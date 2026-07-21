@@ -41,6 +41,21 @@ type ParsedMCPRequest struct {
 	// Meta contains the _meta field from the request params for protocol-level metadata
 	// such as progress tokens, trace IDs, or custom namespaced metadata
 	Meta map[string]interface{}
+	// MCPMethodHeader is the value of the Modern (stateless MCP) "Mcp-Method"
+	// request header, if present. Mandatory on every Modern POST per the draft spec.
+	MCPMethodHeader string
+	// MCPNameHeader is the raw, as-received value of the Modern (stateless MCP)
+	// "Mcp-Name" request header, if present. Required for tools/call,
+	// resources/read, prompts/get. Stored undecoded: the spec allows the header
+	// value to be sentinel-encoded (=?base64?...?=), and a caller comparing it to
+	// the plain body name/uri during validation must decode the header first.
+	MCPNameHeader string
+	// ClientInfo is the client implementation info surfaced via _meta for Modern
+	// (stateless) requests, sourced from _meta["io.modelcontextprotocol/clientInfo"].
+	ClientInfo map[string]interface{}
+	// ProtocolVersion is the per-request protocol version surfaced via _meta for
+	// Modern (stateless) requests, sourced from _meta["io.modelcontextprotocol/protocolVersion"].
+	ProtocolVersion string
 	// IsRequest indicates if this is a JSON-RPC request (vs response or notification)
 	IsRequest bool
 	// IsBatch indicates if this is a batch request
@@ -95,6 +110,8 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Parse the MCP request and store in context
 		parsedRequest := parseMCPRequest(bodyBytes)
 		if parsedRequest != nil {
+			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
+			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
 			ctx := context.WithValue(r.Context(), MCPRequestContextKey, parsedRequest)
 			r = r.WithContext(ctx)
 		}
@@ -158,6 +175,7 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 
 	// Extract resource ID, arguments, and meta based on the method
 	resourceID, arguments, meta := extractResourceAndArguments(req.Method, req.Params)
+	clientInfo, protocolVersion := extractModernMeta(meta)
 
 	// Determine the ID - will be nil for notifications
 	var id interface{}
@@ -166,14 +184,16 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 	}
 
 	return &ParsedMCPRequest{
-		Method:     req.Method,
-		ID:         id,
-		Params:     req.Params,
-		ResourceID: resourceID,
-		Arguments:  arguments,
-		Meta:       meta,
-		IsRequest:  true,
-		IsBatch:    false, // TODO: Add batch request support if needed
+		Method:          req.Method,
+		ID:              id,
+		Params:          req.Params,
+		ResourceID:      resourceID,
+		Arguments:       arguments,
+		Meta:            meta,
+		ClientInfo:      clientInfo,
+		ProtocolVersion: protocolVersion,
+		IsRequest:       true,
+		IsBatch:         false, // TODO: Add batch request support if needed
 	}
 }
 
@@ -219,6 +239,7 @@ var staticResourceIDs = map[string]string{
 	"notifications/resources/list_changed": "resources",
 	"notifications/resources/updated":      "resources",
 	"notifications/tools/list_changed":     "tools",
+	"server/discover":                      "discover",
 }
 
 func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}, map[string]interface{}) {
@@ -231,16 +252,21 @@ func extractResourceAndArguments(method string, params json.RawMessage) (string,
 		return getStaticResourceID(method), nil, nil
 	}
 
-	// Extract _meta field if present
-	var meta map[string]interface{}
-	if metaRaw, ok := paramsMap["_meta"]; ok {
-		if metaMap, ok := metaRaw.(map[string]interface{}); ok {
-			meta = metaMap
-		}
-	}
+	meta := metaFromParamsMap(paramsMap)
 
 	resourceID, arguments := processMethodWithHandler(method, paramsMap)
 	return resourceID, arguments, meta
+}
+
+// extractModernMeta surfaces the Modern (stateless MCP) clientInfo and
+// protocolVersion fields from a parsed _meta map, if present. It delegates to
+// the reserved-key helpers in revision.go so the guarded type assertions live
+// in one place; a wrong-shaped value is treated as absent rather than causing
+// an error.
+func extractModernMeta(meta map[string]interface{}) (clientInfo map[string]interface{}, protocolVersion string) {
+	clientInfo, _ = objectMetaValue(meta, metaKeyClientInfo)
+	protocolVersion, _ = stringMetaValue(meta, metaKeyProtocolVersion)
+	return clientInfo, protocolVersion
 }
 
 // getStaticResourceID returns the static resource ID for methods that don't need parameter parsing
@@ -494,4 +520,24 @@ func GetMCPMeta(ctx context.Context) map[string]interface{} {
 		return parsed.Meta
 	}
 	return nil
+}
+
+// GetMCPClientInfo is a convenience function to get the Modern (stateless MCP)
+// per-request clientInfo from the context.
+// Returns nil if no parsed request is available or clientInfo is not present.
+func GetMCPClientInfo(ctx context.Context) map[string]interface{} {
+	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
+		return parsed.ClientInfo
+	}
+	return nil
+}
+
+// GetMCPProtocolVersion is a convenience function to get the Modern (stateless
+// MCP) per-request protocol version from the context.
+// Returns "" if no parsed request is available or protocolVersion is not present.
+func GetMCPProtocolVersion(ctx context.Context) string {
+	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
+		return parsed.ProtocolVersion
+	}
+	return ""
 }

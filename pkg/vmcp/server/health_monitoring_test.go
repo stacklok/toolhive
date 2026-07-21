@@ -16,7 +16,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	discoverymocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -31,7 +30,6 @@ func TestServer_HealthMonitoring_Disabled(t *testing.T) {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoverymocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
 		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
@@ -48,7 +46,7 @@ func TestServer_HealthMonitoring_Disabled(t *testing.T) {
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, backendRegistry, nil)
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
@@ -83,7 +81,6 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoverymocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
 		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
@@ -117,7 +114,7 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, backendRegistry, nil)
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
@@ -125,7 +122,6 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 	assert.NotNil(t, srv.backendHealth())
 
 	// Start server in background
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -191,7 +187,6 @@ func TestServer_HealthMonitoring_StartupFailure(t *testing.T) {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoverymocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
 		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
@@ -213,7 +208,7 @@ func TestServer_HealthMonitoring_StartupFailure(t *testing.T) {
 
 	// This should fail during New() because of invalid health monitor config
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, backendRegistry, nil)
 	require.Error(t, err)
 	require.Nil(t, srv)
 	assert.Contains(t, err.Error(), "failed to create health monitor")
@@ -228,7 +223,6 @@ func TestServer_HandleBackendHealth_Disabled(t *testing.T) {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoverymocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
 		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
@@ -245,7 +239,7 @@ func TestServer_HandleBackendHealth_Disabled(t *testing.T) {
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Create test request
@@ -277,7 +271,6 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoverymocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
 		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
@@ -304,11 +297,10 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Start server
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -372,7 +364,6 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoverymocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
 		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
@@ -399,11 +390,10 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Start server
-	mockDiscoveryMgr.EXPECT().Stop().Times(1)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)

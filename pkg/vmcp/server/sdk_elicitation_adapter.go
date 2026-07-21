@@ -9,13 +9,12 @@ import (
 	"context"
 	"maps"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// sdkElicitationAdapter wraps mark3labs MCPServer to implement vmcp.ElicitationRequester.
+// sdkElicitationAdapter wraps mcpcompat MCPServer to implement vmcp.ElicitationRequester.
 //
 // It is the sole point where mcp-go elicitation types appear: it translates the
 // domain ElicitationRequest/ElicitationResult to/from the SDK types, keeping the
@@ -24,22 +23,22 @@ import (
 // Per MCP 2025-06-18 spec: The SDK handles JSON-RPC ID correlation internally,
 // so the adapter does not manage IDs.
 //
-// Thread-safety: Safe for concurrent calls. The mark3labs MCPServer is thread-safe.
+// Thread-safety: Safe for concurrent calls. The mcpcompat MCPServer is thread-safe.
 type sdkElicitationAdapter struct {
-	// mcpServer is the mark3labs SDK server instance that handles elicitation protocol.
+	// mcpServer is the mcpcompat SDK server instance that handles elicitation protocol.
 	// Typed as the minimal mcpElicitationRequester seam so the translation logic
 	// can be unit-tested against a fake SDK; *server.MCPServer satisfies it.
 	mcpServer mcpElicitationRequester
 }
 
-// mcpElicitationRequester is the minimal slice of the mark3labs SDK that the
+// mcpElicitationRequester is the minimal slice of the mcpcompat SDK that the
 // adapter depends on. *server.MCPServer satisfies it in production; tests
 // substitute a fake to verify domain ⇄ mcp-go translation without a live session.
 type mcpElicitationRequester interface {
 	RequestElicitation(ctx context.Context, request mcp.ElicitationRequest) (*mcp.ElicitationResult, error)
 }
 
-// NewSDKElicitationAdapter creates a new elicitation adapter that wraps the mark3labs SDK server.
+// NewSDKElicitationAdapter creates a new elicitation adapter that wraps the mcpcompat SDK server.
 //
 // The returned adapter implements vmcp.ElicitationRequester by translating the domain
 // request to/from mcp-go types and delegating to the SDK's RequestElicitation method.
@@ -59,11 +58,11 @@ func NewSDKElicitationAdapter(mcpServer *server.MCPServer) vmcp.ElicitationReque
 }
 
 // RequestElicitation translates the domain request to mcp-go, delegates to the
-// mark3labs SDK's RequestElicitation method, and translates the response back.
+// mcpcompat SDK's RequestElicitation method, and translates the response back.
 //
 // This is a synchronous blocking call that:
 //  1. Maps the domain ElicitationRequest to an mcp.ElicitationRequest
-//  2. Forwards the request to the mark3labs SDK
+//  2. Forwards the request to the mcpcompat SDK
 //  3. Blocks until the client responds or timeout occurs
 //  4. Maps the SDK's mcp.ElicitationResult back to the domain ElicitationResult
 //
@@ -95,7 +94,7 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 		mcpReq.Params.Meta = mcp.NewMetaFromMap(maps.Clone(req.Meta))
 	}
 
-	// Delegate to the mark3labs SDK's RequestElicitation method.
+	// Delegate to the mcpcompat SDK's RequestElicitation method.
 	// The SDK will:
 	//   1. Extract session ID from context (set by SDK middleware)
 	//   2. Generate JSON-RPC ID for the request

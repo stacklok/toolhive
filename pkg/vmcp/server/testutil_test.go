@@ -11,8 +11,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 )
 
 // startRealMCPBackend creates a real in-process MCP server over streamable-HTTP
@@ -121,6 +121,34 @@ func (c *MCPTestClient) CallTool(toolName string, args map[string]any) *http.Res
 			"name":      toolName,
 			"arguments": args,
 		},
+	}, c.sessionID)
+	c.nextID++
+	return resp
+}
+
+// ReadResource calls resources/read for the given URI and returns the raw response.
+func (c *MCPTestClient) ReadResource(uri string) *http.Response {
+	c.t.Helper()
+
+	resp := c.postMCP(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      c.nextID,
+		"method":  "resources/read",
+		"params":  map[string]any{"uri": uri},
+	}, c.sessionID)
+	c.nextID++
+	return resp
+}
+
+// GetPrompt calls prompts/get for the given prompt name and returns the raw response.
+func (c *MCPTestClient) GetPrompt(name string) *http.Response {
+	c.t.Helper()
+
+	resp := c.postMCP(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      c.nextID,
+		"method":  "prompts/get",
+		"params":  map[string]any{"name": name},
 	}, c.sessionID)
 	c.nextID++
 	return resp

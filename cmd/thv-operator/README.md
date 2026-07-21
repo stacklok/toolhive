@@ -129,6 +129,10 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
 ```
 
+For the full list of configurable values, see the
+[operator chart](../../deploy/charts/operator/README.md) and
+[operator CRDs chart](../../deploy/charts/operator-crds/README.md) documentation.
+
 ## Usage
 
 ### Creating an MCP Server

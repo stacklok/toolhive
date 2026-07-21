@@ -4,6 +4,7 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -17,15 +18,15 @@ import (
 
 // newStringCache builds a ValidatingCache[string, string] for tests.
 func newStringCache(
-	load func(string) (string, error),
-	check func(string, string) error,
+	load func(context.Context, string) (string, error),
+	check func(context.Context, string, string) error,
 	evict func(string, string),
 ) *ValidatingCache[string, string] {
 	return New(1000, load, check, evict)
 }
 
 // alwaysAliveCheck returns a check function that always reports the entry as alive.
-func alwaysAliveCheck(_ string, _ string) error { return nil }
+func alwaysAliveCheck(_ context.Context, _ string, _ string) error { return nil }
 
 // ---------------------------------------------------------------------------
 // Construction invariants
@@ -34,14 +35,14 @@ func alwaysAliveCheck(_ string, _ string) error { return nil }
 func TestValidatingCache_New_PanicsOnZeroCapacity(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
-		New(0, func(_ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
+		New(0, func(_ context.Context, _ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
 	})
 }
 
 func TestValidatingCache_New_PanicsOnNegativeCapacity(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
-		New(-1, func(_ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
+		New(-1, func(_ context.Context, _ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
 	})
 }
 
@@ -55,7 +56,7 @@ func TestValidatingCache_New_PanicsOnNilLoad(t *testing.T) {
 func TestValidatingCache_New_PanicsOnNilCheck(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
-		New(1, func(_ string) (string, error) { return "", nil }, nil, nil)
+		New(1, func(_ context.Context, _ string) (string, error) { return "", nil }, nil, nil)
 	})
 }
 
@@ -68,7 +69,7 @@ func TestValidatingCache_CacheMiss_CallsLoad(t *testing.T) {
 
 	loaded := false
 	c := newStringCache(
-		func(key string) (string, error) {
+		func(_ context.Context, key string) (string, error) {
 			loaded = true
 			return "value-" + key, nil
 		},
@@ -76,7 +77,7 @@ func TestValidatingCache_CacheMiss_CallsLoad(t *testing.T) {
 		nil,
 	)
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "value-k", v)
 	assert.True(t, loaded)
@@ -87,7 +88,7 @@ func TestValidatingCache_CacheMiss_StoresResult(t *testing.T) {
 
 	calls := 0
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			calls++
 			return "v", nil
 		},
@@ -95,8 +96,8 @@ func TestValidatingCache_CacheMiss_StoresResult(t *testing.T) {
 		nil,
 	)
 
-	c.Get("k")
-	c.Get("k")
+	c.Get(t.Context(), "k")
+	c.Get(t.Context(), "k")
 	assert.Equal(t, 1, calls, "load should be called only once after caching")
 }
 
@@ -105,12 +106,12 @@ func TestValidatingCache_CacheMiss_LoadError_ReturnsNotFound(t *testing.T) {
 
 	loadErr := errors.New("not found")
 	c := newStringCache(
-		func(_ string) (string, error) { return "", loadErr },
+		func(_ context.Context, _ string) (string, error) { return "", loadErr },
 		alwaysAliveCheck,
 		nil,
 	)
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	assert.False(t, ok)
 	assert.Empty(t, v)
 }
@@ -123,14 +124,14 @@ func TestValidatingCache_CacheHit_AliveCheck_ReturnsCached(t *testing.T) {
 	t.Parallel()
 
 	c := newStringCache(
-		func(key string) (string, error) { return "loaded-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
 		alwaysAliveCheck,
 		nil,
 	)
-	c.Get("k") // prime the cache
+	c.Get(t.Context(), "k") // prime the cache
 
 	// Second Get should return cached value without calling load again.
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "loaded-k", v)
 }
@@ -141,18 +142,18 @@ func TestValidatingCache_CacheHit_Expired_EvictsAndCallsOnEvict(t *testing.T) {
 	evictedKey := ""
 	evictedVal := ""
 	c := newStringCache(
-		func(_ string) (string, error) { return "v", nil },
-		func(_ string, _ string) error { return ErrExpired },
+		func(_ context.Context, _ string) (string, error) { return "v", nil },
+		func(_ context.Context, _ string, _ string) error { return ErrExpired },
 		func(key, val string) {
 			evictedKey = key
 			evictedVal = val
 		},
 	)
-	c.Get("k") // prime the cache
+	c.Get(t.Context(), "k") // prime the cache
 
 	// With singleflight wrapping the full Get, an expired hit evicts the entry
 	// and falls through to load within the same operation, returning the fresh value.
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v)
 	assert.Equal(t, "k", evictedKey)
@@ -165,11 +166,11 @@ func TestValidatingCache_CacheHit_Expired_EntryRemovedFromCache(t *testing.T) {
 	calls := 0
 	expired := false
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			calls++
 			return "v", nil
 		},
-		func(_ string, _ string) error {
+		func(_ context.Context, _ string, _ string) error {
 			if expired {
 				return ErrExpired
 			}
@@ -178,11 +179,11 @@ func TestValidatingCache_CacheHit_Expired_EntryRemovedFromCache(t *testing.T) {
 		nil,
 	)
 
-	c.Get("k") // prime the cache; check returns alive
+	c.Get(t.Context(), "k") // prime the cache; check returns alive
 	expired = true
-	c.Get("k") // check returns ErrExpired → evict
+	c.Get(t.Context(), "k") // check returns ErrExpired → evict
 	expired = false
-	c.Get("k") // cache miss again → load called
+	c.Get(t.Context(), "k") // cache miss again → load called
 
 	assert.Equal(t, 2, calls, "load should be called twice: initial + after eviction")
 }
@@ -191,13 +192,13 @@ func TestValidatingCache_CacheHit_TransientCheckError_ReturnsCached(t *testing.T
 	t.Parallel()
 
 	c := newStringCache(
-		func(_ string) (string, error) { return "v", nil },
-		func(_ string, _ string) error { return errors.New("transient storage error") },
+		func(_ context.Context, _ string) (string, error) { return "v", nil },
+		func(_ context.Context, _ string, _ string) error { return errors.New("transient storage error") },
 		nil,
 	)
-	c.Get("k") // prime the cache
+	c.Get(t.Context(), "k") // prime the cache
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v, "transient check error should keep cached value")
 }
@@ -210,14 +211,14 @@ func TestValidatingCache_Set_StoresValue(t *testing.T) {
 	t.Parallel()
 
 	c := newStringCache(
-		func(_ string) (string, error) { return "", errors.New("should not call load") },
+		func(_ context.Context, _ string) (string, error) { return "", errors.New("should not call load") },
 		alwaysAliveCheck,
 		nil,
 	)
 
 	c.Set("k", "v")
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v)
 }
@@ -226,14 +227,14 @@ func TestValidatingCache_Set_UpdatesExisting(t *testing.T) {
 	t.Parallel()
 
 	c := newStringCache(
-		func(_ string) (string, error) { return "loaded", nil },
+		func(_ context.Context, _ string) (string, error) { return "loaded", nil },
 		alwaysAliveCheck,
 		nil,
 	)
-	c.Get("k") // prime with "loaded"
+	c.Get(t.Context(), "k") // prime with "loaded"
 	c.Set("k", "updated")
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "updated", v)
 }
@@ -250,7 +251,7 @@ func TestValidatingCache_LRU_EvictsLeastRecentlyUsed(t *testing.T) {
 
 	// capacity=2: inserting a third entry evicts the LRU.
 	c := New(2,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -259,18 +260,18 @@ func TestValidatingCache_LRU_EvictsLeastRecentlyUsed(t *testing.T) {
 		},
 	)
 
-	c.Get("a") // a=MRU
-	c.Get("b") // b=MRU, a=LRU
-	c.Get("c") // c=MRU, b, a=LRU → evicts a
+	c.Get(t.Context(), "a") // a=MRU
+	c.Get(t.Context(), "b") // b=MRU, a=LRU
+	c.Get(t.Context(), "c") // c=MRU, b, a=LRU → evicts a
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{"a"}, evictedKeys, "LRU entry (a) should be evicted")
 
 	// a is evicted; b and c remain.
-	_, bPresent := c.Get("b")
+	_, bPresent := c.Get(t.Context(), "b")
 	assert.True(t, bPresent)
-	_, cPresent := c.Get("c")
+	_, cPresent := c.Get(t.Context(), "c")
 	assert.True(t, cPresent)
 }
 
@@ -281,7 +282,7 @@ func TestValidatingCache_LRU_GetRefreshesMRUPosition(t *testing.T) {
 	var mu sync.Mutex
 
 	c := New(2,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -290,16 +291,16 @@ func TestValidatingCache_LRU_GetRefreshesMRUPosition(t *testing.T) {
 		},
 	)
 
-	c.Get("a") // a loaded (MRU)
-	c.Get("b") // b loaded (MRU), a=LRU
-	c.Get("a") // a accessed → a becomes MRU, b=LRU
-	c.Get("c") // c loaded → evicts b (LRU), not a
+	c.Get(t.Context(), "a") // a loaded (MRU)
+	c.Get(t.Context(), "b") // b loaded (MRU), a=LRU
+	c.Get(t.Context(), "a") // a accessed → a becomes MRU, b=LRU
+	c.Get(t.Context(), "c") // c loaded → evicts b (LRU), not a
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{"b"}, evictedKeys, "b should be evicted (LRU after a was re-accessed)")
 
-	_, aPresent := c.Get("a")
+	_, aPresent := c.Get(t.Context(), "a")
 	assert.True(t, aPresent, "a should still be in cache")
 }
 
@@ -310,7 +311,7 @@ func TestValidatingCache_LRU_SetRefreshesMRUPosition(t *testing.T) {
 	var mu sync.Mutex
 
 	c := New(2,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -319,10 +320,10 @@ func TestValidatingCache_LRU_SetRefreshesMRUPosition(t *testing.T) {
 		},
 	)
 
-	c.Get("a")      // a=MRU
-	c.Get("b")      // b=MRU, a=LRU
-	c.Set("a", "x") // Set refreshes a to MRU; b becomes LRU
-	c.Get("c")      // c loaded → evicts b
+	c.Get(t.Context(), "a") // a=MRU
+	c.Get(t.Context(), "b") // b=MRU, a=LRU
+	c.Set("a", "x")         // Set refreshes a to MRU; b becomes LRU
+	c.Get(t.Context(), "c") // c loaded → evicts b
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -336,7 +337,7 @@ func TestValidatingCache_LRU_CapacityOne(t *testing.T) {
 	var mu sync.Mutex
 
 	c := New(1,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -345,9 +346,9 @@ func TestValidatingCache_LRU_CapacityOne(t *testing.T) {
 		},
 	)
 
-	c.Get("a")
-	c.Get("b") // evicts a
-	c.Get("c") // evicts b
+	c.Get(t.Context(), "a")
+	c.Get(t.Context(), "b") // evicts a
+	c.Get(t.Context(), "c") // evicts b
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -359,7 +360,7 @@ func TestValidatingCache_LRU_LargeCapacityNoEviction(t *testing.T) {
 
 	const n = 100
 	c := New(n+1,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			t.Errorf("unexpected eviction for key %s", key)
@@ -367,7 +368,7 @@ func TestValidatingCache_LRU_LargeCapacityNoEviction(t *testing.T) {
 	)
 
 	for i := range n {
-		c.Get(fmt.Sprintf("k%d", i))
+		c.Get(t.Context(), fmt.Sprintf("k%d", i))
 	}
 	assert.Equal(t, n, c.Len(), "no entries should be evicted when under capacity")
 }
@@ -376,15 +377,15 @@ func TestValidatingCache_LRU_Len(t *testing.T) {
 	t.Parallel()
 
 	c := New(5,
-		func(_ string) (string, error) { return "v", nil },
+		func(_ context.Context, _ string) (string, error) { return "v", nil },
 		alwaysAliveCheck,
 		nil,
 	)
 
 	assert.Equal(t, 0, c.Len())
-	c.Get("a")
+	c.Get(t.Context(), "a")
 	assert.Equal(t, 1, c.Len())
-	c.Get("b")
+	c.Get(t.Context(), "b")
 	assert.Equal(t, 2, c.Len())
 }
 
@@ -407,7 +408,7 @@ func TestValidatingCache_Singleflight_SetBeforeLoadReturns(t *testing.T) {
 	allowReturn := make(chan struct{})
 
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			close(loadReached) // signal: load is now in-flight
 			<-allowReturn      // block until test injects the concurrent Set
 			loadCount.Add(1)
@@ -425,7 +426,7 @@ func TestValidatingCache_Singleflight_SetBeforeLoadReturns(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		result, ok = c.Get("k")
+		result, ok = c.Get(context.Background(), "k")
 	}()
 
 	// Wait until load is definitely executing, then write via Set so that
@@ -468,7 +469,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 	var expired atomic.Bool
 
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			// Wait until every goroutine has signalled it is about to call Get.
 			// allStarted.Done() is called before Get(), so this unblocks once
 			// the goroutine scheduler has scheduled all callers — not necessarily
@@ -481,7 +482,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 			expired.Store(false) // refresh: late arrivals see a live entry
 			return "reloaded", nil
 		},
-		func(_ string, _ string) error {
+		func(_ context.Context, _ string, _ string) error {
 			if expired.Load() {
 				return ErrExpired
 			}
@@ -492,7 +493,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 
 	// Prime the cache with a live entry. allStarted has count 0 here, so
 	// Wait() inside load returns immediately — no deadlock.
-	_, ok := c.Get("k")
+	_, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, int32(1), loadCount.Load())
 
@@ -507,7 +508,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 		go func(i int) {
 			defer wg.Done()
 			allStarted.Done() // signal: about to call Get
-			results[i], oks[i] = c.Get("k")
+			results[i], oks[i] = c.Get(context.Background(), "k")
 		}(i)
 	}
 
@@ -550,7 +551,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 	allStarted.Add(goroutines)
 
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			// Block until all goroutines have signalled they are about to call
 			// Get. While blocked the cache entry has not been stored, so
 			// every goroutine that reaches the miss path is deduplicated via
@@ -569,7 +570,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 		go func(i int) {
 			defer wg.Done()
 			allStarted.Done() // signal: about to call Get
-			results[i], oks[i] = c.Get("k")
+			results[i], oks[i] = c.Get(context.Background(), "k")
 		}(i)
 	}
 

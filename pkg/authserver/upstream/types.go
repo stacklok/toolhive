@@ -53,6 +53,18 @@ type Identity struct {
 	// per-user keys (doing so grows `users` without bound). Use the
 	// synthesized Subject as an ephemeral session key only.
 	Synthetic bool
+
+	// Claims holds the raw claims resolved from the upstream IDP for this
+	// identity, for downstream authorization-policy inputs. Source by provider
+	// type:
+	//   - OIDC: all claims from the validated ID token.
+	//   - OAuth2 with userInfo: all claims from the userinfo response.
+	//   - OAuth2 with identityFromToken, or synthetic OAuth2: nil — those paths
+	//     resolve only scalar subject/name/email (or nothing), with no structured
+	//     claim set to carry.
+	// These are informational enrichment only: they are NOT used for user
+	// resolution or token storage. May be nil.
+	Claims map[string]any
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

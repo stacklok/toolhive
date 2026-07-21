@@ -19,6 +19,7 @@ import (
 var errToolNameNotFound = errors.New("tool name not found")
 var errBug = errors.New("there's a bug")
 var errKeepBuffering = errors.New("keep buffering")
+var errUnsupportedMimeType = errors.New("unsupported mime type")
 
 // toolOverrideEntry is a struct that represents a tool override entry.
 type toolOverrideEntry struct {
@@ -189,10 +190,21 @@ func NewListToolsMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewa
 			rw := &toolFilterWriter{
 				ResponseWriter: w,
 				config:         config,
+				statusCode:     http.StatusOK, // matches net/http's implicit status when WriteHeader is never called
 			}
 
 			// Call the next handler
 			next.ServeHTTP(rw, r)
+
+			// Explicitly drain our buffered writer after the handler returns. An inner
+			// buffering middleware (e.g. authz's response filter) may write the final
+			// body into our buffer during its own post-ServeHTTP flush; without this
+			// call that body is stranded and the client gets a 0-byte response. See #5797.
+			//
+			// This is the terminal drain, not a streaming Flush: there is no more data
+			// coming, so a body we can't process (wrong/missing content type, malformed
+			// tools list) is written through unchanged rather than dropped. See #5809 (review).
+			rw.finish()
 		})
 	}, nil
 }
@@ -311,8 +323,9 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 // toolFilterWriter wraps http.ResponseWriter to capture and process SSE responses
 type toolFilterWriter struct {
 	http.ResponseWriter
-	buffer []byte
-	config *toolMiddlewareConfig
+	buffer     []byte
+	config     *toolMiddlewareConfig
+	statusCode int
 }
 
 // WriteHeader captures the status code.
@@ -323,6 +336,7 @@ type toolFilterWriter struct {
 // Content-Length" and the client receives only the headers. Removing the
 // header lets Go fall back to chunked transfer encoding.
 func (rw *toolFilterWriter) WriteHeader(statusCode int) {
+	rw.statusCode = statusCode
 	rw.ResponseWriter.Header().Del("Content-Length")
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
@@ -333,40 +347,110 @@ func (rw *toolFilterWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-// Flush processes any remaining buffered data and writes it to the underlying ResponseWriter
+// Flush processes any remaining buffered data, writes it to the underlying
+// ResponseWriter, and forwards the flush downstream. This is the interim/
+// streaming path: a downstream handler or reverse proxy may call this
+// mid-response, so an incomplete SSE event or partial JSON body is left
+// buffered for a later call to complete, and the transport flush is not
+// forwarded in that case -- there's nothing new to push over the wire, and
+// forwarding it could send a still-incomplete frame. Use finish() for the
+// one-time terminal drain after the wrapped handler has returned.
 func (rw *toolFilterWriter) Flush() {
-	if len(rw.buffer) > 0 {
-		mimeType := strings.Split(rw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
-
-		if mimeType == "" {
-			_, err := rw.ResponseWriter.Write(rw.buffer)
-			if err != nil {
-				slog.Error("error writing buffer", "error", err)
-			}
-			return
-		}
-
-		var b bytes.Buffer
-		err := processBuffer(rw.config, rw.buffer, mimeType, &b)
-		if errors.Is(err, errKeepBuffering) {
-			slog.Debug("keep buffering", "buffered_bytes", len(rw.buffer))
-			return
-		}
-		if err != nil {
-			slog.Error("error flushing response", "error", err)
-		}
-
-		slog.Debug("flushing buffer", "bytes", len(b.Bytes()))
-		_, err = rw.ResponseWriter.Write(b.Bytes())
-		if err != nil {
-			slog.Error("error writing buffer", "error", err)
-		}
-		rw.buffer = rw.buffer[:0] // Reset buffer
+	if !rw.drainBuffer(false) {
+		return
 	}
 
 	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// finish performs the terminal drain of any remaining buffered data after the
+// wrapped handler has returned. Unlike Flush, there is no more data coming:
+// an incomplete body (a truncated stream, a connection cut short) is written
+// through unchanged rather than held forever, and an unrecognized/missing
+// Content-Type on a response with nothing to filter is likewise passed
+// through as-is. It does not forward a transport flush, since returning from
+// ServeHTTP already completes the response.
+//
+// A body that DOES look like a tools list but fails to filter is the one
+// case finish() will not pass through -- see drainBuffer.
+func (rw *toolFilterWriter) finish() {
+	rw.drainBuffer(true)
+}
+
+// drainBuffer processes the buffered response body according to its MIME
+// type and writes the result to the underlying ResponseWriter. It reports
+// whether the caller may safely forward a transport-level flush: false means
+// data is being deliberately withheld, either because it's incomplete and
+// more is expected (Flush, non-terminal) or because it looked like a tools
+// list we could not safely filter (fail closed, in both Flush and finish).
+//
+// When terminal is false (Flush, mid-stream), a body processBuffer reports as
+// incomplete is left buffered for a later call. When terminal is true
+// (finish, called once ServeHTTP has returned), there won't be a later call,
+// so an incomplete body is written through unchanged instead of being
+// stranded.
+//
+// A hard filtering failure -- a response that resolved to a tools list
+// (whether correctly labeled or sniffed, see processUnrecognizedMimeType) but
+// couldn't be filtered, e.g. a tool missing its required name -- is never
+// passed through, in either mode: doing so would leak the unfiltered list.
+func (rw *toolFilterWriter) drainBuffer(terminal bool) bool {
+	if len(rw.buffer) == 0 {
+		return true
+	}
+
+	mimeType := strings.Split(rw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
+	successResponse := rw.statusCode == http.StatusOK || rw.statusCode == http.StatusAccepted
+
+	var b bytes.Buffer
+	err := processBuffer(rw.config, rw.buffer, mimeType, successResponse, &b)
+
+	switch {
+	case errors.Is(err, errKeepBuffering):
+		if !terminal {
+			slog.Debug("keep buffering", "buffered_bytes", len(rw.buffer))
+			return false
+		}
+		slog.Warn("response ended with an incomplete buffered body; writing it through unchanged",
+			"buffered_bytes", len(rw.buffer))
+		rw.writeBuffer(rw.buffer)
+		return true
+
+	case errors.Is(err, errUnsupportedMimeType):
+		// processBuffer only returns this once it has ruled out the buffer being
+		// a tools list: either the response has nothing to filter (a non-2xx
+		// error body), or it's a 2xx body that doesn't look like a tools list
+		// under either supported wire format. Either way, passing it through
+		// unchanged cannot leak an unfiltered list.
+		rw.writeBuffer(rw.buffer)
+		return true
+
+	case err != nil:
+		// A recognized (or sniffed) tools list that failed to filter -- e.g. a
+		// malformed tool entry. Fail closed: writing the raw, unfiltered body
+		// through would defeat the filter entirely.
+		slog.Error("error filtering buffered response; refusing to pass through unfiltered", "error", err)
+		rw.buffer = rw.buffer[:0]
+		return false
+
+	default:
+		slog.Debug("flushing buffer", "bytes", len(b.Bytes()))
+		rw.writeBuffer(b.Bytes())
+		return true
+	}
+}
+
+// writeBuffer writes data to the underlying ResponseWriter and resets rw.buffer.
+// data is expected to be either rw.buffer itself or a value derived from it, so
+// resetting after the write is always correct.
+func (rw *toolFilterWriter) writeBuffer(data []byte) {
+	_, err := rw.ResponseWriter.Write(data)
+	if err != nil {
+		slog.Error("error writing buffer", "error", err)
+	}
+	rw.buffer = rw.buffer[:0] // Reset buffer
 }
 
 type toolsListResponse struct {
@@ -384,11 +468,16 @@ type toolCallRequest struct {
 	Params  *map[string]any `json:"params,omitempty"`
 }
 
-// processSSEBuffer processes any complete SSE events in the buffer
+// processBuffer processes the buffered response body according to its
+// declared MIME type. successResponse indicates whether the response's
+// status code was 200/202: it's only consulted for an unrecognized MIME type,
+// to decide whether the body needs sniffing before it can safely be passed
+// through -- see processUnrecognizedMimeType.
 func processBuffer(
 	config *toolMiddlewareConfig,
 	buffer []byte,
 	mimeType string,
+	successResponse bool,
 	w io.Writer,
 ) error {
 	if len(buffer) == 0 {
@@ -397,32 +486,101 @@ func processBuffer(
 
 	switch mimeType {
 	case "application/json":
-		var toolsListResponse toolsListResponse
-		var syntaxError *json.SyntaxError
-		err := json.Unmarshal(buffer, &toolsListResponse)
-		if errors.As(err, &syntaxError) {
-			return fmt.Errorf("%w: %w", errKeepBuffering, err)
-		}
-		if err == nil && toolsListResponse.Result.Tools != nil {
-			return processToolsListResponse(config, toolsListResponse, w)
-		}
+		return processJSONBuffer(config, buffer, w)
 	case "text/event-stream":
 		return processEventStream(config, buffer, w)
 	default:
-		// NOTE: Content-Type header is mandatory in the spec, and as of the
-		// time of this writing, the only allowed content types are
-		// * application/json, and
-		// * text/event-stream
-		//
-		// As a result, we should never get here and it is safe to return an
-		// error.
-		return fmt.Errorf("unsupported mime type: %s", mimeType)
+		return processUnrecognizedMimeType(config, buffer, mimeType, successResponse, w)
+	}
+}
+
+// processJSONBuffer filters a JSON-RPC response body if it carries a tools
+// list, otherwise passes it through unchanged (e.g. a tools/call result, or
+// any other JSON-RPC message this middleware isn't meant to touch).
+func processJSONBuffer(config *toolMiddlewareConfig, buffer []byte, w io.Writer) error {
+	var toolsListResponse toolsListResponse
+	var syntaxError *json.SyntaxError
+	err := json.Unmarshal(buffer, &toolsListResponse)
+	if errors.As(err, &syntaxError) {
+		return fmt.Errorf("%w: %w", errKeepBuffering, err)
+	}
+	if err == nil && toolsListResponse.Result.Tools != nil {
+		return processToolsListResponse(config, toolsListResponse, w)
 	}
 
-	// If we get this far, we have a valid buffer that we cannot process
-	// in any other way, so we just write it to the underlying writer.
-	_, err := w.Write(buffer)
+	_, err = w.Write(buffer)
 	return err
+}
+
+// processUnrecognizedMimeType handles a body whose Content-Type is missing or
+// isn't one of the two MCP-supported types (application/json,
+// text/event-stream).
+//
+// A non-2xx response has nothing to filter -- the tool filter only ever acts
+// on a tools/list result, which a non-2xx status can't carry -- so it's
+// always safe to pass through.
+//
+// A 2xx response, on the other hand, is spec-required to declare one of the
+// two supported Content-Types. A missing or wrong header there could be an
+// accident, or a backend deliberately omitting/mislabeling it to smuggle an
+// unfiltered tools list past the filter (the same disguised-result concern
+// handled in pkg/authz for #5257). So the raw body is sniffed the same way a
+// correctly-labeled response would be processed: if it resolves to a tools
+// list under either supported shape, it's filtered (or, on failure, rejected)
+// exactly as it would be under the correct Content-Type. Only once neither
+// shape resolves to a tools list is it safe to pass through unchanged.
+//
+// Known limitation: unlike the correctly-labeled paths, this sniff has no
+// notion of "incomplete, wait for more" -- a tools list that both omits/
+// mislabels its Content-Type AND arrives across multiple Flush() calls may
+// be sniffed as "not a tools list" on an early, truncated call and passed
+// through piecemeal before the full body is available. A compliant backend
+// that streams a tools list always declares text/event-stream, so this only
+// affects a backend that is already violating the spec on two axes at once.
+func processUnrecognizedMimeType(
+	config *toolMiddlewareConfig,
+	buffer []byte,
+	mimeType string,
+	successResponse bool,
+	w io.Writer,
+) error {
+	if !successResponse {
+		return fmt.Errorf("%w: %s", errUnsupportedMimeType, mimeType)
+	}
+
+	var candidate toolsListResponse
+	if err := json.Unmarshal(buffer, &candidate); err == nil && candidate.Result.Tools != nil {
+		return processToolsListResponse(config, candidate, w)
+	}
+
+	if sniffSSEToolsList(buffer) {
+		return processEventStream(config, buffer, w)
+	}
+
+	return fmt.Errorf("%w: %s", errUnsupportedMimeType, mimeType)
+}
+
+// sniffSSEToolsList reports whether buffer contains an SSE "data:" line whose
+// payload decodes to a tools list. It's a lightweight detector only, used to
+// decide whether a mislabeled/untyped 2xx body needs the full SSE processing
+// path (which enforces its own completeness and separator rules).
+func sniffSSEToolsList(buffer []byte) bool {
+	normalized := bytes.ReplaceAll(buffer, []byte("\r\n"), []byte("\n"))
+	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
+
+	for _, line := range bytes.Split(normalized, []byte("\n")) {
+		data, ok := bytes.CutPrefix(line, []byte("data:"))
+		if !ok {
+			continue
+		}
+
+		var candidate toolsListResponse
+		if json.Unmarshal(bytes.TrimSpace(data), &candidate) == nil && candidate.Result.Tools != nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 //nolint:gocyclo

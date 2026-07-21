@@ -200,6 +200,9 @@ type PathResolver interface {
 type Installer interface {
 	// Extract decompresses a tar.gz OCI layer and writes files to targetDir.
 	Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, error)
+	// ExtractPlugin is like Extract but preserves the executable bit (cap 0755)
+	// so plugin hook scripts keep +x. Used by plugin adapters.
+	ExtractPlugin(layerData []byte, targetDir string, force bool) (*ExtractResult, error)
 	// Remove safely removes a skill directory.
 	Remove(skillDir string) error
 }

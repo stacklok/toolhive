@@ -17,9 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -212,8 +210,7 @@ func createTestServerWithHealthMonitor(
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	if setupMock != nil {
 		setupMock(mockBackendClient)
@@ -221,22 +218,6 @@ func createTestServerWithHealthMonitor(
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
-
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{
-			Tools:     []vmcp.Tool{},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     make(map[string]*vmcp.BackendTarget),
-				Resources: make(map[string]*vmcp.BackendTarget),
-				Prompts:   make(map[string]*vmcp.BackendTarget),
-			},
-			Metadata: &aggregator.AggregationMetadata{},
-		}, nil).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -252,7 +233,7 @@ func createTestServerWithHealthMonitor(
 		GroupRef:            groupRef,
 		HealthMonitorConfig: healthMonCfg,
 		SessionFactory:      newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	type startResult struct {

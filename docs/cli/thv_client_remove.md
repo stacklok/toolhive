@@ -19,10 +19,6 @@ Remove a client from MCP server configuration.
 
 Valid clients:
   - amp-cli: Sourcegraph Amp CLI
-  - amp-cursor: Cursor Sourcegraph Amp extension
-  - amp-vscode: VS Code Sourcegraph Amp extension
-  - amp-vscode-insider: VS Code Insiders Sourcegraph Amp extension
-  - amp-windsurf: Windsurf Sourcegraph Amp extension
   - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: VS Code Cline extension

@@ -99,17 +99,14 @@ func requireRedisNotFoundError(t *testing.T, err error) {
 
 // TestNewRedisStorage_Validation covers the auth-server-specific invariants
 // enforced by NewRedisStorage. Connection-mode topology (Addr XOR Sentinel,
-// cluster requires Addr, sentinel master name and addresses) is validated by
-// the shared toolhive-core redis package and exercised in its own tests.
+// cluster requires Addr, sentinel master name and addresses) and credentials
+// are validated by the shared toolhive-core redis package and exercised in its
+// own tests; NewRedisStorage does not mandate a password.
 func TestNewRedisStorage_Validation(t *testing.T) {
 	t.Parallel()
 
-	validACL := func() tcredis.Config {
-		return tcredis.Config{
-			Addr:     "localhost:6379",
-			Username: "user",
-			Password: "pass",
-		}
+	validCfg := func() tcredis.Config {
+		return tcredis.Config{Addr: "localhost:6379", Username: "user", Password: "pass"}
 	}
 
 	tests := []struct {
@@ -119,14 +116,8 @@ func TestNewRedisStorage_Validation(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:      "missing ACL password",
-			cfg:       tcredis.Config{Addr: "localhost:6379", Username: "user"},
-			keyPrefix: "test:",
-			wantErr:   "ACL password is required",
-		},
-		{
 			name:      "missing key prefix",
-			cfg:       validACL(),
+			cfg:       validCfg(),
 			keyPrefix: "",
 			wantErr:   "key prefix is required",
 		},
@@ -209,6 +200,24 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 		Username: "testuser",
 		Password: "testpass",
 	}
+
+	ctx := context.Background()
+	s, err := NewRedisStorage(ctx, cfg, "test:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.Health(ctx))
+}
+
+// TestNewRedisStorage_Standalone_Passwordless verifies that an auth-disabled
+// Redis (no ACL) is accepted, matching toolhive-core's Config contract where
+// Password "may be empty when the server does not require authentication".
+func TestNewRedisStorage_Standalone_Passwordless(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t) // no RequireUserAuth → auth disabled
+
+	cfg := tcredis.Config{Addr: mr.Addr()}
 
 	ctx := context.Background()
 	s, err := NewRedisStorage(ctx, cfg, "test:")
@@ -1150,6 +1159,36 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("DeleteUpstreamTokensForProvider leaves sibling intact", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{
+				ProviderID: "provider-a", AccessToken: "a", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", &UpstreamTokens{
+				ProviderID: "provider-b", AccessToken: "b", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			requireRedisNotFoundError(t, err)
+
+			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			require.NoError(t, err)
+			assert.Equal(t, "b", got.AccessToken)
+
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			require.NoError(t, err)
+			assert.Len(t, all, 1)
+		})
+	})
+
+	t.Run("DeleteUpstreamTokensForProvider absent row is non-fatal", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "no-such-session", "provider-a"))
+		})
+	})
+
 }
 
 // --- Bulk Migration Tests ---
@@ -1362,7 +1401,9 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			SingleLeg: true, ChainUpstreams: []string{"provider-1", "provider-2"},
+			CreatedAt: time.Now(),
 		}
 	}
 
@@ -1376,6 +1417,44 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
+			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+		})
+	})
+
+	t.Run("legacy JSON without chain_upstreams decodes with empty ChainUpstreams", func(t *testing.T) {
+		// Pin the wire-shape contract: pre-feature Redis data that has no
+		// "chain_upstreams" key must deserialise to an empty ChainUpstreams, which
+		// the callback treats as "no chain computed yet". A JSON tag rename or a
+		// DisallowUnknownFields flip would break this without failing another test.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			legacyJSON := fmt.Sprintf(`{
+				"client_id": "legacy-client",
+				"redirect_uri": "https://example.com/callback",
+				"state": "client-state",
+				"pkce_challenge": "challenge",
+				"pkce_method": "S256",
+				"scopes": ["openid"],
+				"internal_state": "legacy-internal-state",
+				"upstream_pkce_verifier": "verifier",
+				"upstream_nonce": "nonce",
+				"session_id": "legacy-session",
+				"created_at": %d
+			}`, time.Now().Unix())
+
+			// Inject directly into miniredis, bypassing the Store path, to simulate a
+			// pre-feature row written without "chain_upstreams".
+			key := redisKey(s.keyPrefix, KeyTypePending, "legacy-internal-state")
+			require.NoError(t, mr.Set(key, legacyJSON))
+
+			retrieved, err := s.LoadPendingAuthorization(ctx, "legacy-internal-state")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+
+			assert.Empty(t, retrieved.ChainUpstreams, "legacy record must decode with empty ChainUpstreams")
+			// Sanity-check that unrelated fields still populate from the legacy blob.
+			assert.Equal(t, "legacy-client", retrieved.ClientID)
+			assert.Equal(t, "legacy-session", retrieved.SessionID)
 		})
 	})
 
@@ -1960,12 +2039,14 @@ func TestRedisKeyGeneration(t *testing.T) {
 		t.Parallel()
 		result := redisDCRKey("test:auth:", DCRKey{
 			Issuer:      "https://thv.example.com",
+			UpstreamID:  "https://idp.example.com",
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  "abc123",
 		})
-		// 23 = len("https://thv.example.com"), 38 = len("https://thv.example.com/oauth/callback")
+		// 23 = len("https://thv.example.com"), 23 = len("https://idp.example.com"),
+		// 38 = len("https://thv.example.com/oauth/callback")
 		assert.Equal(t,
-			"test:auth:dcr:23:https://thv.example.com:38:https://thv.example.com/oauth/callback:abc123",
+			"test:auth:dcr:23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:abc123",
 			result)
 	})
 }
@@ -1978,8 +2059,8 @@ func TestRedisKeyGeneration(t *testing.T) {
 func TestRedisDCRKey_Distinct(t *testing.T) {
 	t.Parallel()
 
-	mk := func(issuer, redirect, scopes string) DCRKey {
-		return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: scopes}
+	mk := func(issuer, upstreamID, redirect, scopes string) DCRKey {
+		return DCRKey{Issuer: issuer, UpstreamID: upstreamID, RedirectURI: redirect, ScopesHash: scopes}
 	}
 
 	tests := []struct {
@@ -1988,33 +2069,56 @@ func TestRedisDCRKey_Distinct(t *testing.T) {
 	}{
 		{
 			name: "different issuer",
-			a:    mk("https://idp-a.example.com", "https://x/cb", "h1"),
-			b:    mk("https://idp-b.example.com", "https://x/cb", "h1"),
+			a:    mk("https://idp-a.example.com", "https://up", "https://x/cb", "h1"),
+			b:    mk("https://idp-b.example.com", "https://up", "https://x/cb", "h1"),
+		},
+		{
+			// Two upstreams that share the consumer's issuer, redirect, and
+			// scopes and differ only by upstream — the #5823 shape.
+			name: "different upstream_id",
+			a:    mk("https://idp.example.com", "https://up-a", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up-b", "https://x/cb", "h1"),
 		},
 		{
 			name: "different redirect_uri",
-			a:    mk("https://idp.example.com", "https://x/cb", "h1"),
-			b:    mk("https://idp.example.com", "https://y/cb", "h1"),
+			a:    mk("https://idp.example.com", "https://up", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up", "https://y/cb", "h1"),
 		},
 		{
 			name: "different scopes hash",
-			a:    mk("https://idp.example.com", "https://x/cb", "h1"),
-			b:    mk("https://idp.example.com", "https://x/cb", "h2"),
+			a:    mk("https://idp.example.com", "https://up", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up", "https://x/cb", "h2"),
 		},
 		{
 			// Without length prefixing, ("ab", "cd") and ("a", "bcd") would
 			// both yield ":ab:cd:" as the issuer/redirect segment after a
 			// fmt.Sprintf collapse. The length prefix prevents that.
 			name: "redirect_uri-issuer boundary collision (length-prefix property)",
-			a:    mk("ab", "cd", "h1"),
-			b:    mk("a", "bcd", "h1"),
+			a:    mk("ab", "up", "cd", "h1"),
+			b:    mk("a", "up", "bcd", "h1"),
+		},
+		{
+			// UpstreamID legitimately contains colons and can abut the issuer
+			// boundary; the length prefix keeps ("ab","cd") and ("a","bcd")
+			// distinct across the issuer/upstream seam too.
+			name: "issuer-upstream_id boundary collision (length-prefix property)",
+			a:    mk("ab", "cd", "https://x/cb", "h1"),
+			b:    mk("a", "bcd", "https://x/cb", "h1"),
+		},
+		{
+			// UpstreamID also abuts RedirectURI; the length prefix must keep
+			// ("ab","cd") and ("a","bcd") distinct across the second new seam
+			// introduced by inserting UpstreamID between Issuer and RedirectURI.
+			name: "upstream_id-redirect_uri boundary collision (length-prefix property)",
+			a:    mk("https://idp.example.com", "ab", "cd", "h1"),
+			b:    mk("https://idp.example.com", "a", "bcd", "h1"),
 		},
 		{
 			// RedirectURI legitimately contains colons (e.g. ":443"). A plain
 			// "%s:%s:%s" key would be ambiguous; the length prefix is not.
 			name: "colons inside redirect_uri",
-			a:    mk("https://idp.example.com", "https://x.example.com:443/cb", "h1"),
-			b:    mk("https://idp.example.com", "https://x.example.com/cb:443", "h1"),
+			a:    mk("https://idp.example.com", "https://up", "https://x.example.com:443/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up", "https://x.example.com/cb:443", "h1"),
 		},
 	}
 
@@ -2036,6 +2140,7 @@ func TestRedisDCRKey_Deterministic(t *testing.T) {
 
 	key := DCRKey{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  ScopesHash([]string{"openid", "profile", "email"}),
 	}
@@ -2283,6 +2388,7 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 func dcrFixtureKey() DCRKey {
 	return DCRKey{
 		Issuer:      "https://thv.example.com",
+		UpstreamID:  "https://idp.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  ScopesHash([]string{"openid", "profile"}),
 	}
@@ -2382,8 +2488,8 @@ func TestRedisStorage_DCRCredentials_NotFound(t *testing.T) {
 
 func TestRedisStorage_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
-			return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
+		mkKey := func(issuer, upstreamID, redirect string, scopes []string) DCRKey {
+			return DCRKey{Issuer: issuer, UpstreamID: upstreamID, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
 		}
 		mk := func(key DCRKey, clientID string) *DCRCredentials {
 			return &DCRCredentials{
@@ -2394,10 +2500,13 @@ func TestRedisStorage_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 			}
 		}
 		entries := []*DCRCredentials{
-			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
-			mk(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
-			mk(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
-			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "a"),
+			mk(mkKey("https://idp-b.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "b"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://y/cb", []string{"openid"}), "c"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid", "email"}), "d"),
+			// Differs from entry "a" only by UpstreamID — the two-upstreams-in-
+			// one-authserver shape that collided before #5823.
+			mk(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
 		}
 		for _, e := range entries {
 			require.NoError(t, s.StoreDCRCredentials(ctx, e))
@@ -2426,6 +2535,7 @@ func TestRedisStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 		return &DCRCredentials{
 			Key: DCRKey{
 				Issuer:      "https://idp.example.com",
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://x/cb",
 				ScopesHash:  ScopesHash([]string{"openid"}),
 			},
@@ -2447,6 +2557,13 @@ func TestRedisStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 			name: "empty issuer",
 			mutator: func(c *DCRCredentials) *DCRCredentials {
 				c.Key.Issuer = ""
+				return c
+			},
+		},
+		{
+			name: "empty upstream_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.UpstreamID = ""
 				return c
 			},
 		},
@@ -2669,6 +2786,7 @@ func runDCRConcurrentAccess(
 		case dcrConcurrentDisjointKeys:
 			return DCRKey{
 				Issuer:      fmt.Sprintf("https://idp-%d.example.com", gid),
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://x/cb",
 				ScopesHash:  ScopesHash([]string{"openid"}),
 			}

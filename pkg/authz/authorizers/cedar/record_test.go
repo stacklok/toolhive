@@ -161,13 +161,61 @@ func TestConvertMapToCedarRecord(t *testing.T) {
 		{
 			name: "Unsupported types",
 			input: map[string]interface{}{
-				"map":    map[string]interface{}{"nested": "value"},
 				"struct": struct{ Name string }{"test"},
 				"valid":  "this should be included",
 			},
 			expected: map[string]cedar.Value{
 				"valid": cedar.String("this should be included"),
-				// Other keys should be skipped
+				// struct key should be skipped
+			},
+		},
+		{
+			name: "Nested map converts to Cedar record",
+			input: map[string]interface{}{
+				"act": map[string]interface{}{"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent"},
+			},
+			expected: map[string]cedar.Value{
+				"act": cedar.NewRecord(cedar.RecordMap{
+					cedar.String("sub"): cedar.String("spiffe://toolhive.dev/ns/agents/sa/devops-agent"),
+				}),
+			},
+		},
+		{
+			name: "Deeply nested map",
+			input: map[string]interface{}{
+				"outer": map[string]interface{}{
+					"inner": map[string]interface{}{
+						"value": "deep",
+					},
+				},
+			},
+			expected: map[string]cedar.Value{
+				"outer": cedar.NewRecord(cedar.RecordMap{
+					cedar.String("inner"): cedar.NewRecord(cedar.RecordMap{
+						cedar.String("value"): cedar.String("deep"),
+					}),
+				}),
+			},
+		},
+		{
+			name: "Map nested exactly at depth limit converts fully",
+			input: map[string]interface{}{
+				"claim": buildNestedMap(maxClaimNestingDepth, "reachable"),
+			},
+			expected: map[string]cedar.Value{
+				"claim": nestedCedarRecord(maxClaimNestingDepth, cedar.String("reachable")),
+			},
+		},
+		{
+			name: "Map nested beyond depth limit truncates the deep branch",
+			input: map[string]interface{}{
+				"claim": buildNestedMap(maxClaimNestingDepth+2, "unreachable"),
+			},
+			expected: map[string]cedar.Value{
+				// Everything past maxClaimNestingDepth is dropped: the chain
+				// converts down to the limit and bottoms out in an empty
+				// record instead of reaching "unreachable".
+				"claim": nestedCedarRecord(maxClaimNestingDepth, cedar.NewRecord(cedar.RecordMap{})),
 			},
 		},
 		{
@@ -191,6 +239,36 @@ func TestConvertMapToCedarRecord(t *testing.T) {
 			},
 			expected: map[string]cedar.Value{
 				"int64s": cedar.NewSet(cedar.Long(9223372036854775807)),
+			},
+		},
+		{
+			name: "Array of maps converts to Cedar set of records",
+			input: map[string]interface{}{
+				"act_chain": []interface{}{
+					map[string]interface{}{"sub": "spiffe://toolhive.dev/ns/agents/sa/agent-a"},
+					map[string]interface{}{"sub": "spiffe://toolhive.dev/ns/agents/sa/agent-b"},
+				},
+			},
+			expected: map[string]cedar.Value{
+				"act_chain": cedar.NewSet(
+					cedar.NewRecord(cedar.RecordMap{cedar.String("sub"): cedar.String("spiffe://toolhive.dev/ns/agents/sa/agent-a")}),
+					cedar.NewRecord(cedar.RecordMap{cedar.String("sub"): cedar.String("spiffe://toolhive.dev/ns/agents/sa/agent-b")}),
+				),
+			},
+		},
+		{
+			name: "Array of arrays converts to Cedar set of sets",
+			input: map[string]interface{}{
+				"groups": []interface{}{
+					[]interface{}{"a", "b"},
+					[]interface{}{"c"},
+				},
+			},
+			expected: map[string]cedar.Value{
+				"groups": cedar.NewSet(
+					cedar.NewSet(cedar.String("a"), cedar.String("b")),
+					cedar.NewSet(cedar.String("c")),
+				),
 			},
 		},
 	}
@@ -220,4 +298,27 @@ func TestConvertMapToCedarRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+// buildNestedMap wraps leaf in `levels` maps nested under the key "nested",
+// e.g. buildNestedMap(2, "x") == map[string]interface{}{"nested":
+// map[string]interface{}{"nested": "x"}}. levels must be >= 1 so the return
+// value is always a map[string]interface{}. Used to exercise the recursion
+// depth cap in convertMapToCedarRecord.
+func buildNestedMap(levels int, leaf interface{}) map[string]interface{} {
+	value := leaf
+	for range levels {
+		value = map[string]interface{}{"nested": value}
+	}
+	return value.(map[string]interface{})
+}
+
+// nestedCedarRecord wraps leaf in `levels` Cedar records nested under the
+// key "nested" — the expected-value counterpart to buildNestedMap.
+func nestedCedarRecord(levels int, leaf cedar.Value) cedar.Value {
+	value := leaf
+	for range levels {
+		value = cedar.NewRecord(cedar.RecordMap{cedar.String("nested"): value})
+	}
+	return value
 }

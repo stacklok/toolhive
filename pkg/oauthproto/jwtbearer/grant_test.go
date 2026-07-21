@@ -100,6 +100,15 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: "must use HTTPS",
 		},
 		{
+			name: "non-http scheme is rejected even with InsecureAllowHTTP",
+			config: Config{
+				TokenURL:          "ftp://as.example.com/token",
+				InsecureAllowHTTP: true,
+				AssertionProvider: func() (string, error) { return testAssertion, nil },
+			},
+			wantErr: "must use http or https scheme",
+		},
+		{
 			name: "fragment is rejected",
 			config: Config{
 				TokenURL:          "https://as.example.com/token#section",

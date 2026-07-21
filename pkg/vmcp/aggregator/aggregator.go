@@ -61,25 +61,6 @@ type Aggregator interface {
 	// 2. Resolve conflicts
 	// 3. Merge into final view
 	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
-
-	// ProcessPreQueriedCapabilities applies the same aggregation pipeline (overrides,
-	// conflict resolution, advertising filter) to tools that have already been fetched
-	// from live backends. Used by the session management path to reuse aggregator
-	// logic without re-querying backends over HTTP.
-	//
-	// toolsByBackend maps backend WorkloadID → raw tools as returned by the backend.
-	// targets maps backend WorkloadID → the pre-built BackendTarget for that backend.
-	//
-	// Returns:
-	//   - advertisedTools: resolved tools that pass the advertising filter (for MCP clients)
-	//   - allResolvedTools: all resolved tools including non-advertised ones (for schema lookup)
-	//   - toolsRouting: routing table keyed by resolved name; each entry has OriginalCapabilityName
-	//     set so that GetBackendCapabilityName() translates back to the raw backend name.
-	ProcessPreQueriedCapabilities(
-		ctx context.Context,
-		toolsByBackend map[string][]vmcp.Tool,
-		targets map[string]*vmcp.BackendTarget,
-	) (advertisedTools []vmcp.Tool, allResolvedTools []vmcp.Tool, toolsRouting map[string]*vmcp.BackendTarget, err error)
 }
 
 // BackendCapabilities contains the raw capabilities from a single backend.
@@ -92,6 +73,9 @@ type BackendCapabilities struct {
 
 	// Resources are the resources exposed by this backend.
 	Resources []vmcp.Resource
+
+	// ResourceTemplates are the resource templates exposed by this backend.
+	ResourceTemplates []vmcp.ResourceTemplate
 
 	// Prompts are the prompts exposed by this backend.
 	Prompts []vmcp.Prompt
@@ -112,6 +96,9 @@ type ResolvedCapabilities struct {
 
 	// Resources are passed through (conflicts rare, namespaced by URI).
 	Resources []vmcp.Resource
+
+	// ResourceTemplates are passed through (conflicts rare, namespaced by URI template).
+	ResourceTemplates []vmcp.ResourceTemplate
 
 	// Prompts are passed through (conflicts rare, namespaced by name).
 	Prompts []vmcp.Prompt
@@ -153,7 +140,8 @@ type ResolvedTool struct {
 // AggregatedCapabilities is the final unified view of all backend capabilities.
 // This is what gets exposed to MCP clients via tools/list, resources/list, prompts/list.
 type AggregatedCapabilities struct {
-	// Tools are the aggregated backend tools (ready to expose to clients).
+	// Tools are the aggregated backend tools (ready to expose to clients),
+	// sorted by name for deterministic ordering.
 	Tools []vmcp.Tool
 
 	// CompositeTools are the composite workflow tools defined in vMCP configuration.
@@ -162,6 +150,9 @@ type AggregatedCapabilities struct {
 
 	// Resources are the aggregated resources.
 	Resources []vmcp.Resource
+
+	// ResourceTemplates are the aggregated resource templates.
+	ResourceTemplates []vmcp.ResourceTemplate
 
 	// Prompts are the aggregated prompts.
 	Prompts []vmcp.Prompt
@@ -189,6 +180,9 @@ type AggregationMetadata struct {
 
 	// ResourceCount is the total number of resources.
 	ResourceCount int
+
+	// ResourceTemplateCount is the total number of resource templates.
+	ResourceTemplateCount int
 
 	// PromptCount is the total number of prompts.
 	PromptCount int

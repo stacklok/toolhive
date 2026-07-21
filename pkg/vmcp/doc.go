@@ -7,6 +7,9 @@
 // single unified interface. This package contains the core domain models and interfaces
 // that are platform-agnostic (work for both CLI and Kubernetes deployments).
 //
+// +groupName=toolhive.stacklok.dev
+// +versionName=vmcp
+//
 // # Architecture
 //
 // The vmcp package follows Domain-Driven Design (DDD) principles with clear
@@ -150,7 +153,7 @@
 //
 // # Related Documentation
 //
-// - Proposal: docs/proposals/THV-2106-virtual-mcp-server.md
+// - Proposal: https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md
 // - GitHub Issues: #146-159 in stacklok/stacklok-epics
 // - MCP Specification: https://modelcontextprotocol.io/specification
 //

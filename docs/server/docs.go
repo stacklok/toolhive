@@ -258,16 +258,28 @@ const docTemplate = `{
                     "cached_client_secret_ref": {
                         "type": "string"
                     },
+                    "cached_dcr_callback_port": {
+                        "description": "CachedDCRCallbackPort is the callback port that was actually registered\nduring DCR. It may differ from CallbackPort when the requested port was\nunavailable and a fallback port was selected.",
+                        "type": "integer"
+                    },
                     "cached_refresh_token_ref": {
                         "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
                         "type": "string"
                     },
+                    "cached_reg_client_uri": {
+                        "description": "CachedRegClientURI is the registration_client_uri from the DCR response.\nThis is the endpoint used for RFC 7592 client read/update/delete operations.\nStored as plain text since it is not sensitive.",
+                        "type": "string"
+                    },
                     "cached_reg_token_ref": {
-                        "description": "RegistrationAccessToken is used to update/delete the client registration.\nStored as a secret reference since it's sensitive.",
+                        "description": "CachedRegTokenRef is a secret manager reference to the registration_access_token\nreturned in the DCR response. Used for RFC 7592 client update operations.\nStored as a secret reference since it's sensitive.",
                         "type": "string"
                     },
                     "cached_secret_expiry": {
                         "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
+                        "type": "string"
+                    },
+                    "cached_token_auth_method": {
+                        "description": "CachedTokenEndpointAuthMethod is the auth method used for the token endpoint\n(e.g., \"client_secret_basic\", \"none\"). Persisted for RFC 7592 updates.",
                         "type": "string"
                     },
                     "cached_token_expiry": {
@@ -422,6 +434,10 @@ const docTemplate = `{
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
                     },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
+                        "type": "boolean"
+                    },
                     "authorization_endpoint": {
                         "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
                         "type": "string"
@@ -443,6 +459,10 @@ const docTemplate = `{
                     },
                     "identity_from_token": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
+                        "type": "boolean"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
@@ -479,6 +499,10 @@ const docTemplate = `{
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
                     },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the OIDC discovery and token HTTP clients to\nconnect to private IP ranges (RFC-1918, link-local). Use only when the\nupstream is hosted inside the same cluster and has no public endpoint.\nHTTP-scheme restrictions are unchanged — HTTPS is still required for\nnon-localhost hosts. Defaults to false.",
+                        "type": "boolean"
+                    },
                     "client_id": {
                         "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
                         "type": "string"
@@ -490,6 +514,10 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
+                        "type": "boolean"
                     },
                     "issuer_url": {
                         "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
@@ -506,6 +534,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "subject_claim": {
+                        "description": "SubjectClaim names the validated ID-token claim to use as the upstream\nsubject. Defaults to \"sub\" when empty. Set for IdPs where \"sub\" isn't\nstable per user (e.g. Entra/Azure AD's \"oid\"). See upstream.OIDCConfig.",
+                        "type": "string"
                     },
                     "userinfo_override": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig"
@@ -539,6 +571,10 @@ const docTemplate = `{
                     "cimd": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
                     },
+                    "delegation_token_lifespan": {
+                        "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
+                        "type": "string"
+                    },
                     "disable_upstream_token_injection": {
                         "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
                         "type": "boolean"
@@ -550,6 +586,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",
+                        "type": "boolean"
                     },
                     "issuer": {
                         "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
@@ -868,10 +908,6 @@ const docTemplate = `{
                     "windsurf",
                     "windsurf-jetbrains",
                     "amp-cli",
-                    "amp-vscode",
-                    "amp-cursor",
-                    "amp-vscode-insider",
-                    "amp-windsurf",
                     "lm-studio",
                     "goose",
                     "trae",
@@ -899,10 +935,6 @@ const docTemplate = `{
                     "Windsurf",
                     "WindsurfJetBrains",
                     "AmpCli",
-                    "AmpVSCode",
-                    "AmpCursor",
-                    "AmpVSCodeInsider",
-                    "AmpWindsurf",
                     "LMStudio",
                     "Goose",
                     "Trae",
@@ -931,6 +963,10 @@ const docTemplate = `{
                     },
                     "registered": {
                         "description": "Registered indicates whether the client is registered in the ToolHive configuration",
+                        "type": "boolean"
+                    },
+                    "supports_plugins": {
+                        "description": "SupportsPlugins indicates whether ToolHive can install plugins for this client",
                         "type": "boolean"
                     },
                     "supports_skills": {
@@ -1021,6 +1057,13 @@ const docTemplate = `{
                     "builder_image": {
                         "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
+                    },
+                    "runtime_env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -1095,6 +1138,13 @@ const docTemplate = `{
                 "properties": {
                     "name": {
                         "type": "string"
+                    },
+                    "plugins": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "registered_clients": {
                         "items": {
@@ -1250,8 +1300,16 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
+                    },
+                    "allowed_origins": {
+                        "description": "AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,\nused for DNS-rebinding protection per MCP 2025-11-25 §\"Security Warning\".\nWhen empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default\nloopback-only allowlist is derived at middleware-wiring time.\nWhen empty and Host is non-loopback, the middleware is disabled — operators\nexposing the proxy publicly must configure an explicit allowlist.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "audit_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
@@ -2318,13 +2376,13 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "registryBaseUrl": {
-                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget; not used by oci, mcpb)",
+                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget, cargo; not used by oci, mcpb)",
                         "example": "https://registry.npmjs.org",
                         "format": "uri",
                         "type": "string"
                     },
                     "registryType": {
-                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"oci\", \"nuget\", \"mcpb\")",
+                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"cargo\", \"oci\", \"nuget\", \"mcpb\")",
                         "example": "npm",
                         "minLength": 1,
                         "type": "string"
@@ -2701,6 +2759,10 @@ const docTemplate = `{
             "pkg_api_v1.createRequest": {
                 "description": "Request to create a new workload",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"
@@ -3387,6 +3449,10 @@ const docTemplate = `{
             "pkg_api_v1.updateRequest": {
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"

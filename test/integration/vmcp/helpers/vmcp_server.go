@@ -75,6 +75,7 @@ type vmcpServerConfig struct {
 	workflowDefs       map[string]*composer.WorkflowDefinition
 	telemetryProvider  *telemetry.Provider
 	passthroughHeaders []string
+	sessionTTL         time.Duration
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -109,6 +110,15 @@ func WithTelemetryProvider(provider *telemetry.Provider) VMCPServerOption {
 func WithPassthroughHeaders(headers ...string) VMCPServerOption {
 	return func(c *vmcpServerConfig) {
 		c.passthroughHeaders = headers
+	}
+}
+
+// WithSessionTTL overrides the server's session time-to-live (default 30m).
+// A short TTL is useful for sliding-TTL / eviction regression tests. A zero
+// value leaves the default in place.
+func WithSessionTTL(ttl time.Duration) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.sessionTTL = ttl
 	}
 }
 
@@ -163,7 +173,7 @@ func NewVMCPServer(
 	}
 
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
-	rtr := router.NewDefaultRouter()
+	rtr := router.NewSessionRouter(&vmcptypes.RoutingTable{})
 	backendRegistry := vmcptypes.NewImmutableRegistry(backends)
 
 	// Build the core VMCP — the single authoritative aggregation on the Serve path.
@@ -197,6 +207,9 @@ func NewVMCPServer(
 		SessionManagerConfig: &sessionmanager.FactoryConfig{
 			Base: sessionFactory,
 		},
+	}
+	if config.sessionTTL > 0 {
+		serverCfg.SessionTTL = config.sessionTTL
 	}
 
 	vmcpServer, err := vmcpserver.Serve(ctx, coreVMCP, serverCfg)

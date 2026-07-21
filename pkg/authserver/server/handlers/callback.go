@@ -168,7 +168,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
-	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID)
+	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID, result.Synthetic)
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
 		slog.Error("failed to store upstream tokens",
@@ -180,7 +180,20 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, subject, userName, userEmail)
+	// Build the credential-free principal for the optional upstream filter, keyed on
+	// the identity the first leg just established. providerSubject is the claim-mapped
+	// upstream subject; subject is the canonical ToolHive user ID. On subsequent legs
+	// the filter is not consulted, so this only drives filtering for upstreams[0].
+	// result.Claims carries the ID-token/userinfo claims (nil for synthetic upstreams).
+	principal := auth.PrincipalInfo{
+		Subject:        providerSubject,
+		PlatformUserID: subject,
+		Name:           userName,
+		Email:          userEmail,
+		Claims:         result.Claims,
+	}
+
+	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal)
 }
 
 // maybeCarryForwardRefreshToken preserves a prior refresh token when the upstream IdP
@@ -191,13 +204,18 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 //
 // The UpstreamSubject == providerSubject guard is defense-in-depth against account-linking
 // edge cases where one internal user might have two distinct upstream subjects on the
-// same provider.
+// same provider. It is skipped for synthetic providers: a synthetic identity (OAuth2 with
+// no userinfo/identity config) mints a fresh rotating subject every flow, so the equality
+// can never hold and would block carry-forward entirely. There is no stable upstream
+// subject to link by in that case, so the guard protects nothing — gating on a non-empty
+// prior refresh token is sufficient.
 //
 // storageTokens is mutated in-place only when a carry-forward is warranted.
 func (h *Handler) maybeCarryForwardRefreshToken(
 	ctx context.Context,
 	storageTokens *storage.UpstreamTokens,
 	subject, providerSubject, providerID string,
+	synthetic bool,
 ) {
 	if storageTokens.RefreshToken != "" {
 		return
@@ -205,10 +223,22 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 	prior, err := h.storage.GetLatestUpstreamTokensForUser(ctx, subject, providerID)
 	switch {
 	case err == nil:
-		if prior != nil && prior.UpstreamSubject == providerSubject && prior.RefreshToken != "" {
+		// Defensive: the contract returns ErrNotFound (handled below) on a miss
+		// rather than a nil row, but guard anyway so a (nil, nil) return — or an
+		// empty prior refresh token — can never be carried forward or panic. This
+		// runs before the synthetic branch precisely so "synthetic" can never imply
+		// "carry forward from a non-existent prior row".
+		if prior == nil || prior.RefreshToken == "" {
+			return
+		}
+		// Non-synthetic: defense-in-depth account-linking guard requires the prior
+		// row's upstream subject to match. Synthetic providers mint a fresh rotating
+		// subject every flow, so that equality can never hold and there is no stable
+		// subject to link by — skip the guard and rely on the prior RT alone.
+		if synthetic || prior.UpstreamSubject == providerSubject {
 			storageTokens.RefreshToken = prior.RefreshToken
 			slog.Debug("preserved upstream refresh token from prior row",
-				"user_id", subject, "provider_id", providerID,
+				"user_id", subject, "provider_id", providerID, "synthetic", synthetic,
 			)
 		}
 	case errors.Is(err, storage.ErrNotFound):
@@ -392,11 +422,49 @@ func (h *Handler) continueChainOrComplete(
 	ar fosite.AuthorizeRequester,
 	pending *storage.PendingAuthorization,
 	sessionID string,
-	subject string,
-	name string,
-	email string,
+	principal auth.PrincipalInfo,
 ) {
-	nextProvider, err := h.nextMissingUpstream(ctx, sessionID)
+	// subject is the canonical ToolHive user ID used for chain state, token keying,
+	// and the cross-leg identity check. Note this is principal.PlatformUserID, NOT
+	// principal.Subject (which is the upstream provider's subject).
+	subject := principal.PlatformUserID
+	name := principal.Name
+	email := principal.Email
+
+	// SingleLeg authorizations intentionally bypass chain continuation: the caller
+	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
+	// backend" request), so other configured-but-tokenless upstreams must not
+	// hijack it into a full chain walk. Issue the authorization code immediately.
+	//
+	// On failure we deliberately do NOT delete the stored upstream tokens. The
+	// leg's token was already fetched and stored validly before we got here; the
+	// errors writeAuthorizationResponse can return are all server-side and
+	// unrelated to that credential (client lookup, redirect-URI parse, or fosite
+	// failing to mint the authorization code). Wiping a good upstream token would
+	// force a needless re-auth on what is a retryable error, so we keep it and
+	// just surface the failure to the client.
+	if pending.SingleLeg {
+		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
+			slog.Error("failed to create authorization response", "error", err)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+		}
+		return
+	}
+
+	// Resolve the effective chain of upstreams to walk. The first leg computes it
+	// (consulting the optional filter with this leg's request context); every
+	// subsequent leg reuses the validated chain the first leg carried forward, so
+	// the filter is not re-run per leg. A subsequent leg whose pending predates the
+	// chain is rejected rather than recomputed against a later leg's context.
+	chain, err := h.resolveChain(ctx, pending, principal)
+	if err != nil {
+		slog.Error("failed to resolve upstream chain", "error", err)
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to determine authorization chain"))
+		return
+	}
+
+	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain)
 	if err != nil {
 		slog.Error("failed to determine next upstream", "error", err)
 		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
@@ -405,28 +473,12 @@ func (h *Handler) continueChainOrComplete(
 	}
 
 	if nextProvider == "" {
-		// Defense-in-depth: verify identity consistency across chain legs.
-		// The subject was resolved from the first leg's upstream and carried through
-		// PendingAuthorization. Cross-check it against the stored upstream tokens.
-		if len(h.upstreams) > 1 {
-			allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
-			if err != nil {
-				slog.Error("failed to verify identity consistency", "error", err)
-				_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
-				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to verify identity consistency"))
-				return
-			}
-			firstProvider := h.upstreams[0].Name
-			if firstTokens, ok := allTokens[firstProvider]; ok && firstTokens.UserID != subject {
-				slog.Error("identity mismatch between chain state and stored tokens",
-					"expected", subject,
-					"got", firstTokens.UserID,
-					"provider", firstProvider,
-				)
-				_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
-				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
-				return
-			}
+		if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
+			// verifyChainIdentity already logged the specific cause (with structured
+			// fields for a mismatch); here we just clean up and fail closed.
+			_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
+			return
 		}
 
 		// All upstreams satisfied — issue authorization code
@@ -458,6 +510,9 @@ func (h *Handler) continueChainOrComplete(
 		// Chain state
 		UpstreamProviderName: nextProvider,
 		SessionID:            sessionID,
+		// Carry the effective chain forward so the filter is computed once, on the
+		// first leg, and reused for every subsequent leg.
+		ChainUpstreams: chain,
 		// Carry resolved identity from first leg
 		ResolvedUserID:    subject,
 		ResolvedUserName:  name,
@@ -495,4 +550,49 @@ func (h *Handler) continueChainOrComplete(
 	}
 
 	http.Redirect(w, req, nextURL, http.StatusFound)
+}
+
+// verifyChainIdentity is a defense-in-depth check run once every leg of the
+// effective chain is satisfied. Despite the "chain" framing, it reconciles only
+// the first leg: it confirms the identity provider's stored token (chain[0]) still
+// belongs to the subject carried through the flow. Intermediate/later legs are
+// deliberately NOT identity-checked — those are connect-this-backend flows whose
+// upstream identity can legitimately differ from the first leg's user.
+//
+// subject MUST be the canonical ToolHive user ID resolved from the first leg's
+// upstream via that provider's configured subject-claim mapping (the OIDC
+// SubjectClaim, or the "sub" claim by default) and carried forward unchanged
+// through PendingAuthorization.ResolvedUserID. The caller resolves it exactly once,
+// on the first leg, from the claim-mapped upstream subject. This cross-checks it
+// against firstTokens.UserID — the same canonical ID persisted when the first leg
+// stored its tokens — so a first leg whose stored user disagrees with the carried
+// subject is rejected.
+//
+// It gates on the effective chain rather than the raw config: chain[0] is always
+// the first (required) upstream, so a chain the filter narrowed to just that
+// upstream has no first-leg cross-check to run and the check is a no-op. Returns a
+// non-nil error when the storage lookup fails or an identity mismatch is detected;
+// the caller maps either to a server error.
+func (h *Handler) verifyChainIdentity(ctx context.Context, sessionID string, chain []string, subject string) error {
+	if len(chain) <= 1 {
+		return nil
+	}
+	allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+	if err != nil {
+		slog.Error("failed to load upstream tokens for chain identity check", "error", err)
+		return fmt.Errorf("failed to load upstream tokens for identity check: %w", err)
+	}
+	firstProvider := chain[0]
+	if firstTokens, ok := allTokens[firstProvider]; ok && firstTokens.UserID != subject {
+		// Emit the mismatch as discrete slog fields — not folded into the returned
+		// error string — so log pipelines can filter/alert on this defense-in-depth
+		// check, matching the logging from before this check was extracted here.
+		slog.Error("identity mismatch between chain state and stored tokens",
+			"expected", subject,
+			"got", firstTokens.UserID,
+			"provider", firstProvider,
+		)
+		return fmt.Errorf("identity mismatch on provider %q", firstProvider)
+	}
+	return nil
 }

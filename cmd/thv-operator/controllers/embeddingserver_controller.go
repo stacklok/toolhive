@@ -287,8 +287,11 @@ func (r *EmbeddingServerReconciler) ensureService(
 	if r.serviceNeedsUpdate(service, embedding) {
 		desiredService := r.serviceForEmbedding(ctx, embedding)
 		service.Spec.Ports = desiredService.Spec.Ports
-		service.Labels = desiredService.Labels
-		service.Annotations = desiredService.Annotations
+		// Merge (not replace) Labels/Annotations so keys written by external controllers
+		// (e.g. GKE NEG's cloud.google.com/* annotations) are preserved while the
+		// operator-owned values are applied.
+		service.Labels = ctrlutil.MergeLabels(desiredService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(desiredService.Annotations, service.Annotations)
 		// Preserve ClusterIP as it's immutable
 		if err := r.Update(ctx, service); err != nil {
 			ctxLogger.Error(err, "Failed to update Service",
@@ -330,18 +333,16 @@ func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 		}
 	}
 
-	// Check if expected annotations are present in service
-	for key, value := range expectedAnnotations {
-		if service.Annotations[key] != value {
-			return true
-		}
+	// Subset check rather than exact equality: the Service is co-owned by external
+	// controllers (e.g. GKE NEG/Gateway writes cloud.google.com/* annotations), so only
+	// the operator-owned keys must match. Exact equality would treat those external
+	// annotations as drift and hot-loop Update against the concurrent writer.
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
+		return true
 	}
 
-	// Check if expected labels are present in service
-	for key, value := range expectedLabels {
-		if service.Labels[key] != value {
-			return true
-		}
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
+		return true
 	}
 
 	return false

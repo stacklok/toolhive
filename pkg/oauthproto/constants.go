@@ -41,6 +41,14 @@ const (
 	// TokenEndpointAuthMethodNone indicates no client authentication (public clients).
 	// Typically used with PKCE for native/mobile applications.
 	TokenEndpointAuthMethodNone = "none"
+
+	// TokenEndpointAuthMethodClientSecretBasic sends the client credentials in the
+	// HTTP Basic Authorization header at the token endpoint (RFC 6749 Section 2.3.1).
+	TokenEndpointAuthMethodClientSecretBasic = "client_secret_basic"
+
+	// TokenEndpointAuthMethodClientSecretPost sends the client credentials in the
+	// request body at the token endpoint (RFC 6749 Section 2.3.1).
+	TokenEndpointAuthMethodClientSecretPost = "client_secret_post"
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.
@@ -61,6 +69,12 @@ const (
 
 	// TokenTypeJWT indicates a JSON Web Token (RFC 8693 Section 3).
 	TokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+
+	// TokenTypeIDJAG indicates an Identity Assertion JWT Authorization Grant (ID-JAG)
+	// as defined by draft-ietf-oauth-identity-assertion-authz-grant. This URN is used
+	// as the `requested_token_type` in an RFC 8693 token exchange when the IdP is
+	// asked to mint an ID-JAG for a target application.
+	TokenTypeIDJAG = "urn:ietf:params:oauth:token-type:id-jag"
 )
 
 // Grant type URNs for token exchange protocols.

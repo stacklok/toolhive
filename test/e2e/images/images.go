@@ -102,4 +102,10 @@ const (
 	redisImageTag = "7-alpine"
 	// RedisImage is used for Redis-backed session storage in scaling tests.
 	RedisImage = redisImageURL + ":" + redisImageTag
+
+	dexImageURL = "ghcr.io/dexidp/dex"
+	dexImageTag = "v2.42.0"
+	// DexImage is used as an in-cluster OIDC provider for E2E tests requiring
+	// the embedded auth server OAuth2 flow (upstreamInject authentication).
+	DexImage = dexImageURL + ":" + dexImageTag
 )

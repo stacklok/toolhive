@@ -17,7 +17,6 @@ import (
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -158,35 +157,6 @@ backends:
 	assert.NotNil(t, registry)
 	// Static mode: one backend discovered.
 	assert.Len(t, backends, 1)
-}
-
-func newSessionFactoryMocks(t *testing.T) (*clientmocks.MockOutgoingAuthRegistry, *aggregatormocks.MockAggregator) {
-	t.Helper()
-	ctrl := gomock.NewController(t)
-	return clientmocks.NewMockOutgoingAuthRegistry(ctrl), aggregatormocks.NewMockAggregator(ctrl)
-}
-
-func TestCreateSessionFactory(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		useAgg bool
-	}{
-		{name: "with aggregator", useAgg: true},
-		{name: "without aggregator", useAgg: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			registry, agg := newSessionFactoryMocks(t)
-			var aggArg aggregator.Aggregator
-			if tc.useAgg {
-				aggArg = agg
-			}
-			factory := createSessionFactory(registry, aggArg)
-			require.NotNil(t, factory)
-		})
-	}
 }
 
 // TestRunDiscovery_KubernetesGroupNotFound exercises the Kubernetes-specific branch

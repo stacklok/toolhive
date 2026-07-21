@@ -20,26 +20,48 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
-func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
+// DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer.
+//
+// issuer originates from untrusted remote-server discovery in some callers
+// (e.g. the CLI DCR flow's well-known fallback) and from an operator-supplied
+// flag in others; blockPrivateIPs lets each caller apply its own SSRF policy
+// (CWE-918) rather than this function silently choosing one for everyone.
+func DiscoverOIDCEndpoints(
+	ctx context.Context,
+	issuer string,
+	blockPrivateIPs bool,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false, blockPrivateIPs)
 }
 
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
 // This is useful when the resource metadata points to a URL that hosts the authorization server metadata
 // but the actual issuer identifier is different (e.g., Stripe's case)
-func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false)
+//
+// metadataURL originates from untrusted remote-server discovery. When
+// blockPrivateIPs is true the default client refuses to dial private, loopback,
+// or link-local addresses on every hop (SSRF guard); callers pass false when the
+// operator-configured target is itself internal.
+func DiscoverActualIssuer(
+	ctx context.Context,
+	metadataURL string,
+	blockPrivateIPs bool,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false, blockPrivateIPs)
 }
 
-// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
+// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC
+// issuer with a custom HTTP client (private for testing). blockPrivateIPs is
+// only consulted when client is nil — a caller-supplied client carries its
+// own dial policy.
 func discoverOIDCEndpointsWithClient(
 	ctx context.Context,
 	issuer string,
 	client networking.HTTPClient,
 	insecureAllowHTTP bool,
+	blockPrivateIPs bool,
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP)
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP, blockPrivateIPs)
 }
 
 // discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
@@ -51,6 +73,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	client networking.HTTPClient,
 	validateIssuer bool,
 	insecureAllowHTTP bool,
+	blockPrivateIPs bool,
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
 
 	oidcURL, oauthURL, err := buildWellKnownURLs(issuer, insecureAllowHTTP)
@@ -59,12 +82,22 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	}
 
 	if client == nil {
+		// The issuer/metadata URL originates from untrusted remote-server
+		// discovery, so refuse cross-host and scheme-downgrade redirects to
+		// prevent a 30x from driving the host into an SSRF (CWE-918), and
+		// optionally block private dials on every hop.
+		transport := &http.Transport{
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+		}
+		if blockPrivateIPs {
+			transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+			transport.DisableKeepAlives = true
+		}
 		client = &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 10 * time.Second,
-			},
+			Timeout:       30 * time.Second,
+			Transport:     transport,
+			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 	}
 
@@ -219,8 +252,10 @@ func createOAuthConfigFromOIDCWithClient(
 	resource string,
 	client networking.HTTPClient,
 ) (*Config, error) {
-	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation)
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
+	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation).
+	// blockPrivateIPs=false here preserves this call path's existing behavior;
+	// it is unrelated to the CLI DCR fallback fixed in DiscoverOIDCEndpoints.
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

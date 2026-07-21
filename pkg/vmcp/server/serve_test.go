@@ -45,6 +45,9 @@ func (*stubVMCP) CallTool(
 func (*stubVMCP) ListResources(context.Context, *auth.Identity) ([]vmcp.Resource, error) {
 	return nil, nil
 }
+func (*stubVMCP) ListResourceTemplates(context.Context, *auth.Identity) ([]vmcp.ResourceTemplate, error) {
+	return nil, nil
+}
 func (*stubVMCP) ReadResource(context.Context, *auth.Identity, string) (*vmcp.ResourceReadResult, error) {
 	return nil, nil
 }
@@ -54,6 +57,11 @@ func (*stubVMCP) GetPrompt(
 ) (*vmcp.PromptGetResult, error) {
 	return nil, nil
 }
+func (*stubVMCP) Complete(
+	context.Context, *auth.Identity, vmcp.CompletionRef, string, string, map[string]string,
+) (*vmcp.CompletionResult, error) {
+	return nil, nil
+}
 func (*stubVMCP) LookupTool(context.Context, *auth.Identity, string) (*vmcp.Tool, error) {
 	return nil, nil
 }
@@ -61,6 +69,17 @@ func (*stubVMCP) LookupResource(context.Context, *auth.Identity, string) (*vmcp.
 	return nil, nil
 }
 func (*stubVMCP) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
+	return nil, nil
+}
+func (*stubVMCP) CheckToolCall(context.Context, *auth.Identity, string, map[string]any) error {
+	return nil
+}
+func (*stubVMCP) CheckResourceRead(context.Context, *auth.Identity, string) error { return nil }
+func (*stubVMCP) CheckPromptGet(context.Context, *auth.Identity, string) error    { return nil }
+func (*stubVMCP) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	return nil, nil
+}
+func (*stubVMCP) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
 	return nil, nil
 }
 func (s *stubVMCP) Close() error                 { s.closed = true; return nil }
@@ -321,6 +340,8 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig
 		"OptimizerFactory":    {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 		"OptimizerConfig":     {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
+		"CodeModeConfig":      {}, // consumed by New to wrap the core (code mode decorator) before Serve; not a transport field
+		"RateLimiter":         {}, // consumed by New to wrap the core (rate-limit decorator) before Serve; not a transport field
 		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
 		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
 	}
@@ -337,8 +358,8 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		Port:                    1,
 		EndpointPath:            "/e",
 		SessionTTL:              time.Second,
+		HeartbeatInterval:       time.Second,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
-		RateLimitMiddleware:     func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"x-test"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},

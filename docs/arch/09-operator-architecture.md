@@ -729,4 +729,5 @@ spec:
 - [Core Concepts](02-core-concepts.md) - Operator concepts
 - [Registry System](06-registry-system.md) - MCPRegistry CRD
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - VirtualMCPServer details
+- [Transport Architecture](03-transport-architecture.md) - Transport and proxy setup the proxy-runner performs in-cluster
 - Operator Design: `cmd/thv-operator/DESIGN.md`

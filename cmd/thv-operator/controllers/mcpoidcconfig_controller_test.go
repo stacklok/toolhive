@@ -291,8 +291,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 			objs := []client.Object{tt.oidcConfig}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				Build()
 
@@ -706,8 +705,7 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(oidcConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		WithInterceptorFuncs(inject).
@@ -749,4 +747,83 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 	require.NotNil(t, own, "controller-owned Valid condition must remain")
 	assert.Equal(t, metav1.ConditionTrue, own.Status)
 	assert.EqualValues(t, 1, after.Status.ReferenceCount, "reference refresh must have been applied")
+}
+
+// TestMCPOIDCConfigReconciler_watchHandlers verifies that the workload watch map
+// functions enqueue exactly the config the workload currently references (or nothing
+// when the workload has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
+func TestMCPOIDCConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithOIDCConfigRef("current-config", "aud"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "VirtualMCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type:          "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "current-config"},
+				}),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPRemoteProxy with ref enqueues the current config",
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyOIDCConfigRef("current-config", "aud"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			r, _ := newTestMCPOIDCConfigReconciler(t, tt.obj)
+
+			requests := func() []reconcile.Request {
+				switch tt.obj.(type) {
+				case *mcpv1beta1.MCPServer:
+					return r.mapMCPServerToOIDCConfig(ctx, tt.obj)
+				case *mcpv1beta1.VirtualMCPServer:
+					return r.mapVirtualMCPServerToOIDCConfig(ctx, tt.obj)
+				case *mcpv1beta1.MCPRemoteProxy:
+					return r.mapMCPRemoteProxyToOIDCConfig(ctx, tt.obj)
+				default:
+					t.Fatalf("unexpected object type %T", tt.obj)
+					return nil
+				}
+			}()
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +150,16 @@ var (
 // ClientIDContextKey is the key used to store client ID in the context.
 type ClientIDContextKey struct{}
 
+// claimPrefix namespaces every JWT claim in the Cedar context/principal
+// attributes. claimSetPrefix namespaces the synthetic multi-valued-claim Sets.
+// They are deliberately disjoint: because every JWT claim is emitted under
+// claimPrefix, a token can never produce a claimSetPrefix key, so the synthetic
+// Sets cannot be shadowed or spoofed by claim content.
+const (
+	claimPrefix    = "claim_"
+	claimSetPrefix = "claimset_"
+)
+
 // Authorizer authorizes MCP operations using Cedar policies.
 type Authorizer struct {
 	// Cedar policy set
@@ -179,6 +190,10 @@ type Authorizer struct {
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
+	// multiValuedClaims lists JWT claim names normalized to a canonical unpadded
+	// space-delimited string, plus a companion Cedar Set, before Cedar evaluation.
+	// See ConfigOptions.MultiValuedClaims.
+	multiValuedClaims []string
 }
 
 // ConfigOptions represents the Cedar-specific authorization configuration options.
@@ -214,6 +229,43 @@ type ConfigOptions struct {
 	// names (e.g. "Platform::Group") are not yet supported and are rejected at
 	// construction. See issue #5072.
 	GroupEntityType string `json:"group_entity_type,omitempty" yaml:"group_entity_type,omitempty"`
+
+	// MultiValuedClaims lists JWT claim NAMES (bare, e.g. "scp" or "scope") whose
+	// value is exposed to Cedar in two normalized forms, regardless of whether the
+	// IdP emits the claim as a space-delimited string (Entra `scp`, Keycloak `scope`)
+	// or a JSON array (Okta `scp`):
+	//
+	//  1. "claim_<name>" (both principal attribute and context) is a space-delimited
+	//     string: an array is joined with single spaces; a string value is passed
+	//     through VERBATIM — its spacing and order are preserved, not
+	//     re-canonicalized. Use this with `like`/`==` string policies.
+	//  2. "claimset_<name>" (bare key, both principal attribute and context) is a Cedar
+	//     Set of the claim's elements. Use this with `.contains`/`.containsAll`/
+	//     `.containsAny` for exact-element matching that cannot be fooled by a
+	//     substring (e.g. "Mail.Read" will not match "Mail.ReadWrite"). The "claimset_"
+	//     prefix is reserved and never collides with a JWT claim, since all JWT
+	//     claims are surfaced under the "claim_" prefix.
+	//
+	// Only for claims whose ELEMENTS are space-free (OAuth scopes, per RFC 6749 §3.3).
+	// Do NOT list group/role claims or any claim whose elements can contain spaces
+	// (e.g. group display names) — element boundaries would become ambiguous.
+	//
+	// Backward compatibility: opt-in. When empty (default), "claim_<name>" is
+	// byte-identical to today and no "claimset_<name>" key is added. Listing a claim
+	// leaves OTHER claims untouched.
+	//
+	// Migration hazard: listing a claim that an IdP emits as an ARRAY changes its
+	// "claim_<name>" form from a Cedar Set to a String. A pre-existing policy that
+	// tested it with `like`/substring — which errored on the Set and so failed
+	// closed (deny) — will then match against the joined string and can
+	// substring-match (e.g. `context.claim_scp like "*Mail.Read*"` also matches
+	// "Mail.ReadWrite"), an unintended grant. Audit existing `like` policies on a
+	// claim before listing it, and prefer "claimset_<name>" with `.contains`/
+	// `.containsAll`/`.containsAny` for exact-element membership.
+	//
+	// Note: this unifies claim SHAPE, not NAME — `scp` and `scope` remain distinct
+	// claim names, so a policy still references one specific name.
+	MultiValuedClaims []string `json:"multi_valued_claims,omitempty" yaml:"multi_valued_claims,omitempty"`
 }
 
 // validateGroupEntityType validates a GroupEntityType value. Empty string is
@@ -269,6 +321,7 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 		roleClaimName:           options.RoleClaimName,
 		serverName:              serverName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
+		multiValuedClaims:       options.MultiValuedClaims,
 	}
 
 	// Load policies
@@ -587,10 +640,132 @@ func extractClientIDFromClaims(claims jwt.MapClaims) (string, bool) {
 func preprocessClaims(claims jwt.MapClaims) map[string]interface{} {
 	preprocessed := make(map[string]interface{})
 	for k, v := range claims {
-		claimKey := fmt.Sprintf("claim_%s", k)
+		claimKey := claimPrefix + k
 		preprocessed[claimKey] = v
 	}
 	return preprocessed
+}
+
+// normalizeMultiValuedClaims returns claims with every claim named in names
+// and present in claims rewritten to a canonical unpadded space-delimited
+// string. This lets a single Cedar `like`/`==` policy match a claim regardless
+// of whether the IdP emitted it as a space-delimited string or a JSON array.
+// See ConfigOptions.MultiValuedClaims for the full rationale.
+//
+// When names is empty the input is returned directly (no copy); otherwise a
+// shallow copy is returned and the input is never mutated.
+//
+//   - array ([]interface{} or []string): elements joined with single spaces.
+//     Non-string elements are stringified with fmt.Sprint rather than
+//     dropped; nested array/object elements are skipped with a slog.Debug
+//     since they have no scalar string form.
+//   - string: passthrough, completely unchanged (not trimmed).
+//   - empty array, or an array with no usable elements: "" (empty string —
+//     present but empty).
+//   - claim absent from claims, or names empty: left untouched (no key
+//     fabricated).
+//
+// Only top-level claim keys are matched; there is no dot-notation support.
+// claims is not mutated.
+func normalizeMultiValuedClaims(claims jwt.MapClaims, names []string) jwt.MapClaims {
+	if len(names) == 0 {
+		// Nothing to normalize. Return the input directly — the sole caller
+		// (preprocessClaims) only reads it, so no defensive copy is needed and
+		// the opt-in-empty path pays no allocation.
+		return claims
+	}
+
+	out := make(jwt.MapClaims, len(claims))
+	for k, v := range claims {
+		out[k] = v
+	}
+
+	for _, name := range names {
+		v, ok := claims[name]
+		if !ok {
+			continue
+		}
+
+		switch val := v.(type) {
+		case string:
+			// Verbatim passthrough: out[name] already equals val (out is a copy
+			// of claims), so this is intentionally a no-op. The explicit branch
+			// documents the string contract and, importantly, keeps a string
+			// value out of the default "unrecognized type" log below. This is the
+			// one place the string handling diverges from addMultiValuedClaimSets,
+			// which collapses whitespace via strings.Fields for the Set form.
+			out[name] = val
+		case []interface{}:
+			out[name] = strings.Join(multiValuedTokens(name, val), " ")
+		case []string:
+			out[name] = strings.Join(val, " ")
+		default:
+			slog.Debug("multi-valued claim has unrecognized type, leaving unchanged",
+				"claim", name, "type", fmt.Sprintf("%T", v))
+		}
+	}
+
+	return out
+}
+
+// addMultiValuedClaimSets adds a bare "claimset_<name>" key to processed for every
+// claim named in names and present in raw, holding the claim's elements as a
+// []string (converted to a Cedar Set by convertToCedarValueAtDepth). This is
+// the companion to normalizeMultiValuedClaims's "claim_<name>" string form:
+// where "claim_<name>" supports substring-style `like` matching, "claimset_<name>"
+// supports exact-element `.contains`/`.containsAll`/`.containsAny` matching.
+// The "claimset_" prefix is reserved and cannot collide with a JWT claim, since all
+// JWT claims are "claim_"-prefixed by preprocessClaims.
+//
+// processed must already have the "claim_" prefix applied (i.e. this must run
+// after preprocessClaims) so the added key stays bare. raw is not mutated.
+func addMultiValuedClaimSets(processed map[string]interface{}, raw jwt.MapClaims, names []string) {
+	for _, name := range names {
+		v, ok := raw[name]
+		if !ok {
+			continue
+		}
+
+		// The array path shares multiValuedTokens with normalizeMultiValuedClaims
+		// (string-only elements) so the Set and the joined string stay in sync.
+		// The string path deliberately differs: normalize passes the string
+		// through verbatim, whereas here strings.Fields splits it into exact
+		// elements (collapsing irregular whitespace) — the two cannot share one
+		// coercion for that reason.
+		switch val := v.(type) {
+		case string:
+			processed[claimSetPrefix+name] = strings.Fields(val)
+		case []interface{}:
+			processed[claimSetPrefix+name] = multiValuedTokens(name, val)
+		case []string:
+			processed[claimSetPrefix+name] = slices.Clone(val)
+		default:
+			slog.Debug("multi-valued claim has unrecognized type, omitting claimset set",
+				"claim", name, "type", fmt.Sprintf("%T", v))
+		}
+	}
+}
+
+// multiValuedTokens extracts the string elements of a []interface{} claim value
+// for normalizeMultiValuedClaims and addMultiValuedClaimSets. Only string
+// elements are kept: OAuth scope tokens are strings (RFC 6749 §3.3), so a
+// non-string element (number, bool, null, or a nested array/object) is
+// malformed and is skipped with a slog.Debug rather than stringified. Skipping
+// (a) avoids spurious tokens like "<nil>" or "1e+06" polluting both claim
+// forms, and (b) keeps the array shape consistent with the string shape, whose
+// strings.Fields path likewise yields only real string tokens.
+func multiValuedTokens(claimName string, elems []interface{}) []string {
+	tokens := make([]string, 0, len(elems))
+	for _, elem := range elems {
+		s, ok := elem.(string)
+		if !ok {
+			slog.Debug("multi-valued claim element is not a string, skipping",
+				"claim", claimName, "type", fmt.Sprintf("%T", elem))
+			continue
+		}
+		tokens = append(tokens, s)
+	}
+	return tokens
 }
 
 // preprocessArguments adds an "arg_" prefix to all argument keys.
@@ -884,8 +1059,12 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		extractGroups(resolvedClaims, a.roleClaimName)...,
 	))
 
-	// Preprocess claims and arguments
-	processedClaims := preprocessClaims(resolvedClaims)
+	// Preprocess claims and arguments. Multi-valued claim normalization runs
+	// after group/role extraction (which needs the raw claim shapes) and
+	// before the "claim_" prefix is applied.
+	normalizedClaims := normalizeMultiValuedClaims(resolvedClaims, a.multiValuedClaims)
+	processedClaims := preprocessClaims(normalizedClaims)
+	addMultiValuedClaimSets(processedClaims, resolvedClaims, a.multiValuedClaims)
 	processedArgs := preprocessArguments(arguments)
 
 	// Authorize based on the feature and operation

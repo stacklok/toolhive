@@ -76,10 +76,46 @@ func newConfigCommand() *cobra.Command {
 	return cmd
 }
 
+// addLLMConnectionFlags registers the gateway connection flags shared by
+// "config set" and "setup" so the two commands stay in sync. It binds directly
+// into the caller's SetOptions.
+func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+}
+
+// applyChangedLLMFlags copies the *bool / []string flag values into opts only
+// when the user actually set them, so an unset flag leaves the persisted config
+// field unchanged (nil pointer = "not provided"). Shared by "config set" and
+// "setup" so both commands treat these flags identically.
+func applyChangedLLMFlags(
+	cmd *cobra.Command, opts *llm.SetOptions, tlsSkipVerify, bedrockCompat, enable1M bool, models []string,
+) {
+	if cmd.Flags().Changed("tls-skip-verify") {
+		opts.TLSSkipVerify = &tlsSkipVerify
+	}
+	if cmd.Flags().Changed("bedrock-compat") {
+		opts.BedrockCompat = &bedrockCompat
+	}
+	if cmd.Flags().Changed("enable-1m") {
+		opts.Enable1M = &enable1M
+	}
+	if cmd.Flags().Changed("models") {
+		opts.Models = models
+	}
+}
+
 func newConfigSetCommand() *cobra.Command {
 	var (
 		opts          llm.SetOptions
 		tlsSkipVerify bool
+		bedrockCompat bool
+		enable1M      bool
+		models        []string
 	)
 
 	cmd := &cobra.Command{
@@ -94,23 +130,26 @@ Example:
     --client-id my-client-id`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("tls-skip-verify") {
-				opts.TLSSkipVerify = &tlsSkipVerify
-			}
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
-	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
-	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
-	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	addLLMConnectionFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
+	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
+		"Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier "+
+			"Bedrock model IDs). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
+	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
+		"With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.")
+	cmd.Flags().StringSliceVar(&models, "models", nil,
+		"Model IDs to persist and apply during \"thv llm setup\", comma-separated or by repeating the flag, e.g. "+
+			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients "+
+			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID is also mapped to a "+
+			"Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.")
 
 	return cmd
 }
@@ -224,20 +263,37 @@ func newLLMSetupCommand() *cobra.Command {
 	var (
 		opts                llm.SetOptions
 		tlsSkipVerify       bool
+		bedrockCompat       bool
+		enable1M            bool
 		targetClient        string
 		anthropicPathPrefix string
 		lazy                bool
 		skipBrowser         bool
+		models              []string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure detected AI tools to use the LLM gateway",
-		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
-Xcode) and patch each tool's configuration to route through the LLM gateway.
+		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+Claude Desktop, Codex) and patch each tool's configuration to route through the
+LLM gateway.
 
 Token-helper tools (Claude Code, Gemini CLI) are configured to call
 "thv llm token" to obtain a fresh OIDC token on demand.
+
+Claude Desktop is configured via its third-party inference credential helper,
+which also calls "thv llm token". It reads its configuration only at launch, so
+fully quit and relaunch it after setup. Pass --models to list the models it
+should offer until the gateway serves model discovery itself.
+
+Codex CLI and the ChatGPT desktop app use the same user configuration:
+~/.codex/config.toml by default, or %USERPROFILE%\.codex\config.toml on Windows.
+ToolHive adds a custom model_provider whose auth command invokes "thv llm token"
+directly (no shell), keeping existing model_providers and mcp_servers entries
+untouched. Desktop app detection is supported on macOS and Windows; the canonical
+--client target remains "codex". If the desktop app is running, fully quit and
+reopen it after setup.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -249,12 +305,20 @@ Inline flags (--gateway-url, --issuer, --client-id, etc.) are applied for this
 run and persisted to config only after login and tool patching succeed. This
 lets you combine "config set" and "setup" into a single command.
 
+For a gateway that forwards to AWS Bedrock, add --bedrock-compat to configure
+Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and per-tier Bedrock
+model IDs (override with --models; add --enable-1m for the 1M context window on
+opus/sonnet). The setting is persisted and only affects Claude Code. To add it to
+an already-configured Claude Code, re-run:
+
+  thv llm setup --client claude-code --bedrock-compat
+
+Re-running is idempotent and uses the cached token (no browser prompt).
+
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("tls-skip-verify") {
-				opts.TLSSkipVerify = &tlsSkipVerify
-			}
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -270,12 +334,7 @@ Run "thv llm teardown" to revert all changes.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
-	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
-	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
-	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	addLLMConnectionFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only). "+
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
@@ -285,12 +344,27 @@ Run "thv llm teardown" to revert all changes.`,
 		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools "+
 			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
 	cmd.Flags().StringVar(&targetClient, "client", "",
-		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
+		"Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.")
 	cmd.Flags().BoolVar(&lazy, "lazy", false,
 		"Skip the interactive OIDC login and defer it until the first time a configured tool "+
 			"accesses the gateway. Tool config and persisted settings are written normally. "+
 			"Useful for unattended provisioning (e.g. an MDM profile).")
 	cmd.Flags().BoolVar(&skipBrowser, "skip-browser", false, skipBrowserFlagUsage)
+	cmd.Flags().StringSliceVar(&models, "models", nil,
+		"Model IDs to configure, comma-separated or by repeating the flag, e.g. "+
+			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. "+
+			"For credential-helper clients (Claude Desktop) these become inferenceModels. "+
+			"With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching "+
+			"'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a "+
+			"warning). Omit to use the built-in Bedrock defaults / gateway model discovery.")
+	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
+		"Configure Claude Code for a gateway that forwards to AWS Bedrock: write "+
+			"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) "+
+			"and pin per-tier Bedrock model IDs (override with --models). Persisted, so a later plain "+
+			"\"thv llm setup\" keeps it; clear with --bedrock-compat=false. Only affects Claude Code.")
+	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
+		"With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the "+
+			"1M-token context window on Bedrock (never haiku, which is 200K). Off by default.")
 
 	return cmd
 }
@@ -401,6 +475,10 @@ func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgat
 
 func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) IsManaged(clientType string) bool {
+	return a.cm.IsManaged(client.ClientApp(clientType))
 }
 
 func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {

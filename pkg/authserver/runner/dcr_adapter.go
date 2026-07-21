@@ -79,6 +79,10 @@ func newDCRRequest(rc *authserver.OAuth2UpstreamRunConfig, localIssuer string) (
 		AuthorizationEndpoint: rc.AuthorizationEndpoint,
 		TokenEndpoint:         rc.TokenEndpoint,
 		InitialAccessToken:    initialAccessToken,
+		// Reuse the upstream's private-IP policy so the DCR discovery and
+		// registration calls share the same SSRF posture as its token and
+		// userinfo calls (see upstream.OAuth2Config.AllowPrivateIPs).
+		AllowPrivateIPs: rc.AllowPrivateIPs,
 	}, nil
 }
 
@@ -143,14 +147,17 @@ func consumeResolution(rc authserver.OAuth2UpstreamRunConfig, res *dcr.Resolutio
 }
 
 // applyResolutionToOAuth2Config returns a copy of cfg with the DCR-
-// resolved ClientSecret overlaid onto it. This is the companion to
-// consumeResolution: where that function writes fields representable in
-// the file-or-env run-config model, this one writes the inline-only
-// ClientSecret directly on the runtime config.
+// resolved ClientSecret and TokenEndpointAuthMethod overlaid onto it. This
+// is the companion to consumeResolution: where that function writes fields
+// representable in the file-or-env run-config model, this one writes the
+// inline-only fields directly on the runtime config.
 //
 // cfg is taken by value and the modified copy is returned, mirroring
 // consumeResolution. The no-mutation contract is compile-time enforced
 // by the signature rather than a prose discipline.
+//
+// TokenEndpointAuthMethod carries the method the upstream negotiated during
+// registration (RFC 7591); see upstream.authStyleFromMethod for why it matters.
 //
 // The split exists because buildPureOAuth2Config intentionally retains a
 // narrow file-or-env contract (no DCR awareness) and because OAuth2's
@@ -158,13 +165,16 @@ func consumeResolution(rc authserver.OAuth2UpstreamRunConfig, res *dcr.Resolutio
 // an inline string. Any future output path from OAuth2UpstreamRunConfig
 // to upstream.OAuth2Config must call BOTH consumeResolution (run-config
 // side) AND applyResolutionToOAuth2Config (built-config side) to get a
-// fully-resolved DCR client. Forgetting the second call leaves
-// ClientSecret empty and produces silent auth failures at request time —
-// the type system does not enforce the pair, so the invariant lives here.
+// fully-resolved DCR client. Forgetting the second call leaves both
+// ClientSecret and TokenEndpointAuthMethod empty, producing silent auth
+// failures at request time — a client that negotiated client_secret_basic
+// reverts to POST-body credentials and is rejected. The type system does
+// not enforce the pair, so the invariant lives here.
 func applyResolutionToOAuth2Config(cfg upstream.OAuth2Config, res *dcr.Resolution) upstream.OAuth2Config {
 	if res == nil {
 		return cfg
 	}
 	cfg.ClientSecret = res.ClientSecret
+	cfg.TokenEndpointAuthMethod = res.TokenEndpointAuthMethod
 	return cfg
 }

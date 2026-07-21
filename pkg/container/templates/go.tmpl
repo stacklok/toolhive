@@ -76,6 +76,11 @@ RUN package="{{.MCPPackage}}"; \
 # Final stage - minimal runtime image
 FROM index.docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 
+{{if .RuntimeConfig.RuntimeEnv}}
+# Custom runtime environment variables
+{{range $key, $value := .RuntimeConfig.RuntimeEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate for runtime
 COPY ca-cert.crt /tmp/custom-ca.crt

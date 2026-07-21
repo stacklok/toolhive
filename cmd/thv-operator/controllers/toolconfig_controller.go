@@ -14,10 +14,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -129,12 +131,11 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
 
 	// Find all MCPServers that reference this MCPToolConfig
-	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
+	refs, err := r.findReferencingWorkloads(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
-		// Don't persist the new hash on error — returning the error will requeue,
-		// and on the next attempt handleConfigHashChange will be re-entered so that
-		// MCPServer annotation updates are not permanently skipped.
+		// Don't persist the new hash on error; returning the error requeues so
+		// the next reconcile recomputes referencing workloads.
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
@@ -142,12 +143,6 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	toolConfig.Status.ConfigHash = configHash
 	toolConfig.Status.ObservedGeneration = toolConfig.Generation
 
-	// Update the status with the list of referencing workloads
-	refs := make([]mcpv1beta1.WorkloadReference, 0, len(referencingServers))
-	for _, server := range referencingServers {
-		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
-	}
-	ctrlutil.SortWorkloadRefs(refs)
 	toolConfig.Status.ReferencingWorkloads = refs
 	toolConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 
@@ -155,21 +150,6 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	if err := r.Status().Update(ctx, toolConfig); err != nil {
 		logger.Error(err, "Failed to update MCPToolConfig status")
 		return ctrl.Result{}, err
-	}
-
-	// Trigger reconciliation of all referencing MCPServers
-	for _, server := range referencingServers {
-		logger.Info("Triggering reconciliation of MCPServer due to MCPToolConfig change",
-			"mcpserver", server.Name, "toolconfig", toolConfig.Name)
-
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, &server, func(m *mcpv1beta1.MCPServer) {
-			if m.Annotations == nil {
-				m.Annotations = make(map[string]string)
-			}
-			m.Annotations["toolhive.stacklok.dev/toolconfig-hash"] = configHash
-		}); err != nil {
-			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
-		}
 	}
 
 	return ctrl.Result{}, nil
@@ -226,90 +206,90 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 	return ctrl.Result{}, nil
 }
 
+// toolConfigRefIndexKey is the field-index key backing findReferencingWorkloads.
+// MCPServer references the config via spec.toolConfigRef; the index is registered
+// in SetupWithManager.
+const toolConfigRefIndexKey = "spec.toolConfigRef"
+
+// indexMCPServerByToolConfigRef extracts the MCPToolConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByToolConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.ToolConfigRef == nil || server.Spec.ToolConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.ToolConfigRef.Name}
+}
+
 // findReferencingWorkloads returns the workload resources (MCPServer)
 // that reference this MCPToolConfig via their ToolConfigRef field.
+//
+// The lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing workloads instead of listing every workload
+// in the namespace and filtering in memory.
 func (r *ToolConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	toolConfig *mcpv1beta1.MCPToolConfig,
 ) ([]mcpv1beta1.WorkloadReference, error) {
-	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.ToolConfigRef != nil {
-				return &server.Spec.ToolConfigRef.Name
-			}
-			return nil
-		})
-}
-
-// findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig.
-// Returns the full MCPServer objects, used by handleConfigHashChange to update server annotations.
-func (r *ToolConfigReconciler) findReferencingMCPServers(
-	ctx context.Context,
-	toolConfig *mcpv1beta1.MCPToolConfig,
-) ([]mcpv1beta1.MCPServer, error) {
-	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.ToolConfigRef != nil {
-				return &server.Spec.ToolConfigRef.Name
-			}
-			return nil
-		})
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(toolConfig.Namespace),
+		client.MatchingFields{toolConfigRefIndexKey: toolConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by toolConfigRef: %w", err)
+	}
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(serverList.Items))
+	for i := range serverList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: serverList.Items[i].Name})
+	}
+	ctrlutil.SortWorkloadRefs(refs)
+	return refs, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field index backing findReferencingWorkloads: lets the controller query only
+	// the MCPServers referencing a given config rather than listing every MCPServer
+	// in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, toolConfigRefIndexKey, indexMCPServerByToolConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer toolConfigRef index: %w", err)
+	}
+
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPToolConfigs.
-	// This handler enqueues both the currently-referenced MCPToolConfig AND any
-	// MCPToolConfig that still lists this server in ReferencingWorkloads (covers the
-	// case where a server removes its toolConfigRef — the previously-referenced
-	// config needs to reconcile and clean up the stale entry).
-	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1beta1.MCPServer)
-			if !ok {
-				return nil
-			}
-
-			seen := make(map[types.NamespacedName]struct{})
-			var requests []reconcile.Request
-
-			// Enqueue the currently-referenced MCPToolConfig (if any)
-			if server.Spec.ToolConfigRef != nil {
-				nn := types.NamespacedName{
-					Name:      server.Spec.ToolConfigRef.Name,
-					Namespace: server.Namespace,
-				}
-				seen[nn] = struct{}{}
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-			}
-
-			// Also enqueue any MCPToolConfig that still lists this server in
-			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-			toolConfigList := &mcpv1beta1.MCPToolConfigList{}
-			if err := r.List(ctx, toolConfigList, client.InNamespace(server.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list MCPToolConfigs for MCPServer watch")
-				return requests
-			}
-			for _, cfg := range toolConfigList.Items {
-				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-				if _, already := seen[nn]; already {
-					continue
-				}
-				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
-						requests = append(requests, reconcile.Request{NamespacedName: nn})
-						break
-					}
-				}
-			}
-
-			return requests
-		},
-	)
-
+	// The map function only returns the MCPToolConfig the server currently references.
+	// EnqueueRequestsFromMapFunc runs it on both the old and new object on update (and
+	// on the object for create/delete), so removing or changing the ref enqueues both
+	// the previously- and newly-referenced config — the previously-referenced config
+	// then reconciles and prunes the stale entry. No manual stale-reference scan needed.
+	//
+	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
+	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
+	// operator was down) is this config's own For() resync, which re-runs Reconcile and
+	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPToolConfig{}).
-		Watches(&mcpv1beta1.MCPServer{}, toolConfigHandler).
+		Watches(&mcpv1beta1.MCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToToolConfig),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
+}
+
+// mapMCPServerToToolConfig maps an MCPServer to the MCPToolConfig it currently
+// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on
+// update (and on the object for create/delete), so a ref change or deletion automatically
+// enqueues both the previously- and newly-referenced config; the previously-referenced
+// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
+func (*ToolConfigReconciler) mapMCPServerToToolConfig(
+	_ context.Context, obj client.Object,
+) []reconcile.Request {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.ToolConfigRef == nil || server.Spec.ToolConfigRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      server.Spec.ToolConfigRef.Name,
+		Namespace: server.Namespace,
+	}}}
 }

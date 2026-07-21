@@ -481,6 +481,7 @@ func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
 		UpstreamNonce:        "second-leg-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       "resolved-user-id-from-leg1",
 		ResolvedUserName:     "First Leg User",
 		ResolvedUserEmail:    "firstleg@example.com",
@@ -513,6 +514,356 @@ func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
 	// Pending should be deleted (single-use)
 	_, ok := storState.pendingAuths[secondLegState]
 	assert.False(t, ok, "second leg pending should be consumed")
+}
+
+func TestCallbackHandler_TwoUpstreams_FilterDropsSecondLeg_IssuesCode(t *testing.T) {
+	t.Parallel()
+	// Filter keeps nothing, so the chain narrows to just the first upstream.
+	filter := &stubUpstreamFilter{keep: []string{}}
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t, WithUpstreamFilter(filter))
+
+	sessionID := "chain-session-filter-drop"
+	firstLegState := "filter-drop-first-leg-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-drop",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "filter-drop-verifier-1234567890123456789012",
+		UpstreamNonce:        "filter-drop-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[firstLegState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// The filtered-out second leg means the chain completes at the first upstream:
+	// issue the authorization code (303) rather than redirect onward (302).
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "filtered chain should complete at the first upstream")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, testAuthRedirectURI, "redirect should be to the client's redirect_uri")
+	assert.Contains(t, location, "code=", "redirect should include an authorization code")
+	assert.NotContains(t, location, "error=", "redirect should not contain an error")
+
+	// The filter was consulted exactly once, with the non-first upstream names.
+	assert.Equal(t, 1, filter.calls, "filter should be consulted once on the first leg")
+	assert.Equal(t, []string{"provider-2"}, filter.capturedArgs, "filter receives non-first upstreams")
+
+	// provider-1's code was exchanged and no second-leg pending was created.
+	assert.Equal(t, "provider1-code", provider1.capturedCode)
+	for state, p := range storState.pendingAuths {
+		assert.NotEqualf(t, "provider-2", p.UpstreamProviderName,
+			"no second-leg pending should be created (state %q)", state)
+	}
+}
+
+func TestCallbackHandler_TwoUpstreams_FilterKeepsSecondLeg_CarriesChain(t *testing.T) {
+	t.Parallel()
+	filter := &stubUpstreamFilter{keep: []string{"provider-2"}}
+	handler, storState, _, _ := multiUpstreamTestSetup(t, WithUpstreamFilter(filter))
+
+	sessionID := "chain-session-filter-keep"
+	firstLegState := "filter-keep-first-leg-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-keep",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "filter-keep-verifier-1234567890123456789012",
+		UpstreamNonce:        "filter-keep-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[firstLegState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// Kept provider-2, so the chain continues onward.
+	assert.Equal(t, http.StatusFound, rec.Code, "kept second leg should redirect onward")
+	assert.Contains(t, rec.Header().Get("Location"), "https://idp2.example.com/authorize")
+	assert.Equal(t, 1, filter.calls, "filter should be consulted once on the first leg")
+
+	// The effective chain must be carried into the next leg's pending so the
+	// filter is not re-run per leg.
+	var nextPending *storage.PendingAuthorization
+	for state, p := range storState.pendingAuths {
+		if state != firstLegState && p.UpstreamProviderName == "provider-2" {
+			nextPending = p
+			break
+		}
+	}
+	require.NotNil(t, nextPending, "a second-leg pending should exist")
+	assert.Equal(t, []string{"provider-1", "provider-2"}, nextPending.ChainUpstreams,
+		"the computed chain should be carried forward")
+}
+
+func TestCallbackHandler_FilterError_FailsAuthorization(t *testing.T) {
+	t.Parallel()
+	filter := &stubUpstreamFilter{err: errors.New("filter unavailable")}
+	handler, storState, _, _ := multiUpstreamTestSetup(t, WithUpstreamFilter(filter))
+
+	sessionID := "chain-session-filter-error"
+	firstLegState := "filter-error-first-leg-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-error",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "filter-error-verifier-123456789012345678901",
+		UpstreamNonce:        "filter-error-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[firstLegState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// A filter error fails the authorization cleanly with a server error — no
+	// silent fallback to walking every upstream.
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "filter error should produce a fosite error redirect")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error", "should surface a server error")
+	assert.Contains(t, location, "state=client-state-error", "should preserve client state")
+	assert.Equal(t, 1, filter.calls)
+
+	// provider-1's already-stored tokens are cleaned up.
+	for key := range storState.upstreamTokens {
+		assert.Failf(t, "upstream tokens should be cleaned up", "found leftover token %q", key)
+	}
+}
+
+func TestCallbackHandler_SecondLeg_ReusesChain_DoesNotReRunFilter(t *testing.T) {
+	t.Parallel()
+	// A filter that errors if consulted — proving the second leg reuses the chain
+	// from the pending authorization rather than re-running the filter.
+	filter := &stubUpstreamFilter{err: errors.New("must not be called on a subsequent leg")}
+	handler, storState, _, provider2 := multiUpstreamTestSetup(t, WithUpstreamFilter(filter))
+
+	sessionID := "chain-session-reuse"
+	key1 := sessionID + ":provider-1"
+	storState.upstreamTokens[key1] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "provider1-access-token",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      "resolved-user-id-from-leg1",
+	}
+
+	secondLegState := "reuse-second-leg-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-reuse",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "reuse-verifier-98765432109876543210987654",
+		UpstreamNonce:        "reuse-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"}, // computed on the first leg
+		ResolvedUserID:       "resolved-user-id-from-leg1",
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[secondLegState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "second leg should issue the authorization code")
+	assert.Contains(t, rec.Header().Get("Location"), "code=")
+	assert.Equal(t, 0, filter.calls, "filter must not be re-run on a subsequent leg")
+	assert.Equal(t, "provider2-code", provider2.capturedCode)
+}
+
+func TestCallbackHandler_Filter_ReceivesFirstUpstreamIdentity(t *testing.T) {
+	t.Parallel()
+	filter := &stubUpstreamFilter{keep: []string{"provider-2"}}
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t, WithUpstreamFilter(filter))
+
+	// Model an OIDC first upstream that resolved ID-token claims an authz filter
+	// would key on. (The real OIDC provider's capture of these claims is covered by
+	// TestOIDCProviderImpl_ExchangeCodeForIdentity/"captures ID token claims…"; this
+	// test covers the callback -> filter propagation.)
+	provider1.providerType = upstream.ProviderTypeOIDC
+	provider1.exchangeResult.Claims = map[string]any{
+		"sub":    "user-from-provider1",
+		"email":  "firstleg@example.com",
+		"groups": []any{"engineering", "admins"},
+	}
+
+	sessionID := "chain-session-filter-identity"
+	firstLegState := "filter-identity-first-leg-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-identity",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "filter-identity-verifier-123456789012345678",
+		UpstreamNonce:        "filter-identity-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[firstLegState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// Kept provider-2, so the chain continues onward (proving the filter ran).
+	require.Equal(t, http.StatusFound, rec.Code, "kept second leg should redirect onward")
+	require.Equal(t, 1, filter.calls, "filter should be consulted once on the first leg")
+
+	// The filter received the first upstream's resolved identity.
+	assert.Equal(t, "user-from-provider1", filter.capturedPrincipal.Subject,
+		"principal.Subject must be the claim-mapped upstream subject")
+	assert.Equal(t, "firstleg@example.com", filter.capturedPrincipal.Email,
+		"principal.Email must come from the first upstream")
+	assert.Equal(t, map[string]any{
+		"sub":    "user-from-provider1",
+		"email":  "firstleg@example.com",
+		"groups": []any{"engineering", "admins"},
+	}, filter.capturedPrincipal.Claims, "principal.Claims must carry the first upstream's claims")
+
+	// principal.PlatformUserID is the canonical (resolved) ToolHive user: non-empty
+	// and distinct from the raw upstream subject.
+	assert.NotEmpty(t, filter.capturedPrincipal.PlatformUserID, "platform user ID must be populated")
+	assert.NotEqual(t, "user-from-provider1", filter.capturedPrincipal.PlatformUserID,
+		"platform user ID is the canonical ToolHive user, not the raw upstream subject")
+}
+
+func TestCallbackHandler_SubsequentLeg_MissingChain_FailsClosed(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+	sessionID := "stale-pending-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	// A subsequent-leg pending that predates ChainUpstreams: ResolvedUserID is set
+	// (not a first leg) but ChainUpstreams is empty, as an older build would have
+	// written it mid-rollout.
+	secondLegState := "stale-pending-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "stale-verifier-1234567890123456789012345678",
+		UpstreamNonce:        "stale-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		// ChainUpstreams intentionally empty (stale pending).
+		CreatedAt: time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// The stale pending is rejected (fail closed) rather than recomputing the chain
+	// against this later leg's context.
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "stale pending should produce a fosite error redirect")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error")
+	assert.Contains(t, location, "state=client-original-state")
+
+	// Upstream tokens for the session are cleaned up.
+	for key := range storState.upstreamTokens {
+		assert.Failf(t, "upstream tokens should be cleaned up", "found leftover token %q", key)
+	}
+}
+
+func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
+	t.Parallel()
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t)
+
+	// A SingleLeg pending targets provider-1 only. provider-2 is configured but has
+	// no tokens for this session, so the default chain logic would redirect into it.
+	// SingleLeg must suppress that and issue the authorization code immediately.
+	sessionID := "single-leg-session"
+	legState := "single-leg-state-abc"
+	legVerifier := "single-leg-pkce-verifier-12345678901234567890"
+
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        legState,
+		UpstreamPKCEVerifier: legVerifier,
+		UpstreamNonce:        "single-leg-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		SingleLeg:            true,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[legState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+legState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	// Should issue the authorization code (HTTP 303), not redirect to provider-2 (HTTP 302).
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "single-leg flow should issue auth code, not chain to provider-2")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, testAuthRedirectURI, "redirect should be to client's redirect_uri")
+	assert.Contains(t, location, "code=", "redirect should include authorization code")
+	assert.NotContains(t, location, "idp2.example.com", "must not redirect into the second upstream")
+
+	// provider-1's code should have been exchanged and its tokens stored.
+	assert.Equal(t, "provider1-code", provider1.capturedCode, "provider-1 should have exchanged the code")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1", "provider-1 tokens should be stored")
+
+	// No second-leg pending authorization should have been created for provider-2.
+	for state, p := range storState.pendingAuths {
+		assert.NotEqualf(t, "provider-2", p.UpstreamProviderName,
+			"no chain leg should be created for provider-2 (state=%s)", state)
+	}
 }
 
 func TestCallbackHandler_TwoUpstreams_IdentityFromFirstLeg(t *testing.T) {
@@ -556,6 +907,7 @@ func TestCallbackHandler_TwoUpstreams_IdentityFromFirstLeg(t *testing.T) {
 		UpstreamNonce:        "identity-test-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       firstLegUserID,
 		ResolvedUserName:     "First Leg Name",
 		ResolvedUserEmail:    "firstleg@example.com",
@@ -616,6 +968,7 @@ func TestCallbackHandler_TwoUpstreams_IdentityMismatch_RejectsChain(t *testing.T
 		UpstreamNonce:        "mismatch-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       "correct-user-id", // does NOT match provider-1's UserID above
 		ResolvedUserName:     "Correct User",
 		ResolvedUserEmail:    "correct@example.com",
@@ -846,6 +1199,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 		priorRow         *priorRow // nil = no prior row
 		idpRefreshToken  string    // RT returned by upstream exchange
 		idpSubject       string    // subject claim returned by upstream
+		synthetic        bool      // upstream identity is synthetic (rotating subject)
 		lookupErr        error     // if non-nil, storage lookup returns this error
 		expectedStoredRT string    // expected RefreshToken on the new row
 	}{
@@ -855,6 +1209,29 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			idpRefreshToken:  "",
 			idpSubject:       "user-123",
 			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Synthetic providers mint a fresh rotating subject every flow, so the
+			// UpstreamSubject equality guard can never hold even though the stable
+			// user identity (carried from the first leg) does match. The RT must
+			// still be carried forward — otherwise refresh silently breaks for every
+			// userinfo-less OAuth2 backend.
+			name:             "synthetic carries prior RT despite rotating subject",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "tk-oldrotatingsubject", refreshToken: "rt-prior"},
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Guards the error state where the synthetic branch must not carry forward
+			// (or panic) when there is no prior row to read from.
+			name:             "synthetic with no prior row accepts empty RT",
+			priorRow:         nil,
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "",
 		},
 		{
 			name:             "no carry across different upstream subjects",
@@ -918,7 +1295,8 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 					IDToken:      "new-id-token",
 					ExpiresAt:    time.Now().Add(time.Hour),
 				},
-				Subject: tc.idpSubject,
+				Subject:   tc.idpSubject,
+				Synthetic: tc.synthetic,
 			}
 
 			// Pre-populate user + identity so ResolveUser is deterministic.
@@ -948,7 +1326,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			}
 
 			internalState := testInternalState
-			storState.pendingAuths[internalState] = &storage.PendingAuthorization{
+			pendingAuth := &storage.PendingAuthorization{
 				ClientID:             testAuthClientID,
 				RedirectURI:          testAuthRedirectURI,
 				State:                "client-state",
@@ -961,6 +1339,17 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 				UpstreamProviderName: providerName,
 				CreatedAt:            time.Now(),
 			}
+			if tc.synthetic {
+				// Synthetic carry-forward only applies on a subsequent leg, where the
+				// stable user identity is carried from the first leg (so the prior row
+				// is found by UserID) while the provider's own subject rotates per flow.
+				// A subsequent leg carries the effective chain computed on the first leg.
+				pendingAuth.ResolvedUserID = existingUserID
+				pendingAuth.ResolvedUserName = "First Leg User"
+				pendingAuth.ResolvedUserEmail = "firstleg@example.com"
+				pendingAuth.ChainUpstreams = []string{providerName}
+			}
+			storState.pendingAuths[internalState] = pendingAuth
 
 			req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=test-code&state="+internalState, nil)
 			rec := httptest.NewRecorder()
@@ -1061,6 +1450,7 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 		UpstreamNonce:        "second-leg-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       leg1User,
 		ResolvedUserName:     "First Leg User",
 		ResolvedUserEmail:    "firstleg@example.com",

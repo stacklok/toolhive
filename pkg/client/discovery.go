@@ -26,6 +26,14 @@ type ClientManager struct {
 	lookPath           func(string) (string, error)
 }
 
+// HomeDir returns the home directory this ClientManager is rooted at. Exported
+// so plugin adapters can resolve user-scoped config-file paths (e.g. Claude
+// Code's ~/.claude/settings.json) under the manager's home — which, for tests,
+// is a temp dir injected via NewTestClientManagerWithHome.
+func (cm *ClientManager) HomeDir() string {
+	return cm.homeDir
+}
+
 // NewClientManager creates a new ClientManager with default dependencies
 func NewClientManager() (*ClientManager, error) {
 	home, err := os.UserHomeDir()
@@ -39,16 +47,29 @@ func NewClientManager() (*ClientManager, error) {
 		groupManager = nil
 	}
 
+	// Copy the static integration list so we can wire per-client detectors
+	// without mutating the shared supportedClientIntegrations slice.
+	integrations := make([]clientAppConfig, len(supportedClientIntegrations))
+	copy(integrations, supportedClientIntegrations)
+	codexDetector := newCodexDesktopDetector(home, runtime.GOOS).installed
+	for i := range integrations {
+		if integrations[i].ClientType == Codex {
+			integrations[i].LLMInstalledDetector = codexDetector
+			break
+		}
+	}
+
 	return &ClientManager{
 		homeDir:            home,
 		groupManager:       groupManager,
-		clientIntegrations: supportedClientIntegrations,
+		clientIntegrations: integrations,
 		configProvider:     config.NewDefaultProvider(),
 		lookPath:           exec.LookPath,
 	}, nil
 }
 
-// NewTestClientManager creates a new ClientManager with test dependencies
+// NewTestClientManager creates a ClientManager with test dependencies. Native
+// Codex desktop detection is intentionally omitted to keep tests deterministic.
 func NewTestClientManager(
 	homeDir string,
 	groupManager groups.Manager,
@@ -79,6 +100,8 @@ type ClientAppStatus struct {
 
 	// SupportsSkills indicates whether ToolHive can install skills for this client
 	SupportsSkills bool `json:"supports_skills"`
+	// SupportsPlugins indicates whether ToolHive can install plugins for this client
+	SupportsPlugins bool `json:"supports_plugins"`
 }
 
 // IsClientInstalled reports whether the given client appears to be installed on
@@ -130,10 +153,11 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 			continue
 		}
 		status := ClientAppStatus{
-			ClientType:     cfg.ClientType,
-			Installed:      cm.IsClientInstalled(cfg.ClientType),
-			Registered:     registeredClients[string(cfg.ClientType)],
-			SupportsSkills: cfg.SupportsSkills,
+			ClientType:      cfg.ClientType,
+			Installed:       cm.IsClientInstalled(cfg.ClientType),
+			Registered:      registeredClients[string(cfg.ClientType)],
+			SupportsSkills:  cfg.SupportsSkills,
+			SupportsPlugins: cfg.SupportsPlugins,
 		}
 		statuses = append(statuses, status)
 	}

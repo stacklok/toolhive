@@ -1,16 +1,5 @@
-// Copyright 2025 Stacklok, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 // Package factory provides factory functions for creating vMCP authentication components.
 package factory
@@ -36,6 +25,11 @@ import (
 //   - "token_exchange": RFC-8693 OAuth 2.0 token exchange
 //   - "upstream_inject": Per-upstream token injection from stored credentials
 //   - "aws_sts": AWS STS AssumeRoleWithWebIdentity + SigV4 request signing
+//   - "obo": On-behalf-of (OBO) Entra token exchange; default stub returns
+//     obo.ErrEnterpriseRequired — an out-of-tree build registers a real
+//     strategy via auth.RegisterOBOStrategy before this function is called.
+//   - "xaa": Cross-Application Access (two-step ID-JAG exchange per
+//     draft-ietf-oauth-identity-assertion-authz-grant)
 //
 // Parameters:
 //   - ctx: Context for any initialization that requires it
@@ -78,6 +72,18 @@ func NewOutgoingAuthRegistry(
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeAwsSts,
 		strategies.NewAwsStsStrategy(),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeOBO,
+		auth.NewOBOStrategy(envReader),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeXAA,
+		strategies.NewXAAStrategy(envReader),
 	); err != nil {
 		return nil, err
 	}

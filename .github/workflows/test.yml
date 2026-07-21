@@ -15,10 +15,10 @@ jobs:
         os: [ubuntu-8cores-32gb]
       fail-fast: false
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true  # This caches go modules based on go.sum
@@ -33,7 +33,7 @@ jobs:
       # Cache Go build cache for faster compilation
       # Note: ~/go/pkg/mod is already cached by actions/setup-go with cache: true
       - name: Cache Go build cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
@@ -43,7 +43,7 @@ jobs:
       # Cache Go tools (gotestfmt only for tests)
       - name: Cache Go tools
         id: cache-go-tools
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/go/bin
           key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2

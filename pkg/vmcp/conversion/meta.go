@@ -6,7 +6,7 @@ package conversion
 import (
 	"maps"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // FromMCPMeta converts MCP SDK meta to map[string]any for vmcp wrapper types.

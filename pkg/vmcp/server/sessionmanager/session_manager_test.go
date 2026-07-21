@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -504,7 +503,7 @@ func TestSessionManager_Validate(t *testing.T) {
 		assert.Contains(t, err.Error(), "empty session ID")
 	})
 
-	t.Run("returns error for unknown session", func(t *testing.T) {
+	t.Run("reports unknown session as terminated", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -513,10 +512,15 @@ func TestSessionManager_Validate(t *testing.T) {
 		registry := newFakeRegistry()
 		sm, _ := newTestSessionManager(t, factory, registry)
 
+		// A session that is absent from storage (deleted on Terminate, TTL-expired,
+		// or never existed) must be reported as terminated (isTerminated=true, nil),
+		// NOT as an error. The transport maps terminated -> 404 so the client
+		// re-initializes; reporting an error would surface as a retryable 503 and a
+		// client whose session was terminated on another replica would retry the
+		// dead session forever (regression guarded here).
 		isTerminated, err := sm.Validate("non-existent-id")
-		require.Error(t, err)
-		assert.False(t, isTerminated)
-		assert.Contains(t, err.Error(), "session not found")
+		require.NoError(t, err)
+		assert.True(t, isTerminated, "an absent session must report as terminated, not as a transient error")
 	})
 
 	t.Run("returns false for active session", func(t *testing.T) {
@@ -655,7 +659,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 
 		// The next GetMultiSession triggers checkSession: storage returns
 		// ErrSessionNotFound → ErrExpired → onEvict → Close().
-		_, ok := sm.GetMultiSession(sessionID)
+		_, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "terminated session must not be returned")
 		// gomock verifies Close() was called exactly once via Times(1)
 	})
@@ -817,7 +821,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		registry := newFakeRegistry()
 		sm, _ := newTestSessionManager(t, factory, registry)
 
-		multiSess, ok := sm.GetMultiSession("ghost")
+		multiSess, ok := sm.GetMultiSession(t.Context(), "ghost")
 		assert.False(t, ok)
 		assert.Nil(t, multiSess)
 	})
@@ -835,7 +839,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NotEmpty(t, sessionID)
 
 		// Placeholder has not been upgraded yet.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "placeholder should not satisfy MultiSession type assertion")
 		assert.Nil(t, multiSess)
 	})
@@ -862,7 +866,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok)
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -890,7 +894,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// loadSession detects absent MetadataKeyIdentityBinding → ErrSessionNotFound.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "placeholder should not be restorable")
 		assert.Nil(t, multiSess)
 	})
@@ -926,7 +930,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// loadSession should call RestoreSession, not treat it as a placeholder.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "initialized zero-backend session should be restorable")
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -963,7 +967,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		_, err := sm.storage.Create(context.Background(), sessionID, legacyMeta)
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "legacy record without MetadataKeyBackendIDs must still be restorable")
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -1008,7 +1012,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		_, err := sm.storage.Create(context.Background(), sessionID, staleMeta)
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "session must be restored")
 		require.NotNil(t, multiSess)
 
@@ -1061,7 +1065,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 
 		// GetMultiSession triggers loadSession; the racing delete causes
 		// Update to return (false, nil) → ErrSessionNotFound → (nil, false).
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "session deleted before metadata write-back must not be cached")
 		assert.Nil(t, multiSess)
 	})
@@ -1097,7 +1101,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Write failure must be non-fatal: session is still returned and cached.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.True(t, ok, "transient Update error must not prevent session from being served")
 		assert.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -1105,900 +1109,66 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: GetAdaptedTools
+// Tests: identity propagation through loadSession (issue #5336 Layer B)
 // ---------------------------------------------------------------------------
 
-func TestSessionManager_GetAdaptedTools(t *testing.T) {
+// TestGetMultiSession_PropagatesIdentityToRestoreSession verifies that the
+// *auth.Identity present on the context passed to GetMultiSession reaches the
+// RestoreSession call inside loadSession. This pins the context.WithoutCancel
+// propagation contract: reversing that call to context.Background() would
+// cause zero test failures without this test.
+func TestGetMultiSession_PropagatesIdentityToRestoreSession(t *testing.T) {
 	t.Parallel()
 
-	t.Run("returns error for unknown session", func(t *testing.T) {
-		t.Parallel()
+	ctrl := gomock.NewController(t)
 
-		ctrl := gomock.NewController(t)
-		sess := newMockSession(t, ctrl, "", nil)
-		factory := newMockFactory(t, ctrl, sess)
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
+	// An identity with a non-empty UpstreamTokens map — the concrete value
+	// any outgoing-auth strategy would need at restore time.
+	wantIdentity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims:  map[string]any{"iss": "https://idp.example", "sub": "alice"},
+		},
+		UpstreamTokens: map[string]string{"provider": "live-upstream-token"},
+	}
 
-		_, err := sm.GetAdaptedTools("no-such-session")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found or not a multi-session")
+	sessionID := "restore-identity-propagation-session"
+	restored := newMockSession(t, ctrl, sessionID, nil)
+
+	// Capture the context RestoreSession receives.
+	var capturedCtx context.Context
+	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	factory.EXPECT().
+		RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string, _ map[string]string, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+			capturedCtx = ctx
+			return restored, nil
+		}).Times(1)
+
+	sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+	// Write fully-initialized metadata directly to storage (bypassing cache)
+	// so GetMultiSession triggers the cache-miss → loadSession → RestoreSession path.
+	_, err := sm.storage.Create(context.Background(), sessionID, map[string]string{
+		sessiontypes.MetadataKeyIdentityBinding: "https://idp.example\x00alice",
+		vmcpsession.MetadataKeyBackendIDs:       "",
 	})
-
-	t.Run("returns tools with correct names and schemas", func(t *testing.T) {
-		t.Parallel()
-
-		tools := []vmcp.Tool{
-			{
-				Name:        "alpha",
-				Description: "first tool",
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input": map[string]any{"type": "string"},
-					},
-				},
-			},
-			{Name: "beta", Description: "second tool"},
-		}
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				return newMockSession(t, ctrl, id, tools), nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedTools, err := sm.GetAdaptedTools(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedTools, 2)
-
-		byName := map[string]mcp.Tool{}
-		for _, st := range adaptedTools {
-			byName[st.Tool.Name] = st.Tool
-		}
-
-		require.Contains(t, byName, "alpha")
-		require.Contains(t, byName, "beta")
-
-		// InputSchema must be marshalled into RawInputSchema so clients
-		// receive the full parameter schema.
-		assert.NotEmpty(t, byName["alpha"].RawInputSchema)
-		assert.Contains(t, string(byName["alpha"].RawInputSchema), `"type"`)
-	})
-
-	t.Run("preserves annotations and output schema", func(t *testing.T) {
-		t.Parallel()
-
-		boolPtr := func(b bool) *bool { return &b }
-		tools := []vmcp.Tool{
-			{
-				Name:        "annotated",
-				Description: "tool with annotations",
-				InputSchema: map[string]any{"type": "object"},
-				OutputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"result": map[string]any{"type": "string"},
-					},
-				},
-				Annotations: &vmcp.ToolAnnotations{
-					Title:           "Annotated Tool",
-					ReadOnlyHint:    boolPtr(true),
-					DestructiveHint: boolPtr(false),
-				},
-			},
-			{
-				Name:        "plain",
-				Description: "tool without annotations or output schema",
-				InputSchema: map[string]any{"type": "object"},
-			},
-		}
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				return newMockSession(t, ctrl, id, tools), nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedTools, err := sm.GetAdaptedTools(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedTools, 2)
-
-		byName := map[string]mcp.Tool{}
-		for _, st := range adaptedTools {
-			byName[st.Tool.Name] = st.Tool
-		}
-
-		// Verify annotations are preserved on the annotated tool.
-		annotated := byName["annotated"]
-		assert.Equal(t, "Annotated Tool", annotated.Annotations.Title)
-		require.NotNil(t, annotated.Annotations.ReadOnlyHint)
-		assert.True(t, *annotated.Annotations.ReadOnlyHint)
-		require.NotNil(t, annotated.Annotations.DestructiveHint)
-		assert.False(t, *annotated.Annotations.DestructiveHint)
-		assert.Nil(t, annotated.Annotations.IdempotentHint)
-		assert.Nil(t, annotated.Annotations.OpenWorldHint)
-
-		// Verify output schema is preserved.
-		assert.NotNil(t, annotated.RawOutputSchema)
-		assert.Contains(t, string(annotated.RawOutputSchema), `"result"`)
-
-		// Verify nil annotations produce zero-valued annotations and nil output schema.
-		plain := byName["plain"]
-		assert.Empty(t, plain.Annotations.Title)
-		assert.Nil(t, plain.Annotations.ReadOnlyHint)
-		assert.Nil(t, plain.RawOutputSchema)
-	})
-
-	t.Run("handlers delegate to session CallTool", func(t *testing.T) {
-		t.Parallel()
-
-		tools := []vmcp.Tool{{Name: "greet", Description: "greets user"}}
-		ctrl := gomock.NewController(t)
-
-		callToolResult := &vmcp.ToolCallResult{
-			Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "Hello, world!"}},
-		}
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, tools)
-				sess.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					Return(callToolResult, nil).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedTools, err := sm.GetAdaptedTools(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedTools, 1)
-
-		// Invoke the handler.
-		handler := adaptedTools[0].Handler
-		require.NotNil(t, handler)
-
-		result, handlerErr := handler(context.Background(), newCallToolRequest("greet", nil))
-		require.NoError(t, handlerErr)
-		require.NotNil(t, result)
-		require.Len(t, result.Content, 1)
-		// mcp.Content is an interface; assert the concrete TextContent type.
-		textContent, ok := result.Content[0].(mcp.TextContent)
-		require.True(t, ok, "expected TextContent")
-		assert.Equal(t, "Hello, world!", textContent.Text)
-		assert.False(t, result.IsError)
-	})
-
-	t.Run("handler returns tool error when CallTool fails", func(t *testing.T) {
-		t.Parallel()
-
-		tools := []vmcp.Tool{{Name: "boom", Description: "always fails"}}
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, tools)
-				sess.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					Return(nil, errors.New("backend exploded")).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedTools, err := sm.GetAdaptedTools(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedTools, 1)
-
-		result, handlerErr := adaptedTools[0].Handler(context.Background(), newCallToolRequest("boom", nil))
-		require.NoError(t, handlerErr, "handler should not return an error — it should wrap it in a tool result")
-		require.NotNil(t, result)
-		assert.True(t, result.IsError, "IsError should be set for failed tool calls")
-	})
-
-	t.Run("handler returns error result for non-object arguments", func(t *testing.T) {
-		t.Parallel()
-
-		tools := []vmcp.Tool{{Name: "strict", Description: "requires object args"}}
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				return newMockSession(t, ctrl, id, tools), nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedTools, err := sm.GetAdaptedTools(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedTools, 1)
-
-		// Pass a non-object argument (string instead of map).
-		req := mcp.CallToolRequest{}
-		req.Params.Name = "strict"
-		req.Params.Arguments = "not-an-object"
-
-		result, handlerErr := adaptedTools[0].Handler(context.Background(), req)
-		require.NoError(t, handlerErr, "handler must not return a Go error")
-		require.NotNil(t, result)
-		assert.True(t, result.IsError, "non-object arguments should produce an error tool result")
-	})
-
-	t.Run("handler forwards request meta to CallTool", func(t *testing.T) {
-		t.Parallel()
-
-		tools := []vmcp.Tool{{Name: "meta-tool", Description: "checks meta forwarding"}}
-		ctrl := gomock.NewController(t)
-
-		var capturedMeta map[string]any
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, tools)
-				sess.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ *auth.Identity, _ string, _ map[string]any, meta map[string]any) (*vmcp.ToolCallResult, error) {
-						capturedMeta = meta
-						return &vmcp.ToolCallResult{}, nil
-					}).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedTools, err := sm.GetAdaptedTools(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedTools, 1)
-
-		// Build a request with a progress token in _meta.
-		req := mcp.CallToolRequest{}
-		req.Params.Name = "meta-tool"
-		req.Params.Arguments = map[string]any{}
-		req.Params.Meta = &mcp.Meta{ProgressToken: mcp.ProgressToken("tok-1")}
-
-		_, handlerErr := adaptedTools[0].Handler(context.Background(), req)
-		require.NoError(t, handlerErr)
-
-		// The meta must have been forwarded to CallTool.
-		require.NotNil(t, capturedMeta, "meta should be forwarded to CallTool")
-		assert.Equal(t, "tok-1", capturedMeta["progressToken"])
-	})
-
-	t.Run("handler terminates session on authorization errors", func(t *testing.T) {
-		t.Parallel()
-
-		// Test both ErrUnauthorizedCaller and ErrNilCaller
-		testCases := []struct {
-			name        string
-			authError   error
-			expectError string
-		}{
-			{
-				name:        "ErrUnauthorizedCaller",
-				authError:   sessiontypes.ErrUnauthorizedCaller,
-				expectError: "Unauthorized",
-			},
-			{
-				name:        "ErrNilCaller",
-				authError:   sessiontypes.ErrNilCaller,
-				expectError: "Unauthorized",
-			},
-		}
-
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
-
-				tools := []vmcp.Tool{{Name: "auth-tool", Description: "requires authorization"}}
-				ctrl := gomock.NewController(t)
-				authErr := tc.authError
-				factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-				factory.EXPECT().
-					MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-						sess := newMockSession(t, ctrl, id, tools)
-						sess.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-							Return(nil, authErr).Times(1)
-						// Close() is called when the session is terminated after auth failure
-						sess.EXPECT().Close().Return(nil).Times(1)
-						return sess, nil
-					}).Times(1)
-
-				registry := newFakeRegistry()
-				sm, _ := newTestSessionManager(t, factory, registry)
-
-				sessionID := sm.Generate()
-				_, err := sm.CreateSession(context.Background(), sessionID)
-				require.NoError(t, err)
-
-				adaptedTools, err := sm.GetAdaptedTools(sessionID)
-				require.NoError(t, err)
-				require.Len(t, adaptedTools, 1)
-
-				// Call the tool - should return an error result
-				req := newCallToolRequest("auth-tool", map[string]any{})
-				result, handlerErr := adaptedTools[0].Handler(context.Background(), req)
-				require.NoError(t, handlerErr, "handler should not return Go error")
-				require.NotNil(t, result)
-
-				// Verify error result contains "Unauthorized"
-				assert.True(t, result.IsError, "result should indicate error")
-				require.Len(t, result.Content, 1, "result should have content")
-				textContent, ok := result.Content[0].(mcp.TextContent)
-				require.True(t, ok, "expected TextContent")
-				assert.Contains(t, textContent.Text, tc.expectError)
-
-				// Verify subsequent GetAdaptedTools fails (session no longer exists)
-				_, err = sm.GetAdaptedTools(sessionID)
-				assert.Error(t, err, "GetAdaptedTools should fail after session termination")
-				// gomock verifies Close() was called exactly once via Times(1)
-			})
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Tests: GetAdaptedResources
-// ---------------------------------------------------------------------------
-
-func TestSessionManager_GetAdaptedResources(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns error for unknown session", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		sess := newMockSession(t, ctrl, "", nil)
-		factory := newMockFactory(t, ctrl, sess)
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		_, err := sm.GetAdaptedResources("no-such-session")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found or not a multi-session")
-	})
-
-	t.Run("returns resources with correct fields", func(t *testing.T) {
-		t.Parallel()
-
-		resources := []vmcp.Resource{
-			{
-				Name:        "config",
-				URI:         "file:///etc/config.json",
-				Description: "Configuration file",
-				MimeType:    "application/json",
-			},
-			{
-				Name:        "readme",
-				URI:         "file:///README.md",
-				Description: "Readme",
-				MimeType:    "text/markdown",
-			},
-		}
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, nil)
-				// Override default Resources() AnyTimes with a specific return
-				sess.EXPECT().Resources().Return(resources).AnyTimes()
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedResources, err := sm.GetAdaptedResources(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedResources, 2)
-
-		byURI := map[string]mcp.Resource{}
-		for _, sr := range adaptedResources {
-			byURI[sr.Resource.URI] = sr.Resource
-		}
-
-		require.Contains(t, byURI, "file:///etc/config.json")
-		require.Contains(t, byURI, "file:///README.md")
-
-		assert.Equal(t, "config", byURI["file:///etc/config.json"].Name)
-		assert.Equal(t, "application/json", byURI["file:///etc/config.json"].MIMEType)
-		assert.Equal(t, "readme", byURI["file:///README.md"].Name)
-		assert.Equal(t, "text/markdown", byURI["file:///README.md"].MIMEType)
-	})
-
-	t.Run("handler delegates to session ReadResource", func(t *testing.T) {
-		t.Parallel()
-
-		resources := []vmcp.Resource{
-			{
-				Name:     "data",
-				URI:      "file:///data.txt",
-				MimeType: "text/plain",
-			},
-		}
-		readResult := &vmcp.ResourceReadResult{
-			Contents: []vmcp.ResourceContent{
-				{URI: "file:///data.txt", MimeType: "text/plain", Text: "hello resource"},
-			},
-		}
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, nil)
-				sess.EXPECT().Resources().Return(resources).AnyTimes()
-				sess.EXPECT().ReadResource(gomock.Any(), gomock.Any(), "file:///data.txt").
-					Return(readResult, nil).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedResources, err := sm.GetAdaptedResources(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedResources, 1)
-
-		req := mcp.ReadResourceRequest{}
-		req.Params.URI = "file:///data.txt"
-		contents, handlerErr := adaptedResources[0].Handler(context.Background(), req)
-		require.NoError(t, handlerErr)
-		require.Len(t, contents, 1)
-
-		textContents, ok := contents[0].(mcp.TextResourceContents)
-		require.True(t, ok, "expected TextResourceContents")
-		assert.Equal(t, "file:///data.txt", textContents.URI)
-		assert.Equal(t, "text/plain", textContents.MIMEType)
-		assert.Equal(t, "hello resource", textContents.Text)
-	})
-
-	t.Run("handler returns error when ReadResource fails", func(t *testing.T) {
-		t.Parallel()
-
-		resources := []vmcp.Resource{
-			{
-				Name:     "broken",
-				URI:      "file:///broken.txt",
-				MimeType: "text/plain",
-			},
-		}
-		readErr := errors.New("read failed")
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, nil)
-				sess.EXPECT().Resources().Return(resources).AnyTimes()
-				sess.EXPECT().ReadResource(gomock.Any(), gomock.Any(), "file:///broken.txt").
-					Return(nil, readErr).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedResources, err := sm.GetAdaptedResources(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedResources, 1)
-
-		req := mcp.ReadResourceRequest{}
-		req.Params.URI = "file:///broken.txt"
-		contents, handlerErr := adaptedResources[0].Handler(context.Background(), req)
-		require.Error(t, handlerErr)
-		assert.Nil(t, contents)
-		assert.ErrorContains(t, handlerErr, "read failed")
-	})
-
-	t.Run("handler preserves empty MimeType from backend", func(t *testing.T) {
-		t.Parallel()
-
-		resources := []vmcp.Resource{
-			{
-				Name: "binary",
-				URI:  "file:///binary.bin",
-				// MimeType intentionally empty
-			},
-		}
-		readResult := &vmcp.ResourceReadResult{
-			Contents: []vmcp.ResourceContent{
-				{URI: "file:///binary.bin", MimeType: "", Text: "binary data"},
-			},
-		}
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, nil)
-				sess.EXPECT().Resources().Return(resources).AnyTimes()
-				sess.EXPECT().ReadResource(gomock.Any(), gomock.Any(), "file:///binary.bin").
-					Return(readResult, nil).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedResources, err := sm.GetAdaptedResources(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedResources, 1)
-
-		req := mcp.ReadResourceRequest{}
-		req.Params.URI = "file:///binary.bin"
-		contents, handlerErr := adaptedResources[0].Handler(context.Background(), req)
-		require.NoError(t, handlerErr)
-		require.Len(t, contents, 1)
-
-		textContents, ok := contents[0].(mcp.TextResourceContents)
-		require.True(t, ok, "expected TextResourceContents")
-		assert.Equal(t, "", textContents.MIMEType)
-	})
-
-	t.Run("handler terminates session on authorization errors", func(t *testing.T) {
-		t.Parallel()
-
-		testCases := []struct {
-			name      string
-			authError error
-		}{
-			{
-				name:      "ErrUnauthorizedCaller",
-				authError: sessiontypes.ErrUnauthorizedCaller,
-			},
-			{
-				name:      "ErrNilCaller",
-				authError: sessiontypes.ErrNilCaller,
-			},
-		}
-
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
-
-				resources := []vmcp.Resource{
-					{
-						Name: "protected",
-						URI:  "file:///protected.txt",
-					},
-				}
-				authErr := tc.authError
-
-				ctrl := gomock.NewController(t)
-				factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-				factory.EXPECT().
-					MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-						sess := newMockSession(t, ctrl, id, nil)
-						sess.EXPECT().Resources().Return(resources).AnyTimes()
-						sess.EXPECT().ReadResource(gomock.Any(), gomock.Any(), "file:///protected.txt").
-							Return(nil, authErr).Times(1)
-						// Close() is called when the session is terminated after auth failure
-						sess.EXPECT().Close().Return(nil).Times(1)
-						return sess, nil
-					}).Times(1)
-
-				registry := newFakeRegistry()
-				sm, _ := newTestSessionManager(t, factory, registry)
-
-				sessionID := sm.Generate()
-				_, err := sm.CreateSession(context.Background(), sessionID)
-				require.NoError(t, err)
-
-				adaptedResources, err := sm.GetAdaptedResources(sessionID)
-				require.NoError(t, err)
-				require.Len(t, adaptedResources, 1)
-
-				req := mcp.ReadResourceRequest{}
-				req.Params.URI = "file:///protected.txt"
-				contents, handlerErr := adaptedResources[0].Handler(context.Background(), req)
-				require.Error(t, handlerErr, "handler should return an error for auth failures")
-				assert.Nil(t, contents)
-				assert.ErrorContains(t, handlerErr, "unauthorized")
-
-				// Verify subsequent GetAdaptedResources fails (session no longer exists)
-				_, err = sm.GetAdaptedResources(sessionID)
-				assert.Error(t, err, "GetAdaptedResources should fail after session termination")
-				// gomock verifies Close() was called exactly once via Times(1)
-			})
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Tests: GetAdaptedPrompts
-// ---------------------------------------------------------------------------
-
-func TestSessionManager_GetAdaptedPrompts(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns error for unknown session", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		sess := newMockSession(t, ctrl, "", nil)
-		factory := newMockFactory(t, ctrl, sess)
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		_, err := sm.GetAdaptedPrompts("no-such-session")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found or not a multi-session")
-	})
-
-	t.Run("returns prompts with correct fields and arguments", func(t *testing.T) {
-		t.Parallel()
-
-		prompts := []vmcp.Prompt{
-			{
-				Name:        "greet",
-				Description: "Greet someone",
-				Arguments: []vmcp.PromptArgument{
-					{Name: "name", Description: "Who to greet", Required: true},
-					{Name: "language", Description: "Language to use", Required: false},
-				},
-			},
-			{
-				Name:        "summarize",
-				Description: "Summarize text",
-			},
-		}
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				// Create mock directly (without newMockSession) so there is no
-				// pre-existing Prompts().Return(nil).AnyTimes() that would win
-				// the FIFO expectation race over our specific prompts list.
-				sess := sessionmocks.NewMockMultiSession(ctrl)
-				sess.EXPECT().ID().Return(id).AnyTimes()
-				sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
-				sess.EXPECT().Prompts().Return(prompts).AnyTimes()
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedPrompts, 2)
-
-		byName := map[string]mcp.Prompt{}
-		for _, sp := range adaptedPrompts {
-			byName[sp.Prompt.Name] = sp.Prompt
-		}
-
-		require.Contains(t, byName, "greet")
-		assert.Equal(t, "Greet someone", byName["greet"].Description)
-		require.Len(t, byName["greet"].Arguments, 2)
-		assert.Equal(t, "name", byName["greet"].Arguments[0].Name)
-		assert.True(t, byName["greet"].Arguments[0].Required)
-		assert.Equal(t, "language", byName["greet"].Arguments[1].Name)
-		assert.False(t, byName["greet"].Arguments[1].Required)
-
-		require.Contains(t, byName, "summarize")
-		assert.Equal(t, "Summarize text", byName["summarize"].Description)
-		assert.Empty(t, byName["summarize"].Arguments)
-	})
-
-	t.Run("handler delegates to session GetPrompt", func(t *testing.T) {
-		t.Parallel()
-
-		prompts := []vmcp.Prompt{
-			{
-				Name:        "hello",
-				Description: "Say hello",
-				Arguments:   []vmcp.PromptArgument{{Name: "name", Required: true}},
-			},
-		}
-		getResult := &vmcp.PromptGetResult{
-			Description: "A greeting",
-			Messages: []vmcp.PromptMessage{
-				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello, world!"}},
-			},
-		}
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := sessionmocks.NewMockMultiSession(ctrl)
-				sess.EXPECT().ID().Return(id).AnyTimes()
-				sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
-				sess.EXPECT().Prompts().Return(prompts).AnyTimes()
-				sess.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), "hello", gomock.Any()).
-					Return(getResult, nil).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedPrompts, 1)
-
-		req := mcp.GetPromptRequest{}
-		req.Params.Name = "hello"
-		req.Params.Arguments = map[string]string{"name": "Alice"}
-		result, handlerErr := adaptedPrompts[0].Handler(context.Background(), req)
-		require.NoError(t, handlerErr)
-		require.NotNil(t, result)
-		assert.Equal(t, "A greeting", result.Description)
-		require.Len(t, result.Messages, 1)
-		assert.Equal(t, mcp.RoleAssistant, result.Messages[0].Role)
-	})
-
-	t.Run("handler returns error when GetPrompt fails", func(t *testing.T) {
-		t.Parallel()
-
-		prompts := []vmcp.Prompt{{Name: "broken"}}
-		getErr := errors.New("prompt backend error")
-
-		ctrl := gomock.NewController(t)
-		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().
-			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := sessionmocks.NewMockMultiSession(ctrl)
-				sess.EXPECT().ID().Return(id).AnyTimes()
-				sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
-				sess.EXPECT().Prompts().Return(prompts).AnyTimes()
-				sess.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), "broken", gomock.Any()).
-					Return(nil, getErr).Times(1)
-				return sess, nil
-			}).Times(1)
-
-		registry := newFakeRegistry()
-		sm, _ := newTestSessionManager(t, factory, registry)
-
-		sessionID := sm.Generate()
-		_, err := sm.CreateSession(context.Background(), sessionID)
-		require.NoError(t, err)
-
-		adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
-		require.NoError(t, err)
-		require.Len(t, adaptedPrompts, 1)
-
-		req := mcp.GetPromptRequest{}
-		req.Params.Name = "broken"
-		result, handlerErr := adaptedPrompts[0].Handler(context.Background(), req)
-		require.Error(t, handlerErr)
-		assert.Nil(t, result)
-		assert.ErrorContains(t, handlerErr, "prompt backend error")
-	})
-
-	t.Run("handler terminates session on authorization errors", func(t *testing.T) {
-		t.Parallel()
-
-		testCases := []struct {
-			name      string
-			authError error
-		}{
-			{name: "ErrUnauthorizedCaller", authError: sessiontypes.ErrUnauthorizedCaller},
-			{name: "ErrNilCaller", authError: sessiontypes.ErrNilCaller},
-		}
-
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
-
-				prompts := []vmcp.Prompt{{Name: "secret"}}
-				authErr := tc.authError
-
-				ctrl := gomock.NewController(t)
-				factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-				factory.EXPECT().
-					MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-						sess := sessionmocks.NewMockMultiSession(ctrl)
-						sess.EXPECT().ID().Return(id).AnyTimes()
-						sess.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
-						sess.EXPECT().Prompts().Return(prompts).AnyTimes()
-						sess.EXPECT().GetPrompt(gomock.Any(), gomock.Any(), "secret", gomock.Any()).
-							Return(nil, authErr).Times(1)
-						// Close() is called when the session is terminated after auth failure.
-						sess.EXPECT().Close().Return(nil).Times(1)
-						return sess, nil
-					}).Times(1)
-
-				registry := newFakeRegistry()
-				sm, _ := newTestSessionManager(t, factory, registry)
-
-				sessionID := sm.Generate()
-				_, err := sm.CreateSession(context.Background(), sessionID)
-				require.NoError(t, err)
-
-				adaptedPrompts, err := sm.GetAdaptedPrompts(sessionID)
-				require.NoError(t, err)
-				require.Len(t, adaptedPrompts, 1)
-
-				req := mcp.GetPromptRequest{}
-				req.Params.Name = "secret"
-				result, handlerErr := adaptedPrompts[0].Handler(context.Background(), req)
-				require.Error(t, handlerErr, "handler should return an error for auth failures")
-				assert.Nil(t, result)
-				assert.ErrorContains(t, handlerErr, "unauthorized")
-
-				// Verify subsequent GetAdaptedPrompts fails (session no longer exists).
-				_, err = sm.GetAdaptedPrompts(sessionID)
-				assert.Error(t, err, "GetAdaptedPrompts should fail after session termination")
-				// gomock verifies Close() was called exactly once via Times(1)
-			})
-		}
-	})
+	require.NoError(t, err)
+
+	// Call GetMultiSession with an identity-bearing context.
+	ctxWithIdentity := auth.WithIdentity(t.Context(), wantIdentity)
+	multiSess, ok := sm.GetMultiSession(ctxWithIdentity, sessionID)
+	require.True(t, ok)
+	require.NotNil(t, multiSess)
+
+	// The identity must have propagated to RestoreSession via context.WithoutCancel.
+	require.NotNil(t, capturedCtx, "RestoreSession must have been called")
+	gotIdentity, hasIdentity := auth.IdentityFromContext(capturedCtx)
+	require.True(t, hasIdentity, "identity must be present on the context RestoreSession received")
+	assert.Equal(t, wantIdentity.Subject, gotIdentity.Subject,
+		"Subject must propagate through loadSession's context.WithoutCancel")
+	assert.Equal(t, "live-upstream-token", gotIdentity.UpstreamTokens["provider"],
+		"UpstreamTokens must propagate — these are the credentials backend Initialize needs")
 }
 
 // ---------------------------------------------------------------------------
@@ -2051,7 +1221,7 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// After decoration, GetMultiSession returns the decorated session with both tools.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok)
 		require.Len(t, multiSess.Tools(), 2)
 		assert.Equal(t, "hello", multiSess.Tools()[0].Name)
@@ -2120,7 +1290,7 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 		assert.Contains(t, err.Error(), "was deleted during decoration")
 
 		// The session must not be resurrected.
-		_, ok := sm.GetMultiSession(sessionID)
+		_, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "terminated session must not be resurrected by DecorateSession")
 	})
 }
@@ -2160,7 +1330,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		_, err := storage.Create(context.Background(), sessionID, map[string]string{})
 		require.NoError(t, err)
 
-		err = sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(t.Context(), sessionID, makeEmptySess(t))
 		assert.NoError(t, err, "alive session must return nil")
 	})
 
@@ -2168,7 +1338,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		t.Parallel()
 		sm, _ := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 
-		err := sm.checkSession("nonexistent-session", makeEmptySess(t))
+		err := sm.checkSession(t.Context(), "nonexistent-session", makeEmptySess(t))
 		assert.ErrorIs(t, err, cache.ErrExpired, "deleted session must return ErrExpired")
 	})
 
@@ -2184,7 +1354,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(t.Context(), sessionID, makeEmptySess(t))
 		assert.ErrorIs(t, err, cache.ErrExpired, "terminated session must return ErrExpired")
 	})
 
@@ -2212,7 +1382,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.ErrorIs(t, err, cache.ErrExpired,
 			"stale backend list must return ErrExpired to trigger cross-pod eviction")
 	})
@@ -2234,7 +1404,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.NoError(t, err, "matching backend list must return nil")
 	})
 
@@ -2253,7 +1423,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		cached.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.NoError(t, err, "matching empty metadata must not cause eviction")
 	})
 
@@ -2286,7 +1456,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.NoError(t, err,
 			"differing per-backend session IDs must not evict to avoid cross-pod eviction storms")
 	})
@@ -2611,7 +1781,7 @@ func TestLoadSession_Phase2Marker_UsesIdentityBindingKey(t *testing.T) {
 
 		// loadSession must treat absent MetadataKeyIdentityBinding as a legacy session
 		// and return (nil, false) — not attempting RestoreSession.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "legacy session with only MetadataKeyTokenHash must not be restored")
 		assert.Nil(t, multiSess)
 	})
@@ -2640,7 +1810,7 @@ func TestLoadSession_Phase2Marker_UsesIdentityBindingKey(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "session with MetadataKeyIdentityBinding must be restorable")
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -2750,16 +1920,4 @@ func TestTerminate_LegacyFormatSession_TakesPlaceholderPath(t *testing.T) {
 		"legacy session must remain in storage after Terminate (not deleted)")
 	assert.Equal(t, MetadataValTrue, metadata[MetadataKeyTerminated],
 		"legacy session Terminate must set MetadataKeyTerminated rather than deleting")
-}
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-// newCallToolRequest builds a minimal mcp.CallToolRequest for handler tests.
-func newCallToolRequest(name string, args map[string]any) mcp.CallToolRequest {
-	req := mcp.CallToolRequest{}
-	req.Params.Name = name
-	req.Params.Arguments = args
-	return req
 }

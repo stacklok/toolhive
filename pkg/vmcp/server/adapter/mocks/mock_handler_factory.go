@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	mcp "github.com/mark3labs/mcp-go/mcp"
+	mcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	adapter "github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	gomock "go.uber.org/mock/gomock"
 )

@@ -76,6 +76,7 @@ func NewRegistry() *Registry {
 	r.Register(mcpv1beta1.ExternalAuthTypeUpstreamInject, &UpstreamInjectConverter{})
 	r.Register(mcpv1beta1.ExternalAuthTypeAWSSts, &AwsStsConverter{})
 	r.Register(mcpv1beta1.ExternalAuthTypeOBO, &OBOConverter{})
+	r.Register(mcpv1beta1.ExternalAuthTypeXAA, &XAAConverter{})
 
 	return r
 }

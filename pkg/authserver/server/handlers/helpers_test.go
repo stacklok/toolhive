@@ -451,8 +451,8 @@ func handlerTestSetup(t *testing.T, opts ...baseTestSetupOption) (*Handler, *tes
 }
 
 // multiUpstreamTestSetup creates a test setup with two upstream providers ("provider-1" and "provider-2")
-// for testing multi-upstream authorization chain logic.
-func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
+// for testing multi-upstream authorization chain logic. Any Option values are forwarded to NewHandler.
+func multiUpstreamTestSetup(t *testing.T, opts ...Option) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
 	t.Helper()
 
 	provider, oauth2Config, stor, storState := baseTestSetup(t)
@@ -493,7 +493,7 @@ func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDP
 		{Name: "provider-1", Provider: mockProvider1},
 		{Name: "provider-2", Provider: mockProvider2},
 	}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, opts...)
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2

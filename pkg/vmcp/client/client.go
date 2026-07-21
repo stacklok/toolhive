@@ -4,7 +4,7 @@
 // Package client provides MCP protocol client implementation for communicating with backend servers.
 //
 // This package implements the BackendClient interface defined in the vmcp package,
-// using the mark3labs/mcp-go SDK for protocol communication.
+// using the stacklok/toolhive-core/mcpcompat SDK for protocol communication.
 package client
 
 import (
@@ -18,15 +18,16 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -36,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
 const (
@@ -100,12 +102,18 @@ func WithDialControl(control func(network, address string, c syscall.RawConn) er
 	}
 }
 
-// httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
+// httpBackendClient implements vmcp.BackendClient using stacklok/toolhive-core/mcpcompat HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
-	// clientFactory creates MCP clients for backends.
+	// clientFactory creates MCP clients for backends. The forwarding flag is set
+	// only for the tools/call path — the sole operation during which a backend
+	// may issue server->client requests/notifications (elicitation, sampling,
+	// progress, logging). It gates the continuous-listening SSE stream and the
+	// forwarding handlers so that aggregation/list/read/prompt/complete calls do
+	// NOT open a standalone GET stream (which hangs backends that don't support
+	// one — see the multi-backend optimizer regression).
 	// Abstracted as a function to enable testing with mock clients.
-	clientFactory func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error)
+	clientFactory func(ctx context.Context, target *vmcp.BackendTarget, forwarding bool) (*client.Client, error)
 
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
@@ -121,6 +129,15 @@ type httpBackendClient struct {
 	// receiving the resolved peer IP before the TCP handshake. Nil reproduces the
 	// default dialer behavior with no hook.
 	dialControl func(network, address string, c syscall.RawConn) error
+
+	// forwarders holds the server->client forwarding requesters (elicitation,
+	// sampling, notifications) bound by server.New via BindForwarders. When set,
+	// the client factory installs handlers on each backend client so a backend's
+	// mid-call server->client traffic is relayed to the downstream client, and
+	// enables continuous listening so standalone-SSE server->client messages are
+	// delivered. Nil (unbound) reproduces the pre-forwarding behavior exactly, so
+	// direct embedders and unit tests without a bound server are unaffected.
+	forwarders atomic.Pointer[boundForwarders]
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -265,7 +282,7 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // overridden. The per-request identity placed on the request context by
 // auth.TokenValidator.Middleware carries the freshest upstream tokens (the
 // middleware refreshes them transparently on every incoming request via
-// upstreamtoken.InProcessService.GetAllValidTokens). Overriding it with a
+// upstreamtoken.InProcessService.GetAllUpstreamCredentials). Overriding it with a
 // snapshot captured at session-init time would silently re-inject stale
 // upstream access tokens on every backend call, forcing users to re-auth
 // once the captured access token expired (see issue #5323).
@@ -397,8 +414,91 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 	return strategy, nil
 }
 
-// defaultClientFactory creates mark3labs MCP clients for different transport types.
-func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+// defaultClientFactory creates mcpcompat MCP clients for different transport types.
+// newStreamableHTTPClient builds a streamable-HTTP backend client. It bounds the
+// response body size and — only when forwarding is requested (the tools/call path)
+// and forwarders are bound — enables continuous listening plus the elicitation/
+// sampling handlers so a backend's mid-call server->client traffic reaches the
+// downstream client. Non-forwarding calls get the plain client (no standalone GET
+// stream), which is byte-for-byte the pre-forwarding construction.
+func (*httpBackendClient) newStreamableHTTPClient(
+	ctx context.Context, target *vmcp.BackendTarget,
+	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
+) (*client.Client, error) {
+	// For streamable-HTTP each MCP call is a single bounded HTTP request/response
+	// pair, so a per-response body size limit is safe.
+	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.LimitReader(resp.Body, maxResponseSize),
+			Closer: resp.Body,
+		}
+		return resp, nil
+	})
+	httpClient := &http.Client{
+		Transport: sizeLimitedTransport,
+		Timeout:   30 * time.Second,
+	}
+	transportOpts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPTimeout(30 * time.Second),
+		transport.WithHTTPBasicClient(httpClient),
+	}
+	if fwd != nil && forwarding {
+		// A backend's mid-call elicitation/sampling request is routed by the go-sdk
+		// onto the standalone SSE stream (the shim server replies with
+		// application/json), so the backend client must hold that stream open for the
+		// request to arrive and be answered. Only enabled for the tools/call path:
+		// opening this GET stream against a backend that does not support one hangs
+		// the call, so aggregation/list/read/prompt/complete must not enable it.
+		transportOpts = append(transportOpts, transport.WithContinuousListening())
+		return client.NewStreamableHttpClientWithOpts(
+			target.BaseURL, transportOpts, forwardingClientOptions(ctx, fwd),
+		)
+	}
+	return client.NewStreamableHttpClient(target.BaseURL, transportOpts...)
+}
+
+// newSSEClient builds an SSE backend client. For SSE the entire session is one
+// long-lived HTTP response body, so — unlike the streamable-HTTP client — no
+// response-body size limit and no http.Client.Timeout apply: the former would
+// silently terminate the stream after maxResponseSize CUMULATIVE bytes, the
+// latter would kill the stream. When forwarding is requested (the tools/call
+// path) and forwarders are bound, the elicitation/sampling handlers are
+// installed so a backend's mid-call server->client traffic reaches the
+// downstream client; SSE carries those requests on the already-open event
+// stream, so no continuous-listening option is needed. Non-forwarding calls get
+// the plain client, byte-for-byte the pre-forwarding construction.
+func (*httpBackendClient) newSSEClient(
+	ctx context.Context, target *vmcp.BackendTarget,
+	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
+) (*client.Client, error) {
+	c, err := client.NewSSEMCPClient(
+		target.BaseURL,
+		transport.WithHTTPClient(&http.Client{Transport: baseTransport}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSE client: %w", err)
+	}
+	if fwd != nil && forwarding {
+		// NewSSEMCPClient accepts only transport options, so the client options
+		// are applied post-construction; both run before the caller's Initialize,
+		// which is what the handlers' capability declaration requires.
+		for _, opt := range forwardingClientOptions(ctx, fwd) {
+			opt(c)
+		}
+	}
+	return c, nil
+}
+
+func (h *httpBackendClient) defaultClientFactory(
+	ctx context.Context, target *vmcp.BackendTarget, forwarding bool,
+) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
 	//
@@ -494,57 +594,39 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		propagator: otel.GetTextMapPropagator(),
 	}
 
+	// Snapshot the bound server->client forwarders (nil when unbound). When set,
+	// the client is built with elicitation/sampling handlers and continuous
+	// listening so a backend's mid-call server->client traffic reaches the
+	// downstream client; when nil, construction is byte-for-byte the pre-forwarding
+	// path.
+	fwd := h.forwarders.Load()
+
 	var c *client.Client
 
 	switch target.TransportType {
 	case "streamable-http", "streamable":
 		// "streamable" is a legacy alias for "streamable-http".
-		//
-		// For streamable-HTTP each MCP call is a single bounded HTTP
-		// request/response pair, so a per-response body size limit is safe.
-		sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			resp, err := baseTransport.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.LimitReader(resp.Body, maxResponseSize),
-				Closer: resp.Body,
-			}
-			return resp, nil
-		})
-		httpClient := &http.Client{
-			Transport: sizeLimitedTransport,
-			Timeout:   30 * time.Second,
-		}
-		c, err = client.NewStreamableHttpClient(
-			target.BaseURL,
-			transport.WithHTTPTimeout(30*time.Second),
-			transport.WithHTTPBasicClient(httpClient),
-		)
+		c, err = h.newStreamableHTTPClient(ctx, target, baseTransport, forwarding, fwd)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create streamable-http client: %w", err)
 		}
 
 	case "sse":
-		// For SSE the entire session is one long-lived HTTP response body.
-		// Applying io.LimitReader would silently terminate the stream after
-		// maxResponseSize cumulative bytes — not per-event — which is wrong.
-		// http.Client.Timeout is also omitted: it would kill the stream.
-		httpClient := &http.Client{Transport: baseTransport}
-		c, err = client.NewSSEMCPClient(
-			target.BaseURL,
-			transport.WithHTTPClient(httpClient),
-		)
+		c, err = h.newSSEClient(ctx, target, baseTransport, forwarding, fwd)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create SSE client: %w", err)
+			return nil, err
 		}
 
 	default:
 		return nil, fmt.Errorf("%w: %s (supported: streamable-http, sse)", vmcp.ErrUnsupportedTransport, target.TransportType)
+	}
+
+	// Register the notification forwarder before Initialize (the caller runs it
+	// after this factory returns) so a backend's mid-call progress/logging
+	// notifications are relayed to the downstream client. OnNotification is a
+	// post-construction method, so it applies to both transports.
+	if fwd != nil && forwarding && fwd.notifier != nil {
+		c.OnNotification(newNotificationForwarder(ctx, fwd.notifier))
 	}
 
 	// Start the client connection
@@ -555,6 +637,13 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	// Note: Initialization is deferred to the caller (e.g., ListCapabilities)
 	// so that ServerCapabilities can be captured and used for conditional querying
 	return c, nil
+}
+
+// isAuthorizationRequired reports whether err is one of the mcp-go authorization-required
+// sentinels. Extracted to keep wrapBackendError within the cyclomatic complexity limit.
+func isAuthorizationRequired(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
 // wrapBackendError wraps an error with the appropriate sentinel error based on error type.
@@ -614,8 +703,7 @@ func wrapBackendError(err error, backendID string, operation string) error {
 	// companion sentinel from the OAuth-handler path. Both must map to
 	// ErrAuthenticationFailed so health monitoring engages the auth-aware
 	// branch (#4935) instead of treating the probe as unhealthy (#5223).
-	if errors.Is(err, transport.ErrAuthorizationRequired) ||
-		errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
+	if isAuthorizationRequired(err) {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
@@ -629,7 +717,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
 	}
 
-	// 5. String-based detection: Fall back to pattern matching for cases where
+	// 5. ErrUpstreamTokenNotFound: upstream provider token missing from identity.
+	// Explicit sentinel check takes priority over the string-based "authentication failed"
+	// fallback below, which would also match (via the authRoundTripper error message)
+	// but is fragile. This maps to ErrAuthenticationFailed so the pre-check middleware
+	// and health monitors classify the error correctly.
+	if errors.Is(err, authtypes.ErrUpstreamTokenNotFound) {
+		return fmt.Errorf("%w: failed to %s for backend %s (upstream token missing): %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+
+	// 6. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -681,39 +779,104 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.
+// It follows MCP pagination cursors so backends that paginate (mcpcompat
+// paginates at DefaultPageSize=1000) contribute their complete tool set rather
+// than only the first page.
 func queryTools(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListToolsResult, error) {
 	if supported {
-		result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+			req := mcp.ListToolsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListTools(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Tools, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list tools from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListToolsResult{Tools: tools}, nil
 	}
 	slog.Debug("backend does not advertise tools capability, skipping tools query", "backend", backendID)
 	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
 }
 
-// queryResources queries resources from a backend if the server advertises resource support.
+// queryResources queries resources from a backend if the server advertises
+// resource support. It follows MCP pagination cursors (see queryTools).
 func queryResources(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListResourcesResult, error) {
 	if supported {
-		result, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+		resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+			req := mcp.ListResourcesRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListResources(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Resources, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListResourcesResult{Resources: resources}, nil
 	}
 	slog.Debug("backend does not advertise resources capability, skipping resources query", "backend", backendID)
 	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
 }
 
-// queryPrompts queries prompts from a backend if the server advertises prompt support.
+// queryResourceTemplates queries resource templates from a backend if the server
+// advertises resource support. Resource templates are gated on the same
+// serverCaps.Resources advertisement as plain resources (there is no separate
+// capability flag for templates). It follows MCP pagination cursors (see queryTools).
+func queryResourceTemplates(
+	ctx context.Context, c *client.Client, supported bool, backendID string,
+) (*mcp.ListResourceTemplatesResult, error) {
+	if supported {
+		templates, err := pagination.ListAll(
+			ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.ResourceTemplate, mcp.Cursor, error) {
+				req := mcp.ListResourceTemplatesRequest{}
+				req.Params.Cursor = cursor
+				result, err := c.ListResourceTemplates(ctx, req)
+				if err != nil {
+					return nil, "", err
+				}
+				return result.ResourceTemplates, result.NextCursor, nil
+			})
+		// A backend that advertises the resources capability but does not
+		// implement resources/templates/list (JSON-RPC -32601) degrades to an
+		// empty template list — its other capabilities still aggregate. Other
+		// errors still propagate and drop the backend's capability set.
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Debug("backend does not implement resources/templates/list, treating templates as empty",
+				"backend", backendID)
+			return &mcp.ListResourceTemplatesResult{ResourceTemplates: []mcp.ResourceTemplate{}}, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to list resource templates from backend %s: %w", backendID, err)
+		}
+		return &mcp.ListResourceTemplatesResult{ResourceTemplates: templates}, nil
+	}
+	slog.Debug("backend does not advertise resources capability, skipping resource templates query", "backend", backendID)
+	return &mcp.ListResourceTemplatesResult{ResourceTemplates: []mcp.ResourceTemplate{}}, nil
+}
+
+// queryPrompts queries prompts from a backend if the server advertises prompt
+// support. It follows MCP pagination cursors (see queryTools).
 func queryPrompts(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListPromptsResult, error) {
 	if supported {
-		result, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+		prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+			req := mcp.ListPromptsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListPrompts(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Prompts, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListPromptsResult{Prompts: prompts}, nil
 	}
 	slog.Debug("backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
@@ -726,7 +889,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
 
 	// Create a client for this backend (not yet initialized)
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -760,6 +923,12 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 	}
 
+	// Resource templates share the same server capability advertisement as resources.
+	resourceTemplatesResp, err := queryResourceTemplates(ctx, c, serverCaps.Resources != nil, target.WorkloadID)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
+	}
+
 	promptsResp, err := queryPrompts(ctx, c, serverCaps.Prompts != nil, target.WorkloadID)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
@@ -767,9 +936,10 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 
 	// Convert MCP types to vmcp types
 	capabilities := &vmcp.CapabilityList{
-		Tools:     make([]vmcp.Tool, len(toolsResp.Tools)),
-		Resources: make([]vmcp.Resource, len(resourcesResp.Resources)),
-		Prompts:   make([]vmcp.Prompt, len(promptsResp.Prompts)),
+		Tools:             make([]vmcp.Tool, len(toolsResp.Tools)),
+		Resources:         make([]vmcp.Resource, len(resourcesResp.Resources)),
+		ResourceTemplates: make([]vmcp.ResourceTemplate, len(resourceTemplatesResp.ResourceTemplates)),
+		Prompts:           make([]vmcp.Prompt, len(promptsResp.Prompts)),
 	}
 
 	// Convert tools
@@ -791,6 +961,17 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 			Name:        resource.Name,
 			Description: resource.Description,
 			MimeType:    resource.MIMEType,
+			BackendID:   target.WorkloadID,
+		}
+	}
+
+	// Convert resource templates (pass-through: no URI-template rewriting, like resources)
+	for i, template := range resourceTemplatesResp.ResourceTemplates {
+		capabilities.ResourceTemplates[i] = vmcp.ResourceTemplate{
+			URITemplate: template.URITemplate,
+			Name:        template.Name,
+			Description: template.Description,
+			MimeType:    template.MIMEType,
 			BackendID:   target.WorkloadID,
 		}
 	}
@@ -821,6 +1002,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		"backend", target.WorkloadName,
 		"tools", len(capabilities.Tools),
 		"resources", len(capabilities.Resources),
+		"resource_templates", len(capabilities.ResourceTemplates),
 		"prompts", len(capabilities.Prompts))
 
 	return capabilities, nil
@@ -840,7 +1022,7 @@ func (h *httpBackendClient) CallTool(
 	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, true)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -850,10 +1032,17 @@ func (h *httpBackendClient) CallTool(
 		}
 	}()
 
-	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
+	// Initialize the client and capture the backend's advertised capabilities.
+	serverCaps, err := initializeClient(ctx, c)
+	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
+
+	// When forwarders are bound and the backend advertises logging, request debug
+	// level so the backend emits notifications/message during the call; the
+	// notification forwarder relays them to the downstream client. Best-effort:
+	// a failure here must not fail the tool call.
+	h.enableBackendLogging(ctx, c, serverCaps, target.WorkloadID)
 
 	// Call the tool using the original capability name from the backend's perspective.
 	// When conflict resolution renames tools (e.g., "fetch" → "fetch_fetch"),
@@ -943,7 +1132,7 @@ func (h *httpBackendClient) ReadResource(
 	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -996,7 +1185,7 @@ func (h *httpBackendClient) GetPrompt(
 	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -1035,4 +1224,95 @@ func (h *httpBackendClient) GetPrompt(
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil
+}
+
+// Complete requests argument-completion candidates from the backend MCP server.
+// Returns an empty (non-nil) result when the backend does not advertise the
+// completions capability, matching the MCP spec's lenient completion semantics.
+func (h *httpBackendClient) Complete(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef,
+	argName, argValue string,
+	contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
+	slog.Debug("requesting completion from backend",
+		"ref_type", ref.Type, "backend", target.WorkloadName)
+
+	// Create a client for this backend
+	c, err := h.clientFactory(ctx, target, false)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			slog.Debug("failed to close client", "error", err)
+		}
+	}()
+
+	// Initialize the client and capture the backend's advertised capabilities.
+	serverCaps, err := initializeClient(ctx, c)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	}
+
+	// Backends that do not advertise completions cannot serve completion/complete;
+	// return an empty result rather than erroring (lenient completion semantics).
+	if serverCaps.Completions == nil {
+		slog.Debug("backend does not advertise completions capability, returning empty completion",
+			"backend", target.WorkloadID)
+		return &vmcp.CompletionResult{Values: []string{}}, nil
+	}
+
+	mcpRef, err := buildCompletionRef(target, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	params := mcp.CompleteParams{
+		Ref: mcpRef,
+		Argument: mcp.CompleteArgument{
+			Name:  argName,
+			Value: argValue,
+		},
+	}
+	if len(contextArgs) > 0 {
+		params.Context = &mcp.CompleteContext{Arguments: contextArgs}
+	}
+
+	result, err := c.Complete(ctx, mcp.CompleteRequest{Params: params})
+	if err != nil {
+		return nil, fmt.Errorf("completion failed on backend %s: %w", target.WorkloadID, err)
+	}
+
+	values := result.Completion.Values
+	if values == nil {
+		values = []string{}
+	}
+	return &vmcp.CompletionResult{
+		Values:  values,
+		Total:   result.Completion.Total,
+		HasMore: result.Completion.HasMore,
+	}, nil
+}
+
+// buildCompletionRef converts a domain CompletionRef into the mcp-go-shaped
+// PromptReference/ResourceReference the shim client expects. For a prompt ref the
+// name is translated to the backend's own capability name (mirroring GetPrompt);
+// for a resource ref the URI is passed through unchanged (mirroring ReadResource,
+// whose translation is the identity for non-renamed resources).
+func buildCompletionRef(target *vmcp.BackendTarget, ref vmcp.CompletionRef) (any, error) {
+	switch ref.Type {
+	case vmcp.CompletionRefTypePrompt:
+		backendName := target.GetBackendCapabilityName(ref.Name)
+		if backendName != ref.Name {
+			slog.Debug("translating prompt name for completion",
+				"client_name", ref.Name, "backend_name", backendName)
+		}
+		return mcp.PromptReference{Type: ref.Type, Name: backendName}, nil
+	case vmcp.CompletionRefTypeResource:
+		return mcp.ResourceReference{Type: ref.Type, URI: ref.URI}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported completion ref type %q", vmcp.ErrInvalidInput, ref.Type)
+	}
 }

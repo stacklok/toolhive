@@ -16,6 +16,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/llm"
@@ -959,6 +960,268 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				_, statErr := os.Stat(settingsPath)
 				Expect(os.IsNotExist(statErr)).To(BeTrue(),
 					"settings.json should not be created when OIDC login fails")
+			})
+		})
+
+		Describe("claude-desktop (credential-helper) setup and teardown", func() {
+			// Claude Desktop uses a configLibrary document + _meta.json selector and
+			// a credential-helper shim, not single-file JSON-pointer patching — so it
+			// gets its own assertions rather than the allClientTestCases matrix.
+			claudeDesktopPaths := func(root string) (appDir, configLib, shim string) {
+				if runtime.GOOS == osDarwin {
+					base := filepath.Join(root, "Library", "Application Support")
+					return filepath.Join(base, "Claude"),
+						filepath.Join(base, "Claude-3p", "configLibrary"),
+						filepath.Join(root, ".toolhive", "llm", "claude-desktop-helper.sh")
+				}
+				return filepath.Join(root, "Claude"),
+					filepath.Join(root, "Claude-3p", "configLibrary"),
+					filepath.Join(root, ".toolhive", "llm", "claude-desktop-helper.sh")
+			}
+
+			// readAppliedConfigDoc resolves _meta.json's appliedId to its config doc.
+			readAppliedConfigDoc := func(configLib string) (map[string]any, map[string]any) {
+				metaData, err := os.ReadFile(filepath.Join(configLib, "_meta.json"))
+				Expect(err).ToNot(HaveOccurred(), "_meta.json should exist after setup")
+				var meta map[string]any
+				Expect(json.Unmarshal(metaData, &meta)).To(Succeed())
+
+				appliedID, _ := meta["appliedId"].(string)
+				Expect(appliedID).ToNot(BeEmpty(), "appliedId should be set after setup")
+				docData, err := os.ReadFile(filepath.Join(configLib, appliedID+".json"))
+				Expect(err).ToNot(HaveOccurred(), "applied config document should exist")
+				var doc map[string]any
+				Expect(json.Unmarshal(docData, &doc)).To(Succeed())
+				return meta, doc
+			}
+
+			It("writes the config document, selector, and shim, then reverts them", func() {
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				appDir, configLib, shim := claudeDesktopPaths(tempDir)
+
+				By("creating the Claude Desktop app directory so detection succeeds")
+				Expect(os.MkdirAll(appDir, 0750)).To(Succeed())
+
+				By("running thv llm setup --client claude-desktop")
+				// Pin the Anthropic prefix so setup skips the network probe (fast,
+				// deterministic base URL).
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					thvCmd, oidcServer,
+					"--client", "claude-desktop",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+					"--anthropic-path-prefix", "/anthropic",
+					"--models", "claude-opus-4-8,claude-sonnet-4-6",
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+				Expect(stdout).To(ContainSubstring("quit"),
+					"setup should tell the user to relaunch Claude Desktop")
+
+				By("verifying the config document contents")
+				_, doc := readAppliedConfigDoc(configLib)
+				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
+				Expect(doc["inferenceCredentialKind"]).To(Equal("helper-script"))
+				Expect(doc["inferenceGatewayAuthScheme"]).To(Equal("bearer"))
+				Expect(doc["inferenceGatewayBaseUrl"]).To(Equal(gatewayURL + "/anthropic"))
+				Expect(doc["inferenceCredentialHelper"]).To(Equal(shim))
+				Expect(doc["inferenceModels"]).To(ConsistOf("claude-opus-4-8", "claude-sonnet-4-6"))
+
+				By("verifying the credential-helper shim is executable and calls thv llm token")
+				info, statErr := os.Stat(shim)
+				Expect(statErr).ToNot(HaveOccurred(), "shim should exist after setup")
+				Expect(info.Mode().Perm()&0100).ToNot(BeZero(), "shim should be executable")
+				shimData, readErr := os.ReadFile(shim)
+				Expect(readErr).ToNot(HaveOccurred())
+				Expect(string(shimData)).To(ContainSubstring("llm token"))
+
+				By("verifying config show lists claude-desktop in credential-helper mode")
+				showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				var cfg llm.Config
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				var found bool
+				for _, toolCfg := range cfg.ConfiguredTools {
+					if string(toolCfg.Tool) == "claude-desktop" {
+						found = true
+						Expect(toolCfg.Mode).To(Equal("credential-helper"))
+					}
+				}
+				Expect(found).To(BeTrue(), "claude-desktop should appear in ConfiguredTools")
+
+				By("running thv llm teardown claude-desktop")
+				thvCmd("llm", "teardown", "claude-desktop").ExpectSuccess()
+
+				By("verifying the config document and shim are removed and the selector cleared")
+				metaData, err := os.ReadFile(filepath.Join(configLib, "_meta.json"))
+				Expect(err).ToNot(HaveOccurred(), "_meta.json should still exist after teardown")
+				var meta map[string]any
+				Expect(json.Unmarshal(metaData, &meta)).To(Succeed())
+				Expect(meta["appliedId"]).To(Equal(""), "appliedId should be cleared after teardown")
+				Expect(meta["entries"]).To(BeEmpty(), "ToolHive entry should be removed after teardown")
+				_, shimStatErr := os.Stat(shim)
+				Expect(os.IsNotExist(shimStatErr)).To(BeTrue(), "shim should be deleted after teardown")
+
+				showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				cfg = llm.Config{}
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(BeEmpty(),
+					"ConfiguredTools should be empty after teardown")
+			})
+		})
+
+		Describe("codex (codex-auth) setup and teardown", func() {
+			// Codex's LLM gateway config lives in ~/.codex/config.toml, patched via a
+			// dedicated TOML writer (auth is a command/args table, not a JSON pointer
+			// key), so it gets its own assertions rather than the allClientTestCases
+			// matrix, which only understands JSON.
+			readCodexConfig := func(configPath string) map[string]any {
+				data, err := os.ReadFile(configPath)
+				Expect(err).ToNot(HaveOccurred(), "config.toml should exist")
+				var config map[string]any
+				Expect(toml.Unmarshal(data, &config)).To(Succeed())
+				return config
+			}
+
+			It("detects the macOS desktop app without CLI evidence", func() {
+				if runtime.GOOS != osDarwin {
+					Skip("Codex desktop detection is macOS-only")
+				}
+
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				configPath := filepath.Join(tempDir, ".codex", "config.toml")
+				plistPath := filepath.Join(tempDir, "Applications", "ChatGPT.app", "Contents", "Info.plist")
+				plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>`
+
+				By("creating only the ChatGPT desktop app bundle evidence")
+				Expect(os.MkdirAll(filepath.Dir(plistPath), 0750)).To(Succeed())
+				Expect(os.WriteFile(plistPath, []byte(plist), 0600)).To(Succeed())
+				_, err := os.Stat(filepath.Join(tempDir, ".codex"))
+				Expect(os.IsNotExist(err)).To(BeTrue(), ".codex must not exist before setup")
+				_, err = os.Stat(filepath.Join(binDir, "codex"))
+				Expect(os.IsNotExist(err)).To(BeTrue(), "no fake codex binary should exist")
+
+				// plutil is invoked by absolute path (/usr/bin/plutil) so it does
+				// not need to be on $PATH. The PATH is still restricted to exclude
+				// user-level package-manager paths that may contain a real Codex CLI.
+				appOnlyTHVCmd := func(args ...string) *e2e.THVCommand {
+					return thvCmd(args...).WithEnv("PATH=" + binDir + ":/usr/bin:/bin")
+				}
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					appOnlyTHVCmd, oidcServer,
+					"--client", "codex",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+				By("verifying app-only detection wrote the canonical Codex configuration")
+				config := readCodexConfig(configPath)
+				Expect(config["model_provider"]).To(Equal("toolhive-gateway"))
+				providers, ok := config["model_providers"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				provider, ok := providers["toolhive-gateway"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(provider["base_url"]).To(Equal(gatewayURL + "/v1"))
+				auth, ok := provider["auth"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(auth["command"]).ToNot(BeEmpty())
+				Expect(auth["args"]).To(Equal([]any{"llm", "token", "--skip-browser"}))
+
+				showOut, _ := appOnlyTHVCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				var cfg llm.Config
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(HaveLen(1))
+				Expect(string(cfg.ConfiguredTools[0].Tool)).To(Equal("codex"))
+				Expect(cfg.ConfiguredTools[0].Mode).To(Equal("codex-auth"))
+
+				By("tearing down and verifying the provider is removed")
+				appOnlyTHVCmd("llm", "teardown", "codex").ExpectSuccess()
+				config = readCodexConfig(configPath)
+				_, hasModelProvider := config["model_provider"]
+				Expect(hasModelProvider).To(BeFalse())
+				if providers, ok := config["model_providers"].(map[string]any); ok {
+					_, stillPresent := providers["toolhive-gateway"]
+					Expect(stillPresent).To(BeFalse())
+				}
+				showOut, _ = appOnlyTHVCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				cfg = llm.Config{}
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(BeEmpty())
+			})
+
+			It("writes the model_provider and auth command, then reverts them", func() {
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				codexDir := filepath.Join(tempDir, ".codex")
+				configPath := filepath.Join(codexDir, "config.toml")
+
+				By("creating the .codex directory and codex binary so detection succeeds")
+				Expect(os.MkdirAll(codexDir, 0750)).To(Succeed())
+				Expect(createFakeBinary(binDir, "codex")).To(Succeed())
+
+				By("running thv llm setup --client codex")
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					thvCmd, oidcServer,
+					"--client", "codex",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+				By("verifying config.toml contains the toolhive-gateway provider")
+				config := readCodexConfig(configPath)
+				Expect(config["model_provider"]).To(Equal("toolhive-gateway"))
+				providers, ok := config["model_providers"].(map[string]any)
+				Expect(ok).To(BeTrue(), "model_providers table should exist")
+				provider, ok := providers["toolhive-gateway"].(map[string]any)
+				Expect(ok).To(BeTrue(), "model_providers.toolhive-gateway table should exist")
+				Expect(provider["name"]).To(Equal("ToolHive Gateway"))
+				Expect(provider["base_url"]).To(Equal(gatewayURL + "/v1"))
+				Expect(provider["wire_api"]).To(Equal("responses"))
+
+				auth, ok := provider["auth"].(map[string]any)
+				Expect(ok).To(BeTrue(), "model_providers.toolhive-gateway.auth table should exist")
+				Expect(auth["command"]).ToNot(BeEmpty(), "auth.command should point at the thv executable")
+				args, ok := auth["args"].([]any)
+				Expect(ok).To(BeTrue(), "auth.args should be an array")
+				Expect(args).To(Equal([]any{"llm", "token", "--skip-browser"}))
+
+				By("verifying config show lists codex in codex-auth mode")
+				showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				var cfg llm.Config
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				var found bool
+				for _, toolCfg := range cfg.ConfiguredTools {
+					if string(toolCfg.Tool) == "codex" {
+						found = true
+						Expect(toolCfg.Mode).To(Equal("codex-auth"))
+					}
+				}
+				Expect(found).To(BeTrue(), "codex should appear in ConfiguredTools")
+
+				By("running thv llm teardown codex")
+				thvCmd("llm", "teardown", "codex").ExpectSuccess()
+
+				By("verifying model_provider and the toolhive-gateway table were removed")
+				config = readCodexConfig(configPath)
+				_, hasModelProvider := config["model_provider"]
+				Expect(hasModelProvider).To(BeFalse(), "model_provider should be cleared after teardown")
+				if providers, ok := config["model_providers"].(map[string]any); ok {
+					_, stillPresent := providers["toolhive-gateway"]
+					Expect(stillPresent).To(BeFalse(), "toolhive-gateway provider should be removed after teardown")
+				}
+
+				showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				cfg = llm.Config{}
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(BeEmpty(),
+					"ConfiguredTools should be empty after teardown")
 			})
 		})
 

@@ -146,7 +146,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	// Test cases
 	testCases := []struct {
 		name             string
-		policy           string
+		policies         []string
 		claims           jwt.MapClaims
 		feature          authorizers.MCPFeature
 		operation        authorizers.MCPOperation
@@ -156,7 +156,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	}{
 		{
 			name: "User with correct name can call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -165,7 +165,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "John Doe",
@@ -179,7 +179,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with incorrect name cannot call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -188,7 +188,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "Jane Smith",
@@ -202,7 +202,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Admin user can call any tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -211,7 +211,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_role == "admin"
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "admin123",
 				"name": "Admin User",
@@ -225,7 +225,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific argument value can call tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -234,7 +234,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.arg_operation == "add" && context.arg_value1 == 5
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -251,7 +251,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific role in array can access resource",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -260,7 +260,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_groups.contains("editor")
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":    "user123",
 				"name":   "John Doe",
@@ -274,7 +274,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource entity exposes name attribute for Cedar schema",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -283,7 +283,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.name == "sensitive_data"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -295,7 +295,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource entity retains uri attribute for backward compat",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -304,7 +304,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.uri == "sensitive_data"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -316,7 +316,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource name and uri attributes carry the same value",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -325,7 +325,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.name == resource.uri
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -337,13 +337,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can get prompt",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"get_prompt",
 				resource == Prompt::"greeting"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -357,13 +357,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list tools",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_tools",
 				resource == FeatureType::"tool"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -377,13 +377,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list prompts",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_prompts",
 				resource == FeatureType::"prompt"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -397,13 +397,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list resources",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_resources",
 				resource == FeatureType::"resource"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -414,6 +414,115 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			resourceID:       "",
 			arguments:        nil,
 			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access permitted when act claim matches SPIFFE ID pattern",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access denied when act claim has wrong SPIFFE ID",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://evil.example.com/ns/agents/sa/attacker",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Forbid delegated access to admin tools when act claim present",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Direct access to admin tools allowed when no act claim",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Policy with has operator does not match when act claim absent",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
 		},
 	}
 
@@ -426,7 +535,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 
 			// Create a Cedar authorizer
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
-				Policies:     []string{tc.policy},
+				Policies:     tc.policies,
 				EntitiesJSON: `[]`,
 			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
@@ -2462,6 +2571,205 @@ func TestAuthorizeWithJWTClaims_BackwardCompat(t *testing.T) {
 	}
 }
 
+// TestAuthorizeWithJWTClaims_MultiValuedClaimSets is the end-to-end proof that
+// both normalized surfaces work for both IdP shapes (array and space-delimited
+// string): the "claimset_<name>" Cedar Set for exact-element `.contains`/
+// `.containsAll` matching, and (in the containsAll subtest) that a missing
+// token correctly denies. It also proves `.contains` is exact-element — a
+// "Mail.ReadWrite" token does not satisfy a "Mail.Read" check.
+func TestAuthorizeWithJWTClaims_MultiValuedClaimSets(t *testing.T) {
+	t.Parallel()
+
+	newAuthorizerCtx := func(t *testing.T, scp interface{}) context.Context {
+		t.Helper()
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user1",
+				Claims: map[string]any{
+					"sub": "user1",
+					"scp": scp,
+				},
+			},
+		}
+		return auth.WithIdentity(context.Background(), identity)
+	}
+
+	t.Run("contains_exact_element_no_substring_bleed", func(t *testing.T) {
+		t.Parallel()
+
+		policy := `
+			permit(principal, action, resource)
+			when { context.claimset_scp.contains("Mail.Read") };
+		`
+		authorizer, err := NewCedarAuthorizer(ConfigOptions{
+			Policies:          []string{policy},
+			EntitiesJSON:      `[]`,
+			MultiValuedClaims: []string{"scp"},
+		}, "")
+		require.NoError(t, err)
+
+		tests := []struct {
+			name     string
+			scp      interface{}
+			wantAuth bool
+		}{
+			{
+				name:     "array_shaped_scp_permitted",
+				scp:      []interface{}{"User.Read.All", "Mail.Read"},
+				wantAuth: true,
+			},
+			{
+				name:     "string_shaped_scp_permitted",
+				scp:      "User.Read.All Mail.Read",
+				wantAuth: true,
+			},
+			{
+				name:     "substring_scope_not_matched",
+				scp:      []interface{}{"Mail.ReadWrite"},
+				wantAuth: false,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				authorized, err := authorizer.AuthorizeWithJWTClaims(
+					newAuthorizerCtx(t, tt.scp),
+					authorizers.MCPFeatureTool,
+					authorizers.MCPOperationCall,
+					"any-tool",
+					nil,
+				)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantAuth, authorized)
+			})
+		}
+	})
+
+	t.Run("contains_all_tokens", func(t *testing.T) {
+		t.Parallel()
+
+		policy := `
+			permit(principal, action, resource)
+			when { context.claimset_scp.containsAll(["User.Read.All", "Mail.Read"]) };
+		`
+		authorizer, err := NewCedarAuthorizer(ConfigOptions{
+			Policies:          []string{policy},
+			EntitiesJSON:      `[]`,
+			MultiValuedClaims: []string{"scp"},
+		}, "")
+		require.NoError(t, err)
+
+		tests := []struct {
+			name     string
+			scp      interface{}
+			wantAuth bool
+		}{
+			{
+				name:     "array_shaped_scp_has_both_tokens_permitted",
+				scp:      []interface{}{"User.Read.All", "Mail.Read", "Extra.Scope"},
+				wantAuth: true,
+			},
+			{
+				name:     "string_shaped_scp_has_both_tokens_permitted",
+				scp:      "User.Read.All Mail.Read",
+				wantAuth: true,
+			},
+			{
+				name:     "missing_one_token_denied",
+				scp:      []interface{}{"User.Read.All"},
+				wantAuth: false,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				authorized, err := authorizer.AuthorizeWithJWTClaims(
+					newAuthorizerCtx(t, tt.scp),
+					authorizers.MCPFeatureTool,
+					authorizers.MCPOperationCall,
+					"any-tool",
+					nil,
+				)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantAuth, authorized)
+			})
+		}
+	})
+
+	// principal_claimset_set proves the claimset_<name> Set also appears as a principal
+	// entity attribute, not just in the context — mirroring how claim_<name>
+	// is available on both surfaces.
+	t.Run("principal_claimset_set", func(t *testing.T) {
+		t.Parallel()
+
+		policy := `
+			permit(principal, action, resource)
+			when { principal.claimset_scp.contains("Mail.Read") };
+		`
+		authorizer, err := NewCedarAuthorizer(ConfigOptions{
+			Policies:          []string{policy},
+			EntitiesJSON:      `[]`,
+			MultiValuedClaims: []string{"scp"},
+		}, "")
+		require.NoError(t, err)
+
+		authorized, err := authorizer.AuthorizeWithJWTClaims(
+			newAuthorizerCtx(t, []interface{}{"User.Read.All", "Mail.Read"}),
+			authorizers.MCPFeatureTool,
+			authorizers.MCPOperationCall,
+			"any-tool",
+			nil,
+		)
+		require.NoError(t, err)
+		assert.True(t, authorized)
+	})
+}
+
+// TestAuthorizeWithJWTClaims_MultiValuedClaimsEmptyIsBackwardCompat verifies that
+// when MultiValuedClaims is unset, a whole-string equality policy on the claim
+// still matches — i.e. normalization is fully opt-in and byte-identical to the
+// pre-#5828 behavior when no claim names are listed.
+func TestAuthorizeWithJWTClaims_MultiValuedClaimsEmptyIsBackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	policy := `
+		permit(principal, action, resource)
+		when { context.claim_scp == "User.Read.All Mail.Read" };
+	`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: `[]`,
+		// MultiValuedClaims intentionally left unset.
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub": "user1",
+				"scp": "User.Read.All Mail.Read",
+			},
+		},
+	}
+	ctx := auth.WithIdentity(context.Background(), identity)
+
+	authorized, err := authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"any-tool",
+		nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, authorized, "unpadded whole-string equality must still match when MultiValuedClaims is unset")
+}
+
 // TestParseCedarEntityID tests the parseCedarEntityID helper function.
 func TestParseCedarEntityID(t *testing.T) {
 	t.Parallel()
@@ -2655,6 +2963,201 @@ func TestPreprocessClaims(t *testing.T) {
 			t.Parallel()
 			got := preprocessClaims(tt.claims)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestNormalizeMultiValuedClaims tests the normalizeMultiValuedClaims helper,
+// which rewrites listed claims to a canonical unpadded space-delimited string
+// so a single Cedar `like`/`==` policy matches regardless of whether the IdP
+// emitted the claim as a space-delimited string or a JSON array.
+func TestNormalizeMultiValuedClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		claims jwt.MapClaims
+		names  []string
+		want   jwt.MapClaims
+	}{
+		{
+			name:   "array_of_strings_joined_unpadded",
+			claims: jwt.MapClaims{"scp": []interface{}{"a", "b"}},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "a b"},
+		},
+		{
+			name:   "string_array_joined_unpadded",
+			claims: jwt.MapClaims{"scp": []string{"a", "b"}},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "a b"},
+		},
+		{
+			name:   "single_element_array_unpadded",
+			claims: jwt.MapClaims{"scp": []interface{}{"a"}},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "a"},
+		},
+		{
+			name:   "string_passthrough_unchanged",
+			claims: jwt.MapClaims{"scp": "a b"},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "a b"},
+		},
+		{
+			name:   "string_with_edge_and_internal_spaces_unchanged",
+			claims: jwt.MapClaims{"scp": "  a  b  "},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "  a  b  "},
+		},
+		{
+			name:   "empty_array_becomes_empty_string",
+			claims: jwt.MapClaims{"scp": []interface{}{}},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": ""},
+		},
+		{
+			name:   "absent_claim_stays_absent",
+			claims: jwt.MapClaims{"sub": "user1"},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"sub": "user1"},
+		},
+		{
+			name:   "claim_not_in_names_untouched",
+			claims: jwt.MapClaims{"scp": []interface{}{"a", "b"}, "sub": "user1"},
+			names:  []string{"scope"},
+			want:   jwt.MapClaims{"scp": []interface{}{"a", "b"}, "sub": "user1"},
+		},
+		{
+			name:   "non_string_elements_skipped",
+			claims: jwt.MapClaims{"scp": []interface{}{"a", 1, true}},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "a"},
+		},
+		{
+			name:   "nested_element_skipped",
+			claims: jwt.MapClaims{"scp": []interface{}{"a", []interface{}{"nested"}}},
+			names:  []string{"scp"},
+			want:   jwt.MapClaims{"scp": "a"},
+		},
+		{
+			name:   "empty_names_list_leaves_contents_identical",
+			claims: jwt.MapClaims{"scp": []interface{}{"a", "b"}, "sub": "user1"},
+			names:  nil,
+			want:   jwt.MapClaims{"scp": []interface{}{"a", "b"}, "sub": "user1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizeMultiValuedClaims(tt.claims, tt.names)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestAddMultiValuedClaimSets tests the addMultiValuedClaimSets helper, which
+// injects a bare "claimset_<name>" key holding the claim's elements as a []string
+// (converted to a Cedar Set downstream) — the companion to
+// normalizeMultiValuedClaims's "claim_<name>" string form.
+func TestAddMultiValuedClaimSets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		processed map[string]interface{}
+		raw       jwt.MapClaims
+		names     []string
+		want      map[string]interface{}
+	}{
+		{
+			name:      "array_claim_becomes_set",
+			processed: map[string]interface{}{"claim_scp": "a b"},
+			raw:       jwt.MapClaims{"scp": []interface{}{"a", "b"}},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "a b", "claimset_scp": []string{"a", "b"}},
+		},
+		{
+			name:      "string_claim_split_into_set",
+			processed: map[string]interface{}{"claim_scp": "a b"},
+			raw:       jwt.MapClaims{"scp": "a b"},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "a b", "claimset_scp": []string{"a", "b"}},
+		},
+		{
+			// Companion to normalizeMultiValuedClaims's verbatim passthrough:
+			// claim_scp keeps irregular spacing untouched, while claimset_scp
+			// collapses it via strings.Fields into exact elements.
+			name:      "multi_space_string_collapsed_into_set",
+			processed: map[string]interface{}{"claim_scp": "  a  b  "},
+			raw:       jwt.MapClaims{"scp": "  a  b  "},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "  a  b  ", "claimset_scp": []string{"a", "b"}},
+		},
+		{
+			name:      "empty_array_becomes_empty_set",
+			processed: map[string]interface{}{"claim_scp": ""},
+			raw:       jwt.MapClaims{"scp": []interface{}{}},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "", "claimset_scp": []string{}},
+		},
+		{
+			name:      "empty_string_becomes_empty_set",
+			processed: map[string]interface{}{"claim_scp": ""},
+			raw:       jwt.MapClaims{"scp": ""},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "", "claimset_scp": []string{}},
+		},
+		{
+			name:      "absent_claim_no_key_added",
+			processed: map[string]interface{}{"claim_sub": "user1"},
+			raw:       jwt.MapClaims{"sub": "user1"},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_sub": "user1"},
+		},
+		{
+			name:      "claim_not_in_names_no_key_added",
+			processed: map[string]interface{}{"claim_scp": "a b"},
+			raw:       jwt.MapClaims{"scp": []interface{}{"a", "b"}},
+			names:     []string{"scope"},
+			want:      map[string]interface{}{"claim_scp": "a b"},
+		},
+		{
+			name:      "non_string_elements_skipped",
+			processed: map[string]interface{}{"claim_scp": "a"},
+			raw:       jwt.MapClaims{"scp": []interface{}{"a", 1, true}},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "a", "claimset_scp": []string{"a"}},
+		},
+		{
+			name:      "nested_element_skipped",
+			processed: map[string]interface{}{"claim_scp": "a"},
+			raw:       jwt.MapClaims{"scp": []interface{}{"a", []interface{}{"nested"}}},
+			names:     []string{"scp"},
+			want:      map[string]interface{}{"claim_scp": "a", "claimset_scp": []string{"a"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			addMultiValuedClaimSets(tt.processed, tt.raw, tt.names)
+			assert.Equal(t, tt.want, tt.processed)
+
+			// The injected key must be bare "claimset_<name>", never
+			// "claim_claimset_<name>" — it must not be reachable via the
+			// claim_-prefix path.
+			for _, name := range tt.names {
+				_, hadRaw := tt.raw[name]
+				if !hadRaw {
+					continue
+				}
+				_, hasBareKey := tt.processed["claimset_"+name]
+				_, hasWrongKey := tt.processed["claim_claimset_"+name]
+				assert.True(t, hasBareKey, "expected bare claimset_%s key", name)
+				assert.False(t, hasWrongKey, "must not add claim_claimset_%s", name)
+			}
 		})
 	}
 }
@@ -2871,6 +3374,51 @@ func TestConfigOptionsRoleClaimNameJSON(t *testing.T) {
 					"empty RoleClaimName must be omitted from JSON output")
 			} else {
 				assert.Contains(t, string(marshalled), "role_claim_name")
+			}
+		})
+	}
+}
+
+// TestConfigOptionsMultiValuedClaimsJSON verifies JSON marshal/unmarshal of the
+// MultiValuedClaims field, including backward compatibility when the field is absent.
+func TestConfigOptionsMultiValuedClaimsJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		jsonInput     string
+		want          []string
+		wantOmitOnMar bool // when true, marshal output must NOT contain "multi_valued_claims"
+	}{
+		{
+			name:      "present",
+			jsonInput: `{"policies":["permit(principal,action,resource);"],"multi_valued_claims":["scp","scope"]}`,
+			want:      []string{"scp", "scope"},
+		},
+		{
+			name:          "absent_gives_nil",
+			jsonInput:     `{"policies":["permit(principal,action,resource);"]}`,
+			want:          nil,
+			wantOmitOnMar: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts ConfigOptions
+			err := json.Unmarshal([]byte(tt.jsonInput), &opts)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, opts.MultiValuedClaims)
+
+			marshalled, err := json.Marshal(opts)
+			require.NoError(t, err)
+			if tt.wantOmitOnMar {
+				assert.NotContains(t, string(marshalled), "multi_valued_claims",
+					"empty MultiValuedClaims must be omitted from JSON output")
+			} else {
+				assert.Contains(t, string(marshalled), "multi_valued_claims")
 			}
 		})
 	}

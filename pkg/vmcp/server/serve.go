@@ -9,9 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -63,13 +62,13 @@ type ServerConfig struct {
 	// SessionTTL is the session time-to-live duration (default: 30 minutes).
 	SessionTTL time.Duration
 
+	// HeartbeatInterval configures the SSE keep-alive ping interval on GET
+	// connections (default: 30s when zero).
+	HeartbeatInterval time.Duration
+
 	// AuthMiddleware is the optional authentication middleware applied to MCP routes.
 	// If nil, no authentication is required.
 	AuthMiddleware func(http.Handler) http.Handler
-
-	// RateLimitMiddleware is the optional rate-limit middleware to apply after
-	// authentication and MCP request parsing.
-	RateLimitMiddleware func(http.Handler) http.Handler
 
 	// AuthInfoHandler is the optional handler for the
 	// /.well-known/oauth-protected-resource endpoint.
@@ -213,15 +212,43 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// the mcp-go server for the same reason).
 	hooks := &server.Hooks{}
 
+	// The completion handler is a single global handler (unlike the per-session
+	// tool/resource/prompt handlers), so it is wired here at construction. It closes
+	// over the late-assigned srv — safe because WithCompletionHandler only stores the
+	// handler; it is invoked at request time, always after srv is assigned below. This
+	// mirrors the hooks' close-over-srv pattern. Setting the handler makes the shim
+	// auto-advertise the completions capability at initialize.
+	var srv *Server
+	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
+		return srv.coreCompletionHandler(ctx, req)
+	}
+
+	// Resource subscribe/unsubscribe handlers, wired here alongside the completion
+	// handler for the same close-over-late-srv reason. They accept the subscription
+	// at ack level (enforce session binding, validate the URI is an advertised,
+	// admitted resource) and return nil so go-sdk records it; vMCP does NOT forward
+	// backend resources/updated notifications yet (see coreSubscribeHandler and the
+	// architecture doc's subscription note).
+	subscribeHandler := func(ctx context.Context, uri string) error {
+		return srv.coreSubscribeHandler(ctx, "resources/subscribe", uri)
+	}
+	unsubscribeHandler := func(ctx context.Context, uri string) error {
+		return srv.coreSubscribeHandler(ctx, "resources/unsubscribe", uri)
+	}
+
 	// Build the mcp-go server (mirrors server.New): tools and resources are
-	// registered dynamically, so capabilities start disabled.
+	// registered dynamically, so capabilities start disabled — except resources,
+	// which advertise subscribe support so spec-compliant clients issue
+	// resources/subscribe (the handlers above answer it at ack level).
 	mcpServer := server.NewMCPServer(
 		serveCfg.Name,
 		serveCfg.Version,
 		server.WithToolCapabilities(false),
-		server.WithResourceCapabilities(false, false),
+		server.WithResourceCapabilities(true, false),
 		server.WithLogging(),
 		server.WithHooks(hooks),
+		server.WithCompletionHandler(completionHandler),
+		server.WithSubscribeHandlers(subscribeHandler, unsubscribeHandler),
 	)
 
 	// Two-phase session-creation wiring (relocated from server.New). The pluggable
@@ -253,7 +280,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
 	sessionManager := transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
 
-	srv := &Server{
+	srv = &Server{
 		config:             serveCfg,
 		core:               v,
 		mcpServer:          mcpServer,
@@ -331,8 +358,8 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		Port:                    cfg.Port,
 		EndpointPath:            cfg.EndpointPath,
 		SessionTTL:              cfg.SessionTTL,
+		HeartbeatInterval:       cfg.HeartbeatInterval,
 		AuthMiddleware:          cfg.AuthMiddleware,
-		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,

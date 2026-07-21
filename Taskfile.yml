@@ -215,6 +215,24 @@ tasks:
       - task: test-integration-windows
         platforms: [windows]
 
+  conformance:
+    desc: Run the MCP conformance suite against a `thv run` deployment (requires Docker + Node)
+    deps: [build]
+    env:
+      THV_BINARY: "{{.PWD}}/bin/thv"
+      CONFORMANCE_TARGET: '{{.CONFORMANCE_TARGET | default "proxy"}}'
+    cmds:
+      - ./test/conformance/run-conformance.sh
+
+  conformance-vmcp:
+    desc: Run the MCP conformance suite against a `thv vmcp serve` deployment (requires Docker + Node)
+    deps: [build]
+    env:
+      THV_BINARY: "{{.PWD}}/bin/thv"
+      CONFORMANCE_TARGET: vmcp
+    cmds:
+      - ./test/conformance/run-conformance.sh
+
   test-all:
     desc: Run all tests (unit, integration, and e2e)
     deps: [test, test-integration, test-e2e]

@@ -222,8 +222,25 @@ func (c *Client) DeployWorkload(
 		networkName: {},
 	}
 
+	// Network isolation is only enforceable in bridge mode. For non-bridge
+	// modes (host/none/custom) the sidecars have no route out and the workload
+	// bypasses them, so isolation must be dropped. See issue #5775.
+	effectiveIsolation := isolateNetwork && networking.IsBridgeMode(permissionConfig.NetworkMode)
+	if isolateNetwork && !effectiveIsolation {
+		if permissionConfig.NetworkMode == "none" {
+			// "none" is already maximally confined; isolation is merely redundant.
+			//nolint:gosec // G706: network mode from permission config
+			slog.Debug(networking.NetworkIsolationNoneRedundantMsg, "network_mode", permissionConfig.NetworkMode)
+		} else {
+			// host (or other non-bridge) is less restrictive than isolation, so
+			// dropping it is a real reduction in confinement.
+			//nolint:gosec // G706: network mode from permission config
+			slog.Warn(networking.NetworkIsolationHostDroppedMsg, "network_mode", permissionConfig.NetworkMode)
+		}
+	}
+
 	// Only create external networks and add endpoints if we're not using a custom network mode like "host" or "none"
-	if permissionConfig.NetworkMode == "" || permissionConfig.NetworkMode == "bridge" || permissionConfig.NetworkMode == "default" {
+	if networking.IsBridgeMode(permissionConfig.NetworkMode) {
 		// Add toolhive-external to endpoints config for default networking modes
 		externalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
 
@@ -237,7 +254,7 @@ func (c *Client) DeployWorkload(
 	}
 
 	networkIsolation := false
-	if isolateNetwork {
+	if effectiveIsolation {
 		networkIsolation = true
 
 		internalNetworkLabels := map[string]string{}
@@ -303,7 +320,7 @@ func (c *Client) DeployWorkload(
 		additionalDNS,
 		options.ExposedPorts,
 		newPortBindings,
-		isolateNetwork,
+		effectiveIsolation,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create mcp container: %w", err)
@@ -318,7 +335,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, err // extractFirstPort already wraps the error with context.
 	}
-	if isolateNetwork {
+	if effectiveIsolation {
 		// just extract the first exposed port
 		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig,
 			permissionProfile.Network)
@@ -1568,7 +1585,7 @@ func (c *Client) createMcpContainer(
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
 
 	// Check if we have a custom network mode (e.g., "host", "none", etc.)
-	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
+	if !networking.IsBridgeMode(permissionConfig.NetworkMode) {
 		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
 		// The NetworkMode in hostConfig will handle the networking
 		//nolint:gosec // G706: network mode from permission config

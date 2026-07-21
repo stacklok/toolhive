@@ -340,25 +340,25 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Note: Tools from unhealthy backends excluded by discovery middleware")
+		By("Note: Tools from unhealthy backends excluded during core capability aggregation")
 		// NOTE: This e2e test verifies the circuit breaker state changes (above assertions).
-		// The capability filtering itself is thoroughly unit tested in the discovery middleware.
+		// The capability filtering itself is thoroughly unit tested in the vMCP core.
 		//
 		// Full end-to-end verification of tools/list filtering would require:
 		// 1. Making an HTTP request to the vMCP server
 		// 2. Implementing MCP protocol initialize handshake
 		// 3. Calling tools/list and parsing the response
 		//
-		// The filtering logic is implemented in pkg/vmcp/discovery/middleware.go:filterHealthyBackends()
-		// and covered by unit tests in middleware_test.go (TestFilterHealthyBackends,
-		// TestFilterHealthyBackends_WithHealthMonitor).
+		// The filtering logic is implemented in pkg/vmcp/core/core_vmcp.go:filterHealthyBackends()
+		// and covered by unit tests in core_vmcp_test.go (TestFilterHealthyBackends,
+		// TestFilterHealthyBackends_Empty).
 		//
 		// How it works:
 		// - When backend circuit breaker opens → health monitor marks backend unhealthy
-		// - Discovery middleware queries health monitor via StatusProvider interface
-		// - handleInitializeRequest filters unhealthy backends before aggregation
+		// - The core queries the health monitor via the StatusProvider interface
+		// - filterHealthyBackends excludes unhealthy backends before capability aggregation
 		// - Only healthy/degraded backends' tools appear in tools/list response
-		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/discovery/middleware_test.go\n")
+		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/core/core_vmcp_test.go\n")
 		GinkgoWriter.Printf("   Circuit breaker state verified above; capability filtering covered by unit tests\n")
 	})
 

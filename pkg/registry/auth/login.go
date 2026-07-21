@@ -290,7 +290,10 @@ func ConfigureOAuth(
 	discoveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	if _, err := oauth.DiscoverOIDCEndpoints(discoveryCtx, issuer); err != nil {
+	// blockPrivateIPs=false preserves this call path's existing behavior:
+	// issuer is an operator-supplied flag here, not remote-server-derived
+	// discovery input, unlike the CLI DCR flow's use of DiscoverOIDCEndpoints.
+	if _, err := oauth.DiscoverOIDCEndpoints(discoveryCtx, issuer, false); err != nil {
 		return nil, fmt.Errorf("OIDC discovery failed for issuer %s: %w", issuer, err)
 	}
 

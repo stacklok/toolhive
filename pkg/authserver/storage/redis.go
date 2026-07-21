@@ -107,16 +107,14 @@ type storedSession struct {
 
 // NewRedisStorage creates Redis-backed storage. Connection-mode topology,
 // timeouts, TLS, and credentials are configured through cfg; keyPrefix is the
-// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:"). The auth server
-// requires ACL authentication, so cfg.Password and keyPrefix must be non-empty.
+// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:") and must be non-empty.
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
-// delegated to the shared toolhive-core redis package.
+// delegated to the shared toolhive-core redis package. cfg.Password may be
+// empty when the Redis server does not require authentication (the auth server
+// does not mandate ACL auth); the keyPrefix is storage-specific and required.
 func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) (*RedisStorage, error) {
-	if cfg.Password == "" {
-		return nil, errors.New("invalid redis configuration: ACL password is required")
-	}
 	if keyPrefix == "" {
 		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}
@@ -1044,6 +1042,48 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	return nil
 }
 
+// DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
+// leaving sibling providers' rows intact. Absent row returns nil.
+func (s *RedisStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
+	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+
+	// Best-effort: read UserID for reverse-index cleanup before deleting.
+	var userID string
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err == nil && string(data) != nullMarker {
+		var stored storedUpstreamTokens
+		if unmarshalErr := json.Unmarshal(data, &stored); unmarshalErr == nil {
+			userID = stored.UserID
+		}
+	}
+	// redis.Nil (key absent) or any error on GET: skip user-index cleanup gracefully.
+
+	// Del returns count 0 on absent key — treat as nil (not ErrNotFound).
+	if delErr := s.client.Del(ctx, key).Err(); delErr != nil {
+		return fmt.Errorf("failed to delete upstream tokens for provider: %w", delErr)
+	}
+
+	// Best-effort secondary index cleanup — leave sibling members in idxKey intact.
+	// If this was the last provider for the session, the set becomes empty and
+	// expires by its own TTL; we do not delete the set key itself (intentional,
+	// matching the best-effort cleanup posture of DeleteUpstreamTokens).
+	warnOnCleanupErr(s.client.SRem(ctx, idxKey, key).Err(), "SRem", idxKey)
+	if userID != "" {
+		userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID)
+		warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, key).Err(), "SRem", userUpstreamSetKey)
+	}
+
+	return nil
+}
+
 // GetLatestUpstreamTokensForUser returns the upstream token row for (userID, providerID)
 // with the highest ExpiresAt across all sessions.
 //
@@ -1206,6 +1246,7 @@ type storedDCRCredentials struct {
 	// Embed the canonical key so a row recovered without its lookup key
 	// (e.g. via SCAN during diagnostics) still self-identifies.
 	KeyIssuer      string `json:"key_issuer"`
+	KeyUpstreamID  string `json:"key_upstream_id"`
 	KeyRedirectURI string `json:"key_redirect_uri"`
 	KeyScopesHash  string `json:"key_scopes_hash"`
 
@@ -1242,6 +1283,7 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 	return &DCRCredentials{
 		Key: DCRKey{
 			Issuer:      s.KeyIssuer,
+			UpstreamID:  s.KeyUpstreamID,
 			RedirectURI: s.KeyRedirectURI,
 			ScopesHash:  s.KeyScopesHash,
 		},
@@ -1288,6 +1330,7 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 
 	stored := storedDCRCredentials{
 		KeyIssuer:               creds.Key.Issuer,
+		KeyUpstreamID:           creds.Key.UpstreamID,
 		KeyRedirectURI:          creds.Key.RedirectURI,
 		KeyScopesHash:           creds.Key.ScopesHash,
 		ProviderName:            creds.ProviderName,
@@ -1335,7 +1378,7 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.
 //
-// An unpopulated key (empty Issuer, RedirectURI, or ScopesHash) cannot match
+// An unpopulated key (empty Issuer, UpstreamID, RedirectURI, or ScopesHash) cannot match
 // any stored row because StoreDCRCredentials rejects such keys, so a Get
 // against one is a normal miss — ErrNotFound — matching
 // MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.
@@ -1377,6 +1420,8 @@ type storedPendingAuthorization struct {
 	ResolvedUserID       string   `json:"resolved_user_id,omitempty"`
 	ResolvedUserName     string   `json:"resolved_user_name,omitempty"`
 	ResolvedUserEmail    string   `json:"resolved_user_email,omitempty"`
+	SingleLeg            bool     `json:"single_leg,omitempty"`
+	ChainUpstreams       []string `json:"chain_upstreams,omitempty"`
 	CreatedAt            int64    `json:"created_at"`
 }
 
@@ -1406,6 +1451,8 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt.Unix(),
 	}
 
@@ -1456,6 +1503,8 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		ResolvedUserID:       stored.ResolvedUserID,
 		ResolvedUserName:     stored.ResolvedUserName,
 		ResolvedUserEmail:    stored.ResolvedUserEmail,
+		SingleLeg:            stored.SingleLeg,
+		ChainUpstreams:       slices.Clone(stored.ChainUpstreams),
 		CreatedAt:            createdAt,
 	}, nil
 }

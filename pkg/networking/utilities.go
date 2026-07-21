@@ -4,6 +4,7 @@
 package networking
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +14,43 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// TargetIsPrivate reports whether the host in rawURL refers to — or resolves to —
+// a private, loopback, or link-local address. It is used to detect when an
+// operator has deliberately pointed ToolHive at an internal target, so that
+// discovery fetches derived from untrusted server input may also be allowed to
+// reach internal addresses for that deployment.
+//
+// IP literals and "localhost" are classified without DNS. Hostnames are resolved
+// and reported private if ANY resolved address is private. Unparsable input or
+// resolution failure returns false (treat as public — the SSRF guard then stays
+// engaged, failing secure).
+func TargetIsPrivate(ctx context.Context, rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if IsLocalhost(host) {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return IsPrivateIP(ip)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if IsPrivateIP(a.IP) {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	// ErrPrivateIpAddress is the error returned when the provided URL redirects to a private IP address
@@ -242,6 +280,30 @@ func IsLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
+}
+
+// Network isolation log messages. Network isolation is only functional in bridge
+// mode; host/none/custom network modes bypass the isolation sidecars entirely, so
+// isolation must be dropped for them. These constants are shared across the config
+// build, config load, and deploy paths so the wording cannot drift.
+const (
+	// NetworkIsolationHostDroppedMsg is logged at WARN when isolation was requested
+	// but is dropped because the network mode (host/custom) cannot enforce it.
+	// Dropping isolation here is a real reduction in confinement.
+	NetworkIsolationHostDroppedMsg = "network isolation is not enforced with host/custom networking; " +
+		"disabling isolation for this workload (pass --isolate-network=false to opt out explicitly and silence this warning)"
+	// NetworkIsolationNoneRedundantMsg is logged at DEBUG when isolation is dropped
+	// for the "none" network mode, where it is merely redundant (already maximally confined).
+	NetworkIsolationNoneRedundantMsg = "network isolation is redundant with none networking; " +
+		"disabling isolation for this workload"
+)
+
+// IsBridgeMode reports whether the given network mode is a bridge-style mode
+// (""/"bridge"/"default"). Network isolation is only functional in bridge mode:
+// it builds a per-workload internal network plus DNS/egress/ingress sidecars, and
+// host/none/custom modes bypass those sidecars entirely.
+func IsBridgeMode(mode string) bool {
+	return mode == "" || mode == "bridge" || mode == "default"
 }
 
 // IsURL checks if the input is a valid HTTP or HTTPS URL

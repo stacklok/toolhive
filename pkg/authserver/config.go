@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -62,6 +64,11 @@ type RunConfig struct {
 	// If nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
 	TokenLifespans *TokenLifespanRunConfig `json:"token_lifespans,omitempty" yaml:"token_lifespans,omitempty"`
 
+	// DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+	// via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
+	// If empty, defaults to 15 minutes.
+	DelegationTokenLifespan string `json:"delegation_token_lifespan,omitempty" yaml:"delegation_token_lifespan,omitempty"`
+
 	// Upstreams configures connections to upstream Identity Providers.
 	// At least one upstream is required - the server delegates authentication to these providers.
 	// Multiple upstreams are supported for sequential authorization chains.
@@ -104,6 +111,12 @@ type RunConfig struct {
 	// embedded authorization server accepts HTTPS URLs as client_id values
 	// and resolves them via the CIMD protocol instead of requiring DCR.
 	CIMD *CIMDRunConfig `json:"cimd,omitempty" yaml:"cimd,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments on a trusted network.
+	// Production deployments reachable outside the cluster MUST use https://.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -230,6 +243,17 @@ func ResolveUpstreamName(name string) string {
 	return name
 }
 
+// ResolveFirstUpstreamName returns the resolved name of the first element of
+// names, or DefaultUpstreamName when names is empty. It is the single
+// implementation of the "first upstream or default" pattern used wherever a
+// subject-provider name must be derived from a list of configured upstreams.
+func ResolveFirstUpstreamName(names []string) string {
+	if len(names) > 0 {
+		return ResolveUpstreamName(names[0])
+	}
+	return DefaultUpstreamName
+}
+
 // upstreamNameRegex validates upstream provider names.
 // Names must be DNS-label-like to prevent delimiter injection in storage keys.
 var upstreamNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -291,6 +315,25 @@ type OIDCUpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
+	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
+	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
+
+	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
+	// connect to private IP ranges (RFC-1918, link-local). Use only when the
+	// upstream is hosted inside the same cluster and has no public endpoint.
+	// HTTP-scheme restrictions are unchanged — HTTPS is still required for
+	// non-localhost hosts. Defaults to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+
+	// InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
+	// endpoints for this upstream. Only for in-cluster development environments
+	// (e.g. Dex served over HTTP in a kind cluster) where TLS is not available.
+	// Never set this in production.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.
@@ -355,6 +398,24 @@ type OAuth2UpstreamRunConfig struct {
 	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
 	// Mutually exclusive with ClientID.
 	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). When DCRConfig is set, this
+	// also gates the DCR discovery and registration calls made on this
+	// upstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a
+	// single flag covers the whole upstream rather than needing a separate
+	// DCR-specific setting. Use only when the upstream is hosted inside the
+	// same cluster and has no public endpoint. HTTP-scheme restrictions are
+	// unchanged — HTTPS is still required for non-localhost hosts. Defaults
+	// to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+
+	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+	// for this upstream. Only for in-cluster development environments (e.g. an
+	// OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+	// available. Never set this in production.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
@@ -561,10 +622,23 @@ type Config struct {
 	// If zero, defaults to 10 minutes.
 	AuthCodeLifespan time.Duration
 
+	// DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+	// via RFC 8693 token exchange. The actual lifetime is the minimum of this value
+	// and the subject token's remaining lifetime. If zero, defaults to 15 minutes.
+	DelegationTokenLifespan time.Duration
+
 	// Upstreams contains configurations for connecting to upstream IDPs.
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
+
+	// UpstreamFilter, when set, narrows the upstream authorization chain after the
+	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
+	// configured upstreams are walked — the current behavior. Pass nil itself,
+	// not a nil-valued concrete pointer implementing UpstreamFilter — a typed-nil
+	// interface value is non-nil and will still be wired in. Has no effect with
+	// fewer than 2 configured upstreams; Validate rejects that combination.
+	UpstreamFilter handlers.UpstreamFilter
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// If nil or empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
@@ -606,18 +680,23 @@ type Config struct {
 	// (Cache-Control header parsing is not yet implemented). Zero is replaced by
 	// a default (5 minutes) in applyDefaults when CIMDEnabled is true.
 	CIMDCacheFallbackTTL time.Duration
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments on a trusted network.
+	// Production deployments reachable outside the cluster MUST use https://.
+	InsecureAllowHTTP bool
 }
 
 // Validate checks that the Config is valid.
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
-	if err := validateIssuerURL(c.Issuer); err != nil {
+	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
 		return fmt.Errorf("issuer: %w", err)
 	}
 
 	if c.AuthorizationEndpointBaseURL != "" {
-		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL); err != nil {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
 		}
 	}
@@ -632,6 +711,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateUpstreams(); err != nil {
+		return err
+	}
+
+	if err := c.validateUpstreamFilter(); err != nil {
 		return err
 	}
 
@@ -658,17 +741,48 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.CIMDEnabled && c.CIMDCacheMaxSize < 1 {
-		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	if err := c.validateCIMDBounds(); err != nil {
+		return err
 	}
-	if c.CIMDEnabled && c.CIMDCacheFallbackTTL < 0 {
-		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
+
+	if err := c.validateDelegationTokenLifespan(); err != nil {
+		return err
 	}
 
 	slog.Debug("authserver config validation passed",
 		"issuer", c.Issuer,
 		"upstream_count", len(c.Upstreams),
 	)
+	return nil
+}
+
+// validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.
+// When CIMD is disabled the cache fields are ignored.
+func (c *Config) validateCIMDBounds() error {
+	if !c.CIMDEnabled {
+		return nil
+	}
+	if c.CIMDCacheMaxSize < 1 {
+		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	}
+	if c.CIMDCacheFallbackTTL < 0 {
+		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
+	}
+	return nil
+}
+
+// validateDelegationTokenLifespan rejects negative or excessively long delegation
+// token lifespans. Capped at oauthserver.MaxAccessTokenLifespan (the same ceiling
+// the token-exchange Factory enforces) so validation and construction agree on a
+// single source of truth — delegated tokens should be short-lived. Zero is
+// accepted; applyDefaults substitutes the default.
+func (c *Config) validateDelegationTokenLifespan() error {
+	if c.DelegationTokenLifespan < 0 {
+		return fmt.Errorf("delegation token lifespan must not be negative")
+	}
+	if c.DelegationTokenLifespan > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegation token lifespan must not exceed %v", oauthserver.MaxAccessTokenLifespan)
+	}
 	return nil
 }
 
@@ -794,11 +908,23 @@ func (c *Config) validateUpstreams() error {
 		}
 		seenNames[up.Name] = true
 
-		if err := validateUpstreamType(up); err != nil {
+		if err := validateUpstreamType(up, c.InsecureAllowHTTP); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+// validateUpstreamFilter rejects an UpstreamFilter configured with fewer than
+// 2 upstreams. handlers.computeChain consults the filter only when there is a
+// non-first upstream to narrow, so with a single upstream the filter would
+// silently never be invoked; this fails loudly instead of letting it no-op
+// without any indication to the caller.
+func (c *Config) validateUpstreamFilter() error {
+	if c.UpstreamFilter != nil && len(c.Upstreams) < 2 {
+		return fmt.Errorf("upstream_filter is configured but has no effect with fewer than 2 upstreams")
+	}
 	return nil
 }
 
@@ -833,7 +959,7 @@ func (c *Config) validateUpstreamName(i int, up *UpstreamConfig) error {
 }
 
 // validateUpstreamType validates the provider type and its type-specific config.
-func validateUpstreamType(up *UpstreamConfig) error {
+func validateUpstreamType(up *UpstreamConfig, insecureAllowHTTP bool) error {
 	switch up.Type {
 	case UpstreamProviderTypeOIDC:
 		if up.OIDCConfig == nil {
@@ -842,7 +968,7 @@ func validateUpstreamType(up *UpstreamConfig) error {
 		if up.OAuth2Config != nil {
 			return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
 		}
-		if err := up.OIDCConfig.Validate(); err != nil {
+		if err := up.OIDCConfig.ValidateWithInsecure(insecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
 	case UpstreamProviderTypeOAuth2:
@@ -852,7 +978,7 @@ func validateUpstreamType(up *UpstreamConfig) error {
 		if up.OIDCConfig != nil {
 			return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
 		}
-		if err := up.OAuth2Config.Validate(); err != nil {
+		if err := up.OAuth2Config.ValidateWithInsecure(insecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
 	default:
@@ -876,6 +1002,10 @@ func (c *Config) applyDefaults() error {
 	if c.AuthCodeLifespan == 0 {
 		c.AuthCodeLifespan = 10 * time.Minute
 		slog.Debug("applied default auth code lifespan", "duration", c.AuthCodeLifespan)
+	}
+	if c.DelegationTokenLifespan == 0 {
+		c.DelegationTokenLifespan = 15 * time.Minute
+		slog.Debug("applied default delegation token lifespan", "duration", c.DelegationTokenLifespan)
 	}
 	if c.HMACSecrets == nil {
 		secret := make([]byte, servercrypto.MinSecretLength)
@@ -909,7 +1039,9 @@ func (c *Config) applyDefaults() error {
 // validateIssuerURL validates that the issuer is a valid URL.
 // Per OIDC Core Section 3.1.2.1 and RFC 8414 Section 2, the issuer
 // MUST use the "https" scheme, except for localhost during development.
-func validateIssuerURL(issuer string) error {
+// When insecureAllowHTTP is true, http:// is also permitted for non-localhost
+// hosts (for in-cluster Kubernetes deployments on trusted networks).
+func validateIssuerURL(issuer string, insecureAllowHTTP bool) error {
 	if issuer == "" {
 		return fmt.Errorf("issuer is required")
 	}
@@ -935,12 +1067,13 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("must not contain fragment component")
 	}
 
-	// HTTPS is required unless it's a loopback address (for development)
+	// HTTPS is required unless it's a loopback address (for development) or
+	// insecureAllowHTTP is explicitly set for trusted in-cluster deployments.
 	if parsed.Scheme != "https" {
 		if parsed.Scheme != "http" {
 			return fmt.Errorf("scheme must be https (or http for localhost)")
 		}
-		if !networking.IsLocalhost(parsed.Host) {
+		if !networking.IsLocalhost(parsed.Host) && !insecureAllowHTTP {
 			return fmt.Errorf("http scheme is only allowed for localhost, use https for %s", parsed.Hostname())
 		}
 	}

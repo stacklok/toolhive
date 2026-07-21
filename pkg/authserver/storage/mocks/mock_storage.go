@@ -272,6 +272,20 @@ func (mr *MockUpstreamTokenStorageMockRecorder) DeleteUpstreamTokens(ctx, sessio
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).DeleteUpstreamTokens), ctx, sessionID)
 }
 
+// DeleteUpstreamTokensForProvider mocks base method.
+func (m *MockUpstreamTokenStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteUpstreamTokensForProvider", ctx, sessionID, providerName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteUpstreamTokensForProvider indicates an expected call of DeleteUpstreamTokensForProvider.
+func (mr *MockUpstreamTokenStorageMockRecorder) DeleteUpstreamTokensForProvider(ctx, sessionID, providerName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokensForProvider", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).DeleteUpstreamTokensForProvider), ctx, sessionID, providerName)
+}
+
 // GetAllUpstreamTokens mocks base method.
 func (m *MockUpstreamTokenStorage) GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
@@ -699,6 +713,20 @@ func (m *MockStorage) DeleteUpstreamTokens(ctx context.Context, sessionID string
 func (mr *MockStorageMockRecorder) DeleteUpstreamTokens(ctx, sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).DeleteUpstreamTokens), ctx, sessionID)
+}
+
+// DeleteUpstreamTokensForProvider mocks base method.
+func (m *MockStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteUpstreamTokensForProvider", ctx, sessionID, providerName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteUpstreamTokensForProvider indicates an expected call of DeleteUpstreamTokensForProvider.
+func (mr *MockStorageMockRecorder) DeleteUpstreamTokensForProvider(ctx, sessionID, providerName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokensForProvider", reflect.TypeOf((*MockStorage)(nil).DeleteUpstreamTokensForProvider), ctx, sessionID, providerName)
 }
 
 // DeleteUser mocks base method.

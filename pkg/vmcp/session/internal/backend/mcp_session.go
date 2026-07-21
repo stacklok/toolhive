@@ -12,10 +12,9 @@ import (
 	"net/http"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -24,6 +23,7 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
 const (
@@ -98,7 +98,7 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
 
-// mcpSession wraps a persistent mark3labs MCP client for one backend.
+// mcpSession wraps a persistent mcpcompat MCP client for one backend.
 // It is created once per backend during MakeSession and closed when the session ends.
 //
 // Phase 1 limitation — no reconnection: if the underlying transport drops
@@ -251,7 +251,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 
 		// Extract the backend-assigned session ID when the transport supports it.
 		// Streamable-HTTP servers send an Mcp-Session-Id response header during
-		// Initialize; the mark3labs transport captures it internally and exposes
+		// Initialize; the mcpcompat transport captures it internally and exposes
 		// it via GetSessionId(). SSE transports do not assign a session ID, so
 		// the field remains empty for those backends.
 		var backendSessionID string
@@ -263,7 +263,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	}
 }
 
-// createMCPClient builds and starts a mark3labs MCP client for target.
+// createMCPClient builds and starts a mcpcompat MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
 // sessionHint, when non-empty, is passed as the initial Mcp-Session-Id for
@@ -340,7 +340,7 @@ func createMCPClient(
 		// request/response pair, so a per-response body size limit is safe and
 		// correct. http.Client.Timeout provides a hard wall-clock deadline;
 		// WithHTTPTimeout additionally wraps each SDK request in a
-		// context.WithTimeout so the mark3labs transport surfaces a descriptive
+		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
 		// error before the stdlib deadline fires. Both are set to
 		// defaultBackendRequestTimeout: defense-in-depth.
 		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -429,85 +429,27 @@ func initAndQueryCapabilities(
 	caps := &vmcp.CapabilityList{}
 
 	if serverCaps.Tools != nil {
-		toolsResult, listErr := c.ListTools(ctx, mcp.ListToolsRequest{})
-		if listErr != nil {
-			return nil, fmt.Errorf("list tools failed: %w", listErr)
+		tools, err := queryBackendTools(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
-		for _, t := range toolsResult.Tools {
-			caps.Tools = append(caps.Tools, vmcp.Tool{
-				Name:         t.Name,
-				Description:  t.Description,
-				InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
-				OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
-				Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
-				BackendID:    target.WorkloadID,
-			})
-		}
+		caps.Tools = tools
 	}
 
 	if serverCaps.Resources != nil {
-		resResult, listErr := c.ListResources(ctx, mcp.ListResourcesRequest{})
-		switch {
-		case errors.Is(listErr, mcp.ErrMethodNotFound):
-			// Tolerate JSON-RPC -32601 here so a backend that advertises the
-			// resources capability but does not implement resources/list (e.g.
-			// Atlassian Rovo, see #5231) still contributes its tools instead of
-			// being dropped. HTTP-level method absence is intentionally fatal.
-			slog.Warn("backend advertised resources capability but does not implement resources/list",
-				"backendID", target.WorkloadID,
-				"name", target.WorkloadName,
-				"baseURL", target.BaseURL,
-				"method", "resources/list",
-			)
-		case listErr != nil:
-			return nil, fmt.Errorf("list resources failed: %w", listErr)
-		default:
-			for _, r := range resResult.Resources {
-				caps.Resources = append(caps.Resources, vmcp.Resource{
-					URI:         r.URI,
-					Name:        r.Name,
-					Description: r.Description,
-					MimeType:    r.MIMEType,
-					BackendID:   target.WorkloadID,
-				})
-			}
+		resources, err := queryBackendResources(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
+		caps.Resources = resources
 	}
 
 	if serverCaps.Prompts != nil {
-		promptsResult, listErr := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
-		switch {
-		case errors.Is(listErr, mcp.ErrMethodNotFound):
-			// Tolerate JSON-RPC -32601 here so a backend that advertises the
-			// prompts capability but does not implement prompts/list (e.g.
-			// Atlassian Rovo, see #5231) still contributes its tools instead of
-			// being dropped. HTTP-level method absence is intentionally fatal.
-			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
-				"backendID", target.WorkloadID,
-				"name", target.WorkloadName,
-				"baseURL", target.BaseURL,
-				"method", "prompts/list",
-			)
-		case listErr != nil:
-			return nil, fmt.Errorf("list prompts failed: %w", listErr)
-		default:
-			for _, p := range promptsResult.Prompts {
-				args := make([]vmcp.PromptArgument, len(p.Arguments))
-				for j, a := range p.Arguments {
-					args[j] = vmcp.PromptArgument{
-						Name:        a.Name,
-						Description: a.Description,
-						Required:    a.Required,
-					}
-				}
-				caps.Prompts = append(caps.Prompts, vmcp.Prompt{
-					Name:        p.Name,
-					Description: p.Description,
-					Arguments:   args,
-					BackendID:   target.WorkloadID,
-				})
-			}
+		prompts, err := queryBackendPrompts(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
+		caps.Prompts = prompts
 	}
 
 	slog.Debug("Backend capabilities",
@@ -518,6 +460,113 @@ func initAndQueryCapabilities(
 	)
 
 	return caps, nil
+}
+
+// queryBackendTools lists the backend's tools, following MCP pagination cursors so a
+// backend that paginates (mcpcompat paginates at DefaultPageSize=1000) contributes its
+// complete tool set rather than only the first page.
+func queryBackendTools(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Tool, error) {
+	tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+		req := mcp.ListToolsRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListTools(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Tools, result.NextCursor, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list tools failed: %w", err)
+	}
+	out := make([]vmcp.Tool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, vmcp.Tool{
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
+			OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
+			Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
+			BackendID:    target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// queryBackendResources lists the backend's resources with cursor-following pagination.
+// A backend that advertises the resources capability but does not implement
+// resources/list (JSON-RPC -32601, e.g. Atlassian Rovo, see #5231) is tolerated: it
+// returns no resources instead of failing the whole discovery. HTTP-level method absence
+// remains fatal.
+func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Resource, error) {
+	resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+		req := mcp.ListResourcesRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListResources(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Resources, result.NextCursor, nil
+	})
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		slog.Warn("backend advertised resources capability but does not implement resources/list",
+			"backendID", target.WorkloadID, "name", target.WorkloadName, "baseURL", target.BaseURL, "method", "resources/list")
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list resources failed: %w", err)
+	}
+	out := make([]vmcp.Resource, 0, len(resources))
+	for _, r := range resources {
+		out = append(out, vmcp.Resource{
+			URI:         r.URI,
+			Name:        r.Name,
+			Description: r.Description,
+			MimeType:    r.MIMEType,
+			BackendID:   target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// queryBackendPrompts lists the backend's prompts with cursor-following pagination.
+// Like queryBackendResources, it tolerates a -32601 from a backend that advertises the
+// prompts capability without implementing prompts/list.
+func queryBackendPrompts(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Prompt, error) {
+	prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+		req := mcp.ListPromptsRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListPrompts(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Prompts, result.NextCursor, nil
+	})
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+			"backendID", target.WorkloadID, "name", target.WorkloadName, "baseURL", target.BaseURL, "method", "prompts/list")
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list prompts failed: %w", err)
+	}
+	out := make([]vmcp.Prompt, 0, len(prompts))
+	for _, p := range prompts {
+		args := make([]vmcp.PromptArgument, len(p.Arguments))
+		for j, a := range p.Arguments {
+			args[j] = vmcp.PromptArgument{
+				Name:        a.Name,
+				Description: a.Description,
+				Required:    a.Required,
+			}
+		}
+		out = append(out, vmcp.Prompt{
+			Name:        p.Name,
+			Description: p.Description,
+			Arguments:   args,
+			BackendID:   target.WorkloadID,
+		})
+	}
+	return out, nil
 }
 
 // mergeForwardedHeaders returns a HeaderForwardConfig that combines the static

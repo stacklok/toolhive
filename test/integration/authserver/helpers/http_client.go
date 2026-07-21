@@ -116,6 +116,15 @@ func (c *OAuthClient) StartAuthorization(params url.Values) (*http.Response, err
 	return c.httpClient.Get(authURL)
 }
 
+// Callback drives the upstream callback leg: GET /oauth/callback with the given
+// code and internal state. The client does not follow redirects, so the returned
+// response exposes what the server issues — an onward redirect to the next
+// upstream, or a redirect back to the client with an authorization code.
+func (c *OAuthClient) Callback(code, state string) (*http.Response, error) {
+	params := url.Values{"code": {code}, "state": {state}}
+	return c.httpClient.Get(c.baseURL + "/oauth/callback?" + params.Encode())
+}
+
 // ExchangeToken performs a token exchange at the token endpoint.
 func (c *OAuthClient) ExchangeToken(params url.Values) (map[string]interface{}, int, error) {
 	resp, err := c.httpClient.PostForm(c.baseURL+"/oauth/token", params)

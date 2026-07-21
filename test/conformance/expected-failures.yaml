@@ -1,0 +1,9 @@
+# Conformance baseline for the ToolHive CLI (`thv run`) proxy path.
+#
+# List scenario names here that are KNOWN to fail and accepted. The suite fails
+# CI only on failures NOT listed here. Note: an entry that starts passing again
+# is reported as a STALE entry and also fails CI — keep this list accurate.
+#
+# The CLI proxy is transport-transparent, so this list is empty: every scenario
+# in the `active` suite is expected to pass.
+server: []

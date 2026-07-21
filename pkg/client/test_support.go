@@ -45,3 +45,16 @@ func LLMTestIntegrations(entries []LLMTestEntry) []clientAppConfig {
 	}
 	return cfgs
 }
+
+// NewTestClientManagerWithHome returns a ClientManager backed by the production
+// client integrations (so plugin/skill/config metadata is fully populated) but
+// rooted at homeDir instead of the real user home. Exported so adapter tests in
+// other packages can resolve plugin paths and config-file paths under a temp
+// directory without mutating process-wide HOME (which forbids t.Parallel).
+func NewTestClientManagerWithHome(homeDir string) *ClientManager {
+	return &ClientManager{
+		homeDir:            homeDir,
+		clientIntegrations: supportedClientIntegrations,
+		lookPath:           nil,
+	}
+}

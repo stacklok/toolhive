@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,75 @@ func TestNewHttpClientBuilder(t *testing.T) {
 	assert.Empty(t, builder.caCertPath)
 	assert.Empty(t, builder.authTokenFile)
 	assert.False(t, builder.allowPrivate)
+}
+
+func TestNewHostScopedClientBuilder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		host              string
+		allowPrivateIPs   bool
+		insecureAllowHTTP bool
+		wantAllowPrivate  bool
+		wantInsecureHTTP  bool
+	}{
+		{
+			name: "external host, guarded by default",
+			host: "idp.example.com",
+		},
+		{
+			name:             "external host, allowPrivateIPs widens only the private-IP gate",
+			host:             "idp.example.com",
+			allowPrivateIPs:  true,
+			wantAllowPrivate: true,
+			wantInsecureHTTP: false,
+		},
+		{
+			name:              "external host, insecureAllowHTTP widens both gates",
+			host:              "idp.example.com",
+			insecureAllowHTTP: true,
+			wantAllowPrivate:  true,
+			wantInsecureHTTP:  true,
+		},
+		{
+			name:             "loopback host is exempted from both gates regardless of flags",
+			host:             "127.0.0.1:8443",
+			wantAllowPrivate: true,
+			wantInsecureHTTP: true,
+		},
+		{
+			name:             "loopback host stays exempted even with allowPrivateIPs also set",
+			host:             "localhost",
+			allowPrivateIPs:  true,
+			wantAllowPrivate: true,
+			wantInsecureHTTP: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHostScopedClientBuilder(tt.host, tt.allowPrivateIPs, tt.insecureAllowHTTP)
+
+			assert.Equal(t, tt.wantAllowPrivate, builder.allowPrivate, "allowPrivate mismatch")
+			assert.Equal(t, tt.wantInsecureHTTP, builder.insecureAllowHTTP, "insecureAllowHTTP mismatch")
+		})
+	}
+}
+
+// TestNewHostScopedClientBuilder_InsecureDisableURLValidationEnvVar pins that
+// the env var widens both gates the same way a loopback host does. Kept as a
+// standalone test (not a table case) because t.Setenv is incompatible with
+// t.Parallel.
+func TestNewHostScopedClientBuilder_InsecureDisableURLValidationEnvVar(t *testing.T) {
+	t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "true")
+
+	builder := NewHostScopedClientBuilder("idp.example.com", false, false)
+
+	assert.True(t, builder.allowPrivate, "env var must widen the private-IP gate")
+	assert.True(t, builder.insecureAllowHTTP, "env var must widen the HTTP scheme gate")
 }
 
 func TestHttpClientBuilder_WithCABundle(t *testing.T) {
@@ -572,4 +642,138 @@ func (m *mockRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
 		StatusCode: 200,
 		Body:       io.NopCloser(strings.NewReader("OK")),
 	}, nil
+}
+
+func mustReq(t *testing.T, rawURL string) *http.Request {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	require.NoError(t, err)
+	return &http.Request{URL: u, Host: u.Host}
+}
+
+func TestSameHostRedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := SameHostRedirectPolicy()
+
+	tests := []struct {
+		name      string
+		req       string
+		via       []string
+		wantRefus bool
+	}{
+		{
+			name: "same host same scheme is allowed",
+			req:  "https://mcp.example.com/next",
+			via:  []string{"https://mcp.example.com/start"},
+		},
+		{
+			name:      "same host different port is refused (distinct service)",
+			req:       "https://mcp.example.com:8443/next",
+			via:       []string{"https://mcp.example.com/start"},
+			wantRefus: true,
+		},
+		{
+			name:      "cross-host redirect to internal metadata endpoint is refused",
+			req:       "http://169.254.169.254/latest/meta-data/",
+			via:       []string{"https://mcp.example.com/.well-known/oauth-protected-resource"},
+			wantRefus: true,
+		},
+		{
+			name:      "cross-host redirect to another public host is refused",
+			req:       "https://evil.example.net/x",
+			via:       []string{"https://mcp.example.com/start"},
+			wantRefus: true,
+		},
+		{
+			name:      "https to http downgrade on same host is refused",
+			req:       "http://mcp.example.com/next",
+			via:       []string{"https://mcp.example.com/start"},
+			wantRefus: true,
+		},
+		{
+			name: "http to http on same host is allowed (no downgrade)",
+			req:  "http://localhost:9000/next",
+			via:  []string{"http://localhost:9000/start"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			via := make([]*http.Request, 0, len(tt.via))
+			for _, v := range tt.via {
+				via = append(via, mustReq(t, v))
+			}
+			err := policy(mustReq(t, tt.req), via)
+			if tt.wantRefus {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrRedirectRefused)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSameHostRedirectPolicy_CapsChain(t *testing.T) {
+	t.Parallel()
+
+	policy := SameHostRedirectPolicy()
+	via := make([]*http.Request, MaxRedirects)
+	for i := range via {
+		via[i] = mustReq(t, "https://mcp.example.com/start")
+	}
+	err := policy(mustReq(t, "https://mcp.example.com/next"), via)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRedirectRefused)
+}
+
+func TestSameHostRedirectPolicy_Integration(t *testing.T) {
+	t.Parallel()
+
+	// internal stands in for an internal-only endpoint a malicious server
+	// would try to reach via a cross-host redirect.
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SECRET"))
+	}))
+	t.Cleanup(internal.Close)
+
+	// attacker redirects any request to the internal endpoint (cross-host).
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/same" {
+			// same-host relative redirect should be followed
+			http.Redirect(w, r, "/ok", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/ok" {
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+		http.Redirect(w, r, internal.URL, http.StatusFound)
+	}))
+	t.Cleanup(attacker.Close)
+
+	client := &http.Client{CheckRedirect: SameHostRedirectPolicy()}
+
+	t.Run("cross-host redirect is refused", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(attacker.URL + "/evil") //nolint:bodyclose // err path, no body
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrRedirectRefused)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	})
+
+	t.Run("same-host redirect is followed", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(attacker.URL + "/same")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "OK", string(body))
+	})
 }

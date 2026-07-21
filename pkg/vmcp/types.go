@@ -241,6 +241,7 @@ const (
 
 // DiscoveredBackend represents a backend server discovered by vMCP runtime.
 // This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+// +gendoc
 type DiscoveredBackend struct {
 	// Name is the name of the backend MCPServer
 	Name string `json:"name"`
@@ -422,6 +423,29 @@ type Resource struct {
 	BackendID string
 }
 
+// ResourceTemplate represents an MCP resource template capability.
+// Unlike a Resource, whose URI identifies a single concrete resource, a
+// ResourceTemplate declares an RFC 6570 URI template that expands to a family
+// of resource URIs (e.g. "file:///logs/{date}.txt"). Reading an expanded URI is
+// served through the existing resource-read path: the router matches the URI
+// against these templates when the exact-URI lookup misses.
+type ResourceTemplate struct {
+	// URITemplate is the RFC 6570 URI template (should be globally unique).
+	URITemplate string
+
+	// Name is a human-readable name.
+	Name string
+
+	// Description describes the resource template.
+	Description string
+
+	// MimeType is the MIME type shared by resources matching this template (optional).
+	MimeType string
+
+	// BackendID identifies the backend that provides this resource template.
+	BackendID string
+}
+
 // Prompt represents an MCP prompt capability.
 type Prompt struct {
 	// Name is the prompt name (may conflict with other backends).
@@ -589,6 +613,43 @@ type PromptGetResult struct {
 	Meta map[string]any
 }
 
+// Completion reference type constants, matching the MCP completion/complete
+// "ref" discriminator values.
+const (
+	// CompletionRefTypePrompt identifies a prompt-argument completion reference.
+	CompletionRefTypePrompt = "ref/prompt"
+	// CompletionRefTypeResource identifies a resource(-template) completion reference.
+	CompletionRefTypeResource = "ref/resource"
+)
+
+// CompletionRef identifies what a completion/complete request is completing:
+// either a prompt argument (Type == CompletionRefTypePrompt, Name set) or a
+// resource-template variable (Type == CompletionRefTypeResource, URI set). It is
+// the domain equivalent of the MCP PromptReference/ResourceReference shapes,
+// following the Anti-Corruption Layer pattern (no mcp-go types cross the core
+// boundary, vmcp anti-pattern #5).
+type CompletionRef struct {
+	// Type is the reference discriminator: CompletionRefTypePrompt or
+	// CompletionRefTypeResource.
+	Type string
+	// Name is the prompt name (set only for CompletionRefTypePrompt).
+	Name string
+	// URI is the resource URI or URI template (set only for
+	// CompletionRefTypeResource).
+	URI string
+}
+
+// CompletionResult holds argument-completion candidates returned by a backend.
+// It is the domain equivalent of the MCP CompletionResultDetails.
+type CompletionResult struct {
+	// Values are the completion candidate strings (MCP caps this at 100 items).
+	Values []string
+	// Total is the total number of options available, which may exceed len(Values).
+	Total int
+	// HasMore indicates additional options exist beyond those in Values.
+	HasMore bool
+}
+
 // RoutingTable contains the mappings from capability names to backend targets.
 // This is the output of the aggregation phase and input to the router.
 // Placed in vmcp root package to avoid circular dependencies between
@@ -604,12 +665,18 @@ type RoutingTable struct {
 	// Resources maps resource URIs to their backend targets.
 	Resources map[string]*BackendTarget
 
+	// ResourceTemplates maps resource URI-template strings to their backend targets.
+	// The router consults this when an exact Resources lookup misses: it matches
+	// the requested URI against each template and routes to the first match.
+	ResourceTemplates map[string]*BackendTarget
+
 	// Prompts maps prompt names to their backend targets.
 	Prompts map[string]*BackendTarget
 }
 
 // ConflictResolutionStrategy defines how to handle capability name conflicts.
 // Placed in vmcp root package to be shared by config and aggregator packages.
+// +gendoc
 type ConflictResolutionStrategy string
 
 const (
@@ -657,6 +724,21 @@ type BackendClient interface {
 	// Returns the complete prompt result including _meta field.
 	GetPrompt(ctx context.Context, target *BackendTarget, name string, arguments map[string]any) (*PromptGetResult, error)
 
+	// Complete requests argument-completion candidates from the backend MCP server
+	// (the completion/complete method). ref identifies the prompt or resource being
+	// completed; argName/argValue are the argument name and its partial value;
+	// contextArgs carries previously-resolved argument values for multi-argument
+	// completion (may be nil). For a CompletionRefTypePrompt ref, the prompt name is
+	// translated to the backend's own name via target.GetBackendCapabilityName.
+	//
+	// If the backend does not advertise the completions capability, an empty (non-nil)
+	// CompletionResult is returned without error, matching the MCP spec's lenient
+	// completion semantics.
+	Complete(
+		ctx context.Context, target *BackendTarget, ref CompletionRef,
+		argName, argValue string, contextArgs map[string]string,
+	) (*CompletionResult, error)
+
 	// ListCapabilities queries a backend for its capabilities.
 	// Returns tools, resources, and prompts exposed by the backend.
 	ListCapabilities(ctx context.Context, target *BackendTarget) (*CapabilityList, error)
@@ -670,6 +752,9 @@ type CapabilityList struct {
 
 	// Resources available on this backend.
 	Resources []Resource
+
+	// ResourceTemplates available on this backend.
+	ResourceTemplates []ResourceTemplate
 
 	// Prompts available on this backend.
 	Prompts []Prompt

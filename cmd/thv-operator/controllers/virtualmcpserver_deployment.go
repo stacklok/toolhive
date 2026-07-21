@@ -35,10 +35,6 @@ import (
 )
 
 const (
-	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
-	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
-	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
-
 	// imagePullRefsHashAnnotation tracks the SHA256 hash of the desired
 	// imagePullSecrets list — chart-level defaults merged with
 	// vmcp.Spec.ImagePullSecrets — used by buildDeploymentMetadataForVmcp.
@@ -174,13 +170,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		volumeMounts = append(volumeMounts, telMounts...)
 	}
 
-	// Add embedded auth server volumes and env vars if configured (inline config)
+	// Add embedded auth server volumes if configured (inline config). The matching
+	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
+	// symmetric with what is built here (see #5616).
 	if vmcp.Spec.AuthServerConfig != nil {
 		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
-		authServerEnvVars := ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)
 		volumes = append(volumes, authServerVolumes...)
 		volumeMounts = append(volumeMounts, authServerMounts...)
-		env = append(env, authServerEnvVars...)
 	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
@@ -382,6 +378,16 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		otelEnv := ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(
 			telemetryCfg, vmcp.Spec.TelemetryConfigRef, vmcp.Name, vmcp.Namespace)
 		env = append(env, otelEnv...)
+	}
+
+	// Mount embedded auth server upstream client secrets (and Redis ACL creds).
+	// This must live here, not only in deploymentForVirtualMCPServer, so that the
+	// env-var drift check in containerNeedsUpdate compares against the same set.
+	// Otherwise the live container carries these env vars but the expected set
+	// does not, reflect.DeepEqual never matches, and the operator updates the
+	// Deployment on every reconcile (see #5616).
+	if vmcp.Spec.AuthServerConfig != nil {
+		env = append(env, ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)...)
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
@@ -862,6 +868,9 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 		// masked as a no-op.
 		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
 
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil
+
 	default:
 		return nil, nil // Not applicable
 	}
@@ -877,6 +886,38 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 			},
 		},
 	}}, nil
+}
+
+// xaaSecretEnvVars returns the env vars needed to mount XAA client secrets into
+// the vMCP pod. Returns nil when the XAA spec is absent or has no secret refs.
+func xaaSecretEnvVars(externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig, configName string) []corev1.EnvVar {
+	if externalAuthConfig.Spec.XAA == nil {
+		return nil
+	}
+	var envVars []corev1.EnvVar
+	if ref := externalAuthConfig.Spec.XAA.IDPClientSecretRef; ref != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(configName),
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					Key:                  ref.Key,
+				},
+			},
+		})
+	}
+	if ref := externalAuthConfig.Spec.XAA.TargetClientSecretRef; ref != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(configName),
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					Key:                  ref.Key,
+				},
+			},
+		})
+	}
+	return envVars
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
@@ -1210,15 +1251,13 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		return nil
 	}
 
-	// Validate the PodTemplateSpec and check if there are meaningful customizations
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
-	if err != nil {
+	// Validate the user-provided PodTemplateSpec is well-formed.
+	// We don't check builder.Build() == nil for "empty" customizations: that helper
+	// only enumerates a subset of PodSpec fields and would skip the patch for
+	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
+	// patch is a no-op for `{}` anyway, so always running it is safe.
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp"); err != nil {
 		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
-	}
-
-	if builder.Build() == nil {
-		// No meaningful customizations to apply
-		return nil
 	}
 
 	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, vmcp.Spec.PodTemplateSpec.Raw)

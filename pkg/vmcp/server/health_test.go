@@ -17,8 +17,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -33,8 +31,7 @@ func createTestServer(t *testing.T) *server.Server {
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	// Find an available port for parallel test execution
 	port := networking.FindAvailable()
@@ -44,23 +41,8 @@ func createTestServer(t *testing.T) *server.Server {
 	backends := []vmcp.Backend{}
 
 	// Mock discovery manager to return empty capabilities
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{
-			Tools:     []vmcp.Tool{},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     make(map[string]*vmcp.BackendTarget),
-				Resources: make(map[string]*vmcp.BackendTarget),
-				Prompts:   make(map[string]*vmcp.BackendTarget),
-			},
-			Metadata: &aggregator.AggregationMetadata{},
-		}, nil).
-		AnyTimes()
 
 	// Mock Stop to be called during server shutdown
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	// Create context for server
 	ctx, cancel := context.WithCancel(t.Context())
@@ -72,7 +54,7 @@ func createTestServer(t *testing.T) *server.Server {
 		Host:           "127.0.0.1",
 		Port:           port,
 		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-	}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+	}, rt, mockBackendClient, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Start server in background
@@ -178,8 +160,7 @@ func TestServer_SessionManager(t *testing.T) {
 		t.Cleanup(ctrl.Finish)
 
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-		rt := router.NewDefaultRouter()
+		rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 		srv, err := server.New(context.Background(), &server.Config{
@@ -187,7 +168,7 @@ func TestServer_SessionManager(t *testing.T) {
 			Version:        "1.0.0",
 			SessionTTL:     10 * time.Minute,
 			SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+		}, rt, mockBackendClient, backendRegistry, nil)
 		require.NoError(t, err)
 
 		// SessionManager should be accessible
@@ -202,8 +183,7 @@ func TestServer_SessionManager(t *testing.T) {
 		t.Cleanup(ctrl.Finish)
 
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-		rt := router.NewDefaultRouter()
+		rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 		customTTL := 15 * time.Minute
 		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
@@ -212,7 +192,7 @@ func TestServer_SessionManager(t *testing.T) {
 			Version:        "1.0.0",
 			SessionTTL:     customTTL,
 			SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
+		}, rt, mockBackendClient, backendRegistry, nil)
 		require.NoError(t, err)
 
 		mgr := srv.SessionManager()

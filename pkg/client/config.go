@@ -20,6 +20,7 @@ import (
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -62,14 +63,6 @@ const (
 	WindsurfJetBrains ClientApp = "windsurf-jetbrains"
 	// AmpCli represents the Sourcegraph Amp CLI.
 	AmpCli ClientApp = "amp-cli"
-	// AmpVSCode represents the Sourcegraph Amp extension for VS Code.
-	AmpVSCode ClientApp = "amp-vscode"
-	// AmpCursor represents the Sourcegraph Amp extension for Cursor.
-	AmpCursor ClientApp = "amp-cursor"
-	// AmpVSCodeInsider represents the Sourcegraph Amp extension for VS Code Insiders.
-	AmpVSCodeInsider ClientApp = "amp-vscode-insider"
-	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
-	AmpWindsurf ClientApp = "amp-windsurf"
 	// LMStudio represents the LM Studio application.
 	LMStudio ClientApp = "lm-studio"
 	// Goose represents the Goose AI agent.
@@ -92,7 +85,7 @@ const (
 	VSCodeServer ClientApp = "vscode-server"
 	// MistralVibe represents the Mistral Vibe IDE.
 	MistralVibe ClientApp = "mistral-vibe"
-	// Codex represents the OpenAI Codex CLI.
+	// Codex represents the OpenAI Codex CLI and desktop app.
 	Codex ClientApp = "codex"
 	// KimiCli represents the Kimi Code CLI.
 	KimiCli ClientApp = "kimi-cli"
@@ -108,6 +101,12 @@ const (
 	// It is declared as LLMClientApp (not ClientApp) so that code generators
 	// such as swag do not include "xcode" in the MCP API ClientApp enum.
 	Xcode LLMClientApp = "xcode"
+
+	// ClaudeDesktop represents the Claude Desktop app configured for LLM gateway
+	// routing via its "third-party inference" surface. Only LLM-gateway support is
+	// wired here (not MCP), so it is declared as LLMClientApp — same rationale as
+	// Xcode above.
+	ClaudeDesktop LLMClientApp = "claude-desktop"
 )
 
 // Extension is extension of the client config file.
@@ -166,8 +165,10 @@ const (
 //   - ValueField names which ApplyConfig field to write. Valid values:
 //     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
 //     "TokenHelperCommand", "PlaceholderAPIKey", "ClaudeCodeHelperTTLMillis",
-//     "NodeTLSRejectUnauthorized". An unrecognised ValueField is a programming
-//     error and causes ConfigureLLMGateway to return an error.
+//     "NodeTLSRejectUnauthorized", "BedrockDisableExperimentalBetas",
+//     "BedrockHaikuModel", "BedrockOpusModel", "BedrockSonnetModel". An
+//     unrecognised ValueField is a programming error and causes
+//     ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
 //     that typos in ValueField are caught as errors rather than silently
@@ -181,7 +182,8 @@ type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
-	// "NodeTLSRejectUnauthorized"
+	// "NodeTLSRejectUnauthorized" | "BedrockDisableExperimentalBetas" |
+	// "BedrockHaikuModel" | "BedrockOpusModel" | "BedrockSonnetModel"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -237,9 +239,17 @@ type clientAppConfig struct {
 	// (e.g., XDG ~/.config/ on Linux/macOS).
 	// If nil or missing an entry for the current OS, no prefix is added.
 	SkillsPlatformPrefix map[Platform][]string
+	// Plugin-specific configuration
+	SupportsPlugins    bool     // Whether this client supports plugins
+	PluginsGlobalPath  []string // Path segments for global plugins dir (from home dir)
+	PluginsProjectPath []string // Path segments for project-local plugins dir (from project root)
+	// PluginsPlatformPrefix maps Platform values to path segments inserted between
+	// home dir and PluginsGlobalPath. Same semantics as SkillsPlatformPrefix.
+	// If nil or missing an entry for the current OS, no prefix is added.
+	PluginsPlatformPrefix map[Platform][]string
 	// LLM gateway configuration ─────────────────────────────────────────────
-	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
-	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
+	// LLMGatewayMode identifies the gateway integration strategy (direct token
+	// helper, proxy, credential helper, or Codex auth), or "" when unsupported.
 	LLMGatewayMode string
 	// LLMBinaryName is the executable name looked up via exec.LookPath to
 	// confirm the tool is actually installed (not just a leftover config
@@ -270,6 +280,27 @@ type clientAppConfig struct {
 	// LLMEnvFileKeys lists the key=value entries to write to the .env file when
 	// setting up (or reverting) LLM gateway access.
 	LLMEnvFileKeys []LLMEnvFileKeySpec
+	// LLMDetectRelPath and LLMDetectPlatformPrefix locate a directory whose
+	// existence indicates the tool is installed. Used for GUI apps that are not
+	// on $PATH (LLMBinaryName is empty) and whose LLM settings directory does not
+	// exist until first configured — so the settings dir cannot be the detection
+	// signal. When set, DetectedLLMGatewayClients checks this directory instead of
+	// the settings directory. Resolved with the same semantics as
+	// LLMSettingsRelPath / LLMSettingsPlatformPrefix.
+	LLMDetectRelPath        []string
+	LLMDetectPlatformPrefix map[Platform][]string
+	// LLMInstalledDetector is an optional per-client detection hook that runs
+	// in addition to the shared settings-dir + binary-on-PATH check. Used by
+	// clients that have installation evidence beyond the CLI (e.g. Codex's
+	// desktop app). When set, the client is considered installed if either
+	// the shared check or this hook returns true. The hook must be set at
+	// construction time (NewClientManager), not in static config.
+	LLMInstalledDetector func() (bool, error)
+	// LLMManagedProfileDomain is the macOS managed-preferences plist domain
+	// (e.g. "com.anthropic.claudefordesktop.plist") that, when present, overrides
+	// the client's local config. Setup warns when detected. Empty when the client
+	// has no managed-profile surface.
+	LLMManagedProfileDomain string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -393,7 +424,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".copilot", skillsDirName},
 		SkillsProjectPath: []string{".github", skillsDirName},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "code-insiders",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
@@ -436,7 +467,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".copilot", skillsDirName},
 		SkillsProjectPath: []string{".github", skillsDirName},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code", "User"},
@@ -474,7 +505,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".cursor", skillsDirName},
 		SkillsProjectPath: []string{".cursor", skillsDirName},
 		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "cursor",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Cursor", "User"},
@@ -506,11 +537,14 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            defaultURLFieldName,
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
-		SupportsSkills:    true,
-		SkillsGlobalPath:  []string{".claude", skillsDirName},
-		SkillsProjectPath: []string{".claude", skillsDirName},
+		SupportsSkills:     true,
+		SkillsGlobalPath:   []string{".claude", skillsDirName},
+		SkillsProjectPath:  []string{".claude", skillsDirName},
+		SupportsPlugins:    true,
+		PluginsGlobalPath:  []string{".claude", "plugins"},
+		PluginsProjectPath: []string{".claude", "plugins"},
 		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
-		LLMGatewayMode:     "direct",
+		LLMGatewayMode:     llmgateway.ModeDirect,
 		LLMBinaryName:      "claude",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".claude"},
@@ -524,6 +558,18 @@ var supportedClientIntegrations = []clientAppConfig{
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
+			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
+			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
+			// the per-tier model IDs pin Bedrock inference-profile IDs. All use
+			// ClearWhenEmpty so a non-Bedrock setup removes any stale keys.
+			{
+				JSONPointer:    "/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+				ValueField:     "BedrockDisableExperimentalBetas",
+				ClearWhenEmpty: true,
+			},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL", ValueField: "BedrockHaikuModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_OPUS_MODEL", ValueField: "BedrockOpusModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_SONNET_MODEL", ValueField: "BedrockSonnetModel", ClearWhenEmpty: true},
 		},
 	},
 	{
@@ -593,102 +639,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", skillsDirName},
 		SkillsProjectPath: []string{".agents", skillsDirName},
-	},
-	{
-		ClientType:           AmpVSCode,
-		Description:          "VS Code Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Code", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
-	},
-	{
-		ClientType:           AmpVSCodeInsider,
-		Description:          "VS Code Insiders Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Code - Insiders", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
-	},
-	{
-		ClientType:           AmpCursor,
-		Description:          "Cursor Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Cursor", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
-	},
-	{
-		ClientType:           AmpWindsurf,
-		Description:          "Windsurf Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Windsurf", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
 	},
 	{
 		ClientType:           LMStudio,
@@ -906,7 +856,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		// TLS handshake on that leg. Setting the env var would globally disable
 		// TLS verification for all other HTTPS requests the Gemini CLI process
 		// makes, which is an unacceptable side-effect.
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "gemini",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".gemini"},
@@ -981,6 +931,20 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", skillsDirName},
 		SkillsProjectPath: []string{".agents", skillsDirName},
+		SupportsPlugins:   true,
+		// Codex discovers marketplaces at ~/.agents/plugins/marketplace.json
+		// (personal) and $REPO_ROOT/.agents/plugins/marketplace.json (project).
+		// ToolHive lays each plugin's source under that marketplace root,
+		// namespaced by the "toolhive" marketplace name, so the manifest can
+		// reference it with a relative "./toolhive/<name>" source.
+		PluginsGlobalPath:  []string{".agents", "plugins", "toolhive"},
+		PluginsProjectPath: []string{".agents", "plugins", "toolhive"},
+		// LLM gateway: patches the same config.toml its MCP config uses, via a
+		// dedicated TOML writer (llm_gateway_codex.go) rather than LLMGatewayKeys.
+		LLMGatewayMode:     llmgateway.ModeCodexAuth,
+		LLMBinaryName:      "codex",
+		LLMSettingsFile:    "config.toml",
+		LLMSettingsRelPath: []string{".codex"},
 	},
 	{
 		ClientType:           KimiCli,
@@ -1048,7 +1012,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		ClientType:     ClientApp(Xcode),
 		Description:    "GitHub Copilot for Xcode",
 		LLMGatewayOnly: true,
-		LLMGatewayMode: "proxy",
+		LLMGatewayMode: llmgateway.ModeProxy,
 		// Full path is macOS-specific; on Linux/Windows this directory will not
 		// exist, so DetectedLLMGatewayClients() naturally returns false there.
 		LLMSettingsFile:    "editorSettings.json",
@@ -1057,6 +1021,37 @@ var supportedClientIntegrations = []clientAppConfig{
 			{JSONPointer: "/openAIBaseURL", ValueField: "ProxyBaseURL"},
 			{JSONPointer: "/apiKey", ValueField: "PlaceholderAPIKey"},
 		},
+	},
+	{
+		// Claude Desktop routes LLM traffic through the gateway via its
+		// "third-party inference" surface. Unlike Claude Code (a single JSON
+		// settings file), Desktop uses a configLibrary directory: one config
+		// document per saved config plus a _meta.json selector naming the active
+		// one. That document model does not fit JSON-key patching, so this entry
+		// uses LLMGatewayMode "credential-helper" and carries no LLMGatewayKeys —
+		// the dedicated credential-helper writer handles it. LLM-gateway-only (MCP
+		// not wired). Cast LLMClientApp → ClientApp for internal storage.
+		ClientType:     ClientApp(ClaudeDesktop),
+		Description:    "Claude Desktop",
+		LLMGatewayOnly: true,
+		LLMGatewayMode: llmgateway.ModeCredentialHelper,
+		// Settings file is the _meta.json selector; the writer derives the
+		// containing configLibrary directory from it.
+		LLMSettingsFile:    "_meta.json",
+		LLMSettingsRelPath: []string{"Claude-3p", "configLibrary"},
+		LLMSettingsPlatformPrefix: map[Platform][]string{
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Local"},
+		},
+		// Detect via the app's user-data directory, which exists once Claude
+		// Desktop has run — the configLibrary directory above does not exist
+		// until first configured, so it cannot be the detection signal.
+		LLMDetectRelPath: []string{"Claude"},
+		LLMDetectPlatformPrefix: map[Platform][]string{
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
+		},
+		LLMManagedProfileDomain: "com.anthropic.claudefordesktop.plist",
 	},
 }
 

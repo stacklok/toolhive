@@ -95,6 +95,21 @@ func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, argumen
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, target, toolName, arguments, meta)
 }
 
+// Complete mocks base method.
+func (m *MockBackendClient) Complete(ctx context.Context, target *vmcp.BackendTarget, ref vmcp.CompletionRef, argName, argValue string, contextArgs map[string]string) (*vmcp.CompletionResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Complete", ctx, target, ref, argName, argValue, contextArgs)
+	ret0, _ := ret[0].(*vmcp.CompletionResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Complete indicates an expected call of Complete.
+func (mr *MockBackendClientMockRecorder) Complete(ctx, target, ref, argName, argValue, contextArgs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Complete", reflect.TypeOf((*MockBackendClient)(nil).Complete), ctx, target, ref, argName, argValue, contextArgs)
+}
+
 // GetPrompt mocks base method.
 func (m *MockBackendClient) GetPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	m.ctrl.T.Helper()

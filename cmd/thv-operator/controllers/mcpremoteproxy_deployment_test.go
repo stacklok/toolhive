@@ -26,6 +26,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -605,6 +606,55 @@ func TestEnsureService(t *testing.T) {
 	}
 }
 
+// TestMCPRemoteProxyEnsureService_PreservesExternalAnnotations is a regression test for
+// #5730: when a genuine operator-owned change triggers a Service update, annotations
+// written by an external controller (e.g. GKE NEG) must be merged, not stripped.
+func TestMCPRemoteProxyEnsureService_PreservesExternalAnnotations(t *testing.T) {
+	t.Parallel()
+
+	proxy := v1beta1test.NewMCPRemoteProxy("ext-annot-proxy", "default")
+
+	// Existing Service co-owned by GKE (external annotation) with an operator-owned field
+	// drifted (empty session affinity) so serviceNeedsUpdate fires.
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      createProxyServiceName(proxy.Name),
+			Namespace: proxy.Namespace,
+			Labels:    labelsForMCPRemoteProxy(proxy.Name),
+			Annotations: map[string]string{
+				"cloud.google.com/neg-status": `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			SessionAffinity: "",
+			Ports:           []corev1.ServicePort{{Port: 8080}},
+		},
+	}
+
+	scheme := testutil.NewScheme(t)
+	_ = rbacv1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, existing).
+		Build()
+	reconciler := &MCPRemoteProxyReconciler{Client: fakeClient, Scheme: scheme}
+
+	_, err := reconciler.ensureService(context.TODO(), proxy)
+	require.NoError(t, err)
+
+	updated := &corev1.Service{}
+	require.NoError(t, fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      createProxyServiceName(proxy.Name),
+		Namespace: proxy.Namespace,
+	}, updated))
+	// External annotation preserved...
+	assert.Equal(t, `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+		updated.Annotations["cloud.google.com/neg-status"])
+	// ...and the operator-owned field corrected.
+	assert.Equal(t, corev1.ServiceAffinityClientIP, updated.Spec.SessionAffinity)
+}
+
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
 	t.Parallel()
 
@@ -1180,6 +1230,19 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 				p.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
 				return p
 			}(),
+			needsUpdate: false,
+		},
+		{
+			// Regression for #5730: external controllers (e.g. GKE NEG/Gateway) write
+			// cloud.google.com/* annotations on the Service. These are not operator-owned
+			// and must not be treated as drift, or the operator hot-loops Update.
+			name: "external cloud annotations ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Annotations["cloud.google.com/neg-status"] = `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`
+				return s
+			}(),
+			proxy:       baseProxy.DeepCopy(),
 			needsUpdate: false,
 		},
 	}

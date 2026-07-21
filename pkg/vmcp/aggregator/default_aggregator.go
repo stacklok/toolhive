@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -106,12 +107,13 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 
 	// Convert to BackendCapabilities
 	result := &BackendCapabilities{
-		BackendID:        backend.ID,
-		Tools:            processedTools,
-		Resources:        capabilities.Resources,
-		Prompts:          capabilities.Prompts,
-		SupportsLogging:  capabilities.SupportsLogging,
-		SupportsSampling: capabilities.SupportsSampling,
+		BackendID:         backend.ID,
+		Tools:             processedTools,
+		Resources:         capabilities.Resources,
+		ResourceTemplates: capabilities.ResourceTemplates,
+		Prompts:           capabilities.Prompts,
+		SupportsLogging:   capabilities.SupportsLogging,
+		SupportsSampling:  capabilities.SupportsSampling,
 	}
 
 	span.SetAttributes(
@@ -254,14 +256,16 @@ func (a *defaultAggregator) ResolveConflicts(
 
 	// Build resolved capabilities
 	resolved := &ResolvedCapabilities{
-		Tools:     resolvedTools,
-		Resources: []vmcp.Resource{},
-		Prompts:   []vmcp.Prompt{},
+		Tools:             resolvedTools,
+		Resources:         []vmcp.Resource{},
+		ResourceTemplates: []vmcp.ResourceTemplate{},
+		Prompts:           []vmcp.Prompt{},
 	}
 
-	// Collect resources and prompts (no conflict resolution for these yet)
+	// Collect resources, resource templates, and prompts (no conflict resolution for these yet)
 	for _, caps := range capabilities {
 		resolved.Resources = append(resolved.Resources, caps.Resources...)
+		resolved.ResourceTemplates = append(resolved.ResourceTemplates, caps.ResourceTemplates...)
 		resolved.Prompts = append(resolved.Prompts, caps.Prompts...)
 
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)
@@ -307,9 +311,10 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
-		Tools:     make(map[string]*vmcp.BackendTarget),
-		Resources: make(map[string]*vmcp.BackendTarget),
-		Prompts:   make(map[string]*vmcp.BackendTarget),
+		Tools:             make(map[string]*vmcp.BackendTarget),
+		Resources:         make(map[string]*vmcp.BackendTarget),
+		ResourceTemplates: make(map[string]*vmcp.BackendTarget),
+		Prompts:           make(map[string]*vmcp.BackendTarget),
 	}
 
 	// Convert resolved tools to final vmcp.Tool format
@@ -353,6 +358,10 @@ func (a *defaultAggregator) MergeCapabilities(
 		}
 	}
 
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
+
 	// Add resources to routing table
 	for _, resource := range resolved.Resources {
 		backend := registry.Get(ctx, resource.BackendID)
@@ -368,6 +377,30 @@ func (a *defaultAggregator) MergeCapabilities(
 			// Store the original resource URI for forwarding to backend
 			target.OriginalCapabilityName = resource.URI
 			routingTable.Resources[resource.URI] = target
+		}
+	}
+
+	// Add resource templates to routing table, keyed by URI-template string.
+	// Pass-through, mirroring resources: no URI-template rewriting.
+	//
+	// OriginalCapabilityName is intentionally left empty. A resources/read routed
+	// via a template carries the client's CONCRETE, already-expanded URI (e.g.
+	// file:///logs/2025-01-01.txt); the backend performs its own template
+	// expansion, so that concrete URI must reach it verbatim. Setting
+	// OriginalCapabilityName to the template string would make
+	// GetBackendCapabilityName replace the concrete URI with the unexpanded
+	// template, and the backend would return unsubstituted content. vMCP does not
+	// rename templates, so no name translation is needed here.
+	for _, template := range resolved.ResourceTemplates {
+		backend := registry.Get(ctx, template.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for resource template, creating minimal target",
+				"backend", template.BackendID, "resource_template", template.URITemplate)
+			routingTable.ResourceTemplates[template.URITemplate] = &vmcp.BackendTarget{
+				WorkloadID: template.BackendID,
+			}
+		} else {
+			routingTable.ResourceTemplates[template.URITemplate] = vmcp.BackendToTarget(backend)
 		}
 	}
 
@@ -401,18 +434,20 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Create final aggregated view
 	aggregated := &AggregatedCapabilities{
-		Tools:            tools,
-		Resources:        resolved.Resources,
-		Prompts:          resolved.Prompts,
-		SupportsLogging:  resolved.SupportsLogging,
-		SupportsSampling: resolved.SupportsSampling,
-		RoutingTable:     routingTable,
+		Tools:             tools,
+		Resources:         resolved.Resources,
+		ResourceTemplates: resolved.ResourceTemplates,
+		Prompts:           resolved.Prompts,
+		SupportsLogging:   resolved.SupportsLogging,
+		SupportsSampling:  resolved.SupportsSampling,
+		RoutingTable:      routingTable,
 		Metadata: &AggregationMetadata{
-			BackendCount:     0, // Will be set by caller
-			ToolCount:        len(tools),
-			ResourceCount:    len(resolved.Resources),
-			PromptCount:      len(resolved.Prompts),
-			ConflictStrategy: conflictStrategy,
+			BackendCount:          0, // Will be set by caller
+			ToolCount:             len(tools),
+			ResourceCount:         len(resolved.Resources),
+			ResourceTemplateCount: len(resolved.ResourceTemplates),
+			PromptCount:           len(resolved.Prompts),
+			ConflictStrategy:      conflictStrategy,
 		},
 	}
 
@@ -493,69 +528,6 @@ func (a *defaultAggregator) AggregateCapabilities(
 		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
-}
-
-// ProcessPreQueriedCapabilities implements Aggregator.ProcessPreQueriedCapabilities.
-// It reuses processBackendTools, ResolveConflicts, and shouldAdvertiseTool so that
-// the session path applies identical transforms to the aggregation path.
-func (a *defaultAggregator) ProcessPreQueriedCapabilities(
-	ctx context.Context,
-	toolsByBackend map[string][]vmcp.Tool,
-	targets map[string]*vmcp.BackendTarget,
-) ([]vmcp.Tool, []vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
-	// Step 1: Apply per-backend overrides (renames, description changes).
-	processed := make(map[string]*BackendCapabilities, len(toolsByBackend))
-	for backendID, rawTools := range toolsByBackend {
-		processed[backendID] = &BackendCapabilities{
-			BackendID: backendID,
-			Tools:     processBackendTools(ctx, backendID, rawTools, a.toolConfigMap[backendID]),
-		}
-	}
-
-	// Step 2: Resolve naming conflicts across backends.
-	resolved, err := a.ResolveConflicts(ctx, processed)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// Step 3: Build advertised list, all-resolved list, and routing table.
-	// advertisedTools is the subset shown to MCP clients (post-filter).
-	// allResolvedTools includes every resolved tool regardless of advertising filter,
-	// so that workflow engines can look up InputSchema for type coercion even when
-	// a backend tool is hidden from clients via excludeAll or filter configuration.
-	var advertisedTools []vmcp.Tool
-	var allResolvedTools []vmcp.Tool
-	routingTable := make(map[string]*vmcp.BackendTarget, len(resolved.Tools))
-
-	for _, rt := range resolved.Tools {
-		target, ok := targets[rt.BackendID]
-		if !ok {
-			slog.Warn("ProcessPreQueriedCapabilities: no target for backend, skipping tool",
-				"backend", rt.BackendID, "tool", rt.ResolvedName)
-			continue
-		}
-		// Clone the target and record the actual backend capability name for call routing.
-		// rt.OriginalName is the post-override name; reverse the override map to get the
-		// actual name the backend itself uses.
-		t := *target
-		t.OriginalCapabilityName = actualBackendCapabilityName(a.toolConfigMap, rt.BackendID, rt.OriginalName)
-		routingTable[rt.ResolvedName] = &t
-
-		resolved := vmcp.Tool{
-			Name:         rt.ResolvedName,
-			Description:  rt.Description,
-			InputSchema:  rt.InputSchema,
-			OutputSchema: rt.OutputSchema,
-			Annotations:  rt.Annotations,
-			BackendID:    rt.BackendID,
-		}
-		allResolvedTools = append(allResolvedTools, resolved)
-		if a.shouldAdvertiseTool(rt.BackendID, rt.OriginalName) {
-			advertisedTools = append(advertisedTools, resolved)
-		}
-	}
-
-	return advertisedTools, allResolvedTools, routingTable, nil
 }
 
 // actualBackendCapabilityName returns the real capability name the backend uses,

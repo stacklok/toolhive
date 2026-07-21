@@ -85,6 +85,17 @@ func TestParsingMiddleware(t *testing.T) {
 			expectedResID:  "ping",
 		},
 		{
+			name:           "server/discover request",
+			method:         "POST",
+			path:           "/messages",
+			contentType:    "application/json",
+			body:           `{"jsonrpc":"2.0","id":10,"method":"server/discover","params":{}}`,
+			expectParsed:   true,
+			expectedMethod: "server/discover",
+			expectedID:     int64(10),
+			expectedResID:  "discover",
+		},
+		{
 			name:         "GET request - not parsed",
 			method:       "GET",
 			path:         "/messages",
@@ -220,6 +231,67 @@ func TestParsingMiddleware(t *testing.T) {
 			} else {
 				assert.Nil(t, parsed, "Expected MCP request not to be parsed")
 			}
+		})
+	}
+}
+
+func TestParsingMiddlewareModernHeaders(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name              string
+		mcpMethodHeader   string
+		mcpNameHeader     string
+		expectedMCPMethod string
+		expectedMCPName   string
+	}{
+		{
+			name:              "both headers set",
+			mcpMethodHeader:   "tools/call",
+			mcpNameHeader:     "some-tool",
+			expectedMCPMethod: "tools/call",
+			expectedMCPName:   "some-tool",
+		},
+		{
+			name:              "neither header set",
+			expectedMCPMethod: "",
+			expectedMCPName:   "",
+		},
+		{
+			name:              "sentinel-encoded Mcp-Name stored undecoded",
+			mcpMethodHeader:   "tools/call",
+			mcpNameHeader:     "=?base64?dG9vbA==?=",
+			expectedMCPMethod: "tools/call",
+			expectedMCPName:   "=?base64?dG9vbA==?=",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			if tt.mcpMethodHeader != "" {
+				req.Header.Set("Mcp-Method", tt.mcpMethodHeader)
+			}
+			if tt.mcpNameHeader != "" {
+				req.Header.Set("Mcp-Name", tt.mcpNameHeader)
+			}
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			parsed := GetParsedMCPRequest(capturedCtx)
+			require.NotNil(t, parsed)
+			assert.Equal(t, tt.expectedMCPMethod, parsed.MCPMethodHeader)
+			assert.Equal(t, tt.expectedMCPName, parsed.MCPNameHeader)
 		})
 	}
 }
@@ -1051,6 +1123,124 @@ func TestMetaFieldParsing(t *testing.T) {
 	}
 }
 
+func TestModernMetaParsing(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                    string
+		body                    string
+		expectedClientInfo      map[string]interface{}
+		expectedProtocolVersion string
+	}{
+		{
+			name: "clientInfo and protocolVersion present",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1.0"},
+						"io.modelcontextprotocol/protocolVersion": "2026-07-28"
+					}
+				}
+			}`,
+			expectedClientInfo: map[string]interface{}{
+				"name":    "test-client",
+				"version": "1.0",
+			},
+			expectedProtocolVersion: "2026-07-28",
+		},
+		{
+			name: "_meta absent",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 2,
+				"method": "tools/call",
+				"params": {
+					"name": "weather"
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+		{
+			name: "_meta present without modern keys",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 3,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"progressToken": "abc123"
+					}
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+		{
+			name: "protocolVersion wrong type",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 4,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"io.modelcontextprotocol/protocolVersion": 12345
+					}
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+		{
+			name: "clientInfo wrong type",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 5,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"io.modelcontextprotocol/clientInfo": "not-an-object"
+					}
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			parsed := GetParsedMCPRequest(capturedCtx)
+			require.NotNil(t, parsed)
+			assert.Equal(t, tt.expectedClientInfo, parsed.ClientInfo)
+			assert.Equal(t, tt.expectedProtocolVersion, parsed.ProtocolVersion)
+
+			assert.Equal(t, tt.expectedClientInfo, GetMCPClientInfo(capturedCtx))
+			assert.Equal(t, tt.expectedProtocolVersion, GetMCPProtocolVersion(capturedCtx))
+		})
+	}
+}
+
 func TestMetaFieldInvalidTypes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1390,6 +1580,11 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 			name:               "notifications/initialized",
 			method:             "notifications/initialized",
 			expectedResourceID: "initialized",
+		},
+		{
+			name:               "server/discover",
+			method:             "server/discover",
+			expectedResourceID: "discover",
 		},
 	}
 

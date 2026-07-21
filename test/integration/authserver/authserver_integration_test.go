@@ -8,7 +8,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -199,6 +201,172 @@ func TestEmbeddedAuthServer_AuthorizationFlow(t *testing.T) {
 			"should reject request without resource parameter",
 		)
 	})
+}
+
+// TestEmbeddedAuthServer_CallbackCompletesAuthorization drives the full
+// single-upstream authorization: authorize (redirect to the upstream) → callback
+// (upstream code exchanged, tokens stored) → the chain completes at the sole
+// upstream and the authorization code is issued back to the client. This
+// exercises the callback + chain-completion path that the authorize-only test
+// above does not reach.
+func TestEmbeddedAuthServer_CallbackCompletesAuthorization(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	upstream := helpers.NewMockUpstreamIDP(t)
+	cfg := helpers.NewTestAuthServerConfig(t, upstream.URL())
+	authServer := helpers.NewEmbeddedAuthServer(ctx, t, cfg)
+
+	server := httptest.NewServer(authServer.Handler())
+	defer server.Close()
+
+	client := helpers.NewOAuthClient(server.URL)
+	clientID := registerAuthCodeClient(t, client)
+	challenge := pkceS256Challenge()
+
+	// Leg 1: authorize → redirect to the upstream; capture the internal state the
+	// server threaded to the upstream so we can drive the callback.
+	authParams := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {testClientRedirectURI},
+		"scope":                 {"openid"},
+		"state":                 {"client-state-single"},
+		"resource":              {cfg.AllowedAudiences[0]},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+	}
+	resp, err := client.StartAuthorization(authParams)
+	require.NoError(t, err)
+	location := resp.Header.Get("Location")
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusFound, resp.StatusCode, "authorize should redirect to the upstream")
+	internalState := stateParam(t, location)
+	require.NotEmpty(t, internalState, "authorize must thread an internal state to the upstream")
+
+	// Callback: with only one upstream in the chain, the server exchanges the code
+	// and issues the authorization code back to the client.
+	cbResp, err := client.Callback("mock-auth-code", internalState)
+	require.NoError(t, err)
+	defer cbResp.Body.Close()
+
+	require.Equal(t, http.StatusSeeOther, cbResp.StatusCode,
+		"single-upstream chain should complete and issue the authorization code")
+	final := cbResp.Header.Get("Location")
+	assert.Contains(t, final, testClientRedirectURI, "should redirect back to the client")
+	assert.Contains(t, final, "code=", "should include an authorization code")
+	assert.Contains(t, final, "state=client-state-single", "should preserve the client state")
+	assert.NotContains(t, final, "error=", "should not be an error redirect")
+}
+
+// TestEmbeddedAuthServer_MultiUpstreamChain drives an authorization across two
+// configured upstreams: the first callback continues the chain to the second
+// upstream, and the second callback completes it and issues the authorization
+// code. This exercises the end-to-end chain traversal — the effective chain is
+// computed once, carried across legs, and walked to completion.
+func TestEmbeddedAuthServer_MultiUpstreamChain(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	upstreamA := helpers.NewMockUpstreamIDP(t)
+	upstreamB := helpers.NewMockUpstreamIDP(t)
+	cfg := helpers.NewTestAuthServerConfig(t, upstreamA.URL(),
+		helpers.WithUpstreams([]authserver.UpstreamRunConfig{
+			helpers.NewOAuth2Upstream("provider-a", upstreamA.URL()),
+			helpers.NewOAuth2Upstream("provider-b", upstreamB.URL()),
+		}),
+	)
+	authServer := helpers.NewEmbeddedAuthServer(ctx, t, cfg)
+
+	server := httptest.NewServer(authServer.Handler())
+	defer server.Close()
+
+	client := helpers.NewOAuthClient(server.URL)
+	clientID := registerAuthCodeClient(t, client)
+	challenge := pkceS256Challenge()
+
+	authParams := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {testClientRedirectURI},
+		"scope":                 {"openid"},
+		"state":                 {"client-state-chain"},
+		"resource":              {cfg.AllowedAudiences[0]},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+	}
+
+	// Leg 1: authorize → redirect to the first upstream.
+	resp, err := client.StartAuthorization(authParams)
+	require.NoError(t, err)
+	locA := resp.Header.Get("Location")
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	assert.Contains(t, locA, upstreamA.URL(), "first leg targets provider-a")
+	stateA := stateParam(t, locA)
+	require.NotEmpty(t, stateA)
+
+	// Leg 1 callback → chain continues, redirect onward to the second upstream.
+	cbA, err := client.Callback("code-a", stateA)
+	require.NoError(t, err)
+	locB := cbA.Header.Get("Location")
+	require.NoError(t, cbA.Body.Close())
+	require.Equal(t, http.StatusFound, cbA.StatusCode, "chain should continue to the second upstream")
+	assert.Contains(t, locB, upstreamB.URL(), "second leg targets provider-b")
+	stateB := stateParam(t, locB)
+	require.NotEmpty(t, stateB)
+	require.NotEqual(t, stateA, stateB, "each leg uses a fresh internal state")
+
+	// Leg 2 callback → chain complete, authorization code issued to the client.
+	cbB, err := client.Callback("code-b", stateB)
+	require.NoError(t, err)
+	defer cbB.Body.Close()
+
+	require.Equal(t, http.StatusSeeOther, cbB.StatusCode, "completed chain should issue the code")
+	final := cbB.Header.Get("Location")
+	assert.Contains(t, final, testClientRedirectURI, "should redirect back to the client")
+	assert.Contains(t, final, "code=", "should include an authorization code")
+	assert.Contains(t, final, "state=client-state-chain", "should preserve the client state")
+	assert.NotContains(t, final, "error=", "should not be an error redirect")
+}
+
+// testClientRedirectURI is the client callback used by the authorization-flow tests.
+const testClientRedirectURI = "http://localhost:8080/callback"
+
+// registerAuthCodeClient performs DCR for an authorization-code client and returns
+// its client_id.
+func registerAuthCodeClient(t *testing.T, client *helpers.OAuthClient) string {
+	t.Helper()
+	regResult, statusCode, err := client.RegisterClient(map[string]interface{}{
+		"client_name":   "Integration Test Client",
+		"redirect_uris": []string{testClientRedirectURI},
+		"grant_types":   []string{"authorization_code", "refresh_token"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, statusCode, "client registration should succeed")
+	clientID, ok := regResult["client_id"].(string)
+	require.True(t, ok, "registration response must include a client_id")
+	return clientID
+}
+
+// stateParam extracts the `state` query parameter from a redirect Location.
+func stateParam(t *testing.T, location string) string {
+	t.Helper()
+	require.NotEmpty(t, location, "redirect must include a Location header")
+	u, err := url.Parse(location)
+	require.NoError(t, err)
+	return u.Query().Get("state")
+}
+
+// pkceS256Challenge returns a valid S256 code challenge for a fixed verifier. The
+// verifier itself is unused because these tests assert the authorization-code
+// redirect rather than completing the token exchange.
+func pkceS256Challenge() string {
+	const verifier = "integration-test-pkce-verifier-0123456789abcdef"
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // TestEmbeddedAuthServer_DynamicClientRegistration verifies DCR (RFC 7591) support.

@@ -19,6 +19,7 @@ type Group struct {
 	Name              string   `json:"name"`
 	RegisteredClients []string `json:"registered_clients"`
 	Skills            []string `json:"skills,omitempty"`
+	Plugins           []string `json:"plugins,omitempty"`
 }
 
 // WriteJSON serializes the Group to JSON and writes it to the provided writer

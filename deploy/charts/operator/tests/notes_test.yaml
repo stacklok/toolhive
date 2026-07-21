@@ -1,0 +1,23 @@
+suite: post-install notes
+# NOTES.txt is the only user-facing output after `helm install`. Pin the
+# release context and documentation links so template refactors don't silently
+# drop post-install guidance.
+release:
+  name: toolhive-operator
+  namespace: toolhive-system
+templates:
+  - NOTES.txt
+tests:
+  - it: renders release and namespace context
+    asserts:
+      - matchRegexRaw:
+          pattern: 'Release: toolhive-operator'
+      - matchRegexRaw:
+          pattern: 'Namespace: toolhive-system'
+
+  - it: includes documentation links
+    asserts:
+      - matchRegexRaw:
+          pattern: 'deploying-mcp-server-with-operator\.md'
+      - matchRegexRaw:
+          pattern: 'docs\.stacklok\.com/toolhive/'

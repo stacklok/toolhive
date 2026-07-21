@@ -889,10 +889,10 @@ The following Phase 2 features are planned for future releases:
 
 ## API Reference
 
-For complete API reference including all fields and validation rules, see the [CRD API documentation](./crd-api.md#virtualmcpcompositetooldefinition).
+For complete API reference including all fields and validation rules, see the [CRD API documentation](./crd-api.md#apiv1beta1virtualmcpcompositetooldefinition).
 
 ## Related Resources
 
-- [VirtualMCPServer Guide](./virtualmcpserver-guide.md)
-- [Composite Tools Proposal](../proposals/THV-2106-virtual-mcp-server.md)
-- [Operator Installation Guide](./installation.md)
+- [VirtualMCPServer Kubernetes Guide](./virtualmcpserver-kubernetes-guide.md)
+- [Composite Tools Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md)
+- [Operator Upgrade Guide](./upgrade-guide/README.md)

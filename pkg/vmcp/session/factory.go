@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
@@ -115,7 +114,6 @@ type defaultMultiSessionFactory struct {
 	connector          backendConnector
 	maxConcurrency     int
 	backendInitTimeout time.Duration
-	aggregator         aggregator.Aggregator // Optional: applies tool transforms (overrides, conflict resolution, filter)
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -138,15 +136,6 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 		if d > 0 {
 			f.backendInitTimeout = d
 		}
-	}
-}
-
-// WithAggregator configures the factory to apply per-backend tool overrides,
-// conflict resolution, and advertising filters when building sessions.
-// If not set, raw backend tool names are used unchanged.
-func WithAggregator(agg aggregator.Aggregator) MultiSessionFactoryOption {
-	return func(f *defaultMultiSessionFactory) {
-		f.aggregator = agg
 	}
 }
 
@@ -254,57 +243,6 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
-// buildRoutingTableWithAggregator applies the aggregator's full transformation
-// pipeline (overrides, conflict resolution, advertising filter) to the raw
-// backend capabilities in results, producing resolved tool names identical to
-// the standard aggregation path. Resources and prompts pass through unchanged.
-//
-// Returns the routing table, advertised tools (for MCP clients), all resolved
-// tools (for schema lookup), resources, prompts, and any error.
-func buildRoutingTableWithAggregator(
-	ctx context.Context,
-	agg aggregator.Aggregator,
-	results []initResult,
-) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
-	toolsByBackend := make(map[string][]vmcp.Tool, len(results))
-	targets := make(map[string]*vmcp.BackendTarget, len(results))
-	for i := range results {
-		r := &results[i]
-		toolsByBackend[r.target.WorkloadID] = r.caps.Tools
-		targets[r.target.WorkloadID] = r.target
-	}
-
-	advertisedTools, allResolvedTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
-	rt := &vmcp.RoutingTable{
-		Tools:     toolsRouting,
-		Resources: make(map[string]*vmcp.BackendTarget),
-		Prompts:   make(map[string]*vmcp.BackendTarget),
-	}
-
-	var allResources []vmcp.Resource
-	var allPrompts []vmcp.Prompt
-	for _, r := range results {
-		for _, res := range r.caps.Resources {
-			if _, ok := rt.Resources[res.URI]; !ok {
-				allResources = append(allResources, res)
-				rt.Resources[res.URI] = r.target
-			}
-		}
-		for _, prompt := range r.caps.Prompts {
-			if _, ok := rt.Prompts[prompt.Name]; !ok {
-				allPrompts = append(allPrompts, prompt)
-				rt.Prompts[prompt.Name] = r.target
-			}
-		}
-	}
-
-	return rt, advertisedTools, allResolvedTools, allResources, allPrompts, nil
-}
-
 // MakeSessionWithID implements MultiSessionFactory.
 func (f *defaultMultiSessionFactory) MakeSessionWithID(
 	ctx context.Context,
@@ -364,7 +302,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 	sessionHints map[string]string,
-) (*defaultMultiSession, error) {
+) *defaultMultiSession {
 	filtered := make([]*vmcp.Backend, 0, len(backends))
 	for _, b := range backends {
 		if b == nil {
@@ -409,24 +347,11 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 			"backendCount", len(backends))
 	}
 
-	var (
-		routingTable     *vmcp.RoutingTable
-		advertisedTools  []vmcp.Tool
-		allResolvedTools []vmcp.Tool
-		allResources     []vmcp.Resource
-		allPrompts       []vmcp.Prompt
-	)
-	if f.aggregator != nil {
-		var aggErr error
-		routingTable, advertisedTools, allResolvedTools, allResources, allPrompts, aggErr =
-			buildRoutingTableWithAggregator(ctx, f.aggregator, results)
-		if aggErr != nil {
-			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
-		}
-	} else {
-		routingTable, advertisedTools, allResources, allPrompts = buildRoutingTable(results)
-		allResolvedTools = advertisedTools // no filter when no aggregator
-	}
+	// The core is the single source of capability aggregation/advertising (the factory never
+	// aggregates), so the routing table is built from the raw backend capabilities with no
+	// overrides/conflict-resolution/filter; advertised and resolved tools are identical.
+	routingTable, advertisedTools, allResources, allPrompts := buildRoutingTable(results)
+	allResolvedTools := advertisedTools
 
 	transportSess := transportsession.NewStreamableSession(sessID)
 	populateBackendMetadata(transportSess, results)
@@ -441,7 +366,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
 		queue:           newAdmissionQueue(),
-	}, nil
+	}
 }
 
 // makeSession is the shared implementation for MakeSession and MakeSessionWithID.
@@ -453,10 +378,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends, nil)
-	if err != nil {
-		return nil, err
-	}
+	baseSession := f.makeBaseSession(ctx, sessID, identity, backends, nil)
 
 	// Apply session binding: extracts the (iss, sub) identity tuple, stores it in
 	// session metadata under MetadataKeyIdentityBinding, and wraps the session with
@@ -472,9 +394,9 @@ func (f *defaultMultiSessionFactory) makeSession(
 // RestoreSession implements MultiSessionFactory.
 // It reconnects to the backends whose IDs are listed in storedMetadata, rebuilds
 // the routing table, and reapplies the session-binding decorator from the stored
-// identity binding. Because the original bearer token is not available at restore
-// time, identity is reconstructed from the (iss, sub) tuple in
-// MetadataKeyIdentityBinding.
+// identity binding. Because the original bearer token is not persisted, backend
+// connectors receive nil identity; live requests carry a fully-populated identity
+// on req.Context() from TokenValidator.Middleware.
 func (f *defaultMultiSessionFactory) RestoreSession(
 	ctx context.Context,
 	id string,
@@ -498,10 +420,9 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	// Filter allBackends to the subset originally connected in this session.
 	filteredBackends := filterBackendsByStoredIDs(allBackends, storedBackendIDs)
 
-	// Reconstruct identity from the stored identity binding so makeBaseSession
-	// can pass it to backend connectors (e.g. for outgoing auth injection).
-	// The original bearer token is not available at restore time — only the
-	// (iss, sub) tuple stored in MetadataKeyIdentityBinding is used.
+	// Validate and read the stored identity binding. This key is written by
+	// BindSession at session-creation time and identifies whether the session
+	// was bound to an authenticated identity or was anonymous.
 	storedBinding, hasBinding := storedMetadata[sessiontypes.MetadataKeyIdentityBinding]
 	if !hasBinding {
 		// Legacy token-hash key present confirms not corrupted — safe to invalidate.
@@ -515,26 +436,17 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 			sessiontypes.MetadataKeyIdentityBinding)
 	}
 
-	// Restore identity from the stored (iss, sub) binding. Token is intentionally
-	// empty — the original bearer token is not persisted. Outgoing-auth strategies
-	// must derive credentials from Claims or a token store keyed by tsid; a
-	// strategy that reads identity.Token will reject the request with an
-	// identity-has-no-token error. The anonymous sentinel (identity == nil) is
-	// handled by the IsUnauthenticated guard below.
-	var identity *auth.Identity
+	// Validate that the stored binding is parsable (or the unauthenticated
+	// sentinel) before proceeding. A malformed value indicates corrupted metadata.
+	// We do NOT construct a partial *auth.Identity here: the original bearer
+	// token is not persisted, so UpstreamTokens cannot be recovered. Fabricating
+	// a struct with empty Token and UpstreamTokens would violate the contract that
+	// a non-nil *auth.Identity is always fully populated (see pkg/auth/identity.go).
+	// Backend connectors receive nil identity; live tool calls already carry a
+	// complete identity on req.Context() from TokenValidator.Middleware. See #5336.
 	if !binding.IsUnauthenticated(storedBinding) {
-		iss, sub, ok := binding.Parse(storedBinding)
-		if !ok {
+		if _, _, ok := binding.Parse(storedBinding); !ok {
 			return nil, fmt.Errorf("RestoreSession: stored identity binding is malformed: %q", storedBinding)
-		}
-		identity = &auth.Identity{
-			PrincipalInfo: auth.PrincipalInfo{
-				Subject: sub,
-				Claims: map[string]any{
-					"iss": iss,
-					"sub": sub,
-				},
-			},
 		}
 	}
 
@@ -548,11 +460,8 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 
 	// Build the base session (backend connections + routing table) without the
-	// security wrapper. The wrapper is applied separately below.
-	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends, sessionHints)
-	if err != nil {
-		return nil, fmt.Errorf("RestoreSession: failed to rebuild backend connections: %w", err)
-	}
+	// security wrapper. Pass nil identity — see comment above.
+	baseSession := f.makeBaseSession(ctx, id, nil, filteredBackends, sessionHints)
 
 	// Restore only the identity-binding key from stored metadata. The other
 	// keys (MetadataKeyBackendIDs, MetadataKeyBackendSessionPrefix.*) are

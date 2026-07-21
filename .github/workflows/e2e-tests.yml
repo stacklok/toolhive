@@ -11,10 +11,10 @@ jobs:
     name: Build ToolHive Binary
     runs-on: ubuntu-8cores-32gb
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true
@@ -86,10 +86,10 @@ jobs:
             label_filter: llm
             artifact: e2e-test-results-llm
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true
@@ -123,7 +123,7 @@ jobs:
         run: |
           # Pre-pull images used by E2E tests so that workload creation
           # does not pay the image-pull cost inside the 60s API timeout.
-          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.0 &
+          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.3 &
           docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
           docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
           # yardstick is only needed for the vmcp test suite
@@ -153,4 +153,49 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             test/e2e/junit-report.xml
+          retention-days: 7
+
+  conformance:
+    name: MCP Conformance
+    runs-on: ubuntu-8cores-32gb
+    needs: build-binary
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [proxy, vmcp]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Download ToolHive binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: toolhive-binary
+          path: ./bin/
+
+      - name: Set binary permissions
+        run: chmod +x ./bin/thv
+
+      - name: Set up container runtime (Docker)
+        run: |
+          docker --version
+          sudo systemctl start docker
+
+      - name: Run MCP conformance suite
+        env:
+          THV_BINARY: ${{ github.workspace }}/bin/thv
+          CONFORMANCE_TARGET: ${{ matrix.target }}
+        run: ./test/conformance/run-conformance.sh
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: conformance-results-${{ matrix.target }}
+          path: test/conformance/results
           retention-days: 7

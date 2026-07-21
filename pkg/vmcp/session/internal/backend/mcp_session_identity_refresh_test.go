@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -93,7 +93,7 @@ func TestHTTPSession_PerRequestIdentity_DrivesUpstreamAuthHeader(t *testing.T) {
 	// simulates what auth.TokenValidator.Middleware does on every
 	// authenticated incoming request: the identity it places on the
 	// context carries upstream tokens that were transparently refreshed
-	// by upstreamtoken.InProcessService.GetAllValidTokens.
+	// by upstreamtoken.InProcessService.GetAllUpstreamCredentials.
 	freshIdentity := &auth.Identity{
 		PrincipalInfo:  auth.PrincipalInfo{Subject: "user-1"},
 		UpstreamTokens: map[string]string{providerName: freshToken},

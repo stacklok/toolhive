@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yosida95/uritemplate/v3"
+
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -289,6 +291,54 @@ func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) (
 	return c.admission.FilterResources(ctx, identity, agg.Resources)
 }
 
+// ListResourceTemplates health-filters the registry, aggregates resource
+// templates on demand, and returns only those identity is admitted to read.
+//
+// Resource templates carry no admission entity of their own: the URI template is
+// treated as the resource id, reusing the exact resource-read filter (the same
+// per-item skip-on-error, log-and-continue decision ListResources applies). A
+// template whose URI-template string is denied is withheld.
+func (c *coreVMCP) ListResourceTemplates(
+	ctx context.Context, identity *auth.Identity,
+) ([]vmcp.ResourceTemplate, error) {
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.filterResourceTemplates(ctx, identity, agg.ResourceTemplates)
+}
+
+// filterResourceTemplates applies the resource-read admission filter to templates
+// by projecting each template's URI template onto a vmcp.Resource and reusing
+// admission.FilterResources, so templates and resources share one decision path.
+// The surviving URI templates select which templates are returned.
+func (c *coreVMCP) filterResourceTemplates(
+	ctx context.Context, identity *auth.Identity, templates []vmcp.ResourceTemplate,
+) ([]vmcp.ResourceTemplate, error) {
+	if len(templates) == 0 {
+		return []vmcp.ResourceTemplate{}, nil
+	}
+	proxies := make([]vmcp.Resource, len(templates))
+	for i := range templates {
+		proxies[i] = vmcp.Resource{URI: templates[i].URITemplate, BackendID: templates[i].BackendID}
+	}
+	allowedProxies, err := c.admission.FilterResources(ctx, identity, proxies)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(allowedProxies))
+	for i := range allowedProxies {
+		allowed[allowedProxies[i].URI] = struct{}{}
+	}
+	filtered := make([]vmcp.ResourceTemplate, 0, len(templates))
+	for i := range templates {
+		if _, ok := allowed[templates[i].URITemplate]; ok {
+			filtered = append(filtered, templates[i])
+		}
+	}
+	return filtered, nil
+}
+
 // ListPrompts health-filters the registry, aggregates prompts on demand, and
 // returns only those identity is admitted to get.
 func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
@@ -320,6 +370,13 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 // LookupResource resolves an advertised resource URI to its capability without
 // reading it. Delegates to ListResources, so a URI that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
+//
+// A URI backed by a resource TEMPLATE resolves too: after the concrete-resource
+// miss, the URI is checked against the admission-filtered resource templates
+// (the same view ListResourceTemplates advertises) — an exact template-string
+// match (the form a resources/subscribe or completion ref/resource carries) or
+// a template-expansion match. This keeps subscribe's admission aligned with
+// read: any URI ReadResource would serve is a valid subscription target.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
@@ -331,7 +388,37 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 			return &resource, nil
 		}
 	}
+
+	templates, err := c.ListResourceTemplates(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	for i := range templates {
+		if templates[i].URITemplate == uri || templateMatches(templates[i].URITemplate, uri) {
+			// Project the template onto a resource (the same projection
+			// filterResourceTemplates uses) so lookup and list agree on the shape.
+			return &vmcp.Resource{
+				URI:         templates[i].URITemplate,
+				Name:        templates[i].Name,
+				Description: templates[i].Description,
+				MimeType:    templates[i].MimeType,
+				BackendID:   templates[i].BackendID,
+			}, nil
+		}
+	}
+
 	return nil, fmt.Errorf("%w: resource %q", vmcp.ErrNotFound, uri)
+}
+
+// templateMatches reports whether the RFC 6570 URI template matches uri. An
+// invalid template string reports no match (it was already logged and skipped
+// at routing-table construction).
+func templateMatches(tmplStr, uri string) bool {
+	tmpl, err := uritemplate.New(tmplStr)
+	if err != nil {
+		return false
+	}
+	return tmpl.Match(uri) != nil
 }
 
 // LookupPrompt resolves an advertised prompt name to its capability without
@@ -349,6 +436,50 @@ func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, na
 		}
 	}
 	return nil, fmt.Errorf("%w: prompt %q", vmcp.ErrNotFound, name)
+}
+
+// ListBackends returns the backends visible to identity. In admin mode
+// (filterUnauthorized=false) it returns the full group registry as-is — no
+// aggregation, no admission, no health filter. In authorized mode it returns only
+// the backends the identity is admitted at least one capability on. See the [VMCP]
+// interface contract for the full semantics.
+func (c *coreVMCP) ListBackends(
+	ctx context.Context, identity *auth.Identity, filterUnauthorized bool,
+) ([]vmcp.Backend, error) {
+	all := c.backendRegistry.List(ctx)
+	if !filterUnauthorized {
+		return all, nil
+	}
+	// An empty group has nothing to authorize: return an empty (non-nil) set rather
+	// than aggregating, which would surface the aggregator's "no backends returned
+	// capabilities" sentinel as an error and make the authorized view disagree with
+	// the admin view for the same empty group. A non-empty group whose backends are
+	// all unreachable still errors (consistent with ListTools) — that is a live
+	// failure, not an empty answer.
+	if len(all) == 0 {
+		return []vmcp.Backend{}, nil
+	}
+	return c.authorizedBackends(ctx, identity, all)
+}
+
+// LookupBackend resolves a single backend id in the authorized view, mirroring
+// LookupTool: it delegates to ListBackends(ctx, identity, true) and returns
+// vmcp.ErrNotFound for an id that view does not contain (unknown, out-of-group, or
+// unauthorized).
+func (c *coreVMCP) LookupBackend(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*vmcp.Backend, error) {
+	backends, err := c.ListBackends(ctx, identity, true)
+	if err != nil {
+		return nil, err
+	}
+	for i := range backends {
+		if backends[i].ID == backendID {
+			backend := backends[i]
+			return &backend, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
 }
 
 // Close stops the workflow state store's cleanup goroutine. It is idempotent:
@@ -372,12 +503,72 @@ func (c *coreVMCP) Close() error {
 // lookup-then-call flow aggregates twice. This is intentional — caching is the
 // Serve layer's responsibility, not the core's (vmcp anti-patterns #8/#9).
 func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCapabilities, error) {
-	backends := filterHealthyBackends(c.backendRegistry.List(ctx), c.health)
+	return c.aggregateBackends(ctx, filterHealthyBackends(c.backendRegistry.List(ctx), c.health))
+}
+
+// aggregateBackends aggregates capabilities across the given backends. The caller
+// decides the backend set: aggregatedView passes the health-filtered subset (the
+// data path), while authorizedBackends passes the full registry (backend
+// visibility, per #5741: health is a status, not a visibility filter). It exists so
+// both share one aggregation error-wrap. Unreachable backends fail their live
+// capability query and simply contribute nothing.
+func (c *coreVMCP) aggregateBackends(
+	ctx context.Context, backends []vmcp.Backend,
+) (*aggregator.AggregatedCapabilities, error) {
 	agg, err := c.aggregator.AggregateCapabilities(ctx, backends)
 	if err != nil {
 		return nil, fmt.Errorf("capability aggregation failed: %w", err)
 	}
 	return agg, nil
+}
+
+// authorizedBackends returns the subset of all on which identity is admitted at
+// least one capability. It aggregates over the full set (no health filter — #5741),
+// runs the same admission seam List{Tools,Resources,Prompts} use, and unions the
+// surviving capabilities' BackendIDs. Composite tools are excluded (agg.Tools, not
+// advertisedTools): they are workflows with no single backend, so they cannot make
+// a backend visible. Callers guard the empty-group case before calling this (see
+// ListBackends) so an empty group never reaches the aggregator's "no backends"
+// sentinel here.
+func (c *coreVMCP) authorizedBackends(
+	ctx context.Context, identity *auth.Identity, all []vmcp.Backend,
+) ([]vmcp.Backend, error) {
+	agg, err := c.aggregateBackends(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := c.admission.FilterTools(ctx, identity, agg.Tools)
+	if err != nil {
+		return nil, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return nil, err
+	}
+
+	allowed := make(map[string]struct{})
+	for i := range tools {
+		allowed[tools[i].BackendID] = struct{}{}
+	}
+	for i := range resources {
+		allowed[resources[i].BackendID] = struct{}{}
+	}
+	for i := range prompts {
+		allowed[prompts[i].BackendID] = struct{}{}
+	}
+
+	out := make([]vmcp.Backend, 0, len(allowed))
+	for i := range all {
+		if _, ok := allowed[all[i].ID]; ok {
+			out = append(out, all[i])
+		}
+	}
+	return out, nil
 }
 
 // advertisedTools returns the aggregated backend tools followed by the composite
@@ -518,10 +709,9 @@ func workflowsRequireElicitation(defs map[string]*composer.WorkflowDefinition) b
 // health monitor is used (respects circuit breaker state). When nil, falls back
 // to the initial health status from the backend registry.
 //
-// This is an intentional, temporary duplication of discovery.filterHealthyBackends
-// (discovery/middleware.go:157, rules at 185-188): the discovery middleware keeps
-// its own copy on the legacy server.New path until that path is removed in Phase 3
-// (#5442/#5445). Keep the include/exclude rules identical across both copies.
+// This filtering previously had a second copy in the discovery middleware on the
+// legacy server.New path. That path and its copy were removed in Phase 3 (#5445),
+// so this is now the single source of truth for backend health filtering.
 func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.StatusProvider) []vmcp.Backend {
 	if len(backends) == 0 {
 		return backends

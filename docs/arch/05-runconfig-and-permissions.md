@@ -386,7 +386,7 @@ type Profile struct {
 }
 ```
 
-`NetworkPermissions` also carries a `Mode` field (`"host"`, `"bridge"`, `"none"`) that selects the container runtime network mode; when empty, the runtime default is used.
+`NetworkPermissions` also carries a `Mode` field (`"host"`, `"bridge"`, `"none"`) that selects the container runtime network mode; when empty, the runtime default is used. Network isolation is only enforceable in bridge mode; see [Network isolation requires bridge networking](#network-isolation-requires-bridge-networking).
 
 ### Filesystem Permissions
 
@@ -533,6 +533,30 @@ When `isolate_network: true` in RunConfig:
 - ACL-based filtering of hosts and ports
 
 **Implementation**: `pkg/container/docker/squid.go`, `pkg/networking/`
+
+##### Network isolation requires bridge networking
+
+Network isolation is a bridge-topology construct: it builds a per-workload
+`internal=true` network plus DNS (dnsmasq) and egress/ingress (Squid) sidecars,
+attaching the MCP container to the internal network only. This only works when
+the network mode is bridge (`""`, `bridge`, or `default`). For non-bridge modes
+the sidecars have no route out and the workload bypasses them entirely, so
+isolation is dropped:
+
+| Network mode | `--isolate-network` | Behavior |
+| --- | --- | --- |
+| bridge/`""`/`default` | any | Isolation enforced as designed |
+| `host` (or other non-bridge) | defaulted | Isolation dropped, `WARN` logged (dropping isolation reduces confinement) |
+| `host` (or other non-bridge) | explicitly `true` | Build fails with an error naming both ways out |
+| `none` | any | Isolation dropped silently (`DEBUG`), since `none` is already maximally confined |
+
+`host` and `none` are intentionally asymmetric: dropping isolation for a
+host-networked workload is a real reduction in confinement (warn, or fail fast
+when explicitly requested), whereas `none` already blocks all networking, so
+isolation is merely redundant. This is enforced at three layers: config build
+(`pkg/runner/config_builder.go`), config load (`pkg/runner/config.go` `ReadJSON`
+self-heals legacy on-disk configs), and deploy (`pkg/container/docker/client.go`
+as a safety net for restart paths). See issue #5775.
 
 ### Privileged Mode
 
@@ -747,3 +771,4 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - [Deployment Modes](01-deployment-modes.md) - RunConfig portability
 - [Transport Architecture](03-transport-architecture.md) - Transport configuration
 - [Operator Architecture](09-operator-architecture.md) - K8s-specific configuration
+- [Registry System](06-registry-system.md) - Registry metadata that seeds RunConfig for a server

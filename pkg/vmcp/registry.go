@@ -37,8 +37,10 @@ type BackendRegistry interface {
 	Get(ctx context.Context, backendID string) *Backend
 
 	// List returns all registered backends.
-	// The returned slice is a snapshot and safe to iterate without additional locking.
-	// Order is not guaranteed unless specified by the implementation.
+	// The returned slice is a fresh, non-nil snapshot the caller owns: safe to
+	// iterate without additional locking and safe to mutate (implementations must
+	// not return an internal or shared backing array). Order is not guaranteed
+	// unless specified by the implementation.
 	//
 	// Example:
 	//   backends := registry.List(ctx)

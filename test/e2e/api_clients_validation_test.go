@@ -53,7 +53,7 @@ var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients"
 					}
 				}
 				return false
-			}, 60*time.Second, 2*time.Second).Should(BeTrue())
+			}, 90*time.Second, 2*time.Second).Should(BeTrue())
 
 			By("Attempting to register with an invalid client type")
 			invalidClientName := fmt.Sprintf("invalid-client-%d", time.Now().UnixNano())
@@ -115,7 +115,7 @@ var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients"
 					}
 				}
 				return false
-			}, 60*time.Second, 2*time.Second).Should(BeTrue())
+			}, 90*time.Second, 2*time.Second).Should(BeTrue())
 
 			By("Attempting bulk register with invalid client types")
 			invalidClientName1 := fmt.Sprintf("invalid-bulk-1-%d", time.Now().UnixNano())

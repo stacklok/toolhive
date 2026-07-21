@@ -45,7 +45,9 @@ import (
 //   - Decorators may only SUBTRACT reachability: filter list output or refuse a
 //     call before delegating to inner. They hold only an inner VMCP and have no
 //     path to backends except through it, so they cannot widen access. This
-//     mirrors the list-filter/call-deny pairing in pkg/authz/tool_filter.go.
+//     mirrors the list-filter/call-deny pairing in pkg/authz/tool_filter.go, and
+//     applies to backends too: a decorator may drop entries from ListBackends
+//     output or refuse a LookupBackend, but never surface a backend inner withheld.
 //   - args/meta maps are treated as read-only; the core copies before mutating
 //     (go-style: copy before mutating caller input).
 //   - ReadResource results: Meta may be nil — the mcp-go resources/read handler
@@ -72,6 +74,14 @@ type VMCP interface {
 	// ListResources returns the resources advertised to identity.
 	ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error)
 
+	// ListResourceTemplates returns the resource templates advertised to identity.
+	// Each template's URI template is treated as the resource id for the admission
+	// filter (the same read-side decision ListResources applies), so a template the
+	// identity may not read is withheld. Reading an expanded URI reuses ReadResource
+	// (the router matches the URI against these templates); there is no dedicated
+	// template read method.
+	ListResourceTemplates(ctx context.Context, identity *auth.Identity) ([]vmcp.ResourceTemplate, error)
+
 	// ReadResource reads the resource at uri on behalf of identity. The
 	// returned result's Meta may be nil (see the interface contract).
 	ReadResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
@@ -86,6 +96,27 @@ type VMCP interface {
 	// _meta to forward.
 	GetPrompt(ctx context.Context, identity *auth.Identity, name string,
 		args map[string]any) (*vmcp.PromptGetResult, error)
+
+	// Complete resolves argument-completion candidates for a prompt argument or a
+	// resource-template variable on behalf of identity (the completion/complete
+	// method).
+	//
+	// ref selects the target: a CompletionRefTypePrompt ref resolves the backend via
+	// the prompts routing table (by ref.Name); a CompletionRefTypeResource ref resolves
+	// it via the resource-templates routing table (matching ref.URI against templates)
+	// with an exact concrete-resource fallback. The referenced capability is
+	// admission-checked (the same get/read decision GetPrompt/ReadResource enforce)
+	// before the backend is queried.
+	//
+	// argName/argValue are the argument being completed; contextArgs carries
+	// previously-resolved argument values for multi-argument completion (may be nil).
+	//
+	// An unroutable ref, or a backend that does not advertise completions, yields an
+	// empty (non-nil) CompletionResult rather than an error — matching the MCP spec's
+	// lenient completion semantics. Admission denial still returns an error wrapping
+	// vmcp.ErrAuthorizationFailed. See ListTools for the nil/anonymous identity semantics.
+	Complete(ctx context.Context, identity *auth.Identity, ref vmcp.CompletionRef,
+		argName, argValue string, contextArgs map[string]string) (*vmcp.CompletionResult, error)
 
 	// LookupTool resolves an advertised tool name to its capability (incl.
 	// BackendID) WITHOUT invoking it. Returns an error for an unknown or
@@ -103,6 +134,68 @@ type VMCP interface {
 	// BackendID) WITHOUT retrieving it. Returns an error for an unknown or
 	// unadvertised name. Applies the same admission filter as ListPrompts.
 	LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error)
+
+	// CheckToolCall runs the CALL-side admission decision for the named tool
+	// WITHOUT invoking it: it returns nil when identity is allowed to call name
+	// with args, and an error wrapping [vmcp.ErrAuthorizationFailed] on deny AND on
+	// an authorizer error (fail closed). It shares the exact admission block CallTool
+	// runs, so a pre-flight check and the call can never drift.
+	//
+	// Unlike LookupTool (list-side, no args), this is the call-side decision: it
+	// evaluates argument-conditional policies with the real args. identity is never
+	// logged. See ListTools for the nil/anonymous semantics.
+	CheckToolCall(ctx context.Context, identity *auth.Identity, name string, args map[string]any) error
+
+	// CheckResourceRead runs the read-side admission decision for uri WITHOUT
+	// reading it. Same contract as CheckToolCall: nil when allowed, an error
+	// wrapping [vmcp.ErrAuthorizationFailed] on deny or authorizer error (fail
+	// closed). Shares ReadResource's admission block.
+	CheckResourceRead(ctx context.Context, identity *auth.Identity, uri string) error
+
+	// CheckPromptGet runs the get-side admission decision for the named prompt
+	// WITHOUT retrieving it. Same contract as CheckToolCall: nil when allowed, an
+	// error wrapping [vmcp.ErrAuthorizationFailed] on deny or authorizer error (fail
+	// closed). Shares GetPrompt's admission block.
+	CheckPromptGet(ctx context.Context, identity *auth.Identity, name string) error
+
+	// ListBackends returns the backends visible to identity, scoped to the gateway's
+	// group (groupRef always applies; the BackendRegistry is the group-scoped source).
+	//
+	// filterUnauthorized selects the view:
+	//
+	//   - true (user-discovery): returns only backends the identity is authorized to
+	//     use — a backend appears iff the identity is admitted (the same seam
+	//     ListTools/CallTool enforce) to AT LEAST ONE of that backend's discovered
+	//     capabilities. There is no backend-level authorization entity, so this is a
+	//     derived rule: aggregate the group's backends, run admission, and group the
+	//     surviving capabilities by BackendID. A backend with zero discovered
+	//     capabilities (tool-less) is absent for EVERY identity — this is NOT an
+	//     authorization-denial signal; a backend that has capabilities but all are
+	//     denied to this identity is also absent, for the unrelated reason of policy.
+	//     Callers must not conflate "absent from this list" with "identity is denied
+	//     this specific backend." A nil identity is anonymous (see the interface
+	//     contract), yielding the anonymous-visible set.
+	//
+	//   - false (admin): returns ALL group-scoped backends with no per-identity
+	//     authorization filtering. identity is unused and may be nil. Authorizing the
+	//     caller for this view is the transport/API layer's responsibility (an
+	//     admin-gated endpoint), not the core's.
+	//
+	// Health is a status, not a visibility filter: ListBackends does NOT apply the
+	// health filter ListTools uses. A degraded/unhealthy backend still appears (admin
+	// mode) — carrying its HealthStatus so a UI can badge it — and appears in the
+	// authorized mode whenever it still has an admitted capability. Unreachable
+	// backends contribute no capabilities to the authorized derivation, so they are
+	// naturally absent there, but that is a consequence of live aggregation, not a
+	// health filter. The returned slice is fresh and non-nil; callers may mutate it.
+	ListBackends(ctx context.Context, identity *auth.Identity, filterUnauthorized bool) ([]vmcp.Backend, error)
+
+	// LookupBackend resolves a single backend id in the AUTHORIZED view: it returns
+	// the backend only when it is in ListBackends(ctx, identity, true), and
+	// vmcp.ErrNotFound for an unknown, out-of-group, or unauthorized id. This mirrors
+	// LookupTool/LookupResource/LookupPrompt — a lookup never resolves what the
+	// corresponding authorized list would not show.
+	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
 
 	// BackendHealth returns the backend health reporter the core owns, or nil when health
 	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and

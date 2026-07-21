@@ -31,6 +31,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // testTokenResponse is a test helper to produce token responses.
@@ -219,6 +222,229 @@ func TestNewOAuth2Provider(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "redirect_uri is required")
 	})
+
+	t.Run("unsupported token endpoint auth method returns error", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint:   mock.URL + "/authorize",
+			TokenEndpoint:           mock.URL + "/token",
+			TokenEndpointAuthMethod: "private_key_jwt",
+		}
+
+		_, err := NewOAuth2Provider(config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "private_key_jwt",
+			"construction must fail loudly on a method this client cannot fulfil")
+	})
+}
+
+// TestAuthStyleFromMethod pins the mapping from RFC 7591
+// token_endpoint_auth_method values to oauth2.AuthStyle. Recognised methods
+// (basic/post/none) and the unset case resolve to a definite style; an
+// unrecognised, non-empty method must be rejected (fail loudly) rather than
+// silently degrading to the POST-body default.
+func TestAuthStyleFromMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		method  string
+		want    oauth2.AuthStyle
+		wantErr bool
+	}{
+		{"client_secret_basic maps to header", oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauth2.AuthStyleInHeader, false},
+		{"client_secret_post maps to params", oauthproto.TokenEndpointAuthMethodClientSecretPost, oauth2.AuthStyleInParams, false},
+		{"none maps to params", oauthproto.TokenEndpointAuthMethodNone, oauth2.AuthStyleInParams, false},
+		{"unset maps to params", "", oauth2.AuthStyleInParams, false},
+		{"private_key_jwt is rejected", "private_key_jwt", oauth2.AuthStyleAutoDetect, true},
+		{"unknown method is rejected", "totally_bogus", oauth2.AuthStyleAutoDetect, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := authStyleFromMethod(tt.method)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.method,
+					"error must name the offending method for operator diagnosis")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestNewOAuth2Provider_TokenEndpointAuthMethod verifies that the negotiated
+// token_endpoint_auth_method controls how client credentials are presented at
+// the token endpoint. This is the regression guard for issue #5865: a
+// DCR-registered client whose upstream negotiated client_secret_basic must send
+// its credentials in the HTTP Basic Authorization header, not the POST body, or
+// strict authorization servers (e.g. Ory Hydra) reject the exchange with
+// invalid_client.
+func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "dcr-client"
+		clientSecret = "dcr-secret"
+	)
+
+	tests := []struct {
+		name          string
+		authMethod    string
+		wantAuthStyle oauth2.AuthStyle
+		wantBasicAuth bool // credentials expected in the Authorization header
+	}{
+		{
+			name:          "client_secret_basic sends credentials in Basic header",
+			authMethod:    oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			wantAuthStyle: oauth2.AuthStyleInHeader,
+			wantBasicAuth: true,
+		},
+		{
+			name:          "client_secret_post sends credentials in body",
+			authMethod:    oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			wantAuthStyle: oauth2.AuthStyleInParams,
+			wantBasicAuth: false,
+		},
+		{
+			name:          "unset defaults to credentials in body",
+			authMethod:    "",
+			wantAuthStyle: oauth2.AuthStyleInParams,
+			wantBasicAuth: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mock := newMockOAuth2Server()
+			t.Cleanup(mock.Close)
+
+			var (
+				gotUser, gotPass string
+				gotBasicAuth     bool
+				gotBodySecret    string
+			)
+			mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+				gotUser, gotPass, gotBasicAuth = r.BasicAuth()
+				if err := r.ParseForm(); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				gotBodySecret = r.PostForm.Get("client_secret")
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(testTokenResponse{
+					AccessToken: "access-token",
+					TokenType:   "Bearer",
+				}); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			}
+
+			config := &OAuth2Config{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:     clientID,
+					ClientSecret: clientSecret,
+					RedirectURI:  "http://localhost:8080/callback",
+				},
+				AuthorizationEndpoint:   mock.URL + "/authorize",
+				TokenEndpoint:           mock.URL + "/token",
+				TokenEndpointAuthMethod: tt.authMethod,
+			}
+
+			provider, err := NewOAuth2Provider(config)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthStyle, provider.oauth2Config.Endpoint.AuthStyle,
+				"oauth2 endpoint auth style must reflect the negotiated method")
+
+			_, err = provider.exchangeCodeForTokens(context.Background(), "auth-code", "")
+			require.NoError(t, err)
+
+			if tt.wantBasicAuth {
+				require.True(t, gotBasicAuth, "credentials must be sent in the Basic Authorization header")
+				assert.Equal(t, clientID, gotUser)
+				assert.Equal(t, clientSecret, gotPass)
+				assert.Empty(t, gotBodySecret, "client_secret must not also appear in the POST body")
+			} else {
+				assert.False(t, gotBasicAuth, "no Basic Authorization header expected")
+				assert.Equal(t, clientSecret, gotBodySecret, "client_secret must be sent in the POST body")
+			}
+		})
+	}
+}
+
+// TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod verifies that
+// the negotiated auth method also governs the refresh path. RefreshTokens
+// shares the same oauth2.Config.Endpoint.AuthStyle as code exchange, so a
+// client_secret_basic client must present its credentials in the Basic
+// Authorization header on refresh too — this pins the refresh half of the
+// contract documented on authStyleFromMethod so a future change that rebuilds
+// the config or bypasses AuthStyle in RefreshTokens does not ship unnoticed.
+func TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "dcr-client"
+		clientSecret = "dcr-secret"
+	)
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	var (
+		gotUser, gotPass string
+		gotBasicAuth     bool
+		gotBodySecret    string
+	)
+	mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, gotBasicAuth = r.BasicAuth()
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotBodySecret = r.PostForm.Get("client_secret")
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(testTokenResponse{
+			AccessToken: "refreshed-access-token",
+			TokenType:   "Bearer",
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		AuthorizationEndpoint:   mock.URL + "/authorize",
+		TokenEndpoint:           mock.URL + "/token",
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	}
+
+	provider, err := NewOAuth2Provider(config)
+	require.NoError(t, err)
+
+	_, err = provider.RefreshTokens(context.Background(), "some-refresh-token", "")
+	require.NoError(t, err)
+
+	require.True(t, gotBasicAuth, "refresh must send credentials in the Basic Authorization header")
+	assert.Equal(t, clientID, gotUser)
+	assert.Equal(t, clientSecret, gotPass)
+	assert.Empty(t, gotBodySecret, "client_secret must not also appear in the refresh POST body")
 }
 
 func TestBaseOAuth2Provider_Type(t *testing.T) {
@@ -2061,7 +2287,7 @@ func TestValidateAdditionalAuthorizationParams(t *testing.T) {
 				AdditionalAuthorizationParams: tt.params,
 			}
 
-			err := config.Validate()
+			err := config.ValidateWithInsecure(false)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -2523,5 +2749,124 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing
 		// The error must not leak any part of the token response body.
 		assert.NotContains(t, err.Error(), secretMarker,
 			"error message must not contain token body content")
+	})
+}
+
+func TestNewHTTPClientForHost(t *testing.T) {
+	t.Parallel()
+
+	// privateIP is an RFC-1918 address unlikely to have a listener; used to
+	// trigger the private-IP dial-block without needing a real server.
+	const privateIP = "10.255.255.1"
+
+	tests := []struct {
+		name            string
+		host            string
+		allowPrivateIPs bool
+		// wantPrivateIPBlocked: when true, dialing privateIP must produce the
+		// "private IP address" error; when false, it must not (any other error,
+		// e.g. connection refused or TLS, is fine).
+		wantPrivateIPBlocked bool
+	}{
+		{
+			name:                 "external host with private IPs disallowed blocks private IP dial",
+			host:                 "external.example.com",
+			allowPrivateIPs:      false,
+			wantPrivateIPBlocked: true,
+		},
+		{
+			name:                 "external host with private IPs allowed passes dial guard",
+			host:                 "external.example.com",
+			allowPrivateIPs:      true,
+			wantPrivateIPBlocked: false,
+		},
+		{
+			name:            "localhost always allows private IPs regardless of flag",
+			host:            "localhost",
+			allowPrivateIPs: false,
+			// localhost sets allowInsecure=true which already sets WithPrivateIPs(true)
+			wantPrivateIPBlocked: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := newHTTPClientForHost(tt.host, tt.allowPrivateIPs, false)
+			require.NoError(t, err)
+			require.NotNil(t, client)
+
+			// Use a short deadline so "allowed" cases don't wait for a real TCP
+			// timeout when dialing the unreachable private IP.
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			t.Cleanup(cancel)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+privateIP+":9999", nil)
+			require.NoError(t, err)
+
+			// The private-IP guard fires synchronously inside the dialer's control
+			// function, before any TCP packets are sent, so the "private IP address"
+			// error is immediate and deterministic when the guard is active.
+			// When the guard is absent the dial proceeds over the network; the
+			// 500 ms context deadline bounds the test. Any non-guard error
+			// (context deadline exceeded, connection refused, TLS) does not contain
+			// "private IP address", so the NotContains assertion is not vacuous:
+			// an incorrectly-active guard would fail the check immediately.
+			_, dialErr := client.Do(req)
+			require.Error(t, dialErr)
+
+			if tt.wantPrivateIPBlocked {
+				assert.Contains(t, dialErr.Error(), "private IP address",
+					"expected private IP to be blocked")
+			} else {
+				assert.NotContains(t, dialErr.Error(), "private IP address",
+					"expected private IP dial to pass the IP guard")
+			}
+		})
+	}
+}
+
+func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	t.Run("AllowPrivateIPs field is propagated to provider", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			AllowPrivateIPs:       true,
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+		assert.True(t, provider.config.AllowPrivateIPs)
+	})
+
+	t.Run("AllowPrivateIPs defaults to false", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+		assert.False(t, provider.config.AllowPrivateIPs)
 	})
 }

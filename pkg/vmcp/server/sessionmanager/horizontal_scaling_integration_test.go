@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -185,7 +185,7 @@ func TestHorizontalScaling_CrossPodReconstruction(t *testing.T) {
 	smB := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
 
 	// GetMultiSession triggers cache miss → loadSession → RestoreSession from Redis.
-	sess, ok := smB.GetMultiSession(sessionID)
+	sess, ok := smB.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "pod B must reconstruct the session from Redis on cache miss")
 	require.NotNil(t, sess)
 
@@ -238,7 +238,7 @@ func TestHorizontalScaling_CrossPodHijackPrevention(t *testing.T) {
 
 	// Pod B: restore from Redis.
 	smB := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
-	sess, ok := smB.GetMultiSession(sessionID)
+	sess, ok := smB.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "session must be restorable on pod B")
 	require.NotNil(t, sess)
 
@@ -289,7 +289,7 @@ func TestHorizontalScaling_AllBackendsFailOnRestore(t *testing.T) {
 	// Use a fresh manager: its cache is empty, so GetMultiSession takes the
 	// restore path without needing to explicitly evict the session.
 	smReader := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
-	sess, ok := smReader.GetMultiSession(sessionID)
+	sess, ok := smReader.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "GetMultiSession must return ok=true even when backends are unreachable")
 	require.NotNil(t, sess)
 	assert.Empty(t, sess.Tools(), "routing table must be empty when no backend reconnected")
@@ -319,7 +319,7 @@ func TestHorizontalScaling_BackendExpiry_SkipsExpiredOnRestore(t *testing.T) {
 	sessionID := createSession(t, smA, nil)
 
 	// Verify session A has tools from both backends before expiry.
-	sessA, ok := smA.GetMultiSession(sessionID)
+	sessA, ok := smA.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok)
 	toolNames := make(map[string]bool)
 	for _, tool := range sessA.Tools() {
@@ -336,7 +336,7 @@ func TestHorizontalScaling_BackendExpiry_SkipsExpiredOnRestore(t *testing.T) {
 	// (backendB is still running — we're testing that RestoreSession filters
 	// it out based on the updated Redis metadata, not because it's unreachable.)
 	smC := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backendA, backendB})
-	sessC, ok := smC.GetMultiSession(sessionID)
+	sessC, ok := smC.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "session must be restorable after NotifyBackendExpired")
 	require.NotNil(t, sessC)
 
@@ -379,11 +379,11 @@ func TestHorizontalScaling_InMemoryOnlyMode(t *testing.T) {
 	sessionID := createSession(t, smA, nil)
 
 	// Pod B must not be able to see pod A's session.
-	_, ok := smB.GetMultiSession(sessionID)
+	_, ok := smB.GetMultiSession(t.Context(), sessionID)
 	assert.False(t, ok, "in-memory-only: pod B must not see pod A's session")
 
 	// Single-pod usage on pod A must still work.
-	sess, ok := smA.GetMultiSession(sessionID)
+	sess, ok := smA.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "pod A must still serve its own session")
 	require.NotNil(t, sess)
 	assert.NotEmpty(t, sess.Tools(), "session on pod A must have tools")

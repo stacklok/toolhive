@@ -4,7 +4,7 @@
 # The Virtual MCP Server aggregates multiple MCP server workloads from a ToolHive group
 # into a single unified MCP endpoint.
 #
-# References: docs/proposals/THV-2106-virtual-mcp-server.md
+# References: https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md
 #
 # Usage:
 #   vmcp serve --config vmcp-config.yaml

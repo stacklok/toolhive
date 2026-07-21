@@ -185,6 +185,24 @@ func TestNewHandler_ErrorsOnNilConfig(t *testing.T) {
 		"NewHandler should error when AuthorizationServerConfig.Config is nil")
 }
 
+// TestNewHandler_ErrorsOnDuplicateUpstreamNames pins that the constructor rejects
+// duplicate upstream names. Names must be unique: upstreamByName returns the first
+// match, tokens are keyed by name, and the authorization chain is keyed by name, so
+// a duplicate would silently shadow a provider.
+func TestNewHandler_ErrorsOnDuplicateUpstreamNames(t *testing.T) {
+	t.Parallel()
+
+	_, oauth2Config, stor, _ := baseTestSetup(t)
+	upstreams := []NamedUpstream{
+		{Name: "dup", Provider: &mockIDPProvider{}},
+		{Name: "dup", Provider: &mockIDPProvider{}},
+	}
+
+	_, err := NewHandler(nil, oauth2Config, stor, upstreams)
+	require.Error(t, err, "NewHandler should reject duplicate upstream names")
+	assert.ErrorContains(t, err, "duplicate upstream name")
+}
+
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	t.Parallel()
 	handler, storState, mockUpstream := handlerTestSetup(t)

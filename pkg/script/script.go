@@ -9,7 +9,7 @@ package script
 import (
 	"context"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // DefaultStepLimit is the default maximum number of Starlark execution steps.

@@ -13,15 +13,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	vmcpratelimit "github.com/stacklok/toolhive/pkg/vmcp/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
@@ -92,16 +95,18 @@ var initBody = map[string]any{
 }
 
 // registerServeOptimizerSession builds a Serve server with the optimizer enabled
-// (OptimizerFactory + AdvertiseFromCore) backed by fc, registers one anonymous session
-// via the SDK initialize path, and returns the server, session ID, HTTP base URL, and
-// the recording factory. Mirrors registerServeSession but in optimizer mode.
-func registerServeOptimizerSession(t *testing.T, fc *fakeCore) (*Server, string, string, *recordingOptimizerFactory) {
+// (OptimizerFactory + AdvertiseFromCore) over vmcpCore, registers one anonymous
+// session via the SDK initialize path, and returns the server, session ID, HTTP
+// base URL, and recording factory. Mirrors registerServeSession in optimizer mode.
+func registerServeOptimizerSession(
+	t *testing.T, vmcpCore core.VMCP, tools []vmcp.Tool,
+) (*Server, string, string, *recordingOptimizerFactory) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
-	factory, _ := newToolSessionFactory(t, ctrl, fc.tools)
+	factory, _ := newToolSessionFactory(t, ctrl, tools)
 	optFactory := &recordingOptimizerFactory{}
 
-	srv, err := Serve(context.Background(), fc, &ServerConfig{
+	srv, err := Serve(context.Background(), vmcpCore, &ServerConfig{
 		SessionTTL: time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{
 			Base:              factory,
@@ -126,7 +131,7 @@ func registerServeOptimizerSession(t *testing.T, fc *fakeCore) (*Server, string,
 	require.Equal(t, http.StatusOK, initResp.StatusCode)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 	return srv, sessionID, ts.URL, optFactory
 }
@@ -191,7 +196,7 @@ func TestServeOptimizerAdvertisesOnlyFindAndCallTool(t *testing.T) {
 		{Name: "tool-a", Description: "first"},
 		{Name: "tool-b", Description: "second"},
 	}}
-	_, sessionID, baseURL, optFactory := registerServeOptimizerSession(t, fc)
+	_, sessionID, baseURL, optFactory := registerServeOptimizerSession(t, fc, fc.tools)
 
 	require.Eventually(t, func() bool {
 		for _, n := range serveToolNames(t, baseURL, sessionID) {
@@ -223,7 +228,7 @@ func TestServeOptimizerFindToolReturnsCoreTools(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a"}, {Name: "tool-b"}}}
-	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc)
+	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc, fc.tools)
 
 	handler := optimizerMetaHandlers(t, srv, sessionID)[optimizerdec.FindToolName]
 	require.NotNil(t, handler)
@@ -277,7 +282,7 @@ func TestServeOptimizerCallToolRoutesThroughCore(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a"}}}
-	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc)
+	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc, fc.tools)
 
 	handler := optimizerMetaHandlers(t, srv, sessionID)[optimizerdec.CallToolName]
 	require.NotNil(t, handler)
@@ -309,7 +314,7 @@ func TestServeOptimizerCallToolInnerAdmissionDenied(t *testing.T) {
 		tools:   []vmcp.Tool{{Name: "tool-a"}},
 		callErr: fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
 	}
-	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc)
+	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc, fc.tools)
 
 	handler := optimizerMetaHandlers(t, srv, sessionID)[optimizerdec.CallToolName]
 	require.NotNil(t, handler)
@@ -329,6 +334,88 @@ func TestServeOptimizerCallToolInnerAdmissionDenied(t *testing.T) {
 	assert.Equal(t, int32(1), fc.callToolCalls.Load(), "the inner target must reach the core admission seam")
 }
 
+// singleUseToolLimiter is an in-memory per-tool limiter for the optimizer
+// integration test. Calls for other names are deliberately unlimited, so the
+// test also proves the optimizer passes the resolved backend tool name.
+type singleUseToolLimiter struct {
+	toolName string
+	calls    atomic.Int32
+}
+
+func (l *singleUseToolLimiter) Allow(
+	_ context.Context, toolName, _ string,
+) (*ratelimit.Decision, error) {
+	if toolName != l.toolName {
+		return &ratelimit.Decision{Allowed: true}, nil
+	}
+	if l.calls.Add(1) > 1 {
+		return &ratelimit.Decision{Allowed: false, RetryAfter: time.Minute}, nil
+	}
+	return &ratelimit.Decision{Allowed: true}, nil
+}
+
+// TestServeOptimizerCallToolUsesResolvedNameForRateLimiting composes the real
+// rate-limit decorator below the Serve-layer optimizer. The first call is
+// allowed and reaches the core; the second call to the same resolved tool is
+// denied before delegation.
+func TestServeOptimizerCallToolUsesResolvedNameForRateLimiting(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a"}}}
+	limiter := &singleUseToolLimiter{toolName: "tool-a"}
+	decorated := vmcpratelimit.NewDecorator(fc, limiter)
+	_, sessionID, baseURL, _ := registerServeOptimizerSession(t, decorated, fc.tools)
+
+	requestBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": optimizerdec.CallToolName,
+			"arguments": map[string]any{
+				"tool_name":  "tool-a",
+				"parameters": map[string]any{},
+			},
+		},
+	}
+
+	firstResp := postServeMCP(t, baseURL, requestBody, sessionID)
+	defer firstResp.Body.Close()
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+	var first struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(firstResp.Body).Decode(&first))
+	require.Nil(t, first.Error)
+	assert.False(t, first.Result.IsError)
+
+	secondResp := postServeMCP(t, baseURL, requestBody, sessionID)
+	defer secondResp.Body.Close()
+	require.Equal(t, http.StatusOK, secondResp.StatusCode)
+	var second struct {
+		Result struct {
+			IsError           bool           `json:"isError"`
+			StructuredContent map[string]any `json:"structuredContent"`
+		} `json:"result"`
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(secondResp.Body).Decode(&second))
+	require.Nil(t, second.Error, "coded tool failures should stay tool results, not JSON-RPC errors")
+	assert.True(t, second.Result.IsError)
+	assert.EqualValues(t, ratelimit.CodeRateLimited, second.Result.StructuredContent["code"])
+	assert.Equal(t, ratelimit.MessageRateLimited, second.Result.StructuredContent["message"])
+	data, ok := second.Result.StructuredContent["data"].(map[string]any)
+	require.True(t, ok, "rate-limit data should survive optimizer wrapping")
+	assert.EqualValues(t, 60, data["retryAfterSeconds"])
+	assert.Equal(t, int32(2), limiter.calls.Load(), "the limiter must receive the resolved tool name on both calls")
+	assert.Equal(t, int32(1), fc.callToolCalls.Load(), "the denied call must not reach the core")
+	got, _ := fc.lastCallToolName.Load().(string)
+	assert.Equal(t, "tool-a", got)
+}
+
 // TestServeOptimizerEnforcesSessionBinding proves both meta-tools enforce the session's
 // identity binding (anti-hijack): an attacker presenting a token on an anonymous session
 // is rejected, the session is terminated (fail-closed), and no optimizer work is done.
@@ -339,7 +426,7 @@ func TestServeOptimizerEnforcesSessionBinding(t *testing.T) {
 		t.Run(toolName, func(t *testing.T) {
 			t.Parallel()
 			fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a"}}}
-			srv, sessionID, _, _ := registerServeOptimizerSession(t, fc)
+			srv, sessionID, _, _ := registerServeOptimizerSession(t, fc, fc.tools)
 			handler := optimizerMetaHandlers(t, srv, sessionID)[toolName]
 			require.NotNil(t, handler)
 
@@ -361,7 +448,7 @@ func TestServeOptimizerEnforcesSessionBinding(t *testing.T) {
 
 			assert.Equal(t, int32(0), fc.callToolCalls.Load(),
 				"a binding failure must reject before any inner core call")
-			require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
+			require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 				2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
 		})
 	}
@@ -375,7 +462,7 @@ func TestServeOptimizerLazyInjectsForRehydratedSession(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a"}}}
-	srv, sessionID, _, optFactory := registerServeOptimizerSession(t, fc)
+	srv, sessionID, _, optFactory := registerServeOptimizerSession(t, fc, fc.tools)
 
 	// Capture the registration-time counts so we can prove the rehydration REBUILDS
 	// (the half of AC5 that distinguishes the Serve path from the legacy GetAdaptedTools):

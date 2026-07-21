@@ -302,3 +302,54 @@ func TestEnsureRequiredEnvVars(t *testing.T) {
 		assert.Equal(t, "regular", envMap["REGULAR_VAR"])
 	})
 }
+
+// TestMergeStringMaps documents the precedence the Service reconcilers rely on when
+// merging operator-owned annotations/labels over pre-existing (possibly externally
+// written) ones: on a key collision the default map (first arg) wins, and keys present
+// only in the override map (e.g. an external controller's cloud.google.com/* annotation)
+// are preserved. See #5730.
+func TestMergeStringMaps(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		defaultMap  map[string]string
+		overrideMap map[string]string
+		want        map[string]string
+	}{
+		{
+			name:        "default wins on key collision",
+			defaultMap:  map[string]string{"shared": "operator"},
+			overrideMap: map[string]string{"shared": "external"},
+			want:        map[string]string{"shared": "operator"},
+		},
+		{
+			name:        "override-only keys preserved",
+			defaultMap:  map[string]string{"app": "vmcp"},
+			overrideMap: map[string]string{"cloud.google.com/neg-status": "x"},
+			want:        map[string]string{"app": "vmcp", "cloud.google.com/neg-status": "x"},
+		},
+		{
+			name:        "collision plus preserved external key",
+			defaultMap:  map[string]string{"app": "vmcp"},
+			overrideMap: map[string]string{"app": "stale", "cloud.google.com/neg": "y"},
+			want:        map[string]string{"app": "vmcp", "cloud.google.com/neg": "y"},
+		},
+		{
+			name:        "nil default preserves override",
+			defaultMap:  nil,
+			overrideMap: map[string]string{"cloud.google.com/neg": "y"},
+			want:        map[string]string{"cloud.google.com/neg": "y"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, MergeStringMaps(tt.defaultMap, tt.overrideMap))
+			// MergeAnnotations/MergeLabels are thin wrappers with identical semantics.
+			assert.Equal(t, tt.want, MergeAnnotations(tt.defaultMap, tt.overrideMap))
+			assert.Equal(t, tt.want, MergeLabels(tt.defaultMap, tt.overrideMap))
+		})
+	}
+}

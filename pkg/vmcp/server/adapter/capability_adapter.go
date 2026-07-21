@@ -8,9 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
@@ -19,7 +18,7 @@ import (
 //
 // This is the Anti-Corruption Layer between:
 //   - Domain model (aggregator.AggregatedCapabilities)
-//   - External library (mark3labs/mcp-go SDK types)
+//   - External library (stacklok/toolhive-core/mcpcompat SDK types)
 //
 // The adapter:
 //  1. Converts aggregator types to SDK types

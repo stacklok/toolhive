@@ -53,6 +53,31 @@ func WithBaselineClientScopes(scopes []string) AuthServerOption {
 	}
 }
 
+// WithUpstreams overrides the default single test upstream with an explicit,
+// ordered list of upstream providers. Used to exercise multi-upstream
+// authorization chains.
+func WithUpstreams(upstreams []authserver.UpstreamRunConfig) AuthServerOption {
+	return func(c *authServerConfig) {
+		c.upstreams = upstreams
+	}
+}
+
+// NewOAuth2Upstream builds an OAuth2 upstream run config pointing at the given
+// mock upstream base URL. It has no userinfo endpoint, so the auth server resolves
+// a synthetic identity for it — sufficient for exercising chain traversal.
+func NewOAuth2Upstream(name, upstreamURL string) authserver.UpstreamRunConfig {
+	return authserver.UpstreamRunConfig{
+		Name: name,
+		Type: authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+			AuthorizationEndpoint: upstreamURL + "/authorize",
+			TokenEndpoint:         upstreamURL + "/token",
+			ClientID:              "test-client-id",
+			RedirectURI:           upstreamURL + "/callback",
+		},
+	}
+}
+
 // GetFreePort returns an available TCP port on localhost.
 func GetFreePort(tb testing.TB) int {
 	tb.Helper()

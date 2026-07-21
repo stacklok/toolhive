@@ -54,13 +54,13 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 	// if it already exists.
 	var entryID int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM entries WHERE entry_type = 'skill' AND name = ?`,
-		skill.Metadata.Name,
+		`SELECT id FROM entries WHERE entry_type = ? AND name = ?`,
+		string(storage.EntryTypeSkill), skill.Metadata.Name,
 	).Scan(&entryID)
 	if errors.Is(err, sql.ErrNoRows) {
 		res, insertErr := tx.ExecContext(ctx,
-			`INSERT INTO entries (entry_type, name) VALUES ('skill', ?)`,
-			skill.Metadata.Name,
+			`INSERT INTO entries (entry_type, name) VALUES (?, ?)`,
+			string(storage.EntryTypeSkill), skill.Metadata.Name,
 		)
 		if insertErr != nil {
 			return fmt.Errorf("inserting entry: %w", insertErr)
@@ -132,9 +132,9 @@ func (s *SkillStore) Get(
 		`SELECT `+skillColumns+`
 		FROM entries e
 		JOIN installed_skills is_ ON is_.entry_id = e.id
-		WHERE e.entry_type = 'skill'
+		WHERE e.entry_type = ?
 		  AND e.name = ? AND is_.scope = ? AND is_.project_root = ?`,
-		name, string(scope), projectRoot,
+		string(storage.EntryTypeSkill), name, string(scope), projectRoot,
 	)
 
 	sk, installedSkillID, err := scanSkillFields(row)
@@ -156,9 +156,9 @@ func (s *SkillStore) List(ctx context.Context, filter storage.ListFilter) ([]ski
 	query := `SELECT ` + skillColumns + `
 		FROM entries e
 		JOIN installed_skills is_ ON is_.entry_id = e.id
-		WHERE e.entry_type = 'skill'`
+		WHERE e.entry_type = ?`
 
-	var args []any
+	args := []any{string(storage.EntryTypeSkill)}
 
 	if filter.Scope != "" {
 		query += ` AND is_.scope = ?`
@@ -233,11 +233,11 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 		SELECT e.id, is_.id
 		FROM entries e
 		JOIN installed_skills is_ ON is_.entry_id = e.id
-		WHERE e.entry_type = 'skill'
+		WHERE e.entry_type = ?
 		  AND e.name = ?
 		  AND is_.scope = ?
 		  AND is_.project_root = ?`,
-		skill.Metadata.Name, string(skill.Scope), skill.ProjectRoot,
+		string(storage.EntryTypeSkill), skill.Metadata.Name, string(skill.Scope), skill.ProjectRoot,
 	).Scan(&entryID, &installedSkillID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -315,12 +315,12 @@ func (s *SkillStore) Delete(ctx context.Context, name string, scope skills.Scope
 		DELETE FROM installed_skills WHERE id IN (
 			SELECT is_.id FROM installed_skills is_
 			JOIN entries e ON is_.entry_id = e.id
-			WHERE e.entry_type = 'skill'
+			WHERE e.entry_type = ?
 			  AND e.name = ?
 			  AND is_.scope = ?
 			  AND is_.project_root = ?
 		)`,
-		name, string(scope), projectRoot,
+		string(storage.EntryTypeSkill), name, string(scope), projectRoot,
 	)
 	if err != nil {
 		return fmt.Errorf("deleting installed skill: %w", err)
@@ -336,9 +336,9 @@ func (s *SkillStore) Delete(ctx context.Context, name string, scope skills.Scope
 
 	// Clean up the parent entry if no installed_skills remain for it.
 	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM entries WHERE entry_type = 'skill' AND name = ?
+		DELETE FROM entries WHERE entry_type = ? AND name = ?
 		  AND NOT EXISTS (SELECT 1 FROM installed_skills WHERE entry_id = entries.id)`,
-		name,
+		string(storage.EntryTypeSkill), name,
 	); err != nil {
 		return fmt.Errorf("cleaning up orphaned entry: %w", err)
 	}

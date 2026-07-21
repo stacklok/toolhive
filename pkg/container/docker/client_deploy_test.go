@@ -312,6 +312,114 @@ func TestDeployWorkload_AllowDockerGateway_ForwardedToEgress(t *testing.T) {
 	assert.True(t, fops.egressAllowDockerGW, "AllowDockerGateway must be forwarded to createEgressSquidContainer")
 }
 
+// TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded guards against a
+// default flip: when the caller does not opt in, the egress proxy must keep its
+// Docker-gateway deny rules. It also confirms the DNS container is spawned on the
+// isolation path (the MCP server's resolver).
+func TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
+	c := newClientWithOps(fops)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.AttachStdio = true
+	// AllowDockerGateway intentionally left at its zero value (false).
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"app",
+		[]string{"serve"},
+		map[string]string{},
+		map[string]string{},
+		&permissions.Profile{},
+		"stdio",
+		opts,
+		true, // isolateNetwork required for egress container to be created
+	)
+	require.NoError(t, err)
+
+	require.True(t, fops.egressCalled, "egress container must be created when isolateNetwork=true")
+	assert.False(t, fops.egressAllowDockerGW,
+		"AllowDockerGateway must default to false so the gateway deny rules stay in place")
+	assert.True(t, fops.dnsCalled, "DNS container must be created on the isolation path")
+}
+
+// TestDeployWorkload_NonBridgeNetwork_DropsIsolation verifies that when
+// isolateNetwork=true but the network mode is non-bridge (host/none), the
+// isolation sidecars are never created, no proxy env vars are injected, and the
+// network-isolation label records the effective (false) value. Building the
+// sidecars on the internal network for a host/none workload would silently break
+// all outbound traffic. See issue #5775.
+func TestDeployWorkload_NonBridgeNetwork_DropsIsolation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		networkMode string
+	}{
+		{"host mode", "host"},
+		{"none mode", "none"},
+		{"custom mode", "container:foo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fops := &fakeDeployOps{dnsIP: "172.18.0.10", ingressPort: 18081}
+			c := newClientWithOps(fops)
+
+			opts := runtime.NewDeployWorkloadOptions()
+			opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+			opts.PortBindings = map[string][]runtime.PortBinding{
+				"8080/tcp": {{HostIP: "127.0.0.1", HostPort: "12345"}},
+			}
+
+			labels := map[string]string{}
+			env := map[string]string{"EXISTING": "1"}
+
+			_, err := c.DeployWorkload(
+				t.Context(),
+				"ghcr.io/example/mcp:latest",
+				"app",
+				[]string{"serve"},
+				env,
+				labels,
+				&permissions.Profile{
+					Network: &permissions.NetworkPermissions{Mode: tt.networkMode},
+				},
+				"sse",
+				opts,
+				true, // isolateNetwork requested, but must be dropped for non-bridge modes
+			)
+			require.NoError(t, err)
+
+			// No isolation sidecars should be created.
+			assert.False(t, fops.dnsCalled, "DNS container must not be created for non-bridge modes")
+			assert.False(t, fops.egressCalled, "egress container must not be created for non-bridge modes")
+			assert.False(t, fops.ingressCalled, "ingress container must not be created for non-bridge modes")
+			assert.Empty(t, fops.createNetworkCalls, "internal network must not be created for non-bridge modes")
+
+			// The external network is a bridge-only construct.
+			assert.False(t, fops.externalNetworksCalled, "external network must not be created for non-bridge modes")
+
+			// No proxy env vars should be injected.
+			require.True(t, fops.mcpCalled)
+			assert.NotContains(t, fops.mcpEnvVars, "HTTP_PROXY", "HTTP_PROXY must not be injected without isolation")
+			assert.NotContains(t, fops.mcpEnvVars, "HTTPS_PROXY", "HTTPS_PROXY must not be injected without isolation")
+
+			// createMcpContainer must receive the effective (false) isolation value.
+			assert.False(t, fops.mcpIsolate, "createMcpContainer must receive effective isolation=false")
+
+			// The network-isolation label must record the effective value.
+			assert.False(t, lb.HasNetworkIsolation(labels),
+				"network isolation label must record effective (false) value for non-bridge modes")
+		})
+	}
+}
+
 func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	t.Parallel()
 

@@ -131,6 +131,7 @@ func (d *Data[T]) DeepCopy() *Data[T] {
 // Any is a type alias for Data[any], storing arbitrary JSON values.
 // This is the most flexible type, suitable when the JSON structure is unknown.
 //
+// +gendoc
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:validation:Type=object
 type Any = Data[any]
@@ -138,6 +139,7 @@ type Any = Data[any]
 // Map is a type alias for Data[map[string]any], storing JSON objects.
 // Use this when you know the data will always be a JSON object (not array, string, etc.).
 //
+// +gendoc
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:validation:Type=object
 type Map = Data[map[string]any]

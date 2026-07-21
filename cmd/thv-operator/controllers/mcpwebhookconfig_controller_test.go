@@ -93,8 +93,7 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 			if tt.existingMCPServer != nil {
 				objs = append(objs, tt.existingMCPServer)
 			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 				Build()
@@ -142,8 +141,8 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 					Name:      tt.existingMCPServer.Name,
 					Namespace: tt.existingMCPServer.Namespace,
 				}, &updatedServer))
-				assert.Equal(t, updatedConfig.Status.ConfigHash,
-					updatedServer.Annotations["toolhive.stacklok.dev/webhookconfig-hash"])
+				_, found := updatedServer.Annotations["toolhive.stacklok.dev/webhookconfig-hash"]
+				assert.False(t, found, "MCPWebhookConfig controller should not annotate MCPServers")
 			}
 		})
 	}
@@ -232,8 +231,7 @@ func TestMCPWebhookConfigReconciler_handleDeletion(t *testing.T) {
 		v1beta1test.WithWebhookConfigRef("test-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(webhookConfig, mcpServer).
 		WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 		Build()
@@ -297,8 +295,7 @@ func TestMCPWebhookConfigReconciler_handleDeletionClearsBlockedCondition(t *test
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(webhookConfig).
 		WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 		Build()
@@ -317,6 +314,11 @@ func TestMCPWebhookConfigReconciler_handleDeletionClearsBlockedCondition(t *test
 	assert.Empty(t, clearedConfig.Status.ReferencingWorkloads)
 }
 
+// TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig verifies the map function
+// enqueues exactly the config the MCPServer currently references (or nothing when it has
+// no ref). The previously-referenced config is enqueued by EnqueueRequestsFromMapFunc,
+// which runs the map function on both the old and new object on update — no manual
+// stale-reference scan in the handler.
 func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 	t.Parallel()
 
@@ -327,24 +329,6 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
 		Spec: mcpv1beta1.MCPServerSpec{
 			WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "current-config"},
-		},
-	}
-	currentConfig := &mcpv1alpha1.MCPWebhookConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "current-config", Namespace: "default"},
-		Status: mcpv1beta1.MCPWebhookConfigStatus{
-			ReferencingWorkloads: []mcpv1beta1.WorkloadReference{{
-				Kind: mcpv1beta1.WorkloadKindMCPServer,
-				Name: server.Name,
-			}},
-		},
-	}
-	staleConfig := &mcpv1alpha1.MCPWebhookConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "stale-config", Namespace: "default"},
-		Status: mcpv1beta1.MCPWebhookConfigStatus{
-			ReferencingWorkloads: []mcpv1beta1.WorkloadReference{{
-				Kind: mcpv1beta1.WorkloadKindMCPServer,
-				Name: server.Name,
-			}},
 		},
 	}
 
@@ -363,39 +347,18 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 		}}, r.mapMCPServerToWebhookConfig(ctx, serverCopy))
 	})
 
-	t.Run("stale ReferencingWorkloads returns owning config request", func(t *testing.T) {
+	t.Run("no WebhookConfigRef returns nil", func(t *testing.T) {
 		t.Parallel()
 
-		staleConfigCopy := staleConfig.DeepCopy()
 		serverWithoutRef := server.DeepCopy()
 		serverWithoutRef.Spec.WebhookConfigRef = nil
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(serverWithoutRef, staleConfigCopy).
+			WithObjects(serverWithoutRef).
 			Build()
 		r := &MCPWebhookConfigReconciler{Client: fakeClient, Scheme: scheme}
 
-		require.ElementsMatch(t, []reconcile.Request{{
-			NamespacedName: types.NamespacedName{Name: "stale-config", Namespace: "default"},
-		}}, r.mapMCPServerToWebhookConfig(ctx, serverWithoutRef))
-	})
-
-	t.Run("current and stale references are returned without duplicates", func(t *testing.T) {
-		t.Parallel()
-
-		serverCopy := server.DeepCopy()
-		currentConfigCopy := currentConfig.DeepCopy()
-		staleConfigCopy := staleConfig.DeepCopy()
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(serverCopy, currentConfigCopy, staleConfigCopy).
-			Build()
-		r := &MCPWebhookConfigReconciler{Client: fakeClient, Scheme: scheme}
-
-		require.ElementsMatch(t, []reconcile.Request{
-			{NamespacedName: types.NamespacedName{Name: "current-config", Namespace: "default"}},
-			{NamespacedName: types.NamespacedName{Name: "stale-config", Namespace: "default"}},
-		}, r.mapMCPServerToWebhookConfig(ctx, serverCopy))
+		assert.Nil(t, r.mapMCPServerToWebhookConfig(ctx, serverWithoutRef))
 	})
 
 	t.Run("wrong object type returns nil", func(t *testing.T) {
@@ -406,35 +369,6 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: "default"}}
 
 		assert.Nil(t, r.mapMCPServerToWebhookConfig(ctx, pod))
-	})
-
-	t.Run("list failure returns partial current-ref request", func(t *testing.T) {
-		t.Parallel()
-
-		serverCopy := server.DeepCopy()
-		listErr := errors.New("simulated list failure")
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(serverCopy).
-			WithInterceptorFuncs(interceptor.Funcs{
-				List: func(
-					ctx context.Context,
-					c client.WithWatch,
-					list client.ObjectList,
-					opts ...client.ListOption,
-				) error {
-					if _, ok := list.(*mcpv1alpha1.MCPWebhookConfigList); ok {
-						return listErr
-					}
-					return c.List(ctx, list, opts...)
-				},
-			}).
-			Build()
-		r := &MCPWebhookConfigReconciler{Client: fakeClient, Scheme: scheme}
-
-		require.ElementsMatch(t, []reconcile.Request{{
-			NamespacedName: types.NamespacedName{Name: "current-config", Namespace: "default"},
-		}}, r.mapMCPServerToWebhookConfig(ctx, serverCopy))
 	})
 }
 
@@ -455,8 +389,7 @@ func TestMCPWebhookConfigReconciler_updateReferencingWorkloads(t *testing.T) {
 		v1beta1test.WithImage("test-image"),
 		v1beta1test.WithWebhookConfigRef("other-config"),
 	)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(webhookConfig, referencingServer, otherServer).
 		WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 		Build()

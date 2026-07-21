@@ -1123,7 +1123,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 					},
 				}
 			}
-			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
+			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, false)
 
 			if tt.expectError {
 				require.Error(t, err)

@@ -12,6 +12,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/networking"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -59,6 +61,10 @@ const (
 	authContextDefault          = "default"
 	authContextBackendPrefix    = "backend:"
 	authContextDiscoveredPrefix = "discovered:"
+
+	// authReasonAmbiguousSubjectProvider is the condition Reason surfaced when
+	// injectSubjectProviderIfNeeded returns authtypes.ErrAmbiguousSubjectProvider.
+	authReasonAmbiguousSubjectProvider = "AmbiguousSubjectProvider"
 )
 
 // AuthConfigError represents a single auth config conversion failure.
@@ -102,6 +108,16 @@ func authConfigErrorReason(authErr *AuthConfigError) string {
 		return authErr.Reason
 	}
 	return "ConversionFailed"
+}
+
+// subjectProviderErrorReason maps an error returned by injectSubjectProviderIfNeeded
+// to a condition Reason. Falls back to "" so the caller's AuthConfigError.Reason
+// stays empty and authConfigErrorReason applies its default ("ConversionFailed").
+func subjectProviderErrorReason(err error) string {
+	if stderrors.Is(err, authtypes.ErrAmbiguousSubjectProvider) {
+		return authReasonAmbiguousSubjectProvider
+	}
+	return ""
 }
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -488,7 +504,33 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		return fmt.Errorf("%s", message)
+		return stderrors.New(message)
+	}
+
+	// Admission-time check: http:// issuers for non-localhost hosts require
+	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
+	// will crash at startup with a validateIssuerURL failure.
+	if strings.HasPrefix(cfg.Issuer, "http://") {
+		// url.Parse succeeds for any URL that passes the CRD regex; the
+		// parsed.Host != "" guard defends against the degenerate empty-host case.
+		parsed, err := url.Parse(cfg.Issuer)
+		if err == nil && parsed.Host != "" && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
+			message := fmt.Sprintf(
+				"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
+					"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
+					"in-cluster deployments, or use https:// for production deployments",
+				cfg.Issuer,
+			)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return stderrors.New(message)
+		}
 	}
 
 	if len(cfg.UpstreamProviders) == 0 {
@@ -501,7 +543,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		return fmt.Errorf("%s", message)
+		return stderrors.New(message)
 	}
 
 	// Validate additionalAuthorizationParams on each upstream provider
@@ -518,7 +560,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 				metav1.ConditionFalse,
 			)
 			statusManager.SetObservedGeneration(vmcp.Generation)
-			return fmt.Errorf("%s", message)
+			return stderrors.New(message)
 		}
 	}
 
@@ -1470,7 +1512,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
 		if newDeployment.Spec.Replicas != nil {
 			deployment.Spec.Replicas = newDeployment.Spec.Replicas
 		}
@@ -1555,11 +1597,15 @@ func (r *VirtualMCPServerReconciler) ensureService(
 		// - Preserve Spec.ClusterIP: Immutable field, cannot be changed
 		// - Preserve Spec.HealthCheckNodePort: Set by cloud provider for LoadBalancer
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
+		// - Merge (not replace) Labels/Annotations: preserve keys written by external
+		//   controllers (e.g. GKE NEG's cloud.google.com/* annotations) while applying
+		//   the operator-owned values; a wholesale replace would strip them and race the
+		//   concurrent writer.
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.Type = newService.Spec.Type
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 
 		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 		if err := r.Update(ctx, service); err != nil {
@@ -1579,8 +1625,8 @@ func (*VirtualMCPServerReconciler) ensureServiceURL(
 	statusManager virtualmcpserverstatus.StatusManager,
 ) {
 	if vmcp.Status.URL == "" {
-		url := createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
-		statusManager.SetURL(url)
+		serviceURL := createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
+		statusManager.SetURL(serviceURL)
 	}
 }
 
@@ -1736,10 +1782,12 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
-// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed.
-// Instead of comparing full rendered templates (which always differ due to Kubernetes-defaulted
-// fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
-// the raw PodTemplateSpec input stored as a deployment annotation.
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed, by
+// comparing a SHA256 hash of the raw input against the stored annotation rather than the
+// full rendered template (which always differs due to Kubernetes-defaulted fields).
+// Symmetric by design (#5818): an absent PodTemplateSpec expects an empty hash, so a stale
+// annotation left over after the field is cleared is treated as drift and gets pruned by
+// mergeDeploymentAnnotations on the next write, instead of being flagged forever.
 func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -1750,23 +1798,30 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 		return true
 	}
 
-	// If no PodTemplateSpec is provided, update is only needed if one was previously applied
-	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
-		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
-		return hadPrevious
-	}
-
-	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
-	// Avoids comparing full rendered templates which always differ due to
-	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
-	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
-	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
-	if err != nil {
-		// If we can't hash, assume update is needed
-		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
-		return true
+	expectedHash := ""
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
+			return true
+		}
+		expectedHash = hash
 	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
+}
+
+// mergeDeploymentAnnotations merges desired annotations onto the live ones via
+// ctrlutil.MergeAnnotations, then prunes the operator-owned hash annotations
+// (imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation) that desired no longer wants —
+// MergeAnnotations otherwise preserves them forever once their source field goes empty (#5817, #5818).
+func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
+	merged := ctrlutil.MergeAnnotations(desired, live)
+	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation} {
+		if _, want := desired[key]; !want {
+			delete(merged, key)
+		}
+	}
+	return merged
 }
 
 // imagePullSecretsNeedsUpdate detects drift on the desired imagePullSecrets
@@ -1779,6 +1834,12 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // would either flag spurious drift or miss real changes depending on
 // PodTemplateSpec content. PodTemplateSpec drift is covered separately by
 // podTemplateSpecNeedsUpdate.
+//
+// A missing annotation reads as "" via map indexing, which equals an empty
+// expected hash — so an absent annotation with an empty desired list is
+// correctly the steady state. The write path in ensureDeployment is
+// responsible for actually deleting the annotation once it is no longer
+// wanted; without that, this comparison would flag drift every reconcile.
 func (r *VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -1792,12 +1853,6 @@ func (r *VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to hash imagePullSecrets, assuming update needed")
 		return true
-	}
-	// An empty desired list means the annotation should be absent; an absent annotation
-	// with an empty desired list is the steady state and must not trigger an update.
-	_, present := deployment.Annotations[imagePullRefsHashAnnotation]
-	if expectedHash == "" {
-		return present
 	}
 	return deployment.Annotations[imagePullRefsHashAnnotation] != expectedHash
 }
@@ -1836,17 +1891,21 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		return true
 	}
 
-	// Check if service metadata has changed
+	// Check if service metadata has changed. Use a subset check rather than exact
+	// equality: the Service is co-owned by external controllers (e.g. GKE NEG/Gateway
+	// writes cloud.google.com/* annotations), so only the operator-owned keys must
+	// match. Comparing with maps.Equal would treat those external annotations as drift
+	// and hot-loop Update against the concurrent writer.
 	expectedLabels := labelsForVirtualMCPServer(vmcp.Name)
 	expectedAnnotations := make(map[string]string)
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 
@@ -2188,6 +2247,14 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
 		strategy.HeaderInjection.HeaderValueEnv = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
+	if strategy.XAA != nil && externalAuthConfig.Spec.XAA != nil {
+		if externalAuthConfig.Spec.XAA.IDPClientSecretRef != nil {
+			strategy.XAA.IDPClientSecretEnv = ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(externalAuthConfig.Name)
+		}
+		if externalAuthConfig.Spec.XAA.TargetClientSecretRef != nil {
+			strategy.XAA.TargetClientSecretEnv = ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(externalAuthConfig.Name)
+		}
+	}
 
 	return strategy, nil
 }
@@ -2363,12 +2430,24 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
-		// Only add if not already overridden in inline config
-		if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
-			outgoing.Backends[workloadInfo.Name] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
-		} else if _, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; !exists {
-			// Only add discovered config if not explicitly overridden
-			outgoing.Backends[workloadInfo.Name] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+		// Only add if not already overridden in inline config.
+		shouldAssign := true
+		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+			_, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]
+			shouldAssign = !exists
+		}
+		if shouldAssign {
+			injected, err := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+			if err != nil {
+				authErrors = append(authErrors, AuthConfigError{
+					Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+					BackendName: workloadInfo.Name,
+					Error:       fmt.Errorf("failed to inject subject provider name: %w", err),
+					Reason:      subjectProviderErrorReason(err),
+				})
+			} else {
+				outgoing.Backends[workloadInfo.Name] = injected
+			}
 		}
 	}
 
@@ -2447,8 +2526,15 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
 				Reason:      mirroredReasonFromError(err),
 			})
+		} else if injected, injectErr := injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
+			allAuthErrors = append(allAuthErrors, AuthConfigError{
+				Context:     authContextDefault,
+				BackendName: "",
+				Error:       fmt.Errorf("failed to inject subject provider name: %w", injectErr),
+				Reason:      subjectProviderErrorReason(injectErr),
+			})
 		} else {
-			outgoing.Default = injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig)
+			outgoing.Default = injected
 		}
 	}
 
@@ -2473,8 +2559,15 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
 					Reason:      mirroredReasonFromError(err),
 				})
+			} else if injected, injectErr := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
+				allAuthErrors = append(allAuthErrors, AuthConfigError{
+					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
+					BackendName: backendName,
+					Error:       fmt.Errorf("failed to inject subject provider name: %w", injectErr),
+					Reason:      subjectProviderErrorReason(injectErr),
+				})
 			} else {
-				outgoing.Backends[backendName] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+				outgoing.Backends[backendName] = injected
 			}
 		}
 	}
@@ -2483,73 +2576,70 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 }
 
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on
-// token_exchange and aws_sts strategies when the field is empty and an embedded
-// auth server is configured on the VirtualMCPServer.
-// Both strategies use SubjectProviderName for the same concept: which upstream
-// provider's token to pull from Identity.UpstreamTokens. Mirrors
-// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the
-// same for Cedar's PrimaryUpstreamProvider.
-// Returns strategy unchanged when it is nil, not an applicable strategy type,
-// already has the provider name set, or no embedded auth server is configured.
+// token_exchange, aws_sts, and xaa strategies when the field is empty and an
+// embedded auth server is configured on the VirtualMCPServer. All three
+// strategies use SubjectProviderName for the same concept: which upstream
+// provider's token to pull from Identity.UpstreamTokens.
+//
+// The same first-upstream-name extraction appears in pkg/runner/middleware.go
+// and pkg/vmcp/config/defaults.go, which share the authserver.UpstreamRunConfig
+// type and are candidates for a shared authserver helper (tracked as follow-up
+// work). This function operates on the CRD-specific EmbeddedAuthServerConfig
+// type and is intentionally kept separate.
+//
+// Delegates the actual defaulting to authtypes.DefaultSubjectProviderName.
+// Returns strategy unchanged when it is nil or no embedded auth server is
+// configured. Can return authtypes.ErrAmbiguousSubjectProvider when strategy
+// is xaa, SubjectProviderName is empty, and more than one upstream provider
+// is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
 	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,
-) *authtypes.BackendAuthStrategy {
+) (*authtypes.BackendAuthStrategy, error) {
 	if strategy == nil || embeddedCfg == nil {
-		return strategy
+		return strategy, nil
 	}
-
-	switch strategy.Type {
-	case authtypes.StrategyTypeTokenExchange:
-		if strategy.TokenExchange == nil || strategy.TokenExchange.SubjectProviderName != "" {
-			return strategy
-		}
-		providerName := resolveFirstUpstreamProvider(embeddedCfg)
-		copied := *strategy
-		teCopied := *strategy.TokenExchange
-		teCopied.SubjectProviderName = providerName
-		copied.TokenExchange = &teCopied
-		return &copied
-
-	case authtypes.StrategyTypeAwsSts:
-		if strategy.AwsSts == nil || strategy.AwsSts.SubjectProviderName != "" {
-			return strategy
-		}
-		providerName := resolveFirstUpstreamProvider(embeddedCfg)
-		copied := *strategy
-		stsCopied := *strategy.AwsSts
-		stsCopied.SubjectProviderName = providerName
-		copied.AwsSts = &stsCopied
-		return &copied
-
-	default:
-		return strategy
-	}
+	return authtypes.DefaultSubjectProviderName(
+		strategy,
+		resolveFirstUpstreamProvider(embeddedCfg),
+		len(embeddedCfg.UpstreamProviders) > 1,
+	)
 }
 
 // resolveFirstUpstreamProvider returns the resolved name of the first upstream
 // provider configured on the embedded auth server, or the default name if none
 // are configured.
 func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
-	if len(embeddedCfg.UpstreamProviders) > 0 {
-		return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+	names := make([]string, len(embeddedCfg.UpstreamProviders))
+	for i, p := range embeddedCfg.UpstreamProviders {
+		names[i] = p.Name
 	}
-	return authserver.DefaultUpstreamName
+	return authserver.ResolveFirstUpstreamName(names)
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
 // Preserves metadata and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
 // caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
+// excludedBackends names backends whose outgoing auth strategy failed to build (see
+// backendsWithFailedAuth); they are dropped from the served set entirely rather than
+// left to fall through to the Default strategy at runtime.
 func convertBackendsToStaticBackends(
 	ctx context.Context,
 	backends []vmcptypes.Backend,
 	transportMap map[string]string,
 	caBundlePathMap map[string]string,
+	excludedBackends map[string]struct{},
 ) []vmcpconfig.StaticBackendConfig {
 	logger := log.FromContext(ctx)
 	static := make([]vmcpconfig.StaticBackendConfig, 0, len(backends))
 	for _, backend := range backends {
+		if _, excluded := excludedBackends[backend.Name]; excluded {
+			logger.V(1).Info("Skipping backend with failed outgoing auth configuration",
+				"backend", backend.Name)
+			continue
+		}
+
 		if backend.BaseURL == "" {
 			logger.V(1).Info("Skipping backend without URL in static mode",
 				"backend", backend.Name)

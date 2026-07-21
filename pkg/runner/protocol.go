@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,6 +215,20 @@ func mergeRuntimeConfig(transportType templates.TransportType, override *templat
 		}
 	}
 
+	merged.RuntimeEnv = mergeEnvMaps(defaults.RuntimeEnv, override.RuntimeEnv)
+
+	return merged
+}
+
+// mergeEnvMaps merges two environment variable maps without mutating either
+// input. Entries in override take precedence over entries in base.
+func mergeEnvMaps(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(base)+len(override))
+	maps.Copy(merged, base)
+	maps.Copy(merged, override)
 	return merged
 }
 

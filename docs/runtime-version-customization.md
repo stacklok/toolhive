@@ -194,4 +194,4 @@ thv run go://github.com/example/server \
 ## See Also
 
 - [RunConfig Documentation](arch/05-runconfig-and-permissions.md) - Complete RunConfig reference
-- [Protocol Schemes](../README.md#protocol-schemes) - Overview of uvx://, npx://, and go:// schemes
+- [Protocol Schemes](arch/00-overview.md#protocol-builds) - Overview of uvx://, npx://, and go:// schemes

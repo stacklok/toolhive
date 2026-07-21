@@ -6,37 +6,23 @@ package controllers
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"go.uber.org/zap/zapcore"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/test-integration/testutil"
 )
 
 var (
 	cfg       *rest.Config
 	k8sClient client.Client
-	testEnv   *envtest.Environment
 	ctx       context.Context
-	cancel    context.CancelFunc
+	suiteEnv  *testutil.SuiteEnv
 )
 
 func TestControllers(t *testing.T) {
@@ -52,144 +38,56 @@ func TestControllers(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logLevel := zapcore.ErrorLevel
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
-
-	ctx, cancel = context.WithCancel(context.TODO())
-
-	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "files", "crds")},
-		ErrorIfCRDPathMissing: true,
-	}
-
-	var err error
-	cfg, err = testEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
-
-	err = mcpv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = mcpv1beta1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	// Add other schemes that the controllers use
-	err = appsv1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = corev1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = rbacv1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
-
-	// Start the controller manager
-	k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme.Scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: "0", // Disable metrics server for tests
-		},
-		HealthProbeBindAddress: "0", // Disable health probe for tests
+	suiteEnv = testutil.StartSuite(testutil.SuiteOptions{
+		RegisterGroupRefIndexers: true,
 	})
-	Expect(err).ToNot(HaveOccurred())
+	cfg = suiteEnv.Cfg
+	k8sClient = suiteEnv.Client
+	ctx = suiteEnv.Ctx
 
 	// Register the MCPOIDCConfig controller
-	err = (&controllers.MCPOIDCConfigReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
-	}).SetupWithManager(k8sManager)
-	Expect(err).ToNot(HaveOccurred())
-
-	// Set up field indexing for MCPServer.Spec.GroupRef (required by VirtualMCPServer controller)
-	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1beta1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
-		mcpServer := obj.(*mcpv1beta1.MCPServer)
-		name := mcpServer.Spec.GroupRef.GetName()
-		if name == "" {
-			return nil
-		}
-		return []string{name}
-	}); err != nil {
-		Expect(err).ToNot(HaveOccurred())
-	}
-
-	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef (required by VirtualMCPServer controller)
-	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1beta1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
-		mcpRemoteProxy := obj.(*mcpv1beta1.MCPRemoteProxy)
-		name := mcpRemoteProxy.Spec.GroupRef.GetName()
-		if name == "" {
-			return nil
-		}
-		return []string{name}
-	}); err != nil {
-		Expect(err).ToNot(HaveOccurred())
-	}
-
-	// Set up field indexing for MCPServerEntry.Spec.GroupRef
-	err = k8sManager.GetFieldIndexer().IndexField(
-		context.Background(),
-		&mcpv1beta1.MCPServerEntry{},
-		"spec.groupRef",
-		func(obj client.Object) []string {
-			mcpServerEntry := obj.(*mcpv1beta1.MCPServerEntry)
-			name := mcpServerEntry.Spec.GroupRef.GetName()
-			if name == "" {
-				return nil
-			}
-			return []string{name}
-		},
-	)
+	err := (&controllers.MCPOIDCConfigReconciler{
+		Client: suiteEnv.Manager.GetClient(),
+		Scheme: suiteEnv.Manager.GetScheme(),
+	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
 	// Register the MCPServer controller (needed because MCPOIDCConfig watches
 	// MCPServer changes and we test cross-resource interactions)
 	err = (&controllers.MCPServerReconciler{
-		Client:           k8sManager.GetClient(),
-		Scheme:           k8sManager.GetScheme(),
+		Client:           suiteEnv.Manager.GetClient(),
+		Scheme:           suiteEnv.Manager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}).SetupWithManager(k8sManager)
+	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
 	// Register the MCPGroup controller (VirtualMCPServer depends on MCPGroup)
 	err = (&controllers.MCPGroupReconciler{
-		Client: k8sManager.GetClient(),
-	}).SetupWithManager(k8sManager)
+		Client: suiteEnv.Manager.GetClient(),
+	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
 	// Register the VirtualMCPServer controller (needed because MCPOIDCConfig watches
 	// VirtualMCPServer changes and we test cross-resource interactions)
 	err = (&controllers.VirtualMCPServerReconciler{
-		Client:           k8sManager.GetClient(),
-		Scheme:           k8sManager.GetScheme(),
+		Client:           suiteEnv.Manager.GetClient(),
+		Scheme:           suiteEnv.Manager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}).SetupWithManager(k8sManager)
+	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
 	// Register the MCPRemoteProxy controller (needed because MCPOIDCConfig watches
 	// MCPRemoteProxy changes and we test cross-resource interactions)
 	err = (&controllers.MCPRemoteProxyReconciler{
-		Client:           k8sManager.GetClient(),
-		Scheme:           k8sManager.GetScheme(),
+		Client:           suiteEnv.Manager.GetClient(),
+		Scheme:           suiteEnv.Manager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}).SetupWithManager(k8sManager)
+	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
-	// Start the manager in a goroutine
-	go func() {
-		defer GinkgoRecover()
-		err = k8sManager.Start(ctx)
-		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
-	}()
+	suiteEnv.StartManager()
 })
 
 var _ = AfterSuite(func() {
-	By("tearing down the test environment")
-	cancel()
-	time.Sleep(100 * time.Millisecond)
-	err := testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
+	suiteEnv.Stop()
 })

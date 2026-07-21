@@ -833,6 +833,32 @@ func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 			require.Equal(t, fixture, *got)
 		})
 	})
+
+	t.Run("DeleteUpstreamTokensForProvider leaves sibling intact", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{AccessToken: "a"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", &UpstreamTokens{AccessToken: "b"}))
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			requireNotFoundError(t, err)
+
+			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			require.NoError(t, err)
+			assert.Equal(t, "b", got.AccessToken)
+
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			require.NoError(t, err)
+			assert.Len(t, all, 1)
+		})
+	})
+
+	t.Run("DeleteUpstreamTokensForProvider absent row is non-fatal", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "no-such-session", "provider-a"))
+		})
+	})
 }
 
 // --- Pending Authorization Tests ---
@@ -844,7 +870,9 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			SingleLeg: true, ChainUpstreams: []string{"provider-1", "provider-2"},
+			CreatedAt: time.Now(),
 		}
 	}
 
@@ -858,6 +886,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
+			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
 		})
 	})
 
@@ -1736,6 +1766,7 @@ func TestMemoryStorage_DCRCredentials_RoundTrip(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		key := DCRKey{
 			Issuer:      "https://thv.example.com",
+			UpstreamID:  "https://idp.example.com",
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  ScopesHash([]string{"openid", "profile"}),
 		}
@@ -1766,9 +1797,10 @@ func TestMemoryStorage_DCRCredentials_RoundTrip(t *testing.T) {
 
 func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
+		mkKey := func(issuer, upstreamID, redirect string, scopes []string) DCRKey {
 			return DCRKey{
 				Issuer:      issuer,
+				UpstreamID:  upstreamID,
 				RedirectURI: redirect,
 				ScopesHash:  ScopesHash(scopes),
 			}
@@ -1782,10 +1814,14 @@ func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 			}
 		}
 		entries := []*DCRCredentials{
-			mkCreds(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
-			mkCreds(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
-			mkCreds(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
-			mkCreds(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "a"),
+			mkCreds(mkKey("https://idp-b.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "b"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-a", "https://y/cb", []string{"openid"}), "c"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid", "email"}), "d"),
+			// Differs from entry "a" only by UpstreamID — two OAuth2 upstreams
+			// inside one embedded authserver sharing issuer, redirect, and
+			// scopes. Before UpstreamID joined the key these collided (#5823).
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
 		}
 		for _, e := range entries {
 			require.NoError(t, s.StoreDCRCredentials(ctx, e))
@@ -1804,6 +1840,7 @@ func TestMemoryStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		key := DCRKey{
 			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
 			RedirectURI: "https://x/cb",
 			ScopesHash:  ScopesHash([]string{"openid"}),
 		}
@@ -1834,7 +1871,7 @@ func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
 
 // TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected pins the
 // fail-loud-on-invalid-input contract: nil creds, an unpopulated Key
-// (empty Issuer, RedirectURI, or ScopesHash), and missing RFC 7591
+// (empty Issuer, UpstreamID, RedirectURI, or ScopesHash), and missing RFC 7591
 // mandatory response fields (ClientID, AuthorizationEndpoint,
 // TokenEndpoint) must be rejected with fosite.ErrInvalidRequest rather
 // than producing a working-looking write that fails downstream at the
@@ -1849,6 +1886,7 @@ func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 		return &DCRCredentials{
 			Key: DCRKey{
 				Issuer:      "https://idp.example.com",
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://x/cb",
 				ScopesHash:  ScopesHash([]string{"openid"}),
 			},
@@ -1870,6 +1908,13 @@ func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 			name: "empty issuer",
 			mutator: func(c *DCRCredentials) *DCRCredentials {
 				c.Key.Issuer = ""
+				return c
+			},
+		},
+		{
+			name: "empty upstream_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.UpstreamID = ""
 				return c
 			},
 		},
@@ -1931,6 +1976,7 @@ func TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		key := DCRKey{
 			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
 			RedirectURI: "https://x/cb",
 			ScopesHash:  ScopesHash([]string{"openid"}),
 		}
@@ -1958,6 +2004,7 @@ func TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		key := DCRKey{
 			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
 			RedirectURI: "https://x/cb",
 			ScopesHash:  ScopesHash([]string{"openid"}),
 		}
@@ -1985,6 +2032,7 @@ func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 		key := DCRKey{
 			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
 			RedirectURI: "https://x/cb",
 			ScopesHash:  ScopesHash([]string{"openid"}),
 		}
@@ -2027,6 +2075,7 @@ func TestMemoryStorage_DCRCredentials_ConcurrentAccess(t *testing.T) {
 		overlappingKey := func(i int) DCRKey {
 			return DCRKey{
 				Issuer:      "https://idp.example.com",
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://thv.example.com/oauth/callback",
 				ScopesHash:  fmt.Sprintf("overlap-%d", i%4),
 			}
@@ -2034,6 +2083,7 @@ func TestMemoryStorage_DCRCredentials_ConcurrentAccess(t *testing.T) {
 		disjointKey := func(worker, i int) DCRKey {
 			return DCRKey{
 				Issuer:      fmt.Sprintf("https://idp-%d.example.com", worker),
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://thv.example.com/oauth/callback",
 				ScopesHash:  fmt.Sprintf("disjoint-%d", i),
 			}

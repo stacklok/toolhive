@@ -41,11 +41,13 @@
 
 {{- define "type" -}}
 {{- $type := . -}}
-{{- if markdownShouldRenderType $type -}}
   {{- /* Filter: only render types with +gendoc marker OR in api/v1beta1 package */ -}}
   {{- $hasGendoc := index $type.Markers "gendoc" -}}
   {{- $isAPIType := hasSuffix "/api/v1beta1" $type.Package -}}
-  {{- if or $hasGendoc $isAPIType -}}
+  {{- /* Render if: explicitly +gendoc marked, OR (in api/v1beta1 AND should render), */ -}}
+  {{- /* OR a real K8s resource (has GVK) — so deprecated v1alpha1 resources listed */ -}}
+  {{- /* in "Resource Types" get headings their links resolve to. */ -}}
+  {{- if or $hasGendoc (and $isAPIType (markdownShouldRenderType $type)) $type.GVK -}}
   {{- /* Extract last two path segments from package for disambiguation */ -}}
   {{- $pkgParts := splitList "/" $type.Package -}}
   {{- $pkgLen := len $pkgParts -}}
@@ -58,7 +60,7 @@
 
 #### {{ $prefix }}.{{ $type.Name }}
 
-{{ if $type.IsAlias }}_Underlying type:_ _{{ template "fieldType" $type.UnderlyingType }}_{{ end }}
+{{ if $type.IsAlias }}_Underlying type:_ _{{ $type.UnderlyingType.Name }}_{{ end }}
 
 {{ $type.Doc }}
 
@@ -117,6 +119,5 @@ _Appears in:_
 {{ end -}}
 
 
-{{- end -}}{{- /* end if or $hasGendoc $isAPIType */ -}}
-{{- end -}}
+{{- end -}}{{- /* end if or $hasGendoc (and $isAPIType ...) */ -}}
 {{- end -}}

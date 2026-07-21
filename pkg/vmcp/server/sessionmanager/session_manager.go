@@ -14,7 +14,6 @@ package sessionmanager
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,14 +21,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -46,7 +43,7 @@ const (
 )
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
-// to the mark3labs SDK's SessionIdManager interface.
+// to the mcpcompat SDK's SessionIdManager interface.
 //
 // It implements a two-phase session-creation pattern:
 //
@@ -116,30 +113,10 @@ func New(
 	if capacity == 0 {
 		capacity = defaultCacheCapacity
 	}
-	if len(cfg.WorkflowDefs) > 0 && cfg.ComposerFactory == nil {
-		return nil, nil, fmt.Errorf("sessionmanager.New: ComposerFactory is required when WorkflowDefs are provided")
-	}
-
 	// Resolve optimizer factory from config, applying telemetry wrapping if needed.
 	optimizerFactory, optimizerCleanup, err := resolveOptimizer(cfg)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	// Pre-create workflow telemetry instruments once so they are reused across
-	// all per-session executor wrappers without re-registering metrics.
-	var instruments *workflowExecutorInstruments
-	if cfg.TelemetryProvider != nil && len(cfg.WorkflowDefs) > 0 {
-		instruments, err = newWorkflowExecutorInstruments(
-			cfg.TelemetryProvider.MeterProvider(),
-			cfg.TelemetryProvider.TracerProvider(),
-		)
-		if err != nil {
-			if cleanupErr := optimizerCleanup(context.Background()); cleanupErr != nil {
-				slog.Warn("failed to clean up optimizer after instrument creation error", "error", cleanupErr)
-			}
-			return nil, nil, fmt.Errorf("failed to create workflow executor telemetry: %w", err)
-		}
 	}
 
 	// Build the Manager first so we can reference sm.Terminate and sm.sessions
@@ -175,7 +152,7 @@ func New(
 		},
 	)
 
-	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, instruments, sm.Terminate)
+	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, sm.Terminate)
 
 	cleanup := func(ctx context.Context) error {
 		return optimizerCleanup(ctx)
@@ -440,10 +417,25 @@ func (sm *Manager) cleanupFailedPlaceholder(sessionID string, metadata map[strin
 
 // Validate implements the SDK's SessionIdManager.Validate().
 //
-// Returns (isTerminated=true, nil) for explicitly terminated sessions.
-// Returns (false, error) for unknown sessions — per the SDK interface contract,
-// a lookup failure is signalled via err, not via isTerminated.
+// Returns (isTerminated=true, nil) for a session that is definitively gone:
+// explicitly terminated (placeholder marked terminated=true) OR absent from
+// storage (a full MultiSession is deleted on Terminate, TTL-expired, or never
+// existed). All of these must reject the request as a hard termination so the
+// client re-initializes rather than retrying a dead session.
+//
+// Returns (false, error) only for a genuine, transient storage error (e.g. the
+// backing store is unreachable) — the caller should treat this as retryable and
+// NOT drop session state.
+//
 // Returns (false, nil) for valid, active sessions.
+//
+// This distinction is load-bearing: the streamable transport maps
+// (isTerminated=true) to HTTP 404 (-> client ErrSessionTerminated -> re-init)
+// and a non-terminated error to HTTP 503 (retryable). Reporting a genuinely-gone
+// session as an error would surface as 503 and make a client whose session was
+// terminated on another replica retry the dead session forever. Terminate still
+// DELETES the key (unchanged), so the resurrection-race guarantee is preserved;
+// only the way an absent key is reported here changes.
 func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	if sessionID == "" {
 		return false, fmt.Errorf("Manager.Validate: empty session ID")
@@ -454,8 +446,12 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 
 	metadata, err := sm.storage.Load(ctx, sessionID)
 	if errors.Is(err, transportsession.ErrSessionNotFound) {
-		slog.Debug("Manager.Validate: session not found", "session_id", sessionID)
-		return false, fmt.Errorf("session not found")
+		// The session is gone (terminated + deleted, TTL-expired, or never
+		// existed). Report it as terminated so the transport answers 404 and the
+		// client re-initializes, rather than as an error (which the transport
+		// would treat as a transient 503 and the client would retry indefinitely).
+		slog.Debug("Manager.Validate: session not found; reporting as terminated", "session_id", sessionID)
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("Manager.Validate: storage error for session %q: %w", sessionID, err)
@@ -478,15 +474,16 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 //   - MultiSession (Phase 2): the storage key is deleted. The node-local cache
 //     self-heals on the next Get: checkSession detects ErrSessionNotFound,
 //     evicts the entry, and onEvict closes backend connections. After deletion
-//     Validate() returns (false, error) — the same response as "never existed".
+//     Validate() reports the absent key as (isTerminated=true, nil), so the next
+//     request — on this or any other replica — is rejected with a definitive 404
+//     and the client re-initializes instead of retrying the dead session.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
 //     for TTL cleanup. This prevents CreateSession() from opening backend
 //     connections for an already-terminated session (see fast-fail check in
 //     CreateSession). The terminated flag also lets Validate() return
 //     (isTerminated=true, nil) during the window between termination and TTL
-//     expiry, allowing the SDK to distinguish "actively terminated" from
-//     "never existed".
+//     expiry — the same terminated response the deleted case now gives.
 //
 // Returns (isNotAllowed=false, nil) on success; client termination is always permitted.
 func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
@@ -648,16 +645,11 @@ func (sm *Manager) updateMetadata(sessionID string, metadata map[string]string) 
 // factory.RestoreSession, enabling cross-pod session recovery when Redis is
 // used as the storage backend.
 //
-// Known limitation: GetMultiSession's signature is fixed by the
-// MultiSessionGetter interface and carries no context. Both the liveness
-// check and the restore path use context.Background() with per-operation
-// timeouts (restoreStorageTimeout / restoreSessionTimeout), so they are
-// bounded independently of any caller deadline. The caller's HTTP request
-// cancellation cannot propagate here.
-// TODO: add context propagation through MultiSessionGetter so the caller's
-// deadline can further bound these operations.
-func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool) {
-	return sm.sessions.Get(sessionID)
+// The context is propagated to storage and restore operations using
+// context.WithoutCancel so caller identity (e.g. *auth.Identity in ctx) reaches
+// the backend Initialize handshake during cross-pod session restore.
+func (sm *Manager) GetMultiSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, bool) {
+	return sm.sessions.Get(ctx, sessionID)
 }
 
 // checkSession is the liveness check supplied to sessions. It confirms the
@@ -672,8 +664,8 @@ func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, 
 // replacing the old session and its backend connections. This ensures that a
 // backend-expiry update written by pod A propagates to pod B on the next
 // cache access rather than waiting for natural TTL expiry.
-func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession) error {
-	checkCtx, cancel := context.WithTimeout(context.Background(), restoreStorageTimeout)
+func (sm *Manager) checkSession(ctx context.Context, sessionID string, sess vmcpsession.MultiSession) error {
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreStorageTimeout)
 	defer cancel()
 	metadata, err := sm.storage.Load(checkCtx, sessionID)
 	if errors.Is(err, transportsession.ErrSessionNotFound) {
@@ -709,8 +701,8 @@ func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession)
 // loadSession is the restore function supplied to sessions. It loads session
 // metadata from storage and calls factory.RestoreSession to reconnect to
 // backends, returning the fully-formed MultiSession on success.
-func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, error) {
-	loadCtx, loadCancel := context.WithTimeout(context.Background(), restoreStorageTimeout)
+func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, error) {
+	loadCtx, loadCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreStorageTimeout)
 	defer loadCancel()
 	metadata, loadErr := sm.storage.Load(loadCtx, sessionID)
 	if loadErr != nil {
@@ -741,7 +733,7 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 		return nil, transportsession.ErrSessionNotFound
 	}
 
-	restoreCtx, restoreCancel := context.WithTimeout(context.Background(), restoreSessionTimeout)
+	restoreCtx, restoreCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreSessionTimeout)
 	defer restoreCancel()
 	restored, restoreErr := sm.factory.RestoreSession(restoreCtx, sessionID, metadata, sm.listAllBackends(restoreCtx))
 	if restoreErr != nil {
@@ -760,7 +752,7 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 	// that was concurrently deleted (Terminate / TTL expiry). A (false, nil)
 	// result means the key is already gone — treat it as not found so the
 	// cache never serves a session that no longer exists in storage.
-	updateCtx, updateCancel := context.WithTimeout(context.Background(), restoreMetadataWriteTimeout)
+	updateCtx, updateCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreMetadataWriteTimeout)
 	defer updateCancel()
 	updated, updateErr := sm.storage.Update(updateCtx, sessionID, restored.GetMetadata())
 	if updateErr != nil {
@@ -793,7 +785,10 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 // session was deleted; the cache entry will be evicted on the next Get when
 // checkSession detects ErrSessionNotFound.
 func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error {
-	sess, ok := sm.GetMultiSession(sessionID)
+	// context.Background() is intentional: DecorateSession is called from
+	// OnRegisterSession during session setup, not from a live authenticated
+	// HTTP request, so there is no caller identity to propagate.
+	sess, ok := sm.GetMultiSession(context.Background(), sessionID)
 	if !ok {
 		return fmt.Errorf("DecorateSession: session %q not found or not a multi-session", sessionID)
 	}
@@ -823,219 +818,6 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 	}
 	sm.sessions.Set(sessionID, decorated)
 	return nil
-}
-
-// GetAdaptedTools returns SDK-format tools for the given session, with handlers
-// that delegate tool invocations directly to the session's CallTool() method.
-//
-// When the session factory is configured with an aggregator (WithAggregator),
-// tools are in their final resolved form — overrides and conflict resolution
-// applied via ProcessPreQueriedCapabilities. Each handler passes the resolved
-// tool name to CallTool, which translates it back to the original backend name
-// via GetBackendCapabilityName.
-//
-// Without an aggregator, raw backend tool names are used as-is (no overrides
-// or conflict resolution applied).
-func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error) {
-	multiSess, ok := sm.GetMultiSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("Manager.GetAdaptedTools: session %q not found or not a multi-session", sessionID)
-	}
-
-	domainTools := multiSess.Tools()
-	sdkTools := make([]mcpserver.ServerTool, 0, len(domainTools))
-
-	for _, domainTool := range domainTools {
-		schemaJSON, err := json.Marshal(domainTool.InputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("Manager.GetAdaptedTools: failed to marshal schema for tool %s: %w", domainTool.Name, err)
-		}
-
-		tool := mcp.Tool{
-			Name:           domainTool.Name,
-			Description:    domainTool.Description,
-			RawInputSchema: schemaJSON,
-			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),
-		}
-		if domainTool.OutputSchema != nil {
-			outputSchemaJSON, marshalErr := json.Marshal(domainTool.OutputSchema)
-			if marshalErr != nil {
-				slog.Warn("failed to marshal tool output schema",
-					"tool", domainTool.Name, "error", marshalErr)
-			} else {
-				tool.RawOutputSchema = outputSchemaJSON
-			}
-		}
-
-		capturedSess := multiSess
-		capturedSessionID := sessionID
-		capturedToolName := domainTool.Name
-		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			args, ok := req.Params.Arguments.(map[string]any)
-			if !ok {
-				wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
-				slog.Warn("invalid arguments for tool", "tool", capturedToolName, "error", wrappedErr)
-				return mcp.NewToolResultError(wrappedErr.Error()), nil
-			}
-
-			meta := conversion.FromMCPMeta(req.Params.Meta)
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			result, callErr := capturedSess.CallTool(ctx, caller, capturedToolName, args, meta)
-			if callErr != nil {
-				if errors.Is(callErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(callErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "tool", capturedToolName, "error", callErr)
-					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", callErr)), nil
-				}
-				return mcp.NewToolResultError(callErr.Error()), nil
-			}
-
-			return &mcp.CallToolResult{
-				Result: mcp.Result{
-					Meta: conversion.ToMCPMeta(result.Meta),
-				},
-				Content:           conversion.ToMCPContents(result.Content),
-				StructuredContent: result.StructuredContent,
-				IsError:           result.IsError,
-			}, nil
-		}
-
-		sdkTools = append(sdkTools, mcpserver.ServerTool{
-			Tool:    tool,
-			Handler: handler,
-		})
-		slog.Debug("Manager.GetAdaptedTools: adapted tool", "session_id", sessionID, "tool", domainTool.Name)
-	}
-
-	return sdkTools, nil
-}
-
-// GetAdaptedResources returns SDK-format resources for the given session, with handlers
-// that delegate read requests directly to the session's ReadResource() method.
-func (sm *Manager) GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error) {
-	multiSess, ok := sm.GetMultiSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("Manager.GetAdaptedResources: session %q not found or not a multi-session", sessionID)
-	}
-
-	domainResources := multiSess.Resources()
-	sdkResources := make([]mcpserver.ServerResource, 0, len(domainResources))
-
-	for _, domainResource := range domainResources {
-		resource := mcp.Resource{
-			Name:        domainResource.Name,
-			URI:         domainResource.URI,
-			Description: domainResource.Description,
-			MIMEType:    domainResource.MimeType,
-		}
-
-		capturedSess := multiSess
-		capturedSessionID := sessionID
-		capturedResourceURI := domainResource.URI
-		handler := func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			result, readErr := capturedSess.ReadResource(ctx, caller, capturedResourceURI)
-			if readErr != nil {
-				if errors.Is(readErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(readErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "resource", capturedResourceURI, "error", readErr)
-					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return nil, fmt.Errorf("unauthorized: %w", readErr)
-				}
-				return nil, readErr
-			}
-
-			return conversion.ToMCPResourceContents(result.Contents), nil
-		}
-
-		sdkResources = append(sdkResources, mcpserver.ServerResource{
-			Resource: resource,
-			Handler:  handler,
-		})
-		slog.Debug("Manager.GetAdaptedResources: adapted resource", "session_id", sessionID, "uri", domainResource.URI)
-	}
-
-	return sdkResources, nil
-}
-
-// GetAdaptedPrompts returns SDK-format prompts for the given session, with handlers
-// that delegate prompt requests directly to the session's GetPrompt() method.
-func (sm *Manager) GetAdaptedPrompts(sessionID string) ([]mcpserver.ServerPrompt, error) {
-	multiSess, ok := sm.GetMultiSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("Manager.GetAdaptedPrompts: session %q not found or not a multi-session", sessionID)
-	}
-
-	domainPrompts := multiSess.Prompts()
-	sdkPrompts := make([]mcpserver.ServerPrompt, 0, len(domainPrompts))
-
-	for _, domainPrompt := range domainPrompts {
-		prompt := mcp.Prompt{
-			Name:        domainPrompt.Name,
-			Description: domainPrompt.Description,
-		}
-		for _, arg := range domainPrompt.Arguments {
-			prompt.Arguments = append(prompt.Arguments, mcp.PromptArgument{
-				Name:        arg.Name,
-				Description: arg.Description,
-				Required:    arg.Required,
-			})
-		}
-
-		capturedSess := multiSess
-		capturedSessionID := sessionID
-		capturedPromptName := domainPrompt.Name
-		handler := func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			args := make(map[string]any, len(req.Params.Arguments))
-			for k, v := range req.Params.Arguments {
-				args[k] = v
-			}
-			result, getErr := capturedSess.GetPrompt(ctx, caller, capturedPromptName, args)
-			if getErr != nil {
-				if errors.Is(getErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(getErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "prompt", capturedPromptName, "error", getErr)
-					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return nil, fmt.Errorf("unauthorized: %w", getErr)
-				}
-				return nil, getErr
-			}
-
-			mcpMessages := make([]mcp.PromptMessage, 0, len(result.Messages))
-			for _, msg := range result.Messages {
-				mcpMessages = append(mcpMessages, mcp.PromptMessage{
-					Role:    mcp.Role(msg.Role),
-					Content: conversion.ToMCPContent(msg.Content),
-				})
-			}
-			return &mcp.GetPromptResult{
-				Description: result.Description,
-				Messages:    mcpMessages,
-			}, nil
-		}
-
-		sdkPrompts = append(sdkPrompts, mcpserver.ServerPrompt{
-			Prompt:  prompt,
-			Handler: handler,
-		})
-		slog.Debug("Manager.GetAdaptedPrompts: adapted prompt", "session_id", sessionID, "prompt", domainPrompt.Name)
-	}
-
-	return sdkPrompts, nil
 }
 
 // listAllBackends returns all backends from the registry as a pointer slice.

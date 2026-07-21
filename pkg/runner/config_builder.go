@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -64,6 +65,10 @@ type runConfigBuilder struct {
 	registryProxyPort int
 	// Store network mode to apply to permission profile after it's loaded
 	networkMode string
+	// isolateNetworkExplicit records whether the user explicitly requested network
+	// isolation (e.g. --isolate-network was passed) rather than it being the default.
+	// It controls whether an incompatible network mode fails fast or silently degrades.
+	isolateNetworkExplicit bool
 	// Build context determines which validation and features are enabled
 	buildContext BuildContext
 }
@@ -315,10 +320,30 @@ func WithPermissionProfile(profile *permissions.Profile) RunConfigBuilderOption 
 	}
 }
 
-// WithNetworkIsolation sets network isolation
+// WithNetworkIsolation sets network isolation.
+//
+// Network isolation is only enforceable in bridge mode. When it is requested
+// together with a non-bridge network mode (host/none/custom), the build
+// reconciles the conflict: without the WithNetworkIsolationExplicit companion
+// (i.e. the user did not actively pass --isolate-network), a host/custom
+// conflict degrades to isolation=false with a warning rather than failing fast.
+// See WithNetworkIsolationExplicit and issue #5775.
 func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.IsolateNetwork = isolate
+		return nil
+	}
+}
+
+// WithNetworkIsolationExplicit records whether network isolation was explicitly
+// requested by the user (i.e. --isolate-network was actually passed) rather than
+// defaulted. It exists to drive the fail-fast-vs-degrade decision when isolation
+// conflicts with a non-bridge network mode: when true, a host/custom conflict
+// fails the build so the user learns their request cannot be honored; when false
+// (defaulted), the conflict degrades to isolation=false with a warning. See #5775.
+func WithNetworkIsolationExplicit(explicit bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.isolateNetworkExplicit = explicit
 		return nil
 	}
 }
@@ -327,6 +352,18 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.AllowDockerGateway = allow
+		return nil
+	}
+}
+
+// WithAllowedOrigins sets the HTTP Origin-header allowlist used for
+// DNS-rebinding protection (MCP 2025-11-25 §"Security Warning").
+// An empty slice defers the choice to middleware wiring, which derives a
+// loopback-only default when the bind host is loopback and otherwise leaves
+// the middleware disabled.
+func WithAllowedOrigins(origins []string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.AllowedOrigins = origins
 		return nil
 	}
 }
@@ -619,10 +656,10 @@ func WithMiddlewareFromFlags(
 		var middlewareConfigs []types.MiddlewareConfig
 
 		// NOTE: order matters here. Specifically, these routines use append
-		// to add new middleware configs, but once these routines are called,
-		// inside the proxy, they are applied in reverse order, so the first
-		// being added here is effectively the last being called at HTTP
-		// request time.
+		// to add new middleware configs. The proxy wraps the handler in
+		// reverse slice order (see applyMiddlewares), so the first entry
+		// added here is the OUTERMOST wrapper and runs first at HTTP request
+		// time; the last entry runs closest to the handler.
 		//
 		// We should avoid doing this and a better pattern would be to let the
 		// actual proxy determine the order of application of middlewares, since
@@ -659,16 +696,20 @@ func WithMiddlewareFromFlags(
 			return err
 		}
 
-		// Add optional middlewares
+		// Add optional middlewares. Audit is added BEFORE authorization so it
+		// wraps it at request time: authorization denials (403) must still
+		// produce an audit event with outcome "denied".
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 		var authzErr error
 		middlewareConfigs, authzErr = addAuthzMiddleware(middlewareConfigs, authzConfigPath, b.config.EmbeddedAuthServerConfig)
 		if authzErr != nil {
 			return authzErr
 		}
-		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
-		// Add recovery middleware (always present, added last to be outermost wrapper)
+		// Add recovery middleware (always present, added last so it is the
+		// innermost wrapper, executing closest to the handler — matching
+		// PopulateMiddlewareConfigs)
 		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
 
 		// Set the populated middleware configs
@@ -902,9 +943,10 @@ func addAuditMiddleware(
 	return middlewareConfigs
 }
 
-// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
-// Middleware is applied in reverse order, so adding last means it executes first
-// and catches panics from all other middleware and handlers.
+// addRecoveryMiddleware adds recovery middleware (always present, added last).
+// The proxy wraps the handler in reverse slice order, so the last entry is the
+// INNERMOST wrapper: it catches panics from the handler itself, but not from
+// middleware added earlier in the slice (which wrap it).
 func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
@@ -1101,6 +1143,15 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		slog.Debug("Setting network mode on permission profile", "network_mode", b.networkMode)
 	}
 
+	// Reconcile network isolation against the resolved network mode. Isolation is
+	// only enforceable in bridge mode; for host/none/custom modes the isolation
+	// sidecars have no route out and the workload bypasses them (issue #5775).
+	// Key off the resolved profile mode so this also covers modes coming from a
+	// permission-profile file rather than the --network flag.
+	if err = b.reconcileNetworkIsolation(); err != nil {
+		return err
+	}
+
 	// Process volume mounts
 	if err = b.processVolumeMounts(); err != nil {
 		return err
@@ -1177,6 +1228,51 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		}
 	}
 
+	return nil
+}
+
+// reconcileNetworkIsolation drops network isolation when the resolved network
+// mode cannot enforce it. In bridge mode isolation is left untouched. For "none"
+// (already maximally confined) isolation is silently dropped. For host/other
+// non-bridge modes isolation is dropped with a warning, unless the user
+// explicitly requested isolation, in which case the build fails fast.
+func (b *runConfigBuilder) reconcileNetworkIsolation() error {
+	c := b.config
+	if !c.IsolateNetwork {
+		return nil
+	}
+
+	// Resolve the effective network mode from the permission profile.
+	mode := ""
+	if c.PermissionProfile != nil && c.PermissionProfile.Network != nil {
+		mode = c.PermissionProfile.Network.Mode
+	}
+	if networking.IsBridgeMode(mode) {
+		return nil
+	}
+
+	if mode == "none" {
+		// "none" is already maximally confined; isolation is merely redundant.
+		c.IsolateNetwork = false
+		slog.Debug(networking.NetworkIsolationNoneRedundantMsg, "network_mode", mode)
+		return nil
+	}
+
+	// host (or other non-bridge) is less restrictive than isolation, so dropping
+	// it reduces confinement. Fail fast when it was explicitly requested.
+	//
+	// The mode may come from --permission-profile rather than --network, so the
+	// message names the resolved mode instead of assuming a flag the user may
+	// never have passed. See #5794 review discussion.
+	if b.isolateNetworkExplicit {
+		return fmt.Errorf(
+			"network isolation cannot be enforced with the resolved network mode %q: "+
+				"use a bridge network mode to keep enforced isolation, or pass --isolate-network=false to keep %q networking",
+			mode, mode)
+	}
+
+	c.IsolateNetwork = false
+	slog.Warn(networking.NetworkIsolationHostDroppedMsg, "network_mode", mode)
 	return nil
 }
 

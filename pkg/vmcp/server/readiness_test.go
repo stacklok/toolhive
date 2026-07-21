@@ -16,8 +16,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -38,27 +36,10 @@ func TestReadinessEndpoint_StaticMode(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
-
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{
-			Tools:     []vmcp.Tool{},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     make(map[string]*vmcp.BackendTarget),
-				Resources: make(map[string]*vmcp.BackendTarget),
-				Prompts:   make(map[string]*vmcp.BackendTarget),
-			},
-			Metadata: &aggregator.AggregationMetadata{},
-		}, nil).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -70,7 +51,7 @@ func TestReadinessEndpoint_StaticMode(t *testing.T) {
 		Port:           port,
 		Watcher:        nil, // Static mode
 		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
 	t.Cleanup(cancel)
@@ -111,27 +92,10 @@ func TestReadinessEndpoint_DynamicMode_CacheSynced(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
-
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{
-			Tools:     []vmcp.Tool{},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     make(map[string]*vmcp.BackendTarget),
-				Resources: make(map[string]*vmcp.BackendTarget),
-				Prompts:   make(map[string]*vmcp.BackendTarget),
-			},
-			Metadata: &aggregator.AggregationMetadata{},
-		}, nil).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -146,7 +110,7 @@ func TestReadinessEndpoint_DynamicMode_CacheSynced(t *testing.T) {
 		Port:           port,
 		Watcher:        mockWatcher, // Dynamic mode with synced cache
 		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
+	}, rt, mockBackendClient, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
 	t.Cleanup(cancel)
@@ -187,27 +151,10 @@ func TestReadinessEndpoint_DynamicMode_CacheNotSynced(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
-
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{
-			Tools:     []vmcp.Tool{},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     make(map[string]*vmcp.BackendTarget),
-				Resources: make(map[string]*vmcp.BackendTarget),
-				Prompts:   make(map[string]*vmcp.BackendTarget),
-			},
-			Metadata: &aggregator.AggregationMetadata{},
-		}, nil).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -222,7 +169,7 @@ func TestReadinessEndpoint_DynamicMode_CacheNotSynced(t *testing.T) {
 		Port:           port,
 		Watcher:        mockWatcher, // Dynamic mode with unsynced cache
 		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
+	}, rt, mockBackendClient, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
 	t.Cleanup(cancel)

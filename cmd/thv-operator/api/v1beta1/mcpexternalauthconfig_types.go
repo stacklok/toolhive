@@ -37,7 +37,7 @@ const (
 	ExternalAuthTypeAWSSts ExternalAuthType = "awsSts"
 
 	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
-	// This injects an upstream IDP access token as the Authorization: Bearer header
+	// This injects an upstream IdP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
 
 	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
@@ -46,6 +46,12 @@ const (
 	// status.conditions[Valid] = False with Reason: EnterpriseRequired
 	// when an obo-typed MCPExternalAuthConfig is applied.
 	ExternalAuthTypeOBO ExternalAuthType = "obo"
+
+	// ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.
+	// XAA performs a two-step token exchange to obtain access tokens for target services:
+	//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+	//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+	ExternalAuthTypeXAA ExternalAuthType = "xaa"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -62,7 +68,8 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'upstreamInject' ? has(self.upstreamInject) : !has(self.upstreamInject)",message="upstreamInject configuration must be set if and only if type is 'upstreamInject'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'obo' ? has(self.obo) : !has(self.obo)",message="obo configuration must be set if and only if type is 'obo'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'xaa' ? has(self.xaa) : !has(self.xaa)",message="xaa configuration must be set if and only if type is 'xaa'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo) && !has(self.xaa)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
@@ -71,7 +78,7 @@ type MCPExternalAuthConfigSpec struct {
 	// OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
 	// surface status.conditions[Valid] = False with Reason: EnterpriseRequired
 	// for obo-typed configs.
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo;xaa
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -113,6 +120,11 @@ type MCPExternalAuthConfigSpec struct {
 	// contract mapping.
 	// +optional
 	OBO *OBOConfig `json:"obo,omitempty"`
+
+	// XAA configures XAA (Cross-Application Access) auth for backend requests.
+	// Only used when Type is "xaa".
+	// +optional
+	XAA *XAASpec `json:"xaa,omitempty"`
 }
 
 // OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
@@ -341,7 +353,8 @@ type BearerTokenConfig struct {
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts when
+	// insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	Issuer string `json:"issuer"`
@@ -352,7 +365,8 @@ type EmbeddedAuthServerConfig struct {
 	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
 	// This is useful when the browser-facing authorization endpoint needs to be on a
 	// different host than the issuer used for backend-to-backend calls.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
+	// when insecureAllowHTTP is true) without query, fragment, or trailing slash.
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	// +optional
 	AuthorizationEndpointBaseURL string `json:"authorizationEndpointBaseUrl,omitempty"`
@@ -429,6 +443,22 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments where traffic between
+	// pods traverses a trusted network (e.g. the in-cluster service mesh).
+	// Production deployments reachable outside the cluster MUST use https://.
+	//
+	// On VirtualMCPServer: when false (the default), http:// issuers for non-localhost
+	// hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.
+	//
+	// On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is
+	// structurally present but enforcement is deferred to pod startup via Config.Validate();
+	// a misconfigured issuer will cause the pod to crash at startup rather than surface
+	// as an operator condition.
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
 
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
 	// included in every client registration. The embedded auth server unions these
@@ -570,7 +600,7 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:Pattern=`^https://.*$`
 	IssuerURL string `json:"issuerUrl"`
 
-	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+	// ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
 	// +kubebuilder:validation:Required
 	ClientID string `json:"clientId"`
 
@@ -579,13 +609,13 @@ type OIDCUpstreamConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
 	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
 	// +optional
 	RedirectURI string `json:"redirectUri,omitempty"`
 
-	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// Scopes are the OAuth scopes to request from the upstream IdP.
 	// If not specified, defaults to ["openid", "offline_access"].
 	// When using additionalAuthorizationParams with provider-specific refresh token
 	// mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -612,6 +642,39 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
+	// stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
+	// and whose stable identifier is "oid".
+	//
+	// The value is looked up verbatim as a top-level claim name, so it is
+	// constrained to a claim-name shape: it must start with a letter or
+	// underscore and contain only letters, digits, and underscores. This rejects
+	// dotted, colon-namespaced, or whitespace-containing values at admission
+	// rather than letting a typo silently miss the claim at login, and keeps the
+	// field aligned with the directory service's per-issuer bindingClaim.
+	//
+	// Changing this on a live deployment re-keys existing users (the value
+	// resolves to the internal user ID), so treat it as immutable once users
+	// exist.
+	//
+	// Per-IdP notes:
+	//   - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes
+	//     include "profile". "oid" is unique within a single tenant — multi-tenant
+	//     apps need oid+tid, which this single-claim field cannot express.
+	//   - Okta: the org auth server already puts the stable id in "sub" (default
+	//     works). A custom auth server's "sub" is the mutable login/email and the
+	//     stable "uid" lives only in the access token, not the ID token — map a
+	//     custom ID-token claim and point subjectClaim at it.
+	// The pattern matches the claim-name shape and allows empty (defaults to
+	// "sub"). Using Pattern rather than a CEL XValidation rule keeps this off the
+	// CRD's CEL cost budget — a single-field format check via CEL is rejected by
+	// the apiserver as too expensive once multiplied across the upstreams list.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^([a-zA-Z_][a-zA-Z0-9_]*)?$`
+	SubjectClaim string `json:"subjectClaim,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -675,13 +738,13 @@ type OAuth2UpstreamConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
 	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
 	// +optional
 	RedirectURI string `json:"redirectUri,omitempty"`
 
-	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// Scopes are the OAuth scopes to request from the upstream IdP.
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
@@ -1215,10 +1278,10 @@ type RoleMapping struct {
 }
 
 // UpstreamInjectSpec holds configuration for upstream token injection.
-// This strategy injects an upstream IDP access token obtained by the embedded
+// This strategy injects an upstream IdP access token obtained by the embedded
 // authorization server into backend requests as the Authorization: Bearer header.
 type UpstreamInjectSpec struct {
-	// ProviderName is the name of the upstream IDP provider whose access token
+	// ProviderName is the name of the upstream IdP provider whose access token
 	// should be injected as the Authorization: Bearer header.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -1267,6 +1330,81 @@ const (
 	// Used by out-of-tree handlers; unreachable in upstream-only builds.
 	ConditionReasonInvalidConfig = "InvalidConfig"
 )
+
+// XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.
+// XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) — a
+// two-step token exchange to obtain access tokens for target services:
+//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+type XAASpec struct {
+	// IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693).
+	// Must be a valid HTTPS URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https://.*$`
+	IDPTokenURL string `json:"idpTokenUrl"`
+
+	// IDPClientID is the OAuth client ID at the IdP for IdP exchange.
+	// +optional
+	IDPClientID string `json:"idpClientId,omitempty"`
+
+	// IDPClientSecretRef references a Kubernetes Secret containing the IdP client secret.
+	// +optional
+	IDPClientSecretRef *SecretKeyRef `json:"idpClientSecretRef,omitempty"`
+
+	// TargetTokenURL is the target AS token endpoint for target grant (RFC 7523).
+	// +kubebuilder:validation:Required
+	TargetTokenURL string `json:"targetTokenUrl"`
+
+	// InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+	// WARNING: this is insecure and must only be set for in-cluster or
+	// development/testing endpoints — never in production.
+	// +optional
+	InsecureTargetTokenURL bool `json:"insecureTargetTokenUrl,omitempty"`
+
+	// TargetClientID is the OAuth client ID at the target AS for target grant.
+	// ID-JAG draft §9.1 RECOMMENDS confidential clients for target grant; most
+	// conformant target authorization servers will reject an unauthenticated
+	// JWT-bearer grant per the §4.4.1 client_id continuity requirement.
+	// +optional
+	TargetClientID string `json:"targetClientId,omitempty"`
+
+	// TargetClientSecretRef references a Kubernetes Secret for the target AS client secret.
+	// +optional
+	TargetClientSecretRef *SecretKeyRef `json:"targetClientSecretRef,omitempty"`
+
+	// TargetAudience is the resource AS URL for the ID-JAG audience claim.
+	// +kubebuilder:validation:Required
+	TargetAudience string `json:"targetAudience"`
+
+	// TargetResource is the RFC 8707 resource indicator sent as the `resource`
+	// parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
+	// identifies the target resource server — not the access-token audience, which
+	// is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+	// Some authorization servers (e.g. Okta's early ID-JAG implementation) require
+	// this parameter in practice despite the draft marking it optional — set it
+	// when your IdP needs it.
+	// +optional
+	TargetResource string `json:"targetResource,omitempty"`
+
+	// Scopes are the requested scopes for the XAA exchange (IdP exchange and target grant).
+	// +listType=atomic
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+
+	// SubjectProviderName selects which upstream provider's ID token to use.
+	// When left empty and an embedded authorization server is configured,
+	// the controller automatically populates this field with the first configured
+	// upstream provider name.
+	// +optional
+	SubjectProviderName string `json:"subjectProviderName,omitempty"`
+
+	// SubjectTokenType is the token-type URN of the upstream subject token
+	// used in IdP exchange. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+	// when empty.
+	// +kubebuilder:validation:Enum="urn:ietf:params:oauth:token-type:id_token"
+	// +optional
+	SubjectTokenType string `json:"subjectTokenType,omitempty"`
+}
 
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
@@ -1356,6 +1494,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 			return fmt.Errorf("upstreamInject requires a non-empty providerName")
 		}
 		return nil
+	case ExternalAuthTypeXAA:
+		if r.Spec.XAA == nil {
+			return fmt.Errorf("xaa requires configuration")
+		}
+		return nil
 	case ExternalAuthTypeTokenExchange,
 		ExternalAuthTypeHeaderInjection,
 		ExternalAuthTypeBearerToken,
@@ -1391,44 +1534,43 @@ func (r *MCPExternalAuthConfig) Validate() error {
 	}
 }
 
+// typeConfigEntry maps an ExternalAuthType to its corresponding config field presence check.
+type typeConfigEntry struct {
+	authType  ExternalAuthType
+	fieldName string
+	isSet     bool
+}
+
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
-// The per-type `if` shape is intentional: each row reads one-to-one against
-// the corresponding CEL XValidation rule on the spec, so a reviewer can
-// audit the structural-validation contract by skimming this function.
 //
-// The gocyclo suppression is a confirmed false positive: every new
-// ExternalAuthType adds one biconditional row and one disjunct to the
-// unauthenticated guard, which the analyzer counts as branches even though
-// the rows are syntactically uniform. Collapsing the rows into a
-// table-driven loop would reduce the score but obscure the one-to-one
-// correspondence with the CEL rules on MCPExternalAuthConfigSpec, which is
-// the property reviewers rely on to audit the structural-validation
-// contract. See issue #5329 for the broader discussion.
-//
-//nolint:gocyclo // one if per ExternalAuthType mirrors CEL rules; collapsing would obscure parity — see doc comment
+// Each ExternalAuthType with a config sub-field is one row in the typeConfigEntry
+// table, checked by a uniform biconditional in the loop below ("config set iff
+// type matches"). OBO is checked separately because its handler is registered
+// out-of-tree; the unauthenticated guard then asserts no config is set for the
+// unauthenticated type. Each row still maps one-to-one onto the corresponding
+// CEL XValidation rule on MCPExternalAuthConfigSpec, so a reviewer can audit the
+// structural-validation contract by comparing the table against the markers.
+// See issue #5329 for the broader discussion.
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
-	// Check that each type has its corresponding config
-	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
-		return fmt.Errorf("tokenExchange configuration must be set if and only if type is 'tokenExchange'")
-	}
-	if (r.Spec.HeaderInjection == nil) == (r.Spec.Type == ExternalAuthTypeHeaderInjection) {
-		return fmt.Errorf("headerInjection configuration must be set if and only if type is 'headerInjection'")
-	}
-	if (r.Spec.BearerToken == nil) == (r.Spec.Type == ExternalAuthTypeBearerToken) {
-		return fmt.Errorf("bearerToken configuration must be set if and only if type is 'bearerToken'")
-	}
-	if (r.Spec.EmbeddedAuthServer == nil) == (r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer) {
-		return fmt.Errorf("embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'")
-	}
-	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
-		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
-	}
-	if (r.Spec.UpstreamInject == nil) == (r.Spec.Type == ExternalAuthTypeUpstreamInject) {
-		return fmt.Errorf("upstreamInject configuration must be set if and only if type is 'upstreamInject'")
+	entries := []typeConfigEntry{
+		{ExternalAuthTypeTokenExchange, "tokenExchange", r.Spec.TokenExchange != nil},
+		{ExternalAuthTypeHeaderInjection, "headerInjection", r.Spec.HeaderInjection != nil},
+		{ExternalAuthTypeBearerToken, "bearerToken", r.Spec.BearerToken != nil},
+		{ExternalAuthTypeEmbeddedAuthServer, "embeddedAuthServer", r.Spec.EmbeddedAuthServer != nil},
+		{ExternalAuthTypeAWSSts, "awsSts", r.Spec.AWSSts != nil},
+		{ExternalAuthTypeUpstreamInject, "upstreamInject", r.Spec.UpstreamInject != nil},
+		{ExternalAuthTypeXAA, "xaa", r.Spec.XAA != nil},
 	}
 	if (r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO) {
 		return fmt.Errorf("obo configuration must be set if and only if type is 'obo'")
+	}
+
+	for _, e := range entries {
+		wantSet := r.Spec.Type == e.authType
+		if e.isSet != wantSet {
+			return fmt.Errorf("%s configuration must be set if and only if type is '%s'", e.fieldName, e.authType)
+		}
 	}
 
 	// Redundant with the per-type biconditionals above — each fires first for
@@ -1436,14 +1578,13 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// readable invariant so a contributor adding a new ExternalAuthType extends
 	// the "no configuration must be set" check here too.
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
-		if r.Spec.TokenExchange != nil ||
-			r.Spec.HeaderInjection != nil ||
-			r.Spec.BearerToken != nil ||
-			r.Spec.EmbeddedAuthServer != nil ||
-			r.Spec.AWSSts != nil ||
-			r.Spec.UpstreamInject != nil ||
-			r.Spec.OBO != nil {
+		if r.Spec.OBO != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+		}
+		for _, e := range entries {
+			if e.isSet {
+				return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+			}
 		}
 	}
 

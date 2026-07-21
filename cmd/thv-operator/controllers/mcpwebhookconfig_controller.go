@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,7 +45,7 @@ type MCPWebhookConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpwebhookconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpwebhookconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpwebhookconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -163,36 +162,6 @@ func (r *MCPWebhookConfigReconciler) handleConfigHashChange(
 		return ctrl.Result{}, err
 	}
 
-	var updateErrs []error
-	for _, server := range referencingServers {
-		logger.Info("Triggering reconciliation of MCPServer due to MCPWebhookConfig change",
-			"mcpserver", server.Name, "webhookConfig", webhookConfig.Name)
-
-		latestServer := &mcpv1beta1.MCPServer{}
-		if err := r.Get(ctx, client.ObjectKey{Name: server.Name, Namespace: server.Namespace}, latestServer); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			logger.Error(err, "Failed to get MCPServer before patching annotation", "mcpserver", server.Name)
-			updateErrs = append(updateErrs, err)
-			continue
-		}
-
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, latestServer, func(m *mcpv1beta1.MCPServer) {
-			if m.Annotations == nil {
-				m.Annotations = make(map[string]string)
-			}
-			m.Annotations["toolhive.stacklok.dev/webhookconfig-hash"] = configHash
-		}); err != nil {
-			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
-			updateErrs = append(updateErrs, err)
-		}
-	}
-
-	if err := utilerrors.NewAggregate(updateErrs); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	return ctrl.Result{}, nil
 }
 
@@ -260,18 +229,38 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingMCPServers finds all MCPServers that reference the given MCPWebhookConfig
+// webhookConfigRefIndexKey is the field-index key backing the reverse lookup in
+// findReferencingMCPServers. MCPServer references the config via
+// spec.webhookConfigRef; the index is registered in SetupWithManager. The
+// MCPWebhookConfig CR is v1alpha1, but the index is on the v1beta1 MCPServer.
+const webhookConfigRefIndexKey = "spec.webhookConfigRef"
+
+// indexMCPServerByWebhookConfigRef extracts the MCPWebhookConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByWebhookConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.WebhookConfigRef == nil || server.Spec.WebhookConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.WebhookConfigRef.Name}
+}
+
+// findReferencingMCPServers finds all MCPServers that reference the given MCPWebhookConfig.
+//
+// The lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing MCPServers instead of listing every MCPServer
+// in the namespace and filtering in memory.
 func (r *MCPWebhookConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
 ) ([]mcpv1beta1.MCPServer, error) {
-	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, webhookConfig.Namespace, webhookConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.WebhookConfigRef != nil {
-				return &server.Spec.WebhookConfigRef.Name
-			}
-			return nil
-		})
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(webhookConfig.Namespace),
+		client.MatchingFields{webhookConfigRefIndexKey: webhookConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by webhookConfigRef: %w", err)
+	}
+	return serverList.Items, nil
 }
 
 // updateReferencingWorkloads updates the list of workloads referencing this config
@@ -317,6 +306,19 @@ func conditionWouldChange(conditions []metav1.Condition, desired metav1.Conditio
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field index backing findReferencingMCPServers: lets the controller query only
+	// the MCPServers referencing a given config rather than listing every MCPServer
+	// in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, webhookConfigRefIndexKey, indexMCPServerByWebhookConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer webhookConfigRef index: %w", err)
+	}
+
+	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
+	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
+	// operator was down) is this config's own For() resync, which re-runs Reconcile and
+	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPWebhookConfig{}).
 		Watches(
@@ -327,46 +329,20 @@ func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// mapMCPServerToWebhookConfig maps MCPServer changes to MCPWebhookConfig reconciliation requests.
-// It enqueues the currently referenced config and any config that still lists the server
-// in ReferencingWorkloads, which handles ref removal and server deletion.
-func (r *MCPWebhookConfigReconciler) mapMCPServerToWebhookConfig(
-	ctx context.Context, obj client.Object,
+// mapMCPServerToWebhookConfig maps an MCPServer to the MCPWebhookConfig it currently references.
+// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update (and on the
+// object for create/delete), so a ref change or deletion automatically enqueues both the
+// previously- and newly-referenced config; the previously-referenced config then prunes the stale
+// entry on reconcile. No manual stale-reference scan needed.
+func (*MCPWebhookConfigReconciler) mapMCPServerToWebhookConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok {
+	if !ok || server.Spec.WebhookConfigRef == nil || server.Spec.WebhookConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[client.ObjectKey]struct{})
-	var requests []reconcile.Request
-
-	if server.Spec.WebhookConfigRef != nil {
-		nn := client.ObjectKey{
-			Name:      server.Spec.WebhookConfigRef.Name,
-			Namespace: server.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	webhookConfigList := &mcpv1alpha1.MCPWebhookConfigList{}
-	if err := r.List(ctx, webhookConfigList, client.InNamespace(server.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPWebhookConfigs for MCPServer watch")
-		return requests
-	}
-	for _, cfg := range webhookConfigList.Items {
-		nn := client.ObjectKey{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-
-	return requests
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Name:      server.Spec.WebhookConfigRef.Name,
+		Namespace: server.Namespace,
+	}}}
 }

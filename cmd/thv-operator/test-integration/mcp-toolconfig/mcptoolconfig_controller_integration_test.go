@@ -324,6 +324,57 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 		})
 
+		It("should propagate MCPToolConfig changes to referencing MCPServers", func() {
+			var initialHash string
+			Eventually(func() string {
+				updated := &mcpv1beta1.MCPServer{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updated); err != nil {
+					return ""
+				}
+				initialHash = updated.Status.ToolConfigHash
+				return initialHash
+			}, timeout, interval).ShouldNot(BeEmpty())
+
+			Eventually(func() error {
+				updated := &mcpv1beta1.MCPToolConfig{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configName,
+					Namespace: namespace,
+				}, updated); err != nil {
+					return err
+				}
+				updated.Spec.ToolsFilter = []string{"tool1", "tool2", "tool3"}
+				return k8sClient.Update(ctx, updated)
+			}, timeout, interval).Should(Succeed())
+
+			var updatedConfigHash string
+			Eventually(func() string {
+				updated := &mcpv1beta1.MCPToolConfig{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configName,
+					Namespace: namespace,
+				}, updated); err != nil {
+					return initialHash
+				}
+				updatedConfigHash = updated.Status.ConfigHash
+				return updatedConfigHash
+			}, timeout, interval).ShouldNot(Equal(initialHash))
+
+			Eventually(func() string {
+				updated := &mcpv1beta1.MCPServer{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updated); err != nil {
+					return initialHash
+				}
+				return updated.Status.ToolConfigHash
+			}, timeout, interval).Should(Equal(updatedConfigHash))
+		})
+
 		It("should remove server from status when MCPServer is deleted", func() {
 			// Delete the MCPServer
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())

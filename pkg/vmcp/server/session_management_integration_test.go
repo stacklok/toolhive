@@ -15,18 +15,17 @@ import (
 	"testing"
 	"time"
 
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpsdk "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpsdk "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -204,17 +203,11 @@ func buildTestServerWithOptions(
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
-	// List() is consumed by the core's on-demand aggregation; the discovery middleware
-	// is guarded off on the Serve path (s.core != nil), so Discover() is no longer called
-	// (the AnyTimes expectations tolerate zero calls). Return an empty (non-nil) result.
-	emptyAggCaps := &aggregator.AggregatedCapabilities{}
+	// List() is consumed by the core's on-demand aggregation.
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(emptyAggCaps, nil).AnyTimes()
 	// Stop is called when the server is stopped (not via httptest but via session manager cleanup).
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 	// tools/call routes through core.CallTool → BackendClient.CallTool (the session factory's
 	// own CallTool is bypassed on the Serve path). Return a deterministic result so call
 	// tests can assert on it.
@@ -223,7 +216,7 @@ func buildTestServerWithOptions(
 		Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}, nil).
 		AnyTimes()
 
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	srv, err := server.New(
 		context.Background(),
@@ -237,7 +230,6 @@ func buildTestServerWithOptions(
 		},
 		rt,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		opts.workflowDefs,
 	)

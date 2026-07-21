@@ -8,11 +8,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -179,7 +179,7 @@ func TestSDKElicitationAdapter_Integration(t *testing.T) {
 }
 
 // TestServer_MCPServer_ReturnsSameInstance verifies that (*Server).MCPServer
-// returns the exact mark3labs server pointer stored at construction time.
+// returns the exact mcpcompat server pointer stored at construction time.
 // Identity matters because ClientSession correlation is keyed to the server
 // that received the initialize request; embedders building their own
 // elicitation requester must receive the authoritative instance.

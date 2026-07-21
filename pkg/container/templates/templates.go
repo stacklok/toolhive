@@ -32,8 +32,11 @@ type TemplateData struct {
 	// These are typically required subcommands (e.g., "start") that must always be present.
 	// Runtime arguments passed via "-- <args>" will be appended after these build args.
 	BuildArgs []string
-	// BuildEnv contains environment variables to inject into the Dockerfile builder stage.
-	// These are used for configuring package managers (e.g., custom registry URLs).
+	// BuildEnv contains environment variables to inject into the Dockerfile builder stage only.
+	// These are used for configuring package managers (e.g., custom registry URLs) and do NOT
+	// persist into the final runtime image or the running container's environment.
+	// For environment variables the running container's process needs at startup
+	// (e.g. feature flags, cache backend selection), use RuntimeConfig.RuntimeEnv instead.
 	// Keys must be uppercase with underscores, values are validated for safety.
 	BuildEnv map[string]string
 	// BuildAuthFiles contains auth file contents keyed by file type (npmrc, netrc, etc).

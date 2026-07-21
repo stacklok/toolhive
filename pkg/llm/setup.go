@@ -31,6 +31,9 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// IsManaged reports whether a managed-preferences profile overrides the
+	// client's local config (so the config setup writes would be ignored).
+	IsManaged(clientType string) bool
 	// ConfigureEnvFile writes .env file entries for the client and returns the
 	// env file path. Returns ("", nil) when the client has no env-file entries.
 	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
@@ -84,11 +87,6 @@ func Setup(
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	tokenHelperCommand, err := buildTokenHelperCommand()
-	if err != nil {
-		return err
-	}
-
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
 
 	// Detect tools before login so we skip the interactive browser flow when
@@ -102,6 +100,21 @@ func Setup(
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
+	}
+
+	// Only build the shell-string token helper if a detected tool actually
+	// consumes it — its shell-safety check on the thv executable path would
+	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
+	var tokenHelperCommand string
+	if tokenHelperCommandNeeded(gm, detected) {
+		tokenHelperCommand, err = buildTokenHelperCommand()
+		if err != nil {
+			return err
+		}
+	}
+	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
+	if err != nil {
+		return err
 	}
 
 	// In lazy mode the interactive login is deferred until a configured tool
@@ -131,13 +144,22 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		llmCfg.TLSSkipVerify, anthropicPrefix,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, llmCfg.Bedrock,
 	)
 	if err != nil {
 		return err
 	}
 
+	// Warn about bedrock flags the user passed THIS run that had no effect:
+	// --bedrock-compat when Claude Code was not configured, and --enable-1m when
+	// bedrock-compat is off. Keyed off inlineOpts (not the merged config) because
+	// bedrock-compat is persisted — gating on llmCfg.Bedrock would nag on every
+	// later setup that omits claude-code. llmCfg.Bedrock.Compat is the effective
+	// (persisted + inline) compat state used for the --enable-1m check.
+	warnBedrockNoEffect(errOut, inlineOpts, llmCfg.Bedrock.Compat, configured)
+
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
+	warnCredentialHelperTools(out, errOut, gm, configured)
 
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
 		// SetFields applies inline opts to the on-disk config (preserving any
@@ -294,13 +316,13 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 	}
 	for _, tc := range configured {
 		switch tc.Mode {
-		case "direct":
+		case llmgateway.ModeDirect:
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: %s uses direct mode — NODE_TLS_REJECT_UNAUTHORIZED=0 has been written to its "+
 					"settings, disabling TLS certificate verification for ALL of %s's outbound connections "+
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
-		case "proxy":
+		case llmgateway.ModeProxy:
 			if tc.Tool == "gemini-cli" {
 				_, _ = fmt.Fprintf(errOut,
 					"Note: --tls-skip-verify is not supported for Gemini CLI "+
@@ -311,6 +333,11 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
 						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 			}
+		case llmgateway.ModeCodexAuth:
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: --tls-skip-verify was NOT applied to %s — its config.toml has no "+
+					"TLS-skip option. Codex will fail against a self-signed gateway until you "+
+					"trust the certificate in the system store.\n", tc.Tool)
 		}
 	}
 }
@@ -330,6 +357,102 @@ func filterDetectedClients(detected []string, targetClient string) ([]string, er
 	return nil, fmt.Errorf("client %q is not installed or not detected", targetClient)
 }
 
+// claudeCodeClient is the canonical client identifier for Claude Code. Declared
+// here as a string literal because pkg/llm does not import pkg/client (which
+// owns the ClientApp constant) to avoid an import cycle.
+const claudeCodeClient = "claude-code"
+
+// Default Bedrock inference-profile model IDs written for Claude Code in
+// bedrock-compat mode when --models does not override a tier. These track the
+// current generation and are expected to be bumped periodically; users override
+// per tier via --models.
+const (
+	defaultBedrockHaikuModel  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	defaultBedrockOpusModel   = "us.anthropic.claude-opus-4-8"
+	defaultBedrockSonnetModel = "us.anthropic.claude-sonnet-5"
+)
+
+// oneMSuffix is the model-ID suffix that opts Bedrock opus/sonnet into the
+// 1M-token context window.
+const oneMSuffix = "[1m]"
+
+// resolveBedrockModels maps optional override model IDs onto Claude Code's three
+// tiers, starting from the built-in defaults. Each override is assigned to a tier
+// by matching "haiku", "opus", or "sonnet" (case-insensitive) as a substring of
+// the ID. When enable1M is true, the "[1m]" suffix is appended to the opus and
+// sonnet IDs (never haiku, which has a 200K context window) to opt into the 1M
+// context window on Bedrock; an override that already carries the suffix is left
+// as-is so it is not doubled.
+//
+// warnings collects the human-readable diagnostics for overrides that had no
+// (or a surprising) effect — an ID matching no tier, and a second ID clobbering
+// a tier an earlier ID already set — so the caller can surface them.
+func resolveBedrockModels(models []string, enable1M bool) (haiku, opus, sonnet string, warnings []string) {
+	haiku, opus, sonnet = defaultBedrockHaikuModel, defaultBedrockOpusModel, defaultBedrockSonnetModel
+	// Track which tiers an override has already claimed so a second override for
+	// the same tier is reported rather than silently winning last-write.
+	assigned := make(map[string]string, 3)
+	assign := func(tier string, dst *string, id string) {
+		if prev, ok := assigned[tier]; ok {
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q overrides %q for the %s tier; only the last is used", id, prev, tier))
+		}
+		assigned[tier] = id
+		*dst = id
+	}
+	for _, m := range models {
+		switch lower := strings.ToLower(m); {
+		case strings.Contains(lower, "haiku"):
+			assign("haiku", &haiku, m)
+		case strings.Contains(lower, "opus"):
+			assign("opus", &opus, m)
+		case strings.Contains(lower, "sonnet"):
+			assign("sonnet", &sonnet, m)
+		default:
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q did not match a tier (expected haiku/opus/sonnet in the ID); ignored", m))
+		}
+	}
+	if enable1M {
+		opus = withOneMSuffix(opus)
+		sonnet = withOneMSuffix(sonnet)
+	}
+	return haiku, opus, sonnet, warnings
+}
+
+// withOneMSuffix appends the "[1m]" suffix unless id already ends with it, so a
+// user-supplied ID that already carries the suffix is not doubled into "[1m][1m]".
+func withOneMSuffix(id string) string {
+	if strings.HasSuffix(id, oneMSuffix) {
+		return id
+	}
+	return id + oneMSuffix
+}
+
+// warnBedrockNoEffect warns about Bedrock flags the user passed on THIS run that
+// had no effect. It keys off opts (the inline flags for this invocation), not the
+// persisted config, because bedrock-compat is sticky: warning off the merged state
+// would nag on every later setup that omits claude-code even though the flag was
+// not passed. effectiveCompat is the merged (persisted + inline) compat state, used
+// to decide whether an inline --enable-1m is inert.
+//
+// Two cases:
+//   - --bedrock-compat passed this run but Claude Code was not among the configured
+//     tools (the keys only attach to Claude Code), and
+//   - --enable-1m passed this run while compat is off (the 1M suffix rides the
+//     Bedrock model-ID path, so it is inert without compat) — otherwise a silent
+//     no-op.
+func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool, configured []ToolConfig) {
+	if opts.BedrockCompat != nil && *opts.BedrockCompat && !isTarget(configured, claudeCodeClient) {
+		_, _ = fmt.Fprintln(errOut,
+			"Warning: --bedrock-compat was set but Claude Code was not configured; the flag had no effect.")
+	}
+	if opts.Enable1M != nil && *opts.Enable1M && !effectiveCompat {
+		_, _ = fmt.Fprintln(errOut,
+			"Warning: --enable-1m has no effect without --bedrock-compat; it is ignored.")
+	}
+}
+
 // configureDetectedTools patches each detected tool's config file and returns
 // the list of successfully configured tools. An error is returned only when no
 // tool was configured successfully.
@@ -338,17 +461,22 @@ func configureDetectedTools(
 	gm GatewayManager,
 	detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
+	models []string,
+	bedrock BedrockConfig,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
 		mode := gm.LLMGatewayModeFor(clientType)
 
-		// Only apply the Anthropic path prefix for direct-mode tools.
-		// Proxy-mode tools (Cursor, VS Code, Xcode) do not use ANTHROPIC_BASE_URL.
+		// Apply the Anthropic path prefix for tools that talk the Anthropic API
+		// directly — direct-mode (ANTHROPIC_BASE_URL) and credential-helper mode
+		// (Claude Desktop's inferenceGatewayBaseUrl). Proxy-mode tools (Cursor,
+		// VS Code, Xcode) do not use it.
 		anthropicBaseURL := ""
-		if mode == "direct" && anthropicPathPrefix != "" {
+		if usesAnthropicBaseURL(mode) && anthropicPathPrefix != "" {
 			// Trim any leading slash: url.JoinPath docs say elements should not
 			// start with "/", and path.Join already handles the join correctly.
 			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
@@ -361,8 +489,27 @@ func configureDetectedTools(
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
+			TokenHelperPath:    tokenHelperPath,
+			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
+			Models:             models,
 		}
+
+		// Bedrock-compat applies only to Claude Code: it disables the experimental
+		// anthropic-beta headers Bedrock rejects and pins per-tier Bedrock model
+		// IDs. Resolve defaults, tier mapping, and the optional [1m] suffix here so
+		// pkg/client only writes the resolved values.
+		if bedrock.Compat && clientType == claudeCodeClient {
+			haiku, opus, sonnet, warnings := resolveBedrockModels(models, bedrock.Enable1M)
+			applyCfg.BedrockCompat = true
+			applyCfg.BedrockHaikuModel = haiku
+			applyCfg.BedrockOpusModel = opus
+			applyCfg.BedrockSonnetModel = sonnet
+			for _, w := range warnings {
+				_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
+			}
+		}
+
 		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
@@ -455,6 +602,20 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
+// tokenHelperCommandNeeded reports whether any detected client's mode consumes
+// the shell-string token helper (TokenHelperCommand) — direct-mode's
+// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
+// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
+func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
+	for _, clientType := range detected {
+		switch gm.LLMGatewayModeFor(clientType) {
+		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
+			return true
+		}
+	}
+	return false
+}
+
 // buildTokenHelperCommand returns the shell command string used as the
 // token-helper for direct-mode tools. It rejects executable paths that contain
 // shell metacharacters, since the command is written verbatim into long-lived
@@ -482,16 +643,58 @@ func buildTokenHelperCommand() (string, error) {
 	return fmt.Sprintf(`"%s" llm token`, self), nil
 }
 
-// hasDirectModeClient reports whether any client in the detected list uses
-// direct mode. Used to skip the Anthropic-prefix probe when no direct-mode
-// tools are present (proxy-mode tools ignore ANTHROPIC_BASE_URL entirely).
+// buildTokenHelperArgv returns the argv-form of the token helper, for config
+// formats that invoke an executable directly (no shell) — e.g. Codex's
+// [model_providers.<id>.auth] command/args table. Since args are passed as a
+// TOML array rather than interpolated into a shell string, no shell-metacharacter
+// validation is needed. --skip-browser is always included since Codex has no
+// interactive-context signal like Claude Desktop's credential-helper shim.
+func buildTokenHelperArgv() (string, []string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving thv executable path: %w", err)
+	}
+	return self, []string{"llm", "token", "--skip-browser"}, nil
+}
+
+// usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base
+// URL (gateway + /anthropic prefix): direct mode via ANTHROPIC_BASE_URL, and
+// credential-helper mode (Claude Desktop) via inferenceGatewayBaseUrl.
+func usesAnthropicBaseURL(mode string) bool {
+	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper
+}
+
+// hasDirectModeClient reports whether any client in the detected list uses a
+// mode that needs the Anthropic base URL. Used to skip the Anthropic-prefix
+// probe when no such tools are present (proxy-mode tools ignore it entirely).
 func hasDirectModeClient(gm GatewayManager, detected []string) bool {
 	for _, clientType := range detected {
-		if gm.LLMGatewayModeFor(clientType) == "direct" {
+		if usesAnthropicBaseURL(gm.LLMGatewayModeFor(clientType)) {
 			return true
 		}
 	}
 	return false
+}
+
+// warnCredentialHelperTools prints the follow-up notes credential-helper clients
+// (Claude Desktop) need: they read config only at launch, so the user must fully
+// quit and relaunch; and a managed-preferences profile, if present, overrides
+// the local config setup just wrote.
+func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
+	for _, tc := range configured {
+		if tc.Mode != llmgateway.ModeCredentialHelper {
+			continue
+		}
+		_, _ = fmt.Fprintf(out,
+			"%s reads its configuration only at launch — fully quit and reopen it "+
+				"for the gateway change to take effect.\n", tc.Tool)
+		if gm.IsManaged(tc.Tool) {
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: a managed-preferences profile for %s is present; it overrides the local "+
+					"configuration just written, which will be ignored. Remove the managed profile or "+
+					"configure the gateway there instead.\n", tc.Tool)
+		}
+	}
 }
 
 // revertToolConfig reverts the settings-file and .env patches for a single
@@ -525,7 +728,7 @@ func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []T
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.
 func hasProxyMode(cfgs []ToolConfig) bool {
 	for _, t := range cfgs {
-		if t.Mode == "proxy" {
+		if t.Mode == llmgateway.ModeProxy {
 			return true
 		}
 	}

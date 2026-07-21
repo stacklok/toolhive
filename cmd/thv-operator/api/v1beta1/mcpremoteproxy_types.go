@@ -5,6 +5,7 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // HeaderForwardConfig defines header forward configuration for remote servers.
@@ -123,6 +124,16 @@ type MCPRemoteProxySpec struct {
 	// If not specified, a ServiceAccount will be created automatically and used by the proxy.
 	// +optional
 	ServiceAccount *string `json:"serviceAccount,omitempty"`
+
+	// PodTemplateSpec defines the pod template to use for the MCPRemoteProxy
+	// This allows for customizing the pod configuration beyond what is provided by the other fields.
+	// Note that to modify the specific container the remote proxy runs in, you must specify
+	// the `toolhive` container name in the PodTemplateSpec.
+	// This field accepts a PodTemplateSpec object as JSON/YAML.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	// When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
@@ -292,6 +303,12 @@ const (
 	// ConditionTypeMCPRemoteProxyAuthServerRefValidated indicates whether the AuthServerRef is valid
 	ConditionTypeMCPRemoteProxyAuthServerRefValidated = "AuthServerRefValidated"
 
+	// ConditionTypeMCPRemoteProxyPodTemplateValid indicates whether the PodTemplateSpec is valid
+	ConditionTypeMCPRemoteProxyPodTemplateValid = "PodTemplateValid"
+
+	// ConditionTypeMCPRemoteProxyCABundleRefValidated indicates whether the OIDC CA bundle reference is valid
+	ConditionTypeMCPRemoteProxyCABundleRefValidated = "CABundleRefValidated"
+
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
@@ -379,6 +396,21 @@ const (
 
 	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
 	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyPodTemplateValid indicates PodTemplateSpec validation succeeded
+	ConditionReasonMCPRemoteProxyPodTemplateValid = "ValidPodTemplateSpec"
+
+	// ConditionReasonMCPRemoteProxyPodTemplateInvalid indicates PodTemplateSpec validation failed
+	ConditionReasonMCPRemoteProxyPodTemplateInvalid = "InvalidPodTemplateSpec"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefValid indicates the CA bundle ref is valid and the ConfigMap exists
+	ConditionReasonMCPRemoteProxyCABundleRefValid = "CABundleRefValid"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefNotFound indicates the referenced CA bundle ConfigMap was not found
+	ConditionReasonMCPRemoteProxyCABundleRefNotFound = "CABundleRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefInvalid indicates the CA bundle ref configuration is invalid
+	ConditionReasonMCPRemoteProxyCABundleRefInvalid = "CABundleRefInvalid"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

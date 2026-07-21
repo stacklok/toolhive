@@ -20,6 +20,27 @@ const maxPackageNameLength = 128
 // dots, underscores, plus signs, or hyphens.
 var packageNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+\-]*$`)
 
+// envKeyPattern matches valid environment variable names for RuntimeEnv.
+// Must start with an uppercase letter, followed by uppercase letters, numbers, or underscores.
+var envKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// reservedRuntimeEnvKeys lists environment variable names that RuntimeEnv must
+// not override, either because the generated Dockerfile sets them itself
+// (e.g. PATH) or because overriding them could destabilize the runtime image.
+var reservedRuntimeEnvKeys = map[string]bool{
+	"PATH": true, "HOME": true, "USER": true, "SHELL": true, "PWD": true,
+	"HOSTNAME": true, "TERM": true, "LANG": true, "LC_ALL": true,
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true,
+}
+
+// runtimeEnvDangerousValuePatterns lists substrings that must not appear in a
+// RuntimeEnv value. Values are interpolated verbatim into a Dockerfile ENV
+// line (ENV KEY="value") with no shell-escaping, so these characters could
+// break out of the quoted value and inject arbitrary Dockerfile/shell content.
+var runtimeEnvDangerousValuePatterns = []string{
+	"`", "$(", "${", "\\", "\n", "\r", "\"", ";", "&&", "||", "|", ">", "<",
+}
+
 // RuntimeConfig defines the base images and versions for a specific runtime
 type RuntimeConfig struct {
 	// BuilderImage is the full image reference for the builder stage.
@@ -32,6 +53,16 @@ type RuntimeConfig struct {
 	// Examples for Alpine: ["git", "make", "gcc"]
 	// Examples for Debian: ["git", "build-essential"]
 	AdditionalPackages []string `json:"additional_packages,omitempty" yaml:"additional_packages,omitempty"`
+
+	// RuntimeEnv contains environment variables to inject into the Dockerfile's
+	// final runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),
+	// which only affects the builder stage, these variables are baked into the
+	// shipped image and are present in the running container's process
+	// environment at startup. Use this for values a packaged MCP server reads at
+	// process start (e.g. feature flags, cache backend selection), not for
+	// build-time package manager configuration.
+	// Keys must be uppercase with underscores, values are validated for safety.
+	RuntimeEnv map[string]string `json:"runtime_env,omitempty" yaml:"runtime_env,omitempty"`
 }
 
 // Validate checks that all RuntimeConfig fields contain safe values that cannot
@@ -66,6 +97,29 @@ func (rc *RuntimeConfig) Validate() error {
 				"invalid package name %q: must match %s",
 				pkg, packageNamePattern.String(),
 			))
+		}
+	}
+
+	// Validate each RuntimeEnv entry to ensure keys and values are safe to
+	// interpolate into a Dockerfile ENV instruction.
+	for key, value := range rc.RuntimeEnv {
+		if !envKeyPattern.MatchString(key) {
+			errs = append(errs, fmt.Errorf(
+				"invalid runtime env key %q: must match %s", key, envKeyPattern.String(),
+			))
+			continue
+		}
+		if reservedRuntimeEnvKeys[key] {
+			errs = append(errs, fmt.Errorf("runtime env key %q is reserved and cannot be overridden", key))
+			continue
+		}
+		for _, pattern := range runtimeEnvDangerousValuePatterns {
+			if strings.Contains(value, pattern) {
+				errs = append(errs, fmt.Errorf(
+					"runtime env value for key %q contains potentially dangerous characters: %q", key, pattern,
+				))
+				break
+			}
 		}
 	}
 

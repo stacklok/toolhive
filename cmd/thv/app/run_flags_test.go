@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive-core/logging"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
@@ -808,4 +809,64 @@ validating:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid webhook configuration")
 	})
+}
+
+// TestBuildRunnerConfig_NetworkIsolationExplicitWiring guards against a regression
+// where the cmd layer drops WithNetworkIsolationExplicit: it reproduces the exact
+// cmd.Flags().Changed("isolate-network") computation from BuildRunnerConfig and
+// threads the result through buildRunnerConfig (the closest unit-testable entry;
+// BuildRunnerConfig itself needs a live Docker runtime and registry). It confirms
+// an explicit --isolate-network with --network host fails fast, while a defaulted
+// isolation with --network host degrades to IsolateNetwork=false. See #5775.
+func TestBuildRunnerConfig_NetworkIsolationExplicitWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		network         string
+		setIsolate      string // "" means the flag is left defaulted (not changed)
+		expectError     bool
+		expectIsolation bool
+	}{
+		{"host with explicit isolate errors", "host", "true", true, false},
+		{"host with defaulted isolate degrades", "host", "", false, false},
+		{"bridge with explicit isolate keeps isolation", "", "true", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runFlags := &RunFlags{}
+			cmd := &cobra.Command{}
+			AddRunFlags(cmd, runFlags)
+
+			require.NoError(t, cmd.Flags().Set("permission-profile", "none"))
+			require.NoError(t, cmd.Flags().Set("transport", "stdio"))
+			if tt.network != "" {
+				require.NoError(t, cmd.Flags().Set("network", tt.network))
+			}
+			if tt.setIsolate != "" {
+				require.NoError(t, cmd.Flags().Set("isolate-network", tt.setIsolate))
+			}
+
+			// Reproduce the exact explicitness computation from BuildRunnerConfig.
+			isolateExplicit := cmd.Flags().Changed("isolate-network")
+
+			cfg, err := buildRunnerConfig(
+				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+				map[string]string{}, &runner.DetachedEnvVarValidator{}, nil, nil, &config.Config{},
+				runner.WithNetworkIsolationExplicit(isolateExplicit),
+			)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "network isolation cannot be enforced")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.Equal(t, tt.expectIsolation, cfg.IsolateNetwork)
+		})
+	}
 }

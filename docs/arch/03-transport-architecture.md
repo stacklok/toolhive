@@ -213,8 +213,8 @@ All proxy types integrate with the middleware chain:
 graph LR
     Client[Client Request] --> MW1[Middleware 1<br/>Auth]
     MW1 --> MW2[Middleware 2<br/>Parser]
-    MW2 --> MW3[Middleware 3<br/>Authz]
-    MW3 --> MW4[Middleware 4<br/>Audit]
+    MW2 --> MW3[Middleware 3<br/>Audit]
+    MW3 --> MW4[Middleware 4<br/>Authz]
     MW4 --> Proxy[Proxy Handler]
     Proxy --> Container[MCP Server]
 
@@ -227,7 +227,7 @@ graph LR
 
 **Implementation:**
 - `pkg/transport/types/transport.go` - `MiddlewareFunction` and `NamedMiddleware` types
-- Middleware applied in reverse order (last registered = outermost)
+- Middleware wraps the handler in reverse registration order, so the first registered entry is the outermost wrapper and runs first at request time
 - Each transport type accepts `[]NamedMiddleware` in constructor (each wraps a `MiddlewareFunction` with its name for logging)
 
 ## Remote MCP Server Proxying
@@ -655,3 +655,4 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 - [Deployment Modes](01-deployment-modes.md) - How transports work in each mode
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Transport configuration
 - [Core Concepts](02-core-concepts.md) - Transport concepts and terminology
+- [Operator Architecture](09-operator-architecture.md) - How the operator and proxy-runner set up transports in Kubernetes

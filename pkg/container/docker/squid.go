@@ -207,6 +207,36 @@ func writeDockerGatewayDenyRules(sb *strings.Builder, gatewayIP string) {
 	)
 }
 
+// writeDockerGatewayAllowRules emits Squid ACL definitions and http_access allow
+// rules that grant access to the Docker gateway addresses. They are written when
+// --allow-docker-gateway is set so the flag alone makes the host reachable — in
+// allowlist mode, suppressing the deny is not enough, since Squid is
+// first-match-wins and only a later allow can let the request through.
+//
+// The allow rules are emitted as standalone http_access lines that reference only
+// the host/IP ACLs, NOT the port ACL. On a single http_access line Squid AND-s
+// the ACLs together, so folding the gateway host into the port-restricted
+// allowed_ports/allowed_dsts rule would block it on the arbitrary ports that
+// host-local services use (5432, 3306, 6379, 8080, …). Gateway access is
+// therefore port-independent — a deliberate relaxation, since reaching the host
+// is already a separate, more-privileged opt-in.
+//
+// Like the deny rules, these MUST precede any later http_access allow/deny so
+// they are reached under Squid's first-match-wins evaluation.
+//
+// See writeDockerGatewayDenyRules for the meaning of gatewayIP and the gateway
+// hostnames.
+func writeDockerGatewayAllowRules(sb *strings.Builder, gatewayIP string) {
+	sb.WriteString(
+		"# Grant Docker gateway access — enabled via --allow-docker-gateway\n" +
+			"acl docker_gateway_hosts dstdomain " +
+			dockerGatewayHostname + " " + dockerAltGatewayHostname + "\n" +
+			"acl docker_gateway_ip dst " + gatewayIP + "\n" +
+			"http_access allow docker_gateway_hosts\n" +
+			"http_access allow docker_gateway_ip\n\n",
+	)
+}
+
 func createTempEgressSquidConf(
 	networkPermissions *permissions.NetworkPermissions,
 	serverHostname string,
@@ -217,10 +247,13 @@ func createTempEgressSquidConf(
 
 	writeCommonConfig(&sb, serverHostname, proxyEgress)
 
-	// Always block Docker gateway addresses unless the caller explicitly opts
-	// in via --allow-docker-gateway. MUST precede any http_access allow —
-	// Squid is first-match-wins.
-	if !allowDockerGateway {
+	// Handle Docker gateway access. MUST precede any http_access allow — Squid
+	// is first-match-wins. When --allow-docker-gateway is set, emit explicit
+	// allow rules so the flag alone grants host access; otherwise block the
+	// gateway addresses.
+	if allowDockerGateway {
+		writeDockerGatewayAllowRules(&sb, gatewayIP)
+	} else {
 		writeDockerGatewayDenyRules(&sb, gatewayIP)
 	}
 
@@ -365,11 +398,16 @@ func writeIngressProxyConfig(
 ) {
 	portNum := strconv.Itoa(upstreamPort)
 	squidPortNum := strconv.Itoa(squidPort)
+	// standby=2 keeps warm idle connections open to the upstream so the first
+	// request after a cold start (notably a long-lived GET SSE stream that a
+	// server-initiated request rides on) is forwarded without paying inline DNS
+	// + TCP connect latency. Without it, the cold first GET races behind a
+	// later POST that reuses a warmed path, reordering server->client streams.
 	sb.WriteString(
 		"\n# Reverse proxy setup for port " + portNum + "\n" +
 			"http_port 0.0.0.0:" + squidPortNum + " accel defaultsite=" + serverHostname + "\n" +
 			"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
-			portNum + " connect-timeout=5 connect-fail-limit=5\n")
+			portNum + " connect-timeout=5 connect-fail-limit=5 standby=2\n")
 
 	// Check if inbound network permissions are configured
 	if networkPermissions != nil && networkPermissions.Inbound != nil && len(networkPermissions.Inbound.AllowHost) > 0 {

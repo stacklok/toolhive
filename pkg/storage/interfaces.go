@@ -7,10 +7,14 @@ package storage
 import (
 	"context"
 
+	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
-//go:generate mockgen -destination=mocks/mock_skill_store.go -package=mocks -source=interfaces.go SkillStore
+//go:generate mockgen -destination=mocks/mock_skill_store.go -package=mocks -source=interfaces.go
+// Note: -source mode generates mocks for ALL interfaces in this file
+// (SkillStore and PluginStore) into mock_skill_store.go. The interface-name
+// argument to -source is ignored; both mocks land in the same file.
 
 // SkillStore defines the interface for managing skill persistence.
 type SkillStore interface {
@@ -28,7 +32,27 @@ type SkillStore interface {
 	Close() error
 }
 
-// ListFilter configures filtering for List operations.
+// PluginStore defines the interface for managing plugin persistence. Mirrors
+// SkillStore; the two share the ListFilter type and the entries table but
+// store plugin-specific rows in installed_plugins/plugin_dependencies.
+type PluginStore interface {
+	// Create stores a new installed plugin.
+	Create(ctx context.Context, plugin plugins.InstalledPlugin) error
+	// Get retrieves an installed plugin by name, scope, and project root.
+	Get(ctx context.Context, name string, scope plugins.Scope, projectRoot string) (plugins.InstalledPlugin, error)
+	// List returns all installed plugins matching the given filter.
+	List(ctx context.Context, filter ListFilter) ([]plugins.InstalledPlugin, error)
+	// Update modifies an existing installed plugin.
+	Update(ctx context.Context, plugin plugins.InstalledPlugin) error
+	// Delete removes an installed plugin by name, scope, and project root.
+	Delete(ctx context.Context, name string, scope plugins.Scope, projectRoot string) error
+	// Close releases any resources held by the store.
+	Close() error
+}
+
+// ListFilter configures filtering for List operations. Shared by SkillStore
+// and PluginStore (the scope/project-root/client-app filtering shape is
+// identical; ListFilter.Scope is skills.Scope, which plugins.Scope aliases).
 type ListFilter struct {
 	// Scope filters by installation scope. Empty matches all scopes.
 	Scope skills.Scope

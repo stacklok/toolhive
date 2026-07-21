@@ -5,8 +5,17 @@
 package cedar
 
 import (
+	"log/slog"
+
 	cedar "github.com/cedar-policy/cedar-go"
 )
+
+// maxClaimNestingDepth caps how deeply nested maps/arrays in JWT claims are
+// converted into Cedar records/sets. Claims can originate from an unverified
+// upstream token (see parseUpstreamJWTClaims in core.go, which uses
+// jwt.ParseUnverified), so recursion here has no other bound. Matches
+// maxSchemaDepth in pkg/vmcp/composer/elicitation_handler.go for consistency.
+const maxClaimNestingDepth = 10
 
 // EntityTypeTHVGroup is the default Cedar entity type representing group membership.
 // It is used when ConfigOptions.GroupEntityType is empty. Principals are added as
@@ -181,8 +190,15 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	return entities, nil
 }
 
-// convertMapToCedarRecord converts a Go map to a Cedar record.
+// convertMapToCedarRecord converts a Go map to a Cedar record. Nesting beyond
+// maxClaimNestingDepth is dropped (see convertToCedarValueAtDepth).
 func convertMapToCedarRecord(data map[string]interface{}) cedar.Record {
+	return convertMapToCedarRecordAtDepth(data, 0)
+}
+
+// convertMapToCedarRecordAtDepth is the depth-tracking implementation behind
+// convertMapToCedarRecord.
+func convertMapToCedarRecordAtDepth(data map[string]interface{}, depth int) cedar.Record {
 	if data == nil {
 		return cedar.NewRecord(cedar.RecordMap{})
 	}
@@ -191,7 +207,7 @@ func convertMapToCedarRecord(data map[string]interface{}) cedar.Record {
 
 	for k, v := range data {
 		// Convert Go values to Cedar values
-		cedarValue := convertToCedarValue(v)
+		cedarValue := convertToCedarValueAtDepth(v, depth)
 		if cedarValue != nil {
 			recordMap[cedar.String(k)] = cedarValue
 		}
@@ -200,8 +216,20 @@ func convertMapToCedarRecord(data map[string]interface{}) cedar.Record {
 	return cedar.NewRecord(recordMap)
 }
 
-// convertToCedarValue converts a Go value to a Cedar value.
-func convertToCedarValue(v interface{}) cedar.Value {
+// convertToCedarValueAtDepth converts a Go value to a Cedar value. Maps and
+// arrays nested deeper than maxClaimNestingDepth are dropped rather than
+// causing unbounded recursion, since claim values can originate from an
+// unverified upstream JWT (see parseUpstreamJWTClaims in core.go). depth
+// counts how many maps/arrays have already been unwrapped to reach v; once
+// it exceeds maxClaimNestingDepth, v is dropped (returns nil) and a warning
+// is logged instead of recursing further.
+func convertToCedarValueAtDepth(v interface{}, depth int) cedar.Value {
+	if depth > maxClaimNestingDepth {
+		slog.Warn("claim attribute nested too deeply, dropping",
+			"max_depth", maxClaimNestingDepth)
+		return nil
+	}
+
 	switch val := v.(type) {
 	case bool:
 		return convertBoolToCedar(val)
@@ -214,9 +242,11 @@ func convertToCedarValue(v interface{}) cedar.Value {
 	case float64:
 		return convertFloatToCedar(val)
 	case []interface{}:
-		return convertInterfaceArrayToCedar(val)
+		return convertInterfaceArrayToCedar(val, depth)
 	case []string:
 		return convertStringArrayToCedar(val)
+	case map[string]interface{}:
+		return convertMapToCedarRecordAtDepth(val, depth+1)
 	default:
 		// Skip unsupported types
 		return nil
@@ -241,33 +271,15 @@ func convertFloatToCedar(val float64) cedar.Value {
 }
 
 // convertInterfaceArrayToCedar converts an array of interfaces to a Cedar set.
-func convertInterfaceArrayToCedar(val []interface{}) cedar.Value {
+func convertInterfaceArrayToCedar(val []interface{}, depth int) cedar.Value {
 	values := make([]cedar.Value, 0, len(val))
 	for _, item := range val {
-		cedarItem := convertArrayItemToCedar(item)
+		cedarItem := convertToCedarValueAtDepth(item, depth+1)
 		if cedarItem != nil {
 			values = append(values, cedarItem)
 		}
 	}
 	return cedar.NewSet(values...)
-}
-
-// convertArrayItemToCedar converts an array item to a Cedar value.
-func convertArrayItemToCedar(item interface{}) cedar.Value {
-	switch itemVal := item.(type) {
-	case string:
-		return cedar.String(itemVal)
-	case bool:
-		return convertBoolToCedar(itemVal)
-	case int:
-		return cedar.Long(itemVal)
-	case int64:
-		return cedar.Long(itemVal)
-	case float64:
-		return convertFloatToCedar(itemVal)
-	default:
-		return nil
-	}
 }
 
 // convertStringArrayToCedar converts a string array to a Cedar set.

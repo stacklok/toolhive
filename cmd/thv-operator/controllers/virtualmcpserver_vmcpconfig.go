@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -351,6 +352,41 @@ func extractInlineBackendNames(vmcp *mcpv1beta1.VirtualMCPServer) []string {
 	return names
 }
 
+// backendsWithFailedAuth returns the set of backend names whose outgoing auth strategy
+// failed to build (conversion error, mirrored-invalid source, or subject-provider
+// injection error). These backends must never be served: since ResolveForBackend falls
+// through to Default for any backend absent from OutgoingAuthConfig.Backends, silently
+// omitting a failed backend from that map is not enough to keep it from being routed to
+// with the wrong (Default) identity — it must also be dropped from the served backend set.
+//
+// Default-only errors (empty BackendName) are excluded here: they aren't tied to a
+// specific backend, and a backend that falls through to a nil Default degrades to the
+// explicit "unauthenticated" strategy rather than picking up a different identity.
+//
+// A backend name recorded in authErrors is only added to the exclusion set if it also
+// lacks a successfully-resolved strategy in resolvedBackends. A backend can accumulate an
+// error from one path (e.g. a broken discovered ExternalAuthConfigRef) while still ending
+// up with a valid strategy from another (e.g. an inline override) — discoverExternalAuthConfigs
+// records the discovered-path error before checking whether an inline override makes the
+// discovered result irrelevant. Excluding such a backend would drop a fully routable backend
+// from the served set.
+func backendsWithFailedAuth(
+	authErrors []AuthConfigError,
+	resolvedBackends map[string]*authtypes.BackendAuthStrategy,
+) map[string]struct{} {
+	failed := make(map[string]struct{})
+	for _, authErr := range authErrors {
+		if authErr.BackendName == "" {
+			continue
+		}
+		if resolvedBackends[authErr.BackendName] != nil {
+			continue
+		}
+		failed[authErr.BackendName] = struct{}{}
+	}
+	return failed
+}
+
 // determineValidInlineBackends determines which inline backends have valid auth configs.
 func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inlineBackendNames []string) []string {
 	if authConfig == nil || authConfig.Backends == nil {
@@ -397,6 +433,15 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 	// All errors are non-fatal - the system continues in degraded mode with partial auth config
 	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 
+	// Backends whose auth strategy failed to build must be excluded from the served
+	// set entirely — see backendsWithFailedAuth for why omission from
+	// authConfig.Backends alone is not sufficient.
+	var resolvedBackends map[string]*authtypes.BackendAuthStrategy
+	if authConfig != nil {
+		resolvedBackends = authConfig.Backends
+	}
+	excludedBackends := backendsWithFailedAuth(allAuthErrors, resolvedBackends)
+
 	// Extract inline backend names and determine valid auth configs
 	inlineBackendNames := extractInlineBackendNames(vmcp)
 	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
@@ -437,7 +482,7 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 			return fmt.Errorf("failed to build CA bundle path map for static mode: %w", err)
 		}
 
-		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap, caBundlePathMap)
+		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap, caBundlePathMap, excludedBackends)
 
 		// Validate at least one backend exists
 		if len(config.Backends) == 0 {

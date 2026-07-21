@@ -16,9 +16,11 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authz"
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -1583,6 +1585,53 @@ func TestResolveRegistryServerName(t *testing.T) {
 	}
 }
 
+// TestWithMiddlewareFromFlags_AuditBeforeAuthz pins the same audit-wraps-authz
+// ordering invariant on the CLI flag path that
+// TestPopulateMiddlewareConfigs_AuditBeforeAuthz pins on the operator path:
+// audit must precede authorization in the config slice (earlier entries wrap
+// later ones at request time) so authorization denials still produce an audit
+// event with outcome "denied".
+func TestWithMiddlewareFromFlags_AuditBeforeAuthz(t *testing.T) {
+	t.Parallel()
+
+	builder := &runConfigBuilder{config: NewRunConfig()}
+	opt := WithMiddlewareFromFlags(
+		nil,                     // oidcConfig
+		nil,                     // tokenExchangeConfig
+		nil,                     // toolsFilter
+		nil,                     // toolsOverride
+		nil,                     // telemetryConfig
+		writeCedarConfigFile(t), // authzConfigPath
+		true,                    // enableAudit
+		"",                      // auditConfigPath
+		"test-server",           // serverName
+		"streamable-http",       // transportType
+		true,                    // disableUsageMetrics
+	)
+	require.NoError(t, opt(builder))
+
+	typeIndex := make(map[string]int, len(builder.config.MiddlewareConfigs))
+	for i, mw := range builder.config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	auditIdx, ok := typeIndex[audit.MiddlewareType]
+	require.True(t, ok, "audit middleware must be present")
+	authzIdx, ok := typeIndex[authz.MiddlewareType]
+	require.True(t, ok, "authz middleware must be present")
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware must be present")
+	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
+	require.True(t, ok, "MCP parser middleware must be present")
+
+	assert.Less(t, auditIdx, authzIdx,
+		"audit must precede authz so authorization denials are audited")
+	assert.Less(t, authIdx, auditIdx,
+		"auth must precede audit so the identity is available to audit events")
+	assert.Less(t, parserIdx, auditIdx,
+		"MCP parser must precede audit so parsed MCP data is available to audit events")
+}
+
 // TestWithAdditionalMiddlewareConfigs verifies the generic injected-middleware
 // builder option: it appends pre-built configs (across multiple calls and
 // multiple arguments), preserves order, and skips nil entries. The option is
@@ -1638,4 +1687,89 @@ func TestWithAdditionalMiddlewareConfigs(t *testing.T) {
 		require.NoError(t, WithAdditionalMiddlewareConfigs()(b))
 		assert.Nil(t, b.config.AdditionalMiddlewareConfigs)
 	})
+}
+
+// TestRunConfigBuilder_NetworkIsolationReconciliation verifies that network
+// isolation is reconciled against the resolved network mode: enforced in bridge
+// mode, dropped (with warn or error) for host, and dropped silently for none.
+// See issue #5775.
+func TestRunConfigBuilder_NetworkIsolationReconciliation(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+
+	const (
+		isolateDefaultTrue  = "default-true"  // isolation on, not explicitly requested
+		isolateExplicitTrue = "explicit-true" // isolation on, explicitly requested
+		isolateFalse        = "false"         // isolation off
+	)
+
+	tests := []struct {
+		name            string
+		networkMode     string
+		isolate         string
+		expectError     bool
+		expectIsolation bool
+	}{
+		// Bridge modes: isolation left untouched.
+		{"empty mode default isolate", "", isolateDefaultTrue, false, true},
+		{"empty mode explicit isolate", "", isolateExplicitTrue, false, true},
+		{"empty mode isolate off", "", isolateFalse, false, false},
+		{"bridge mode default isolate", "bridge", isolateDefaultTrue, false, true},
+		{"bridge mode explicit isolate", "bridge", isolateExplicitTrue, false, true},
+		{"default mode default isolate", "default", isolateDefaultTrue, false, true},
+
+		// Host mode: drop + warn when defaulted, error when explicit.
+		{"host mode default isolate degrades", "host", isolateDefaultTrue, false, false},
+		{"host mode explicit isolate errors", "host", isolateExplicitTrue, true, false},
+		{"host mode isolate off untouched", "host", isolateFalse, false, false},
+
+		// None mode: always drop silently, never error.
+		{"none mode default isolate degrades", "none", isolateDefaultTrue, false, false},
+		{"none mode explicit isolate degrades", "none", isolateExplicitTrue, false, false},
+		{"none mode isolate off", "none", isolateFalse, false, false},
+
+		// Custom (non-bridge, non-none) mode behaves like host.
+		{"custom mode default isolate degrades", "container:foo", isolateDefaultTrue, false, false},
+		{"custom mode explicit isolate errors", "container:foo", isolateExplicitTrue, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+				WithNetworkMode(tt.networkMode),
+			}
+			switch tt.isolate {
+			case isolateDefaultTrue:
+				opts = append(opts, WithNetworkIsolation(true))
+			case isolateExplicitTrue:
+				opts = append(opts, WithNetworkIsolation(true), WithNetworkIsolationExplicit(true))
+			case isolateFalse:
+				opts = append(opts, WithNetworkIsolation(false))
+			}
+
+			config, err := NewRunConfigBuilder(t.Context(), nil, map[string]string{}, mockValidator, opts...)
+
+			if tt.expectError {
+				require.Error(t, err, "expected build to fail fast")
+				// The error must name the resolved mode (not assume it came from
+				// --network, since it may have come from --permission-profile)
+				// and both ways out.
+				assert.Contains(t, err.Error(), `"`+tt.networkMode+`"`,
+					"error should name the resolved network mode")
+				assert.Contains(t, err.Error(), "pass --isolate-network=false",
+					"error should offer disabling isolation")
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expectIsolation, config.IsolateNetwork,
+				"IsolateNetwork should reflect reconciled value")
+		})
+	}
 }

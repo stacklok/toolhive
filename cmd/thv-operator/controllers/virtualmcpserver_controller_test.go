@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -588,80 +589,6 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
 }
 
-// TestVirtualMCPServerEnsureDeployment tests Deployment creation
-func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
-	t.Parallel()
-
-	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
-		v1beta1test.WithVMCPGroupRef(testGroupName),
-	)
-
-	// Create MCPGroup that the VirtualMCPServer references
-	mcpGroup := &mcpv1beta1.MCPGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      testGroupName,
-			Namespace: "default",
-		},
-		Status: mcpv1beta1.MCPGroupStatus{
-			Phase: mcpv1beta1.MCPGroupPhaseReady,
-		},
-	}
-
-	// Create ConfigMap with checksum
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcpConfigMapName(vmcp.Name),
-			Namespace: "default",
-			Annotations: map[string]string{
-				"toolhive.stacklok.dev/content-checksum": "test-checksum-123",
-			},
-		},
-		Data: map[string]string{
-			"config.yaml": "{}",
-		},
-	}
-
-	scheme := testutil.NewScheme(t)
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp, mcpGroup, configMap).
-		Build()
-
-	r := &VirtualMCPServerReconciler{
-		Client:           fakeClient,
-		Scheme:           scheme,
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}
-
-	result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
-	require.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, result)
-
-	// Verify Deployment was created
-	deployment := &appsv1.Deployment{}
-	err = fakeClient.Get(context.Background(), types.NamespacedName{
-		Name:      vmcp.Name,
-		Namespace: vmcp.Namespace,
-	}, deployment)
-	require.NoError(t, err)
-	assert.Equal(t, vmcp.Name, deployment.Name)
-	// spec.replicas is nil — nil-passthrough for HPA compatibility
-	assert.Nil(t, deployment.Spec.Replicas)
-
-	// Verify container configuration
-	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-	container := deployment.Spec.Template.Spec.Containers[0]
-	assert.Equal(t, "vmcp", container.Name)
-	assert.NotEmpty(t, container.Image)
-	assert.Contains(t, container.Args, "serve")
-	assert.Contains(t, container.Args, "--config=/etc/vmcp-config/config.yaml")
-
-	// Verify checksum annotation is set using standard annotation key
-	assert.Equal(t, "test-checksum-123",
-		deployment.Spec.Template.Annotations[checksum.RunConfigChecksumAnnotation])
-}
-
 // TestVirtualMCPServerEnsureService tests Service creation
 func TestVirtualMCPServerEnsureService(t *testing.T) {
 	t.Parallel()
@@ -862,6 +789,33 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 				v.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
 				return v
 			}(),
+			needsUpdate: false,
+		},
+		{
+			// Regression for #5730: a Service co-owned by GKE NEG/Gateway gets
+			// cloud.google.com/* annotations written by the cloud controller. These are
+			// not operator-owned and must not be treated as drift, or the operator
+			// hot-loops Update and races the concurrent writer.
+			name: "external cloud annotations ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Annotations = map[string]string{
+					"cloud.google.com/neg":        `{"ingress":true}`,
+					"cloud.google.com/neg-status": `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+				}
+				return s
+			}(),
+			vmcp:        baseVmcp.DeepCopy(),
+			needsUpdate: false,
+		},
+		{
+			name: "external label ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Labels["external.example.com/managed"] = "true"
+				return s
+			}(),
+			vmcp:        baseVmcp.DeepCopy(),
 			needsUpdate: false,
 		},
 	}
@@ -2010,6 +1964,70 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			expectedUpdate: true,
 		},
 		{
+			name: "stale podTemplateSpec hash annotation",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: map[string]string{podTemplateSpecHashAnnotation: "stale-hash"},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Args: reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "stale imagePullSecrets hash annotation",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: map[string]string{imagePullRefsHashAnnotation: "stale-hash"},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Args: reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
 			name: "no changes - no update needed",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2049,6 +2067,56 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 
 			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, nil, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
+		})
+	}
+}
+
+// Direct unit tests for podTemplateSpecNeedsUpdate live in
+// virtualmcpserver_podtemplatespec_reconcile_test.go, and for
+// imagePullSecretsNeedsUpdate in virtualmcpserver_deployment_test.go /
+// virtualmcpserver_default_imagepullsecrets_test.go — no need to duplicate here.
+
+func TestMergeDeploymentAnnotations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		desired  map[string]string
+		live     map[string]string
+		expected map[string]string
+	}{
+		{
+			name:     "prunes stale imagePullRefsHashAnnotation when desired no longer wants it",
+			desired:  map[string]string{},
+			live:     map[string]string{imagePullRefsHashAnnotation: "stale-hash"},
+			expected: map[string]string{},
+		},
+		{
+			name:     "prunes stale podTemplateSpecHashAnnotation when desired no longer wants it",
+			desired:  map[string]string{},
+			live:     map[string]string{podTemplateSpecHashAnnotation: "stale-hash"},
+			expected: map[string]string{},
+		},
+		{
+			name:     "keeps hash annotations desired still wants",
+			desired:  map[string]string{imagePullRefsHashAnnotation: "new-hash", podTemplateSpecHashAnnotation: "new-hash"},
+			live:     map[string]string{imagePullRefsHashAnnotation: "old-hash", podTemplateSpecHashAnnotation: "old-hash"},
+			expected: map[string]string{imagePullRefsHashAnnotation: "new-hash", podTemplateSpecHashAnnotation: "new-hash"},
+		},
+		{
+			name:     "preserves externally-managed annotations absent from desired",
+			desired:  map[string]string{},
+			live:     map[string]string{"external.io/managed-by": "someone-else"},
+			expected: map[string]string{"external.io/managed-by": "someone-else"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			merged := mergeDeploymentAnnotations(tt.desired, tt.live)
+			assert.Equal(t, tt.expected, merged)
 		})
 	}
 }
@@ -2353,6 +2421,19 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 	}, deployment)
 	assert.NoError(t, err)
 	assert.Equal(t, vmcp.Name, deployment.Name)
+	// spec.replicas is nil — nil-passthrough for HPA compatibility
+	assert.Nil(t, deployment.Spec.Replicas)
+
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "vmcp", container.Name)
+	assert.NotEmpty(t, container.Image)
+	assert.Contains(t, container.Args, "serve")
+	assert.Contains(t, container.Args, "--config=/etc/vmcp-config/config.yaml")
+
+	// Verify checksum annotation is set using standard annotation key
+	assert.Equal(t, "test-checksum",
+		deployment.Spec.Template.Annotations[checksum.RunConfigChecksumAnnotation])
 }
 
 func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
@@ -2507,6 +2588,131 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
+// TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation is a regression test
+// for #5817/#5818: a stale operator-owned hash annotation left over from a prior
+// reconcile (when the corresponding field was non-empty) must be removed once that
+// field is cleared, and reconciling again from the cleaned-up state must be a no-op
+// rather than looping forever.
+func TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		staleHashAnno string
+	}{
+		{name: "imagePullSecrets", staleHashAnno: imagePullRefsHashAnnotation},
+		{name: "podTemplateSpec", staleHashAnno: podTemplateSpecHashAnnotation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef(testGroupName),
+			)
+
+			configMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpConfigMapName(vmcp.Name),
+					Namespace: "default",
+					Annotations: map[string]string{
+						checksum.ContentChecksumAnnotation: "test-checksum",
+					},
+				},
+				Data: map[string]string{
+					"config.yaml": "test-config",
+				},
+			}
+
+			reconciler := &VirtualMCPServerReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+				Scheme: scheme,
+			}
+
+			expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
+				labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+			)
+
+			// Deployment otherwise matches the desired state exactly, except it
+			// carries a stale hash annotation from before the corresponding
+			// VirtualMCPServer field was cleared.
+			staleDeployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testVmcpName,
+					Namespace: "default",
+					Labels:    labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: map[string]string{
+						tt.staleHashAnno: "stale-hash",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: labelsForVirtualMCPServer(vmcp.Name),
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			}
+
+			k8sClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(vmcp, configMap, staleDeployment).
+				Build()
+			reconciler.Client = k8sClient
+
+			// First reconcile cleans up the stale annotation.
+			result, err := reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+
+			deployment := &appsv1.Deployment{}
+			require.NoError(t, k8sClient.Get(context.Background(), types.NamespacedName{
+				Name:      vmcp.Name,
+				Namespace: vmcp.Namespace,
+			}, deployment))
+			_, present := deployment.Annotations[tt.staleHashAnno]
+			assert.False(t, present, "stale hash annotation must be removed once the corresponding field is unset")
+
+			resourceVersionAfterCleanup := deployment.ResourceVersion
+
+			// Second reconcile from the now-clean steady state must be a no-op.
+			// Without both fixes, this would keep re-detecting drift and updating
+			// forever — the hot-reconcile loop from #5817/#5818.
+			result, err = reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+
+			deployment = &appsv1.Deployment{}
+			require.NoError(t, k8sClient.Get(context.Background(), types.NamespacedName{
+				Name:      vmcp.Name,
+				Namespace: vmcp.Namespace,
+			}, deployment))
+			assert.Equal(t, resourceVersionAfterCleanup, deployment.ResourceVersion,
+				"reconciling from steady state must not write again")
+		})
+	}
+}
+
 func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 	t.Parallel()
 
@@ -2595,6 +2801,61 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 	}, service)
 	assert.NoError(t, err)
 	assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
+}
+
+// TestVirtualMCPServerEnsureService_PreservesExternalAnnotations is a regression test
+// for #5730: when a genuine operator-owned change triggers a Service update, annotations
+// written by an external controller (e.g. GKE NEG) must be preserved, not stripped.
+func TestVirtualMCPServerEnsureService_PreservesExternalAnnotations(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Spec.ServiceType = "LoadBalancer"
+		}),
+	)
+
+	// Existing service with wrong type (triggers update) plus a cloud-owned annotation.
+	oldService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpServiceName(vmcp.Name),
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+			Annotations: map[string]string{
+				"cloud.google.com/neg-status": `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: labelsForVirtualMCPServer(vmcp.Name),
+			Ports:    []corev1.ServicePort{{Port: 4483, TargetPort: intstr.FromInt(4483)}},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, oldService).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{Client: k8sClient, Scheme: scheme}
+
+	_, err := reconciler.ensureService(context.Background(), vmcp)
+	assert.NoError(t, err)
+
+	service := &corev1.Service{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcpServiceName(vmcp.Name),
+		Namespace: vmcp.Namespace,
+	}, service)
+	assert.NoError(t, err)
+	// Operator-owned field applied...
+	assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
+	// ...and the external annotation preserved.
+	assert.Equal(t, `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+		service.Annotations["cloud.google.com/neg-status"])
 }
 
 func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
@@ -2769,144 +3030,101 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 
 // TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven verifies that when
 // spec.replicas is set, ensureDeployment updates the Deployment to match.
-func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
+// TestVirtualMCPServerEnsureDeployment_ReplicaSync covers spec.replicas
+// syncing to the live Deployment: a spec-driven value overrides whatever is
+// live, while nil leaves the live value untouched (HPA-managed passthrough).
+func TestVirtualMCPServerEnsureDeployment_ReplicaSync(t *testing.T) {
 	t.Parallel()
 
-	specReplicas := int32(3)
-	vmcp := v1beta1test.NewVirtualMCPServer("vmcp-replica-sync", "default",
-		v1beta1test.WithVMCPGroupRef(testGroupName),
-		v1beta1test.WithVMCPReplicas(specReplicas),
-	)
-
-	mcpGroup := &mcpv1beta1.MCPGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
-		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
-	}
-
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcpConfigMapName(vmcp.Name),
-			Namespace: "default",
-			Annotations: map[string]string{
-				checksum.ContentChecksumAnnotation: testChecksumValue,
-			},
+	tests := []struct {
+		name             string
+		specReplicas     *int32
+		existingReplicas int32
+		wantReplicas     int32
+	}{
+		{
+			name:             "spec-driven value overrides existing replica count",
+			specReplicas:     ptr.To(int32(3)),
+			existingReplicas: 1,
+			wantReplicas:     3,
 		},
-		Data: map[string]string{"config.yaml": "{}"},
-	}
-
-	// Existing deployment has 1 replica — simulates a pre-existing state
-	existingReplicas := int32(1)
-	existingDeployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcp.Name,
-			Namespace: "default",
-			Labels:    labelsForVirtualMCPServer(vmcp.Name),
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &existingReplicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labelsForVirtualMCPServer(vmcp.Name)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labelsForVirtualMCPServer(vmcp.Name)},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "vmcp", Image: "test:latest"}}},
-			},
+		{
+			name:             "nil spec.replicas does not overwrite HPA-managed count",
+			specReplicas:     nil,
+			existingReplicas: 5,
+			wantReplicas:     5,
 		},
 	}
 
-	scheme := testutil.NewScheme(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp, mcpGroup, configMap, existingDeployment).
-		Build()
+			opts := []v1beta1test.VirtualMCPServerOption{v1beta1test.WithVMCPGroupRef(testGroupName)}
+			if tt.specReplicas != nil {
+				opts = append(opts, v1beta1test.WithVMCPReplicas(*tt.specReplicas))
+			}
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default", opts...)
 
-	r := &VirtualMCPServerReconciler{
-		Client:           fakeClient,
-		Scheme:           scheme,
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			mcpGroup := &mcpv1beta1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
+				Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+			}
+
+			configMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpConfigMapName(vmcp.Name),
+					Namespace: "default",
+					Annotations: map[string]string{
+						checksum.ContentChecksumAnnotation: testChecksumValue,
+					},
+				},
+				Data: map[string]string{"config.yaml": "{}"},
+			}
+
+			existingReplicas := tt.existingReplicas
+			existingDeployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcp.Name,
+					Namespace: "default",
+					Labels:    labelsForVirtualMCPServer(vmcp.Name),
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &existingReplicas,
+					Selector: &metav1.LabelSelector{MatchLabels: labelsForVirtualMCPServer(vmcp.Name)},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: labelsForVirtualMCPServer(vmcp.Name)},
+						Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "vmcp", Image: "test:latest"}}},
+					},
+				},
+			}
+
+			scheme := testutil.NewScheme(t)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(vmcp, mcpGroup, configMap, existingDeployment).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+
+			updated := &appsv1.Deployment{}
+			err = fakeClient.Get(context.Background(), types.NamespacedName{
+				Name: vmcp.Name, Namespace: vmcp.Namespace,
+			}, updated)
+			require.NoError(t, err)
+			require.NotNil(t, updated.Spec.Replicas)
+			assert.Equal(t, tt.wantReplicas, *updated.Spec.Replicas)
+		})
 	}
-
-	result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
-	require.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, result)
-
-	updated := &appsv1.Deployment{}
-	err = fakeClient.Get(context.Background(), types.NamespacedName{
-		Name: vmcp.Name, Namespace: vmcp.Namespace,
-	}, updated)
-	require.NoError(t, err)
-	require.NotNil(t, updated.Spec.Replicas)
-	assert.Equal(t, int32(3), *updated.Spec.Replicas)
-}
-
-// TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough verifies that when
-// spec.replicas is nil, ensureDeployment does not overwrite a live replica count (HPA-managed).
-func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.T) {
-	t.Parallel()
-
-	// Replicas left nil — HPA manages replicas.
-	vmcp := v1beta1test.NewVirtualMCPServer("vmcp-nil-passthrough", "default",
-		v1beta1test.WithVMCPGroupRef(testGroupName),
-	)
-
-	mcpGroup := &mcpv1beta1.MCPGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
-		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
-	}
-
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcpConfigMapName(vmcp.Name),
-			Namespace: "default",
-			Annotations: map[string]string{
-				checksum.ContentChecksumAnnotation: testChecksumValue,
-			},
-		},
-		Data: map[string]string{"config.yaml": "{}"},
-	}
-
-	// Existing deployment has 5 replicas — set by HPA
-	hpaReplicas := int32(5)
-	existingDeployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcp.Name,
-			Namespace: "default",
-			Labels:    labelsForVirtualMCPServer(vmcp.Name),
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &hpaReplicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labelsForVirtualMCPServer(vmcp.Name)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labelsForVirtualMCPServer(vmcp.Name)},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "vmcp", Image: "test:latest"}}},
-			},
-		},
-	}
-
-	scheme := testutil.NewScheme(t)
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp, mcpGroup, configMap, existingDeployment).
-		Build()
-
-	r := &VirtualMCPServerReconciler{
-		Client:           fakeClient,
-		Scheme:           scheme,
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}
-
-	result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
-	require.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, result)
-
-	updated := &appsv1.Deployment{}
-	err = fakeClient.Get(context.Background(), types.NamespacedName{
-		Name: vmcp.Name, Namespace: vmcp.Namespace,
-	}, updated)
-	require.NoError(t, err)
-	// HPA-managed replica count must not be overwritten
-	require.NotNil(t, updated.Spec.Replicas)
-	assert.Equal(t, int32(5), *updated.Spec.Replicas)
 }
 
 // mustBuildEnvVarsForVmcp is a test helper that calls buildEnvVarsForVmcp and panics on error.
@@ -3847,4 +4065,104 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedInactive, cond.Reason)
 	assert.NotContains(t, cond.Message, "atlassian",
 		"stale message naming the now-removed upstream must not survive the broken edit")
+}
+
+// TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP exercises the
+// admission-time check that rejects http:// issuers for non-localhost hosts
+// unless insecureAllowHTTP is explicitly set.
+func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T) {
+	t.Parallel()
+
+	validUpstreams := []mcpv1beta1.UpstreamProviderConfig{
+		{
+			Name: "dex",
+			Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+				IssuerURL: "https://dex.example.com",
+				ClientID:  "test-client",
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           bool
+		wantCondition     metav1.ConditionStatus
+	}{
+		{
+			name:          "https issuer: always valid",
+			issuer:        "https://authserver.example.com",
+			wantCondition: metav1.ConditionTrue,
+		},
+		{
+			name:          "http localhost issuer: valid without flag",
+			issuer:        "http://localhost:4483",
+			wantCondition: metav1.ConditionTrue,
+		},
+		{
+			name:          "http in-cluster issuer without flag: rejected",
+			issuer:        "http://vmcp-test.default.svc.cluster.local:4483",
+			wantErr:       true,
+			wantCondition: metav1.ConditionFalse,
+		},
+		{
+			name:              "http in-cluster issuer with flag: accepted",
+			issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
+			insecureAllowHTTP: true,
+			wantCondition:     metav1.ConditionTrue,
+		},
+		{
+			name:          "http non-localhost issuer without flag: rejected",
+			issuer:        "http://authserver.example.com",
+			wantErr:       true,
+			wantCondition: metav1.ConditionFalse,
+		},
+		{
+			name:              "http non-localhost issuer with flag: accepted",
+			issuer:            "http://authserver.example.com",
+			insecureAllowHTTP: true,
+			wantCondition:     metav1.ConditionTrue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer:            tt.issuer,
+					InsecureAllowHTTP: tt.insecureAllowHTTP,
+					UpstreamProviders: validUpstreams,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, cond, "AuthServerConfigValidated condition must be set")
+			assert.Equal(t, tt.wantCondition, cond.Status)
+
+			if tt.wantErr {
+				assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, cond.Reason)
+				assert.Contains(t, cond.Message, "insecureAllowHTTP",
+					"rejection message must guide the user to the fix")
+			}
+		})
+	}
 }

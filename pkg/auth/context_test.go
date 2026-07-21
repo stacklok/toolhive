@@ -91,9 +91,9 @@ func TestIdentityContext_ExplicitNilValue(t *testing.T) {
 	// Explicitly store nil Identity pointer in context (edge case)
 	ctx = context.WithValue(ctx, IdentityContextKey{}, (*Identity)(nil))
 
-	// Retrieval should detect the nil pointer
+	// Typed-nil pointers must read as absent so fallback identity injection can proceed.
 	identity, ok := IdentityFromContext(ctx)
-	assert.True(t, ok, "expected value to be present")
+	assert.False(t, ok, "typed-nil identity should not be treated as present")
 	assert.Nil(t, identity, "expected nil identity")
 }
 

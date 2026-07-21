@@ -17,8 +17,8 @@ The middleware chain consists of the following components:
 5. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
 6. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
 7. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-8. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
-9. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+8. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+9. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
 10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
 11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
@@ -38,7 +38,7 @@ When configured together, the effective order is:
 3. MCP parsing
 4. Mutating webhooks
 5. Validating webhooks
-6. Telemetry, authorization, and audit middleware
+6. Telemetry, audit, and authorization middleware
 
 Multiple webhook definitions of the same type run in configuration order. When multiple `--webhook-config` files are provided, later files override earlier webhook definitions with the same `name`.
 
@@ -59,12 +59,12 @@ Example config files:
 
 ```mermaid
 graph TD
-    A[Incoming MCP Request] --> R[Recovery Middleware]
-    R --> B[Authentication Middleware]
+    A[Incoming MCP Request] --> B[Authentication Middleware]
     B --> C[MCP Parsing Middleware]
-    C --> D[Authorization Middleware]
-    D --> E[Audit Middleware]
-    E --> F[MCP Server Handler]
+    C --> E[Audit Middleware]
+    E --> D[Authorization Middleware]
+    D --> R[Recovery Middleware]
+    R --> F[MCP Server Handler]
 
     R --> R1[Catch Panics]
     R1 --> R2[Log Stack Trace]
@@ -101,17 +101,15 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Recovery as Recovery
     participant Auth as Authentication
     participant Parser as MCP Parser
-    participant Authz as Authorization
     participant Audit as Audit
+    participant Authz as Authorization
+    participant Recovery as Recovery
     participant Server as MCP Server
 
-    Client->>Recovery: HTTP Request
-    Note over Recovery: Wraps entire chain to catch panics
-
-    Recovery->>Auth: HTTP Request with JWT
+    Client->>Auth: HTTP Request with JWT
+    Note over Recovery: Innermost wrapper: catches panics<br/>from the handler and inner middleware
     Auth->>Auth: Validate JWT Token
     Auth->>Auth: Extract Claims
     Note over Auth: Add claims to context
@@ -122,19 +120,23 @@ sequenceDiagram
     Parser->>Parser: Extract Resource ID & Arguments
     Note over Parser: Add parsed data to context
 
-    Parser->>Authz: Request + Parsed MCP Data
+    Parser->>Audit: Request + Parsed MCP Data
+    Note over Audit: Wraps authorization so every<br/>request is logged, including denials
+
+    Audit->>Authz: Request
     Authz->>Authz: Get Parsed Data from Context
     Authz->>Authz: Create Cedar Entities
     Authz->>Authz: Evaluate Policies
 
     alt Authorized
-        Authz->>Audit: Authorized Request
-        Audit->>Audit: Extract Event Data
-        Audit->>Audit: Log Audit Event
-        Audit->>Server: Process Request
-        Server->>Client: Response
+        Authz->>Server: Process Request
+        Server->>Audit: Response
+        Audit->>Audit: Log Audit Event (outcome success)
+        Audit->>Client: Response
     else Unauthorized
-        Authz->>Client: 403 Forbidden
+        Authz->>Audit: 403 Forbidden
+        Audit->>Audit: Log Audit Event (outcome denied)
+        Audit->>Client: 403 Forbidden
     else Panic Occurs
         Recovery->>Recovery: Log stack trace
         Recovery->>Client: 500 Internal Server Error
@@ -389,6 +391,7 @@ thv config usage-metrics enable
 - Log structured audit events as JSON
 - Track request duration and outcome
 - Support file-based and stdout log destinations
+- Wrap the authorization middleware so denied requests are still recorded (outcome `denied`)
 
 **Event Types**:
 - `mcp_initialize` - Client initialization events
@@ -560,8 +563,7 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
 - Prevent server crashes from unhandled panics
 
 **Behavior**:
-- Always added as the outermost middleware wrapper (added last in chain, executes first)
-- Catches any panic from the entire middleware chain and MCP handlers
+- On the `vmcp` path it is applied explicitly as the outermost wrapper and catches panics from the entire chain. On the `thv`/`thv-proxyrunner` path it is appended last to the config slice, which makes it the innermost wrapper: it catches panics from the proxy handler, but not from middleware that wrap it
 - Logs error with stack trace using `logger.Errorf`
 - Returns generic "Internal Server Error" message (no sensitive details exposed)
 
@@ -618,8 +620,8 @@ The middleware chain uses Go's `context.Context` to pass data between components
 graph LR
     A[Request Context] --> B[+ JWT Claims]
     B --> C[+ Parsed MCP Data]
-    C --> D[+ Authorization Result]
-    D --> E[+ Audit Metadata]
+    C --> E[+ Audit Metadata]
+    E --> D[+ Authorization Result]
     
     subgraph "Authentication"
         B
@@ -629,12 +631,12 @@ graph LR
         C
     end
     
-    subgraph "Authorization"
-        D
-    end
-    
     subgraph "Audit"
         E
+    end
+    
+    subgraph "Authorization"
+        D
     end
 ```
 
@@ -661,8 +663,8 @@ The middleware order is critical and enforced by the system:
 
 1. **Authentication** - Must be first to establish client identity
 2. **MCP Parsing** - Must come after authentication to access JWT context
-3. **Authorization** - Must come after parsing to access structured MCP data
-4. **Audit** - Must be last to capture the complete request lifecycle
+3. **Audit** - Must wrap authorization so every request is logged, including policy denials (outcome `denied`)
+4. **Authorization** - Must come after parsing to access structured MCP data
 
 ## Error Handling
 
@@ -1001,10 +1003,10 @@ The middleware chain execution order is critical and controlled by the order in 
 6. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
 7. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
 8. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
-9. **Authorization Middleware** (if enabled) - Cedar policy evaluation
-10. **Audit Middleware** (if enabled) - Request logging
+9. **Audit Middleware** (if enabled) - Request logging
+10. **Authorization Middleware** (if enabled) - Cedar policy evaluation
 11. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
-12. **Recovery Middleware** (always present) - Catches panics (outermost wrapper)
+12. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
 - Authentication must come first to establish client identity
@@ -1012,8 +1014,9 @@ The middleware chain execution order is critical and controlled by the order in 
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
+- Audit must come before Authorization so it wraps it: policy denials (403) must still produce an audit event with outcome `denied`
 - Header Forward executes close to the backend handler (innermost position)
-- Recovery is always last in config (so it executes first as outermost wrapper)
+- Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
 
 ### Custom Authorization Policies
 

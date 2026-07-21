@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Run Grype vulnerability scanner
         id: grype-scan
@@ -32,7 +32,7 @@ jobs:
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1
@@ -65,7 +65,14 @@ jobs:
           # CI's `setup-go: stable` still resolves to go1.26.3 because the
           # actions/go-versions manifest lags the Go release. Temporary
           # exclusion; remove once CI builds on go1.26.4 or later.
-          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039"
+          #
+          # GO-2026-5932: golang.org/x/crypto/openpgp is deprecated-by-design
+          # ("unsafe, not maintained, should not be used"). No fixed version
+          # exists and none is planned. ToolHive does not import openpgp
+          # directly; it is pulled transitively via sigstore (rekor/sigstore-go)
+          # for backward-compatible OpenPGP verification. Remove when sigstore
+          # drops the openpgp dependency.
+          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039 GO-2026-5932"
 
           # Show the raw output for debugging
           echo "::group::govulncheck raw output"

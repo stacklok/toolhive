@@ -29,13 +29,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -86,6 +89,18 @@ type testServerOptions struct {
 	// miniredis return value is valid (e.g., for non-Redis alternative
 	// backends).
 	storageFactory func(t *testing.T) (storage.Storage, *miniredis.Miniredis)
+	// upstreamFilter, when set, is passed through to Config.UpstreamFilter.
+	// Read by every setup helper below that builds its own Config
+	// (setupTestServer, setupTestServerWithOIDCProvider,
+	// setupTestServerWithTwoUpstreams) and by setupTestServerWithMockOIDC,
+	// which delegates to setupTestServer. setupTestServerWithRTProxy does not
+	// accept testServerOption at all, so this field does not apply to it.
+	upstreamFilter handlers.UpstreamFilter
+	// extraClients, when non-empty, are registered in storage in addition to the
+	// default public PKCE test client. Used to install a confidential client for
+	// flows the default public client cannot exercise (e.g. RFC 8693 token
+	// exchange, which requires a confidential acting client).
+	extraClients []fosite.Client
 }
 
 // testServerOption is a functional option for test server setup.
@@ -109,6 +124,23 @@ func withScopes(scopes []string) testServerOption {
 func withAccessTokenLifespan(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.accessTokenLifespan = d
+	}
+}
+
+// withUpstreamFilter configures Config.UpstreamFilter, exercising the
+// authserver.New -> handlers.NewHandler wiring end-to-end rather than the
+// handler-level WithUpstreamFilter option directly.
+func withUpstreamFilter(f handlers.UpstreamFilter) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.upstreamFilter = f
+	}
+}
+
+// withExtraClient registers an additional client in storage alongside the
+// default public PKCE test client.
+func withExtraClient(c fosite.Client) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.extraClients = append(opts.extraClients, c)
 	}
 }
 
@@ -208,6 +240,11 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	})
 	require.NoError(t, err)
 
+	// Register any extra clients (e.g. a confidential client for token exchange).
+	for _, c := range options.extraClients {
+		require.NoError(t, stor.RegisterClient(ctx, c))
+	}
+
 	// 5. Build upstream config for newServer
 	// When no upstream is provided, use a dummy config that satisfies validation
 	// Note: Uses HTTPS to pass config validation
@@ -235,6 +272,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
 		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
+		UpstreamFilter:       options.upstreamFilter,
 		AllowedAudiences:     []string{"https://mcp.example.com"},
 	}
 
@@ -564,6 +602,191 @@ func TestIntegration_TokenEndpoint_RefreshToken(t *testing.T) {
 	replayResp := makeTokenRequest(t, ts.Server.URL, replayParams)
 	defer replayResp.Body.Close()
 	require.GreaterOrEqual(t, replayResp.StatusCode, 400, "old refresh token must be rejected after rotation")
+}
+
+// ============================================================================
+// RFC 8693 Token Exchange Wiring Tests
+// ============================================================================
+
+// TestIntegration_TokenExchange_PublicClientRejected proves that public clients
+// are barred from the RFC 8693 token-exchange grant (only confidential clients
+// may act on a user's behalf), and that the grant is wired into the fosite
+// provider and reachable at the token endpoint.
+//
+// It does not assert a full delegated-token issuance: the handler requires a
+// confidential client (RFC 8693 §2.1) and the shared test harness only
+// registers a public client. Instead it relies on a decisive dispatch
+// discriminator observable at the token endpoint:
+//
+//   - With the token-exchange factory registered, a token-exchange request is
+//     routed to the handler, whose first guard rejects the public client with
+//     error=invalid_grant and a "token-exchange"-specific hint.
+//   - Without the factory, no handler claims grant_type=token-exchange and
+//     fosite returns error=invalid_request (see fosite NewAccessRequest: an
+//     unmatched grant yields ErrInvalidRequest).
+//
+// So invalid_grant with a token-exchange hint proves the handler is registered
+// and executed — exactly the regression a dropped factory would introduce.
+func TestIntegration_TokenExchange_PublicClientRejected(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Mint a genuine server-issued access token to use as the subject_token, so
+	// the request is a well-formed RFC 8693 exchange up to the client-type gate.
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "token-exchange-dispatch",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+	subjectToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, subjectToken)
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {subjectToken},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"client_id":          {testClientID},
+	})
+	defer resp.Body.Close()
+
+	body := parseTokenResponse(t, resp)
+	errCode, _ := body["error"].(string)
+	errDesc, _ := body["error_description"].(string)
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"token-exchange from a public client should be a 400, got %d (body: %v)", resp.StatusCode, body)
+	// The decisive assertion: the token-exchange handler ran and rejected the
+	// public client (invalid_grant), rather than the request falling through
+	// unhandled (invalid_request), which is what a missing factory would produce.
+	require.Equal(t, "invalid_grant", errCode,
+		"expected invalid_grant from the token-exchange handler; invalid_request would mean "+
+			"the token-exchange factory is not wired into the provider")
+	assert.Contains(t, errDesc, "token-exchange",
+		"the rejection must originate from the token-exchange handler specifically")
+}
+
+// TestIntegration_TokenExchange_ConfidentialClientHappyPath drives a full RFC 8693
+// delegation exchange over HTTP through the real fosite provider: a confidential
+// acting client authenticates with client_secret_post, presents a server-signed
+// subject token, and receives a delegated access token.
+//
+// Unlike the unit tests in the tokenexchange package (which call the handler
+// directly with mock strategy/storage), this exercises the complete glued path —
+// fosite NewAccessRequest -> client authentication -> handler dispatch ->
+// PopulateTokenEndpointResponse JSON issuance — proving the token exchange is not
+// just registered but functional end-to-end.
+func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
+	t.Parallel()
+
+	const (
+		agentClientID     = "test-agent-client"
+		agentClientSecret = "test-agent-secret"
+		delegatedUserSub  = "delegated-user-sub"
+	)
+
+	// A confidential client registered for the token-exchange grant is the acting
+	// agent. The handler rejects public clients, so this must be confidential.
+	agentClient, err := registration.New(registration.Config{
+		ID:         agentClientID,
+		Secret:     agentClientSecret,
+		Public:     false,
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     registration.DefaultScopes,
+		Audience:   []string{testAudience},
+	})
+	require.NoError(t, err)
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withExtraClient(agentClient))
+
+	// Mint a subject token signed by the server's own key (the validator verifies
+	// against the server's JWKS). client_id must equal the acting client so the
+	// RFC 8693 §4.1 delegation-consent check (client_id binding) passes.
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: ts.PrivateKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"),
+	)
+	require.NoError(t, err)
+
+	now := time.Now()
+	subjectToken, err := jwt.Signed(signer).
+		Claims(jwt.Claims{
+			Issuer:   testIssuer,
+			Subject:  delegatedUserSub,
+			Audience: jwt.Audience{testAudience},
+			Expiry:   jwt.NewNumericDate(now.Add(30 * time.Minute)),
+			IssuedAt: jwt.NewNumericDate(now),
+		}).
+		Claims(map[string]any{
+			"client_id": agentClientID,
+			"name":      "Delegated User",
+			"email":     "deleg@example.com",
+		}).
+		Serialize()
+	require.NoError(t, err)
+
+	// No resource/audience is sent: the server defaults to its sole allowed
+	// audience (testAudience), which the agent client is registered for.
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {subjectToken},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"client_id":          {agentClientID},
+		"client_secret":      {agentClientSecret},
+	})
+	defer resp.Body.Close()
+
+	body := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"token exchange should succeed, got %d (body: %v)", resp.StatusCode, body)
+
+	// RFC 8693 §2.2.1 requires issued_token_type in the response.
+	assert.Equal(t, oauthproto.TokenTypeAccessToken, body["issued_token_type"],
+		"response must advertise the issued token type")
+
+	delegated, ok := body["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, delegated)
+
+	// The delegated token is a JWT signed by the server; verify and inspect claims.
+	parsed, err := jwt.ParseSigned(delegated, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]any
+	require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+
+	// The delegated token carries the USER as subject and the AGENT as the
+	// RFC 8693 §4.1 "act" (acting party).
+	assert.Equal(t, delegatedUserSub, claims["sub"], "delegated token subject must be the user")
+	assert.Equal(t, testIssuer, claims["iss"])
+	act, ok := claims["act"].(map[string]any)
+	require.True(t, ok, "delegated token must carry an 'act' claim")
+	assert.Equal(t, agentClientID, act["sub"], "act.sub must identify the acting agent client")
+
+	// Audience: no resource/audience was requested, so grantDefaultAudience must
+	// bind the token to the server's sole allowed audience.
+	aud, ok := claims["aud"].([]interface{})
+	require.True(t, ok, "aud claim should be an array")
+	require.Len(t, aud, 1, "aud should have exactly one audience")
+	assert.Equal(t, testAudience, aud[0], "delegated token audience should default to the sole allowed audience")
+
+	// Lifetime cap: the delegated token's exp must be min(subject_remaining=30m,
+	// delegationLifespan=15m default) ≈ 15m — NOT the subject token's 30m. This
+	// verifies the handler's min() cap and rules out a "subject token echoed
+	// back" regression, which would otherwise satisfy sub/iss/signature.
+	exp, ok := claims["exp"].(float64)
+	require.True(t, ok, "exp claim should be a number")
+	assert.WithinDuration(t, now.Add(15*time.Minute), time.Unix(int64(exp), 0), 2*time.Minute,
+		"delegated token exp must be capped at the 15m delegation lifespan, not the subject token's 30m")
 }
 
 // ============================================================================
@@ -906,9 +1129,10 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 //   - defaultUpstreamFactory dispatching to NewOIDCProvider
 //   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
 //
-// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage);
-// the upstream is fixed because this helper exists specifically to exercise the
-// real OIDC factory path. Other testServerOptions are silently ignored.
+// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage)
+// and setting Config.UpstreamFilter (withUpstreamFilter); the upstream itself is
+// fixed because this helper exists specifically to exercise the real OIDC
+// factory path. Other testServerOptions are silently ignored.
 func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ...testServerOption) *testServerWithUpstream {
 	t.Helper()
 	ctx := context.Background()
@@ -975,6 +1199,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 			},
 		}},
 		AllowedAudiences: []string{testAudience},
+		UpstreamFilter:   options.upstreamFilter,
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.
@@ -1820,6 +2045,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 			{Name: "provider-2", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg2},
 		},
 		AllowedAudiences: []string{testAudience},
+		UpstreamFilter:   options.upstreamFilter,
 	}
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
@@ -1952,6 +2178,95 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 		"provider-2 UpstreamSubject should come from m2's queued user")
 	assert.NotEqual(t, tokens1.UpstreamSubject, tokens2.UpstreamSubject,
 		"upstream subjects should differ (different IDPs)")
+}
+
+// stubChainFilter is a minimal handlers.UpstreamFilter test double that always
+// keeps the given set of upstream names, regardless of the principal or
+// configured list it is passed. The lower-level filter-narrowing behavior
+// (computeChain) is already covered directly in
+// pkg/authserver/server/handlers/handler_chain_test.go; this double exists only
+// to drive the Config.UpstreamFilter -> authserver.New -> handlers.NewHandler
+// wiring end-to-end.
+type stubChainFilter struct {
+	keep []string
+}
+
+func (f *stubChainFilter) FilterUpstreams(
+	_ context.Context,
+	_ auth.PrincipalInfo,
+	_ []string,
+) ([]string, error) {
+	return f.keep, nil
+}
+
+// TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter proves that a
+// Config.UpstreamFilter set through the public authserver.New facade reaches
+// the handler and narrows the authorization chain. Before Config gained this
+// field, WithUpstreamFilter was only reachable via the low-level
+// handlers.NewHandler constructor, so a caller using authserver.New had no way
+// to install a filter at all.
+//
+// The filter here drops provider-2 entirely, so after the provider-1 callback
+// the chain must be satisfied and the handler must redirect straight to the
+// client (303) instead of on to provider-2 (302). The status-code assertion
+// below is the only signal this test relies on: it fails immediately on a
+// mismatch, before ever following a redirect that would reach provider-2.
+func TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	m1, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m1.Shutdown()) })
+
+	m2, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m2.Shutdown()) })
+
+	m1.QueueUser(&mockoidc.MockUser{
+		Subject: "user-from-provider-1",
+		Email:   "user1@provider1.example.com",
+	})
+
+	filter := &stubChainFilter{keep: nil}
+	ts := setupTestServerWithTwoUpstreams(t, m1, m2, withUpstreamFilter(filter))
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+	clientState := "upstream-filter-client-state"
+
+	resp := runFirstLeg(t, ts.Server.URL, challenge, clientState)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"expected 303 straight to client: the Config-supplied filter should have dropped provider-2 from the chain")
+	clientLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	require.Equal(t, clientState, clientLocation.Query().Get("state"))
+	authCode := clientLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, accessToken)
+
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]interface{}
+	require.NoError(t, parsedToken.Claims(ts.PrivateKey.Public(), &claims))
+	tsid, ok := claims["tsid"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, tsid)
+
+	ctx := context.Background()
+
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1")
+	require.NoError(t, err, "provider-1 tokens should be stored")
+	require.NotNil(t, tokens1)
+
+	_, err = ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2")
+	require.Error(t, err, "provider-2 should have been dropped from the chain by the filter")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
 
 // ============================================================================
@@ -2128,19 +2443,19 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 // the hand-crafted flow in TestIntegration_MultiUpstreamSequentialChain but
 // is reused by the mixed-expiry orderings test. The PKCE verifier is the
 // caller's responsibility — it's only needed at the final /token exchange.
-func runChainFlow(
-	t *testing.T,
-	serverURL string,
-	challenge string,
-	clientState string,
-) string {
+// runFirstLeg drives the leg-1 flow shared by every multi-upstream chain
+// test: client -> /oauth/authorize -> first upstream -> our /oauth/callback.
+// It returns the callback response unread and unclosed so callers can assert
+// on its status code — 302 on to the next upstream (chain continues) vs. 303
+// straight to the client (chain already satisfied) — before deciding how to
+// continue. Callers are responsible for closing the returned response's body.
+func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.Response {
 	t.Helper()
 	client := noRedirectClient()
 
 	parsedServerURL, err := url.Parse(serverURL)
 	require.NoError(t, err)
 
-	// Leg 1: client -> /authorize -> first upstream
 	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
 		"client_id":             {testClientID},
 		"redirect_uri":          {testRedirectURI},
@@ -2169,6 +2484,22 @@ func runChainFlow(
 
 	resp, err = client.Get(firstCallback.String())
 	require.NoError(t, err)
+	return resp
+}
+
+func runChainFlow(
+	t *testing.T,
+	serverURL string,
+	challenge string,
+	clientState string,
+) string {
+	t.Helper()
+
+	parsedServerURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+
+	// Leg 1: client -> /authorize -> first upstream -> callback
+	resp := runFirstLeg(t, serverURL, challenge, clientState)
 	require.Equal(t, http.StatusFound, resp.StatusCode,
 		"expected redirect to second upstream, not 303 to client")
 	secondUpstreamLocation, err := resp.Location()
@@ -2176,6 +2507,7 @@ func runChainFlow(
 	resp.Body.Close()
 
 	// Leg 2: second upstream -> callback -> client
+	client := noRedirectClient()
 	resp, err = client.Get(secondUpstreamLocation.String())
 	require.NoError(t, err)
 	require.Equal(t, http.StatusFound, resp.StatusCode)
@@ -2206,7 +2538,7 @@ func runChainFlow(
 // TestIntegration_MultiUpstreamChain_MixedExpiryOrderings exercises the two-leg
 // authorization chain with one upstream returning expires_in and the other
 // omitting it. Both orderings must succeed and both providers' tokens must be
-// retrievable via GetAllValidTokens.
+// retrievable via GetAllUpstreamCredentials.
 //
 // This pins the chain handler's per-leg storage write and the
 // convertOAuth2Token zero-Expiry path through the full HTTP flow, in both
@@ -2290,17 +2622,17 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
 					"provider-2 (expiring) must carry a non-zero ExpiresAt")
 			}
 
-			// GetAllValidTokens must return both providers' access tokens.
+			// GetAllUpstreamCredentials must return both providers' credentials.
 			// Before the Lua TTL fix, the non-expiring provider's index could
 			// be evicted prematurely depending on chain ordering, so this
 			// would have returned an empty or incomplete map for one
 			// ordering.
 			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
-			all, err := svc.GetAllValidTokens(ctx, tsid)
+			all, _, err := svc.GetAllUpstreamCredentials(ctx, tsid)
 			require.NoError(t, err)
-			require.Len(t, all, 2, "GetAllValidTokens must return both providers regardless of expiry ordering")
-			assert.NotEmpty(t, all["provider-1"], "provider-1 access token must be present")
-			assert.NotEmpty(t, all["provider-2"], "provider-2 access token must be present")
+			require.Len(t, all, 2, "GetAllUpstreamCredentials must return both providers regardless of expiry ordering")
+			assert.NotEmpty(t, all["provider-1"].AccessToken, "provider-1 access token must be present")
+			assert.NotEmpty(t, all["provider-2"].AccessToken, "provider-2 access token must be present")
 		})
 	}
 }
@@ -2499,11 +2831,11 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			// (commit 1b3bc81e2), the integration flow always produces ttlMs > 0 and
 			// the buggy Lua branch is unreachable from a real auth chain. The Lua
 			// invariant is exercised at unit level by pkg/authserver/storage/redis_test.go.
-			tokensMap, err := svc.GetAllValidTokens(ctx, tsid)
+			tokensMap, _, err := svc.GetAllUpstreamCredentials(ctx, tsid)
 			require.NoError(t, err)
-			require.Len(t, tokensMap, 2, "GetAllValidTokens must return both providers after chain")
-			assert.NotEmpty(t, tokensMap["provider-1"], "provider-1 access token must be present")
-			assert.NotEmpty(t, tokensMap["provider-2"], "provider-2 access token must be present")
+			require.Len(t, tokensMap, 2, "GetAllUpstreamCredentials must return both providers after chain")
+			assert.NotEmpty(t, tokensMap["provider-1"].AccessToken, "provider-1 access token must be present")
+			assert.NotEmpty(t, tokensMap["provider-2"].AccessToken, "provider-2 access token must be present")
 		})
 	}
 }

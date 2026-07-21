@@ -22,7 +22,6 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -192,19 +191,9 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	}
 
 	// Create discovery manager (follows same pattern as TestIntegration_AuditLogging)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
-			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
-			return agg.AggregateCapabilities(ctx, backends)
-		}).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	// Create router
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	// Build the tools and routing table. The aggregator prefixes tool names with
 	// "{workload}_", so "search" becomes "search-svc_search".
@@ -246,7 +235,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		TelemetryProvider: telemetryProvider,
 		SessionFactory:    telemetryFactory,
 		Aggregator:        telemetryAgg,
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Start server

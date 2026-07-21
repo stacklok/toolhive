@@ -4,8 +4,10 @@
 package networking
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -35,6 +37,51 @@ const HttpsScheme = "https"
 // HttpScheme is the HTTP scheme
 const HttpScheme = "http"
 
+// MaxRedirects bounds how many HTTP redirects an SSRF-guarded client follows
+// before giving up. Matches the cap used by the transparent proxy data path.
+const MaxRedirects = 10
+
+// ErrRedirectRefused is wrapped by SameHostRedirectPolicy when it declines to
+// follow a redirect, so callers can match it with errors.Is.
+var ErrRedirectRefused = errors.New("redirect refused")
+
+// SameHostRedirectPolicy returns a value for http.Client.CheckRedirect that
+// follows only same-host redirects, refuses HTTPS-to-HTTP downgrades, and caps
+// the chain at MaxRedirects.
+//
+// Any client that fetches a URL derived from an untrusted remote server — auth
+// discovery probes, RFC 9728 resource-metadata fetches, OIDC issuer discovery —
+// must install this. Validating only the originally-supplied URL is not enough:
+// a malicious server can return a 30x that points the request at an internal
+// address (cloud IMDS, RFC1918 services), and the host-side client would follow
+// it (CWE-918). Restricting redirects to the same host as the original request
+// keeps the request on the endpoint the operator actually configured.
+//
+// This mirrors the data-plane guard in pkg/transport/proxy/transparent
+// (followRedirects); keep the two policies in sync.
+func SameHostRedirectPolicy() func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= MaxRedirects {
+			return fmt.Errorf("stopped after %d redirects: %w", MaxRedirects, ErrRedirectRefused)
+		}
+		// via[0] is the original request; CheckRedirect is only invoked once at
+		// least one redirect has occurred, so via is never empty.
+		original := via[0]
+		// Compare host:port (not just hostname): a redirect to a different port
+		// on the same host can reach a different internal service (a co-located
+		// metadata/admin port), so it must be treated as cross-host.
+		if !strings.EqualFold(req.URL.Host, original.URL.Host) {
+			return fmt.Errorf("refusing cross-host redirect to %q (original host %q): %w",
+				req.URL.Host, original.URL.Host, ErrRedirectRefused)
+		}
+		if original.URL.Scheme == HttpsScheme && req.URL.Scheme != HttpsScheme {
+			return fmt.Errorf("refusing redirect that downgrades from HTTPS to %q: %w",
+				req.URL.Scheme, ErrRedirectRefused)
+		}
+		return nil
+	}
+}
+
 // Dialer control function for validating addresses prior to connection
 func protectedDialerControl(_, address string, _ syscall.RawConn) error {
 	err := AddressReferencesPrivateIp(address)
@@ -43,6 +90,20 @@ func protectedDialerControl(_, address string, _ syscall.RawConn) error {
 	}
 
 	return nil
+}
+
+// NewPrivateIPBlockingDialContext returns a DialContext that refuses to connect
+// to private, loopback, or link-local addresses. The check runs after DNS
+// resolution on the address actually being dialed, so it also defends against
+// DNS rebinding and is re-applied on every redirect hop. Pair it with
+// Transport.DisableKeepAlives so a pooled connection cannot skip the check on a
+// later request.
+//
+// Use this on clients that fetch a URL derived from untrusted input when the
+// operator-configured target is public; SameHostRedirectPolicy is the
+// redirect-following counterpart.
+func NewPrivateIPBlockingDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return (&net.Dialer{Control: protectedDialerControl}).DialContext
 }
 
 // ValidatingTransport is for validating URLs prior to request
@@ -113,6 +174,31 @@ func NewHttpClientBuilder() *HttpClientBuilder {
 		tlsHandshakeTimeout:   10 * time.Second,
 		responseHeaderTimeout: 10 * time.Second,
 	}
+}
+
+// NewHostScopedClientBuilder returns an HttpClientBuilder pre-configured with
+// the SSRF-guard policy (CWE-918) appropriate for dialing host. By default the
+// returned builder blocks plain HTTP and connections to private/loopback/
+// link-local IP ranges. Both gates are relaxed automatically for loopback
+// hosts (development/testing) and when INSECURE_DISABLE_URL_VALIDATION is set.
+//
+// allowPrivateIPs widens only the private-IP gate — for example an in-cluster
+// provider reachable solely over an RFC-1918 address — without enabling plain
+// HTTP for non-loopback hosts. insecureAllowHTTP additionally permits
+// plain-HTTP for non-loopback hosts and must never be set in production.
+//
+// The returned builder is not yet built: callers may chain further options
+// (e.g. WithTimeout, WithDisableKeepAlives) before calling Build. This is the
+// single source of truth for the host-scoped guard policy shared by the
+// upstream OAuth2/OIDC providers and the DCR resolver so the two paths cannot
+// drift.
+func NewHostScopedClientBuilder(host string, allowPrivateIPs, insecureAllowHTTP bool) *HttpClientBuilder {
+	allowInsecure := IsLocalhost(host) ||
+		insecureAllowHTTP ||
+		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
+	return NewHttpClientBuilder().
+		WithInsecureAllowHTTP(allowInsecure).
+		WithPrivateIPs(allowInsecure || allowPrivateIPs)
 }
 
 // WithCABundle sets the CA certificate bundle path

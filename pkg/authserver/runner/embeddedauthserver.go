@@ -197,12 +197,23 @@ func NewEmbeddedAuthServerWithStorage(
 	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
 	// resolutions in dcrStore so re-entrant boot/reload paths reuse
 	// previously-registered upstream clients instead of re-registering.
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore))
+	upstreams, err := buildUpstreamConfigs(
+		ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore), cfg.InsecureAllowHTTP,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 6. Build the resolved Config.
+	// 6. Parse delegation token lifespan if configured.
+	var delegationLifespan time.Duration
+	if cfg.DelegationTokenLifespan != "" {
+		delegationLifespan, err = time.ParseDuration(cfg.DelegationTokenLifespan)
+		if err != nil {
+			return nil, fmt.Errorf("invalid delegation token lifespan: %w", err)
+		}
+	}
+
+	// 7. Build the resolved Config.
 	//
 	// Defensive copies of the scope/audience slices: cfg is operator-supplied
 	// input that may be retained or mutated by the caller (e.g. tests, a
@@ -221,6 +232,7 @@ func NewEmbeddedAuthServerWithStorage(
 		AccessTokenLifespan:          accessLifespan,
 		RefreshTokenLifespan:         refreshLifespan,
 		AuthCodeLifespan:             authCodeLifespan,
+		DelegationTokenLifespan:      delegationLifespan,
 		Upstreams:                    upstreams,
 		ScopesSupported:              slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:         slices.Clone(cfg.BaselineClientScopes),
@@ -228,9 +240,10 @@ func NewEmbeddedAuthServerWithStorage(
 		CIMDEnabled:                  cimdEnabled,
 		CIMDCacheMaxSize:             cimdCacheMaxSize,
 		CIMDCacheFallbackTTL:         cimdCacheFallbackTTL,
+		InsecureAllowHTTP:            cfg.InsecureAllowHTTP,
 	}
 
-	// 7. Create the auth server. authserver.New also asserts the DCR
+	// 8. Create the auth server. authserver.New also asserts the DCR
 	// capability internally so its DCRStore() accessor returns the same
 	// asserted handle this constructor used for buildUpstreamConfigs.
 	server, err := authserver.New(ctx, resolvedCfg, stor)
@@ -442,6 +455,7 @@ func buildUpstreamConfigs(
 	runConfigs []authserver.UpstreamRunConfig,
 	issuer string,
 	dcrStore dcr.CredentialStore,
+	insecureAllowHTTP bool,
 ) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
@@ -479,7 +493,7 @@ func buildUpstreamConfigs(
 			dcrResolution = resolution
 		}
 
-		cfg, err := buildUpstreamConfig(&rcCopy)
+		cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 		}
@@ -502,10 +516,10 @@ func buildUpstreamConfigs(
 
 // buildUpstreamConfig builds an authserver.UpstreamConfig from UpstreamRunConfig.
 // It preserves the provider type and builds the appropriate config.
-func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.UpstreamConfig, error) {
+func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*authserver.UpstreamConfig, error) {
 	switch rc.Type {
 	case authserver.UpstreamProviderTypeOIDC:
-		oidcCfg, err := buildOIDCConfig(rc)
+		oidcCfg, err := buildOIDCConfig(rc, insecureAllowHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -516,7 +530,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 		}, nil
 
 	case authserver.UpstreamProviderTypeOAuth2:
-		oauth2Cfg, err := buildPureOAuth2Config(rc)
+		oauth2Cfg, err := buildPureOAuth2Config(rc, insecureAllowHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -539,7 +553,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 // by OIDCProviderImpl.ExchangeCodeForIdentity), not from the UserInfo endpoint.
 // The UserInfo endpoint may still be discovered via OIDC discovery for other
 // purposes, but it is not used for identity resolution.
-func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, error) {
+func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*upstream.OIDCConfig, error) {
 	if rc.OIDCConfig == nil {
 		return nil, fmt.Errorf("oidc_config required for OIDC provider")
 	}
@@ -576,7 +590,10 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer: oidc.IssuerURL,
+		Issuer:            oidc.IssuerURL,
+		SubjectClaim:      oidc.SubjectClaim,
+		AllowPrivateIPs:   oidc.AllowPrivateIPs,
+		InsecureAllowHTTP: insecureAllowHTTP || oidc.InsecureAllowHTTP,
 	}, nil
 }
 
@@ -586,7 +603,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 // enforced here via OAuth2UpstreamRunConfig.Validate before secrets are
 // resolved, since the downstream upstream.OAuth2Config validator only sees the
 // flattened runtime shape and cannot observe DCR fields.
-func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
+func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*upstream.OAuth2Config, error) {
 	if rc.OAuth2Config == nil {
 		return nil, fmt.Errorf("oauth2_config required for OAuth2 provider")
 	}
@@ -611,6 +628,8 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
+		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
+		InsecureAllowHTTP:     insecureAllowHTTP || oauth2.InsecureAllowHTTP,
 	}
 
 	if oauth2.TokenResponseMapping != nil {
@@ -852,12 +871,15 @@ func resolveCIMDConfig(cfg *authserver.CIMDRunConfig) (enabled bool, cacheMaxSiz
 }
 
 // resolveEnvVar reads a value from the named environment variable.
+// An empty value is returned without error — empty credentials are valid for
+// unauthenticated backends (e.g. a no-auth Redis where the operator injects a
+// blank password from a Kubernetes Secret).
 func resolveEnvVar(envVar string) (string, error) {
 	if envVar == "" {
 		return "", fmt.Errorf("environment variable name is empty")
 	}
-	value := os.Getenv(envVar)
-	if value == "" {
+	value, ok := os.LookupEnv(envVar)
+	if !ok {
 		return "", fmt.Errorf("environment variable %q is not set", envVar)
 	}
 	return value, nil

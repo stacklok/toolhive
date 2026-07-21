@@ -16,6 +16,7 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -32,12 +33,13 @@ type server struct {
 	// (newServer) so DCRStore() is a field read rather than re-asserting on
 	// every call, and a backend that does not implement DCRCredentialStore
 	// is rejected at boot rather than at first DCR resolve.
-	dcrStore  storage.DCRCredentialStore
-	upstreams []handlers.NamedUpstream
-	// refreshTokenLifespan mirrors the validated Config.RefreshTokenLifespan.
-	// It is threaded into upstreamTokenRefresher so the refresh path can
-	// re-anchor SessionExpiresAt for legacy storage rows missing that field.
-	refreshTokenLifespan time.Duration
+	dcrStore storage.DCRCredentialStore
+	// upstreamRefresher is the single shared refresher instance constructed in
+	// newServer. Storing the interface type (not *upstreamTokenRefresher) keeps
+	// the nil-return contract: newUpstreamTokenRefresher returns a true nil
+	// interface when there are no upstreams, so callers can check == nil safely.
+	upstreamRefresher storage.UpstreamTokenRefresher
+	upstreams         []handlers.NamedUpstream
 }
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
@@ -176,30 +178,26 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// Wrap storage with the CIMD decorator before constructing the fosite provider
 	// so that GetClient calls for HTTPS client_id values are intercepted at the
 	// fosite level (not just the handler level).
-	if cfg.CIMDEnabled {
-		if len(cfg.BaselineClientScopes) > 0 {
-			slog.Warn("CIMD is enabled with baseline_client_scopes configured; "+
-				"any third-party client resolved via CIMD will also receive these scopes — "+
-				"ensure they are scopes you would grant by default to any unknown client",
-				"baseline_client_scopes", cfg.BaselineClientScopes)
-		}
-		stor, err = storage.NewCIMDStorageDecorator(stor, storage.CIMDDecoratorConfig{
-			Enabled:              true,
-			CacheMaxSize:         cfg.CIMDCacheMaxSize,
-			FallbackTTL:          cfg.CIMDCacheFallbackTTL,
-			ScopesSupported:      cfg.ScopesSupported,
-			BaselineClientScopes: cfg.BaselineClientScopes,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
-		}
+	stor, err = decorateStorageForCIMD(cfg, stor)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create fosite provider with the (possibly decorated) storage.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider := createProvider(authServerConfig, stor)
+	fositeProvider, err := buildProvider(cfg, authServerConfig, stor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
+	}
 
-	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
+	// Give the handler a refresher so the authorization chain can transparently
+	// refresh an expired upstream leg during login instead of skipping it and
+	// failing later at MCP-request token-swap time. The same instance is stored
+	// on the server so UpstreamTokenRefresher() returns the identical object,
+	// ensuring both paths share one singleflight.Group.
+	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
+	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
+		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -212,12 +210,62 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	return &server{
-		handler:              router,
-		storage:              stor,
-		dcrStore:             dcrStore,
-		upstreams:            upstreams,
-		refreshTokenLifespan: cfg.RefreshTokenLifespan,
+		handler:           router,
+		storage:           stor,
+		dcrStore:          dcrStore,
+		upstreams:         upstreams,
+		upstreamRefresher: refresher,
 	}, nil
+}
+
+// decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,
+// so GetClient calls for HTTPS client_id values are intercepted at the fosite
+// level (not just the handler level). Returns stor unchanged when CIMD is disabled.
+func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, error) {
+	if !cfg.CIMDEnabled {
+		return stor, nil
+	}
+	if len(cfg.BaselineClientScopes) > 0 {
+		slog.Warn("CIMD is enabled with baseline_client_scopes configured; "+
+			"any third-party client resolved via CIMD will also receive these scopes — "+
+			"ensure they are scopes you would grant by default to any unknown client",
+			"baseline_client_scopes", cfg.BaselineClientScopes)
+	}
+	decorated, err := storage.NewCIMDStorageDecorator(stor, storage.CIMDDecoratorConfig{
+		Enabled:              true,
+		CacheMaxSize:         cfg.CIMDCacheMaxSize,
+		FallbackTTL:          cfg.CIMDCacheFallbackTTL,
+		ScopesSupported:      cfg.ScopesSupported,
+		BaselineClientScopes: cfg.BaselineClientScopes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
+	}
+	return decorated, nil
+}
+
+// buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
+// token-exchange handler as an extension grant alongside the standard grants.
+func buildProvider(
+	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
+) (fosite.OAuth2Provider, error) {
+	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+	}
+	return createProvider(authServerConfig, stor, tokenExchangeFactory)
+}
+
+// buildHandlerOptions assembles the handlers.Option list for NewHandler: the
+// refresher is always wired, and the filter is added only when the caller's
+// Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
+// behavior of walking every configured upstream.
+func buildHandlerOptions(refresher storage.UpstreamTokenRefresher, filter handlers.UpstreamFilter) []handlers.Option {
+	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
+	if filter != nil {
+		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	return opts
 }
 
 // Handler returns the HTTP handler that serves all OAuth/OIDC endpoints.
@@ -236,21 +284,33 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 	return s.dcrStore
 }
 
-// UpstreamTokenRefresher returns a refresher that wraps the upstream providers
-// and storage to transparently refresh expired upstream tokens. The refresher
-// dispatches to the correct provider based on each token's ProviderID.
+// UpstreamTokenRefresher returns the single shared refresher constructed in
+// newServer. Both the handler's chain-walk path and the runtime token-swap
+// path use this instance, ensuring concurrent refreshes for the same
+// (session, provider) pair are deduplicated by a single singleflight.Group.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
-	if len(s.upstreams) == 0 {
+	return s.upstreamRefresher
+}
+
+// newUpstreamTokenRefresher builds a refresher over the given upstreams, or nil
+// when there are none. Called once during newServer so the returned instance
+// can be shared between the handler and the UpstreamTokenRefresher() accessor.
+func newUpstreamTokenRefresher(
+	upstreams []handlers.NamedUpstream,
+	stor storage.UpstreamTokenStorage,
+	refreshTokenLifespan time.Duration,
+) storage.UpstreamTokenRefresher {
+	if len(upstreams) == 0 {
 		return nil
 	}
-	providers := make(map[string]upstream.OAuth2Provider, len(s.upstreams))
-	for _, u := range s.upstreams {
+	providers := make(map[string]upstream.OAuth2Provider, len(upstreams))
+	for _, u := range upstreams {
 		providers[u.Name] = u.Provider
 	}
 	return &upstreamTokenRefresher{
 		providers:            providers,
-		storage:              s.storage,
-		refreshTokenLifespan: s.refreshTokenLifespan,
+		storage:              stor,
+		refreshTokenLifespan: refreshTokenLifespan,
 	}
 }
 
@@ -262,9 +322,10 @@ func (s *server) Close() error {
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.
 //
-// Fosite is an OAuth 2.0 framework that implements the protocol details. The compose package
-// provides a builder pattern to wire together configuration, storage, token strategies,
-// and grant type handlers into a single OAuth2Provider that can handle all OAuth endpoints.
+// Fosite is an OAuth 2.0 framework that implements the protocol details. We use
+// server.NewAuthorizationServer which accepts server.Factory functions to register
+// grant type handlers. The standard compose factories are wrapped via wrapComposeFactory
+// and any extra factories (e.g., token exchange) are appended.
 //
 // The provider is configured with:
 //   - JWT strategy for access tokens (asymmetric signing, distributed validation via JWKS)
@@ -272,7 +333,12 @@ func (s *server) Close() error {
 //   - Authorization code grant (RFC 6749 Section 4.1)
 //   - Refresh token grant (RFC 6749 Section 6)
 //   - PKCE (RFC 7636) for public client security
-func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage) fosite.OAuth2Provider {
+//   - Any extra factories passed in (e.g., RFC 8693 token exchange)
+func createProvider(
+	authServerConfig *oauthserver.AuthorizationServerConfig,
+	stor storage.Storage,
+	extraFactories ...oauthserver.Factory,
+) (fosite.OAuth2Provider, error) {
 	slog.Debug("configuring fosite OAuth2 provider",
 		"key_id", authServerConfig.SigningKey.KeyID,
 		"algorithm", authServerConfig.SigningKey.Algorithm,
@@ -302,18 +368,21 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		authServerConfig.Config,
 	)
 
-	// compose.Compose wires together all the pieces into an OAuth2Provider:
-	// - Config: token lifespans, issuer URL, HMAC secret
-	// - Storage: where to persist authorization codes, tokens, and client data
-	// - Strategy: how to generate and validate tokens
-	// - Factories: which OAuth grant types to enable (each adds handlers for specific flows)
-	return compose.Compose(
-		authServerConfig.Config,
+	commonStrategy := &compose.CommonStrategy{CoreStrategy: jwtStrategy}
+
+	// Wrap fosite's compose factories to match server.Factory signature.
+	factories := []oauthserver.Factory{
+		wrapComposeFactory(compose.OAuth2AuthorizeExplicitFactory), // Authorization code grant
+		wrapComposeFactory(compose.OAuth2RefreshTokenGrantFactory), // Refresh token grant
+		wrapComposeFactory(compose.OAuth2PKCEFactory),              // PKCE for public clients
+	}
+	factories = append(factories, extraFactories...)
+
+	return oauthserver.NewAuthorizationServer(
+		authServerConfig,
 		stor,
-		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
-		compose.OAuth2AuthorizeExplicitFactory, // Authorization code grant
-		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
-		compose.OAuth2PKCEFactory,              // PKCE for public clients
+		commonStrategy,
+		factories...,
 	)
 }
 
@@ -343,4 +412,14 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 		}
 	}
 	return nil
+}
+
+// wrapComposeFactory adapts a compose.Factory to a server.Factory.
+// Compose factories take (fosite.Configurator, interface{}, interface{}) while
+// server factories take (*AuthorizationServerConfig, fosite.Storage, any).
+// The embedded *fosite.Config satisfies fosite.Configurator.
+func wrapComposeFactory(cf compose.Factory) oauthserver.Factory {
+	return func(config *oauthserver.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
+		return cf(config.Config, storage, strategy), nil
+	}
 }

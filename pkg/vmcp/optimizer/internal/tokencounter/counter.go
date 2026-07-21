@@ -7,7 +7,7 @@ package tokencounter
 import (
 	"encoding/json"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // Counter estimates the number of tokens a tool definition would consume

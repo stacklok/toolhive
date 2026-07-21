@@ -21,12 +21,13 @@ func TestValidateIssuerURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		issuer  string
-		wantErr bool
-		errMsg  string
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           bool
+		errMsg            string
 	}{
-		// Valid
+		// Valid — strict mode (insecureAllowHTTP=false)
 		{name: "https", issuer: "https://example.com"},
 		{name: "https with port", issuer: "https://example.com:8443"},
 		{name: "https with path", issuer: "https://example.com/auth"},
@@ -35,7 +36,12 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http 127.0.0.1", issuer: "http://127.0.0.1:8080"},
 		{name: "http IPv6 loopback", issuer: "http://[::1]:8080"},
 
-		// Invalid
+		// Valid — insecureAllowHTTP=true permits http for non-localhost
+		{name: "http cluster-local insecure", issuer: "http://vmcp-foo.default.svc.cluster.local:4483", insecureAllowHTTP: true},
+		{name: "http private IP insecure", issuer: "http://10.0.0.1:4483", insecureAllowHTTP: true},
+		{name: "http non-localhost insecure", issuer: "http://example.com", insecureAllowHTTP: true},
+
+		// Invalid — strict mode
 		{name: "empty", issuer: "", wantErr: true, errMsg: "issuer is required"},
 		{name: "missing scheme", issuer: "example.com", wantErr: true, errMsg: "scheme is required"},
 		{name: "missing host", issuer: "https://", wantErr: true, errMsg: "host is required"},
@@ -44,12 +50,23 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http non-localhost", issuer: "http://example.com", wantErr: true, errMsg: "http scheme is only allowed for localhost"},
 		{name: "ftp scheme", issuer: "ftp://example.com", wantErr: true, errMsg: "scheme must be https"},
 		{name: "trailing slash", issuer: "https://example.com/", wantErr: true, errMsg: "must not have trailing slash"},
+
+		// Valid — insecureAllowHTTP=true permits http for non-localhost
+		{name: "http in-cluster insecure allowed", issuer: "http://vmcp-test.default.svc.cluster.local:4483", insecureAllowHTTP: true},
+		{name: "http non-localhost insecure allowed", issuer: "http://example.com", insecureAllowHTTP: true},
+		{name: "https still valid with insecure flag", issuer: "https://example.com", insecureAllowHTTP: true},
+		{name: "http localhost still valid with insecure flag", issuer: "http://localhost:8080", insecureAllowHTTP: true},
+
+		// Invalid — insecureAllowHTTP=true still enforces other rules
+		{name: "trailing slash insecure", issuer: "http://example.com/", insecureAllowHTTP: true, wantErr: true, errMsg: "must not have trailing slash"},
+		{name: "ftp scheme insecure", issuer: "ftp://example.com", insecureAllowHTTP: true, wantErr: true, errMsg: "scheme must be https"},
+		{name: "empty insecure", issuer: "", insecureAllowHTTP: true, wantErr: true, errMsg: "issuer is required"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateIssuerURL(tt.issuer)
+			err := validateIssuerURL(tt.issuer, tt.insecureAllowHTTP)
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
@@ -85,6 +102,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "no upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "at least one upstream is required"},
 		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2}}}, wantErr: true, errMsg: "oauth2_config is required"},
 		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{name: "upstream_filter with single upstream rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, UpstreamFilter: &stubChainFilter{}}, wantErr: true, errMsg: "upstream_filter is configured but has no effect"},
+		{name: "upstream_filter with multiple upstreams allowed", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}, UpstreamFilter: &stubChainFilter{}}},
 		{name: "duplicate upstream names", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "same", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "same", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "duplicate upstream name"},
 		{name: "multi-upstream with empty name on second", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "upstream[1]: name must be explicitly set"},
 		{name: "multi-upstream with empty name on first", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "upstream[0]: name must be explicitly set"},
@@ -647,6 +666,82 @@ func TestConfigApplyDefaults_CIMD(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.wantMaxSize, cfg.CIMDCacheMaxSize)
 			require.Equal(t, tt.wantFallbackTTL, cfg.CIMDCacheFallbackTTL)
+		})
+	}
+}
+
+// TestConfigValidate_DelegationTokenLifespan covers the RFC 8693 delegation
+// token lifespan bounds added to Config.Validate: zero is accepted (it is
+// defaulted later by applyDefaults), values in (0, 24h] are accepted, and
+// negative or over-24h values are rejected.
+func TestConfigValidate_DelegationTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	// base returns a minimally-valid Config so each case isolates the
+	// DelegationTokenLifespan check from unrelated validation failures.
+	base := func() Config {
+		return Config{
+			Issuer:      "https://example.com",
+			KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			Upstreams: []UpstreamConfig{{
+				Name: "default",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		lifespan time.Duration
+		wantErr  bool
+		errMsg   string
+	}{
+		{name: "zero accepted (defaulted later)", lifespan: 0},
+		{name: "valid 15m", lifespan: 15 * time.Minute},
+		{name: "valid 1h", lifespan: time.Hour},
+		{name: "valid 24h boundary", lifespan: 24 * time.Hour},
+		{name: "negative rejected", lifespan: -time.Second, wantErr: true, errMsg: "delegation token lifespan must not be negative"},
+		{name: "over 24h rejected", lifespan: 24*time.Hour + time.Second, wantErr: true, errMsg: "delegation token lifespan must not exceed 24h"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			cfg.DelegationTokenLifespan = tt.lifespan
+			assertError(t, cfg.Validate(), tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestConfigApplyDefaults_DelegationTokenLifespan verifies that applyDefaults
+// fills a zero DelegationTokenLifespan with the 15-minute default and preserves
+// a caller-supplied value.
+func TestConfigApplyDefaults_DelegationTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input time.Duration
+		want  time.Duration
+	}{
+		{name: "zero gets 15m default", input: 0, want: 15 * time.Minute},
+		{name: "custom value preserved", input: 5 * time.Minute, want: 5 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{Issuer: "https://example.com", DelegationTokenLifespan: tt.input}
+			require.NoError(t, cfg.applyDefaults())
+			require.Equal(t, tt.want, cfg.DelegationTokenLifespan)
 		})
 	}
 }

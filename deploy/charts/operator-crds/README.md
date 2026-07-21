@@ -1,6 +1,6 @@
 # ToolHive Operator CRDs Helm Chart
 
-![Version: 0.30.0](https://img.shields.io/badge/Version-0.30.0-informational?style=flat-square)
+![Version: 0.40.1](https://img.shields.io/badge/Version-0.40.1-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.
@@ -84,4 +84,8 @@ This is a one-time operation. After patching, future upgrades will work as long 
 | crds | object | `{"install":true,"keep":true}` | CRD installation configuration |
 | crds.install | bool | `true` | Whether to install the CRDs in this chart |
 | crds.keep | bool | `true` | Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs When true, CRDs will not be deleted when the Helm release is uninstalled |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this chart.
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -863,4 +864,132 @@ func TestListenerTimeoutsDisabledForStreaming(t *testing.T) {
 		}
 	}
 	assert.True(t, sawPlainHTTP, "egress must have a plain-HTTP route")
+}
+
+// TestBuildAllowlistPolicies_AllowPort verifies that AllowPort entries are
+// translated into port-suffix matchers on the :authority header, matching
+// Squid's allowed_ports ACL behaviour. Tests cover:
+//   - AllowPort alone (any host on listed ports)
+//   - AllowHost + AllowPort (both must match — parity with Squid's AND logic)
+//   - AllowHost without AllowPort (any port, original behaviour)
+//   - InsecureAllowAll ignores port constraints
+func TestBuildAllowlistPolicies_AllowPort(t *testing.T) {
+	t.Parallel()
+
+	// authorityAllowed checks whether the ALLOW RBAC filter in l permits the
+	// given :authority value by walking all policies and testing each permission
+	// against the authority string (replicating Envoy's full-string anchoring).
+	authorityAllowed := func(t *testing.T, l envoyListener, authority string) bool {
+		t.Helper()
+		rbac := findRBACFilter(l)
+		if rbac == nil {
+			return false
+		}
+		// A request is allowed when at least one policy's permissions all match.
+		for _, policy := range rbac.Rules.Policies {
+			allMatch := true
+			for _, perm := range policy.Permissions {
+				if !permMatchesAuthority(perm, authority) {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				return true
+			}
+		}
+		return false
+	}
+
+	tests := []struct {
+		name string
+		out  *permissions.OutboundNetworkPermissions
+		// authority strings that must be allowed / denied
+		allowed []string
+		denied  []string
+	}{
+		{
+			name:    "AllowPort only — any host allowed on listed ports",
+			out:     &permissions.OutboundNetworkPermissions{AllowPort: []int{80, 443}},
+			allowed: []string{"example.com:80", "anything.io:443"},
+			denied:  []string{"example.com:8080", "example.com:22"},
+		},
+		{
+			name: "AllowHost + AllowPort — host AND port must match",
+			out: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+				AllowPort: []int{443},
+			},
+			allowed: []string{"example.com:443"},
+			denied: []string{
+				"example.com:80", // right host, wrong port
+				"other.com:443",  // right port, wrong host
+				"other.com:80",   // neither
+			},
+		},
+		{
+			name: "AllowHost without AllowPort — any port allowed",
+			out: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+			},
+			allowed: []string{"example.com:443", "example.com:8080", "example.com:22"},
+			denied:  []string{"other.com:443"},
+		},
+		{
+			name:    "InsecureAllowAll ignores AllowPort",
+			out:     &permissions.OutboundNetworkPermissions{InsecureAllowAll: true, AllowPort: []int{443}},
+			allowed: []string{"example.com:80", "anything.io:9999"},
+			denied:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			spec := proxySpec{
+				WorkloadName: "app",
+				GatewayIP:    dockerDefaultBridgeGatewayIP,
+				Permissions:  &permissions.NetworkPermissions{Outbound: tt.out},
+			}
+			listener := buildEgressListener(spec)
+			for _, a := range tt.allowed {
+				assert.True(t, authorityAllowed(t, listener, a),
+					"authority %q should be allowed", a)
+			}
+			for _, a := range tt.denied {
+				assert.False(t, authorityAllowed(t, listener, a),
+					"authority %q should be denied", a)
+			}
+		})
+	}
+}
+
+// permMatchesAuthority tests a single envoyPermission against an authority
+// string, replicating Envoy's full-string anchoring for safe_regex and
+// exact/suffix/prefix string matches.
+func permMatchesAuthority(perm envoyPermission, authority string) bool {
+	if perm.Any != nil && *perm.Any {
+		return true
+	}
+	if perm.Header != nil && perm.Header.Name == ":authority" && perm.Header.StringMatch != nil {
+		sm := perm.Header.StringMatch
+		switch {
+		case sm.SafeRegex != nil:
+			return regexp.MustCompile("^(?:" + sm.SafeRegex.Regex + ")$").MatchString(authority)
+		case sm.Exact != "":
+			return authority == sm.Exact
+		case sm.Suffix != "":
+			return strings.HasSuffix(authority, sm.Suffix)
+		case sm.Prefix != "":
+			return strings.HasPrefix(authority, sm.Prefix)
+		}
+	}
+	if perm.OrRules != nil {
+		for _, r := range perm.OrRules.Rules {
+			if permMatchesAuthority(r, authority) {
+				return true
+			}
+		}
+	}
+	return false
 }

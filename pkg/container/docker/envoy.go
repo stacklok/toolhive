@@ -539,22 +539,70 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 		}
 		return policies
 	}
+	// Build the port constraint once (shared across all host policies).
+	portPerm := portMatchPermission(out.AllowPort)
+
+	if len(out.AllowHost) == 0 && portPerm != nil {
+		// AllowPort only — any host on the listed ports.
+		policies["any-host-allowed-ports"] = envoyRBACPolicy{
+			Permissions: []envoyPermission{*portPerm},
+			Principals:  []envoyPrincipal{{Any: true}},
+		}
+		return policies
+	}
+
 	for _, host := range out.AllowHost {
-		policies[host] = envoyRBACPolicy{
-			Permissions: []envoyPermission{
-				{
-					Header: &envoyHeaderMatcher{
-						Name: ":authority",
-						StringMatch: &envoyStringMatch{
-							SafeRegex: &envoySafeRegex{Regex: hostMatchRegex(host)},
-						},
-					},
-				},
+		hostPerm := envoyPermission{
+			Header: &envoyHeaderMatcher{
+				Name:        ":authority",
+				StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: hostMatchRegex(host)}},
 			},
-			Principals: []envoyPrincipal{{Any: true}},
+		}
+		var perms []envoyPermission
+		if portPerm != nil {
+			// AllowHost + AllowPort: both must match (AND semantics within a policy).
+			// The host regex already tolerates an optional ":port" suffix; the port
+			// permission anchors it to exactly the listed port numbers, matching
+			// Squid's "allowed_ports AND allowed_dsts" ACL combination.
+			perms = []envoyPermission{hostPerm, *portPerm}
+		} else {
+			// AllowHost only — any port (matches original behaviour).
+			perms = []envoyPermission{hostPerm}
+		}
+		policies[host] = envoyRBACPolicy{
+			Permissions: perms,
+			Principals:  []envoyPrincipal{{Any: true}},
 		}
 	}
 	return policies
+}
+
+// portMatchPermission returns an envoyPermission that matches the :authority
+// port suffix against the given allowed ports, or nil when the list is empty
+// (meaning no port constraint). The permission uses an OR of exact port-suffix
+// matchers (":80", ":443", …) so it fires when the authority ends with any of
+// the allowed ports — covering both plain HTTP and HTTPS CONNECT, where the
+// authority always carries the port. Hosts accessed via plain HTTP without an
+// explicit port (authority = "example.com") are NOT matched by this permission,
+// which is conservative: if a caller specifies AllowPort they intend to
+// constrain traffic to those ports.
+func portMatchPermission(ports []int) *envoyPermission {
+	if len(ports) == 0 {
+		return nil
+	}
+	rules := make([]envoyPermission, 0, len(ports))
+	for _, p := range ports {
+		rules = append(rules, envoyPermission{
+			Header: &envoyHeaderMatcher{
+				Name:        ":authority",
+				StringMatch: &envoyStringMatch{Suffix: ":" + strconv.Itoa(p)},
+			},
+		})
+	}
+	if len(rules) == 1 {
+		return &rules[0]
+	}
+	return &envoyPermission{OrRules: &envoyOrRules{Rules: rules}}
 }
 
 // hostMatchRegex builds an anchored, case-insensitive RE2 pattern that matches

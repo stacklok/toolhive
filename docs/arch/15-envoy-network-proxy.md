@@ -44,21 +44,25 @@ Envoy's `HttpConnectionManager` supports multiple listeners in a single process.
 The egress forward proxy (`:3128`) and ingress reverse proxy share the same Envoy
 instance, the same access logs, and the same lifecycle.
 
-### L3 + L7 enforcement
+### L7 authority-based enforcement
 
-Squid operates at L7 only — it can match destination hostnames via `dstdomain`
-ACLs but cannot match by IP address in a reliable, port-independent way.
+Squid matches destination hostnames via `dstdomain` ACLs and destination IPs via
+`dst` ACLs. Envoy, running as a forward proxy, enforces the equivalent controls
+at L7 by matching the HTTP `:authority` header.
 
-Envoy's RBAC filter supports:
-- **`destination_ip`** — CIDR match at L3/L4, applied before the request is
-  parsed as HTTP. This catches direct-IP connections that bypass DNS.
-- **Header match on `:authority`** — L7 match on the CONNECT target or HTTP
-  Host header, equivalent to Squid's `dstdomain`.
+Envoy's RBAC filter is used for both allow and deny decisions:
+- **Header match on `:authority`** — L7 match on the forward-proxy target for
+  both plain HTTP requests and HTTPS CONNECT tunnels. This is the authority the
+  client asks the proxy to reach, so a single match covers hostnames *and* IP
+  literals presented as the CONNECT target.
 
-ToolHive combines both layers: outbound traffic is blocked at L3 for known IP
-ranges and at L7 for hostname patterns. The `Internal: true` Docker network
-remains the fail-closed backstop for non-cooperative traffic that ignores the
-proxy entirely.
+Note that RBAC `destination_ip` is **not** usable for target filtering in a
+forward proxy: `destination_ip` resolves to Envoy's own listener socket (the
+address the client connected to), not the proxied target, so a CIDR match on it
+is inert. All target enforcement therefore happens through `:authority` regexes,
+which mirror Squid's `dstdomain`/`dst` denies. The `Internal: true` Docker
+network remains the fail-closed backstop for non-cooperative traffic that ignores
+the proxy entirely.
 
 ### Proper dynamic forward proxy
 
@@ -107,18 +111,28 @@ listener and iptables rules that Envoy handles cleanly.
 ```
 HTTP_PROXY / HTTPS_PROXY → Envoy :3128
   └── HCM (upgrade: CONNECT)
-        ├── [optional] RBAC DENY  — docker gateway IP (L3) + hostnames (L7)
+        ├── [optional] RBAC DENY  — docker gateway (:authority: IP literal + hostnames)
         ├── RBAC ALLOW            — outbound allowlist (or allow-all)
         ├── dynamic_forward_proxy — per-request DNS + CONNECT tunnel
         └── router
 ```
 
 The RBAC filters are evaluated top-to-bottom. The gateway DENY filter is present
-unless `--allow-docker-gateway` is set; it blocks:
-- The resolved Docker bridge gateway IP as a /32 CIDR (`destination_ip`)
-- `host.docker.internal` and `gateway.docker.internal` as `:authority` prefix
-  matches (covers both plain HTTP and HTTPS CONNECT where authority includes the
-  port, e.g. `host.docker.internal:443`)
+unless `--allow-docker-gateway` is set. It blocks the Docker gateway purely at
+L7, by matching the `:authority` header (the forward-proxy target for both plain
+HTTP and HTTPS CONNECT) against anchored, case-insensitive, port-tolerant
+regexes for:
+- The resolved Docker bridge gateway IP literal (e.g. `172.17.0.1`, with an
+  optional `:port`)
+- The Docker-internal hostnames `host.docker.internal` and
+  `gateway.docker.internal` (with an optional `:port`, so HTTPS CONNECT
+  authorities such as `host.docker.internal:443` match too)
+
+There is deliberately no `destination_ip`/L3 CIDR component: as noted above, a
+forward proxy's `destination_ip` is Envoy's own listener, so it would never match
+the gateway. Matching the IP literal in `:authority` is what actually catches a
+client that connects directly to the gateway address, giving parity with Squid's
+combined `dst`/`dstdomain` denies.
 
 The ALLOW filter implements the permission profile's `Outbound` rules:
 - `InsecureAllowAll: true` → single wildcard policy (`any: true`)
@@ -132,6 +146,15 @@ The ALLOW filter implements the permission profile's `Outbound` rules:
 
 This preserves parity with the existing Squid backend so that permission
 profiles written for Squid's `dstdomain` syntax behave identically under Envoy.
+
+When `--allow-docker-gateway` is set, ToolHive not only omits the gateway DENY
+filter but also injects explicit ALLOW policies for the gateway (the IP literal
+and both Docker-internal hostnames, matched the same way as the deny). This is
+required because the ALLOW filter is default-deny: under a non-permissive profile
+(one without `InsecureAllowAll`), simply dropping the deny would leave the
+gateway unreachable, since nothing in the allowlist would match it. The explicit
+ALLOW entries ensure the gateway is actually permitted rather than merely
+un-denied.
 
 ### Ingress listener (`0.0.0.0:<port>` — reverse proxy)
 
@@ -161,7 +184,12 @@ admin API being accessible from other containers.
 2. The file is bind-mounted read-only into the Envoy container at
    `/etc/envoy/envoy.json`.
 3. Envoy reads it once at startup.
-4. The file is cleaned up when ToolHive removes the workload.
+
+The bootstrap file is **not** removed when the workload is torn down — there is
+no cleanup hook for it today. The only removal path is a best-effort cleanup if
+generation fails partway through writing. As a result, a bootstrap file persists
+in the OS temp directory (at mode `0600`) for the lifetime of the host until the
+OS reclaims the temp directory. This is a known limitation (see below).
 
 ## Selection
 
@@ -188,7 +216,7 @@ backend is stable.
 | HTTPS CONNECT tunnelling | ✓ | ✓ |
 | TLS inspection | ✗ | ✗ |
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
-| L3 IP CIDR deny | Partial (`dst` ACL — DNS-resolved) | ✓ (direct packet match) |
+| Destination IP deny | ✓ (`dst` ACL) | ✓ (IP literal matched in `:authority`) |
 | Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
 | Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
 | Access logs | Per-container, text format | Unified stdout, structured |
@@ -201,6 +229,7 @@ backend is stable.
 - **Tag-pinned image.** The Envoy image is pinned by tag (`v1.32.3`), not by
   digest. A future PR should pin by digest and add a `TOOLHIVE_ENVOY_IMAGE`
   override for supply-chain policy requirements (the env var already exists).
+  Tracked in #5903.
 - **Admin interface port.** The admin API on `:9901` (loopback-only inside the
   container) is always enabled. A follow-up can disable it entirely or make it
   conditional.
@@ -213,5 +242,24 @@ backend is stable.
   non-bypassable enforcement requires iptables TPROXY + an init container with
   `CAP_NET_ADMIN` — this is Phase 2 and requires its own architecture doc.
 - **No port-based allowlist.** `AllowPort` from the permission profile is not
-  yet translated into Envoy policy. Squid honours `AllowPort`; the Envoy backend
-  currently ignores it.
+  yet translated into Envoy egress policy, so an allowlisted host is reachable on
+  any port. Squid honours `AllowPort`; the Envoy backend currently does not,
+  which is a parity gap. Tracked in #5915.
+- **IPv4-only DFP DNS.** The `dynamic_forward_proxy` cluster's DNS lookup is
+  hardcoded to `V4_ONLY`. A host that resolves only to IPv6 addresses is
+  unreachable through the Envoy egress path even if it is allowlisted.
+- **Wildcard ingress virtual host.** The ingress listener uses a wildcard virtual
+  host (`domains: ["*"]`) rather than a specific host match. This is safe because
+  it is bounded by the host-side port binding to `127.0.0.1`: only the local
+  proxy runner can reach the ingress listener, so the wildcard is not exposed
+  beyond the local machine.
+- **Bootstrap file not cleaned up.** The generated bootstrap file (mode `0600` in
+  the OS temp directory) is not removed on workload teardown; it is only removed
+  on a mid-write generation failure. Files accumulate until the OS reclaims the
+  temp directory.
+- **Deny-all on empty profile (deliberate divergence).** A nil or empty
+  permission profile produces an empty ALLOW policy map, which under Envoy's
+  default-deny RBAC means deny-all. Squid, by contrast, defaults to allow-all
+  when no rules are configured. The Envoy behaviour is fail-closed (safer) but is
+  an intentional divergence from the default backend, so a profile that is
+  permissive-by-omission under Squid will block all egress under Envoy.

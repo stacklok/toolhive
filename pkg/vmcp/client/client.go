@@ -646,6 +646,36 @@ func isAuthorizationRequired(err error) bool {
 		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
+// wrapTransportSentinelError maps mcp-go transport sentinel errors to vmcp
+// sentinel errors, returning nil when err matches none of them. Extracted to
+// keep wrapBackendError within the cyclomatic complexity limit.
+func wrapTransportSentinelError(err error, backendID string, operation string) error {
+	if errors.Is(err, transport.ErrUnauthorized) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
+	// and *transport.AuthorizationRequiredError) for 401 responses with a
+	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
+	// companion sentinel from the OAuth-handler path. Both must map to
+	// ErrAuthenticationFailed so health monitoring engages the auth-aware
+	// branch (#4935) instead of treating the probe as unhealthy (#5223).
+	if isAuthorizationRequired(err) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
+	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
+	// We cannot distinguish auth failures from routing errors without the raw status code,
+	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	if errors.Is(err, transport.ErrLegacySSEServer) {
+		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
+		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
+			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
+	}
+	return nil
+}
+
 // wrapBackendError wraps an error with the appropriate sentinel error based on error type.
 // This enables type-safe error checking with errors.Is() instead of string matching.
 //
@@ -659,8 +689,10 @@ func isAuthorizationRequired(err error) bool {
 // - errors.Is() works for checking the sentinel error (e.g., errors.Is(err, vmcp.ErrTimeout))
 // - errors.As() cannot access the underlying original error type
 // This is a deliberate trade-off due to Go's limitation of one %w per fmt.Errorf call.
-// If access to the underlying error type is needed in the future, consider implementing
-// a custom error type with multiple Unwrap() methods (Go 1.20+).
+// The single exception is ConsentRequiredError: it is wrapped via errors.Join
+// together with ErrAuthenticationFailed, so errors.As extracts the typed
+// consent payload (provider + authorize URL) while errors.Is keeps the
+// health-monitor sentinel contract.
 func wrapBackendError(err error, backendID string, operation string) error {
 	if err == nil {
 		return nil
@@ -693,28 +725,20 @@ func wrapBackendError(err error, backendID string, operation string) error {
 
 	// 4. mcp-go transport sentinel errors: check before string-based fallbacks
 	// to ensure accurate classification of protocol-level errors.
-	if errors.Is(err, transport.ErrUnauthorized) {
-		return fmt.Errorf("%w: failed to %s for backend %s: %v",
-			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	if wrapped := wrapTransportSentinelError(err, backendID, operation); wrapped != nil {
+		return wrapped
 	}
-	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
-	// and *transport.AuthorizationRequiredError) for 401 responses with a
-	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
-	// companion sentinel from the OAuth-handler path. Both must map to
-	// ErrAuthenticationFailed so health monitoring engages the auth-aware
-	// branch (#4935) instead of treating the probe as unhealthy (#5223).
-	if isAuthorizationRequired(err) {
-		return fmt.Errorf("%w: failed to %s for backend %s: %v",
-			vmcp.ErrAuthenticationFailed, operation, backendID, err)
-	}
-	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
-	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
-	// We cannot distinguish auth failures from routing errors without the raw status code,
-	// so we surface a clear message and classify as backend unavailable to allow recovery.
-	if errors.Is(err, transport.ErrLegacySSEServer) {
-		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
-		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
-			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
+
+	// 5. ConsentRequiredError: upstream provider token missing and the error
+	// carries consent context (provider + authorize URL). Checked before the
+	// plain sentinel branch so errors.As can extract the typed payload through
+	// the wrap; errors.Join preserves both ErrAuthenticationFailed (health
+	// monitors) and the ConsentRequiredError chain (tool-result rendering).
+	var consentErr *authtypes.ConsentRequiredError
+	if errors.As(err, &consentErr) {
+		return errors.Join(vmcp.ErrAuthenticationFailed,
+			fmt.Errorf("failed to %s for backend %s (upstream consent required): %w",
+				operation, backendID, err))
 	}
 
 	// 5. ErrUpstreamTokenNotFound: upstream provider token missing from identity.

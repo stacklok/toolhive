@@ -104,6 +104,16 @@ func TestAuthorizationServerCheck(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int32(code.Code_PERMISSION_DENIED), resp.GetStatus().GetCode())
 		assert.Nil(t, resp.GetOkResponse())
+
+		// Regression guard (Wave 4 consent-on-demand): the sidecar denial text
+		// stays exactly "re-consent required" with no consent URL threaded
+		// through. The agent-facing consent UX (provider + authorize URL) comes
+		// from the vMCP upstream_inject path, never from the sidecar.
+		denied := resp.GetDeniedResponse()
+		require.NotNil(t, denied)
+		assert.Contains(t, denied.GetBody(), "re-consent required")
+		assert.NotContains(t, denied.GetBody(), "authorize")
+		assert.NotContains(t, denied.GetBody(), "http")
 	})
 
 	t.Run("missing destination → deny (fail closed)", func(t *testing.T) {

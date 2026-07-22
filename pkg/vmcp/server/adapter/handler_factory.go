@@ -15,6 +15,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/compositetools"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -96,6 +97,17 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 		result, err := f.backendClient.CallTool(ctx, target, toolName, args, meta)
 		if err != nil {
 			// Only actual network/transport errors reach here now (IsError=true is handled in result)
+			var consentErr *authtypes.ConsentRequiredError
+			if errors.As(err, &consentErr) {
+				// Missing upstream consent: render the machine-detectable marker
+				// + JSON payload so the client can prompt the user to authorize
+				// and retry. This is fail-fast UX; the egress-broker sidecar
+				// remains the security enforcement point.
+				slog.Debug("upstream consent required for tool",
+					"tool", toolName, "provider", consentErr.Provider)
+				return mcp.NewToolResultError(
+					authtypes.FormatConsentRequired(consentErr.Provider, consentErr.AuthorizeURL)), nil
+			}
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				slog.Warn("backend unavailable for tool", "tool", toolName, "error", err)
 				return mcp.NewToolResultError(fmt.Sprintf("Backend unavailable: %v", err)), nil

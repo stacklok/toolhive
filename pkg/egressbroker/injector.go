@@ -105,6 +105,13 @@ func (i *CredentialInjector) Evaluate(ctx context.Context, dest Destination) Dec
 	}
 	cred, ok := creds[provider]
 	if !ok || slices.Contains(failed, provider) {
+		// Re-consent denial: this 403 is the security enforcement backstop for
+		// the case where vMCP's fail-fast consent check is bypassed (e.g. a
+		// malicious server attempting egress anyway). The agent-facing consent
+		// UX (provider + authorize URL) comes from the vMCP upstream_inject
+		// path, never from here: the denial surfaces on the server's own
+		// outbound HTTPS call, not on the vMCP channel, so no consent URL can
+		// or should be threaded through this response.
 		return deny("upstream credential unavailable; re-consent required")
 	}
 	if cred.AccessToken == "" {

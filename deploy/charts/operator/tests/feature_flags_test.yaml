@@ -30,19 +30,8 @@ tests:
           path: 'spec.template.spec.containers[0].env'
           content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "false" }
 
-  # The migrator watches cluster-scoped CRDs, so it must never be enabled in a
-  # namespace-scoped install. The chart fails the render rather than deploying a
-  # wedged operator. Pin both the rejection and the supported opt-out.
-  - it: rejects the storage version migrator in namespace scope
-    template: deployment.yaml
-    set:
-      operator.rbac.scope: namespace
-      operator.rbac.allowedNamespaces: [toolhive-system]
-      operator.features.storageVersionMigrator: true
-    asserts:
-      - failedTemplate:
-          errorPattern: "operator.features.storageVersionMigrator requires operator.rbac.scope=cluster"
-
+  # Namespace-scope + migrator enabled is tested separately in
+  # validate_features_test.yaml (suite-level set is required for failedTemplate).
   - it: allows namespace scope when the storage version migrator is disabled
     template: deployment.yaml
     set:

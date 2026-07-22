@@ -34,18 +34,19 @@ func TestBrokerPortContract(t *testing.T) {
 		"the Envoy proxy port must match the backend HTTP(S)_PROXY env the clone wiring renders")
 }
 
-// TestHealthListenerLoopbackBind performs a real loopback bind on the pinned
-// health port: newHealthServer must bind 127.0.0.1 (never a pod-external
-// interface — the handler answers unauthenticated) and serve /healthz.
-// The bind is the assertion; port conflicts skip rather than fail (another
-// listener on 15083 says nothing about where this server would have bound).
-func TestHealthListenerLoopbackBind(t *testing.T) {
+// TestHealthListenerBind performs a real bind on the pinned health port. The
+// listener must bind all interfaces (the pod IP): kubelet httpGet probes are
+// delivered to the pod IP from the node network, so a loopback-only bind makes
+// every probe fail and the container is killed at the liveness threshold
+// before it can initialize. The bind is the assertion; port conflicts skip
+// rather than fail (another listener on 15083 says nothing about the bind).
+func TestHealthListenerBind(t *testing.T) {
 	t.Parallel()
 
 	h, _ := healthFixture(t, nil)
 	var loadedFlag atomic.Bool
 	loadedFlag.Store(true)
-	srv := newHealthServer(h.ca, &loadedFlag, h.ping)
+	srv := newHealthServerHandler(&healthServer{ca: h.ca, policyLoaded: &loadedFlag, ping: h.ping})
 
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
@@ -53,12 +54,11 @@ func TestHealthListenerLoopbackBind(t *testing.T) {
 	}
 	defer ln.Close()
 
-	// The bound address must be loopback-only.
-	host, _, err := net.SplitHostPort(ln.Addr().String())
+	// The bound address must be the wildcard (all interfaces) so kubelet
+	// probes delivered to the pod IP reach it.
+	_, port, err := net.SplitHostPort(ln.Addr().String())
 	require.NoError(t, err)
-	ip := net.ParseIP(host)
-	require.NotNil(t, ip, "bound host %q is not an IP", host)
-	assert.True(t, ip.IsLoopback(), "health listener must bind loopback only, got %s", host)
+	assert.Equal(t, "15083", port)
 
 	// Serve one real request through the bound listener.
 	go func() { _ = srv.Serve(ln) }()

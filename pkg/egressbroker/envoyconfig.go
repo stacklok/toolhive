@@ -114,7 +114,10 @@ func (p EnvoyConfigParams) Validate() error {
 //   - upstream_validation_context pins trust to the system CA bundle — the
 //     bump CA is only ever presented to the backend container, never used to
 //     validate real upstreams.
-const envoyBootstrapTemplate = `static_resources:
+const envoyBootstrapTemplate = `node:
+  id: thv-egress-sidecar
+  cluster: thv-untrusted-egress
+static_resources:
   listeners:
   - name: https_proxy
     address:
@@ -169,8 +172,6 @@ const envoyBootstrapTemplate = `static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
               failure_mode_allow: false
-              with_request_body:
-                max_request_bytes: 0
               grpc_service:
                 envoy_grpc:
                   cluster_name: egress_broker
@@ -259,6 +260,12 @@ const envoyBootstrapTemplate = `static_resources:
 // raw yaml.Nodes (gopkg.in/yaml.v3 cannot decode into *yaml.Node sequence
 // elements, so every raw list is a single wrapping node).
 type bootstrapDoc struct {
+	// Node carries the Envoy node id/cluster required by the SDS API. Kept as
+	// a yaml.Node (not typed fields) so it round-trips verbatim through the
+	// unmarshal/mutate/marshal render path — a typed struct that omits it
+	// silently drops the section and Envoy rejects the bootstrap with
+	// "node 'id' and 'cluster' are required".
+	Node            yaml.Node `yaml:"node"`
 	StaticResources struct {
 		Listeners []struct {
 			Name    string `yaml:"name"`
@@ -389,7 +396,7 @@ func buildVirtualHosts(allowedHosts []string) yaml.Node {
 						"upgrade_configs": []any{
 							map[string]any{
 								"upgrade_type":   "CONNECT",
-								"connect_config": map[string]any{"terminate_connect": true},
+								"connect_config": map[string]any{},
 							},
 						},
 					},

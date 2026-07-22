@@ -634,6 +634,22 @@ func TestTokenMap_ConcurrencyFlood(t *testing.T) {
 	for i := 0; i < 8*maxEntries; i++ {
 		ids = append(ids, fmt.Sprintf("flood-%d", i))
 	}
+	// Phase 1: concurrent Record flood (no racing Lookups — a racing Lookup can
+	// legitimately consume an "oldest" entry, freeing capacity so it is NOT
+	// evicted, which made the old assertion racy by design). Bounded-ness and
+	// oldest-first eviction are only deterministic once the flood settles.
+	for _, id := range ids {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			m.Record(id, testHeaderVal, "github")
+		}(id)
+	}
+	waitWithTimeout(t, &wg, "record flood")
+
+	assert.LessOrEqual(t, m.Len(), maxEntries, "the map must stay bounded under flood")
+	// Phase 2: concurrent Record/Lookup mix must never panic and must keep the
+	// map bounded — the only invariants that hold while Lookups consume.
 	for _, id := range ids {
 		wg.Add(2)
 		go func(id string) {
@@ -642,20 +658,26 @@ func TestTokenMap_ConcurrencyFlood(t *testing.T) {
 		}(id)
 		go func(id string) {
 			defer wg.Done()
-			_, _ = m.Lookup(id) // racing a record of the same id is fine
+			_, _ = m.Lookup(id)
 		}(id)
 	}
 	waitWithTimeout(t, &wg, "record/lookup flood")
+	assert.LessOrEqual(t, m.Len(), maxEntries, "the map must stay bounded under a record/lookup mix")
 
-	assert.LessOrEqual(t, m.Len(), maxEntries, "the map must stay bounded under flood")
-	// The oldest ids must have been evicted; the newest survive.
+	// Phase 3: a SEQUENTIAL record flood evicts oldest-first — this is the only
+	// ordering that is deterministic (concurrent records acquire the map lock
+	// in arbitrary order, so "the oldest N" is not well-defined under a flood).
+	// Drive it from this goroutine, not spawned ones.
+	for _, id := range ids {
+		m.Record(id+"-fresh", testHeaderVal, "github")
+	}
 	for _, id := range ids[:maxEntries] {
-		_, ok := m.Lookup(id)
-		assert.False(t, ok, "oldest entry %s must be evicted", id)
+		_, ok := m.Lookup(id + "-fresh")
+		assert.False(t, ok, "oldest entry %s-fresh must be evicted", id)
 	}
 	survivors := 0
 	for _, id := range ids[len(ids)-maxEntries:] {
-		if _, ok := m.Lookup(id); ok {
+		if _, ok := m.Lookup(id + "-fresh"); ok {
 			survivors++
 		}
 	}

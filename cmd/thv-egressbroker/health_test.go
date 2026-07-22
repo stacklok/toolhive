@@ -87,7 +87,7 @@ func TestHealthz(t *testing.T) {
 		t.Parallel()
 		h, _ := healthFixture(t, nil)
 		var loadedFlag atomic.Bool
-		srv := newHealthServer(h.ca, &loadedFlag, h.ping)
-		assert.Equal(t, "127.0.0.1:15083", srv.Addr)
+		srv := newHealthServerHandler(&healthServer{ca: h.ca, policyLoaded: &loadedFlag, ping: h.ping})
+		assert.Equal(t, ":15083", srv.Addr)
 	})
 }

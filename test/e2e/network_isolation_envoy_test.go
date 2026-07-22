@@ -8,10 +8,6 @@ package e2e_test
 // as the Squid suite in network_isolation_test.go — egress allowlist, inbound
 // Host gating, docker-gateway deny/allow — plus Envoy-specific guards such as
 // the route-timeout regression test.
-//
-// All tests are currently skipped pending resolution of #5922 (Envoy isolated
-// server does not reach ready state on Linux Docker Engine). Remove the
-// BeforeEach(Skip(...)) call to activate them once #5922 is fixed.
 
 import (
 	"context"
@@ -39,11 +35,6 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 	)
 
 	BeforeEach(func() {
-		// TODO(#5922): Remove this skip once Envoy isolated-server readiness on
-		// Linux Docker Engine is fixed. The tests are correct; the backend is not
-		// yet ready on that platform.
-		Skip("Envoy isolated-server readiness on Linux Docker Engine is broken — see #5922")
-
 		config = e2e.NewTestConfig()
 
 		var err error

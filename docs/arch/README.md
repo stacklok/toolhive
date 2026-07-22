@@ -120,6 +120,13 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Component inventory and per-client dropped-component warnings
     - Name/repo consistency check, extraction safety, TOML mutation under file lock
 
+15. **[Envoy Network Proxy](15-envoy-network-proxy.md)**
+    - Experimental Envoy backend (`TOOLHIVE_NETWORK_PROXY=envoy`) replacing two Squid containers with one
+    - Egress forward proxy and ingress reverse proxy as separate listeners in a single process
+    - L7 `:authority`-based RBAC allow/deny and `dstdomain` parity (incl. Docker-gateway blocking)
+    - Dynamic forward proxy with per-request DNS and native HTTPS CONNECT tunnelling
+    - Squid-vs-Envoy comparison and known limitations (`AllowPort` gap, V4_ONLY DNS, deny-all on empty profile)
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**

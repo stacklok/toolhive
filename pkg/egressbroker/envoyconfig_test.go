@@ -275,7 +275,10 @@ func TestRenderEnvoyBootstrap(t *testing.T) {
 			connect := routes[0].(map[string]any)
 			upgrade := dig(t, connect, "route", "upgrade_configs").([]any)[0].(map[string]any)
 			assert.Equal(t, "CONNECT", upgrade["upgrade_type"])
-			assert.Equal(t, true, dig(t, upgrade, "connect_config").(map[string]any)["terminate_connect"])
+			// terminate_connect was removed: it is a v1.37 field the pinned
+			// Envoy v1.36 rejects (bootstrap invalid). Presence of connect_config
+			// (empty) is the bump marker.
+			assert.Contains(t, upgrade, "connect_config")
 			assert.Equal(t, "dynamic_forward_proxy_cluster",
 				dig(t, connect, "route").(map[string]any)["cluster"])
 		}
@@ -408,7 +411,6 @@ func TestBootstrapMentionsSDSFetchWiring(t *testing.T) {
 		"tls_certificate_sds_secret_configs",
 		"tls_inspector",
 		"sni_dynamic_forward_proxy",
-		"terminate_connect: true",
 		"failure_mode_allow: false",
 	} {
 		assert.Contains(t, string(data), want)

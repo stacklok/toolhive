@@ -411,16 +411,20 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 		pod := newPod()
 		broker := findContainer(t, pod, brokerContainerName)
 
+		// Liveness targets /livez (dependency-free, served from process start)
+		// so a slow Redis/CA init cannot kill a healthy broker; readiness
+		// targets /healthz (gated on CA/policy/Redis).
 		for name, probe := range map[string]*corev1.Probe{
 			"readiness": broker.ReadinessProbe,
 			"liveness":  broker.LivenessProbe,
 		} {
 			require.NotNil(t, probe, "%s probe must be set", name)
 			require.NotNil(t, probe.HTTPGet, "%s probe must be httpGet", name)
-			assert.Equal(t, "/healthz", probe.HTTPGet.Path)
 			assert.Equal(t, int32(BrokerHealthPort), probe.HTTPGet.Port.IntVal)
 			assert.Equal(t, int32(5), probe.PeriodSeconds, "%s probe period", name)
 		}
+		assert.Equal(t, "/healthz", broker.ReadinessProbe.HTTPGet.Path)
+		assert.Equal(t, "/livez", broker.LivenessProbe.HTTPGet.Path)
 		assert.Equal(t, int32(3), broker.LivenessProbe.FailureThreshold)
 
 		// Envoy and the backend container get no probes (the broker's health

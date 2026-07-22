@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/egressbroker"
@@ -163,7 +166,15 @@ func (r *MCPServerReconciler) ensureUntrustedResources(ctx context.Context, m *m
 	if err := r.ensureEgressPolicyConfigMap(ctx, m, policyDoc); err != nil {
 		return fmt.Errorf("failed to ensure egress policy ConfigMap: %w", err)
 	}
-	if err := r.ensureUntrustedNetworkPolicy(ctx, m, dialAllowlist); err != nil {
+	// The token store is broker infrastructure, not a credential destination:
+	// the pod's NetworkPolicy must let the sidecar reach it or every
+	// credential lookup fails (the pod is otherwise locked to loopback +
+	// kube-dns + allowedHosts). Resolve the fronting vMCP's Redis address and
+	// add it to the egress allowlist. Absent/unresolvable = fail closed (the
+	// broker already denies without a token store, and a pod that can reach
+	// nothing but its sidecar is the safe posture).
+	tokenStoreCIDRs, tokenStorePort := r.resolveUntrustedTokenStoreEgress(ctx, m)
+	if err := r.ensureUntrustedNetworkPolicy(ctx, m, dialAllowlist, tokenStoreCIDRs, tokenStorePort); err != nil {
 		return fmt.Errorf("failed to ensure egress NetworkPolicy: %w", err)
 	}
 	if err := r.stampUntrustedCAGeneration(ctx, m, generation); err != nil {
@@ -568,9 +579,9 @@ func (r *MCPServerReconciler) ensureEgressPolicyConfigMap(
 // load-bearing controls are the sidecar's destination binding (D5) and
 // per-dial IP validation (D7).
 func (r *MCPServerReconciler) ensureUntrustedNetworkPolicy(
-	ctx context.Context, m *mcpv1beta1.MCPServer, dialAllowlist []string,
+	ctx context.Context, m *mcpv1beta1.MCPServer, dialAllowlist, tokenStoreCIDRs []string, tokenStorePort *intstr.IntOrString,
 ) error {
-	desired := desiredUntrustedNetworkPolicy(m, dialAllowlist)
+	desired := desiredUntrustedNetworkPolicy(m, dialAllowlist, tokenStoreCIDRs, tokenStorePort)
 	if err := controllerutil.SetControllerReference(m, desired, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set owner reference on egress NetworkPolicy: %w", err)
 	}
@@ -609,9 +620,111 @@ const (
 	dnsPodSelectorName = "kube-dns"
 )
 
+// resolveUntrustedTokenStoreEgress finds the VirtualMCPServer fronting this
+// workload's group and resolves its auth-server Redis address to CIDRs for
+// the NetworkPolicy egress allowlist. Returns (nil, nil) when no vMCP fronts
+// the group or its Redis is not standalone/cluster-addressable — in both
+// cases the broker cannot function anyway, so the pod correctly fails closed
+// with no token-store rule. The port is returned separately so the NP rule
+// can be scoped to the Redis port only.
+func (r *MCPServerReconciler) resolveUntrustedTokenStoreEgress(
+	ctx context.Context, m *mcpv1beta1.MCPServer,
+) (cidrs []string, port *intstr.IntOrString) {
+	if m.Spec.GroupRef == nil {
+		return nil, nil
+	}
+	vmcps := &mcpv1beta1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcps, client.InNamespace(m.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for untrusted token-store egress")
+		return nil, nil
+	}
+	groupName := m.Spec.GroupRef.Name
+	for i := range vmcps.Items {
+		vmcp := &vmcps.Items[i]
+		if vmcp.Spec.GroupRef.GetName() != groupName {
+			continue
+		}
+		as := vmcp.Spec.AuthServerConfig
+		if as == nil || as.Storage == nil ||
+			as.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis ||
+			as.Storage.Redis == nil || as.Storage.Redis.Addr == "" {
+			return nil, nil
+		}
+		host, portStr, err := net.SplitHostPort(as.Storage.Redis.Addr)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "untrusted token-store addr is not host:port",
+				"addr", as.Storage.Redis.Addr)
+			return nil, nil
+		}
+		portNum, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, nil
+		}
+		p := intstr.FromInt32(int32(portNum)) // #nosec G109 G115 -- portNum is a validated 0-65535 TCP port, fits int32
+
+		// NetworkPolicy egress is evaluated against the packet's destination
+		// AFTER kube-proxy DNAT — i.e. the backend POD IP, not the Service
+		// ClusterIP. So for an in-cluster Redis (a Service DNS name) we must
+		// allow the Service's *endpoint* IPs, or the rule silently never
+		// matches and the broker cannot reach the token store. For an external
+		// Redis (a routable host/IP) fall back to plain DNS resolution.
+		if svcCIDRs := r.resolveServiceEndpointCIDRs(ctx, m.Namespace, host); len(svcCIDRs) > 0 {
+			return svcCIDRs, &p
+		}
+		ips, err := resolveEgressHost(host)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "untrusted token-store host does not resolve",
+				"host", host)
+			return nil, nil
+		}
+		for _, ip := range ips {
+			cidrs = append(cidrs, ip.String()+"/32")
+		}
+		return cidrs, &p
+	}
+	return nil, nil
+}
+
+// resolveServiceEndpointCIDRs returns the endpoint pod IPs (as /32 CIDRs) of
+// the Kubernetes Service named by host, when host is a cluster Service name
+// (either bare "redis" or "redis.namespace[.svc.cluster.local]"). Returns nil
+// when host is not a Service name this operator can resolve (e.g. an external
+// host), so callers fall back to DNS.
+func (r *MCPServerReconciler) resolveServiceEndpointCIDRs(
+	ctx context.Context, defaultNS, host string,
+) []string {
+	name, ns := host, defaultNS
+	if i := strings.Index(host, "."); i >= 0 {
+		name = host[:i]
+		if parts := strings.Split(host, "."); len(parts) > 1 && parts[1] != "svc" {
+			ns = parts[1]
+		}
+	}
+	slices := &discoveryv1.EndpointSliceList{}
+	if err := r.List(ctx, slices,
+		client.InNamespace(ns),
+		client.MatchingLabels{discoveryv1.LabelServiceName: name}); err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, es := range slices.Items {
+		for _, ep := range es.Endpoints {
+			for _, addr := range ep.Addresses {
+				if _, dup := seen[addr]; !dup {
+					seen[addr] = struct{}{}
+					out = append(out, addr+"/32")
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // desiredUntrustedNetworkPolicy renders the egress lockdown.
 func desiredUntrustedNetworkPolicy(
-	m *mcpv1beta1.MCPServer, dialAllowlist []string,
+	m *mcpv1beta1.MCPServer, dialAllowlist, tokenStoreCIDRs []string, tokenStorePort *intstr.IntOrString,
 ) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
@@ -626,6 +739,49 @@ func desiredUntrustedNetworkPolicy(
 			networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
 	}
 
+	egressRules := []networkingv1.NetworkPolicyEgressRule{
+		// Loopback: the in-pod sidecar (Envoy + broker).
+		{To: []networkingv1.NetworkPolicyPeer{
+			{IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.1/32"}},
+			{IPBlock: &networkingv1.IPBlock{CIDR: "::1/128"}},
+		}},
+		// DNS: restricted to the cluster DNS pods (kube-system +
+		// k8s-app=kube-dns) — never 0.0.0.0/0:53, which would let the
+		// backend run or reach an arbitrary DNS server to smuggle data
+		// or resolve attacker-controlled names off-policy.
+		{
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					"kubernetes.io/metadata.name": dnsNamespaceSelectorName,
+				}},
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					"k8s-app": dnsPodSelectorName,
+				}},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &udp, Port: &dnsPort},
+				{Protocol: &tcp, Port: &dnsPort},
+			},
+		},
+		destinationRule,
+	}
+
+	// Token store (broker infrastructure): the sidecar must reach the
+	// auth-server Redis or every credential lookup fails. Scoped to the Redis
+	// port only. Added only when resolvable (fail-closed otherwise — the pod
+	// already cannot inject, and confining it is the safe posture).
+	if len(tokenStoreCIDRs) > 0 && tokenStorePort != nil {
+		tcp2 := corev1.ProtocolTCP
+		rule := networkingv1.NetworkPolicyEgressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp2, Port: tokenStorePort}},
+		}
+		for _, cidr := range tokenStoreCIDRs {
+			rule.To = append(rule.To,
+				networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
+		}
+		egressRules = append(egressRules, rule)
+	}
+
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      m.Name + untrustedNetworkPolicySuffix,
@@ -638,32 +794,7 @@ func desiredUntrustedNetworkPolicy(
 				"toolhive.stacklok.dev/mcpserver-uid": string(m.UID),
 			}},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
-				// Loopback: the in-pod sidecar (Envoy + broker).
-				{To: []networkingv1.NetworkPolicyPeer{
-					{IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.1/32"}},
-					{IPBlock: &networkingv1.IPBlock{CIDR: "::1/128"}},
-				}},
-				// DNS: restricted to the cluster DNS pods (kube-system +
-				// k8s-app=kube-dns) — never 0.0.0.0/0:53, which would let the
-				// backend run or reach an arbitrary DNS server to smuggle data
-				// or resolve attacker-controlled names off-policy.
-				{
-					To: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": dnsNamespaceSelectorName,
-						}},
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-							"k8s-app": dnsPodSelectorName,
-						}},
-					}},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &udp, Port: &dnsPort},
-						{Protocol: &tcp, Port: &dnsPort},
-					},
-				},
-				destinationRule,
-			},
+			Egress:      egressRules,
 		},
 	}
 }

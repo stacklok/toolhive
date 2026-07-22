@@ -289,9 +289,10 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
 		Name:    caSeedInitContainerName,
 		Image:   images.EgressBroker,
-		Command: []string{"sh", "-c"},
+		Command: []string{"/ko-app/thv-egressbroker", "seed-ca"},
 		Args: []string{
-			fmt.Sprintf("cp /bundle/%s /ca/%s && chmod 0444 /ca/%s", caKeyCert, caFileName, caFileName),
+			fmt.Sprintf("/bundle/%s", caKeyCert),
+			fmt.Sprintf("/ca/%s", caFileName),
 		},
 		Resources: caSeedResources,
 		VolumeMounts: []corev1.VolumeMount{
@@ -311,9 +312,14 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 	// Envoy data plane: consumes the broker-rendered bootstrap.
 	pod.Spec.Containers = append(pod.Spec.Containers,
 		corev1.Container{
-			Name:      envoyContainerName,
-			Image:     images.EnvoyProxy,
-			Command:   []string{"envoy", "-c", envoyConfigPath + "/envoy.yaml"},
+			Name:  envoyContainerName,
+			Image: images.EnvoyProxy,
+			// Wait for the broker to render the bootstrap before starting; the
+			// broker writes it at startup and Envoy crashes on a missing file.
+			Command: []string{"sh", "-c"},
+			Args: []string{
+				fmt.Sprintf("until [ -f %s/envoy.yaml ]; do sleep 0.2; done; exec envoy -c %s/envoy.yaml", envoyConfigPath, envoyConfigPath),
+			},
 			Resources: scaledResources(defaultEnvoyResources, res.CPUMultiplier, res.MemoryMultiplier),
 			Ports: []corev1.ContainerPort{
 				{Name: "egress-proxy", ContainerPort: proxyPort},
@@ -418,7 +424,10 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/healthz",
+					// /livez is dependency-free (process alive), served from
+					// process start — a slow Redis/CA init must not let
+					// liveness kill a healthy broker mid-startup.
+					Path: "/livez",
 					Port: intstr.FromInt32(BrokerHealthPort),
 				},
 			},

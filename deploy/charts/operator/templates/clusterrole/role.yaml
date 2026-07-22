@@ -25,6 +25,8 @@ rules:
   resources:
   - pods
   verbs:
+  - create
+  - delete
   - get
   - list
   - watch
@@ -80,6 +82,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - events.k8s.io

@@ -224,9 +224,8 @@ func (c *Client) DeployWorkload(
 		slog.Debug("skipping external network creation for custom network mode", "network_mode", permissionConfig.NetworkMode)
 	}
 
-	// For non-stdio isolated workloads, extract the upstream port before setting
-	// up proxy containers so that the ingress proxy can be configured before the
-	// MCP container is created.
+	// For non-stdio isolated workloads, extract the upstream port so the ingress
+	// proxy can be configured. Done here so a bad exposed-ports config fails fast.
 	var upstreamPort int
 	if transportType != "stdio" && effectiveIsolation {
 		upstreamPort, err = extractFirstPort(options)
@@ -236,7 +235,12 @@ func (c *Client) DeployWorkload(
 	}
 
 	networkIsolation := false
-	var proxyRes proxyResult
+	// pspec and egress are populated in the isolation block and reused by
+	// SetupIngress after the MCP container is created.
+	var (
+		pspec  proxySpec
+		egress egressResult
+	)
 	if effectiveIsolation {
 		networkIsolation = true
 
@@ -257,9 +261,7 @@ func (c *Client) DeployWorkload(
 			return 0, fmt.Errorf("failed to create dns container: %w", err)
 		}
 
-		// SetupProxies is called before createMcpContainer so that the ingress
-		// proxy is ready before the MCP container starts.
-		proxyRes, err = c.proxy.SetupProxies(ctx, proxySpec{
+		pspec = proxySpec{
 			WorkloadName:       name,
 			Permissions:        permissionProfile.Network,
 			AllowDockerGateway: options != nil && options.AllowDockerGateway,
@@ -268,11 +270,15 @@ func (c *Client) DeployWorkload(
 			UpstreamPort:       upstreamPort,
 			AttachStdio:        attachStdio,
 			Endpoints:          externalEndpointsConfig,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("failed to set up network proxy: %w", err)
 		}
-		envVars = mergeEnvVars(envVars, proxyRes.EnvVars)
+
+		// SetupEgress runs before createMcpContainer so its env vars can be
+		// injected into the workload and the egress proxy has a head start.
+		egress, err = c.proxy.SetupEgress(ctx, pspec)
+		if err != nil {
+			return 0, fmt.Errorf("failed to set up egress proxy: %w", err)
+		}
+		envVars = mergeEnvVars(envVars, egress.EnvVars)
 	} else {
 		networkName = ""
 	}
@@ -317,8 +323,13 @@ func (c *Client) DeployWorkload(
 		return 0, err // extractFirstPort already wraps the error with context.
 	}
 	if effectiveIsolation {
-		// The ingress host port was already determined by SetupProxies.
-		hostPort = proxyRes.IngressHostPort
+		// SetupIngress runs after createMcpContainer so the reverse-proxy upstream
+		// resolves on first probe (a squid ingress created earlier would cache the
+		// negative DNS lookup and never recover).
+		hostPort, err = c.proxy.SetupIngress(ctx, pspec, egress)
+		if err != nil {
+			return 0, fmt.Errorf("failed to set up ingress proxy: %w", err)
+		}
 	}
 
 	// NOTE: this is a hack to get the final port for the workload.

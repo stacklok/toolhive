@@ -25,11 +25,26 @@ import (
 // True L3/L4 traffic interception is a separate Phase 2 concern and is not
 // addressed here.
 type networkProxy interface {
-	// SetupProxies creates egress (and, for non-stdio transports, ingress) proxy
-	// containers for the workload described by spec. It returns a proxyResult
-	// containing the host-side ingress port (0 for stdio) and any environment
-	// variables that must be injected into the MCP container.
-	SetupProxies(ctx context.Context, spec proxySpec) (proxyResult, error)
+	// SetupEgress provisions egress enforcement BEFORE the MCP container is
+	// created and returns the environment variables to inject into the workload
+	// (HTTP_PROXY etc.). A per-container backend (squid) creates its egress
+	// container here; a consolidated backend (envoy) creates its single
+	// dual-listener container here and reserves the ingress port, carried back in
+	// the egressResult for SetupIngress to return.
+	//
+	// It must run before createMcpContainer so the returned env vars land in the
+	// workload's environment and the egress proxy has a head start.
+	SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error)
+
+	// SetupIngress finalizes the ingress proxy AFTER the MCP container exists and
+	// returns the host-side ingress port (0 for stdio / UpstreamPort==0). A
+	// per-container backend (squid) creates its ingress container here — now that
+	// the MCP container's hostname resolves, avoiding a cached negative DNS lookup
+	// that would leave the reverse proxy permanently unable to reach the upstream.
+	// A consolidated backend returns the port it reserved in SetupEgress.
+	//
+	// It must run after createMcpContainer.
+	SetupIngress(ctx context.Context, spec proxySpec, egress egressResult) (int, error)
 }
 
 // proxySpec contains all the parameters needed to set up proxy containers for
@@ -58,11 +73,10 @@ type proxySpec struct {
 	Endpoints map[string]*network.EndpointSettings
 }
 
-// proxyResult is the output of a successful SetupProxies call.
-type proxyResult struct {
-	// IngressHostPort is the host-side port bound by the ingress proxy. It is
-	// 0 when no ingress proxy was created (stdio transport or UpstreamPort==0).
-	IngressHostPort int
+// egressResult is the output of a successful SetupEgress call. It is passed to
+// SetupIngress so a consolidated backend can carry state (e.g. a reserved
+// ingress port) forward without holding per-workload state on the shared proxy.
+type egressResult struct {
 	// EnvVars contains environment variables that must be merged into the MCP
 	// container's environment (e.g. HTTP_PROXY, HTTPS_PROXY).
 	EnvVars map[string]string

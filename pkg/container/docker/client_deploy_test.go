@@ -111,31 +111,39 @@ func (f *fakeDeployOps) createMcpContainer(
 
 // fakeNetworkProxy implements networkProxy for testing DeployWorkload without real proxy containers.
 type fakeNetworkProxy struct {
-	setupCalled  bool
-	capturedSpec proxySpec
-	result       proxyResult
-	err          error
+	setupCalled   bool // SetupEgress was called
+	ingressCalled bool // SetupIngress was called
+	capturedSpec  proxySpec
+	ingressPort   int // returned by SetupIngress
+	err           error
 	// callOrder tracks cross-component ordering when shared with fakeDeployOps.
 	callOrder *[]string
 }
 
-func (f *fakeNetworkProxy) SetupProxies(_ context.Context, spec proxySpec) (proxyResult, error) {
+func (f *fakeNetworkProxy) SetupEgress(_ context.Context, spec proxySpec) (egressResult, error) {
 	if f.callOrder != nil {
-		*f.callOrder = append(*f.callOrder, "SetupProxies")
+		*f.callOrder = append(*f.callOrder, "SetupEgress")
 	}
 	f.setupCalled = true
 	f.capturedSpec = spec
-
+	if f.err != nil {
+		return egressResult{}, f.err
+	}
 	// Return realistic env vars based on spec so MCP container env var assertions remain meaningful.
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
-	result := proxyResult{
-		IngressHostPort: f.result.IngressHostPort,
-		EnvVars:         addEgressEnvVars(nil, egressContainerName),
+	return egressResult{EnvVars: addEgressEnvVars(nil, egressContainerName)}, nil
+}
+
+func (f *fakeNetworkProxy) SetupIngress(_ context.Context, spec proxySpec, _ egressResult) (int, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "SetupIngress")
 	}
+	f.ingressCalled = true
+	f.capturedSpec = spec
 	if f.err != nil {
-		return proxyResult{}, f.err
+		return 0, f.err
 	}
-	return result, nil
+	return f.ingressPort, nil
 }
 
 // newClientWithOpsAndProxy creates a minimal client with the provided ops, proxy, and a fake dockerAPI.
@@ -228,7 +236,7 @@ func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *te
 		dnsIP: "172.18.0.20",
 	}
 	fproxy := &fakeNetworkProxy{
-		result: proxyResult{IngressHostPort: 18081},
+		ingressPort: 18081,
 	}
 	c := newClientWithOpsAndProxy(fops, fproxy)
 
@@ -396,7 +404,7 @@ func TestDeployWorkload_NonBridgeNetwork_DropsIsolation(t *testing.T) {
 			t.Parallel()
 
 			fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
-			fproxy := &fakeNetworkProxy{result: proxyResult{IngressHostPort: 18081}}
+			fproxy := &fakeNetworkProxy{ingressPort: 18081}
 			c := newClientWithOpsAndProxy(fops, fproxy)
 
 			opts := runtime.NewDeployWorkloadOptions()
@@ -477,22 +485,30 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported transport type")
 }
 
-func TestDeployWorkload_Isolated_SetupProxiesBeforeCreateMcp(t *testing.T) {
+// TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter locks in the ordering
+// contract: egress is provisioned BEFORE the MCP container (so proxy env vars are
+// injected), and ingress is provisioned AFTER it. Creating the ingress before the
+// MCP container caused the squid reverse proxy to cache a negative DNS lookup for
+// the not-yet-existent upstream and never recover, leaving the workload stuck.
+func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
 	t.Parallel()
 
-	callOrder := make([]string, 0, 2)
+	callOrder := make([]string, 0, 3)
 	fops := &fakeDeployOps{
 		dnsIP:     "172.18.0.10",
 		callOrder: &callOrder,
 	}
 	fproxy := &fakeNetworkProxy{
-		result:    proxyResult{IngressHostPort: 0},
-		callOrder: &callOrder,
+		ingressPort: 18081,
+		callOrder:   &callOrder,
 	}
 	c := newClientWithOpsAndProxy(fops, fproxy)
 
 	opts := runtime.NewDeployWorkloadOptions()
-	opts.AttachStdio = true
+	opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+	opts.PortBindings = map[string][]runtime.PortBinding{
+		"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}},
+	}
 
 	_, err := c.DeployWorkload(
 		t.Context(),
@@ -502,13 +518,12 @@ func TestDeployWorkload_Isolated_SetupProxiesBeforeCreateMcp(t *testing.T) {
 		map[string]string{},
 		map[string]string{},
 		&permissions.Profile{},
-		"stdio",
+		"sse",
 		opts,
 		true,
 	)
 	require.NoError(t, err)
 
-	require.Len(t, callOrder, 2, "expected SetupProxies and createMcpContainer calls")
-	assert.Equal(t, "SetupProxies", callOrder[0], "SetupProxies must be called before createMcpContainer")
-	assert.Equal(t, "createMcpContainer", callOrder[1])
+	require.Equal(t, []string{"SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
+		"egress must be set up before the MCP container and ingress after it")
 }

@@ -359,9 +359,9 @@ type squidProxy struct {
 	client *Client
 }
 
-// SetupProxies creates the egress Squid container and, for non-stdio transports,
-// the ingress Squid container for the workload described by spec.
-func (s *squidProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyResult, error) {
+// SetupEgress creates the egress Squid container before the MCP container is
+// created and returns the proxy env vars to inject into the workload.
+func (s *squidProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error) {
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
 	_, err := createEgressSquidContainer(
 		ctx, s.client, spec.WorkloadName, egressContainerName,
@@ -369,22 +369,29 @@ func (s *squidProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyRes
 		spec.AllowDockerGateway, spec.GatewayIP,
 	)
 	if err != nil {
-		return proxyResult{}, fmt.Errorf("failed to create egress container: %w", err)
+		return egressResult{}, fmt.Errorf("failed to create egress container: %w", err)
 	}
+	// ingressPort stays 0: squid creates and binds the ingress container later,
+	// in SetupIngress, once the MCP container's hostname resolves.
+	return egressResult{EnvVars: addEgressEnvVars(nil, egressContainerName)}, nil
+}
 
-	envVars := addEgressEnvVars(nil, egressContainerName)
-
+// SetupIngress creates the ingress Squid container after the MCP container
+// exists. Creating it here (rather than before the MCP container) ensures the
+// cache_peer hostname resolves on first probe; a Squid ingress created against a
+// not-yet-existent upstream caches the negative DNS lookup and never recovers
+// within the workload's readiness window.
+func (s *squidProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressResult) (int, error) {
 	if spec.TransportType == "stdio" || spec.UpstreamPort == 0 {
-		return proxyResult{EnvVars: envVars}, nil
+		return 0, nil
 	}
-
 	ingressPort, err := s.client.setupIngressContainer(
 		ctx, spec.WorkloadName, spec.UpstreamPort, spec.AttachStdio, spec.Endpoints, spec.Permissions,
 	)
 	if err != nil {
-		return proxyResult{}, err
+		return 0, err
 	}
-	return proxyResult{IngressHostPort: ingressPort, EnvVars: envVars}, nil
+	return ingressPort, nil
 }
 
 func createTempIngressSquidConf(

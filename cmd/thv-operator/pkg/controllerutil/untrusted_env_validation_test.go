@@ -39,6 +39,15 @@ func configMapEnvVar(name, configMapName, key string) corev1.EnvVar {
 	}
 }
 
+// TestValidateNoSecretEnvForUntrusted pins the operator admission-side
+// untrusted pod gate. CHANNEL-COVERAGE MIRROR: the vmcp runtime-side gate's
+// test — pkg/vmcp/session/untrusted/template_clone_test.go
+// (TestClonePodFromTemplate_FailClosed / TestReverifyAllowsFieldRefEnv) —
+// covers the same secret-injection channels (secretKeyRef / configMapKeyRef
+// env, envFrom secret/configmap refs, secret / configmap / projected
+// volumes). When a new injection channel is added or allowed on one side,
+// update the other side's suite too — drift between the two is a silent gap
+// in the untrusted isolation boundary.
 func TestValidateNoSecretEnvForUntrusted(t *testing.T) {
 	t.Parallel()
 

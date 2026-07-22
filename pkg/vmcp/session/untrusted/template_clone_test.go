@@ -148,6 +148,16 @@ func TestClonePodFromTemplate(t *testing.T) {
 	})
 }
 
+// TestClonePodFromTemplate_FailClosed pins the vmcp runtime-side untrusted
+// pod gate (the template clone refuses secret-injecting pod specs).
+// CHANNEL-COVERAGE MIRROR: the operator admission-side gate's test —
+// cmd/thv-operator/pkg/controllerutil/untrusted_env_validation_test.go
+// (TestValidateNoSecretEnvForUntrusted) — covers the same secret-injection
+// channels (secretKeyRef / configMapKeyRef env, envFrom secret/configmap
+// refs, secret / configmap / projected volumes). When a new injection
+// channel is added or allowed on one side, update the other side's suite too
+// — drift between the two is a silent gap in the untrusted isolation
+// boundary.
 func TestClonePodFromTemplate_FailClosed(t *testing.T) {
 	t.Parallel()
 

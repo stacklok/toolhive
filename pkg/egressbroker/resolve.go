@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // ErrDNSResolution marks DNS lookup failures during dial-allowlist resolution.
@@ -60,7 +62,7 @@ func ResolveDialAllowlist(policy *EgressPolicy, lookupHost func(string) ([]net.I
 				continue
 			}
 			addr = addr.Unmap()
-			if isNonPublic(addr) {
+			if networking.IsPrivateIP(addr.AsSlice()) {
 				continue
 			}
 			prefix := netip.PrefixFrom(addr, addr.BitLen()).String()
@@ -77,36 +79,9 @@ func ResolveDialAllowlist(policy *EgressPolicy, lookupHost func(string) ([]net.I
 	return out, nil
 }
 
-// nonPublicPrefixes are never allowlisted from DNS answers (OWASP SSRF set:
-// loopback, RFC 1918, link-local, CGNAT, IPv6 ULA/link-local). A name that
-// resolves into these is a rebinding suspect and must not widen the dial
-// allowlist.
-var nonPublicPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("169.254.0.0/16"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"),
-	netip.MustParsePrefix("224.0.0.0/4"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("::1/128"),
-	netip.MustParsePrefix("fc00::/7"),
-	netip.MustParsePrefix("fe80::/10"),
-	netip.MustParsePrefix("ff00::/8"),
-}
-
-func isNonPublic(addr netip.Addr) bool {
-	for _, prefix := range nonPublicPrefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
-}
+// The non-public address classifier is networking.IsPrivateIP (single shared
+// implementation — do not reintroduce a local table): it rejects the OWASP
+// SSRF set (loopback, RFC 1918, link-local, CGNAT, IPv6 ULA/link-local,
+// multicast/reserved, documentation ranges, 192.0.0.0/24, 198.18.0.0/15) AND
+// decodes NAT64 64:ff9b::/96 + 64:ff9b:1::/48 embeddings, so a rebinding
+// suspect hidden behind a NAT64 address never widens the dial allowlist.

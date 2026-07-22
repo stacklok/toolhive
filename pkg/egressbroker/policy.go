@@ -13,7 +13,7 @@ package egressbroker
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -97,7 +97,7 @@ func (e *EgressPolicy) ProviderNames() []string {
 	for _, p := range e.providers {
 		names = append(names, p.Provider)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -162,7 +162,7 @@ func (e *EgressPolicy) HostAllowlist() []string {
 			}
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -251,12 +251,7 @@ func methodAllowed(p ProviderPolicy, method string) bool {
 		}
 		return false
 	}
-	for _, m := range p.AllowedMethods {
-		if m == method {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.AllowedMethods, method)
 }
 
 // pathAllowed: empty AllowedPathPrefixes means all paths ("/" prefix).
@@ -267,12 +262,9 @@ func pathAllowed(p ProviderPolicy, path string) bool {
 	if len(p.AllowedPathPrefixes) == 0 {
 		return true
 	}
-	for _, prefix := range p.AllowedPathPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.AllowedPathPrefixes, func(prefix string) bool {
+		return strings.HasPrefix(path, prefix)
+	})
 }
 
 func knownMethod(m string) bool {

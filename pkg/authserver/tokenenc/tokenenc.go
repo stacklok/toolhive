@@ -29,14 +29,14 @@
 package tokenenc
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/stacklok/toolhive/pkg/secrets/aes"
 )
 
 const (
@@ -144,12 +144,12 @@ func Seal(kr Keyring, redisKey string, plaintext []byte) ([]byte, error) {
 
 	activeID, kek := kr.Active()
 
-	edek, err := gcmSeal(kek, dek, nil)
+	edek, err := aes.Encrypt(dek, kek)
 	if err != nil {
 		return nil, fmt.Errorf("token encryption: failed to wrap data key: %w", err)
 	}
 
-	ct, err := gcmSeal(dek, plaintext, []byte(redisKey))
+	ct, err := aes.EncryptWithAAD(plaintext, dek, []byte(redisKey))
 	if err != nil {
 		return nil, fmt.Errorf("token encryption: failed to encrypt record: %w", err)
 	}
@@ -201,7 +201,7 @@ func Open(kr Keyring, redisKey string, value []byte) (plaintext []byte, legacy b
 	if err != nil {
 		return nil, false, fmt.Errorf("token encryption: malformed wrapped data key: %w", err)
 	}
-	dek, err := gcmOpen(kek, edek, nil)
+	dek, err := aes.Decrypt(edek, kek)
 	if err != nil {
 		return nil, false, fmt.Errorf("token encryption: failed to unwrap data key: %w", err)
 	}
@@ -210,7 +210,7 @@ func Open(kr Keyring, redisKey string, value []byte) (plaintext []byte, legacy b
 	if err != nil {
 		return nil, false, fmt.Errorf("token encryption: malformed ciphertext: %w", err)
 	}
-	plaintext, err = gcmOpen(dek, ct, []byte(redisKey))
+	plaintext, err = aes.DecryptWithAAD(ct, dek, []byte(redisKey))
 	if err != nil {
 		return nil, false, fmt.Errorf("token encryption: failed to decrypt record: %w", err)
 	}
@@ -245,38 +245,4 @@ func NeedsRotation(kr Keyring, value []byte) bool {
 	}
 	activeID, _ := kr.Active()
 	return env.KID != activeID
-}
-
-// gcmSeal encrypts plaintext with AES-256-GCM under key, returning
-// nonce|ciphertext|tag. aad is additional authenticated data (may be nil).
-func gcmSeal(key, plaintext, aad []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, aad), nil
-}
-
-// gcmOpen reverses gcmSeal.
-func gcmOpen(key, ciphertext, aad []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	if len(ciphertext) < gcm.NonceSize() {
-		return nil, errors.New("malformed ciphertext")
-	}
-	return gcm.Open(nil, ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():], aad)
 }

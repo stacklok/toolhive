@@ -783,16 +783,20 @@ func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 				Endpoints:     map[string]*network.EndpointSettings{},
 			}
 
+			// SetupEgress must NOT create the container — it only returns env vars.
+			// Container creation is deferred to SetupIngress so the MCP hostname
+			// resolves on first probe (see #5922).
 			egress, err := e.SetupEgress(t.Context(), spec)
 			require.NoError(t, err)
-			assert.Equal(t, "app-egress", createdName, "envoy container must reuse the -egress name")
+			assert.Empty(t, createdName, "SetupEgress must not create the container")
 			assert.Equal(t, "http://app-egress:3128", egress.EnvVars["HTTP_PROXY"])
 
+			// SetupIngress creates the container and returns the ingress port.
 			ingressPort, err := e.SetupIngress(t.Context(), spec, egress)
 			require.NoError(t, err)
+			assert.Equal(t, "app-egress", createdName, "SetupIngress must create the -egress container")
 			if tt.wantIngress {
 				assert.Positive(t, ingressPort, "non-stdio must reserve an ingress port")
-				assert.Equal(t, egress.ingressPort, ingressPort, "SetupIngress must return the port reserved in SetupEgress")
 			} else {
 				assert.Zero(t, ingressPort, "stdio must not reserve an ingress port")
 			}

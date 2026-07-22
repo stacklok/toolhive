@@ -71,12 +71,6 @@ type proxySpec struct {
 	// Endpoints is the set of network endpoints the proxy containers should
 	// join, keyed by network name.
 	Endpoints map[string]*network.EndpointSettings
-	// DNSServers is an optional list of DNS server IPs to configure on the proxy
-	// containers. Used to inject the dnsmasq container IP so that Envoy's
-	// STRICT_DNS cluster can resolve MCP container hostnames on the internal
-	// Docker network (Linux Docker Engine requires explicit DNS configuration;
-	// the default bridge DNS cannot resolve names from custom internal networks).
-	DNSServers []string
 }
 
 // egressResult is the output of a successful SetupEgress call. It is passed to

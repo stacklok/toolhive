@@ -270,7 +270,6 @@ func (c *Client) DeployWorkload(
 			UpstreamPort:       upstreamPort,
 			AttachStdio:        attachStdio,
 			Endpoints:          externalEndpointsConfig,
-			DNSServers:         dnsServersFromAdditionalDNS(additionalDNS),
 		}
 
 		// SetupEgress runs before createMcpContainer so its env vars can be
@@ -1633,16 +1632,6 @@ func mergeEnvVars(base, extra map[string]string) map[string]string {
 		result[k] = v
 	}
 	return result
-}
-
-// dnsServersFromAdditionalDNS converts the additionalDNS string (a single IP
-// set as the MCP container's custom resolver) into the slice form expected by
-// proxySpec.DNSServers. Returns nil when additionalDNS is empty.
-func dnsServersFromAdditionalDNS(additionalDNS string) []string {
-	if additionalDNS == "" {
-		return nil
-	}
-	return []string{additionalDNS}
 }
 
 // setupIngressContainer creates the ingress Squid reverse-proxy container for

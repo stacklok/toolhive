@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"os"
 	"regexp"
 	"strconv"
@@ -872,11 +871,6 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 		NetworkMode: container.NetworkMode("bridge"),
 		SecurityOpt: []string{"label:disable"},
 		CapDrop:     []string{"ALL"},
-		// Inject the dnsmasq container as the DNS server so the STRICT_DNS ingress
-		// cluster can resolve the MCP container's hostname on the internal Docker
-		// network. On Linux Docker Engine, the default bridge DNS (127.0.0.11)
-		// cannot resolve names from custom internal networks; dnsmasq bridges both.
-		DNS: parseNetipAddrs(spec.DNSServers),
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -896,19 +890,4 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 
 	success = true
 	return ingressPort, nil
-}
-
-// parseNetipAddrs converts a slice of IP address strings into []netip.Addr for
-// use in container.HostConfig.DNS. Malformed addresses are silently skipped.
-func parseNetipAddrs(addrs []string) []netip.Addr {
-	if len(addrs) == 0 {
-		return nil
-	}
-	result := make([]netip.Addr, 0, len(addrs))
-	for _, s := range addrs {
-		if addr, err := netip.ParseAddr(s); err == nil {
-			result = append(result, addr)
-		}
-	}
-	return result
 }

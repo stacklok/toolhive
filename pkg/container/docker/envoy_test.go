@@ -267,6 +267,10 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					"deny must match gateway.docker.internal")
 				assert.True(t, authorityMatched(pats, "HOST.DOCKER.INTERNAL"),
 					"deny must be case-insensitive (uppercase must not bypass)")
+				assert.True(t, authorityMatched(pats, dockerGatewayHostname+"."),
+					"deny must match a trailing-dot FQDN (host.docker.internal.)")
+				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP+"."),
+					"deny must match a trailing-dot gateway IP (172.17.0.1.)")
 				assert.False(t, authorityMatched(pats, dockerGatewayHostname+".attacker.com"),
 					"deny must be anchored (lookalike suffix must not match)")
 
@@ -296,9 +300,11 @@ func TestHostMatchRegex(t *testing.T) {
 		noMatches []string
 	}{
 		{
-			name:      "exact host, no subdomains",
-			host:      "example.com",
-			matches:   []string{"example.com", "example.com:443", "EXAMPLE.COM"},
+			name: "exact host, no subdomains",
+			host: "example.com",
+			// A trailing-dot FQDN resolves identically and must match, or it becomes
+			// a bypass on the deny path.
+			matches:   []string{"example.com", "example.com:443", "EXAMPLE.COM", "example.com.", "example.com.:443"},
 			noMatches: []string{"www.example.com", "notexample.com", "example.com.attacker.com"},
 		},
 		{
@@ -792,4 +798,59 @@ func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestListenerTimeoutsDisabledForStreaming guards against Envoy's 15s default
+// RouteAction.timeout (a hard total-response cap) and 5m stream_idle_timeout
+// truncating long-lived MCP streams (SSE / streamable-http). Both the ingress
+// reverse-proxy route and the egress plain-HTTP route must disable the route
+// timeout, and both HCMs must disable the idle timeout.
+func TestListenerTimeoutsDisabledForStreaming(t *testing.T) {
+	t.Parallel()
+
+	spec := proxySpec{
+		WorkloadName:  "app",
+		TransportType: "streamable-http",
+		UpstreamPort:  8080,
+		GatewayIP:     dockerDefaultBridgeGatewayIP,
+	}
+
+	hcmOf := func(l envoyListener) *envoyHCM {
+		hcm, ok := l.FilterChains[0].Filters[0].TypedConfig.(*envoyHCM)
+		require.True(t, ok, "first network filter must be the HCM")
+		return hcm
+	}
+	// routeTimeouts returns the Timeout of every route action in an HCM.
+	routeTimeouts := func(hcm *envoyHCM) []string {
+		var out []string
+		for _, vh := range hcm.RouteConfig.VirtualHosts {
+			for _, r := range vh.Routes {
+				if r.Route != nil {
+					out = append(out, r.Route.Timeout)
+				}
+			}
+		}
+		return out
+	}
+
+	ingress := hcmOf(buildIngressListener(spec, 18080))
+	assert.Equal(t, "0s", ingress.StreamIdleTimeout, "ingress HCM must disable the idle timeout")
+	for _, tmo := range routeTimeouts(ingress) {
+		assert.Equal(t, "0s", tmo, "ingress route must disable the 15s total-response cap")
+	}
+
+	egress := hcmOf(buildEgressListener(spec))
+	assert.Equal(t, "0s", egress.StreamIdleTimeout, "egress HCM must disable the idle timeout")
+	// The plain-HTTP egress route must disable the cap; the CONNECT route is
+	// unaffected by the default (no end-of-stream while tunneling) so it need not.
+	var sawPlainHTTP bool
+	for _, vh := range egress.RouteConfig.VirtualHosts {
+		for _, r := range vh.Routes {
+			if r.Match.Prefix == "/" && r.Route != nil {
+				sawPlainHTTP = true
+				assert.Equal(t, "0s", r.Route.Timeout, "egress plain-HTTP route must disable the 15s cap")
+			}
+		}
+	}
+	assert.True(t, sawPlainHTTP, "egress must have a plain-HTTP route")
 }

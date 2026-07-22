@@ -216,7 +216,7 @@ backend is stable.
 | HTTPS CONNECT tunnelling | ✓ | ✓ |
 | TLS inspection | ✗ | ✗ |
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
-| Destination IP deny | ✓ (`dst` ACL) | ✓ (IP literal matched in `:authority`) |
+| Destination IP deny | ✓ (`dst` ACL, resolved IP) | ~ (IP literal in `:authority` only; resolved IP not enforced — see Known Limitations) |
 | Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
 | Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
 | Access logs | Per-container, text format | Unified stdout, structured |
@@ -245,6 +245,15 @@ backend is stable.
   yet translated into Envoy egress policy, so an allowlisted host is reachable on
   any port. Squid honours `AllowPort`; the Envoy backend currently does not,
   which is a parity gap. Tracked in #5915.
+- **Gateway deny matches the requested name, not the resolved IP.** The deny
+  filter matches the `:authority` string (the gateway IP literal and the two
+  Docker-internal hostnames). Because an HTTP RBAC filter cannot see the address
+  the `dynamic_forward_proxy` cluster ultimately resolves and dials, a hostname
+  that resolves to the gateway IP — via DNS rebinding, an attacker-controlled
+  record, or an allowlisted host repointed at the gateway — is not caught, whereas
+  Squid's `dst` ACL denies on the resolved IP. Enforcing on the resolved address
+  requires L3/L4 interception (Phase 2, #5905); until then this is a known
+  weakening of the gateway block versus the Squid backend.
 - **IPv4-only DFP DNS.** The `dynamic_forward_proxy` cluster's DNS lookup is
   hardcoded to `V4_ONLY`. A host that resolves only to IPv6 addresses is
   unreachable through the Envoy egress path even if it is allowlisted.

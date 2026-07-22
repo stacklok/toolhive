@@ -113,12 +113,15 @@ type envoyNetworkFilter struct {
 // envoyHCM is the typed config for
 // envoy.filters.network.http_connection_manager.
 type envoyHCM struct {
-	Type           string               `json:"@type"`
-	StatPrefix     string               `json:"stat_prefix"`
-	AccessLog      []envoyAccessLog     `json:"access_log,omitempty"`
-	UpgradeConfigs []envoyUpgradeConfig `json:"upgrade_configs,omitempty"`
-	HTTPFilters    []envoyHTTPFilter    `json:"http_filters"`
-	RouteConfig    *envoyRouteConfig    `json:"route_config,omitempty"`
+	Type       string           `json:"@type"`
+	StatPrefix string           `json:"stat_prefix"`
+	AccessLog  []envoyAccessLog `json:"access_log,omitempty"`
+	// StreamIdleTimeout caps how long a stream may be idle. Envoy defaults it to
+	// 5m, which would reap a sparse-but-open SSE stream; "0s" disables it.
+	StreamIdleTimeout string               `json:"stream_idle_timeout,omitempty"`
+	UpgradeConfigs    []envoyUpgradeConfig `json:"upgrade_configs,omitempty"`
+	HTTPFilters       []envoyHTTPFilter    `json:"http_filters"`
+	RouteConfig       *envoyRouteConfig    `json:"route_config,omitempty"`
 }
 
 // envoyAccessLog configures request access logging for an HCM.
@@ -268,7 +271,11 @@ type envoyConnectMatcher struct{}
 
 // envoyRouteAction forwards matched requests to an upstream cluster.
 type envoyRouteAction struct {
-	Cluster        string               `json:"cluster"`
+	Cluster string `json:"cluster"`
+	// Timeout is the route's total request→response cap. Envoy defaults it to
+	// 15s, which truncates long-lived MCP streams (SSE, streamable-http); set
+	// "0s" to disable it for proxied traffic.
+	Timeout        string               `json:"timeout,omitempty"`
 	UpgradeConfigs []envoyUpgradeConfig `json:"upgrade_configs,omitempty"`
 }
 
@@ -336,11 +343,12 @@ func buildEgressListener(spec proxySpec) envoyListener {
 	httpFilters := buildEgressHTTPFilters(spec)
 
 	hcm := &envoyHCM{
-		Type:           typeHCM,
-		StatPrefix:     "egress_http",
-		AccessLog:      stdoutAccessLog(),
-		UpgradeConfigs: []envoyUpgradeConfig{{UpgradeType: "CONNECT"}},
-		HTTPFilters:    httpFilters,
+		Type:              typeHCM,
+		StatPrefix:        "egress_http",
+		AccessLog:         stdoutAccessLog(),
+		StreamIdleTimeout: "0s", // don't reap sparse long-lived outbound streams
+		UpgradeConfigs:    []envoyUpgradeConfig{{UpgradeType: "CONNECT"}},
+		HTTPFilters:       httpFilters,
 		RouteConfig: &envoyRouteConfig{
 			VirtualHosts: []envoyVirtualHost{
 				{
@@ -358,10 +366,13 @@ func buildEgressListener(spec proxySpec) envoyListener {
 								},
 							},
 						},
-						// Prefix match handles plain HTTP requests.
+						// Prefix match handles plain HTTP requests. Timeout "0s"
+						// disables Envoy's 15s default so long-lived plain-HTTP
+						// outbound streams aren't truncated (CONNECT tunnels are
+						// unaffected by the default, but disabling is harmless there).
 						{
 							Match: envoyRouteMatch{Prefix: "/"},
-							Route: &envoyRouteAction{Cluster: dfpClusterName},
+							Route: &envoyRouteAction{Cluster: dfpClusterName, Timeout: "0s"},
 						},
 					},
 				},
@@ -568,8 +579,10 @@ func hostMatchRegex(host string) string {
 		// Optional "sub." prefix at any depth, plus the apex itself.
 		pattern = `(.*\.)?` + pattern
 	}
-	// (?i) case-insensitive (hostnames are); (:[0-9]+)? optional port.
-	return `(?i)` + pattern + `(:[0-9]+)?`
+	// (?i) case-insensitive (hostnames are); \.? tolerates a trailing-dot FQDN
+	// ("host.docker.internal." resolves identically and would otherwise bypass a
+	// deny); (:[0-9]+)? optional port.
+	return `(?i)` + pattern + `\.?(:[0-9]+)?`
 }
 
 // buildEgressCluster returns the dynamic_forward_proxy cluster required by the
@@ -608,6 +621,8 @@ func buildIngressListener(spec proxySpec, hostPort int) envoyListener {
 		Type:       typeHCM,
 		StatPrefix: "ingress_http",
 		AccessLog:  stdoutAccessLog(),
+		// Disable the idle timer so a sparse-but-open SSE stream isn't reaped.
+		StreamIdleTimeout: "0s",
 		HTTPFilters: []envoyHTTPFilter{
 			{
 				Name:        "envoy.filters.http.router",
@@ -622,7 +637,10 @@ func buildIngressListener(spec proxySpec, hostPort int) envoyListener {
 					Routes: []envoyRoute{
 						{
 							Match: envoyRouteMatch{Prefix: "/"},
-							Route: &envoyRouteAction{Cluster: ingressClusterName},
+							// Timeout "0s" disables Envoy's 15s default total-response
+							// cap, which would otherwise truncate SSE / streamable-http
+							// MCP streams. This is the primary transport path.
+							Route: &envoyRouteAction{Cluster: ingressClusterName, Timeout: "0s"},
 						},
 					},
 				},
@@ -692,7 +710,10 @@ func buildIngressCluster(spec proxySpec) envoyCluster {
 }
 
 // writeEnvoyBootstrap marshals b to JSON and writes it to a temporary file at
-// mode 0600. Returns the file path. The caller is responsible for cleanup.
+// mode 0600, returning the path. On success the file must outlive this call —
+// the Envoy container bind-mounts it read-only — so it is not removed here; the
+// caller removes it if setup fails afterward. On any error during writing, the
+// partially-created file is removed before returning.
 func writeEnvoyBootstrap(b envoyBootstrap) (string, error) {
 	data, err := json.Marshal(b)
 	if err != nil {
@@ -776,6 +797,15 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 	if err != nil {
 		return egressResult{}, err // already wrapped with context
 	}
+	// On success the file must persist for the container's read-only bind mount,
+	// so it can't be unconditionally deferred away. Remove it only if setup fails
+	// past this point, so a failed deploy doesn't orphan a bootstrap in TempDir.
+	success := false
+	defer func() {
+		if !success {
+			_ = os.Remove(configPath)
+		}
+	}()
 
 	envoyImage := getEnvoyImage()
 	//nolint:gosec // G706: envoy image name from config
@@ -845,6 +875,7 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 		return egressResult{}, fmt.Errorf("failed to create envoy container: %w", err)
 	}
 
+	success = true // keep the bootstrap file; the container bind-mounts it
 	return egressResult{
 		EnvVars:     addEgressEnvVars(nil, egressContainerName),
 		ingressPort: ingressPort,

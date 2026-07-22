@@ -278,7 +278,15 @@ func (f *fakeBackend) writeError(w http.ResponseWriter, id json.RawMessage, e *j
 // is registered via t.Cleanup.
 func newTestClient(t *testing.T, url string) *mcpclient.Client {
 	t.Helper()
-	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(&http.Client{}))
+	// Each test client gets its own transport with keep-alive disabled. A bare
+	// &http.Client{} shares the process-global http.DefaultTransport, so across
+	// t.Parallel() subtests one client's teardown (t.Cleanup -> Close) can close
+	// idle connections a sibling is mid-request on. Go surfaces that as
+	// "connection broken: http: CloseIdleConnections called", which the
+	// streamable transport reports as a spurious 4xx/legacy-SSE init failure.
+	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(&http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}))
 	require.NoError(t, err)
 	require.NoError(t, c.Start(context.Background()))
 	t.Cleanup(func() { _ = c.Close() })

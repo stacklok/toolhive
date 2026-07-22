@@ -330,13 +330,16 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 				// Reuses the gateway-reachable host path (Linux Docker Engine only; skips
 				// where the bridge gateway is not host-routable, e.g. Docker Desktop).
 				It("does not truncate a response that takes longer than Envoy's 15s default", func() {
-					By("Starting a host service that responds after ~18s (past the 15s cap)")
+					// 16s > 15s cap (proves the timeout was disabled) and leaves
+					// enough headroom below the fetchThrough 30s context deadline to
+					// account for MCP client round-trip overhead.
+					By("Starting a host service that responds after 16s (past the 15s cap)")
 					listener, err := net.Listen("tcp", ":0") //nolint:gosec // ephemeral test port
 					Expect(err).ToNot(HaveOccurred())
 					port := listener.Addr().(*net.TCPAddr).Port
 					srv := &http.Server{
 						Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-							time.Sleep(18 * time.Second)
+							time.Sleep(16 * time.Second)
 							_, _ = io.WriteString(w, "slow-stream-ok")
 						}),
 						ReadHeaderTimeout: 5 * time.Second,

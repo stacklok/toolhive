@@ -675,13 +675,13 @@ func buildIngressListener(spec proxySpec, hostPort int) envoyListener {
 }
 
 // ingressDomains returns the virtual host domain list for the ingress listener.
-// When Inbound.AllowHost is configured those entries are used; otherwise a
-// wildcard ("*") is returned so all hostnames are accepted.
-func ingressDomains(spec proxySpec) []string {
-	if spec.Permissions != nil && spec.Permissions.Inbound != nil &&
-		len(spec.Permissions.Inbound.AllowHost) > 0 {
-		return spec.Permissions.Inbound.AllowHost
-	}
+// Always returns a wildcard: the Inbound.AllowHost list contains bare hostnames
+// (e.g. "localhost", "127.0.0.1") but the transparent proxy sends a Host header
+// with a port suffix ("127.0.0.1:22354"), which Envoy would not match against
+// a bare hostname. The inbound access restriction is instead enforced by the
+// host-side port binding to 127.0.0.1, which already limits the ingress to
+// local connections only.
+func ingressDomains(_ proxySpec) []string {
 	return []string{"*"}
 }
 

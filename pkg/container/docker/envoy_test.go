@@ -407,7 +407,11 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 			wantHostPortBound: 18080,
 		},
 		{
-			name: "inbound AllowHost restricts virtual host domains",
+			// Inbound.AllowHost is intentionally ignored for Envoy's ingress virtual
+			// host domains. The transparent proxy rewrites Host to include the port
+			// ("127.0.0.1:19090"), which would not match a bare hostname list. The
+			// inbound access restriction is enforced by the 127.0.0.1 port binding.
+			name: "inbound AllowHost is ignored — ingress always uses wildcard domain",
 			spec: proxySpec{
 				WorkloadName:  "svc",
 				UpstreamPort:  9090,
@@ -421,7 +425,7 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 			hostPort:          19090,
 			wantUpstreamRef:   "svc",
 			wantHostPortBound: 19090,
-			wantDomains:       []string{"app.example.com"},
+			wantDomains:       []string{`"*"`},
 		},
 		{
 			// No inbound AllowHost → wildcard virtual host. This is safe because

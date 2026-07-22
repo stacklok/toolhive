@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -99,16 +100,6 @@ type deployOps interface {
 		networkName string,
 		endpointsConfig map[string]*network.EndpointSettings,
 	) (string, string, error)
-	createEgressSquidContainer(
-		ctx context.Context,
-		containerName string,
-		squidContainerName string,
-		attachStdio bool,
-		exposedPorts map[string]struct{},
-		endpointsConfig map[string]*network.EndpointSettings,
-		perm *permissions.NetworkPermissions,
-		allowDockerGateway bool,
-	) (string, error)
 	createMcpContainer(
 		ctx context.Context,
 		name string,
@@ -124,14 +115,6 @@ type deployOps interface {
 		portBindings map[string][]runtime.PortBinding,
 		isolateNetwork bool,
 	) error
-	createIngressContainer(
-		ctx context.Context,
-		containerName string,
-		upstreamPort int,
-		attachStdio bool,
-		externalEndpointsConfig map[string]*network.EndpointSettings,
-		networkPermissions *permissions.NetworkPermissions,
-	) (int, error)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -142,6 +125,7 @@ type Client struct {
 	api          dockerAPI
 	imageManager images.ImageManager
 	ops          deployOps
+	proxy        networkProxy // selected at construction time via newNetworkProxy
 }
 
 // NewClient creates a new container client
@@ -163,26 +147,13 @@ func NewClient(ctx context.Context) (*Client, error) {
 	// Default ops implementation uses the real client methods.
 	c.ops = c
 
-	return c, nil
-}
+	proxy, err := newNetworkProxy(c)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize network proxy: %w", err)
+	}
+	c.proxy = proxy
 
-// createEgressSquidContainer wraps the package-level createEgressSquidContainer to satisfy deployOps.
-func (c *Client) createEgressSquidContainer(
-	ctx context.Context,
-	containerName string,
-	squidContainerName string,
-	attachStdio bool,
-	exposedPorts map[string]struct{},
-	endpointsConfig map[string]*network.EndpointSettings,
-	perm *permissions.NetworkPermissions,
-	allowDockerGateway bool,
-) (string, error) {
-	gatewayIP := c.getDockerBridgeGatewayIP(ctx)
-	return createEgressSquidContainer(
-		ctx, c, containerName, squidContainerName,
-		attachStdio, exposedPorts, endpointsConfig, perm,
-		allowDockerGateway, gatewayIP,
-	)
+	return c, nil
 }
 
 // DeployWorkload creates and starts a workload.
@@ -253,7 +224,23 @@ func (c *Client) DeployWorkload(
 		slog.Debug("skipping external network creation for custom network mode", "network_mode", permissionConfig.NetworkMode)
 	}
 
+	// For non-stdio isolated workloads, extract the upstream port so the ingress
+	// proxy can be configured. Done here so a bad exposed-ports config fails fast.
+	var upstreamPort int
+	if transportType != "stdio" && effectiveIsolation {
+		upstreamPort, err = extractFirstPort(options)
+		if err != nil {
+			return 0, err // extractFirstPort already wraps the error with context.
+		}
+	}
+
 	networkIsolation := false
+	// pspec and egress are populated in the isolation block and reused by
+	// SetupIngress after the MCP container is created.
+	var (
+		pspec  proxySpec
+		egress egressResult
+	)
 	if effectiveIsolation {
 		networkIsolation = true
 
@@ -274,24 +261,24 @@ func (c *Client) DeployWorkload(
 			return 0, fmt.Errorf("failed to create dns container: %w", err)
 		}
 
-		// create egress container
-		egressContainerName := fmt.Sprintf("%s-egress", name)
-		allowDockerGateway := options != nil && options.AllowDockerGateway
-		_, err = c.ops.createEgressSquidContainer(
-			ctx,
-			name,
-			egressContainerName,
-			attachStdio,
-			nil,
-			externalEndpointsConfig,
-			permissionProfile.Network,
-			allowDockerGateway,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("failed to create egress container: %w", err)
+		pspec = proxySpec{
+			WorkloadName:       name,
+			Permissions:        permissionProfile.Network,
+			AllowDockerGateway: options != nil && options.AllowDockerGateway,
+			GatewayIP:          c.getDockerBridgeGatewayIP(ctx),
+			TransportType:      transportType,
+			UpstreamPort:       upstreamPort,
+			AttachStdio:        attachStdio,
+			Endpoints:          externalEndpointsConfig,
 		}
 
-		envVars = addEgressEnvVars(envVars, egressContainerName)
+		// SetupEgress runs before createMcpContainer so its env vars can be
+		// injected into the workload and the egress proxy has a head start.
+		egress, err = c.proxy.SetupEgress(ctx, pspec)
+		if err != nil {
+			return 0, fmt.Errorf("failed to set up egress proxy: %w", err)
+		}
+		envVars = mergeEnvVars(envVars, egress.EnvVars)
 	} else {
 		networkName = ""
 	}
@@ -336,11 +323,12 @@ func (c *Client) DeployWorkload(
 		return 0, err // extractFirstPort already wraps the error with context.
 	}
 	if effectiveIsolation {
-		// just extract the first exposed port
-		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig,
-			permissionProfile.Network)
+		// SetupIngress runs after createMcpContainer so the reverse-proxy upstream
+		// resolves on first probe (a squid ingress created earlier would cache the
+		// negative DNS lookup and never recover).
+		hostPort, err = c.proxy.SetupIngress(ctx, pspec, egress)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create ingress container: %w", err)
+			return 0, fmt.Errorf("failed to set up ingress proxy: %w", err)
 		}
 	}
 
@@ -1206,8 +1194,12 @@ func (c *Client) createNetwork(
 // Linux Docker Engine uses 172.17.0.1 by default, while Docker Desktop on macOS
 // uses 192.168.65.1 and Colima typically uses 192.168.5.1 or similar. Querying
 // the daemon directly is more accurate than hardcoding platform-specific IPs.
-// Falls back to dockerDefaultBridgeGatewayIP on any error.
+// Falls back to dockerDefaultBridgeGatewayIP on any error or when the underlying
+// Docker client is unavailable.
 func (c *Client) getDockerBridgeGatewayIP(ctx context.Context) string {
+	if c.client == nil {
+		return dockerDefaultBridgeGatewayIP
+	}
 	nr, err := c.client.NetworkInspect(ctx, "bridge", mobyclient.NetworkInspectOptions{})
 	if err != nil {
 		slog.Debug("failed to inspect bridge network, using default gateway IP", "error", err)
@@ -1610,22 +1602,41 @@ func (c *Client) createMcpContainer(
 
 }
 
-// addEgressEnvVars adds environment variables for egress proxy configuration.
+// addEgressEnvVars returns a new map containing all entries from envVars plus
+// the HTTP_PROXY/HTTPS_PROXY/NO_PROXY variables for the given egress container.
+// The caller's map is never mutated.
 func addEgressEnvVars(envVars map[string]string, egressContainerName string) map[string]string {
 	egressHost := fmt.Sprintf("http://%s:3128", egressContainerName)
-	if envVars == nil {
-		envVars = make(map[string]string)
+	result := maps.Clone(envVars)
+	if result == nil {
+		result = make(map[string]string)
 	}
-	envVars["HTTP_PROXY"] = egressHost
-	envVars["HTTPS_PROXY"] = egressHost
-	envVars["http_proxy"] = egressHost
-	envVars["https_proxy"] = egressHost
-	envVars["NO_PROXY"] = "localhost,127.0.0.1,::1"
-	envVars["no_proxy"] = "localhost,127.0.0.1,::1"
-	return envVars
+	result["HTTP_PROXY"] = egressHost
+	result["HTTPS_PROXY"] = egressHost
+	result["http_proxy"] = egressHost
+	result["https_proxy"] = egressHost
+	result["NO_PROXY"] = "localhost,127.0.0.1,::1"
+	result["no_proxy"] = "localhost,127.0.0.1,::1"
+	return result
 }
 
-func (c *Client) createIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
+// mergeEnvVars returns a new map containing all entries from base with all
+// entries from extra added (extra values overwrite base on conflict). Neither
+// input map is mutated.
+func mergeEnvVars(base, extra map[string]string) map[string]string {
+	result := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range extra {
+		result[k] = v
+	}
+	return result
+}
+
+// setupIngressContainer creates the ingress Squid reverse-proxy container for
+// the workload and returns the host-side port it is bound on.
+func (c *Client) setupIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
 	externalEndpointsConfig map[string]*network.EndpointSettings, networkPermissions *permissions.NetworkPermissions) (int, error) {
 	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
 	if err != nil {
@@ -1694,6 +1705,8 @@ func (c *Client) createExternalNetworks(ctx context.Context) error {
 
 func generatePortBindings(labels map[string]string,
 	portBindings map[string][]runtime.PortBinding) (map[string][]runtime.PortBinding, int, error) {
+	// Clone portBindings so we never mutate the caller's map.
+	portBindings = maps.Clone(portBindings)
 	var hostPort int
 	// check if we need to map to a random port of not
 	if _, ok := labels[ToolhiveAuxiliaryWorkloadLabel]; ok && labels[ToolhiveAuxiliaryWorkloadLabel] == LabelValueTrue {

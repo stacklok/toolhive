@@ -1260,11 +1260,15 @@ func (b *runConfigBuilder) reconcileNetworkIsolation() error {
 
 	// host (or other non-bridge) is less restrictive than isolation, so dropping
 	// it reduces confinement. Fail fast when it was explicitly requested.
+	//
+	// The mode may come from --permission-profile rather than --network, so the
+	// message names the resolved mode instead of assuming a flag the user may
+	// never have passed. See #5794 review discussion.
 	if b.isolateNetworkExplicit {
 		return fmt.Errorf(
-			"network isolation cannot be enforced with --network %s: "+
-				"drop --network %s to keep enforced isolation, or pass --isolate-network=false to keep %s networking",
-			mode, mode, mode)
+			"network isolation cannot be enforced with the resolved network mode %q: "+
+				"use a bridge network mode to keep enforced isolation, or pass --isolate-network=false to keep %q networking",
+			mode, mode)
 	}
 
 	c.IsolateNetwork = false

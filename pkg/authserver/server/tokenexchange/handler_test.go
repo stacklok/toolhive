@@ -512,6 +512,58 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			wantErr:  true,
 		},
 		{
+			// The subject token is valid only for testIssuer, but the client is
+			// registered for a second audience. Requesting that second audience
+			// must be rejected: delegation cannot broaden the resource boundary.
+			name: "audience escalation blocked by subject token",
+			ctx:  func(_ *testing.T) context.Context { return context.Background() },
+			client: func() *fosite.DefaultClient {
+				c := defaultClient()
+				c.Audience = []string{testIssuer, "https://other.example.com"}
+				return c
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("audience", "https://other.example.com")
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: server.ErrInvalidTarget,
+			hintContains: "not covered by the subject token",
+		},
+		{
+			// The subject token carries both audiences, so requesting one of them
+			// is within the delegated boundary and must succeed.
+			name: "audience within subject token granted",
+			ctx:  func(_ *testing.T) context.Context { return context.Background() },
+			client: func() *fosite.DefaultClient {
+				c := defaultClient()
+				c.Audience = []string{testIssuer, "https://other.example.com"}
+				return c
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				claims := validClaims()
+				claims.Audience = jwt.Audience{testIssuer, "https://other.example.com"}
+				token := tj.signToken(t, claims, validExtraClaims())
+				f := url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+				f.Set("audience", "https://other.example.com")
+				return f
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				assert.Contains(t, req.GetGrantedAudience(), "https://other.example.com",
+					"audience covered by the subject token should be granted")
+			},
+		},
+		{
 			name:   "valid resource parameter granted as audience",
 			ctx:    func(_ *testing.T) context.Context { return context.Background() },
 			client: defaultClient,

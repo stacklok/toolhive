@@ -81,6 +81,11 @@ type dcrTestServerConfig struct {
 	// handler so concurrent goroutines can pile up at the singleflight
 	// before any can finish.
 	registrationDelay time.Duration
+
+	// Optional RFC 7591 response metadata used by renewal happy-path tests.
+	clientSecretExpiresAt   int64
+	registrationAccessToken string
+	registrationClientURI   string
 }
 
 // newDCRDiscoveryServer mounts /.well-known/openid-configuration and a
@@ -130,6 +135,9 @@ func newDCRDiscoveryServer(t *testing.T, cfg dcrTestServerConfig) *httptest.Serv
 		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
 			ClientID:                "cli-registered-client",
+			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			RegistrationAccessToken: cfg.registrationAccessToken,
+			RegistrationClientURI:   cfg.registrationClientURI,
 			TokenEndpointAuthMethod: "none",
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -529,20 +537,28 @@ func TestHandleDynamicRegistration_SynthesisesEndpointWhenMetadataOmitsIt(t *tes
 		"synthesised endpoint must be contacted exactly once")
 }
 
-// TestHandleDynamicRegistration_PopulatesEndpoints verifies the contract
-// the rest of the CLI flow depends on: handleDynamicRegistration writes
-// the resolved AuthorizeURL / TokenURL onto OAuthFlowConfig so
-// createOAuthConfig can construct the OAuth2 flow without re-discovery.
-func TestHandleDynamicRegistration_PopulatesEndpoints(t *testing.T) {
+// TestHandleDynamicRegistration_PopulatesEndpointsAndRenewalMetadata verifies
+// the contract the rest of the CLI flow depends on: handleDynamicRegistration
+// writes the resolved endpoints and DCR renewal metadata onto OAuthFlowConfig.
+func TestHandleDynamicRegistration_PopulatesEndpointsAndRenewalMetadata(t *testing.T) {
 	t.Parallel()
 
+	const (
+		callbackPort          = 8765
+		secretExpiryUnix      = int64(1_893_456_000)
+		registrationToken     = "registration-access-token"
+		registrationClientURI = "https://issuer.example/register/cli-registered-client"
+	)
 	server := newDCRDiscoveryServer(t, dcrTestServerConfig{
 		codeChallengeMethodsSupported: []string{"S256"},
+		clientSecretExpiresAt:         secretExpiryUnix,
+		registrationAccessToken:       registrationToken,
+		registrationClientURI:         registrationClientURI,
 	})
 
 	config := &OAuthFlowConfig{
 		Scopes:          []string{"openid", "profile"},
-		CallbackPort:    8765,
+		CallbackPort:    callbackPort,
 		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
@@ -554,4 +570,9 @@ func TestHandleDynamicRegistration_PopulatesEndpoints(t *testing.T) {
 		"handleDynamicRegistration must populate OAuthFlowConfig.AuthorizeURL")
 	assert.Equal(t, server.URL+"/token", config.TokenURL,
 		"handleDynamicRegistration must populate OAuthFlowConfig.TokenURL")
+	assert.Equal(t, time.Unix(secretExpiryUnix, 0).UTC(), config.SecretExpiry)
+	assert.Equal(t, registrationToken, config.RegistrationAccessToken)
+	assert.Equal(t, registrationClientURI, config.RegistrationClientURI)
+	assert.Equal(t, "none", config.TokenEndpointAuthMethod)
+	assert.Equal(t, callbackPort, config.RegisteredCallbackPort)
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -719,6 +720,10 @@ func (p *HTTPProxy) ensureSession(id string) error {
 // resolveSessionForBatch resolves the session for batch POSTs.
 // Writes appropriate HTTP errors and returns an error when handling should stop.
 //
+// Batches don't exist under the Modern revision, so this path is Legacy-only
+// by construction; Modern message-shape enforcement (rejecting a batch outright)
+// is deferred.
+//
 // Sessionless POSTs receive a per-request UUID used solely as an in-process
 // routing token. Sessionless routing tokens MUST be unique per request:
 // sharing one (e.g. the empty string) across concurrent sessionless requests
@@ -745,17 +750,26 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 }
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
-// On initialize, assigns a new session ID if none is provided and returns setSessionHeader=true.
-// A provided but unknown session ID returns 404.
 //
-// Sessionless non-initialize requests receive a per-request UUID used solely as
-// an in-process routing token (not registered with sessionManager). Sessionless
-// routing tokens MUST be unique per request: sharing one (e.g. the empty string)
-// across concurrent sessionless requests with the same JSON-RPC id collapses
-// them onto the same compositeKey(sessID, idKey) and overwrites entries in the
-// waiters / idRestore sync.Maps, leaking one client's response payload to
-// another. This is a confidentiality bug, not a performance issue -- do not
-// collapse the token.
+// It first classifies the request as Modern or Legacy MCP (mcp.ClassifyRevision).
+// A classification error is rejected outright with an HTTP 400 JSON-RPC error
+// response. A Modern request is always sessionless: it gets a fresh per-request
+// routing token and never touches sessionManager, regardless of any
+// Mcp-Session-Id header it carries (see the confidentiality note below). A
+// Legacy request falls through to the existing session rules: on initialize,
+// assigns a new session ID if none is provided and returns setSessionHeader=true;
+// a provided but unknown session ID returns 404.
+//
+// Sessionless requests (both the Modern branch and Legacy's sessionless
+// non-initialize branch) receive a per-request UUID used solely as an
+// in-process routing token (not registered with sessionManager). Sessionless
+// routing tokens MUST be unique per request: sharing one (e.g. the empty string,
+// or a stale/foreign Mcp-Session-Id) across concurrent sessionless requests with
+// the same JSON-RPC id collapses them onto the same compositeKey(sessID, idKey)
+// and overwrites entries in the waiters / idRestore sync.Maps, leaking one
+// client's response payload to another. This is a confidentiality bug, not a
+// performance issue -- do not collapse the token, and do not let a Modern
+// request fall through to the session-lookup path below.
 //
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
@@ -763,6 +777,30 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	r *http.Request,
 	req *jsonrpc2.Request,
 ) (string, bool, error) {
+	// Classification/routing here applies only to the single id-bearing request
+	// path; the batch and notification/client-response paths are Legacy-only by
+	// construction, with Modern message-shape enforcement deferred.
+	meta := mcp.ExtractMeta(req.Params)
+	protoHeader := r.Header.Get("MCP-Protocol-Version")
+	rev, err := mcp.ClassifyRevision(req.Method, meta, protoHeader)
+	if err != nil {
+		mcp.WriteClassificationError(w, req.ID.Raw(), err)
+		return "", false, err
+	}
+
+	if rev == mcp.RevisionModern {
+		// Modern is stateless: mint a fresh routing token unconditionally and
+		// ignore any client-supplied Mcp-Session-Id. Never fall through to the
+		// session-lookup path below with it -- see the confidentiality note
+		// in this function's doc comment.
+		token, err := uuid.NewRandom()
+		if err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
+			return "", false, fmt.Errorf("generate routing token: %w", err)
+		}
+		return token.String(), false, nil
+	}
+
 	var setSessionHeader bool
 	sessID := r.Header.Get("Mcp-Session-Id")
 
@@ -831,6 +869,8 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 	return msg, true
 }
 
+// handleNotificationOrClientResponse handles notifications and client responses
+// as Legacy today; Modern-aware handling of this path is deferred.
 func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, sessID string, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
 		// Refresh TTL so a client sending only notifications doesn't get evicted.

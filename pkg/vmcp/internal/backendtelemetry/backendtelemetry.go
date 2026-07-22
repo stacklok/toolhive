@@ -253,6 +253,26 @@ func (t telemetryBackendClient) GetPrompt(
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }
 
+func (t telemetryBackendClient) Complete(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef,
+	argName, argValue string,
+	contextArgs map[string]string,
+) (_ *vmcp.CompletionResult, retErr error) {
+	attrs := []attribute.KeyValue{
+		attribute.String("completion.ref_type", ref.Type),
+		attribute.String("completion.argument_name", argName),
+	}
+	// Check if caller is authenticated (extract from context)
+	if caller, _ := auth.IdentityFromContext(ctx); caller != nil && caller.Subject != "" {
+		attrs = append(attrs, attribute.Bool("auth.authenticated", true))
+	}
+	ctx, done := t.record(ctx, target, "complete", "", &retErr, attrs...)
+	defer done()
+	return t.backendClient.Complete(ctx, target, ref, argName, argValue, contextArgs)
+}
+
 func (t telemetryBackendClient) ListCapabilities(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (_ *vmcp.CapabilityList, retErr error) {

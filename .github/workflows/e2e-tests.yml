@@ -160,6 +160,10 @@ jobs:
     runs-on: ubuntu-8cores-32gb
     needs: build-binary
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [proxy, vmcp]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
@@ -185,12 +189,13 @@ jobs:
       - name: Run MCP conformance suite
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv
+          CONFORMANCE_TARGET: ${{ matrix.target }}
         run: ./test/conformance/run-conformance.sh
 
       - name: Upload conformance results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: conformance-results
+          name: conformance-results-${{ matrix.target }}
           path: test/conformance/results
           retention-days: 7

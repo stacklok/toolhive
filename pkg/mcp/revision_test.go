@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -316,6 +317,79 @@ func TestClassifyRevision(t *testing.T) {
 
 			assert.Equal(t, tt.expectedRev, rev)
 			tt.checkErr(t, err)
+		})
+	}
+}
+
+func TestExtractMeta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		params json.RawMessage
+		want   map[string]any
+	}{
+		{
+			name:   "well-formed object _meta is returned",
+			params: json.RawMessage(`{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}`),
+			want:   map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+		},
+		{
+			name:   "empty object _meta is returned",
+			params: json.RawMessage(`{"_meta":{}}`),
+			want:   map[string]any{},
+		},
+		{
+			name:   "nil params yields nil",
+			params: nil,
+			want:   nil,
+		},
+		{
+			name:   "empty params yields nil",
+			params: json.RawMessage(``),
+			want:   nil,
+		},
+		{
+			name:   "params without _meta yields nil",
+			params: json.RawMessage(`{"other":"value"}`),
+			want:   nil,
+		},
+		{
+			name:   "params as JSON array yields nil",
+			params: json.RawMessage(`["_meta"]`),
+			want:   nil,
+		},
+		{
+			name:   "params as JSON scalar yields nil",
+			params: json.RawMessage(`42`),
+			want:   nil,
+		},
+		{
+			name:   "malformed params bytes yield nil",
+			params: json.RawMessage(`{not json`),
+			want:   nil,
+		},
+		{
+			name:   "_meta as string yields nil",
+			params: json.RawMessage(`{"_meta":"not-an-object"}`),
+			want:   nil,
+		},
+		{
+			name:   "_meta as number yields nil",
+			params: json.RawMessage(`{"_meta":42}`),
+			want:   nil,
+		},
+		{
+			name:   "_meta as array yields nil",
+			params: json.RawMessage(`{"_meta":[1,2,3]}`),
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, ExtractMeta(tt.params))
 		})
 	}
 }

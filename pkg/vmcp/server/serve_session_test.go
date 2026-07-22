@@ -107,25 +107,33 @@ func newToolSessionFactory(
 // session factory: the factory establishes the session record, the core supplies the
 // advertised set and call routing.
 type fakeCore struct {
-	tools     []vmcp.Tool
-	resources []vmcp.Resource
-	prompts   []vmcp.Prompt
+	tools             []vmcp.Tool
+	resources         []vmcp.Resource
+	resourceTemplates []vmcp.ResourceTemplate
+	prompts           []vmcp.Prompt
 
-	listToolsCalls     atomic.Int32
-	listResourcesCalls atomic.Int32
-	listPromptsCalls   atomic.Int32
-	callToolCalls      atomic.Int32
-	readResourceCalls  atomic.Int32
-	getPromptCalls     atomic.Int32
-	lastCallToolName   atomic.Value // string
-	lastCallToolArgs   atomic.Value // map[string]any
-	lastReadURI        atomic.Value // string
-	lastGetPromptName  atomic.Value // string
-	lastGetPromptArgs  atomic.Value // map[string]any
+	listToolsCalls             atomic.Int32
+	listResourcesCalls         atomic.Int32
+	listResourceTemplatesCalls atomic.Int32
+	listPromptsCalls           atomic.Int32
+	callToolCalls              atomic.Int32
+	readResourceCalls          atomic.Int32
+	getPromptCalls             atomic.Int32
+	lastCallToolName           atomic.Value // string
+	lastCallToolArgs           atomic.Value // map[string]any
+	lastReadURI                atomic.Value // string
+	lastGetPromptName          atomic.Value // string
+	lastGetPromptArgs          atomic.Value // map[string]any
 
-	callErr   error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
-	readErr   error // when set, ReadResource returns it
-	promptErr error // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
+	completeCalls   atomic.Int32
+	lastCompleteRef atomic.Value // vmcp.CompletionRef
+	completeValues  []string     // returned by Complete when completeErr is nil
+
+	callErr           error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	readErr           error // when set, ReadResource returns it
+	promptErr         error // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
+	completeErr       error // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
+	lookupResourceErr error // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
 }
 
 var _ core.VMCP = (*fakeCore)(nil)
@@ -152,6 +160,11 @@ func (f *fakeCore) CallTool(
 func (f *fakeCore) ListResources(context.Context, *auth.Identity) ([]vmcp.Resource, error) {
 	f.listResourcesCalls.Add(1)
 	return f.resources, nil
+}
+
+func (f *fakeCore) ListResourceTemplates(context.Context, *auth.Identity) ([]vmcp.ResourceTemplate, error) {
+	f.listResourceTemplatesCalls.Add(1)
+	return f.resourceTemplates, nil
 }
 
 func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.ResourceReadResult, error) {
@@ -187,6 +200,17 @@ func (f *fakeCore) GetPrompt(
 	}, nil
 }
 
+func (f *fakeCore) Complete(
+	_ context.Context, _ *auth.Identity, ref vmcp.CompletionRef, _, _ string, _ map[string]string,
+) (*vmcp.CompletionResult, error) {
+	f.completeCalls.Add(1)
+	f.lastCompleteRef.Store(ref)
+	if f.completeErr != nil {
+		return nil, f.completeErr
+	}
+	return &vmcp.CompletionResult{Values: f.completeValues, Total: len(f.completeValues)}, nil
+}
+
 func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) (*vmcp.Tool, error) {
 	for i := range f.tools {
 		if f.tools[i].Name == name {
@@ -200,6 +224,12 @@ func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) 
 func (f *fakeCore) LookupResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.Resource, error) {
 	for i := range f.resources {
 		if f.resources[i].URI == uri {
+			// An advertised resource whose admission is denied: exercises the
+			// subscribe/completion admission-denial path (the URI is known, but the
+			// caller may not read it).
+			if f.lookupResourceErr != nil {
+				return nil, f.lookupResourceErr
+			}
 			res := f.resources[i]
 			return &res, nil
 		}
@@ -818,6 +848,164 @@ func TestServeCoreResourceHandler(t *testing.T) {
 	})
 }
 
+// TestServeCoreResourceTemplateHandler covers the Serve resource-template path:
+// the core's resource template is advertised by the registration builder, the
+// handler routes a read of an EXPANDED URI (taken from the request, not a fixed
+// URI) through core.ReadResource, and an ErrAuthorizationFailed is genericized.
+func TestServeCoreResourceTemplateHandler(t *testing.T) {
+	t.Parallel()
+
+	const uriTemplate = "file:///logs/{date}.txt"
+	const expandedURI = "file:///logs/2025-01-01.txt"
+
+	t.Run("advertises the template and routes the expanded read through core.ReadResource", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resourceTemplates: []vmcp.ResourceTemplate{
+			{Name: "Daily log", URITemplate: uriTemplate, MimeType: "text/plain"},
+		}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		templates, err := srv.coreSessionResourceTemplates(t.Context(), sessionID, nil)
+		require.NoError(t, err)
+		require.Len(t, templates, 1)
+		assert.Equal(t, uriTemplate, templates[0].Template.URITemplate)
+		assert.Equal(t, "text/plain", templates[0].Template.MIMEType)
+
+		// The template handler reads the concrete URI from the request, not a fixed URI.
+		req := mcp.ReadResourceRequest{Params: mcp.ReadResourceParams{URI: expandedURI}}
+		contents, err := srv.coreResourceTemplateHandler(sessionID, "")(t.Context(), req)
+		require.NoError(t, err)
+		require.NotEmpty(t, contents)
+
+		gotURI, _ := fc.lastReadURI.Load().(string)
+		assert.Equal(t, expandedURI, gotURI,
+			"the template handler must route the read through core.ReadResource with the expanded URI")
+	})
+
+	t.Run("admission filtering withholds a denied template", func(t *testing.T) {
+		t.Parallel()
+		// The core (fakeCore stands in for it) returns the admission-filtered set;
+		// an empty set means no template is advertised for this identity.
+		fc := &fakeCore{resourceTemplates: nil}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		templates, err := srv.coreSessionResourceTemplates(t.Context(), sessionID, nil)
+		require.NoError(t, err)
+		assert.Empty(t, templates, "a denied/withheld template must not be advertised")
+	})
+
+	t.Run("authorization denial yields a generic message", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			resourceTemplates: []vmcp.ResourceTemplate{{Name: "Daily log", URITemplate: uriTemplate}},
+			readErr:           fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		req := mcp.ReadResourceRequest{Params: mcp.ReadResourceParams{URI: expandedURI}}
+		_, err := srv.coreResourceTemplateHandler(sessionID, "")(t.Context(), req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read denied by authorization policy")
+		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+}
+
+// TestServeResourceTemplatesEndToEnd drives the resource-templates lane over the
+// full Streamable HTTP protocol (the conformance gap this lane closes):
+//
+//   - resources/templates/list advertises the backend's template, and
+//   - resources/read of an EXPANDED URI matching the template is served (routed
+//     through core.ReadResource) and returns contents, and
+//   - a denied read returns an authorization error rather than -32002
+//     "Resource not found" — the pre-fix symptom was that vMCP never registered
+//     the template, so every templated read fell through to not-found.
+func TestServeResourceTemplatesEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	const uriTemplate = "file:///logs/{date}.txt"
+	const expandedURI = "file:///logs/2025-01-01.txt"
+
+	t.Run("lists the template and serves an expanded read", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resourceTemplates: []vmcp.ResourceTemplate{
+			{Name: "Daily log", URITemplate: uriTemplate, MimeType: "text/plain"},
+		}}
+		_, sessionID, baseURL := registerServeSession(t, fc)
+
+		// resources/templates/list must advertise the backend's template.
+		listResp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "resources/templates/list",
+			"params":  map[string]any{},
+		}, sessionID)
+		defer listResp.Body.Close()
+		require.Equal(t, http.StatusOK, listResp.StatusCode)
+
+		env, raw := readServeJSONRPC(t, listResp)
+		result, ok := env["result"].(map[string]any)
+		require.True(t, ok, "list must have a result; body: %s", string(raw))
+		templates, ok := result["resourceTemplates"].([]any)
+		require.True(t, ok, "result.resourceTemplates must be present; body: %s", string(raw))
+		require.Len(t, templates, 1)
+		tmpl := templates[0].(map[string]any)
+		assert.Equal(t, uriTemplate, tmpl["uriTemplate"])
+
+		// resources/read of a URI expanded from the template must be served through
+		// core.ReadResource and return contents (not -32002).
+		readResp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      3,
+			"method":  "resources/read",
+			"params":  map[string]any{"uri": expandedURI},
+		}, sessionID)
+		defer readResp.Body.Close()
+		require.Equal(t, http.StatusOK, readResp.StatusCode)
+
+		readEnv, readRaw := readServeJSONRPC(t, readResp)
+		require.NotContains(t, readEnv, "error", "a templated read must not error; body: %s", string(readRaw))
+		readResult, ok := readEnv["result"].(map[string]any)
+		require.True(t, ok, "read must have a result; body: %s", string(readRaw))
+		contents, ok := readResult["contents"].([]any)
+		require.True(t, ok, "result.contents must be present; body: %s", string(readRaw))
+		require.NotEmpty(t, contents)
+
+		gotURI, _ := fc.lastReadURI.Load().(string)
+		assert.Equal(t, expandedURI, gotURI, "the expanded URI must reach core.ReadResource")
+	})
+
+	t.Run("denied templated read returns an authorization error, not -32002", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			resourceTemplates: []vmcp.ResourceTemplate{{Name: "Daily log", URITemplate: uriTemplate}},
+			readErr:           fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		_, sessionID, baseURL := registerServeSession(t, fc)
+
+		readResp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "resources/read",
+			"params":  map[string]any{"uri": expandedURI},
+		}, sessionID)
+		defer readResp.Body.Close()
+
+		env, raw := readServeJSONRPC(t, readResp)
+		readErr, ok := env["error"].(map[string]any)
+		require.True(t, ok, "a denied read must return a JSON-RPC error; body: %s", string(raw))
+
+		// The whole point: the template is registered, so the read reaches the
+		// handler and is DENIED — it is not the SDK's -32002 "Resource not found"
+		// that the pre-fix (never-registered) path returned.
+		if code, ok := readErr["code"].(float64); ok {
+			assert.NotEqual(t, float64(-32002), code, "denial must not surface as -32002 Resource not found")
+		}
+		msg, _ := readErr["message"].(string)
+		assert.Contains(t, msg, "read denied by authorization policy")
+		assert.NotContains(t, msg, "cedar said no", "the underlying authorizer detail must not leak")
+	})
+}
+
 // TestServeCorePromptHandler covers the Serve prompt path: the core's prompt is
 // advertised by the registration builder, the handler routes a get through
 // core.GetPrompt (widening the string args to map[string]any and converting the
@@ -873,6 +1061,273 @@ func TestServeCorePromptHandler(t *testing.T) {
 		assert.Contains(t, err.Error(), vmcp.DenyMessagePromptGet)
 		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
 	})
+}
+
+// TestServeCoreCompletionHandler covers coreCompletionHandler's admission-denial
+// mapping directly (mirroring TestServeCorePromptHandler): completion reuses the
+// underlying capability's deny wording, so a Cedar-denied prompt ref surfaces the
+// prompt deny message and a denied resource ref surfaces the resource deny
+// message — and neither leaks the raw authorizer detail.
+func TestServeCoreCompletionHandler(t *testing.T) {
+	t.Parallel()
+
+	const promptName = "greeting"
+	const uri = "file:///doc.txt"
+
+	t.Run("prompt-ref authorization denial yields the prompt deny message", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			prompts:     []vmcp.Prompt{{Name: promptName}},
+			completeErr: fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		ctx := sdkSessionContext(t.Context(), srv, sessionID)
+		_, err := srv.coreCompletionHandler(ctx, mcp.CompleteRequest{Params: mcp.CompleteParams{
+			Ref:      mcp.PromptReference{Type: vmcp.CompletionRefTypePrompt, Name: promptName},
+			Argument: mcp.CompleteArgument{Name: "name", Value: "wor"},
+		}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), vmcp.DenyMessagePromptGet)
+		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+
+	t.Run("resource-ref authorization denial yields the resource deny message", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			resources:   []vmcp.Resource{{Name: "doc", URI: uri}},
+			completeErr: fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		ctx := sdkSessionContext(t.Context(), srv, sessionID)
+		_, err := srv.coreCompletionHandler(ctx, mcp.CompleteRequest{Params: mcp.CompleteParams{
+			Ref:      mcp.ResourceReference{Type: vmcp.CompletionRefTypeResource, URI: uri},
+			Argument: mcp.CompleteArgument{Name: "path", Value: "d"},
+		}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), vmcp.DenyMessageResourceRead)
+		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+}
+
+// TestServeCompletionEndToEnd drives the completion/complete lane over the full
+// Streamable HTTP protocol (the conformance gap this lane closes): the SDK
+// auto-advertises the completions capability (WithCompletionHandler is wired at
+// construction), and a completion/complete request for a prompt ref routes through
+// core.Complete and returns the backend's candidate values.
+func TestServeCompletionEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	const promptName = "greeting"
+
+	fc := &fakeCore{
+		prompts:        []vmcp.Prompt{{Name: promptName, Arguments: []vmcp.PromptArgument{{Name: "name"}}}},
+		completeValues: []string{"world", "worf", "wormhole"},
+	}
+	_, sessionID, baseURL := registerServeSession(t, fc)
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "completion/complete",
+		"params": map[string]any{
+			"ref":      map[string]any{"type": "ref/prompt", "name": promptName},
+			"argument": map[string]any{"name": "name", "value": "wor"},
+		},
+	}, sessionID)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	env, raw := readServeJSONRPC(t, resp)
+	require.NotContains(t, env, "error", "completion must not error; body: %s", string(raw))
+	result, ok := env["result"].(map[string]any)
+	require.True(t, ok, "completion must have a result; body: %s", string(raw))
+	completion, ok := result["completion"].(map[string]any)
+	require.True(t, ok, "result.completion must be present; body: %s", string(raw))
+	values, ok := completion["values"].([]any)
+	require.True(t, ok, "result.completion.values must be present; body: %s", string(raw))
+	require.Len(t, values, 3)
+	assert.Equal(t, "world", values[0])
+
+	require.Equal(t, int32(1), fc.completeCalls.Load(), "the request must route through core.Complete exactly once")
+	gotRef, _ := fc.lastCompleteRef.Load().(vmcp.CompletionRef)
+	assert.Equal(t, vmcp.CompletionRefTypePrompt, gotRef.Type)
+	assert.Equal(t, promptName, gotRef.Name, "the prompt ref must reach core.Complete")
+}
+
+// TestServeSubscriptionsEndToEnd drives resources/subscribe and resources/unsubscribe
+// over the full Streamable HTTP protocol (the conformance gap these ack-level lanes
+// close): initialize advertises resources.subscribe=true, subscribing to an advertised
+// resource URI succeeds, and an unknown URI is rejected. vMCP accepts the subscription
+// at ack level; it does NOT forward backend resources/updated notifications (out of
+// scope). The pre-fix symptom was -32601 "server does not support resource subscriptions".
+func TestServeSubscriptionsEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	const uri = "file:///doc.txt"
+
+	t.Run("initialize advertises subscribe support", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		ctrl := gomock.NewController(t)
+		factory, _ := newToolSessionFactory(t, ctrl, fc.tools)
+		srv, err := Serve(context.Background(), fc, &ServerConfig{
+			SessionTTL:           time.Minute,
+			SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
+			BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+		streamable := server.NewStreamableHTTPServer(
+			srv.mcpServer,
+			server.WithEndpointPath("/mcp"),
+			server.WithSessionIdManager(srv.vmcpSessionMgr),
+		)
+		ts := httptest.NewServer(streamable)
+		t.Cleanup(ts.Close)
+
+		initResp := postServeMCP(t, ts.URL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "initialize",
+			"params": map[string]any{
+				"protocolVersion": "2025-06-18",
+				"capabilities":    map[string]any{},
+				"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+			},
+		}, "")
+		defer initResp.Body.Close()
+		require.Equal(t, http.StatusOK, initResp.StatusCode)
+
+		env, raw := readServeJSONRPC(t, initResp)
+		result, ok := env["result"].(map[string]any)
+		require.True(t, ok, "initialize must have a result; body: %s", string(raw))
+		caps, ok := result["capabilities"].(map[string]any)
+		require.True(t, ok, "result.capabilities must be present; body: %s", string(raw))
+		resources, ok := caps["resources"].(map[string]any)
+		require.True(t, ok, "capabilities.resources must be advertised; body: %s", string(raw))
+		assert.Equal(t, true, resources["subscribe"], "resources.subscribe must be advertised; body: %s", string(raw))
+	})
+
+	t.Run("subscribe and unsubscribe an advertised resource succeed", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		_, sessionID, baseURL := registerServeSession(t, fc)
+
+		subResp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "resources/subscribe",
+			"params":  map[string]any{"uri": uri},
+		}, sessionID)
+		defer subResp.Body.Close()
+		require.Equal(t, http.StatusOK, subResp.StatusCode)
+
+		subEnv, subRaw := readServeJSONRPC(t, subResp)
+		require.NotContains(t, subEnv, "error", "subscribe must succeed (regression: -32601); body: %s", string(subRaw))
+		_, ok := subEnv["result"]
+		require.True(t, ok, "subscribe must return a result; body: %s", string(subRaw))
+
+		unsubResp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      3,
+			"method":  "resources/unsubscribe",
+			"params":  map[string]any{"uri": uri},
+		}, sessionID)
+		defer unsubResp.Body.Close()
+		require.Equal(t, http.StatusOK, unsubResp.StatusCode)
+
+		unsubEnv, unsubRaw := readServeJSONRPC(t, unsubResp)
+		require.NotContains(t, unsubEnv, "error", "unsubscribe must succeed; body: %s", string(unsubRaw))
+	})
+
+	t.Run("subscribe to an unknown resource is rejected", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		_, sessionID, baseURL := registerServeSession(t, fc)
+
+		resp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "resources/subscribe",
+			"params":  map[string]any{"uri": "file:///unknown.txt"},
+		}, sessionID)
+		defer resp.Body.Close()
+
+		env, raw := readServeJSONRPC(t, resp)
+		_, ok := env["error"].(map[string]any)
+		require.True(t, ok, "subscribing to an unadvertised resource must return an error; body: %s", string(raw))
+	})
+}
+
+// TestServeCoreSubscribeHandler covers coreSubscribeHandler's branches directly: an
+// advertised resource is accepted (nil), an unknown/admission-denied URI is rejected,
+// and a session-binding failure is enforced before the resource lookup.
+func TestServeCoreSubscribeHandler(t *testing.T) {
+	t.Parallel()
+
+	const uri = "file:///doc.txt"
+
+	t.Run("advertised resource is accepted", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		ctx := sdkSessionContext(t.Context(), srv, sessionID)
+		err := srv.coreSubscribeHandler(ctx, "resources/subscribe", uri)
+		require.NoError(t, err)
+	})
+
+	t.Run("unknown resource is rejected", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		ctx := sdkSessionContext(t.Context(), srv, sessionID)
+		err := srv.coreSubscribeHandler(ctx, "resources/subscribe", "file:///nope.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, vmcp.ErrNotFound)
+	})
+
+	t.Run("admission-denied advertised resource is rejected, not acked", func(t *testing.T) {
+		t.Parallel()
+		// The URI is advertised, but LookupResource applies the same admission
+		// decision resources/read enforces and denies it: subscribe must reject
+		// rather than silently ack.
+		fc := &fakeCore{
+			resources:         []vmcp.Resource{{Name: "doc", URI: uri}},
+			lookupResourceErr: fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		ctx := sdkSessionContext(t.Context(), srv, sessionID)
+		err := srv.coreSubscribeHandler(ctx, "resources/subscribe", uri)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed)
+	})
+
+	t.Run("session binding is enforced", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		srv, _, _ := registerServeSession(t, fc)
+
+		// An unknown session ID has no binding record, so enforceSessionBinding fails
+		// closed before the resource lookup.
+		ctx := sdkSessionContext(t.Context(), srv, "not-a-real-session")
+		err := srv.coreSubscribeHandler(ctx, "resources/subscribe", uri)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unauthorized")
+	})
+}
+
+// sdkSessionContext returns ctx carrying an SDK ClientSession for sessionID, the
+// mechanism the global completion/subscribe handlers use to recover the session ID
+// (server.ClientSessionFromContext). It mirrors the SDK's per-request context
+// plumbing without going over HTTP.
+func sdkSessionContext(ctx context.Context, srv *Server, sessionID string) context.Context {
+	return srv.mcpServer.WithContext(ctx, &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}})
 }
 
 // TestServeHandlersLabelAuditBackend verifies the Serve-path audit labelling (#5512):

@@ -258,16 +258,28 @@ const docTemplate = `{
                     "cached_client_secret_ref": {
                         "type": "string"
                     },
+                    "cached_dcr_callback_port": {
+                        "description": "CachedDCRCallbackPort is the callback port that was actually registered\nduring DCR. It may differ from CallbackPort when the requested port was\nunavailable and a fallback port was selected.",
+                        "type": "integer"
+                    },
                     "cached_refresh_token_ref": {
                         "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
                         "type": "string"
                     },
+                    "cached_reg_client_uri": {
+                        "description": "CachedRegClientURI is the registration_client_uri from the DCR response.\nThis is the endpoint used for RFC 7592 client read/update/delete operations.\nStored as plain text since it is not sensitive.",
+                        "type": "string"
+                    },
                     "cached_reg_token_ref": {
-                        "description": "RegistrationAccessToken is used to update/delete the client registration.\nStored as a secret reference since it's sensitive.",
+                        "description": "CachedRegTokenRef is a secret manager reference to the registration_access_token\nreturned in the DCR response. Used for RFC 7592 client update operations.\nStored as a secret reference since it's sensitive.",
                         "type": "string"
                     },
                     "cached_secret_expiry": {
                         "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
+                        "type": "string"
+                    },
+                    "cached_token_auth_method": {
+                        "description": "CachedTokenEndpointAuthMethod is the auth method used for the token endpoint\n(e.g., \"client_secret_basic\", \"none\"). Persisted for RFC 7592 updates.",
                         "type": "string"
                     },
                     "cached_token_expiry": {
@@ -558,6 +570,10 @@ const docTemplate = `{
                     },
                     "cimd": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
+                    },
+                    "delegation_token_lifespan": {
+                        "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
+                        "type": "string"
                     },
                     "disable_upstream_token_injection": {
                         "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",

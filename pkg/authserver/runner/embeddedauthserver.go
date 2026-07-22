@@ -204,7 +204,16 @@ func NewEmbeddedAuthServerWithStorage(
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 6. Build the resolved Config.
+	// 6. Parse delegation token lifespan if configured.
+	var delegationLifespan time.Duration
+	if cfg.DelegationTokenLifespan != "" {
+		delegationLifespan, err = time.ParseDuration(cfg.DelegationTokenLifespan)
+		if err != nil {
+			return nil, fmt.Errorf("invalid delegation token lifespan: %w", err)
+		}
+	}
+
+	// 7. Build the resolved Config.
 	//
 	// Defensive copies of the scope/audience slices: cfg is operator-supplied
 	// input that may be retained or mutated by the caller (e.g. tests, a
@@ -223,6 +232,7 @@ func NewEmbeddedAuthServerWithStorage(
 		AccessTokenLifespan:          accessLifespan,
 		RefreshTokenLifespan:         refreshLifespan,
 		AuthCodeLifespan:             authCodeLifespan,
+		DelegationTokenLifespan:      delegationLifespan,
 		Upstreams:                    upstreams,
 		ScopesSupported:              slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:         slices.Clone(cfg.BaselineClientScopes),
@@ -233,7 +243,7 @@ func NewEmbeddedAuthServerWithStorage(
 		InsecureAllowHTTP:            cfg.InsecureAllowHTTP,
 	}
 
-	// 7. Create the auth server. authserver.New also asserts the DCR
+	// 8. Create the auth server. authserver.New also asserts the DCR
 	// capability internally so its DCRStore() accessor returns the same
 	// asserted handle this constructor used for buildUpstreamConfigs.
 	server, err := authserver.New(ctx, resolvedCfg, stor)

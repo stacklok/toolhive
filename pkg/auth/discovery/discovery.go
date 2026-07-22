@@ -529,6 +529,14 @@ type OAuthFlowConfig struct {
 	// blockPrivateIPs decision the flow already applies to its other discovery
 	// fetches. Defaults to false (guarded).
 	AllowPrivateIPs bool
+
+	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
+	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
+	SecretExpiry            time.Time // zero means the secret never expires
+	RegistrationAccessToken string    //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -544,6 +552,16 @@ type OAuthFlowResult struct {
 	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
 	ClientID     string
 	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
+
+	// DCR renewal metadata (RFC 7591 §3.2.1 / RFC 7592).
+	// SecretExpiry is zero when the provider did not issue an expiring secret.
+	// RegistrationAccessToken and RegistrationClientURI are empty when the
+	// provider does not support RFC 7592 management operations.
+	SecretExpiry            time.Time
+	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -616,20 +634,12 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 // exists.
 //
 // One consequence of option (b) is that the resolver's RFC 7591 §3.2.1
-// expiry-driven refetch does NOT participate in the CLI's cross-
-// invocation persistence loop: each PerformOAuthFlow call builds a fresh
-// in-memory store, so a "cached but expired" entry from the previous
-// invocation never reaches the resolver. Cross-invocation expiry is also
-// NOT enforced by the remote handler's gate today —
-// HasCachedClientCredentials only checks CachedClientID != "" and does
-// not consult CachedSecretExpiry, so an expired-but-still-cached client
-// gets reused on the next invocation and surfaces as a token-endpoint
-// failure rather than a clean DCR re-registration. Tightening the gate
-// to also check CachedSecretExpiry is open follow-up work; the
-// behaviour today is "cross-invocation expiry is unhandled". Within a
-// single invocation, the resolver's expiry check is still in the loop
-// and would fire if the same call site somehow registered, persisted,
-// and re-queried the in-memory store — but the CLI never does this today.
+// expiry-driven refetch does NOT participate in the CLI's cross-invocation
+// persistence loop: each PerformOAuthFlow call builds a fresh in-memory store,
+// so a cached entry from a previous invocation never reaches the resolver.
+// Cross-invocation client-secret expiry is handled instead by the remote
+// handler, which consults CachedSecretExpiry and renews through RFC 7592 before
+// cached credentials are used.
 //
 // Wrapping the remote handler's secretProvider into a dcr.CredentialStore
 // adapter (option (a)) would close that loop and is the natural follow-up;
@@ -675,6 +685,18 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 	}
 	if resolution.TokenEndpoint != "" {
 		config.TokenURL = resolution.TokenEndpoint
+	}
+
+	// Store DCR renewal metadata for RFC 7592 operations.
+	// A zero ClientSecretExpiresAt means the secret never expires (RFC 7591 §3.2.1).
+	config.SecretExpiry = resolution.ClientSecretExpiresAt
+	config.RegistrationAccessToken = resolution.RegistrationAccessToken
+	config.RegistrationClientURI = resolution.RegistrationClientURI
+	config.TokenEndpointAuthMethod = resolution.TokenEndpointAuthMethod
+	config.RegisteredCallbackPort = config.CallbackPort
+
+	if resolution.RegistrationAccessToken != "" {
+		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
 	}
 
 	return nil
@@ -929,15 +951,30 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}
 
 	source := flow.TokenSource()
+	return buildOAuthFlowResult(source, oauthConfig, tokenResult, config), nil
+}
+
+func buildOAuthFlowResult(
+	tokenSource oauth2.TokenSource,
+	oauthConfig *oauth.Config,
+	tokenResult *oauth.TokenResult,
+	config *OAuthFlowConfig,
+) *OAuthFlowResult {
 	return &OAuthFlowResult{
-		TokenSource:  source,
+		TokenSource:  tokenSource,
 		Config:       oauthConfig,
 		AccessToken:  tokenResult.AccessToken,
 		RefreshToken: tokenResult.RefreshToken,
 		Expiry:       tokenResult.Expiry,
 		ClientID:     oauthConfig.ClientID,
 		ClientSecret: oauthConfig.ClientSecret,
-	}, nil
+		// DCR renewal metadata — populated only when dynamic registration was performed.
+		SecretExpiry:            config.SecretExpiry,
+		RegistrationAccessToken: config.RegistrationAccessToken,
+		RegistrationClientURI:   config.RegistrationClientURI,
+		TokenEndpointAuthMethod: config.TokenEndpointAuthMethod,
+		RegisteredCallbackPort:  config.RegisteredCallbackPort,
+	}
 }
 
 // FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a

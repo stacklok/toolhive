@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive-core/registry/types"
+	registry "github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 )
 
@@ -68,7 +68,8 @@ type Config struct {
 	// ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).
 	// A zero value means the secret does not expire.
 	CachedSecretExpiry time.Time `json:"cached_secret_expiry,omitempty" yaml:"cached_secret_expiry,omitempty"`
-	// RegistrationAccessToken is used to update/delete the client registration.
+	// CachedRegTokenRef is a secret manager reference to the registration_access_token
+	// returned in the DCR response. Used for RFC 7592 client update operations.
 	// Stored as a secret reference since it's sensitive.
 	CachedRegTokenRef string `json:"cached_reg_token_ref,omitempty" yaml:"cached_reg_token_ref,omitempty"`
 
@@ -78,6 +79,17 @@ type Config struct {
 	// rotation clears CachedClientID without touching the stable CIMD URL.
 	// Read by resolveClientCredentials to send the correct client_id on token refresh.
 	CachedCIMDClientID string `json:"cached_cimd_client_id,omitempty" yaml:"cached_cimd_client_id,omitempty"`
+	// CachedRegClientURI is the registration_client_uri from the DCR response.
+	// This is the endpoint used for RFC 7592 client read/update/delete operations.
+	// Stored as plain text since it is not sensitive.
+	CachedRegClientURI string `json:"cached_reg_client_uri,omitempty" yaml:"cached_reg_client_uri,omitempty"`
+	// CachedTokenEndpointAuthMethod is the auth method used for the token endpoint
+	// (e.g., "client_secret_basic", "none"). Persisted for RFC 7592 updates.
+	CachedTokenEndpointAuthMethod string `json:"cached_token_auth_method,omitempty" yaml:"cached_token_auth_method,omitempty"`
+	// CachedDCRCallbackPort is the callback port that was actually registered
+	// during DCR. It may differ from CallbackPort when the requested port was
+	// unavailable and a fallback port was selected.
+	CachedDCRCallbackPort int `json:"cached_dcr_callback_port,omitempty" yaml:"cached_dcr_callback_port,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -184,6 +196,9 @@ func (c *Config) ClearCachedClientCredentials() {
 	c.CachedClientSecretRef = ""
 	c.CachedSecretExpiry = time.Time{}
 	c.CachedRegTokenRef = ""
+	c.CachedRegClientURI = ""
+	c.CachedTokenEndpointAuthMethod = ""
+	c.CachedDCRCallbackPort = 0
 }
 
 // LogContext returns the upstream issuer and resolved client_id for use as

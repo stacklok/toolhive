@@ -28,6 +28,9 @@ type ReaperConfig struct {
 	HeartbeatInterval time.Duration
 	// HeartbeatTTL is the expiry of the liveness key. Default 5m.
 	HeartbeatTTL time.Duration
+	// ReadinessTimeout is the failed-cold-start threshold: a pod older than
+	// this and not Ready is deleted. Default 120s (DefaultReadyBudget).
+	ReadinessTimeout time.Duration
 }
 
 const (
@@ -50,6 +53,9 @@ func (c ReaperConfig) resolved() ReaperConfig {
 	if c.HeartbeatTTL <= 0 {
 		c.HeartbeatTTL = defaultHeartbeatTTL
 	}
+	if c.ReadinessTimeout <= 0 {
+		c.ReadinessTimeout = defaultReadinessTimeout
+	}
 	return c
 }
 
@@ -59,8 +65,8 @@ func (c ReaperConfig) resolved() ReaperConfig {
 // deletes are harmless — Delete is idempotent, NotFound ignored).
 //
 // Rules enforced each tick:
-//   - readiness timeout: pod older than 120s and not Ready → delete
-//     (failed cold start);
+//   - readiness timeout: pod older than ReadinessTimeout (default 120s) and
+//     not Ready → delete (failed cold start);
 //   - idle TTL: podttl lease absent → delete (session gone);
 //   - zombie: pod's vMCP heartbeat is absent and has been for the grace
 //     period → delete (owning vMCP died, no replica adopted the pod);
@@ -189,7 +195,7 @@ func (r *Reaper) evaluatePod(
 	// Rule 1: readiness timeout (failed cold start). Pure-K8s evidence; no
 	// Redis read needed.
 	age := r.now().Sub(pod.CreationTimestamp.Time)
-	if age > readinessTimeout && !isPodReady(pod) {
+	if age > r.cfg.ReadinessTimeout && !isPodReady(pod) {
 		r.delete(ctx, pod, "readiness timeout")
 		return nil
 	}

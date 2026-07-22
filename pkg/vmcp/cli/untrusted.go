@@ -7,7 +7,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -30,6 +35,49 @@ import (
 // cmd/thv-operator/controllers/virtualmcpserver_deployment.go). The two
 // packages must not import each other; the contract is pinned by tests.
 const untrustedTokenStoreAddrEnvVar = "THV_UNTRUSTED_TOKEN_STORE_REDIS_ADDR" // #nosec G101 -- env var name, not a credential
+
+// untrustedTokenStoreKEK*EnvVars mirror the operator-side env vars carrying
+// the token-encryption KEK coordinates (see
+// cmd/thv-operator/controllers/virtualmcpserver_deployment.go
+// buildUntrustedTokenStoreEnvVars).
+const (
+	untrustedTokenStoreKEKSecretEnvVar = "THV_UNTRUSTED_TOKEN_STORE_KEK_SECRET" // #nosec G101 -- env var name, not a credential
+	untrustedTokenStoreKEKKeyEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_KEY"    // #nosec G101 -- env var name, not a credential
+	untrustedTokenStoreKEKIDsEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_IDS"    // #nosec G101 -- env var name, not a credential
+)
+
+// Platform-operator tunables (Wave-5 spec §3.1/§3.2/§4), resolved ONCE here at
+// the composition root — never hot-reloaded. Every one fails startup on an
+// unparseable/zero/negative value (fail loud).
+const (
+	// envUntrustedEnvoyImage overrides the pinned Envoy data-plane image
+	// (air-gapped mirrors).
+	envUntrustedEnvoyImage = "THV_UNTRUSTED_ENVOY_IMAGE"
+	// envUntrustedBrokerImage overrides the pinned broker sidecar image.
+	envUntrustedBrokerImage = "THV_UNTRUSTED_BROKER_IMAGE"
+	// envUntrustedSidecarCPU scales the envoy/broker sidecar CPU
+	// requests/limits (multiplier, 1.0 = defaults).
+	envUntrustedSidecarCPU = "THV_UNTRUSTED_SIDECAR_CPU"
+	// envUntrustedSidecarMem scales the envoy/broker sidecar memory
+	// requests/limits (multiplier, 1.0 = defaults).
+	envUntrustedSidecarMem = "THV_UNTRUSTED_SIDECAR_MEM"
+
+	// envUntrustedIdleTTL is the pod liveness lease the reaper enforces.
+	// Default 30m.
+	envUntrustedIdleTTL = "THV_UNTRUSTED_IDLE_TTL"
+	// envUntrustedPerUserQuota caps concurrent untrusted pods per user.
+	// Default 10.
+	envUntrustedPerUserQuota = "THV_UNTRUSTED_PER_USER_QUOTA"
+	// envUntrustedPerServerCap caps concurrent untrusted pods per MCPServer.
+	// Default 200.
+	envUntrustedPerServerCap = "THV_UNTRUSTED_PER_SERVER_CAP"
+	// envUntrustedGlobalCapRatio is the fraction of the session cache
+	// capacity bounding total untrusted pods. Default 0.8.
+	envUntrustedGlobalCapRatio = "THV_UNTRUSTED_GLOBAL_CAP_RATIO"
+	// envUntrustedReadinessTimeout is the failed-cold-start threshold
+	// (resolver wait budget AND reaper sweep rule). Default 120s.
+	envUntrustedReadinessTimeout = "THV_UNTRUSTED_READINESS_TIMEOUT"
+)
 
 // defaultSessionKeyPrefix mirrors the fallback in server.buildSessionDataStorage.
 const defaultSessionKeyPrefix = "thv:vmcp:session:"
@@ -107,6 +155,15 @@ func buildUntrustedStack(
 	if keyPrefix == "" {
 		keyPrefix = defaultSessionKeyPrefix
 	}
+
+	// Resolve the platform tunables once, before any dependency construction,
+	// so a malformed knob fails startup with a clean error (no half-built
+	// stack).
+	tunables, err := resolveUntrustedTunables()
+	if err != nil {
+		return nil, err
+	}
+
 	redisClient, err := tcredis.NewClient(ctx, &tcredis.Config{
 		Addr:     cfg.SessionStorage.Address,
 		Password: os.Getenv(config.RedisPasswordEnvVar),
@@ -123,14 +180,26 @@ func buildUntrustedStack(
 	}
 
 	stack, err := untrusted.NewStack(untrusted.WiringConfig{
-		K8sClient:     k8sClient,
-		RedisClient:   redisClient,
-		KeyPrefix:     keyPrefix,
-		Namespace:     namespace,
-		VMCPUId:       untrustedVMCPUId(),
-		Admission:     untrusted.AdmissionConfig{CacheCapacity: untrustedCacheCapacity()},
-		TokenStore:    resolveTokenStoreConfig(namespace, vmcpName),
-		MeterProvider: meterProvider,
+		K8sClient:   k8sClient,
+		RedisClient: redisClient,
+		KeyPrefix:   keyPrefix,
+		Namespace:   namespace,
+		VMCPUId:     untrustedVMCPUId(),
+		Admission: untrusted.AdmissionConfig{
+			PerUserPodQuota: tunables.perUserQuota,
+			PerMCPServerCap: tunables.perServerCap,
+			GlobalCapFactor: tunables.globalCapRatio,
+			CacheCapacity:   untrustedCacheCapacity(),
+		},
+		Reaper: untrusted.ReaperConfig{
+			IdleTTL:          tunables.idleTTL,
+			ReadinessTimeout: tunables.readinessTimeout,
+		},
+		ReadyBudget:      tunables.readinessTimeout,
+		TokenStore:       resolveTokenStoreConfig(namespace, vmcpName),
+		Images:           tunables.images,
+		SidecarResources: tunables.sidecarResources,
+		MeterProvider:    meterProvider,
 	})
 	if err != nil {
 		_ = redisClient.Close()
@@ -145,7 +214,11 @@ func buildUntrustedStack(
 
 // resolveTokenStoreConfig builds the egress-broker token-store coordinates from
 // the vMCP's identity and the operator-injected Redis address. Returns nil
-// (broker fails closed) when the address is absent.
+// (broker fails closed) when the address is absent. When the operator wired
+// token encryption (THV_UNTRUSTED_TOKEN_STORE_KEK_SECRET/_KEY/_IDS), the KEK
+// Secret name, the ACTIVE key ID, and the full key-ID set are carried so every
+// cloned sidecar reads the keys from the Secret — never literals — and its
+// keyring knows retired IDs too (rotation never orphans ciphertext).
 func resolveTokenStoreConfig(namespace, vmcpName string) *untrusted.TokenStoreConfig {
 	addr := os.Getenv(untrustedTokenStoreAddrEnvVar)
 	if addr == "" {
@@ -154,10 +227,194 @@ func resolveTokenStoreConfig(namespace, vmcpName string) *untrusted.TokenStoreCo
 			"env_var", untrustedTokenStoreAddrEnvVar)
 		return nil
 	}
-	return &untrusted.TokenStoreConfig{
+	ts := &untrusted.TokenStoreConfig{
 		RedisAddr: addr,
 		KeyPrefix: authstorage.DeriveKeyPrefix(namespace, vmcpName),
 	}
+	secretName := os.Getenv(untrustedTokenStoreKEKSecretEnvVar)
+	activeID := os.Getenv(untrustedTokenStoreKEKKeyEnvVar)
+	idsRaw := os.Getenv(untrustedTokenStoreKEKIDsEnvVar)
+	// All-or-nothing: partial KEK coordinates (a hand-edited Deployment or an
+	// operator/vMCP version skew) leave the sidecar keyring under-specified —
+	// warn loudly and render no KEK config (encryption off on the sidecar; the
+	// broker fails closed on any encrypted row).
+	if secretName == "" && activeID == "" && idsRaw == "" {
+		return ts
+	}
+	ids := splitNonEmpty(idsRaw, ",")
+	if secretName == "" || activeID == "" || len(ids) == 0 || !slices.Contains(ids, activeID) {
+		slog.Warn("untrusted token-store KEK coordinates are incomplete "+
+			"(secret name, active key ID, and the key-ID set are required together); "+
+			"egress-broker sidecars run without token decryption",
+			"secret_set", secretName != "",
+			"active_id_set", activeID != "",
+			"ids_set", len(ids) > 0)
+		return ts
+	}
+	ts.KEKSecret = secretName
+	ts.KEKActiveID = activeID
+	ts.KEKIDs = ids
+	return ts
+}
+
+// splitNonEmpty splits s on sep and drops empty elements (so a trailing or
+// leading separator in the operator-rendered list cannot produce an empty ID).
+func splitNonEmpty(s, sep string) []string {
+	var out []string
+	for _, part := range strings.Split(s, sep) {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// untrustedTunables carries the resolved Wave-5 platform knobs into
+// buildUntrustedStack. All values come from env vars (see the const block
+// above) or their documented defaults.
+type untrustedTunables struct {
+	images           *untrusted.SidecarImages
+	sidecarResources *untrusted.SidecarResourceOverride
+	idleTTL          time.Duration
+	readinessTimeout time.Duration
+	perUserQuota     int
+	perServerCap     int
+	globalCapRatio   float64
+}
+
+// resolveUntrustedTunables reads the THV_UNTRUSTED_* env vars once. Absent
+// vars take defaults; an unparseable or non-positive value is a startup-fatal
+// error (fail loud — a silently-defaulted quota or timeout is a misconfig the
+// operator cannot see).
+func resolveUntrustedTunables() (*untrustedTunables, error) {
+	t := &untrustedTunables{}
+
+	var err error
+	if t.idleTTL, err = parseEnvDuration(envUntrustedIdleTTL, 30*time.Minute); err != nil {
+		return nil, err
+	}
+	if t.readinessTimeout, err = parseEnvDuration(envUntrustedReadinessTimeout, untrusted.DefaultReadyBudget); err != nil {
+		return nil, err
+	}
+	if t.perUserQuota, err = parseEnvPositiveInt(envUntrustedPerUserQuota, 10); err != nil {
+		return nil, err
+	}
+	if t.perServerCap, err = parseEnvPositiveInt(envUntrustedPerServerCap, 200); err != nil {
+		return nil, err
+	}
+	if t.globalCapRatio, err = parseEnvPositiveFloat(envUntrustedGlobalCapRatio, 0.8); err != nil {
+		return nil, err
+	}
+
+	// Image overrides (supply-chain): absent = the pinned defaults. Overrides
+	// that are not digest-pinned are honored (air-gapped mirrors may retag)
+	// but warned about: a floating tag can silently re-point the untrusted
+	// data plane at a different image on the next pull. A ":latest" tag is
+	// rejected outright — it re-points on EVERY pull and bypasses the
+	// release-pinned broker binary contract.
+	t.images = &untrusted.SidecarImages{
+		EnvoyProxy:   os.Getenv(envUntrustedEnvoyImage),
+		EgressBroker: os.Getenv(envUntrustedBrokerImage),
+	}
+	for _, override := range []struct {
+		envVar string
+		image  string
+	}{
+		{envUntrustedEnvoyImage, t.images.EnvoyProxy},
+		{envUntrustedBrokerImage, t.images.EgressBroker},
+	} {
+		if override.image == "" {
+			continue
+		}
+		if strings.HasSuffix(override.image, ":latest") {
+			return nil, fmt.Errorf("%s value %q must not use the :latest tag; "+
+				"pin the untrusted sidecar image by digest (preferred) or an immutable tag",
+				override.envVar, override.image)
+		}
+		if !strings.Contains(override.image, "@sha256:") {
+			slog.Warn("untrusted sidecar image override is not digest-pinned; "+
+				"a floating tag can silently re-point the untrusted data plane on the next pull",
+				"env_var", override.envVar, "image", override.image)
+		}
+	}
+
+	cpuMult, err := parseEnvMultiplier(envUntrustedSidecarCPU, 1.0)
+	if err != nil {
+		return nil, err
+	}
+	memMult, err := parseEnvMultiplier(envUntrustedSidecarMem, 1.0)
+	if err != nil {
+		return nil, err
+	}
+	t.sidecarResources = &untrusted.SidecarResourceOverride{
+		CPUMultiplier:    cpuMult,
+		MemoryMultiplier: memMult,
+	}
+	return t, nil
+}
+
+// parseEnvDuration resolves a duration env var: absent = def, otherwise the
+// value must parse to a positive duration.
+func parseEnvDuration(envVar string, def time.Duration) (time.Duration, error) {
+	raw := os.Getenv(envVar)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s value %q must be a positive Go duration (e.g. %q)", envVar, raw, def.String())
+	}
+	return d, nil
+}
+
+// parseEnvPositiveInt resolves an integer env var: absent = def, otherwise
+// the value must be a positive integer.
+func parseEnvPositiveInt(envVar string, def int) (int, error) {
+	raw := os.Getenv(envVar)
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s value %q must be a positive integer (default %d)", envVar, raw, def)
+	}
+	return n, nil
+}
+
+// parseEnvPositiveFloat resolves a float env var: absent = def, otherwise the
+// value must be a finite positive number (NaN/Inf are not config).
+func parseEnvPositiveFloat(envVar string, def float64) (float64, error) {
+	raw := os.Getenv(envVar)
+	if raw == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil || f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("%s value %q must be a finite positive number (default %v)", envVar, raw, def)
+	}
+	return f, nil
+}
+
+// maxSidecarMultiplier bounds the sidecar CPU/memory multipliers: a larger
+// factor is a misconfiguration (a stray zero or a units mix-up), never an
+// intent — fail loud instead of requesting thousands of CPUs.
+const maxSidecarMultiplier = 100.0
+
+// parseEnvMultiplier resolves a resource-multiplier env var: absent = def,
+// otherwise the value must be a finite number in (0, maxSidecarMultiplier].
+// NaN/Inf and absurd factors are startup-fatal (a silently-clamped multiplier
+// is a misconfig the operator cannot see).
+func parseEnvMultiplier(envVar string, def float64) (float64, error) {
+	raw := os.Getenv(envVar)
+	if raw == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil || f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) || f > maxSidecarMultiplier {
+		return 0, fmt.Errorf("%s value %q must be a finite number in (0, %v] (default %v)",
+			envVar, raw, maxSidecarMultiplier, def)
+	}
+	return f, nil
 }
 
 // untrustedK8sClient builds the in-cluster controller-runtime client the pod

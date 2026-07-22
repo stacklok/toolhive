@@ -155,3 +155,10 @@ func parsePodTemplateSpec(raw *runtime.RawExtension) (*corev1.PodTemplateSpec, e
 
 	return spec.DeepCopy(), nil
 }
+
+// ParsePodTemplateSpec is the exported form of parsePodTemplateSpec for
+// controller call sites that need the parsed user template itself (e.g. to
+// run additional field-level validation on it before applying the patch).
+func ParsePodTemplateSpec(raw *runtime.RawExtension) (*corev1.PodTemplateSpec, error) {
+	return parsePodTemplateSpec(raw)
+}

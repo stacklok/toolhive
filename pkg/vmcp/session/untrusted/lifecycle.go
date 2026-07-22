@@ -55,6 +55,12 @@ type EnsurePodRequest struct {
 	// broker without a token store (it fails closed at startup — only valid
 	// where the broker is not expected to inject credentials).
 	TokenStore *TokenStoreConfig
+	// Images overrides the egress data-plane images (Wave-5 supply-chain
+	// pinning). Nil = the pinned defaults in egress.go.
+	Images *SidecarImages
+	// SidecarResources overrides the envoy/broker sidecar resource
+	// multipliers (Wave-5). Nil = defaults.
+	SidecarResources *SidecarResourceOverride
 	// OnNewPod, when non-nil, is invoked exactly once per fresh pod create
 	// with the deterministic pod name (used by the resolver to drop stale
 	// session hints). Not invoked when an existing pod is reused.
@@ -70,8 +76,9 @@ const (
 	waitReadyInitialPoll = 500 * time.Millisecond
 	waitReadyMaxPoll     = 5 * time.Second
 
-	// readinessTimeout is the reaper's failed-cold-start threshold.
-	readinessTimeout = DefaultReadyBudget
+	// defaultReadinessTimeout is the reaper's failed-cold-start threshold
+	// (overridable via ReaperConfig.ReadinessTimeout).
+	defaultReadinessTimeout = DefaultReadyBudget
 
 	// zombieHeartbeatGrace is how long a missing vMCP heartbeat is tolerated
 	// before the zombie rule deletes a pod (2x the 5-minute heartbeat TTL).

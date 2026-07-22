@@ -565,6 +565,44 @@ spec:
                         - message: clusterMode requires addr to be set
                           rule: '!(has(self.clusterMode) && self.clusterMode) || (has(self.addr)
                             && self.addr.size() > 0)'
+                      tokenEncryption:
+                        description: |-
+                          TokenEncryption enables envelope encryption of upstream tokens at rest.
+                          Requires redis storage: the RunConfig shape only supports token
+                          encryption on the Redis backend, and untrusted-mode egress (the primary
+                          consumer) requires Redis-backed token storage. ActiveKeyID names the
+                          key used for new writes; KeySecretRef references a Secret whose data
+                          keys are key IDs and values are base64 32-byte KEKs.
+                        properties:
+                          activeKeyId:
+                            description: |-
+                              ActiveKeyID identifies the KEK used to encrypt new writes. Must match a
+                              data key of the Secret referenced by KeySecretRef.
+                            minLength: 1
+                            type: string
+                          keySecretRef:
+                            description: |-
+                              KeySecretRef references the Secret holding the key-encryption keys.
+                              Its data keys are key IDs; values are base64 32-byte KEKs.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - activeKeyId
+                        - keySecretRef
+                        type: object
+                        x-kubernetes-validations:
+                        - message: keySecretRef.name must not be empty
+                          rule: self.keySecretRef.name.size() > 0
                       type:
                         default: memory
                         description: |-
@@ -575,6 +613,9 @@ spec:
                         - redis
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: tokenEncryption requires storage type 'redis'
+                      rule: '!has(self.tokenEncryption) || self.type == ''redis'''
                   tokenLifespans:
                     description: |-
                       TokenLifespans configures the duration that various tokens are valid.
@@ -2167,6 +2208,44 @@ spec:
                         - message: clusterMode requires addr to be set
                           rule: '!(has(self.clusterMode) && self.clusterMode) || (has(self.addr)
                             && self.addr.size() > 0)'
+                      tokenEncryption:
+                        description: |-
+                          TokenEncryption enables envelope encryption of upstream tokens at rest.
+                          Requires redis storage: the RunConfig shape only supports token
+                          encryption on the Redis backend, and untrusted-mode egress (the primary
+                          consumer) requires Redis-backed token storage. ActiveKeyID names the
+                          key used for new writes; KeySecretRef references a Secret whose data
+                          keys are key IDs and values are base64 32-byte KEKs.
+                        properties:
+                          activeKeyId:
+                            description: |-
+                              ActiveKeyID identifies the KEK used to encrypt new writes. Must match a
+                              data key of the Secret referenced by KeySecretRef.
+                            minLength: 1
+                            type: string
+                          keySecretRef:
+                            description: |-
+                              KeySecretRef references the Secret holding the key-encryption keys.
+                              Its data keys are key IDs; values are base64 32-byte KEKs.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - activeKeyId
+                        - keySecretRef
+                        type: object
+                        x-kubernetes-validations:
+                        - message: keySecretRef.name must not be empty
+                          rule: self.keySecretRef.name.size() > 0
                       type:
                         default: memory
                         description: |-
@@ -2177,6 +2256,9 @@ spec:
                         - redis
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: tokenEncryption requires storage type 'redis'
+                      rule: '!has(self.tokenEncryption) || self.type == ''redis'''
                   tokenLifespans:
                     description: |-
                       TokenLifespans configures the duration that various tokens are valid.

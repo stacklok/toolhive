@@ -84,6 +84,26 @@ const (
 	// vMCP, which clones it into untrusted egress-broker sidecars. The value is
 	// the non-secret host:port from spec.authServerConfig.storage.redis.addr.
 	untrustedTokenStoreAddrEnvVar = "THV_UNTRUSTED_TOKEN_STORE_REDIS_ADDR" // #nosec G101 -- env var name, not a credential
+
+	// untrustedTokenStoreKEK*EnvVars carry the token-encryption KEK
+	// coordinates (Secret name + active key ID + the full key-ID set, all
+	// non-secret references) to the vMCP, which renders one SecretKeyRef env
+	// per ID on every cloned egress-broker sidecar. The KEK value itself
+	// never transits an env literal. The IDs env is the ordered union of the
+	// KEK Secret's data keys (active + retired) so key rotation never orphans
+	// sidecar-decrypted rows. pkg/vmcp/cli/untrusted.go mirrors these names;
+	// the contract is pinned by tests on both sides.
+	untrustedTokenStoreKEKSecretEnvVar = "THV_UNTRUSTED_TOKEN_STORE_KEK_SECRET" // #nosec G101 -- env var name, not a credential
+	untrustedTokenStoreKEKKeyEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_KEY"    // #nosec G101 -- env var name, not a credential
+	untrustedTokenStoreKEKIDsEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_IDS"    // #nosec G101 -- env var name, not a credential
+
+	// reservedVMCPEnvPrefixes are the env-var prefixes the operator owns on
+	// the vmcp container. A user PodTemplateSpec must not set them: they
+	// carry operator-injected wiring (untrusted egress coordinates, embedded
+	// auth-server credential indirection) whose override could silently
+	// re-point credential flows.
+	reservedVMCPEnvPrefixUntrusted  = "THV_UNTRUSTED_"
+	reservedVMCPEnvPrefixAuthServer = "TOOLHIVE_AUTHSERVER_"
 )
 
 // RBAC rules for VirtualMCPServer service account in inline mode
@@ -411,42 +431,89 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// does not, reflect.DeepEqual never matches, and the operator updates the
 	// Deployment on every reconcile (see #5616).
 	if vmcp.Spec.AuthServerConfig != nil {
-		env = append(env, ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)...)
+		authServerEnv, err := ctrlutil.GenerateAuthServerEnvVars(ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build embedded auth server env vars: %w", err)
+		}
+		env = append(env, authServerEnv...)
 	}
 
 	// Mount the auth-server token-store coordinates for untrusted-mode egress
 	// (Wave-3): the vMCP forwards these to the egress-broker sidecar at pod-clone
 	// time. The address is non-secret; the vMCP derives the per-tenant key prefix
 	// from its own identity (VMCP_NAME/VMCP_NAMESPACE) via DeriveKeyPrefix.
-	env = append(env, buildUntrustedTokenStoreEnvVars(vmcp)...)
+	tokenStoreEnv, err := r.buildUntrustedTokenStoreEnvVars(ctx, vmcp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build untrusted token-store env vars: %w", err)
+	}
+	env = append(env, tokenStoreEnv...)
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }
 
-// buildUntrustedTokenStoreEnvVars returns the auth-server Redis address env var
-// the vMCP clones into untrusted egress-broker sidecars (THV_EGRESSBROKER_*).
-// Empty when the embedded auth server does not use Redis storage — the broker
-// then fails closed at startup, matching the untrusted-mode posture that
-// upstream-token injection requires Redis-backed token storage. The KEK is
-// deliberately NOT injected here: the CRD has no token-encryption field, and
-// when encryption is enabled (enterprise RunConfig path) the sidecar's KEK is
-// supplied via its own Secret env reference, never a ConfigMap.
-func buildUntrustedTokenStoreEnvVars(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+// buildUntrustedTokenStoreEnvVars returns the auth-server token-store
+// coordinate env vars the vMCP clones into untrusted egress-broker sidecars
+// (THV_UNTRUSTED_TOKEN_STORE_*). Empty when the embedded auth server does not
+// use Redis storage — the broker then fails closed at startup, matching the
+// untrusted-mode posture that upstream-token injection requires Redis-backed
+// token storage. When spec.authServerConfig.storage.tokenEncryption is set,
+// the KEK coordinates (Secret name + active key ID + the full key-ID set,
+// read from the referenced Secret) ride along as non-secret literals; the
+// vMCP turns them into one SecretKeyRef env per key ID on each cloned
+// sidecar, so the KEK values never appear in a pod spec or ConfigMap and a
+// key rotation never orphans ciphertext sealed under a retired ID.
+func (r *VirtualMCPServerReconciler) buildUntrustedTokenStoreEnvVars(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) ([]corev1.EnvVar, error) {
 	as := vmcp.Spec.AuthServerConfig
 	if as == nil || as.Storage == nil ||
 		as.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis ||
 		as.Storage.Redis == nil {
-		return nil
+		return nil, nil
 	}
 	// Sentinel-based auth-server Redis has no single address the sidecar can
 	// dial directly; untrusted egress requires a standalone/cluster addr.
 	if as.Storage.Redis.Addr == "" {
-		return nil
+		// A configured tokenEncryption is silently unusable for untrusted
+		// egress here — never drop the KEK coordinates without a trace (the
+		// broker would fail closed on encrypted rows with no operator-visible
+		// reason). The deployment builder is on every write path (create,
+		// drift-check rebuild), so the Warning fires on each reconcile — a
+		// standing misconfiguration that deserves the repetition.
+		if as.Storage.GetTokenEncryption() != nil {
+			log.FromContext(ctx).Info("tokenEncryption set but Redis storage uses Sentinel; "+
+				"untrusted egress-broker sidecars cannot decrypt upstream tokens",
+				"vmcp", vmcp.Name, "namespace", vmcp.Namespace)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "TokenEncryptionNotSupportedForUntrusted",
+					"UntrustedTokenStore", "tokenEncryption requires standalone/cluster Redis storage; "+
+						"Sentinel-backed auth-server Redis leaves untrusted egress-broker sidecars unable to decrypt upstream tokens")
+			}
+		}
+		return nil, nil
 	}
-	return []corev1.EnvVar{{
+	env := []corev1.EnvVar{{
 		Name:  untrustedTokenStoreAddrEnvVar,
 		Value: as.Storage.Redis.Addr,
 	}}
+	if te := as.Storage.GetTokenEncryption(); te != nil {
+		envByID, err := ctrlutil.ResolveKEKKeySet(ctx, r.Client, vmcp.Namespace, as)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(envByID))
+		for id := range envByID {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		env = append(env,
+			corev1.EnvVar{Name: untrustedTokenStoreKEKSecretEnvVar, Value: te.KeySecretRef.Name},
+			corev1.EnvVar{Name: untrustedTokenStoreKEKKeyEnvVar, Value: te.ActiveKeyID},
+			corev1.EnvVar{Name: untrustedTokenStoreKEKIDsEnvVar, Value: strings.Join(ids, ",")},
+		)
+	}
+	return env, nil
 }
 
 // buildOIDCEnvVars builds environment variables for OIDC client secret mounting.
@@ -1312,8 +1379,12 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	// only enumerates a subset of PodSpec fields and would skip the patch for
 	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
 	// patch is a no-op for `{}` anyway, so always running it is safe.
-	if _, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp"); err != nil {
+	parsed, err := ctrlutil.ParsePodTemplateSpec(vmcp.Spec.PodTemplateSpec)
+	if err != nil {
 		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
+	}
+	if err := validateNoReservedVMCPEnvVars(parsed); err != nil {
+		return err
 	}
 
 	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, vmcp.Spec.PodTemplateSpec.Raw)
@@ -1334,6 +1405,35 @@ const (
 	// caBundleBasePath is the base path where CA bundle ConfigMaps are mounted in the vMCP pod.
 	caBundleBasePath = "/etc/toolhive/ca-bundles"
 )
+
+// validateNoReservedVMCPEnvVars rejects user PodTemplateSpecs that set env
+// vars with operator-reserved prefixes on the vmcp container
+// (THV_UNTRUSTED_* / TOOLHIVE_AUTHSERVER_*). Those env vars carry
+// operator-injected wiring — untrusted egress token-store coordinates and
+// embedded auth-server credential indirection — and letting a user template
+// override them would silently re-point credential flows. Only the container
+// named "vmcp" is checked; sidecar containers the user adds are theirs.
+// Returns nil when parsed is nil (no user template).
+func validateNoReservedVMCPEnvVars(parsed *corev1.PodTemplateSpec) error {
+	if parsed == nil {
+		return nil
+	}
+	for i := range parsed.Spec.Containers {
+		c := &parsed.Spec.Containers[i]
+		if c.Name != "vmcp" {
+			continue
+		}
+		for _, e := range c.Env {
+			if strings.HasPrefix(e.Name, reservedVMCPEnvPrefixUntrusted) ||
+				strings.HasPrefix(e.Name, reservedVMCPEnvPrefixAuthServer) {
+				return fmt.Errorf("PodTemplateSpec must not set env var %q on the vmcp container: "+
+					"the %s*/%s* prefixes are reserved for operator-injected wiring",
+					e.Name, reservedVMCPEnvPrefixUntrusted, reservedVMCPEnvPrefixAuthServer)
+			}
+		}
+	}
+	return nil
+}
 
 // caBundleMountPath returns the mount path for a CA bundle ConfigMap for a given entry name.
 // The key defaults to "ca.crt" if not specified in the CABundleSource.

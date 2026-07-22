@@ -4,11 +4,18 @@
 package docker
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"regexp"
 	"testing"
+	"time"
 
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -40,6 +47,39 @@ func findRBACFilter(listener envoyListener) *envoyHTTPRBAC {
 		}
 	}
 	return nil
+}
+
+// collectAuthorityRegexes walks every policy/permission in an RBAC filter
+// (including or_rules) and returns all :authority safe_regex patterns.
+func collectAuthorityRegexes(rbac *envoyHTTPRBAC) []string {
+	var out []string
+	var walk func(perms []envoyPermission)
+	walk = func(perms []envoyPermission) {
+		for _, p := range perms {
+			if p.Header != nil && p.Header.Name == ":authority" &&
+				p.Header.StringMatch != nil && p.Header.StringMatch.SafeRegex != nil {
+				out = append(out, p.Header.StringMatch.SafeRegex.Regex)
+			}
+			if p.OrRules != nil {
+				walk(p.OrRules.Rules)
+			}
+		}
+	}
+	for _, pol := range rbac.Rules.Policies {
+		walk(pol.Permissions)
+	}
+	return out
+}
+
+// authorityMatched reports whether any of the given RE2 patterns matches the
+// authority, replicating Envoy's full-string anchoring.
+func authorityMatched(patterns []string, authority string) bool {
+	for _, p := range patterns {
+		if regexp.MustCompile("^(?:" + p + ")$").MatchString(authority) {
+			return true
+		}
+	}
+	return false
 }
 
 // findDenyRBACFilter returns the first RBAC filter with action == "DENY" from
@@ -194,36 +234,47 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 			}
 
 			if tt.wantGatewayDenyAbsent {
-				// Serialize to JSON and verify neither gateway hostname nor the
-				// gateway CIDR deny appear anywhere in the config.
-				raw, err := json.Marshal(listener)
-				require.NoError(t, err)
-				s := string(raw)
-				assert.NotContains(t, s, dockerGatewayHostname,
-					"docker gateway hostname should be absent when AllowDockerGateway=true")
-				assert.NotContains(t, s, dockerDefaultBridgeGatewayIP,
-					"docker gateway IP should be absent when AllowDockerGateway=true")
-
-				// Also confirm no DENY RBAC filter exists in the Go struct.
-				denyFilter := findDenyRBACFilter(listener)
-				assert.Nil(t, denyFilter,
+				// --allow-docker-gateway: no DENY filter, and the ALLOW filter must
+				// explicitly permit the gateway (omitting the deny alone is not
+				// enough under a default-deny allowlist — see #2).
+				assert.Nil(t, findDenyRBACFilter(listener),
 					"no DENY RBAC filter should be present when AllowDockerGateway=true")
+				allow := findRBACFilter(listener)
+				require.NotNil(t, allow)
+				pats := collectAuthorityRegexes(allow)
+				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP),
+					"ALLOW filter must permit the gateway IP when AllowDockerGateway=true")
+				assert.True(t, authorityMatched(pats, dockerGatewayHostname),
+					"ALLOW filter must permit host.docker.internal when AllowDockerGateway=true")
 			}
 
-			if tt.wantGatewayDenyL3 {
-				raw, err := json.Marshal(listener)
-				require.NoError(t, err)
-				assert.Contains(t, string(raw), dockerDefaultBridgeGatewayIP,
-					"expected L3 CIDR deny on gateway IP")
-			}
+			// wantGatewayDenyL3/L7: the DENY filter must block the gateway by
+			// :authority — the IP literal (with/without port) AND the hostnames,
+			// case-insensitively — without a destination_ip rule (inert for a
+			// forward proxy). See #1/#4.
+			if tt.wantGatewayDenyL3 || tt.wantGatewayDenyL7 {
+				deny := findDenyRBACFilter(listener)
+				require.NotNil(t, deny, "expected a DENY RBAC filter for the gateway")
+				pats := collectAuthorityRegexes(deny)
 
-			if tt.wantGatewayDenyL7 {
+				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP),
+					"deny must match the gateway IP")
+				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP+":8080"),
+					"deny must match the gateway IP with a port (raw-IP bypass)")
+				assert.True(t, authorityMatched(pats, dockerGatewayHostname),
+					"deny must match host.docker.internal")
+				assert.True(t, authorityMatched(pats, dockerAltGatewayHostname),
+					"deny must match gateway.docker.internal")
+				assert.True(t, authorityMatched(pats, "HOST.DOCKER.INTERNAL"),
+					"deny must be case-insensitive (uppercase must not bypass)")
+				assert.False(t, authorityMatched(pats, dockerGatewayHostname+".attacker.com"),
+					"deny must be anchored (lookalike suffix must not match)")
+
+				// The dead destination_ip L3 rule must be gone.
 				raw, err := json.Marshal(listener)
 				require.NoError(t, err)
-				assert.Contains(t, string(raw), dockerGatewayHostname,
-					"expected L7 authority deny for host.docker.internal")
-				assert.Contains(t, string(raw), dockerAltGatewayHostname,
-					"expected L7 authority deny for gateway.docker.internal")
+				assert.NotContains(t, string(raw), "destination_ip",
+					"destination_ip is inert for a forward proxy and must not be used")
 			}
 		})
 	}
@@ -367,7 +418,10 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 			wantDomains:       []string{"app.example.com"},
 		},
 		{
-			name: "nil permissions defaults to permissive localhost gating",
+			// No inbound AllowHost → wildcard virtual host. This is safe because
+			// the ingress listener is bound to 127.0.0.1 on the host, so only the
+			// local proxy runner can reach it regardless of the vhost domain.
+			name: "nil permissions defaults to wildcard virtual host",
 			spec: proxySpec{
 				WorkloadName:  "tool",
 				UpstreamPort:  7070,
@@ -377,6 +431,7 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 			hostPort:          17070,
 			wantUpstreamRef:   "tool",
 			wantHostPortBound: 17070,
+			wantDomains:       []string{`"*"`},
 		},
 	}
 
@@ -608,4 +663,131 @@ func TestEgressClusterTypeURL(t *testing.T) {
 
 	assert.Contains(t, s, typeDFPCluster,
 		"@type for DFP cluster config must be present in serialized JSON")
+}
+
+// TestEnvoyBootstrap_ValidatesAgainstRealEnvoy asserts that the generated
+// bootstrap is accepted by a real Envoy (`--mode validate`), across the deny,
+// allow-gateway, and allowlist permutations. Hand-rolled protobuf-JSON can pass
+// Go-level unit tests yet be rejected by Envoy (wrong @type, bad matcher shape),
+// so this closes that gap. Skips when docker is unavailable.
+func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available; skipping real-Envoy validation")
+	}
+
+	cases := []struct {
+		name string
+		spec proxySpec
+	}{
+		{
+			name: "allowlist + gateway deny + ingress",
+			spec: proxySpec{
+				WorkloadName: "demo", TransportType: "streamable-http", UpstreamPort: 8080,
+				GatewayIP: dockerDefaultBridgeGatewayIP,
+				Permissions: &permissions.NetworkPermissions{
+					Outbound: &permissions.OutboundNetworkPermissions{AllowHost: []string{"example.com", ".github.com"}},
+					Inbound:  &permissions.InboundNetworkPermissions{AllowHost: []string{"app.internal"}},
+				},
+			},
+		},
+		{
+			name: "allow-docker-gateway + insecure-allow-all + stdio (egress only)",
+			spec: proxySpec{
+				WorkloadName: "demo", TransportType: "stdio", AllowDockerGateway: true,
+				GatewayIP:   dockerDefaultBridgeGatewayIP,
+				Permissions: &permissions.NetworkPermissions{Outbound: &permissions.OutboundNetworkPermissions{InsecureAllowAll: true}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			listeners := []envoyListener{buildEgressListener(tc.spec)}
+			clusters := []envoyCluster{buildEgressCluster()}
+			if tc.spec.TransportType != "stdio" {
+				listeners = append(listeners, buildIngressListener(tc.spec, 18080))
+				clusters = append(clusters, buildIngressCluster(tc.spec))
+			}
+			b := envoyBootstrap{
+				Admin:           &envoyAdmin{Address: envoyAddress{SocketAddress: envoySocketAddress{Address: "127.0.0.1", PortValue: 9901}}},
+				StaticResources: envoyStaticResources{Listeners: listeners, Clusters: clusters},
+			}
+			path, err := writeEnvoyBootstrap(b)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.Remove(path) })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			//nolint:gosec // G204: fixed args; path is a test-controlled temp file
+			out, err := exec.CommandContext(ctx, "docker", "run", "--rm",
+				"-v", path+":/etc/envoy/envoy.json:ro",
+				defaultEnvoyImage, "--mode", "validate", "-c", "/etc/envoy/envoy.json").CombinedOutput()
+			require.NoError(t, err, "envoy rejected the generated config:\n%s", out)
+			assert.Contains(t, string(out), "configuration '/etc/envoy/envoy.json' OK")
+		})
+	}
+}
+
+// TestEnvoyProxy_SetupOrchestration covers the container-orchestration branch
+// logic of SetupEgress/SetupIngress without a live daemon: the egress container
+// is always created (named <name>-egress), a non-stdio workload reserves an
+// ingress port that SetupIngress returns, and a stdio workload reserves none.
+func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		transport    string
+		upstreamPort int
+		wantIngress  bool
+	}{
+		{name: "non-stdio reserves an ingress port", transport: "streamable-http", upstreamPort: 8080, wantIngress: true},
+		{name: "stdio reserves no ingress port", transport: "stdio", upstreamPort: 0, wantIngress: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var createdName string
+			api := &fakeDockerAPI{
+				createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, name string) (container.CreateResponse, error) {
+					createdName = name
+					return container.CreateResponse{ID: "cid-envoy"}, nil
+				},
+				startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error { return nil },
+			}
+			c := &Client{
+				api:          api,
+				imageManager: &fakeImageManager{availableImages: map[string]struct{}{defaultEnvoyImage: {}}},
+			}
+			e := &envoyProxy{client: c}
+
+			spec := proxySpec{
+				WorkloadName:  "app",
+				TransportType: tt.transport,
+				UpstreamPort:  tt.upstreamPort,
+				GatewayIP:     dockerDefaultBridgeGatewayIP,
+				Endpoints:     map[string]*network.EndpointSettings{},
+			}
+
+			egress, err := e.SetupEgress(t.Context(), spec)
+			require.NoError(t, err)
+			assert.Equal(t, "app-egress", createdName, "envoy container must reuse the -egress name")
+			assert.Equal(t, "http://app-egress:3128", egress.EnvVars["HTTP_PROXY"])
+
+			ingressPort, err := e.SetupIngress(t.Context(), spec, egress)
+			require.NoError(t, err)
+			if tt.wantIngress {
+				assert.Positive(t, ingressPort, "non-stdio must reserve an ingress port")
+				assert.Equal(t, egress.ingressPort, ingressPort, "SetupIngress must return the port reserved in SetupEgress")
+			} else {
+				assert.Zero(t, ingressPort, "stdio must not reserve an ingress port")
+			}
+		})
+	}
 }

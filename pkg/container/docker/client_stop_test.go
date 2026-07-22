@@ -139,14 +139,14 @@ func TestStopWorkload_NotFound_ReturnsNil(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestStopProxyContainer_HandlesEnvoyAndSquidTopologies guards the cleanup path
-// shared by both proxy backends. StopWorkload iterates the fixed proxy suffixes
-// (-egress, -ingress, -dns) and calls stopProxyContainer for each. A legacy Squid
-// workload has all three; an Envoy workload consolidates egress+ingress into one
-// container and therefore has NO -ingress container. stopProxyContainer must stop
-// a container that exists and silently tolerate one that does not, so the same
-// teardown works for both the 2-container (Envoy) and 3-container (Squid)
-// topologies without backend-specific logic. See #5902.
+// TestStopProxyContainer_HandlesEnvoyAndSquidTopologies exercises the building
+// block of the shared cleanup path. StopWorkload iterates the fixed proxy
+// suffixes (-egress, -ingress, -dns) and calls stopProxyContainer for each; this
+// test verifies stopProxyContainer's per-container contract directly: stop a
+// container that exists, and silently tolerate one that does not. That tolerance
+// is what lets the same suffix iteration clean up both the 3-container Squid
+// workload and the 2-container Envoy workload (which has no -ingress container)
+// without backend-specific logic. See #5902.
 func TestStopProxyContainer_HandlesEnvoyAndSquidTopologies(t *testing.T) {
 	t.Parallel()
 

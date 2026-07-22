@@ -10,9 +10,11 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/moby/moby/api/types/container"
+	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	lb "github.com/stacklok/toolhive/pkg/labels"
@@ -20,7 +22,7 @@ import (
 )
 
 const (
-	// defaultEnvoyImage is pinned by digest to prevent unexpected updates.
+	// defaultEnvoyImage is pinned by tag. Digest pinning is tracked in #5903.
 	// Override with TOOLHIVE_ENVOY_IMAGE.
 	defaultEnvoyImage = "envoyproxy/envoy-distroless:v1.32.3"
 
@@ -50,10 +52,6 @@ func getEnvoyImage() string {
 	}
 	return defaultEnvoyImage
 }
-
-// boolPtr returns a pointer to b, used for the RBAC any permission field which
-// requires a pointer to distinguish "unset" from "false".
-func boolPtr(b bool) *bool { return &b }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -180,21 +178,14 @@ type envoyRBACPolicy struct {
 // envoyPermission matches a request by various criteria. Exactly one field
 // should be set per permission entry.
 type envoyPermission struct {
-	Any           *bool               `json:"any,omitempty"`
-	Header        *envoyHeaderMatcher `json:"header,omitempty"`
-	DestinationIP *envoyCIDRRange     `json:"destination_ip,omitempty"`
-	OrRules       *envoyOrRules       `json:"or_rules,omitempty"`
+	Any     *bool               `json:"any,omitempty"`
+	Header  *envoyHeaderMatcher `json:"header,omitempty"`
+	OrRules *envoyOrRules       `json:"or_rules,omitempty"`
 }
 
 // envoyOrRules composes multiple permissions with logical OR.
 type envoyOrRules struct {
 	Rules []envoyPermission `json:"rules"`
-}
-
-// envoyCIDRRange matches destination IPs against a CIDR prefix.
-type envoyCIDRRange struct {
-	AddressPrefix string `json:"address_prefix"`
-	PrefixLen     uint32 `json:"prefix_len"`
 }
 
 // envoyHeaderMatcher matches an HTTP header value.
@@ -436,58 +427,53 @@ func buildEgressHTTPFilters(spec proxySpec) []envoyHTTPFilter {
 	return filters
 }
 
-// buildGatewayDenyRBAC builds an RBAC DENY filter that blocks the Docker
-// bridge gateway IP (L3 CIDR) and the Docker-internal hostnames (L7 authority
-// header). This filter must precede the allowlist filter.
+// buildGatewayDenyRBAC builds an RBAC DENY filter that blocks the Docker bridge
+// gateway — both the resolved gateway IP and the Docker-internal hostnames —
+// matched on the :authority header. This filter must precede the allowlist.
+//
+// Matching is on :authority (not destination_ip): for a forward proxy the RBAC
+// destination_ip resolves to Envoy's own listener socket, not the proxied
+// target, so an L3 CIDR rule never matches the upstream. The forward-proxy
+// target is carried in :authority for both plain HTTP and HTTPS CONNECT, so
+// authority matching — including the gateway IP literal — is what actually
+// blocks it (mirroring Squid's `dst`/`dstdomain` denies).
 func buildGatewayDenyRBAC(gatewayIP string) *envoyHTTPRBAC {
 	return &envoyHTTPRBAC{
 		Type: typeHTTPRBAC,
 		Rules: envoyRBACRules{
 			Action: "DENY",
 			Policies: map[string]envoyRBACPolicy{
-				"gateway-ip": {
-					Permissions: []envoyPermission{
-						{
-							DestinationIP: &envoyCIDRRange{
-								AddressPrefix: gatewayIP,
-								PrefixLen:     32,
-							},
-						},
-					},
-					Principals: []envoyPrincipal{{Any: true}},
-				},
-				"gateway-hostnames": {
-					Permissions: []envoyPermission{
-						{
-							// Prefix match covers both plain HTTP (:authority = "host.docker.internal")
-							// and HTTPS CONNECT (:authority = "host.docker.internal:443").
-							OrRules: &envoyOrRules{
-								Rules: []envoyPermission{
-									{
-										Header: &envoyHeaderMatcher{
-											Name: ":authority",
-											StringMatch: &envoyStringMatch{
-												Prefix: dockerGatewayHostname,
-											},
-										},
-									},
-									{
-										Header: &envoyHeaderMatcher{
-											Name: ":authority",
-											StringMatch: &envoyStringMatch{
-												Prefix: dockerAltGatewayHostname,
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-					Principals: []envoyPrincipal{{Any: true}},
+				"gateway": {
+					Permissions: gatewayAuthorityPermissions(gatewayIP),
+					Principals:  []envoyPrincipal{{Any: true}},
 				},
 			},
 		},
 	}
+}
+
+// gatewayAuthorityPermissions returns RBAC permissions that match the Docker
+// gateway on the :authority header — the resolved gateway IP literal plus the
+// two Docker-internal hostnames. Each is matched with hostMatchRegex, so the
+// match is anchored, case-insensitive (HOST.DOCKER.INTERNAL cannot bypass it),
+// and tolerant of an optional :port. Shared by the deny path (gateway blocked)
+// and the allow path (--allow-docker-gateway).
+func gatewayAuthorityPermissions(gatewayIP string) []envoyPermission {
+	patterns := []string{
+		hostMatchRegex(gatewayIP),
+		hostMatchRegex(dockerGatewayHostname),
+		hostMatchRegex(dockerAltGatewayHostname),
+	}
+	rules := make([]envoyPermission, 0, len(patterns))
+	for _, re := range patterns {
+		rules = append(rules, envoyPermission{
+			Header: &envoyHeaderMatcher{
+				Name:        ":authority",
+				StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: re}},
+			},
+		})
+	}
+	return []envoyPermission{{OrRules: &envoyOrRules{Rules: rules}}}
 }
 
 // buildAllowlistRBAC builds an RBAC ALLOW filter encoding the outbound
@@ -510,20 +496,34 @@ func buildAllowlistRBAC(spec proxySpec) *envoyHTTPRBAC {
 // InsecureAllowAll produces a single wildcard policy. Each AllowHost entry
 // becomes a policy matching the :authority header via hostMatchRegex, which
 // mirrors Squid's dstdomain semantics (see hostMatchRegex for the syntax).
+//
+// When spec.AllowDockerGateway is set, an explicit ALLOW policy for the gateway
+// is added: omitting the deny filter alone is not enough, because the allowlist
+// is default-deny, so the gateway would still be blocked under a non-permissive
+// profile. This mirrors Squid, which emits explicit allow rules for the flag.
 func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
+	policies := make(map[string]envoyRBACPolicy)
+
+	// --allow-docker-gateway: grant the gateway explicitly (see doc comment).
+	// Harmless under InsecureAllowAll (allow-all already covers it).
+	if spec.AllowDockerGateway {
+		policies["gateway"] = envoyRBACPolicy{
+			Permissions: gatewayAuthorityPermissions(spec.GatewayIP),
+			Principals:  []envoyPrincipal{{Any: true}},
+		}
+	}
+
 	if spec.Permissions == nil || spec.Permissions.Outbound == nil {
-		return make(map[string]envoyRBACPolicy)
+		return policies
 	}
 	out := spec.Permissions.Outbound
 	if out.InsecureAllowAll {
-		return map[string]envoyRBACPolicy{
-			"allow-all": {
-				Permissions: []envoyPermission{{Any: boolPtr(true)}},
-				Principals:  []envoyPrincipal{{Any: true}},
-			},
+		policies["allow-all"] = envoyRBACPolicy{
+			Permissions: []envoyPermission{{Any: ptr.To(true)}},
+			Principals:  []envoyPrincipal{{Any: true}},
 		}
+		return policies
 	}
-	policies := make(map[string]envoyRBACPolicy)
 	for _, host := range out.AllowHost {
 		policies[host] = envoyRBACPolicy{
 			Permissions: []envoyPermission{
@@ -774,17 +774,22 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 
 	configPath, err := writeEnvoyBootstrap(bootstrap)
 	if err != nil {
-		return egressResult{}, fmt.Errorf("failed to write envoy bootstrap: %w", err)
+		return egressResult{}, err // already wrapped with context
 	}
 
 	envoyImage := getEnvoyImage()
+	//nolint:gosec // G706: envoy image name from config
 	slog.Debug("setting up envoy container", "name", egressContainerName, "image", envoyImage)
 
 	if err := e.client.imageManager.PullImage(ctx, envoyImage); err != nil {
-		_, inspectErr := e.client.imageManager.ImageExists(ctx, envoyImage)
-		if inspectErr != nil {
+		// Fall back to a locally-present image; only proceed if it actually
+		// exists (ImageExists returns (false, nil) when absent, so the bool
+		// must be checked, not just the error).
+		exists, inspectErr := e.client.imageManager.ImageExists(ctx, envoyImage)
+		if inspectErr != nil || !exists {
 			return egressResult{}, fmt.Errorf("failed to pull envoy image: %w", err)
 		}
+		//nolint:gosec // G706: envoy image name from config
 		slog.Debug("envoy image exists locally, continuing despite pull failure", "image", envoyImage)
 	}
 
@@ -809,10 +814,11 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 	var exposedPorts map[string]struct{}
 	var portBindings map[string][]runtime.PortBinding
 	if ingressPort > 0 {
-		portKey := fmt.Sprintf("%d/tcp", ingressPort)
+		portStr := strconv.Itoa(ingressPort)
+		portKey := portStr + "/tcp"
 		exposedPorts = map[string]struct{}{portKey: {}}
 		portBindings = map[string][]runtime.PortBinding{
-			portKey: {{HostIP: "127.0.0.1", HostPort: fmt.Sprintf("%d", ingressPort)}},
+			portKey: {{HostIP: "127.0.0.1", HostPort: portStr}},
 		}
 	}
 
@@ -820,6 +826,8 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 		Mounts:      convertMounts(mounts),
 		NetworkMode: container.NetworkMode("bridge"),
 		SecurityOpt: []string{"label:disable"},
+		// Envoy distroless runs as nonroot and needs no capabilities; drop all.
+		CapDrop: []string{"ALL"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},

@@ -101,23 +101,51 @@ func (e *HeaderMismatchError) Data() map[string]any {
 	return map[string]any{"header": e.Header, "body": e.Body}
 }
 
+// requestHeaderMismatchReason distinguishes why a Mcp-Method/Mcp-Name header
+// check failed, so Error() can describe the actual problem instead of always
+// reporting a value "mismatch" — the wire code (CodeHeaderMismatch, -32020)
+// is the same in every case; only the human-readable message differs.
+type requestHeaderMismatchReason int
+
+const (
+	// headerMismatchReasonValue is the default: the header and body both
+	// carry a value, but they disagree.
+	headerMismatchReasonValue requestHeaderMismatchReason = iota
+	// headerMismatchReasonMissing means the header was required but absent.
+	headerMismatchReasonMissing
+	// headerMismatchReasonMalformed means the header value itself could not
+	// be decoded (e.g. invalid base64 in a Mcp-Name sentinel).
+	headerMismatchReasonMalformed
+)
+
 // RequestHeaderMismatchError indicates a Modern (2026-07-28) request header
-// contradicted the value carried in the request body. This is the
-// generalized sibling of HeaderMismatchError for the Mcp-Method/Mcp-Name
-// headers: HeaderMismatchError is specific to MCP-Protocol-Version, while
-// this type covers any other header/body consistency check and names which
-// header failed.
+// contradicted, was missing from, or was malformed relative to the value
+// carried in the request body. This is the generalized sibling of
+// HeaderMismatchError for the Mcp-Method/Mcp-Name headers: HeaderMismatchError
+// is specific to MCP-Protocol-Version, while this type covers any other
+// header/body consistency check and names which header failed.
 type RequestHeaderMismatchError struct {
-	// Header is the name of the mismatched header (e.g. "Mcp-Method", "Mcp-Name").
+	// Header is the name of the header that failed the check (e.g. "Mcp-Method", "Mcp-Name").
 	Header string
 	// HeaderValue is the (decoded, where applicable) value carried by the header.
 	HeaderValue string
 	// BodyValue is the value the header was compared against in the request body.
 	BodyValue string
+
+	// reason is unexported: it only shapes Error()'s message, not Data()'s
+	// three-key shape or Code()'s wire value.
+	reason requestHeaderMismatchReason
 }
 
 func (e *RequestHeaderMismatchError) Error() string {
-	return fmt.Sprintf("%s header %q does not match request body value %q", e.Header, e.HeaderValue, e.BodyValue)
+	switch e.reason {
+	case headerMismatchReasonMissing:
+		return fmt.Sprintf("%s header is missing (required for this request)", e.Header)
+	case headerMismatchReasonMalformed:
+		return fmt.Sprintf("%s header value %q is malformed", e.Header, e.HeaderValue)
+	default:
+		return fmt.Sprintf("%s header %q does not match request body value %q", e.Header, e.HeaderValue, e.BodyValue)
+	}
 }
 
 // Code implements CodedError.
@@ -278,36 +306,65 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 	return RevisionModern, nil
 }
 
-// ValidateHeaderConsistency checks the Modern (2026-07-28) Mcp-Method and
-// Mcp-Name request headers, when present, against the corresponding parsed
-// request body fields (Method and ResourceID).
-// A header value that contradicts the body is a hard rejection
-// (*RequestHeaderMismatchError); a Mcp-Name header is decoded via
-// decodeSentinelName before comparison, since the draft spec allows it to be
-// sentinel-encoded. Requests carrying neither header return nil unconditionally,
-// which is the correct no-op for Legacy traffic: Legacy clients never send
-// these headers.
+// nameRequiredMethods are the Modern (2026-07-28) methods for which the draft
+// spec's "Server Validation" section requires a Mcp-Name header naming the
+// body's tool/resource/prompt identifier. Methods outside this set (e.g.
+// tools/list) have no per-request name to check, so Mcp-Name is never
+// required for them — though if a client sends one anyway, it is still
+// validated for consistency.
+var nameRequiredMethods = map[string]bool{
+	"tools/call":     true,
+	"resources/read": true,
+	"prompts/get":    true,
+}
+
+// ValidateHeaderConsistency enforces the Modern (2026-07-28) Mcp-Method and
+// Mcp-Name request headers against the corresponding parsed request body
+// fields (Method and ResourceID).
 //
-// This function does not yet enforce presence/requiredness of these headers
-// on Modern requests, only consistency when present, for the same
-// transport-ambiguity reason noted on the TODO above (this classifier cannot
-// yet tell stdio's "no header concept" apart from HTTP's "header omitted").
+// Caller contract: only call this for a request ClassifyRevision has already
+// classified Modern. Mcp-Method/Mcp-Name are HTTP-only fields — populated
+// solely by ParsingMiddleware reading real HTTP headers (see parser.go) —
+// so there is no stdio/HTTP transport ambiguity here to excuse a Legacy
+// request from this check; the caller must simply not invoke this function
+// for Legacy traffic in the first place.
+//
+// Mcp-Method is required on every Modern request: a missing or empty header
+// is itself a rejection (*RequestHeaderMismatchError), not a silent no-op,
+// and a present-but-different value is a mismatch.
+//
+// Mcp-Name is required only for the methods in nameRequiredMethods
+// (tools/call, resources/read, prompts/get) — for any other method, an
+// absent Mcp-Name header is fine. When present, it is decoded via
+// decodeSentinelName before comparison against ResourceID, since the draft
+// spec allows it to be sentinel-encoded; a decode failure or mismatch is a
+// rejection.
 func ValidateHeaderConsistency(parsed *ParsedMCPRequest) error {
-	if parsed.MCPMethodHeader != "" && parsed.MCPMethodHeader != parsed.Method {
+	if parsed.MCPMethodHeader == "" {
+		return &RequestHeaderMismatchError{Header: "Mcp-Method", reason: headerMismatchReasonMissing}
+	}
+	if parsed.MCPMethodHeader != parsed.Method {
 		return &RequestHeaderMismatchError{Header: "Mcp-Method", HeaderValue: parsed.MCPMethodHeader, BodyValue: parsed.Method}
 	}
 
-	if parsed.MCPNameHeader != "" {
-		decoded, err := decodeSentinelName(parsed.MCPNameHeader)
-		if err != nil || decoded != parsed.ResourceID {
-			headerValue := func() string {
-				if err != nil {
-					return parsed.MCPNameHeader
-				}
-				return decoded
-			}()
-			return &RequestHeaderMismatchError{Header: "Mcp-Name", HeaderValue: headerValue, BodyValue: parsed.ResourceID}
+	if parsed.MCPNameHeader == "" {
+		if nameRequiredMethods[parsed.Method] {
+			return &RequestHeaderMismatchError{Header: "Mcp-Name", reason: headerMismatchReasonMissing}
 		}
+		return nil
+	}
+
+	decoded, err := decodeSentinelName(parsed.MCPNameHeader)
+	if err != nil {
+		return &RequestHeaderMismatchError{
+			Header:      "Mcp-Name",
+			HeaderValue: parsed.MCPNameHeader,
+			BodyValue:   parsed.ResourceID,
+			reason:      headerMismatchReasonMalformed,
+		}
+	}
+	if decoded != parsed.ResourceID {
+		return &RequestHeaderMismatchError{Header: "Mcp-Name", HeaderValue: decoded, BodyValue: parsed.ResourceID}
 	}
 
 	return nil

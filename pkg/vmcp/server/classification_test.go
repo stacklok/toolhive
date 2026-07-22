@@ -20,10 +20,9 @@ import (
 // Reserved Modern _meta keys, mirrored from pkg/mcp/revision.go's unexported
 // constants since classification_test.go cannot import them directly.
 const (
-	metaKeyProtocolVersion     = "io.modelcontextprotocol/protocolVersion"
-	metaKeyClientInfo          = "io.modelcontextprotocol/clientInfo"
-	metaKeyClientCapabilities  = "io.modelcontextprotocol/clientCapabilities"
-	modernProtocolVersionValue = "2026-07-28"
+	metaKeyProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
+	metaKeyClientInfo         = "io.modelcontextprotocol/clientInfo"
+	metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 )
 
 func sentinelEncode(v string) string {
@@ -59,15 +58,18 @@ func TestClassificationMiddleware(t *testing.T) {
 			wantPassthrough: true,
 		},
 		{
+			// tools/list is deliberately not in the Mcp-Name-required set, so this
+			// case only needs Mcp-Method (required on every Modern request) to pass.
 			name: "modern header and complete meta pass through",
 			parsed: &mcpparser.ParsedMCPRequest{
-				Method: "tools/call",
+				Method: "tools/list",
 				Meta: map[string]any{
-					metaKeyProtocolVersion:    modernProtocolVersionValue,
+					metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
 					metaKeyClientCapabilities: map[string]any{},
 				},
+				MCPMethodHeader: "tools/list",
 			},
-			protocolHeader:  modernProtocolVersionValue,
+			protocolHeader:  mcpparser.MCPVersionModern,
 			wantPassthrough: true,
 		},
 		{
@@ -85,7 +87,7 @@ func TestClassificationMiddleware(t *testing.T) {
 			parsed: &mcpparser.ParsedMCPRequest{
 				Method: "tools/call",
 				Meta: map[string]any{
-					metaKeyProtocolVersion:    modernProtocolVersionValue,
+					metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
 					metaKeyClientCapabilities: map[string]any{},
 				},
 			},
@@ -107,28 +109,63 @@ func TestClassificationMiddleware(t *testing.T) {
 			parsed: &mcpparser.ParsedMCPRequest{
 				Method: "tools/call",
 				Meta: map[string]any{
-					metaKeyProtocolVersion: modernProtocolVersionValue,
+					metaKeyProtocolVersion: mcpparser.MCPVersionModern,
 				},
 			},
-			protocolHeader: modernProtocolVersionValue,
+			protocolHeader: mcpparser.MCPVersionModern,
 			wantCode:       mcpparser.CodeMissingClientCapability,
 		},
 		{
-			name: "mismatched Mcp-Method header is a header mismatch",
+			// No Modern signal anywhere (no header, no reserved _meta key), so this
+			// classifies Legacy and ValidateHeaderConsistency must not run at all —
+			// a stray/mismatched Mcp-Method header on Legacy traffic is not an error.
+			name: "legacy request carrying a stray Mcp-Method header passes through unchanged",
 			parsed: &mcpparser.ParsedMCPRequest{
 				Method:          "tools/call",
 				MCPMethodHeader: "resources/read",
 			},
-			wantCode: mcpparser.CodeHeaderMismatch,
+			wantPassthrough: true,
 		},
 		{
 			name: "sentinel-encoded Mcp-Name header mismatched against ResourceID is a header mismatch",
 			parsed: &mcpparser.ParsedMCPRequest{
-				Method:        "tools/call",
-				ResourceID:    "echo",
-				MCPNameHeader: sentinelEncode("other-tool"),
+				Method:     "tools/call",
+				ResourceID: "echo",
+				Meta: map[string]any{
+					metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
+					metaKeyClientCapabilities: map[string]any{},
+				},
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   sentinelEncode("other-tool"),
 			},
-			wantCode: mcpparser.CodeHeaderMismatch,
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantCode:       mcpparser.CodeHeaderMismatch,
+		},
+		{
+			name: "modern request missing required Mcp-Method header is rejected",
+			parsed: &mcpparser.ParsedMCPRequest{
+				Method: "tools/list",
+				Meta: map[string]any{
+					metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
+					metaKeyClientCapabilities: map[string]any{},
+				},
+			},
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantCode:       mcpparser.CodeHeaderMismatch,
+		},
+		{
+			name: "modern tools/call request missing required Mcp-Name header is rejected",
+			parsed: &mcpparser.ParsedMCPRequest{
+				Method:     "tools/call",
+				ResourceID: "echo",
+				Meta: map[string]any{
+					metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
+					metaKeyClientCapabilities: map[string]any{},
+				},
+				MCPMethodHeader: "tools/call",
+			},
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantCode:       mcpparser.CodeHeaderMismatch,
 		},
 	}
 

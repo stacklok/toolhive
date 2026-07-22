@@ -409,14 +409,45 @@ func TestValidateHeaderConsistency(t *testing.T) {
 		checkErr func(t *testing.T, err error)
 	}{
 		{
-			name: "both headers absent is a legacy no-op",
+			name: "missing Mcp-Method header is rejected",
 			parsed: &ParsedMCPRequest{
 				Method:     "tools/call",
 				ResourceID: "my-tool",
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, "Mcp-Method", mismatchErr.Header)
+			},
+		},
+		{
+			name: "method not in the name-required set needs no Mcp-Name",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/list",
+				MCPMethodHeader: "tools/list",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
 				require.NoError(t, err)
+			},
+		},
+		{
+			name: "method in the name-required set missing Mcp-Name is rejected",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, "Mcp-Name", mismatchErr.Header)
 			},
 		},
 		{
@@ -425,6 +456,7 @@ func TestValidateHeaderConsistency(t *testing.T) {
 				Method:          "tools/call",
 				ResourceID:      "my-tool",
 				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "my-tool",
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -437,6 +469,7 @@ func TestValidateHeaderConsistency(t *testing.T) {
 				Method:          "tools/call",
 				ResourceID:      "my-tool",
 				MCPMethodHeader: "resources/read",
+				MCPNameHeader:   "my-tool",
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -452,9 +485,10 @@ func TestValidateHeaderConsistency(t *testing.T) {
 		{
 			name: "Mcp-Name plain string matches ResourceID",
 			parsed: &ParsedMCPRequest{
-				Method:        "tools/call",
-				ResourceID:    "my-tool",
-				MCPNameHeader: "my-tool",
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "my-tool",
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -464,9 +498,10 @@ func TestValidateHeaderConsistency(t *testing.T) {
 		{
 			name: "Mcp-Name plain string mismatches ResourceID",
 			parsed: &ParsedMCPRequest{
-				Method:        "tools/call",
-				ResourceID:    "my-tool",
-				MCPNameHeader: "other-tool",
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "other-tool",
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -482,9 +517,10 @@ func TestValidateHeaderConsistency(t *testing.T) {
 		{
 			name: "Mcp-Name sentinel-encoded decodes to matching ResourceID",
 			parsed: &ParsedMCPRequest{
-				Method:        "tools/call",
-				ResourceID:    "my-tool",
-				MCPNameHeader: sentinelEncode("my-tool"),
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   sentinelEncode("my-tool"),
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -494,9 +530,10 @@ func TestValidateHeaderConsistency(t *testing.T) {
 		{
 			name: "Mcp-Name sentinel-encoded decodes to mismatching value",
 			parsed: &ParsedMCPRequest{
-				Method:        "tools/call",
-				ResourceID:    "my-tool",
-				MCPNameHeader: sentinelEncode("other-tool"),
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   sentinelEncode("other-tool"),
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -511,9 +548,10 @@ func TestValidateHeaderConsistency(t *testing.T) {
 		{
 			name: "Mcp-Name sentinel wrapper with invalid base64 payload",
 			parsed: &ParsedMCPRequest{
-				Method:        "tools/call",
-				ResourceID:    "my-tool",
-				MCPNameHeader: "=?base64?not-valid-base64!!?=",
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "=?base64?not-valid-base64!!?=",
 			},
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()

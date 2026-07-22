@@ -218,6 +218,7 @@ backend is stable.
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
 | Destination IP deny | ✓ (`dst` ACL, resolved IP) | ~ (IP literal in `:authority` only; resolved IP not enforced — see Known Limitations) |
 | Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
+| Port-based allowlist | ✓ (`AllowPort` ACL, AND-d with host) | ✓ (`:authority` suffix match, AND-d with host) |
 | Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
 | Access logs | Per-container, text format | Unified stdout, structured |
 | Config format | Text template | Typed Go structs → protobuf-JSON |
@@ -241,10 +242,6 @@ backend is stable.
   `HTTP_PROXY`) is contained by the `Internal: true` network, not Envoy. True
   non-bypassable enforcement requires iptables TPROXY + an init container with
   `CAP_NET_ADMIN` — this is Phase 2 and requires its own architecture doc.
-- **No port-based allowlist.** `AllowPort` from the permission profile is not
-  yet translated into Envoy egress policy, so an allowlisted host is reachable on
-  any port. Squid honours `AllowPort`; the Envoy backend currently does not,
-  which is a parity gap. Tracked in #5915.
 - **Gateway deny matches the requested name, not the resolved IP.** The deny
   filter matches the `:authority` string (the gateway IP literal and the two
   Docker-internal hostnames). Because an HTTP RBAC filter cannot see the address

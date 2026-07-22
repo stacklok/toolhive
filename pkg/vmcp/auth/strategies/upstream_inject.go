@@ -24,6 +24,11 @@ import (
 //   - ProviderName: The upstream provider name matching an entry in AuthServer.Upstreams.
 //     The token for this provider must be present in the identity's UpstreamTokens map.
 //
+// Optional configuration fields:
+//   - AuthorizeURL: The authorization server's authorize-endpoint URL, carried
+//     in the ConsentRequiredError returned when the provider token is absent
+//     so clients can direct the user to consent.
+//
 // This strategy is appropriate when:
 //   - The backend requires a user-specific upstream IDP token for authentication
 //   - The embedded authorization server has been configured to obtain tokens from
@@ -79,7 +84,13 @@ func (*UpstreamInjectStrategy) Authenticate(
 
 	token := identity.UpstreamTokens[providerName]
 	if token == "" {
-		return fmt.Errorf("provider %q: %w", providerName, authtypes.ErrUpstreamTokenNotFound)
+		// ConsentRequiredError unwraps to ErrUpstreamTokenNotFound, so existing
+		// errors.Is classification is preserved while errors.As lets the
+		// tool-call layer render an actionable consent message.
+		return fmt.Errorf("provider %q: %w", providerName, &authtypes.ConsentRequiredError{
+			Provider:     providerName,
+			AuthorizeURL: strategy.UpstreamInject.AuthorizeURL,
+		})
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))

@@ -12,11 +12,69 @@
 //   - Backend auth configuration structs (BackendAuthStrategy, etc.)
 package types
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+)
 
 // ErrUpstreamTokenNotFound is returned when a required upstream provider token
 // is not present in the identity's UpstreamTokens map.
 var ErrUpstreamTokenNotFound = errors.New("upstream token not found")
+
+// ConsentRequiredMarker is the machine-detectable prefix of the tool-result
+// text emitted when a tool call fails because the user has not consented an
+// upstream provider. The marker is followed by a single space and a JSON
+// payload (consentRequiredPayload). It is a convention, not a wire-protocol
+// change: it travels in the existing IsError/text channel that untrusted
+// servers and stock MCP clients already carry untouched.
+const ConsentRequiredMarker = "UPSTREAM_CONSENT_REQUIRED"
+
+// ConsentRequiredError carries the provider and authorize endpoint for a
+// missing upstream consent, so the tool-call layer can render an actionable
+// IsError result (see FormatConsentRequired). AuthorizeURL may be empty when
+// no authorization server issuer is configured.
+type ConsentRequiredError struct {
+	Provider     string
+	AuthorizeURL string
+}
+
+// Error returns a human-readable message. It contains the provider name and
+// authorize endpoint only — never token material.
+func (e *ConsentRequiredError) Error() string {
+	if e.AuthorizeURL != "" {
+		return fmt.Sprintf("consent required for upstream provider %q (authorize at %s)",
+			e.Provider, e.AuthorizeURL)
+	}
+	return fmt.Sprintf("consent required for upstream provider %q", e.Provider)
+}
+
+// Unwrap returns ErrUpstreamTokenNotFound so existing errors.Is classification
+// (health monitors, pre-check middleware) keeps working while errors.As
+// extracts the structured payload.
+func (*ConsentRequiredError) Unwrap() error {
+	return ErrUpstreamTokenNotFound
+}
+
+// consentRequiredPayload is the JSON object following ConsentRequiredMarker.
+type consentRequiredPayload struct {
+	Provider     string `json:"provider"`
+	AuthorizeURL string `json:"authorize_url,omitempty"`
+}
+
+// FormatConsentRequired renders the consent-required tool-result text:
+// the marker, a space, then a JSON payload carrying the provider and (when
+// configured) the authorize endpoint the client should open to consent.
+// The payload never contains token material.
+func FormatConsentRequired(provider, authorizeURL string) string {
+	payload, err := json.Marshal(consentRequiredPayload{Provider: provider, AuthorizeURL: authorizeURL})
+	if err != nil {
+		// Only non-UTF8 control characters could fail marshaling; fall back to
+		// the marker plus provider so the message is still detectable.
+		return fmt.Sprintf("%s {\"provider\":%q}", ConsentRequiredMarker, provider)
+	}
+	return fmt.Sprintf("%s %s", ConsentRequiredMarker, payload)
+}
 
 // Strategy type identifiers used to identify authentication strategies.
 const (
@@ -162,6 +220,15 @@ type UpstreamInjectConfig struct {
 	// ProviderName is the name of the upstream provider configured in the
 	// embedded authorization server. Must match an entry in AuthServer.Upstreams.
 	ProviderName string `json:"providerName" yaml:"providerName"`
+
+	// AuthorizeURL is the ToolHive authorization server's authorize-endpoint
+	// URL ({issuer}/oauth/authorize). When set, it is carried in the
+	// ConsentRequiredError returned when the provider token is absent, so
+	// clients can direct the user to consent. The URL cannot be a complete
+	// one-click link: the client must merge its own client_id, redirect_uri,
+	// and PKCE parameters. Optional; when empty the error carries no URL.
+	// +optional
+	AuthorizeURL string `json:"authorizeUrl,omitempty" yaml:"authorizeUrl,omitempty"`
 }
 
 // RoleMapping defines a rule for mapping JWT claims to IAM roles.

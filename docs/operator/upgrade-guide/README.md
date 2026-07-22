@@ -11,6 +11,14 @@ This guide is the canonical reproducible verification for the migrator. Companio
 - [`docs/operator/storage-version-migration.md`](../storage-version-migration.md) — reference docs for the controller itself (label contract, opt-in model, mechanism).
 - [Issue #4969](https://github.com/stacklok/toolhive/issues/4969) — the motivating problem.
 
+> **⚠ Upgrade break for namespace-scoped installs.** `operator.features.storageVersionMigrator` now defaults to `true`. The chart hard-fails the render when the migrator is enabled with `operator.rbac.scope=namespace`, because the controller requires cluster-wide CRD access that a namespace-scoped operator does not have. If you run the operator namespace-scoped and never explicitly set this flag, **`helm upgrade` will fail** with:
+>
+> ```
+> operator.features.storageVersionMigrator requires operator.rbac.scope=cluster
+> ```
+>
+> **Before upgrading**, add `operator.features.storageVersionMigrator=false` to your Helm values (or `--set` flags) for any namespace-scoped install. Cluster-scoped installs (the default) are unaffected.
+
 ## Prerequisites
 
 - `kind`, `kubectl`, `helm`, `ko`, `task` on PATH (`go install github.com/google/ko@latest` for ko)
@@ -211,10 +219,10 @@ kubectl rollout status deployment -n toolhive-system --timeout=180s
 
 # Confirm flag is now true — read off the Deployment spec directly (see step 5
 # for why a pod-based check races with the old pod's Terminating state).
-# NOTE: the flag must be set explicitly. The chart default is
-# storageVersionMigrator=false (the feature is opt-in), and `helm upgrade` does
-# not reuse the previous release's --set values, so omitting it here renders the
-# env var as false and the migrator never runs.
+# NOTE: this is set explicitly here only because step 5 explicitly disabled it
+# (and `helm upgrade` does not reuse the previous release's --set values). The
+# chart default is storageVersionMigrator=true, so a normal install/upgrade that
+# omits the flag entirely already runs the migrator.
 kubectl get deploy -n toolhive-system toolhive-operator \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR")].value}'
 # expected: true

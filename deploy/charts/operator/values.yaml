@@ -11,9 +11,13 @@ operator:
     # -- Enable the StorageVersionMigrator controller, which auto-cleans
     # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
     # future release can drop deprecated versions (e.g. v1alpha1) without
-    # orphaning etcd objects in the cluster. Sets
+    # orphaning etcd objects in the cluster. Enabled by default; set to
+    # false to opt out and handle storage-version cleanup yourself. Sets
     # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
-    storageVersionMigrator: false
+    # Requires `operator.rbac.scope=cluster` — the controller watches
+    # cluster-scoped CRDs and re-stores resources across all namespaces, so
+    # the chart rejects this being true when scope is namespace.
+    storageVersionMigrator: true
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 

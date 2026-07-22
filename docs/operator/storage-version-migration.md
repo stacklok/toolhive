@@ -2,7 +2,7 @@
 
 The ToolHive operator ships a `StorageVersionMigrator` controller that keeps every ToolHive CRD's `status.storedVersions` list clean, so a future operator release can drop deprecated API versions (e.g. `v1alpha1`) without orphaning objects in etcd.
 
-The controller is **opt-in** via the `operator.features.storageVersionMigrator` chart value (or the `TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR` environment variable if you inject it directly via `operator.env`).
+The controller is **enabled by default** via the `operator.features.storageVersionMigrator` chart value (or the `TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR` environment variable if you inject it directly via `operator.env`). Set the value to `false` to opt out.
 
 ## Why this exists
 
@@ -71,17 +71,30 @@ Then `task operator-manifests` to regenerate the CRD YAML. CI verifies the marke
 
 ## Enabling the controller
 
-Set the Helm feature flag at install or upgrade time:
+The controller is enabled by default — `operator.features.storageVersionMigrator` defaults to `true`, which sets `TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true` on the operator Deployment and registers the reconciler with the manager. No action is required to use it.
+
+To opt out, set the Helm feature flag to `false` at install or upgrade time:
 
 ```yaml
 operator:
   features:
-    storageVersionMigrator: true
+    storageVersionMigrator: false
 ```
 
-This sets `TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true` on the operator Deployment and registers the reconciler with the manager.
-
 Once enabled, the controller is dormant on CRDs whose `storedVersions` already equals `[<currentStorageVersion>]` — most of the time, most CRDs. It only does meaningful work when a CRD's stored-versions list is dirty (typically right after a graduation release).
+
+### Requires cluster-scoped RBAC
+
+The migrator only works when the operator runs cluster-scoped (`operator.rbac.scope=cluster`, the default). It watches cluster-scoped `CustomResourceDefinition` objects and re-stores custom resources across **all** namespaces — neither is possible for a namespace-scoped operator, which gets only per-namespace `RoleBindings` and a namespace-restricted manager cache. To prevent a silently wedged operator, the chart **fails the render** if `storageVersionMigrator: true` is combined with `operator.rbac.scope=namespace`:
+
+```
+operator.features.storageVersionMigrator requires operator.rbac.scope=cluster: the
+StorageVersionMigrator controller watches cluster-scoped CustomResourceDefinitions and
+re-stores resources across all namespaces, which a namespace-scoped operator cannot do.
+Set operator.features.storageVersionMigrator=false for namespace-scoped installs.
+```
+
+Namespace-scoped installs must set `storageVersionMigrator: false` and handle storage-version cleanup by other means — e.g. running the standalone [`kube-storage-version-migrator`](https://github.com/kubernetes-sigs/kube-storage-version-migrator), which is a cluster-scoped component with its own identity, before any version-removal release.
 
 ## Per-CRD emergency escape hatch
 
@@ -98,10 +111,10 @@ Intended for incident response only. If you deploy the operator via GitOps (Argo
 
 The `StorageVersionMigrator` must have run against your cluster *before* an operator release that drops a deprecated CRD version ships. The typical sequence is:
 
-1. **Release N**: both versions served, newer version is storage, `StorageVersionMigrator` available (opt-in via the chart flag). Operators that enable the migrator have their `storedVersions` trimmed during this deprecation window.
+1. **Release N**: both versions served, newer version is storage, `StorageVersionMigrator` enabled by default. Operators running the migrator have their `storedVersions` trimmed during this deprecation window.
 2. **Release N+1+**: the deprecated version is removed from `spec.versions`. Because every cluster that enabled the migrator already has clean `storedVersions`, the CRD update applies.
 
-> **⚠ Skip-a-version upgrade trap.** If your cluster upgrades directly from a pre-migrator release to the version-removal release without ever running an intermediate release that runs the migrator, the helm upgrade will **fail** when the API server refuses to remove the deprecated version from `spec.versions`. To recover: deploy [kube-storage-version-migrator](https://github.com/kubernetes-sigs/kube-storage-version-migrator) once to clean `storedVersions`, then retry the upgrade. To avoid the trap entirely, install each release in sequence, and enable `storageVersionMigrator: true` at least one release before any version-removal release.
+> **⚠ Skip-a-version upgrade trap.** If your cluster upgrades directly from a pre-migrator release to the version-removal release without ever running an intermediate release that runs the migrator, the helm upgrade will **fail** when the API server refuses to remove the deprecated version from `spec.versions`. To recover: deploy [kube-storage-version-migrator](https://github.com/kubernetes-sigs/kube-storage-version-migrator) once to clean `storedVersions`, then retry the upgrade. To avoid the trap entirely, install each release in sequence, and keep `storageVersionMigrator` enabled (the default) for at least one release before any version-removal release.
 
 ## Verification
 

@@ -49,11 +49,11 @@ var (
 	setupLog = log.Log.WithName("setup")
 )
 
-// envEnableStorageVersionMigrator is the opt-in for the StorageVersionMigrator
-// controller. The controller defaults to OFF in this release so the change can
-// ship safely without functional impact. Set to "true" (or "1", "t") to enable.
-// A follow-up release will flip the default to true alongside the helm chart
-// surface and user docs.
+// envEnableStorageVersionMigrator gates the StorageVersionMigrator controller.
+// The binary itself defaults to OFF when the var is unset; the operator helm
+// chart sets it to "true" by default, so chart-based installs run the migrator
+// unless the operator explicitly opts out. Set to "true" (or "1", "t") to
+// enable, "false" to disable.
 const envEnableStorageVersionMigrator = "TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR"
 
 func init() {
@@ -197,10 +197,10 @@ func setupStorageVersionMigrator(mgr ctrl.Manager) error {
 }
 
 // isStorageVersionMigratorEnabled reports whether the StorageVersionMigrator
-// controller should be registered. Defaults to false in this release — admins
-// must explicitly opt in via TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true.
-// An unparsable value returns an error so startup fails loudly rather than
-// silently disabling the feature an admin asked to turn on.
+// controller should be registered. Defaults to false when
+// TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR is unset; the operator helm chart
+// sets it to "true" by default. An unparsable value returns an error so startup
+// fails loudly rather than silently disabling the feature an admin asked to turn on.
 func isStorageVersionMigratorEnabled() (bool, error) {
 	value, found := os.LookupEnv(envEnableStorageVersionMigrator)
 	if !found {

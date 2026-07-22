@@ -42,6 +42,10 @@ spec:
         - operator.rbac.scope=namespace
         - --set
         - operator.rbac.allowedNamespaces={toolhive-system,test-namespace,toolhive-test-ns-1,toolhive-test-ns-2}
+        # The StorageVersionMigrator watches cluster-scoped CRDs, so it is
+        # unsupported (and chart-rejected) in namespace scope. Opt out here.
+        - --set
+        - operator.features.storageVersionMigrator=false
     - assert:
         file: assert-operator-ready.yaml
     - assert:

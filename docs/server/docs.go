@@ -342,6 +342,10 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config": {
                 "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
                 "properties": {
+                    "authorize_url": {
+                        "description": "AuthorizeURL is the ToolHive authorization server's authorize-endpoint URL\n({issuer}/oauth/authorize). When set, the 401 consent response includes it\nso clients can direct the user to consent. It is only an endpoint: the\nclient merges its own client_id, redirect_uri, and PKCE parameters. It\nmust never be derived from the request Host header (attacker-controlled).\nOptional; when empty the 401 body omits authorize_url.",
+                        "type": "string"
+                    },
                     "custom_header_name": {
                         "description": "CustomHeaderName is the header name when HeaderStrategy is \"custom\".",
                         "type": "string"
@@ -611,7 +615,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
                     },
                     "storage": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig"
+                        "$ref": "#/components/schemas/storage.RunConfig"
                     },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
@@ -769,115 +773,6 @@ const docTemplate = `{
                     "http_method": {
                         "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
                         "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
-                "properties": {
-                    "password_env_var": {
-                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
-                        "type": "string"
-                    },
-                    "username_env_var": {
-                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig": {
-                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
-                "properties": {
-                    "acl_user_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
-                    },
-                    "addr": {
-                        "description": "Addr is the Redis server address (host:port). Required for standalone and cluster modes.\nMutually exclusive with SentinelConfig.",
-                        "type": "string"
-                    },
-                    "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
-                        "type": "string"
-                    },
-                    "cluster_mode": {
-                        "description": "ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.",
-                        "type": "boolean"
-                    },
-                    "dial_timeout": {
-                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
-                        "type": "string"
-                    },
-                    "key_prefix": {
-                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
-                        "type": "string"
-                    },
-                    "read_timeout": {
-                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
-                        "type": "string"
-                    },
-                    "sentinel_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig"
-                    },
-                    "sentinel_tls": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
-                    },
-                    "tls": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
-                    },
-                    "write_timeout": {
-                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
-                "properties": {
-                    "ca_cert_file": {
-                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
-                        "type": "string"
-                    },
-                    "insecure_skip_verify": {
-                        "description": "InsecureSkipVerify skips certificate verification.",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig": {
-                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
-                "properties": {
-                    "redis_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig"
-                    },
-                    "type": {
-                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
-                "properties": {
-                    "db": {
-                        "description": "DB is the Redis database number (default: 0).",
-                        "type": "integer"
-                    },
-                    "master_name": {
-                        "description": "MasterName is the name of the Redis Sentinel master.",
-                        "type": "string"
-                    },
-                    "sentinel_addrs": {
-                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -4237,6 +4132,135 @@ const docTemplate = `{
                     "predicate": {},
                     "predicate_type": {
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "addr": {
+                        "description": "Addr is the Redis server address (host:port). Required for standalone and cluster modes.\nMutually exclusive with SentinelConfig.",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "cluster_mode": {
+                        "description": "ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.",
+                        "type": "boolean"
+                    },
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "sentinel_tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "token_encryption": {
+                        "$ref": "#/components/schemas/storage.TokenEncryptionRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisTLSRunConfig": {
+                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
+                "properties": {
+                    "ca_cert_file": {
+                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify skips certificate verification.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "storage.TokenEncryptionRunConfig": {
+                "description": "TokenEncryption configures envelope encryption for upstream OAuth tokens\nat rest. Presence enables encryption; absence preserves the current\nplaintext behavior.",
+                "properties": {
+                    "active_key_id": {
+                        "description": "ActiveKeyID identifies the KEK used to encrypt new writes. Other IDs in\nKeys remain decrypt-only (retired), supporting lazy read-old/write-new\nrotation.",
+                        "type": "string"
+                    },
+                    "keys": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Keys maps key ID → name of the environment variable holding the\nbase64-encoded 32-byte key-encryption key.",
+                        "type": "object"
                     }
                 },
                 "type": "object"

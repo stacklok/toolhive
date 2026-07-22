@@ -124,15 +124,26 @@ func (e *EgressPolicy) ProviderFor(host string) (string, bool) {
 // second half of D5, evaluated before any credential load or header write).
 // provider must be a name previously returned by ProviderFor.
 func (e *EgressPolicy) Allows(provider, method, path string) bool {
+	return e.AllowsMethod(provider, method) && e.AllowsPath(provider, path)
+}
+
+// AllowsMethod is the method half of Allows (used by the injector to name
+// the deny-reason dimension).
+func (e *EgressPolicy) AllowsMethod(provider, method string) bool {
 	for i := range e.providers {
-		if e.providers[i].Provider != provider {
-			continue
+		if e.providers[i].Provider == provider {
+			return methodAllowed(e.providers[i], method)
 		}
-		p := e.providers[i]
-		if !methodAllowed(p, method) {
-			return false
+	}
+	return false
+}
+
+// AllowsPath is the path half of Allows.
+func (e *EgressPolicy) AllowsPath(provider, path string) bool {
+	for i := range e.providers {
+		if e.providers[i].Provider == provider {
+			return pathAllowed(e.providers[i], path)
 		}
-		return pathAllowed(p, path)
 	}
 	return false
 }

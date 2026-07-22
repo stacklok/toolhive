@@ -205,11 +205,13 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 		t.Parallel()
 		req := testRequest()
 		req.TokenStore = &TokenStoreConfig{
-			RedisAddr:   "redis.auth:6379",
-			KeyPrefix:   "thv:auth:{toolhive:my-vmcp}:",
-			KEKSecret:   "my-vmcp-token-kek",
-			KEKActiveID: "kek-2",
-			KEKIDs:      []string{"kek-1", "kek-2"},
+			RedisAddr:           "redis.auth:6379",
+			KeyPrefix:           "thv:auth:{toolhive:my-vmcp}:",
+			RedisPasswordSecret: "redis-creds",
+			RedisPasswordKey:    "password",
+			KEKSecret:           "my-vmcp-token-kek",
+			KEKActiveID:         "kek-2",
+			KEKIDs:              []string{"kek-1", "kek-2"},
 		}
 		pod, err := clonePodFromTemplate(validTemplate(), "backend-app", req, "vmcp-1")
 		require.NoError(t, err)
@@ -221,6 +223,15 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 		}
 		assert.Equal(t, "redis.auth:6379", env["THV_EGRESSBROKER_REDIS_ADDR"].Value)
 		assert.Equal(t, "thv:auth:{toolhive:my-vmcp}:", env["THV_EGRESSBROKER_REDIS_KEY_PREFIX"].Value)
+
+		// The Redis password is a SecretKeyRef env (KEK pattern — never a
+		// literal); the broker reads it via vmcpconfig.RedisPasswordEnvVar.
+		pw := env["THV_SESSION_REDIS_PASSWORD"]
+		require.NotNil(t, pw.ValueFrom, "the Redis password must come from a Secret env reference")
+		require.NotNil(t, pw.ValueFrom.SecretKeyRef)
+		assert.Equal(t, "redis-creds", pw.ValueFrom.SecretKeyRef.Name)
+		assert.Equal(t, "password", pw.ValueFrom.SecretKeyRef.Key)
+		assert.Empty(t, pw.Value, "the Redis password must never be a pod-spec literal")
 
 		// The active key ID is a non-secret literal.
 		assert.Equal(t, "kek-2", env["THV_EGRESSBROKER_KEK_ID"].Value)
@@ -276,6 +287,10 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 			{"key ID unsafe as env suffix", &TokenStoreConfig{
 				RedisAddr: "r:6379", KeyPrefix: "thv:auth:{a:b}:",
 				KEKSecret: "s", KEKActiveID: "kek.1", KEKIDs: []string{"kek.1"},
+			}},
+			{"password coordinates partial", &TokenStoreConfig{
+				RedisAddr: "r:6379", KeyPrefix: "thv:auth:{a:b}:",
+				RedisPasswordSecret: "redis-creds",
 			}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

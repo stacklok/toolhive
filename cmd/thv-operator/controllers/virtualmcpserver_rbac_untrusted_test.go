@@ -169,11 +169,55 @@ func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 				assert.Empty(t, env)
 				return
 			}
-			require.Len(t, env, 1)
+			require.Len(t, env, 3, "addr + the Redis ACL password Secret coordinates")
 			assert.Equal(t, untrustedTokenStoreAddrEnvVar, env[0].Name)
 			assert.Equal(t, tc.wantAddr, env[0].Value)
 			assert.Nil(t, env[0].ValueFrom, "address is non-secret; must be a plain literal, never a Secret ref")
+			byName := map[string]corev1.EnvVar{}
+			for _, e := range env {
+				byName[e.Name] = e
+				assert.Nil(t, e.ValueFrom, "%s must be a literal coordinate, never a Secret ref", e.Name)
+			}
+			assert.Equal(t, "redis-creds", byName[untrustedTokenStorePasswordSecretEnvVar].Value)
+			assert.Equal(t, "password", byName[untrustedTokenStorePasswordKeyEnvVar].Value)
 		})
+	}
+}
+
+// TestBuildUntrustedTokenStoreEnvVars_PasswordMissing pins the loud-failure
+// seam: standalone Redis storage WITHOUT ACL password coordinates still
+// renders the address (the vMCP/broker fail loud downstream), but flags the
+// misconfiguration with a Warning event so it is never silently dropped.
+func TestBuildUntrustedTokenStoreEnvVars_PasswordMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Storage: &mcpv1beta1.AuthServerStorageConfig{
+			Type:  mcpv1beta1.AuthServerStorageTypeRedis,
+			Redis: &mcpv1beta1.RedisStorageConfig{Addr: "redis.auth:6379"},
+		},
+	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPAuthServerConfig(cfg))
+
+	recorder := events.NewFakeRecorder(10)
+	scheme := testutil.NewScheme(t)
+	r := &VirtualMCPServerReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+
+	env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+	require.NoError(t, err, "the misconfiguration must not error the reconcile (the broker fails loud)")
+	require.Len(t, env, 1, "only the address renders — no password coordinates exist to forward")
+	assert.Equal(t, untrustedTokenStoreAddrEnvVar, env[0].Name)
+
+	select {
+	case event := <-recorder.Events:
+		assert.Contains(t, event, "TokenStorePasswordMissing")
+	default:
+		t.Fatal("expected a Warning event for Redis storage without ACL password coordinates")
 	}
 }
 
@@ -207,13 +251,15 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 		})
 		env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
 		require.NoError(t, err)
-		require.Len(t, env, 4)
+		require.Len(t, env, 6, "addr + password coordinates + KEK coordinates")
 
 		byName := map[string]corev1.EnvVar{}
 		for _, e := range env {
 			byName[e.Name] = e
 		}
 		assert.Equal(t, "redis.auth:6379", byName[untrustedTokenStoreAddrEnvVar].Value)
+		assert.Equal(t, "redis-creds", byName[untrustedTokenStorePasswordSecretEnvVar].Value)
+		assert.Equal(t, "password", byName[untrustedTokenStorePasswordKeyEnvVar].Value)
 		assert.Equal(t, "my-vmcp-kek", byName[untrustedTokenStoreKEKSecretEnvVar].Value)
 		assert.Equal(t, "kek-2", byName[untrustedTokenStoreKEKKeyEnvVar].Value)
 		assert.Equal(t, "kek-1,kek-2", byName[untrustedTokenStoreKEKIDsEnvVar].Value,
@@ -223,14 +269,14 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 		}
 	})
 
-	t.Run("tokenEncryption nil emits only the address env var", func(t *testing.T) {
+	t.Run("tokenEncryption nil emits the address and password coordinate env vars", func(t *testing.T) {
 		t.Parallel()
 		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 			v1beta1test.WithVMCPAuthServerConfig(redisStorage(nil)))
 		r := newTokenStoreTestReconciler(t)
 		env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
 		require.NoError(t, err)
-		require.Len(t, env, 1)
+		require.Len(t, env, 3)
 		assert.Equal(t, untrustedTokenStoreAddrEnvVar, env[0].Name)
 	})
 

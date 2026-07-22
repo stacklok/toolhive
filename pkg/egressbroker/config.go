@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Environment-driven configuration (the sidecar is configured exclusively
@@ -27,15 +28,32 @@ const (
 	// EnvDialAllowlist is a comma-separated CIDR/IP list for the D7 per-dial
 	// resolved-IP validation.
 	EnvDialAllowlist = "THV_EGRESSBROKER_DIAL_ALLOWLIST"
+	// EnvScanFailClosed flips the response scanner (D6c) off its DOCUMENTED
+	// fail-open default: when "true", a scanner-internal error suppresses the
+	// response (502) instead of passing it. Governs scanner errors only — a
+	// detected credential echo ALWAYS blocks in both modes.
+	EnvScanFailClosed = "THV_EGRESSBROKER_SCAN_FAIL_CLOSED"
+	// EnvScanMaxBodyBytes overrides the buffered-body scan cap (bytes).
+	EnvScanMaxBodyBytes = "THV_EGRESSBROKER_SCAN_MAX_BODY_BYTES"
 )
 
-// Defaults for the gRPC listener and the Envoy explicit-proxy port.
+// Defaults for the gRPC listener, the Envoy explicit-proxy port, and the
+// response scanner (D6c).
 const (
 	defaultListenAddress = "127.0.0.1"
 	defaultListenPort    = 9001
 	// DefaultProxyPort is the Envoy explicit-proxy port the backend's
 	// HTTP(S)_PROXY env points at (must match the clone-time wiring).
 	DefaultProxyPort = 15001
+
+	// DefaultScanMaxBodyBytes is the buffered-body scan cap (1 MiB). The
+	// rendered Envoy ext_proc config buffers at most this much per response.
+	DefaultScanMaxBodyBytes = 1 << 20
+	// ScanCorrelationTTL bounds how long an injection's scan record lives
+	// (request/response round trip plus slack).
+	ScanCorrelationTTL = 60 * time.Second
+	// ScanCorrelationMaxEntries bounds the request-id → token map (10k).
+	ScanCorrelationMaxEntries = 10000
 )
 
 // Config is the validated runtime configuration of the broker process.
@@ -52,6 +70,11 @@ type Config struct {
 	ListenPort int
 	// DialAllowlist is the D7 per-dial IP allowlist (required, non-empty).
 	DialAllowlist []string
+	// ScanFailClosed suppresses responses on scanner-internal errors
+	// (default false — the documented fail-open posture, ADR D6c).
+	ScanFailClosed bool
+	// ScanMaxBodyBytes is the buffered-body scan cap (default 1 MiB).
+	ScanMaxBodyBytes int64
 }
 
 // LoadConfig reads and validates the process environment. Fails loudly on
@@ -71,13 +94,12 @@ func LoadConfig(getenv func(string) string) (*Config, error) {
 	if cfg.ListenAddress == "" {
 		cfg.ListenAddress = defaultListenAddress
 	}
-	cfg.ListenPort = defaultListenPort
-	if raw := strings.TrimSpace(getenv(EnvListenPort)); raw != "" {
-		port, err := strconv.Atoi(raw)
-		if err != nil || port <= 0 || port > 65535 {
-			return nil, fmt.Errorf("egressbroker: %s value %q is not a valid port", EnvListenPort, raw)
-		}
-		cfg.ListenPort = port
+	var err error
+	if cfg.ListenPort, err = parsePort(getenv(EnvListenPort)); err != nil {
+		return nil, err
+	}
+	if err := loadScanConfig(cfg, getenv); err != nil {
+		return nil, err
 	}
 	if cfg.PolicyFile == "" {
 		return nil, fmt.Errorf("egressbroker: %s must be set (policy ConfigMap mount)", EnvPolicyFile)
@@ -136,6 +158,40 @@ func (c *Config) ReadBumpCA() (*BumpCA, error) {
 		return nil, fmt.Errorf("egressbroker: failed to read bump CA key: %w", err)
 	}
 	return ParseBumpCA(certPEM, keyPEM)
+}
+
+// parsePort reads an optional port env value (default when empty).
+func parsePort(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultListenPort, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("egressbroker: %s value %q is not a valid port", EnvListenPort, raw)
+	}
+	return port, nil
+}
+
+// loadScanConfig reads the D6c scanner tunables (fail-closed opt-in, body
+// cap) with their documented defaults.
+func loadScanConfig(cfg *Config, getenv func(string) string) error {
+	if raw := strings.TrimSpace(getenv(EnvScanFailClosed)); raw != "" {
+		failClosed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("egressbroker: %s value %q is not a boolean", EnvScanFailClosed, raw)
+		}
+		cfg.ScanFailClosed = failClosed
+	}
+	cfg.ScanMaxBodyBytes = DefaultScanMaxBodyBytes
+	if raw := strings.TrimSpace(getenv(EnvScanMaxBodyBytes)); raw != "" {
+		maxBytes, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || maxBytes <= 0 {
+			return fmt.Errorf("egressbroker: %s value %q is not a positive byte count", EnvScanMaxBodyBytes, raw)
+		}
+		cfg.ScanMaxBodyBytes = maxBytes
+	}
+	return nil
 }
 
 func splitTrim(s string) []string {

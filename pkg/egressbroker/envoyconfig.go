@@ -25,6 +25,19 @@ type EnvoyConfigParams struct {
 	// SDS server will mint bump certs for — anything else fails the
 	// downstream handshake.
 	AllowedHosts []string
+	// ScanFailOpen renders the ext_proc response scanner's failure_mode_allow
+	// (ADR D6c): true = pass responses when the scanner is down/errored
+	// (documented default); false = fail closed (502) for high-security
+	// tenants. ext_authz stays failure_mode_allow: false either way.
+	ScanFailOpen bool
+	// ScanMaxBodyBytes is the body cap the broker's scanner enforces in-band
+	// (must match the broker's scanner config; default 1 MiB). It does NOT
+	// appear in the rendered bootstrap: ext_proc has no per-filter byte cap,
+	// so Envoy buffers the whole response body and the broker refuses to scan
+	// past the cap (recorded as a skip, headers still scanned). The cap is a
+	// cost bound, not a security boundary — the allowlist + destination
+	// binding are the boundary (ADR-0001 §5).
+	ScanMaxBodyBytes int64
 }
 
 // Validate fails loudly on an unrenderable bootstrap (constructor
@@ -41,6 +54,9 @@ func (p EnvoyConfigParams) Validate() error {
 	}
 	if len(p.AllowedHosts) == 0 {
 		return fmt.Errorf("egressbroker: allowed hosts must not be empty")
+	}
+	if p.ScanMaxBodyBytes <= 0 {
+		return fmt.Errorf("egressbroker: scan body cap must be positive")
 	}
 	return nil
 }
@@ -66,8 +82,29 @@ func (p EnvoyConfigParams) Validate() error {
 // Security invariants baked into the template (do not relax):
 //   - ext_authz failure_mode_allow: false — a dead injector denies, never
 //     passes unauthenticated traffic.
+//   - A Lua HTTP filter runs BEFORE ext_authz/ext_proc and copies
+//     x-request-id and :authority into dynamic metadata namespace
+//     io.toolhive.egress. This is the ONLY working D6c correlation path:
+//     route filter_metadata values are stored literally (Envoy performs no
+//     formatter substitution there), and the response-path ext_proc cannot
+//     see request headers. ext_proc forwards the namespace per its
+//     metadata_options.forwarding_namespaces.
+//   - ext_proc (D6c response scanner) runs response headers+body only
+//     (request phase is pass-through; injection stays in ext_authz), with
+//     message_timeout 2s and failure_mode_allow wired from broker config
+//     (documented fail-open default; fail-closed for high-security tenants).
+//     Body mode is BUFFERED: ext_proc has no per-filter byte cap, so Envoy
+//     buffers the whole body; the byte cap lives in the broker's in-band
+//     scanner (over-cap bodies pass with a skip metric, headers still
+//     scanned). The cap is a cost bound, not a security boundary — the
+//     allowlist + destination binding are the boundary (ADR-0001 §5).
 //   - The route table matches only allowlisted hosts; anything else has no
 //     route → connection refused before ext_authz is even consulted.
+//   - preserve_external_request_id is false (the Envoy default, pinned by
+//     test): the untrusted server controls its own outbound x-request-id, so
+//     client-supplied ids are always discarded and Envoy generates one —
+//     collision poisoning and premature-consumption evasion against the D6c
+//     correlation map are impossible.
 //   - No redirect-following filter exists: Envoy as a forward proxy passes
 //     3xx responses through untouched (D6a).
 //   - Listeners and the broker cluster bind loopback only; the SDS secret
@@ -104,11 +141,29 @@ const envoyBootstrapTemplate = `static_resources:
           upgrade_configs:
           - upgrade_type: CONNECT
             enabled: true
+          request_id_extension:
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.request_id.uuid.v3.UuidRequestIdConfig
           route_config:
             name: egress_routes
             virtual_hosts:
 {{VHOSTS}}
           http_filters:
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              default_source_code:
+                inline_string: |
+                  -- Copies the D6c correlation values into dynamic metadata so
+                  -- the response-path ext_proc scanner can find the injection's
+                  -- scan record (it cannot see request headers, and route
+                  -- filter_metadata values are stored literally — no formatter
+                  -- substitution happens there).
+                  function envoy_on_request(request_handle)
+                    local metadata = request_handle:metadata()
+                    metadata:set("io.toolhive.egress", "request_id", request_handle:headers():get("x-request-id") or "")
+                    metadata:set("io.toolhive.egress", "host", request_handle:headers():get(":authority") or "")
+                  end
           - name: envoy.filters.http.ext_authz
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
@@ -119,6 +174,32 @@ const envoyBootstrapTemplate = `static_resources:
                 envoy_grpc:
                   cluster_name: egress_broker
                 timeout: 5s
+          - name: envoy.filters.http.ext_proc
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+              failure_mode_allow: {{SCAN_FAIL_OPEN}}
+              message_timeout: 2s
+              # NOTE: ext_proc has no per-filter body byte cap (no max_bytes or
+              # allow_partial_message field exists on this filter in the pinned
+              # Envoy v1.36 / go-control-plane v1.37): Envoy buffers the whole
+              # response body per the BUFFERED mode below. The byte cap is
+              # enforced in-band by the broker's scanner (over-cap bodies pass
+              # with a skip metric; headers are always scanned).
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: egress_broker
+                timeout: 2s
+              processing_mode:
+                request_header_mode: SKIP
+                request_body_mode: NONE
+                request_trailer_mode: SKIP
+                response_header_mode: SEND
+                response_body_mode: BUFFERED
+                response_trailer_mode: SKIP
+              metadata_options:
+                forwarding_namespaces:
+                  typed:
+                  - io.toolhive.egress
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -178,7 +259,10 @@ const envoyBootstrapTemplate = `static_resources:
 // forward proxy; every request — the CONNECT itself and the decrypted tunneled
 // requests — passes ext_authz (no per-route disable: the credential injection
 // on tunneled traffic IS the feature). Non-CONNECT routes (plain absolute-form
-// HTTP through the proxy) share the same upstream.
+// HTTP through the proxy) share the same upstream. The D6c correlation
+// metadata is NOT set here: route filter_metadata values are stored literally
+// (no %REQ()% formatter substitution) — the Lua HTTP filter upstream in the
+// chain sets them instead.
 const vhostTemplate = `            - name: {{HOST_NAME}}
               domains: ["{{HOST}}"]
               routes:
@@ -217,6 +301,7 @@ func RenderEnvoyBootstrap(params EnvoyConfigParams) ([]byte, error) {
 	out := strings.ReplaceAll(envoyBootstrapTemplate, "{{PROXY_PORT}}", fmt.Sprintf("%d", params.ProxyPort))
 	out = strings.ReplaceAll(out, "{{EXT_AUTHZ_ADDRESS}}", params.ExtAuthzAddress)
 	out = strings.ReplaceAll(out, "{{EXT_AUTHZ_PORT}}", fmt.Sprintf("%d", params.ExtAuthzPort))
+	out = strings.ReplaceAll(out, "{{SCAN_FAIL_OPEN}}", fmt.Sprintf("%t", params.ScanFailOpen))
 	out = strings.ReplaceAll(out, "{{VHOSTS}}", vhosts.String())
 	return []byte(out), nil
 }

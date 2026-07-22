@@ -97,6 +97,17 @@ const (
 	untrustedTokenStoreKEKKeyEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_KEY"    // #nosec G101 -- env var name, not a credential
 	untrustedTokenStoreKEKIDsEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_IDS"    // #nosec G101 -- env var name, not a credential
 
+	// untrustedTokenStorePassword*EnvVars carry the auth-server Redis ACL
+	// password Secret COORDINATES (name + key, never the value) to the vMCP,
+	// which renders a SecretKeyRef env (THV_SESSION_REDIS_PASSWORD) on every
+	// cloned egress-broker sidecar. Without them the sidecar cannot
+	// authenticate against the token store and every injection denies.
+	// pkg/vmcp/cli/untrusted.go mirrors these names; the contract is pinned by
+	// tests on both sides.
+	// #nosec G101 -- env var names, not credentials.
+	untrustedTokenStorePasswordSecretEnvVar = "THV_UNTRUSTED_TOKEN_STORE_PASSWORD_SECRET"
+	untrustedTokenStorePasswordKeyEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_PASSWORD_KEY" // #nosec G101
+
 	// reservedVMCPEnvPrefixes are the env-var prefixes the operator owns on
 	// the vmcp container. A user PodTemplateSpec must not set them: they
 	// carry operator-injected wiring (untrusted egress coordinates, embedded
@@ -497,6 +508,28 @@ func (r *VirtualMCPServerReconciler) buildUntrustedTokenStoreEnvVars(
 		Name:  untrustedTokenStoreAddrEnvVar,
 		Value: as.Storage.Redis.Addr,
 	}}
+	// The token store's ACL password must reach the egress-broker sidecar or
+	// every credential injection denies (Redis AUTH failure). It is forwarded
+	// as Secret COORDINATES (never the value): the vMCP turns them into a
+	// SecretKeyRef env on each cloned sidecar (KEK pattern). A standalone
+	// Redis addr without the ACL coordinates is almost always a
+	// misconfiguration — RedisStorageConfig requires aclUserConfig — so flag
+	// it loudly instead of silently cloning sidecars that cannot authenticate.
+	if acl := as.Storage.Redis.ACLUserConfig; acl != nil && acl.PasswordSecretRef != nil {
+		env = append(env,
+			corev1.EnvVar{Name: untrustedTokenStorePasswordSecretEnvVar, Value: acl.PasswordSecretRef.Name},
+			corev1.EnvVar{Name: untrustedTokenStorePasswordKeyEnvVar, Value: acl.PasswordSecretRef.Key},
+		)
+	} else {
+		log.FromContext(ctx).Info("auth-server Redis storage carries no ACL password coordinates; "+
+			"untrusted egress-broker sidecars will fail to authenticate against the token store",
+			"vmcp", vmcp.Name, "namespace", vmcp.Namespace)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "TokenStorePasswordMissing",
+				"UntrustedTokenStore", "auth-server Redis storage has no aclUserConfig.passwordSecretRef; "+
+					"untrusted egress-broker sidecars cannot authenticate against the upstream token store")
+		}
+	}
 	if te := as.Storage.GetTokenEncryption(); te != nil {
 		envByID, err := ctrlutil.ResolveKEKKeySet(ctx, r.Client, vmcp.Namespace, as)
 		if err != nil {

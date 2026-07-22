@@ -20,10 +20,12 @@ import (
 
 func testParams() egressbroker.EnvoyConfigParams {
 	return egressbroker.EnvoyConfigParams{
-		ExtAuthzAddress: "127.0.0.1",
-		ExtAuthzPort:    9001,
-		ProxyPort:       15001,
-		AllowedHosts:    []string{"api.github.com", "*.example.com"},
+		ExtAuthzAddress:  "127.0.0.1",
+		ExtAuthzPort:     9001,
+		ProxyPort:        15001,
+		AllowedHosts:     []string{"api.github.com", "*.example.com"},
+		ScanFailOpen:     true,
+		ScanMaxBodyBytes: egressbroker.DefaultScanMaxBodyBytes,
 	}
 }
 
@@ -131,13 +133,126 @@ func TestRenderEnvoyBootstrap(t *testing.T) {
 		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
 		hcm := dig(t, chain, "filters").([]any)[1].(map[string]any)
 		httpFilters := dig(t, hcm, "typed_config", "http_filters").([]any)
-		require.Len(t, httpFilters, 2)
+		require.Len(t, httpFilters, 4)
 
-		extAuthz := dig(t, httpFilters[0], "typed_config").(map[string]any)
+		assert.Equal(t, "envoy.filters.http.lua", httpFilters[0].(map[string]any)["name"],
+			"the Lua correlation filter runs BEFORE ext_authz/ext_proc")
+		extAuthz := dig(t, httpFilters[1], "typed_config").(map[string]any)
 		assert.Equal(t, false, extAuthz["failure_mode_allow"], "ext_authz must deny when the broker is down")
 		cluster := dig(t, extAuthz, "grpc_service", "envoy_grpc").(map[string]any)["cluster_name"]
 		assert.Equal(t, "egress_broker", cluster)
-		assert.Equal(t, "envoy.filters.http.router", httpFilters[1].(map[string]any)["name"])
+		assert.Equal(t, "envoy.filters.http.ext_proc", httpFilters[2].(map[string]any)["name"],
+			"ext_proc runs after ext_authz (D6c)")
+		assert.Equal(t, "envoy.filters.http.router", httpFilters[3].(map[string]any)["name"])
+	})
+
+	t.Run("lua filter renders the D6c correlation metadata copy", func(t *testing.T) {
+		t.Parallel()
+		doc := render(t, testParams())
+		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
+		hcm := dig(t, chain, "filters").([]any)[1].(map[string]any)
+		httpFilters := dig(t, hcm, "typed_config", "http_filters").([]any)
+		lua := dig(t, httpFilters[0], "typed_config").(map[string]any)
+		assert.Equal(t, "type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua", lua["@type"])
+		code := dig(t, lua, "default_source_code").(map[string]any)["inline_string"].(string)
+		assert.Contains(t, code, `metadata:set("io.toolhive.egress", "request_id"`)
+		assert.Contains(t, code, `headers():get("x-request-id")`)
+		assert.Contains(t, code, `metadata:set("io.toolhive.egress", "host"`)
+		assert.Contains(t, code, `headers():get(":authority")`)
+	})
+
+	t.Run("ext_proc scans response headers+body only, fail-open default, 2s timeout (D6c)", func(t *testing.T) {
+		t.Parallel()
+		doc := render(t, testParams())
+		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
+		hcm := dig(t, chain, "filters").([]any)[1].(map[string]any)
+		httpFilters := dig(t, hcm, "typed_config", "http_filters").([]any)
+		extProc := dig(t, httpFilters[2], "typed_config").(map[string]any)
+
+		assert.Equal(t, true, extProc["failure_mode_allow"],
+			"the documented fail-open default passes responses when the scanner is down")
+		assert.Equal(t, "2s", extProc["message_timeout"])
+		cluster := dig(t, extProc, "grpc_service", "envoy_grpc").(map[string]any)["cluster_name"]
+		assert.Equal(t, "egress_broker", cluster)
+
+		mode := extProc["processing_mode"].(map[string]any)
+		assert.Equal(t, "SKIP", mode["request_header_mode"], "request phase is a pass-through")
+		assert.Equal(t, "NONE", mode["request_body_mode"])
+		assert.Equal(t, "SKIP", mode["request_trailer_mode"])
+		assert.Equal(t, "SEND", mode["response_header_mode"])
+		assert.Equal(t, "BUFFERED", mode["response_body_mode"], "response body buffered for scanning")
+		assert.Equal(t, "SKIP", mode["response_trailer_mode"])
+
+		// The D6c correlation metadata namespace is forwarded to ext_proc.
+		namespaces := dig(t, extProc, "metadata_options", "forwarding_namespaces", "typed").([]any)
+		assert.Contains(t, namespaces, "io.toolhive.egress")
+	})
+
+	t.Run("fail-closed scan config flips ext_proc failure_mode_allow to false", func(t *testing.T) {
+		t.Parallel()
+		params := testParams()
+		params.ScanFailOpen = false
+		doc := render(t, params)
+		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
+		hcm := dig(t, chain, "filters").([]any)[1].(map[string]any)
+		extProc := dig(t, hcm, "typed_config", "http_filters").([]any)[2].(map[string]any)["typed_config"].(map[string]any)
+		assert.Equal(t, false, extProc["failure_mode_allow"],
+			"fail-closed tenants get 502s on scanner unavailability")
+		// ext_authz posture never changes.
+		extAuthz := dig(t, hcm, "typed_config", "http_filters").([]any)[1].(map[string]any)["typed_config"].(map[string]any)
+		assert.Equal(t, false, extAuthz["failure_mode_allow"])
+	})
+
+	t.Run("request-id extension renders so x-request-id exists at ext_authz time", func(t *testing.T) {
+		t.Parallel()
+		doc := render(t, testParams())
+		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
+		hcm := dig(t, chain, "filters").([]any)[1].(map[string]any)["typed_config"].(map[string]any)
+		ridExt := dig(t, hcm, "request_id_extension", "typed_config").(map[string]any)
+		assert.Equal(t,
+			"type.googleapis.com/envoy.extensions.request_id.uuid.v3.UuidRequestIdConfig", ridExt["@type"])
+	})
+
+	t.Run("client-supplied x-request-id is never trusted (no accept_from_client; default pinned)", func(t *testing.T) {
+		t.Parallel()
+		// The pinned Envoy version (v1.36 / go-control-plane v1.37) has NO
+		// request_id_config/accept_from_client field on the HCM — the trust
+		// knob is preserve_external_request_id, whose default (false) discards
+		// any downstream-supplied x-request-id and generates a fresh one. This
+		// test pins BOTH that the field is absent and that the template does
+		// not opt back into preserving client ids, so a future config edit or
+		// Envoy upgrade that re-enables client-supplied ids fails loudly here.
+		data, err := egressbroker.RenderEnvoyBootstrap(testParams())
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "preserve_external_request_id",
+			"never opt into keeping client-supplied request ids (collision poisoning / "+
+				"premature-consumption evasion against the D6c correlation map)")
+		doc := render(t, testParams())
+		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
+		hcm := dig(t, chain, "filters").([]any)[1].(map[string]any)["typed_config"].(map[string]any)
+		assert.NotContains(t, hcm, "preserve_external_request_id")
+		assert.NotContains(t, hcm, "request_id_config",
+			"no accept_from_client exists on the pinned HCM; if this fails after an Envoy bump, "+
+				"set request_id_config.accept_from_client: false explicitly")
+	})
+
+	t.Run("routes carry no D6c filter_metadata (Lua sets it; route values are stored literally)", func(t *testing.T) {
+		t.Parallel()
+		data, err := egressbroker.RenderEnvoyBootstrap(testParams())
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "%REQ(",
+			"route filter_metadata performs no formatter substitution — %REQ% values would be "+
+				"stored literally and every scanner lookup would miss")
+		doc := render(t, testParams())
+		chain := dig(t, doc, "static_resources", "listeners").([]any)[0].(map[string]any)["filter_chains"].([]any)[0]
+		vhosts := dig(t, chain, "filters").([]any)[1].(map[string]any)
+		vl := dig(t, vhosts, "typed_config", "route_config", "virtual_hosts").([]any)
+		for _, v := range vl {
+			routes := v.(map[string]any)["routes"].([]any)
+			require.Len(t, routes, 2)
+			assert.NotContains(t, routes[1], "metadata",
+				"the D6c correlation metadata comes from the Lua filter, not route filter_metadata")
+		}
 	})
 
 	t.Run("routes cover exactly the allowlisted hosts; CONNECT terminates with upgrade config", func(t *testing.T) {

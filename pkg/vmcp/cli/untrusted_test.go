@@ -59,6 +59,24 @@ func TestResolveTokenStoreConfig(t *testing.T) {
 		assert.Empty(t, ts.KEKIDs)
 	})
 
+	t.Run("Redis password coordinates populate the Secret reference the sidecar clones", func(t *testing.T) {
+		t.Setenv(untrustedTokenStoreAddrEnvVar, "redis.auth:6379")
+		t.Setenv(untrustedTokenStorePasswordSecretEnvVar, "redis-creds")
+		t.Setenv(untrustedTokenStorePasswordKeyEnvVar, "password")
+		ts := resolveTokenStoreConfig("toolhive", "my-vmcp")
+		require.NotNil(t, ts)
+		assert.Equal(t, "redis-creds", ts.RedisPasswordSecret)
+		assert.Equal(t, "password", ts.RedisPasswordKey)
+	})
+
+	t.Run("absent password coordinates render no password reference (broker fails loud)", func(t *testing.T) {
+		t.Setenv(untrustedTokenStoreAddrEnvVar, "redis.auth:6379")
+		ts := resolveTokenStoreConfig("toolhive", "my-vmcp")
+		require.NotNil(t, ts)
+		assert.Empty(t, ts.RedisPasswordSecret)
+		assert.Empty(t, ts.RedisPasswordKey)
+	})
+
 	t.Run("KEK coordinates populate the multi-key set the sidecar clones", func(t *testing.T) {
 		t.Setenv(untrustedTokenStoreAddrEnvVar, "redis.auth:6379")
 		t.Setenv(untrustedTokenStoreKEKSecretEnvVar, "my-vmcp-kek")

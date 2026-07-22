@@ -305,6 +305,12 @@ never holds a token it can carry off, replay later, or use as another user.
    every injected call (D11) as the primary detection surface.
 2. **Data exfiltration via MCP responses.** Anything the upstream API returns to the server can be
    embedded in tool responses to the agent. The credential never leaks; the data it fetches can.
+3. **Transformed echoes of the credential.** The D6c response scanner matches the injected header
+   value byte-exactly (plus its standard base64 form). It is a tripwire, not a proof: a server that
+   transforms the echo — gzip/hex/base64-of-base64, splitting it across chunks or fields, or
+   smuggling it in response trailers (unscanned, SKIP mode) — evades the match. The real boundary
+   is the allowlist + destination binding (D5/D6b): the credential can only travel to consented
+   hosts in the first place, and every injection is audited (D11).
 
 Operators must be told both limits — here and in the Wave-5 user-facing doc — so "untrusted mode"
 is not over-trusted.

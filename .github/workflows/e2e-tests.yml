@@ -57,8 +57,12 @@ jobs:
             label_filter: mcp-protocol
             artifact: e2e-test-results-mcp-protocol
           - title: proxy
-            label_filter: proxy
+            label_filter: "proxy && !isolation"
             artifact: e2e-test-results-proxy
+          - title: network-isolation
+            label_filter: isolation
+            artifact: e2e-test-results-network-isolation
+            test_timeout: 25m
           - title: middleware
             label_filter: 'middleware || stability'
             artifact: e2e-test-results-middleware
@@ -130,9 +134,12 @@ jobs:
           if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
             docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
           fi
-          # the time server and Envoy proxy are only used by the proxy test suite
-          if [ "${{ matrix.label_filter }}" = "proxy" ]; then
+          # the time server is only used by the proxy test suite
+          if [ "${{ matrix.label_filter }}" = "proxy && !isolation" ]; then
             docker pull ghcr.io/stacklok/dockyard/uvx/mcp-server-time:2026.1.26 &
+          fi
+          # Envoy is only used by the network-isolation test suite
+          if [ "${{ matrix.title }}" = "network-isolation" ]; then
             docker pull envoyproxy/envoy-distroless:v1.32.3 &
           fi
           wait
@@ -147,8 +154,8 @@ jobs:
           LABEL_FILTER: ${{ matrix.label_filter }}
         run: ./test/e2e/run_tests.sh
 
-      - name: Capture Envoy container logs on failure (proxy shard only)
-        if: failure() && matrix.label_filter == 'proxy'
+      - name: Capture Envoy container logs on failure (isolation shard only)
+        if: failure() && matrix.title == 'network-isolation'
         run: |
           echo "=== Docker containers (nie-* workloads) ==="
           docker ps -a --filter "name=nie-" --format "{{.Names}}\t{{.Status}}\t{{.Image}}" || true

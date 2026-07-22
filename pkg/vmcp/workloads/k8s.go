@@ -34,6 +34,12 @@ const (
 	metadataKeyWorkloadStatus = "workload_status"
 	metadataKeyNamespace      = "namespace"
 	metadataKeyRemoteURL      = "remote_url"
+
+	// metadataKeyUntrusted mirrors untrusted.MetadataKeyUntrusted (the untrusted
+	// session package must not be imported here; the values must stay in sync).
+	metadataKeyUntrusted = "toolhive.stacklok.dev/untrusted"
+	// metadataKeyMCPServerUID mirrors untrusted.MetadataKeyMCPServerUID.
+	metadataKeyMCPServerUID = "toolhive.stacklok.dev/mcpserver-uid"
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
@@ -284,6 +290,14 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	backend.Metadata[metadataKeyWorkloadStatus] = string(mcpServer.Status.Phase)
 	if mcpServer.Namespace != "" {
 		backend.Metadata[metadataKeyNamespace] = mcpServer.Namespace
+	}
+
+	// Mark untrusted backends for the per-session address resolver. The UID is
+	// rename-safe identity: pods/StatefulSets are keyed on it (handoff §4), so
+	// an MCPServer rename cannot strand a session pod's ownership.
+	if mcpServer.Spec.Untrusted {
+		backend.Metadata[metadataKeyUntrusted] = "true"
+		backend.Metadata[metadataKeyMCPServerUID] = string(mcpServer.UID)
 	}
 
 	// Discover and populate authentication configuration from MCPServer

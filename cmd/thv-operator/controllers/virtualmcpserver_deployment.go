@@ -79,6 +79,11 @@ const (
 	vmcpDefaultMemoryRequest = "128Mi"
 	vmcpDefaultCPULimit      = "500m"
 	vmcpDefaultMemoryLimit   = "512Mi"
+
+	// untrustedTokenStoreAddrEnvVar carries the auth-server Redis address to the
+	// vMCP, which clones it into untrusted egress-broker sidecars. The value is
+	// the non-secret host:port from spec.authServerConfig.storage.redis.addr.
+	untrustedTokenStoreAddrEnvVar = "THV_UNTRUSTED_TOKEN_STORE_REDIS_ADDR" // #nosec G101 -- env var name, not a credential
 )
 
 // RBAC rules for VirtualMCPServer service account in inline mode
@@ -107,6 +112,25 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
 		Resources: []string{"configmaps", "secrets"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		// Untrusted mode (ADR-0001 D4): vMCP is the session-lifecycle owner and
+		// creates/deletes one bare pod per (user, session, untrusted MCPServer),
+		// cloned from the operator-built backend StatefulSet template. Pods-only
+		// namespaced rule; the template-clone-only constraint and quota
+		// admission bound the blast radius of pod-write.
+		APIGroups: []string{""},
+		Resources: []string{"pods"},
+		Verbs:     []string{"get", "list", "watch", "create", "delete"},
+	},
+	{
+		// Untrusted mode (ADR-0001 D4): the pod lifecycle resolves the
+		// operator-built backend StatefulSet by label selector
+		// (toolhive=true + mcpserver-uid) to clone its pod template.
+		// Read-only — vMCP never writes StatefulSets.
+		APIGroups: []string{"apps"},
+		Resources: []string{"statefulsets"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 	{
@@ -390,7 +414,39 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		env = append(env, ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)...)
 	}
 
+	// Mount the auth-server token-store coordinates for untrusted-mode egress
+	// (Wave-3): the vMCP forwards these to the egress-broker sidecar at pod-clone
+	// time. The address is non-secret; the vMCP derives the per-tenant key prefix
+	// from its own identity (VMCP_NAME/VMCP_NAMESPACE) via DeriveKeyPrefix.
+	env = append(env, buildUntrustedTokenStoreEnvVars(vmcp)...)
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
+}
+
+// buildUntrustedTokenStoreEnvVars returns the auth-server Redis address env var
+// the vMCP clones into untrusted egress-broker sidecars (THV_EGRESSBROKER_*).
+// Empty when the embedded auth server does not use Redis storage — the broker
+// then fails closed at startup, matching the untrusted-mode posture that
+// upstream-token injection requires Redis-backed token storage. The KEK is
+// deliberately NOT injected here: the CRD has no token-encryption field, and
+// when encryption is enabled (enterprise RunConfig path) the sidecar's KEK is
+// supplied via its own Secret env reference, never a ConfigMap.
+func buildUntrustedTokenStoreEnvVars(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+	as := vmcp.Spec.AuthServerConfig
+	if as == nil || as.Storage == nil ||
+		as.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis ||
+		as.Storage.Redis == nil {
+		return nil
+	}
+	// Sentinel-based auth-server Redis has no single address the sidecar can
+	// dial directly; untrusted egress requires a standalone/cluster addr.
+	if as.Storage.Redis.Addr == "" {
+		return nil
+	}
+	return []corev1.EnvVar{{
+		Name:  untrustedTokenStoreAddrEnvVar,
+		Value: as.Storage.Redis.Addr,
+	}}
 }
 
 // buildOIDCEnvVars builds environment variables for OIDC client secret mounting.

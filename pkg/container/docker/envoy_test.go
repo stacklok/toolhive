@@ -716,18 +716,20 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 				Admin:           &envoyAdmin{Address: envoyAddress{SocketAddress: envoySocketAddress{Address: "127.0.0.1", PortValue: 9901}}},
 				StaticResources: envoyStaticResources{Listeners: listeners, Clusters: clusters},
 			}
-			path, err := writeEnvoyBootstrap(b)
+			cfg, err := json.Marshal(b)
 			require.NoError(t, err)
-			t.Cleanup(func() { _ = os.Remove(path) })
 
+			// Pass the config inline via --config-yaml (JSON is valid YAML) rather
+			// than bind-mounting a file: the bootstrap is written 0600 and envoy
+			// runs as nonroot, so a bind-mounted file is unreadable to the
+			// container on native-Linux CI. Inline config sidesteps that entirely.
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			//nolint:gosec // G204: fixed args; path is a test-controlled temp file
+			//nolint:gosec // G204: fixed args; cfg is test-generated JSON
 			out, err := exec.CommandContext(ctx, "docker", "run", "--rm",
-				"-v", path+":/etc/envoy/envoy.json:ro",
-				defaultEnvoyImage, "--mode", "validate", "-c", "/etc/envoy/envoy.json").CombinedOutput()
+				defaultEnvoyImage, "--mode", "validate", "--config-yaml", string(cfg)).CombinedOutput()
 			require.NoError(t, err, "envoy rejected the generated config:\n%s", out)
-			assert.Contains(t, string(out), "configuration '/etc/envoy/envoy.json' OK")
+			assert.Contains(t, string(out), "configuration '' OK")
 		})
 	}
 }

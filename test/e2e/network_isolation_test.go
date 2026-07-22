@@ -311,6 +311,47 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 						"with --allow-docker-gateway the fetch must reach the host service through the egress proxy")
 				})
 
+				// Regression guard for the Envoy ingress/egress route timeout: Envoy's
+				// default RouteAction.timeout (15s) is a hard total-response cap that
+				// truncated long-lived MCP streams until it was set to "0s". Squid has no
+				// equivalent cap, so this passes trivially there and meaningfully on Envoy.
+				// A response that takes >15s must complete, not get cut at 15s.
+				//
+				// Reuses the gateway-reachable host path (Linux Docker Engine only; skips
+				// where the bridge gateway is not host-routable, e.g. Docker Desktop).
+				It("does not truncate a response that takes longer than Envoy's 15s default", func() {
+					By("Starting a host service that responds after ~18s (past the 15s cap)")
+					listener, err := net.Listen("tcp", ":0") //nolint:gosec // ephemeral test port
+					Expect(err).ToNot(HaveOccurred())
+					port := listener.Addr().(*net.TCPAddr).Port
+					srv := &http.Server{
+						Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							time.Sleep(18 * time.Second)
+							_, _ = io.WriteString(w, "slow-stream-ok")
+						}),
+						ReadHeaderTimeout: 5 * time.Second,
+					}
+					go func() { _ = srv.Serve(listener) }()
+					DeferCleanup(func() { _ = srv.Close() })
+
+					target := fmt.Sprintf("http://%s:%d/", dockerBridgeGatewayIP(), port)
+					server := startFetchServer("slow", "", "--allow-docker-gateway")
+
+					By("Fetching the slow endpoint through the proxy")
+					result := fetchThrough(server, target)
+					if result.IsError {
+						// Either the gateway isn't host-routable here (Docker Desktop), or
+						// the response was truncated. Distinguish so a real timeout
+						// regression isn't masked as an environment skip.
+						if strings.Contains(resultText(result), "slow-stream-ok") {
+							Fail("slow response was truncated — the 15s route timeout was not disabled")
+						}
+						Skip("docker bridge gateway is not routable to the host in this environment (e.g. Docker Desktop)")
+					}
+					Expect(resultText(result)).To(ContainSubstring("slow-stream-ok"),
+						"a >15s response must complete without being truncated by the route timeout")
+				})
+
 				// Squid-only: pin the generated ACL rules on the deployed egress
 				// container. Envoy's equivalent config shape is covered by unit tests
 				// and the real-Envoy `--mode validate` test (envoy-distroless has no

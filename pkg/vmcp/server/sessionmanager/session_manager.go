@@ -29,7 +29,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
+	vmcpsessionuntrusted "github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 const (
@@ -89,6 +91,10 @@ type Manager struct {
 	// path can build a per-session optimizer over the core's tools. The store and
 	// cleanup remain owned by this Manager (cleanup returned from New).
 	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error)
+
+	// untrusted, when non-nil, enables untrusted-mode behavior (restore budget
+	// selection, DeletePod on Terminate). Nil = untrusted mode off.
+	untrusted *UntrustedConfig
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
@@ -124,6 +130,7 @@ func New(
 	sm := &Manager{
 		storage:    storage,
 		backendReg: backendRegistry,
+		untrusted:  cfg.Untrusted,
 	}
 
 	// Surface the resolved optimizer factory to the Serve path ONLY when
@@ -147,6 +154,10 @@ func New(
 				slog.Warn("session cache: error closing evicted session",
 					"session_id", id, "error", closeErr)
 			}
+			// Untrusted sessions own per-session backend pods: eviction must
+			// release them like Terminate does, not leave them for the reaper's
+			// idle TTL (the reaper is the backstop, not the primary teardown).
+			sm.deleteUntrustedSessionPods(id, sess.GetMetadata())
 			slog.Warn("session cache: session evicted from node-local cache",
 				"session_id", id)
 		},
@@ -209,6 +220,13 @@ const restoreMetadataWriteTimeout = 5 * time.Second
 // we allow more time than a simple storage read. Aligned with discoveryTimeout
 // (15 s) since both involve backend HTTP round-trips.
 const restoreSessionTimeout = 15 * time.Second
+
+// restoreSessionTimeoutUntrusted bounds factory.RestoreSession when the
+// restored backend set includes at least one untrusted backend: the restore
+// may cold-start per-session pods (scheduling + image pull + container start),
+// which the 15 s trusted budget cannot cover. 60 s is the cold-start SLO
+// (ADR-0001 §7.3); the per-pod hard cap stays 120 s inside WaitReady.
+const restoreSessionTimeoutUntrusted = 60 * time.Second
 
 // terminateTimeout is the context deadline applied to storage operations inside
 // Terminate(). Terminate() is called on client DELETE requests and on auth
@@ -465,6 +483,28 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	return false, nil
 }
 
+// SessionExists reports whether the session metadata key for sessionID is
+// alive in shared storage, through the storage's own API (the session manager
+// owns session storage — no caller may re-derive its key shape). It is the
+// liveness probe for the untrusted-mode reaper's refresh rule: a session that
+// no longer exists stops getting pod-lease renewals, so its pods are reaped
+// at idle-TTL lapse.
+//
+// Fail-closed on errors: any storage error (including Redis unavailability)
+// reports false, so a pod is never kept alive on unreadable evidence. A
+// placeholder terminated by another replica (MetadataKeyTerminated) also
+// reports false.
+func (sm *Manager) SessionExists(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	metadata, err := sm.storage.Load(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	return metadata[MetadataKeyTerminated] != MetadataValTrue
+}
+
 // Terminate implements the SDK's SessionIdManager.Terminate().
 //
 // The two session types are handled asymmetrically to prevent a race condition
@@ -511,6 +551,7 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		sm.deleteUntrustedSessionPods(sessionID, metadata)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}
@@ -733,9 +774,11 @@ func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsessi
 		return nil, transportsession.ErrSessionNotFound
 	}
 
-	restoreCtx, restoreCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreSessionTimeout)
+	allBackends := sm.listAllBackends(ctx)
+	budget := sm.restoreBudgetFor(metadata, allBackends)
+	restoreCtx, restoreCancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer restoreCancel()
-	restored, restoreErr := sm.factory.RestoreSession(restoreCtx, sessionID, metadata, sm.listAllBackends(restoreCtx))
+	restored, restoreErr := sm.factory.RestoreSession(restoreCtx, sessionID, metadata, allBackends)
 	if restoreErr != nil {
 		slog.Warn("Manager.loadSession: failed to restore session from storage",
 			"session_id", sessionID, "error", restoreErr)
@@ -828,4 +871,79 @@ func (sm *Manager) listAllBackends(ctx context.Context) []*vmcp.Backend {
 		backends[i] = &raw[i]
 	}
 	return backends
+}
+
+// restoreBudgetFor selects the RestoreSession budget: the untrusted budget
+// when the restored backend set includes at least one untrusted backend (pod
+// cold start may be required), the trusted default otherwise.
+func (sm *Manager) restoreBudgetFor(metadata map[string]string, allBackends []*vmcp.Backend) time.Duration {
+	if sm.untrusted == nil {
+		return restoreSessionTimeout
+	}
+	storedIDs := metadata[vmcpsession.MetadataKeyBackendIDs]
+	if storedIDs == "" {
+		return restoreSessionTimeout
+	}
+	idSet := make(map[string]struct{})
+	for _, p := range strings.Split(storedIDs, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			idSet[t] = struct{}{}
+		}
+	}
+	for _, b := range allBackends {
+		if b == nil {
+			continue
+		}
+		if _, ok := idSet[b.ID]; ok && b.Metadata[vmcpsessionuntrusted.MetadataKeyUntrusted] == "true" {
+			return restoreSessionTimeoutUntrusted
+		}
+	}
+	return restoreSessionTimeout
+}
+
+// deleteUntrustedSessionPods best-effort deletes the per-session untrusted
+// backend pods of a terminated session. Pod names are deterministic from
+// (mcpserverUID, userKey, sessionID), so no lookup is needed. Failures are
+// logged and swallowed — the reaper's idle-TTL rule is the backstop.
+func (sm *Manager) deleteUntrustedSessionPods(sessionID string, metadata map[string]string) {
+	if sm.untrusted == nil || sm.untrusted.Lifecycle == nil {
+		return
+	}
+	storedBinding := metadata[sessiontypes.MetadataKeyIdentityBinding]
+	iss, sub, ok := binding.Parse(storedBinding)
+	if !ok {
+		// Anonymous sessions never own untrusted pods (the resolver soft-fails
+		// them); malformed bindings have no derivable user key either.
+		return
+	}
+	userKey, err := binding.Format(iss, sub)
+	if err != nil {
+		return
+	}
+
+	storedIDs := metadata[vmcpsession.MetadataKeyBackendIDs]
+	if storedIDs == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), terminateTimeout)
+	defer cancel()
+	for _, p := range strings.Split(storedIDs, ",") {
+		backendID := strings.TrimSpace(p)
+		if backendID == "" {
+			continue
+		}
+		b := sm.backendReg.Get(ctx, backendID)
+		if b == nil || b.Metadata[vmcpsessionuntrusted.MetadataKeyUntrusted] != "true" {
+			continue
+		}
+		uid := b.Metadata[vmcpsessionuntrusted.MetadataKeyMCPServerUID]
+		if uid == "" {
+			continue
+		}
+		podName := vmcpsessionuntrusted.PodNameFor(uid, userKey, sessionID)
+		if delErr := sm.untrusted.Lifecycle.DeletePod(ctx, podName); delErr != nil {
+			slog.Warn("Manager.Terminate: failed to delete untrusted session pod; reaper will collect it",
+				"session_id", sessionID, "backend", backendID, "error", delErr)
+		}
+	}
 }

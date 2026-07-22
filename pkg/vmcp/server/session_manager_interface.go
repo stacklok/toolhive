@@ -43,6 +43,12 @@ type SessionManager interface {
 	// Terminate terminates the session with the given ID, closing all backend connections.
 	Terminate(sessionID string) (bool, error)
 
+	// SessionExists reports whether the session metadata key for sessionID is
+	// alive in shared storage, through the storage's own API. It is the
+	// liveness probe for the untrusted-mode reaper's refresh rule and fails
+	// false on any storage error.
+	SessionExists(ctx context.Context, sessionID string) bool
+
 	// NotifyBackendExpired updates session metadata in storage to reflect that the
 	// backend identified by workloadID is no longer connected. The caller must
 	// supply the session metadata it already holds (e.g. from MultiSession.GetMetadata);

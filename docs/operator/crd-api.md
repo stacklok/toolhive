@@ -1874,6 +1874,24 @@ This provides a local name for use in the CRD status.
 
 
 
+#### api.v1beta1.EgressPolicy
+
+
+
+EgressPolicy binds upstream providers to the exact destinations their credentials
+may be injected for. The broker emits provider P's credential ONLY to hosts in
+P's AllowedHosts, with method/path further constrained by the entry (ADR-0001 D5).
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `providers` _[api.v1beta1.ProviderEgress](#apiv1beta1provideregress) array_ | Providers maps an upstream provider name (as configured in the embedded auth<br />server's upstream chain / upstream_inject strategy) to its egress constraints. |  | MinItems: 1 <br /> |
+
+
 #### api.v1beta1.EmbeddedAuthServerCIMDConfig
 
 
@@ -3208,6 +3226,8 @@ _Appears in:_
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
+| `untrusted` _boolean_ | Untrusted marks this MCP server as running untrusted code. When true, the operator<br />enforces the untrusted-mode invariants (ADR-0001): no Secret/ConfigMap-sourced env on<br />the backend container, single-tenant session-scoped backend pods, mandatory MCPGroup<br />membership behind a VirtualMCPServer, and egress only through the credential-broker<br />sidecar per EgressPolicy. K8s-only; ignored (and inert) in CLI/Docker mode. | false | Optional: \{\} <br /> |
+| `egressPolicy` _[api.v1beta1.EgressPolicy](#apiv1beta1egresspolicy)_ | EgressPolicy declares which upstream providers this server may call and where the<br />broker may inject each provider's credential. Required when Untrusted is true.<br />When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend<br />pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar<br />Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
@@ -3778,6 +3798,28 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether Prometheus metrics endpoint is exposed | false | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.ProviderEgress
+
+
+
+ProviderEgress is the per-provider egress constraint. Credential-to-destination
+binding (ADR-0001 D5): the broker injects this provider's credential only to
+AllowedHosts, only on AllowedMethods, only under AllowedPathPrefixes.
+
+
+
+_Appears in:_
+- [api.v1beta1.EgressPolicy](#apiv1beta1egresspolicy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `provider` _string_ | Provider is the logical upstream provider name (e.g. "github", "google").<br />Must match the provider name used by the auth server and the vMCP<br />upstream_inject strategy config for this workload. |  | MinLength: 1 <br /> |
+| `allowedHosts` _string array_ | AllowedHosts is the exact set of destination hosts the credential may be<br />injected for. Exact hostnames or one-label wildcards ("*.githubusercontent.com");<br />no ports, no schemes. |  | MinItems: 1 <br />items:Pattern: `^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$` <br /> |
+| `allowedMethods` _string array_ | AllowedMethods constrains HTTP methods the broker will inject on.<br />Empty means GET/HEAD/OPTIONS only (safe default — read-only). |  | items:Enum: [GET HEAD OPTIONS POST PUT PATCH DELETE] <br />Optional: \{\} <br /> |
+| `allowedPathPrefixes` _string array_ | AllowedPathPrefixes constrains URL paths the broker will inject on<br />(prefix match, e.g. "/repos/"). Empty means "/" (all paths on the allowed hosts). |  | Optional: \{\} <br /> |
+| `credentialEnvName` _string_ | CredentialEnvName names the backend env var that would normally carry this<br />provider's token (e.g. "GITHUB_TOKEN"). The operator injects a SENTINEL literal<br />here so servers that refuse to start tokenless still boot; the broker ignores<br />the sentinel value. Sentinel literal format: "thv-untrusted-sentinel:<provider>". |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ProxyDeploymentOverrides

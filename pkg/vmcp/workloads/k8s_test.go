@@ -376,6 +376,54 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
 
+func TestMCPServerToBackend_UntrustedMetadata(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	newServer := func(untrusted bool) *mcpv1beta1.MCPServer {
+		return &mcpv1beta1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-server",
+				Namespace: namespace,
+				UID:       "uid-abc-123",
+			},
+			Spec: mcpv1beta1.MCPServerSpec{
+				Image:     "test-image:latest",
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				Untrusted: untrusted,
+			},
+			Status: mcpv1beta1.MCPServerStatus{
+				Phase: mcpv1beta1.MCPServerPhaseReady,
+				URL:   "http://localhost:8080",
+			},
+		}
+	}
+
+	t.Run("untrusted server is marked with UID", func(t *testing.T) {
+		t.Parallel()
+		srv := newServer(true)
+		discoverer := NewK8SDiscovererWithClient(setupTestClient(t, srv), namespace).(*k8sDiscoverer)
+		backend := discoverer.mcpServerToBackend(context.Background(), srv)
+		require.NotNil(t, backend)
+		assert.Equal(t, "true", backend.Metadata["toolhive.stacklok.dev/untrusted"])
+		assert.Equal(t, "uid-abc-123", backend.Metadata["toolhive.stacklok.dev/mcpserver-uid"])
+	})
+
+	t.Run("trusted server carries no untrusted metadata", func(t *testing.T) {
+		t.Parallel()
+		srv := newServer(false)
+		discoverer := NewK8SDiscovererWithClient(setupTestClient(t, srv), namespace).(*k8sDiscoverer)
+		backend := discoverer.mcpServerToBackend(context.Background(), srv)
+		require.NotNil(t, backend)
+		_, hasUntrusted := backend.Metadata["toolhive.stacklok.dev/untrusted"]
+		_, hasUID := backend.Metadata["toolhive.stacklok.dev/mcpserver-uid"]
+		assert.False(t, hasUntrusted)
+		assert.False(t, hasUID)
+	})
+}
+
 func TestMCPServerToBackend_StdioTransport(t *testing.T) {
 	t.Parallel()
 

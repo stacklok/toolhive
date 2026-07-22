@@ -323,21 +323,6 @@ func TestIsLegacyValue(t *testing.T) {
 	assert.True(t, IsLegacyValue([]byte("garbage")))
 }
 
-func TestEnvelopeKeyID(t *testing.T) {
-	t.Parallel()
-
-	kr := newTestKeyring(t, "k1", map[string][]byte{"k1": testKey(1)})
-	sealed, err := Seal(kr, "key1", []byte("payload"))
-	require.NoError(t, err)
-
-	kid, ok := EnvelopeKeyID(sealed)
-	assert.True(t, ok)
-	assert.Equal(t, "k1", kid)
-
-	_, ok = EnvelopeKeyID([]byte(`{"access_token":"tok"}`))
-	assert.False(t, ok)
-}
-
 // TestSealOpen_RandomKeys guards against accidental dependence on the
 // deterministic testKey helper: real random KEKs must round-trip too.
 func TestSealOpen_RandomKeys(t *testing.T) {

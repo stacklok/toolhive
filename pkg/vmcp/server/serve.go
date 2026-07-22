@@ -349,6 +349,8 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     built directly in Serve from ServerConfig.SessionManagerConfig (a pre-built
 //     *sessionmanager.FactoryConfig that carries the session factory and optimizer
 //     wiring), not via Config→New, so these Config fields are unused on the Serve path.
+//   - Untrusted: consumed by New into FactoryConfig.Untrusted (session-manager
+//     untrusted-mode wiring), not a transport field — never mapped into Config.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
 		Name:                    cfg.Name,

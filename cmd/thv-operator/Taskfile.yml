@@ -231,6 +231,8 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/validation/mcpserver-untrusted
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/untrusted-egress
 
   thv-operator-e2e-test:
     desc: |

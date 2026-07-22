@@ -247,17 +247,6 @@ func NeedsRotation(kr Keyring, value []byte) bool {
 	return env.KID != activeID
 }
 
-// EnvelopeKeyID extracts the key ID from an envelope value for observability
-// (never for security decisions). ok is false for non-envelope values.
-func EnvelopeKeyID(value []byte) (kid string, ok bool) {
-	var env envelope
-	if jsonErr := json.Unmarshal(value, &env); jsonErr != nil ||
-		env.V != envelopeVersion || env.KID == "" || env.EDEK == "" || env.CT == "" {
-		return "", false
-	}
-	return env.KID, true
-}
-
 // gcmSeal encrypts plaintext with AES-256-GCM under key, returning
 // nonce|ciphertext|tag. aad is additional authenticated data (may be nil).
 func gcmSeal(key, plaintext, aad []byte) ([]byte, error) {

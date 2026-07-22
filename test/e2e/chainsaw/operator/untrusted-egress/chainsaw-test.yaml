@@ -1,0 +1,196 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Wave-3 untrusted egress data plane: the operator must materialize the
+# per-tenant bump CA, the egress-policy ConfigMap, and the egress-lockdown
+# NetworkPolicy for an untrusted MCPServer — and delete them when the server
+# flips back to trusted.
+#
+# The MCPServer intentionally uses a groupRef-free fixture shape: the
+# data-plane resources are reconciled independent of vMCP wiring, so this
+# scenario creates the group it references to satisfy CEL R2.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpserver-untrusted-egress-resources
+spec:
+  description: |
+    Untrusted MCPServer → bump-CA Secret + bundle ConfigMap + egress-policy
+    ConfigMap + egress NetworkPolicy exist with ownerReferences; flipping
+    untrusted to false deletes them. The policy ConfigMap content matches the
+    CRD EgressPolicy. The NetworkPolicy must select the untrusted session
+    pods and permit only loopback, DNS, and the allowlisted destination.
+  steps:
+    - name: create-group-and-untrusted-server
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPGroup
+              metadata:
+                name: untrusted-egress-group
+                namespace: default
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-egress-srv
+                namespace: default
+              spec:
+                image: ghcr.io/stacklok/toolhive/test-mcp-server:latest
+                untrusted: true
+                groupRef:
+                  name: untrusted-egress-group
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+                      allowedMethods:
+                        - GET
+                      allowedPathPrefixes:
+                        - /repos/
+
+    - name: bump-ca-secret-exists-with-ownerref
+      try:
+        # The Secret is generation-named (<name>-bump-ca-<sha256-of-cert[:16]>):
+        # cert+key of ONE CA generation live in one object so a pod cloned
+        # mid-rotation mounts a consistent pair. Assert by label + prefix.
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              for i in $(seq 1 24); do
+                NAME=$(kubectl get secrets -n default \
+                  -l toolhive.stacklok.dev/untrusted-resource=true \
+                  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+                  | grep '^untrusted-egress-srv-bump-ca-' || true)
+                COUNT=$(printf '%s\n' "$NAME" | grep -c . || true)
+                if [ "$COUNT" = "1" ]; then break; fi
+                sleep 5
+              done
+              [ "$COUNT" = "1" ] || { echo "expected exactly one generation-named CA Secret, got: $NAME"; exit 1; }
+              GEN=${NAME##untrusted-egress-srv-bump-ca-}
+              [ -n "$GEN" ] || { echo "CA Secret $NAME is not generation-named"; exit 1; }
+              kubectl get secret "$NAME" -n default -o jsonpath='{.data.ca\.crt}' | grep -q . || {
+                echo "CA Secret $NAME has no ca.crt"; exit 1; }
+              kubectl get secret "$NAME" -n default -o jsonpath='{.data.ca\.key}' | grep -q . || {
+                echo "CA Secret $NAME has no ca.key"; exit 1; }
+              OWNER=$(kubectl get secret "$NAME" -n default -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')
+              [ "$OWNER" = "MCPServer/untrusted-egress-srv" ] || { echo "bad ownerRef: $OWNER"; exit 1; }
+              echo "$GEN" > /tmp/untrusted-egress-gen.txt
+
+    - name: bump-ca-bundle-has-public-cert-only
+      try:
+        # The bundle is generation-named like the Secret and carries the
+        # public cert of the same generation (never the key).
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              GEN=$(cat /tmp/untrusted-egress-gen.txt)
+              NAME="untrusted-egress-srv-bump-ca-bundle-$GEN"
+              for i in $(seq 1 24); do
+                kubectl get configmap "$NAME" -n default >/dev/null 2>&1 && break
+                sleep 5
+              done
+              CERT_SECRET=$(kubectl get secret "untrusted-egress-srv-bump-ca-$GEN" -n default -o jsonpath='{.data.ca\.crt}')
+              CERT_BUNDLE=$(kubectl get configmap "$NAME" -n default -o jsonpath='{.data.ca\.crt}')
+              [ -n "$CERT_BUNDLE" ] || { echo "bundle $NAME has no ca.crt"; exit 1; }
+              [ "$CERT_SECRET" = "$CERT_BUNDLE" ] || {
+                echo "bundle $NAME cert does not match the same generation's Secret cert"; exit 1; }
+              KEY=$(kubectl get configmap "$NAME" -n default -o jsonpath='{.data.ca\.key}' || true)
+              [ -z "$KEY" ] || { echo "CA private key must never appear in the bundle"; exit 1; }
+              OWNER=$(kubectl get configmap "$NAME" -n default -o jsonpath='{.metadata.ownerReferences[0].kind}')
+              [ "$OWNER" = "MCPServer" ] || { echo "bad ownerRef: $OWNER"; exit 1; }
+
+    - name: egress-policy-configmap-matches-crd
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: untrusted-egress-srv-egress-policy
+                namespace: default
+              (metadata.ownerReferences[0].kind): MCPServer
+              (contains(data['policy.yaml'], 'provider: github')): true
+              (contains(data['policy.yaml'], 'api.github.com')): true
+              (contains(data['policy.yaml'], '/repos/')): true
+
+    - name: egress-networkpolicy-locks-down-session-pods
+      try:
+        - assert:
+            resource:
+              apiVersion: networking.k8s.io/v1
+              kind: NetworkPolicy
+              metadata:
+                name: untrusted-egress-srv-egress
+                namespace: default
+              (metadata.ownerReferences[0].kind): MCPServer
+              (spec.podSelector.matchLabels['toolhive.stacklok.dev/untrusted']): "true"
+              (contains(spec.policyTypes, 'Egress')): true
+
+    - name: flip-to-trusted
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-egress-srv
+                namespace: default
+              spec:
+                image: ghcr.io/stacklok/toolhive/test-mcp-server:latest
+                groupRef:
+                  name: untrusted-egress-group
+
+    - name: untrusted-resources-are-deleted-on-flip
+      try:
+        # Every generation-named CA Secret and bundle goes (listed by label);
+        # the fixed-name policy ConfigMap and NetworkPolicy go by name.
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              for i in $(seq 1 24); do
+                LEFT=$(kubectl get secrets,configmaps -n default \
+                  -l toolhive.stacklok.dev/untrusted-resource=true \
+                  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+                  | grep -c '^untrusted-egress-srv-' || true)
+                [ "$LEFT" = "0" ] && break
+                sleep 5
+              done
+              [ "$LEFT" = "0" ] || { echo "untrusted CA generations still present after flip"; exit 1; }
+        - error:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: untrusted-egress-srv-egress-policy
+                namespace: default
+        - error:
+            resource:
+              apiVersion: networking.k8s.io/v1
+              kind: NetworkPolicy
+              metadata:
+                name: untrusted-egress-srv-egress
+                namespace: default
+
+    - name: cleanup
+      try:
+        - delete:
+            ref:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-egress-srv
+                namespace: default
+        - delete:
+            ref:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPGroup
+              metadata:
+                name: untrusted-egress-group
+                namespace: default

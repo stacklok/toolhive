@@ -58,6 +58,8 @@ type podAddressResolver struct {
 	admission   Admission
 	readyBudget time.Duration
 	tokenStore  *TokenStoreConfig
+	images      *SidecarImages
+	sidecarRes  *SidecarResourceOverride
 	metrics     *untrustedMetrics
 }
 
@@ -71,15 +73,18 @@ func NewPodAddressResolver(lifecycle PodLifecycle, adm Admission, readyBudget ti
 }
 
 // podAddressResolverWithTokenStore is the internal constructor that also wires
-// the egress-broker token-store coordinates and metrics into every provisioned
-// pod. Kept unexported: production wiring goes through NewStack, which resolves
-// the TokenStoreConfig and metrics once; NewPodAddressResolver stays the public
-// seam for tests that exercise the resolver without a token store or metrics.
+// the egress-broker token-store coordinates, sidecar images/resources, and
+// metrics into every provisioned pod. Kept unexported: production wiring goes
+// through NewStack, which resolves them once; NewPodAddressResolver stays the
+// public seam for tests that exercise the resolver without them.
 func podAddressResolverWithTokenStore(
 	lifecycle PodLifecycle, adm Admission, readyBudget time.Duration, ts *TokenStoreConfig, m *untrustedMetrics,
+	images *SidecarImages, sidecarRes *SidecarResourceOverride,
 ) *podAddressResolver {
 	r := NewPodAddressResolver(lifecycle, adm, readyBudget).(*podAddressResolver)
 	r.tokenStore = ts
+	r.images = images
+	r.sidecarRes = sidecarRes
 	r.metrics = m
 	return r
 }
@@ -145,12 +150,14 @@ func (r *podAddressResolver) resolveOne(
 	}
 
 	pod, err := r.lifecycle.EnsurePod(ctx, EnsurePodRequest{
-		Session:       sess,
-		MCPServerUID:  mcpserverUID,
-		MCPServerName: b.Name,
-		Port:          port,
-		OwnerRefUID:   types.UID(mcpserverUID),
-		TokenStore:    r.tokenStore,
+		Session:          sess,
+		MCPServerUID:     mcpserverUID,
+		MCPServerName:    b.Name,
+		Port:             port,
+		OwnerRefUID:      types.UID(mcpserverUID),
+		TokenStore:       r.tokenStore,
+		Images:           r.images,
+		SidecarResources: r.sidecarRes,
 		OnNewPod: func(string) {
 			if onNewPod != nil {
 				onNewPod(b.ID)

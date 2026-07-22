@@ -611,7 +611,8 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			envVars := GenerateAuthServerEnvVars(tt.authConfig)
+			envVars, err := GenerateAuthServerEnvVars(context.Background(), nil, "default", tt.authConfig)
+			require.NoError(t, err)
 
 			if len(tt.wantEnvNames) == 0 {
 				assert.Empty(t, envVars)
@@ -1650,7 +1651,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config, err := BuildAuthServerRunConfig("default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported, tt.resourceURL)
+			config, err := BuildAuthServerRunConfig(
+				"default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported, tt.resourceURL, nil)
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
@@ -1702,6 +1704,7 @@ func TestBuildAuthServerRunConfig_InvalidDCR(t *testing.T) {
 		[]string{"http://test-server.default.svc.cluster.local:8080"},
 		[]string{"openid", "offline_access"},
 		"http://test-server.default.svc.cluster.local:8080",
+		nil,
 	)
 
 	require.Error(t, err, "expected BuildAuthServerRunConfig to fail on invalid DCR pairing")
@@ -1973,7 +1976,8 @@ func TestGenerateAuthServerEnvVars_RedisCredentials(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			envVars := GenerateAuthServerEnvVars(tt.authConfig)
+			envVars, err := GenerateAuthServerEnvVars(context.Background(), nil, "default", tt.authConfig)
+			require.NoError(t, err)
 			assert.Len(t, envVars, tt.wantEnvVarLen)
 
 			envMap := make(map[string]corev1.EnvVar)
@@ -2009,6 +2013,237 @@ func TestGenerateAuthServerEnvVars_RedisCredentials(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGenerateAuthServerEnvVars_TokenEncryption pins the Wave-5 KEK wiring:
+// when authServerConfig.storage.tokenEncryption is set, the vmcp container
+// gets ONE SecretKeyRef env entry per data key of the referenced KEK Secret
+// (active + retired, so rotation never orphans ciphertext). Each entry is
+// named TokenEncryptionKEKEnvVarPrefix_<SANITIZED-ID> and sources the key from
+// the Secret — a KEK value never appears as a literal. The KEK Secret must be
+// readable and consistent (active ID a data key, no empty or
+// sanitization-colliding IDs) or rendering is an error (fail closed).
+func TestGenerateAuthServerEnvVars_TokenEncryption(t *testing.T) {
+	t.Parallel()
+
+	redisStorageWithTE := func(te *mcpv1beta1.TokenEncryptionConfig) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer:            "https://auth.example.com",
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{},
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type: mcpv1beta1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1beta1.RedisStorageConfig{
+					Addr: "redis.auth:6379",
+					ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
+						PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-creds", Key: "password"},
+					},
+				},
+				TokenEncryption: te,
+			},
+		}
+	}
+
+	kekSecret := func(data map[string][]byte) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-vmcp-kek", Namespace: "default"},
+			Data:       data,
+		}
+	}
+	// Placeholder values only — the renderer must never inspect key VALUES,
+	// and the assertion below pins that the values never leave the Secret.
+	kekSecretClient := func(data map[string][]byte) client.Client {
+		return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).
+			WithObjects(kekSecret(data)).Build()
+	}
+
+	t.Run("tokenEncryption renders one SecretKeyRef env entry per Secret data key", func(t *testing.T) {
+		t.Parallel()
+		cfg := redisStorageWithTE(&mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-2",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		c := kekSecretClient(map[string][]byte{
+			"kek-1": []byte("retired-key-bytes"),
+			"kek-2": []byte("active-key-bytes"),
+		})
+		envVars, err := GenerateAuthServerEnvVars(context.Background(), c, "default", cfg)
+		require.NoError(t, err)
+
+		envMap := make(map[string]corev1.EnvVar)
+		for _, ev := range envVars {
+			envMap[ev.Name] = ev
+		}
+		for _, id := range []string{"kek-1", "kek-2"} {
+			name := TokenEncryptionKEKEnvVarPrefix + "_" + strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
+			ev, ok := envMap[name]
+			require.True(t, ok, "expected the token-encryption KEK env var for key ID %s", id)
+			assert.Empty(t, ev.Value, "KEK value must never be an env literal")
+			require.NotNil(t, ev.ValueFrom)
+			require.NotNil(t, ev.ValueFrom.SecretKeyRef)
+			assert.Equal(t, "my-vmcp-kek", ev.ValueFrom.SecretKeyRef.Name)
+			assert.Equal(t, id, ev.ValueFrom.SecretKeyRef.Key,
+				"the Secret data key is the key ID")
+		}
+	})
+
+	t.Run("missing KEK Secret is an error (fail closed)", func(t *testing.T) {
+		t.Parallel()
+		cfg := redisStorageWithTE(&mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-1",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		c := fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).Build()
+		_, err := GenerateAuthServerEnvVars(context.Background(), c, "default", cfg)
+		require.Error(t, err)
+	})
+
+	t.Run("active key ID absent from the Secret is an error", func(t *testing.T) {
+		t.Parallel()
+		cfg := redisStorageWithTE(&mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-9",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		c := kekSecretClient(map[string][]byte{"kek-1": []byte("x")})
+		_, err := GenerateAuthServerEnvVars(context.Background(), c, "default", cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "kek-9")
+	})
+
+	t.Run("key IDs colliding after sanitization are an error", func(t *testing.T) {
+		t.Parallel()
+		cfg := redisStorageWithTE(&mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-1",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		c := kekSecretClient(map[string][]byte{
+			"kek-1": []byte("x"),
+			"kek.1": []byte("y"),
+		})
+		_, err := GenerateAuthServerEnvVars(context.Background(), c, "default", cfg)
+		require.Error(t, err)
+	})
+
+	t.Run("nil tokenEncryption renders no KEK env entry", func(t *testing.T) {
+		t.Parallel()
+		envVars, err := GenerateAuthServerEnvVars(context.Background(), nil, "default", redisStorageWithTE(nil))
+		require.NoError(t, err)
+		for _, ev := range envVars {
+			assert.NotContains(t, ev.Name, TokenEncryptionKEKEnvVarPrefix)
+		}
+	})
+
+	t.Run("nil storage renders no KEK env entry", func(t *testing.T) {
+		t.Parallel()
+		cfg := &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer:            "https://auth.example.com",
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{},
+		}
+		envVars, err := GenerateAuthServerEnvVars(context.Background(), nil, "default", cfg)
+		require.NoError(t, err)
+		for _, ev := range envVars {
+			assert.NotContains(t, ev.Name, TokenEncryptionKEKEnvVarPrefix)
+		}
+	})
+
+	t.Run("nil auth config renders nothing", func(t *testing.T) {
+		t.Parallel()
+		envVars, err := GenerateAuthServerEnvVars(context.Background(), nil, "default", nil)
+		require.NoError(t, err)
+		assert.Empty(t, envVars)
+	})
+}
+
+// TestBuildAuthServerRunConfig_TokenEncryption pins the RunConfig side of the
+// Wave-5 KEK wiring: storage.tokenEncryption becomes a
+// TokenEncryptionRunConfig whose Keys map references every KEK by env var NAME
+// (the indirection the pod env resolves at start). Callers pass the key set
+// resolved from the KEK Secret (active + retired, so rotation never orphans
+// ciphertext); the nil fallback renders only the active ID via the same
+// deterministic env-name derivation.
+func TestBuildAuthServerRunConfig_TokenEncryption(t *testing.T) {
+	t.Parallel()
+
+	baseAuthConfig := func() *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "okta",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://okta.example.com",
+						ClientID:  "client-id",
+					},
+				},
+			},
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type: mcpv1beta1.AuthServerStorageTypeRedis,
+				Redis: &mcpv1beta1.RedisStorageConfig{
+					Addr: "redis.auth:6379",
+					ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
+						PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-creds", Key: "password"},
+					},
+				},
+			},
+		}
+	}
+	withTokenEncryption := func(activeID string) *mcpv1beta1.EmbeddedAuthServerConfig {
+		cfg := baseAuthConfig()
+		cfg.Storage.TokenEncryption = &mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  activeID,
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		}
+		return cfg
+	}
+
+	t.Run("resolved key set carries active and retired keys into the RunConfig", func(t *testing.T) {
+		t.Parallel()
+		kekEnvByID := map[string]string{
+			"kek-1": TokenEncryptionKEKEnvVarPrefix + "_KEK_1",
+			"kek-2": TokenEncryptionKEKEnvVarPrefix + "_KEK_2",
+		}
+		rc, err := BuildAuthServerRunConfig("default", "test-vmcp", withTokenEncryption("kek-2"),
+			[]string{"https://vmcp.example.com"}, []string{"openid"}, "https://vmcp.example.com", kekEnvByID)
+		require.NoError(t, err)
+		require.NotNil(t, rc.Storage)
+		require.NotNil(t, rc.Storage.RedisConfig)
+		require.NotNil(t, rc.Storage.RedisConfig.TokenEncryption)
+		assert.Equal(t, "kek-2", rc.Storage.RedisConfig.TokenEncryption.ActiveKeyID)
+		assert.Equal(t, kekEnvByID, rc.Storage.RedisConfig.TokenEncryption.Keys,
+			"the RunConfig carries the full key set by env var name, never by value")
+	})
+
+	t.Run("nil key set falls back to the active ID only (offline renderers)", func(t *testing.T) {
+		t.Parallel()
+		rc, err := BuildAuthServerRunConfig("default", "test-vmcp", withTokenEncryption("kek-1"),
+			[]string{"https://vmcp.example.com"}, []string{"openid"}, "https://vmcp.example.com", nil)
+		require.NoError(t, err)
+		require.NotNil(t, rc.Storage.RedisConfig.TokenEncryption)
+		assert.Equal(t, "kek-1", rc.Storage.RedisConfig.TokenEncryption.ActiveKeyID)
+		assert.Equal(t,
+			map[string]string{"kek-1": TokenEncryptionKEKEnvVarPrefix + "_KEK_1"},
+			rc.Storage.RedisConfig.TokenEncryption.Keys,
+			"the fallback derives the active ID's env name deterministically")
+	})
+
+	t.Run("active ID absent from the resolved key set is an error", func(t *testing.T) {
+		t.Parallel()
+		_, err := BuildAuthServerRunConfig("default", "test-vmcp", withTokenEncryption("kek-9"),
+			[]string{"https://vmcp.example.com"}, []string{"openid"}, "https://vmcp.example.com",
+			map[string]string{"kek-1": TokenEncryptionKEKEnvVarPrefix + "_KEK_1"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "kek-9")
+	})
+
+	t.Run("nil tokenEncryption leaves the RunConfig encryption-free", func(t *testing.T) {
+		t.Parallel()
+		rc, err := BuildAuthServerRunConfig("default", "test-vmcp", baseAuthConfig(),
+			[]string{"https://vmcp.example.com"}, []string{"openid"}, "https://vmcp.example.com", nil)
+		require.NoError(t, err)
+		require.NotNil(t, rc.Storage)
+		require.NotNil(t, rc.Storage.RedisConfig)
+		assert.Nil(t, rc.Storage.RedisConfig.TokenEncryption)
+	})
 }
 
 func TestResolveSentinelAddrs(t *testing.T) {
@@ -2340,7 +2575,7 @@ func TestBuildStorageRunConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := buildStorageRunConfig("default", "test-server", tt.authConfig)
+			cfg, err := buildStorageRunConfig("default", "test-server", tt.authConfig, nil)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -2396,6 +2631,7 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 		[]string{"http://test-server.default.svc.cluster.local:8080"},
 		[]string{"openid"},
 		"http://test-server.default.svc.cluster.local:8080",
+		nil,
 	)
 
 	require.NoError(t, err)
@@ -2849,6 +3085,7 @@ func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
 				baseAuthConfig(tt.cimd),
 				defaultAudiences, defaultScopes,
 				"https://mcp.example.com",
+				nil,
 			)
 
 			if tt.wantErr {

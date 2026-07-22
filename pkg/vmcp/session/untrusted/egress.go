@@ -8,6 +8,8 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/stacklok/toolhive/pkg/egressbroker"
 )
@@ -23,10 +25,26 @@ const (
 	// caKeyKey is the private-key data key of the CA Secret.
 	caKeyKey = egressbroker.CAKeyKey
 
-	// EgressBrokerImage is the broker sidecar image (ext_authz + SDS).
-	EgressBrokerImage = "ghcr.io/stacklok/toolhive/egressbroker:latest"
-	// EnvoyProxyImage is the Envoy data-plane image.
-	EnvoyProxyImage = "envoyproxy/envoy:v1.36-latest"
+	// DefaultEgressBrokerImage is the default broker sidecar image
+	// (ext_authz + SDS). Bump with the ToolHive release that ships the
+	// broker binary; overridable per install via THV_UNTRUSTED_BROKER_IMAGE
+	// (resolved once in pkg/vmcp/cli/untrusted.go) for air-gapped mirrors.
+	DefaultEgressBrokerImage = "ghcr.io/stacklok/toolhive/egressbroker:v0.17.0"
+	// DefaultEnvoyProxyImage is the default Envoy data-plane image, pinned by
+	// tag AND digest — a floating tag would let the untrusted data plane run
+	// whatever upstream publishes next. Bump procedure: update tag+digest
+	// together (resolve the digest with `crane digest envoyproxy/envoy:<tag>`),
+	// then run `task operator-test`; the untrusted-egress chainsaw scenario
+	// must pass. Overridable per install via THV_UNTRUSTED_ENVOY_IMAGE for
+	// air-gapped mirrors.
+	DefaultEnvoyProxyImage = "envoyproxy/envoy:v1.36.2@sha256:4972515dd9a069b44beb43cebba7851596e72a8c61cd7a7c33d8f48efc5280ba"
+
+	// BrokerHealthPort is the loopback-only health HTTP port (readiness +
+	// liveness probes). It is the single source of truth for the contract
+	// between the clone-time probes (here) and the broker's health listener:
+	// cmd/thv-egressbroker binds it directly (test-only import back into this
+	// package pins the two sides).
+	BrokerHealthPort = 15083
 
 	// brokerListenPort is the ext_authz/SDS gRPC port (loopback).
 	brokerListenPort = 9001
@@ -62,6 +80,96 @@ const (
 	// brokerContainerName is the credential-broker container.
 	brokerContainerName = "thv-egressbroker"
 )
+
+// SidecarImages carries the egress data-plane images for one clone. Resolved
+// once at the vMCP composition root (pkg/vmcp/cli/untrusted.go); a nil *Images
+// field falls back to the pinned default.
+type SidecarImages struct {
+	// EnvoyProxy is the Envoy data-plane image. Empty = DefaultEnvoyProxyImage.
+	EnvoyProxy string
+	// EgressBroker is the broker sidecar image (also the CA-seed init image).
+	// Empty = DefaultEgressBrokerImage.
+	EgressBroker string
+}
+
+// resolved applies the pinned defaults.
+func (s SidecarImages) resolved() SidecarImages {
+	if s.EnvoyProxy == "" {
+		s.EnvoyProxy = DefaultEnvoyProxyImage
+	}
+	if s.EgressBroker == "" {
+		s.EgressBroker = DefaultEgressBrokerImage
+	}
+	return s
+}
+
+// SidecarResourceOverride tunes the envoy/broker sidecar container resources
+// (the ca-seed init container stays fixed — it copies one file and exits).
+// Multipliers scale the default requests and limits together; resolved once
+// at the composition root from THV_UNTRUSTED_SIDECAR_CPU/MEM.
+type SidecarResourceOverride struct {
+	// CPUMultiplier scales sidecar CPU requests/limits (1.0 = defaults).
+	// Must be > 0.
+	CPUMultiplier float64
+	// MemoryMultiplier scales sidecar memory requests/limits (1.0 = defaults).
+	// Must be > 0.
+	MemoryMultiplier float64
+}
+
+// Default sidecar container resources (spec §3.2). Envoy's bump is
+// connection-heavy; the Go broker is light; the CA-seed init copies one file.
+var (
+	defaultEnvoyResources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+	defaultBrokerResources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("25m"),
+			corev1.ResourceMemory: resource.MustParse("32Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
+	// caSeedResources are fixed: the init container copies one file and exits.
+	caSeedResources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("16Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("32Mi"),
+		},
+	}
+)
+
+// scaledResources returns a copy of base with CPU quantities multiplied by
+// cpuMult and memory quantities by memMult (1.0 = unchanged).
+func scaledResources(base corev1.ResourceRequirements, cpuMult, memMult float64) corev1.ResourceRequirements {
+	out := *base.DeepCopy()
+	scale := func(list corev1.ResourceList, name corev1.ResourceName, mult float64) {
+		q, ok := list[name]
+		if !ok || mult == 1.0 {
+			return
+		}
+		q.SetMilli(int64(float64(q.MilliValue()) * mult))
+		list[name] = q
+	}
+	for _, list := range []corev1.ResourceList{out.Requests, out.Limits} {
+		scale(list, corev1.ResourceCPU, cpuMult)
+		scale(list, corev1.ResourceMemory, memMult)
+	}
+	return out
+}
 
 // sidecarEnv is the deterministic (sorted) view of the shared annotation→env
 // contract (egressbroker.EnvToAnnotation): the broker's THV_UNTRUSTED_* env
@@ -108,12 +216,14 @@ var sidecarEnv = func() []struct {
 // ConfigMap) are operator-managed additions appended after verification.
 //
 // The broker's token-store env (THV_EGRESSBROKER_REDIS_ADDR /
-// _REDIS_KEY_PREFIX, and the tokenenc KEK) is injected here from
-// req.TokenStore. The address and key prefix are non-secret and are rendered
-// as env literals; the KEK, when encryption is enabled, is referenced from a
-// Secret via SecretKeyRef (never a ConfigMap or env literal). A nil TokenStore
-// renders no token-store env at all — the broker then refuses to start
-// (fail closed, per cmd/thv-egressbroker).
+// _REDIS_KEY_PREFIX, and the tokenenc KEKs) is injected here from
+// req.TokenStore. The address, key prefix, and active key ID are non-secret
+// and are rendered as env literals; each KEK, when encryption is enabled, is
+// referenced from a Secret via a per-ID SecretKeyRef (never a ConfigMap or env
+// literal). A nil TokenStore renders no token-store env at all — the broker
+// then refuses to start (fail closed, per cmd/thv-egressbroker).
+//
+//nolint:gocyclo // one flat pod-assembly walk: validate, volumes, init, envoy, broker, backend.
 func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 	if pod == nil {
 		return fmt.Errorf("untrusted egress wiring: pod must not be nil")
@@ -125,6 +235,19 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 		if err := req.TokenStore.validate(); err != nil {
 			return err
 		}
+	}
+
+	images := SidecarImages{}
+	if req.Images != nil {
+		images = *req.Images
+	}
+	images = images.resolved()
+	res := SidecarResourceOverride{CPUMultiplier: 1.0, MemoryMultiplier: 1.0}
+	if req.SidecarResources != nil {
+		res = *req.SidecarResources
+	}
+	if res.CPUMultiplier <= 0 || res.MemoryMultiplier <= 0 {
+		return fmt.Errorf("untrusted egress wiring: sidecar resource multipliers must be positive")
 	}
 
 	// Generation-qualified CA objects: the pod mounts the exact CA generation
@@ -164,11 +287,12 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 	// gets a ConfigMap-backed path.
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
 		Name:    caSeedInitContainerName,
-		Image:   EgressBrokerImage,
+		Image:   images.EgressBroker,
 		Command: []string{"sh", "-c"},
 		Args: []string{
 			fmt.Sprintf("cp /bundle/%s /ca/%s && chmod 0444 /ca/%s", caKeyCert, caFileName, caFileName),
 		},
+		Resources: caSeedResources,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: caSharedVolumeName, MountPath: "/ca"},
 			{Name: caBundleVolumeName, MountPath: "/bundle", ReadOnly: true},
@@ -186,9 +310,10 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 	// Envoy data plane: consumes the broker-rendered bootstrap.
 	pod.Spec.Containers = append(pod.Spec.Containers,
 		corev1.Container{
-			Name:    envoyContainerName,
-			Image:   EnvoyProxyImage,
-			Command: []string{"envoy", "-c", envoyConfigPath + "/envoy.yaml"},
+			Name:      envoyContainerName,
+			Image:     images.EnvoyProxy,
+			Command:   []string{"envoy", "-c", envoyConfigPath + "/envoy.yaml"},
+			Resources: scaledResources(defaultEnvoyResources, res.CPUMultiplier, res.MemoryMultiplier),
 			Ports: []corev1.ContainerPort{
 				{Name: "egress-proxy", ContainerPort: proxyPort},
 			},
@@ -219,32 +344,63 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 		})
 	}
 	// Token-store coordinates (Wave-3 deviation 1). Address/prefix are non-secret
-	// literals; the KEK comes from a Secret env reference so the key value never
-	// appears in the pod spec or a ConfigMap. A nil TokenStore renders none of
-	// these — the broker then fails closed at startup.
+	// literals; the KEKs come from per-ID Secret env references so the key values
+	// never appear in the pod spec or a ConfigMap. The broker keyring gets the
+	// FULL key-ID set (active + retired) so a key rotation never orphans rows
+	// sealed under the old ID. A nil TokenStore renders none of these — the
+	// broker then fails closed at startup.
 	if req.TokenStore != nil {
 		brokerEnv = append(brokerEnv,
 			corev1.EnvVar{Name: "THV_EGRESSBROKER_REDIS_ADDR", Value: req.TokenStore.RedisAddr},
 			corev1.EnvVar{Name: "THV_EGRESSBROKER_REDIS_KEY_PREFIX", Value: req.TokenStore.KeyPrefix},
 		)
-		if ref := req.TokenStore.KEKSecretRef; ref != nil {
-			brokerEnv = append(brokerEnv, corev1.EnvVar{
-				Name: "THV_EGRESSBROKER_KEK",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
-						Key:                  ref.Key,
+		if req.TokenStore.KEKSecret != "" {
+			brokerEnv = append(brokerEnv,
+				corev1.EnvVar{Name: "THV_EGRESSBROKER_KEK_ID", Value: req.TokenStore.KEKActiveID},
+			)
+			for _, id := range req.TokenStore.KEKIDs {
+				brokerEnv = append(brokerEnv, corev1.EnvVar{
+					Name: "THV_EGRESSBROKER_KEK_" + id,
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: req.TokenStore.KEKSecret},
+							Key:                  id,
+						},
 					},
-				},
-			})
+				})
+			}
 		}
 	}
 	pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
-		Name:  brokerContainerName,
-		Image: EgressBrokerImage,
-		Env:   brokerEnv,
+		Name:      brokerContainerName,
+		Image:     images.EgressBroker,
+		Env:       brokerEnv,
+		Resources: scaledResources(defaultBrokerResources, res.CPUMultiplier, res.MemoryMultiplier),
 		Ports: []corev1.ContainerPort{
 			{Name: "ext-authz", ContainerPort: brokerListenPort},
+			{Name: "healthz", ContainerPort: BrokerHealthPort},
+		},
+		// Health contract: /healthz is 200 iff Redis is reachable AND the
+		// policy is loaded AND the bump CA is not past rotation-due. Readiness
+		// gates the pod; liveness (3 strikes) restarts a wedged broker.
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: intstr.FromInt32(BrokerHealthPort),
+				},
+			},
+			PeriodSeconds: 5,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: intstr.FromInt32(BrokerHealthPort),
+				},
+			},
+			PeriodSeconds:    5,
+			FailureThreshold: 3,
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: caSecretVolumeName, MountPath: "/ca-secret", ReadOnly: true},

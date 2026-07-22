@@ -108,6 +108,8 @@ _Appears in:_
 | `xaa` _[auth.types.XAAConfig](#authtypesxaaconfig)_ | XAA contains configuration for XAA (Cross-Application Access) auth strategy.<br />Used when Type = "xaa". |  |  |
 
 
+
+
 #### auth.types.HeaderInjectionConfig
 
 
@@ -1715,6 +1717,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `type` _[api.v1beta1.AuthServerStorageType](#apiv1beta1authserverstoragetype)_ | Type specifies the storage backend type.<br />Valid values: "memory" (default), "redis". | memory | Enum: [memory redis] <br /> |
 | `redis` _[api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)_ | Redis configures the Redis storage backend.<br />Required when type is "redis". |  | Optional: \{\} <br /> |
+| `tokenEncryption` _[api.v1beta1.TokenEncryptionConfig](#apiv1beta1tokenencryptionconfig)_ | TokenEncryption enables envelope encryption of upstream tokens at rest.<br />Requires redis storage: the RunConfig shape only supports token<br />encryption on the Redis backend, and untrusted-mode egress (the primary<br />consumer) requires Redis-backed token storage. ActiveKeyID names the<br />key used for new writes; KeySecretRef references a Secret whose data<br />keys are key IDs and values are base64 32-byte KEKs. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.AuthServerStorageType
@@ -4154,6 +4157,29 @@ _Appears in:_
 | `db` _integer_ | DB is the Redis database number | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.TokenEncryptionConfig
+
+
+
+TokenEncryptionConfig configures AES-256-GCM envelope encryption of
+upstream OAuth token values stored in Redis. The Secret referenced by
+KeySecretRef holds one data entry per key ID (value = base64 32-byte KEK);
+the operator mounts the active key as a SecretKeyRef env entry on the vMCP
+container and clones the same reference into untrusted egress-broker
+sidecars. Key material never appears in the CRD, a ConfigMap, or a pod env
+literal.
+
+
+
+_Appears in:_
+- [api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `activeKeyId` _string_ | ActiveKeyID identifies the KEK used to encrypt new writes. Must match a<br />data key of the Secret referenced by KeySecretRef. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `keySecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | KeySecretRef references the Secret holding the key-encryption keys.<br />Its data keys are key IDs; values are base64 32-byte KEKs. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.TokenExchangeConfig

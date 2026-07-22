@@ -205,12 +205,11 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 		t.Parallel()
 		req := testRequest()
 		req.TokenStore = &TokenStoreConfig{
-			RedisAddr: "redis.auth:6379",
-			KeyPrefix: "thv:auth:{toolhive:my-vmcp}:",
-			KEKSecretRef: &SecretKeyRef{
-				Name: "my-vmcp-token-kek",
-				Key:  "kek",
-			},
+			RedisAddr:   "redis.auth:6379",
+			KeyPrefix:   "thv:auth:{toolhive:my-vmcp}:",
+			KEKSecret:   "my-vmcp-token-kek",
+			KEKActiveID: "kek-2",
+			KEKIDs:      []string{"kek-1", "kek-2"},
 		}
 		pod, err := clonePodFromTemplate(validTemplate(), "backend-app", req, "vmcp-1")
 		require.NoError(t, err)
@@ -223,13 +222,19 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 		assert.Equal(t, "redis.auth:6379", env["THV_EGRESSBROKER_REDIS_ADDR"].Value)
 		assert.Equal(t, "thv:auth:{toolhive:my-vmcp}:", env["THV_EGRESSBROKER_REDIS_KEY_PREFIX"].Value)
 
-		// The KEK is a Secret env reference, never a literal or ConfigMap.
-		kek := env["THV_EGRESSBROKER_KEK"]
-		require.NotNil(t, kek.ValueFrom, "KEK must come from a Secret env reference")
-		require.NotNil(t, kek.ValueFrom.SecretKeyRef)
-		assert.Equal(t, "my-vmcp-token-kek", kek.ValueFrom.SecretKeyRef.Name)
-		assert.Equal(t, "kek", kek.ValueFrom.SecretKeyRef.Key)
-		assert.Empty(t, kek.Value, "KEK value must never be a pod-spec literal")
+		// The active key ID is a non-secret literal.
+		assert.Equal(t, "kek-2", env["THV_EGRESSBROKER_KEK_ID"].Value)
+
+		// Every key ID (active + retired) is a per-ID Secret env reference,
+		// never a literal or ConfigMap.
+		for _, id := range []string{"kek-1", "kek-2"} {
+			kek := env["THV_EGRESSBROKER_KEK_"+id]
+			require.NotNil(t, kek.ValueFrom, "KEK %s must come from a Secret env reference", id)
+			require.NotNil(t, kek.ValueFrom.SecretKeyRef)
+			assert.Equal(t, "my-vmcp-token-kek", kek.ValueFrom.SecretKeyRef.Name)
+			assert.Equal(t, id, kek.ValueFrom.SecretKeyRef.Key)
+			assert.Empty(t, kek.Value, "KEK value must never be a pod-spec literal")
+		}
 	})
 
 	t.Run("nil TokenStore renders no token-store env (broker fails closed)", func(t *testing.T) {
@@ -241,8 +246,10 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 			assert.NotContains(t, []string{
 				"THV_EGRESSBROKER_REDIS_ADDR",
 				"THV_EGRESSBROKER_REDIS_KEY_PREFIX",
-				"THV_EGRESSBROKER_KEK",
+				"THV_EGRESSBROKER_KEK_ID",
 			}, e.Name, "no token-store env without a TokenStore config")
+			assert.NotContains(t, e.Name, "THV_EGRESSBROKER_KEK_",
+				"no per-ID KEK env without a TokenStore config")
 		}
 	})
 
@@ -254,9 +261,21 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 		}{
 			{"empty addr", &TokenStoreConfig{KeyPrefix: "thv:auth:{a:b}:"}},
 			{"prefix missing colon", &TokenStoreConfig{RedisAddr: "r:6379", KeyPrefix: "thv:auth"}},
-			{"kek ref missing key", &TokenStoreConfig{
+			{"kek coords partial", &TokenStoreConfig{
 				RedisAddr: "r:6379", KeyPrefix: "thv:auth:{a:b}:",
-				KEKSecretRef: &SecretKeyRef{Name: "s"},
+				KEKSecret: "s",
+			}},
+			{"active ID not in key set", &TokenStoreConfig{
+				RedisAddr: "r:6379", KeyPrefix: "thv:auth:{a:b}:",
+				KEKSecret: "s", KEKActiveID: "kek-9", KEKIDs: []string{"kek-1"},
+			}},
+			{"duplicate key ID", &TokenStoreConfig{
+				RedisAddr: "r:6379", KeyPrefix: "thv:auth:{a:b}:",
+				KEKSecret: "s", KEKActiveID: "kek-1", KEKIDs: []string{"kek-1", "kek-1"},
+			}},
+			{"key ID unsafe as env suffix", &TokenStoreConfig{
+				RedisAddr: "r:6379", KeyPrefix: "thv:auth:{a:b}:",
+				KEKSecret: "s", KEKActiveID: "kek.1", KEKIDs: []string{"kek.1"},
 			}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -267,5 +286,131 @@ func TestApplyEgressBrokerSidecar(t *testing.T) {
 				require.Error(t, err)
 			})
 		}
+	})
+
+	t.Run("sidecar images are pinned by default and overridable per clone", func(t *testing.T) {
+		t.Parallel()
+		pod := newPod()
+		assert.Equal(t, DefaultEnvoyProxyImage, findContainer(t, pod, envoyContainerName).Image)
+		assert.Equal(t, DefaultEgressBrokerImage, findContainer(t, pod, brokerContainerName).Image)
+		assert.Contains(t, DefaultEnvoyProxyImage, "@sha256:",
+			"the default Envoy image must be digest-pinned (supply chain)")
+		var init *corev1.Container
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name == caSeedInitContainerName {
+				init = &pod.Spec.InitContainers[i]
+			}
+		}
+		require.NotNil(t, init)
+		assert.Equal(t, DefaultEgressBrokerImage, init.Image)
+
+		req := testRequest()
+		req.Images = &SidecarImages{EnvoyProxy: "mirror.local/envoy:v1", EgressBroker: "mirror.local/broker:v2"}
+		overridden, err := clonePodFromTemplate(validTemplate(), "backend-app", req, "vmcp-1")
+		require.NoError(t, err)
+		assert.Equal(t, "mirror.local/envoy:v1", findContainer(t, overridden, envoyContainerName).Image)
+		assert.Equal(t, "mirror.local/broker:v2", findContainer(t, overridden, brokerContainerName).Image)
+	})
+
+	t.Run("sidecar containers carry resource requests and limits", func(t *testing.T) {
+		t.Parallel()
+		pod := newPod()
+		envoy := findContainer(t, pod, envoyContainerName)
+		broker := findContainer(t, pod, brokerContainerName)
+
+		assert.Equal(t, "50m", envoy.Resources.Requests.Cpu().String())
+		assert.Equal(t, "64Mi", envoy.Resources.Requests.Memory().String())
+		assert.Equal(t, "500m", envoy.Resources.Limits.Cpu().String())
+		assert.Equal(t, "256Mi", envoy.Resources.Limits.Memory().String())
+		assert.Equal(t, "25m", broker.Resources.Requests.Cpu().String())
+		assert.Equal(t, "32Mi", broker.Resources.Requests.Memory().String())
+		assert.Equal(t, "250m", broker.Resources.Limits.Cpu().String())
+		assert.Equal(t, "128Mi", broker.Resources.Limits.Memory().String())
+
+		var init *corev1.Container
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name == caSeedInitContainerName {
+				init = &pod.Spec.InitContainers[i]
+			}
+		}
+		require.NotNil(t, init)
+		assert.Equal(t, "10m", init.Resources.Requests.Cpu().String())
+		assert.Equal(t, "16Mi", init.Resources.Requests.Memory().String())
+		assert.Equal(t, "50m", init.Resources.Limits.Cpu().String())
+		assert.Equal(t, "32Mi", init.Resources.Limits.Memory().String())
+	})
+
+	t.Run("resource multipliers scale envoy+broker, never the ca-seed init", func(t *testing.T) {
+		t.Parallel()
+		req := testRequest()
+		req.SidecarResources = &SidecarResourceOverride{CPUMultiplier: 2.0, MemoryMultiplier: 4.0}
+		pod, err := clonePodFromTemplate(validTemplate(), "backend-app", req, "vmcp-1")
+		require.NoError(t, err)
+
+		envoy := findContainer(t, pod, envoyContainerName)
+		assert.Equal(t, "100m", envoy.Resources.Requests.Cpu().String())
+		assert.Equal(t, "256Mi", envoy.Resources.Requests.Memory().String())
+		assert.Equal(t, "1", envoy.Resources.Limits.Cpu().String())
+		broker := findContainer(t, pod, brokerContainerName)
+		assert.Equal(t, "50m", broker.Resources.Requests.Cpu().String())
+
+		var init *corev1.Container
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name == caSeedInitContainerName {
+				init = &pod.Spec.InitContainers[i]
+			}
+		}
+		require.NotNil(t, init)
+		assert.Equal(t, "10m", init.Resources.Requests.Cpu().String(), "init resources stay fixed")
+	})
+
+	t.Run("partial multiplier scales only its dimension", func(t *testing.T) {
+		t.Parallel()
+		req := testRequest()
+		req.SidecarResources = &SidecarResourceOverride{CPUMultiplier: 2.0, MemoryMultiplier: 1.0}
+		pod, err := clonePodFromTemplate(validTemplate(), "backend-app", req, "vmcp-1")
+		require.NoError(t, err)
+
+		envoy := findContainer(t, pod, envoyContainerName)
+		assert.Equal(t, "100m", envoy.Resources.Requests.Cpu().String(), "CPU scaled 2x")
+		assert.Equal(t, "64Mi", envoy.Resources.Requests.Memory().String(), "memory untouched")
+		assert.Equal(t, "256Mi", envoy.Resources.Limits.Memory().String(), "memory limit untouched")
+	})
+
+	t.Run("non-positive resource multipliers fail loudly", func(t *testing.T) {
+		t.Parallel()
+		for _, mult := range []SidecarResourceOverride{
+			{CPUMultiplier: 0, MemoryMultiplier: 1},
+			{CPUMultiplier: 1, MemoryMultiplier: -1},
+		} {
+			req := testRequest()
+			m := mult
+			req.SidecarResources = &m
+			_, err := clonePodFromTemplate(validTemplate(), "backend-app", req, "vmcp-1")
+			require.Error(t, err)
+		}
+	})
+
+	t.Run("broker container gets readiness and liveness probes on the health port", func(t *testing.T) {
+		t.Parallel()
+		pod := newPod()
+		broker := findContainer(t, pod, brokerContainerName)
+
+		for name, probe := range map[string]*corev1.Probe{
+			"readiness": broker.ReadinessProbe,
+			"liveness":  broker.LivenessProbe,
+		} {
+			require.NotNil(t, probe, "%s probe must be set", name)
+			require.NotNil(t, probe.HTTPGet, "%s probe must be httpGet", name)
+			assert.Equal(t, "/healthz", probe.HTTPGet.Path)
+			assert.Equal(t, int32(BrokerHealthPort), probe.HTTPGet.Port.IntVal)
+			assert.Equal(t, int32(5), probe.PeriodSeconds, "%s probe period", name)
+		}
+		assert.Equal(t, int32(3), broker.LivenessProbe.FailureThreshold)
+
+		// Envoy and the backend container get no probes (the broker's health
+		// is the pod's egress data-plane liveness contract).
+		assert.Nil(t, findContainer(t, pod, envoyContainerName).ReadinessProbe)
+		assert.Nil(t, findContainer(t, pod, "mcp").ReadinessProbe)
 	})
 }

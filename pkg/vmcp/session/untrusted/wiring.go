@@ -53,6 +53,12 @@ type WiringConfig struct {
 	// token-store coordinates into every provisioned pod. Nil leaves the broker
 	// without a token store (it fails closed at startup).
 	TokenStore *TokenStoreConfig
+	// Images overrides the egress data-plane images (supply-chain pinning,
+	// Wave-5). Nil = the pinned defaults in egress.go.
+	Images *SidecarImages
+	// SidecarResources overrides the envoy/broker sidecar resource
+	// multipliers. Nil = defaults. Values must be positive (fail loudly).
+	SidecarResources *SidecarResourceOverride
 	// MeterProvider, when non-nil, registers the untrusted-mode OTel instruments
 	// (untrusted_backend_pods gauge, untrusted_pod_admissions_total counter).
 	// Nil disables metrics.
@@ -107,6 +113,10 @@ func NewStack(cfg WiringConfig) (*Stack, error) {
 			return nil, err
 		}
 	}
+	if cfg.SidecarResources != nil &&
+		(cfg.SidecarResources.CPUMultiplier <= 0 || cfg.SidecarResources.MemoryMultiplier <= 0) {
+		return nil, fmt.Errorf("untrusted wiring: sidecar resource multipliers must be positive")
+	}
 	var metrics *untrustedMetrics
 	if cfg.MeterProvider != nil {
 		metrics, err = newUntrustedMetrics(cfg.MeterProvider)
@@ -125,7 +135,8 @@ func NewStack(cfg WiringConfig) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
-	resolver := podAddressResolverWithTokenStore(lifecycle, adm, cfg.ReadyBudget, cfg.TokenStore, metrics)
+	resolver := podAddressResolverWithTokenStore(
+		lifecycle, adm, cfg.ReadyBudget, cfg.TokenStore, metrics, cfg.Images, cfg.SidecarResources)
 	reaper, err := NewReaper(cfg.K8sClient, store, cfg.Reaper, cfg.VMCPUId, metrics)
 	if err != nil {
 		return nil, err

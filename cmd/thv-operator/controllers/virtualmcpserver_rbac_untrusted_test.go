@@ -4,14 +4,20 @@
 package controllers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // TestVmcpDiscoveredRBACRules_PodsRule pins the untrusted-mode pods grant:
@@ -75,28 +81,45 @@ func TestVmcpDiscoveredRBACRules_StatefulSetsRule(t *testing.T) {
 	assert.NotContains(t, rule.Verbs, "delete", "read-only: vMCP never writes StatefulSets")
 }
 
+// untrustedRedisStorage is the shared fixture for the token-store env tests:
+// standalone/cluster Redis storage with the given address and token-encryption
+// config.
+func untrustedRedisStorage(addr string, te *mcpv1beta1.TokenEncryptionConfig) *mcpv1beta1.EmbeddedAuthServerConfig {
+	return &mcpv1beta1.EmbeddedAuthServerConfig{
+		Storage: &mcpv1beta1.AuthServerStorageConfig{
+			Type: mcpv1beta1.AuthServerStorageTypeRedis,
+			Redis: &mcpv1beta1.RedisStorageConfig{
+				Addr: addr,
+				ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
+					PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-creds", Key: "password"},
+				},
+			},
+			TokenEncryption: te,
+		},
+	}
+}
+
+// newTokenStoreTestReconciler builds a reconciler over a fake client seeded
+// with objects. The status manager is nil: none of the address-only paths
+// touch it (only the Sentinel+tokenEncryption condition does, and that test
+// supplies a mock).
+func newTokenStoreTestReconciler(t *testing.T, objects ...*corev1.Secret) *VirtualMCPServerReconciler {
+	t.Helper()
+	scheme := testutil.NewScheme(t)
+	builder := fake.NewClientBuilder().WithScheme(scheme)
+	for _, o := range objects {
+		builder = builder.WithObjects(o)
+	}
+	return &VirtualMCPServerReconciler{Client: builder.Build(), Scheme: scheme}
+}
+
 // TestBuildUntrustedTokenStoreEnvVars pins the Wave-3 token-store coordinate
 // injection: the vMCP Deployment gets the (non-secret) auth-server Redis
 // address when the embedded auth server uses standalone/cluster Redis storage,
-// and nothing otherwise. The KEK is never injected here — it is a sidecar-only
-// Secret reference resolved at clone time.
+// and nothing otherwise. The KEK values are never injected here — they stay
+// Secret-only and reach sidecars as SecretKeyRef envs resolved at clone time.
 func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 	t.Parallel()
-
-	redisStorage := func(addr string) *mcpv1beta1.EmbeddedAuthServerConfig {
-		cfg := &mcpv1beta1.EmbeddedAuthServerConfig{
-			Storage: &mcpv1beta1.AuthServerStorageConfig{
-				Type: mcpv1beta1.AuthServerStorageTypeRedis,
-				Redis: &mcpv1beta1.RedisStorageConfig{
-					Addr: addr,
-					ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
-						PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-creds", Key: "password"},
-					},
-				},
-			},
-		}
-		return cfg
-	}
 
 	tests := []struct {
 		name      string
@@ -118,7 +141,7 @@ func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 		},
 		{
 			name:      "redis storage with addr produces the address env var",
-			authCfg:   redisStorage("redis.auth:6379"),
+			authCfg:   untrustedRedisStorage("redis.auth:6379", nil),
 			wantAddr:  "redis.auth:6379",
 			wantEmpty: false,
 		},
@@ -139,7 +162,9 @@ func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 			t.Parallel()
 			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 				v1beta1test.WithVMCPAuthServerConfig(tc.authCfg))
-			env := buildUntrustedTokenStoreEnvVars(vmcp)
+			r := newTokenStoreTestReconciler(t)
+			env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+			require.NoError(t, err)
 			if tc.wantEmpty {
 				assert.Empty(t, env)
 				return
@@ -150,4 +175,126 @@ func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 			assert.Nil(t, env[0].ValueFrom, "address is non-secret; must be a plain literal, never a Secret ref")
 		})
 	}
+}
+
+// TestBuildUntrustedTokenStoreEnvVars_KEK pins the Wave-5 KEK wiring: when the
+// auth-server storage carries tokenEncryption, the vMCP Deployment gets the
+// KEK Secret coordinates (Secret name + active key ID + the full key-ID set
+// read from the Secret) as plain literals — the vMCP turns them into one
+// SecretKeyRef env per key ID on every cloned sidecar, so the KEK values
+// themselves never appear in any pod spec.
+func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
+	t.Parallel()
+
+	redisStorage := func(te *mcpv1beta1.TokenEncryptionConfig) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return untrustedRedisStorage("redis.auth:6379", te)
+	}
+
+	t.Run("tokenEncryption set emits the KEK coordinate env vars (full key set)", func(t *testing.T) {
+		t.Parallel()
+		cfg := redisStorage(&mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-2",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPAuthServerConfig(cfg))
+		r := newTokenStoreTestReconciler(t, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-vmcp-kek", Namespace: "default"},
+			Data: map[string][]byte{
+				"kek-1": []byte("retired-key-bytes"),
+				"kek-2": []byte("active-key-bytes"),
+			},
+		})
+		env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+		require.NoError(t, err)
+		require.Len(t, env, 4)
+
+		byName := map[string]corev1.EnvVar{}
+		for _, e := range env {
+			byName[e.Name] = e
+		}
+		assert.Equal(t, "redis.auth:6379", byName[untrustedTokenStoreAddrEnvVar].Value)
+		assert.Equal(t, "my-vmcp-kek", byName[untrustedTokenStoreKEKSecretEnvVar].Value)
+		assert.Equal(t, "kek-2", byName[untrustedTokenStoreKEKKeyEnvVar].Value)
+		assert.Equal(t, "kek-1,kek-2", byName[untrustedTokenStoreKEKIDsEnvVar].Value,
+			"the full key-ID set (active + retired) rides along so rotation never orphans ciphertext")
+		for _, e := range env {
+			assert.Nil(t, e.ValueFrom, "%s must be a literal coordinate, never a Secret ref", e.Name)
+		}
+	})
+
+	t.Run("tokenEncryption nil emits only the address env var", func(t *testing.T) {
+		t.Parallel()
+		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPAuthServerConfig(redisStorage(nil)))
+		r := newTokenStoreTestReconciler(t)
+		env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+		require.NoError(t, err)
+		require.Len(t, env, 1)
+		assert.Equal(t, untrustedTokenStoreAddrEnvVar, env[0].Name)
+	})
+
+	t.Run("memory storage with tokenEncryption emits nothing (CEL guards admission)", func(t *testing.T) {
+		t.Parallel()
+		// The CEL rule rejects this at admission; the builder must still not
+		// emit KEK coordinates for non-Redis storage (defense in depth).
+		cfg := &mcpv1beta1.EmbeddedAuthServerConfig{
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type: mcpv1beta1.AuthServerStorageTypeMemory,
+				TokenEncryption: &mcpv1beta1.TokenEncryptionConfig{
+					ActiveKeyID:  "kek-1",
+					KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+				},
+			},
+		}
+		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPAuthServerConfig(cfg))
+		r := newTokenStoreTestReconciler(t)
+		env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+		require.NoError(t, err)
+		assert.Empty(t, env)
+	})
+
+	t.Run("unresolvable KEK Secret is an error (fail closed, coordinates dropped)", func(t *testing.T) {
+		t.Parallel()
+		cfg := redisStorage(&mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-1",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPAuthServerConfig(cfg))
+		// No KEK Secret seeded — the resolution must fail.
+		r := newTokenStoreTestReconciler(t)
+		_, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+		require.Error(t, err)
+	})
+
+	t.Run("sentinel storage with tokenEncryption emits a Warning event and no env", func(t *testing.T) {
+		t.Parallel()
+		cfg := untrustedRedisStorage("", &mcpv1beta1.TokenEncryptionConfig{
+			ActiveKeyID:  "kek-1",
+			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
+		})
+		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPAuthServerConfig(cfg))
+
+		recorder := events.NewFakeRecorder(10)
+		scheme := testutil.NewScheme(t)
+		r := &VirtualMCPServerReconciler{
+			Client:   fake.NewClientBuilder().WithScheme(scheme).Build(),
+			Scheme:   scheme,
+			Recorder: recorder,
+		}
+
+		env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+		require.NoError(t, err, "the Sentinel misconfiguration must not error the reconcile")
+		assert.Empty(t, env, "no token-store env for Sentinel-backed storage")
+
+		select {
+		case event := <-recorder.Events:
+			assert.Contains(t, event, "TokenEncryptionNotSupportedForUntrusted")
+		default:
+			t.Fatal("expected a Warning event for Sentinel-backed storage with tokenEncryption")
+		}
+	})
 }

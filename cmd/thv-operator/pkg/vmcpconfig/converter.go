@@ -157,7 +157,7 @@ func (c *Converter) Convert(
 	var authServerRC *authserver.RunConfig
 	// Convert inline AuthServerConfig if specified.
 	if vmcp.Spec.AuthServerConfig != nil {
-		rc, err := c.convertAuthServerConfig(vmcp, config)
+		rc, err := c.convertAuthServerConfig(ctx, vmcp, config)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to convert auth server config: %w", err)
 		}
@@ -524,12 +524,20 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 // convertAuthServerConfig converts the inline EmbeddedAuthServerConfig from the
 // VirtualMCPServer spec into an authserver.RunConfig using the shared builder in
 // controllerutil. AllowedAudiences is derived from the resolved incoming OIDC config.
-func (*Converter) convertAuthServerConfig(
+// The KEK key set (active + retired) is resolved from the referenced Secret so
+// the RunConfig can decrypt rows sealed under retired keys, matching the env
+// vars the deployment builder renders on the same pod.
+func (c *Converter) convertAuthServerConfig(
+	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	config *vmcpconfig.Config,
 ) (*authserver.RunConfig, error) {
 	if vmcp.Spec.AuthServerConfig == nil {
 		return nil, nil
+	}
+	kekEnvByID, err := controllerutil.ResolveKEKKeySet(ctx, c.k8sClient, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve token-encryption KEK key set: %w", err)
 	}
 	return controllerutil.BuildAuthServerRunConfig(
 		vmcp.Namespace, vmcp.Name,
@@ -537,6 +545,7 @@ func (*Converter) convertAuthServerConfig(
 		deriveAllowedAudiences(config),
 		deriveScopesSupported(config),
 		deriveResourceURL(config),
+		kekEnvByID,
 	)
 }
 

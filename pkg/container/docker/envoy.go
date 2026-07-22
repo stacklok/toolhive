@@ -287,12 +287,16 @@ type envoyConnectConfig struct{}
 
 // envoyCluster is an Envoy upstream cluster definition.
 type envoyCluster struct {
-	Name           string               `json:"name"`
-	ConnectTimeout string               `json:"connect_timeout"`
-	LbPolicy       string               `json:"lb_policy,omitempty"`
-	Type           string               `json:"type,omitempty"`
-	ClusterType    *envoyClusterType    `json:"cluster_type,omitempty"`
-	LoadAssignment *envoyLoadAssignment `json:"load_assignment,omitempty"`
+	Name           string `json:"name"`
+	ConnectTimeout string `json:"connect_timeout"`
+	LbPolicy       string `json:"lb_policy,omitempty"`
+	Type           string `json:"type,omitempty"`
+	// DnsLookupFamily restricts DNS resolution to IPv4 only. Without this,
+	// STRICT_DNS clusters attempt AAAA lookups first, which adds latency in
+	// environments where IPv6 is unavailable or times out.
+	DnsLookupFamily string               `json:"dns_lookup_family,omitempty"`
+	ClusterType     *envoyClusterType    `json:"cluster_type,omitempty"`
+	LoadAssignment  *envoyLoadAssignment `json:"load_assignment,omitempty"`
 }
 
 // envoyClusterType is the custom cluster discovery extension (e.g. DFP).
@@ -685,9 +689,10 @@ func ingressDomains(spec proxySpec) []string {
 // listener, pointing at spec.WorkloadName:spec.UpstreamPort.
 func buildIngressCluster(spec proxySpec) envoyCluster {
 	return envoyCluster{
-		Name:           ingressClusterName,
-		ConnectTimeout: "10s",
-		Type:           "STRICT_DNS",
+		Name:            ingressClusterName,
+		ConnectTimeout:  "10s",
+		Type:            "STRICT_DNS",
+		DnsLookupFamily: "V4_ONLY",
 		LoadAssignment: &envoyLoadAssignment{
 			ClusterName: ingressClusterName,
 			Endpoints: []envoyEndpoint{
@@ -734,8 +739,12 @@ func writeEnvoyBootstrap(b envoyBootstrap) (string, error) {
 		_ = os.Remove(created)
 		return "", fmt.Errorf("failed to write envoy bootstrap: %w", err)
 	}
-	// 0600: only the owner can read — the file may contain network topology.
-	if err := tmpFile.Chmod(0o600); err != nil {
+	// 0o644: world-readable so the Envoy distroless container (UID 101) can
+	// read the bind-mounted file. On Linux Docker Engine, strict POSIX
+	// permissions apply — 0o600 prevents the container user from reading the
+	// file, causing Envoy to crash-loop. The bootstrap contains no secrets
+	// (only network topology: hostnames, ports, RBAC rules).
+	if err := tmpFile.Chmod(0o644); err != nil {
 		_ = os.Remove(created)
 		return "", fmt.Errorf("failed to set envoy bootstrap file permissions: %w", err)
 	}

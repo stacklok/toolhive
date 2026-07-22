@@ -540,10 +540,12 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 
-	// Mode must be 0600 — not 0644 — so that other processes cannot read the
-	// bootstrap config (which may contain sensitive socket addresses).
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
-		"bootstrap file must be written at mode 0600")
+	// Mode must be 0644: world-readable so the Envoy distroless container
+	// (UID 101) can read the bind-mounted file on Linux Docker Engine, where
+	// strict POSIX permissions prevent a different UID from reading 0600 files.
+	// The bootstrap contains no secrets, so world-readable is safe.
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(),
+		"bootstrap file must be written at mode 0644")
 
 	// File must contain valid JSON that deserializes back into envoyBootstrap.
 	data, err := os.ReadFile(path)

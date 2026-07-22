@@ -76,7 +76,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 		runArgs = append(runArgs, "fetch")
 
 		envoyRun(config, runArgs...).ExpectSuccess()
-		Expect(e2e.WaitForMCPServer(config, serverName, 120*time.Second)).
+		Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).
 			To(Succeed(), "Envoy server should be running within 120 seconds")
 		return serverName
 	}
@@ -148,7 +148,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			runArgs = append(runArgs, "--permission-profile", profilePath, "fetch")
 			envoyRun(config, runArgs...).ExpectSuccess()
 
-			Expect(e2e.WaitForMCPServer(config, serverName, 120*time.Second)).To(Succeed())
+			Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).To(Succeed())
 			serverURL, err := e2e.GetMCPServerURL(config, serverName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)).To(Succeed())

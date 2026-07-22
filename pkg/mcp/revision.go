@@ -139,6 +139,8 @@ type RequestHeaderMismatchError struct {
 
 func (e *RequestHeaderMismatchError) Error() string {
 	switch e.reason {
+	case headerMismatchReasonValue:
+		return fmt.Sprintf("%s header %q does not match request body value %q", e.Header, e.HeaderValue, e.BodyValue)
 	case headerMismatchReasonMissing:
 		return fmt.Sprintf("%s header is missing (required for this request)", e.Header)
 	case headerMismatchReasonMalformed:

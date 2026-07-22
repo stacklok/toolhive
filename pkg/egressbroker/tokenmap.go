@@ -4,11 +4,12 @@
 package egressbroker
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // TokenMap is the request-id → injected-token correlation the response
@@ -28,15 +29,16 @@ import (
 // evicted (a response whose entry was evicted scans as unknown-request and
 // passes under the fail-open default — recorded as a scan miss).
 //
-// Concurrency: a single mutex guards map + eviction list (one synchronization
+// Concurrency: the backing store is hashicorp/golang-lru/v2 (the same LRU
+// pkg/cache wraps for the session manager). A single mutex serializes the
+// map's operations so the consume-on-read Lookup (get + remove) is atomic
+// with respect to Record and the eviction sweep (one synchronization
 // primitive per data structure).
 type TokenMap struct {
-	mu         sync.Mutex
-	entries    map[string]*list.Element // requestID → list element
-	lru        *list.List               // front = most recently recorded
-	ttl        time.Duration
-	maxEntries int
-	now        func() time.Time
+	mu  sync.Mutex
+	lru *lru.Cache[string, *tokenMapEntry]
+	ttl time.Duration
+	now func() time.Time
 }
 
 // ScanRecord is one entry's payload.
@@ -47,7 +49,6 @@ type ScanRecord struct {
 }
 
 type tokenMapEntry struct {
-	requestID string
 	record    ScanRecord
 	expiresAt time.Time
 }
@@ -72,25 +73,23 @@ func NewTokenMapWithClock(ttl time.Duration, maxEntries int, now func() time.Tim
 	if now == nil {
 		return nil, fmt.Errorf("egressbroker: clock must not be nil")
 	}
-	return &TokenMap{
-		entries:    map[string]*list.Element{},
-		lru:        list.New(),
-		ttl:        ttl,
-		maxEntries: maxEntries,
-		now:        now,
-	}, nil
+	cache, err := lru.New[string, *tokenMapEntry](maxEntries)
+	if err != nil {
+		return nil, fmt.Errorf("egressbroker: failed to build token map: %w", err)
+	}
+	return &TokenMap{lru: cache, ttl: ttl, now: now}, nil
 }
 
 // Record stores the scan record for an injected credential header value under
 // requestID. provider travels with the entry for scan-time metrics/audit
 // labeling (low-cardinality policy names only). A re-recorded requestID
-// refreshes in place.
+// refreshes in place; past the cap the least-recently-used entry is evicted
+// by the backing LRU.
 func (m *TokenMap) Record(requestID, headerValue, provider string) {
 	if requestID == "" || headerValue == "" {
 		return
 	}
 	entry := &tokenMapEntry{
-		requestID: requestID,
 		record: ScanRecord{
 			TokenHash: hashOf(headerValue),
 			Needles:   buildNeedles(headerValue),
@@ -100,35 +99,27 @@ func (m *TokenMap) Record(requestID, headerValue, provider string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if el, ok := m.entries[requestID]; ok {
-		el.Value = entry
-		m.lru.MoveToFront(el)
-		return
-	}
-	m.entries[requestID] = m.lru.PushFront(entry)
-	for m.lru.Len() > m.maxEntries {
-		oldest := m.lru.Back()
-		m.lru.Remove(oldest)
-		delete(m.entries, oldest.Value.(*tokenMapEntry).requestID)
-	}
+	m.lru.Add(requestID, entry)
 }
 
 // Lookup returns the scan record for requestID, consuming the entry (one
 // injection corresponds to one scanned response; a second lookup reports
-// unknown). Expired entries count as unknown.
+// unknown). Expired entries count as unknown. The peek+remove pair runs under
+// the map's mutex so no concurrent Record/Lookup can interleave between them.
+// Peek (not Get) keeps the recency order strictly record-ordered: a lookup is
+// consumption, not reuse, so it must not shield an entry from being the next
+// eviction victim — the oldest un-consumed injection is always evicted first.
 func (m *TokenMap) Lookup(requestID string) (ScanRecord, bool) {
 	if requestID == "" {
 		return ScanRecord{}, false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	el, found := m.entries[requestID]
+	entry, found := m.lru.Peek(requestID)
 	if !found {
 		return ScanRecord{}, false
 	}
-	delete(m.entries, requestID)
-	m.lru.Remove(el)
-	entry := el.Value.(*tokenMapEntry)
+	m.lru.Remove(requestID)
 	if m.now().After(entry.expiresAt) {
 		return ScanRecord{}, false
 	}
@@ -142,14 +133,10 @@ func (m *TokenMap) evictExpired() {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for el := m.lru.Back(); el != nil; {
-		prev := el.Prev()
-		entry := el.Value.(*tokenMapEntry)
-		if now.After(entry.expiresAt) {
-			m.lru.Remove(el)
-			delete(m.entries, entry.requestID)
+	for _, key := range m.lru.Keys() {
+		if entry, ok := m.lru.Peek(key); ok && now.After(entry.expiresAt) {
+			m.lru.Remove(key)
 		}
-		el = prev
 	}
 }
 

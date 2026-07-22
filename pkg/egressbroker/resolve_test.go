@@ -105,6 +105,37 @@ providers:
 		assert.Contains(t, err.Error(), "empty dial allowlist")
 	})
 
+	t.Run("NAT64-embedded private answers never widen the allowlist", func(t *testing.T) {
+		t.Parallel()
+		p := mustParse(t, `
+providers:
+- provider: github
+  allowedHosts: ["api.github.com"]
+`)
+		_, err := egressbroker.ResolveDialAllowlist(p, lookup(map[string][]net.IP{
+			// 64:ff9b::/96 (RFC 6052) and 64:ff9b:1::/96 (RFC 8215 local-use)
+			// embeddings of 169.254.169.254 (cloud metadata endpoint).
+			"api.github.com": {net.ParseIP("64:ff9b::a9fe:a9fe"), net.ParseIP("64:ff9b:1::a9fe:a9fe")},
+		}))
+		require.Error(t, err, "a host resolving only to NAT64-embedded private IPs must fail, not allowlist them")
+		assert.Contains(t, err.Error(), "empty dial allowlist")
+	})
+
+	t.Run("NAT64-embedded global answers stay allowlisted", func(t *testing.T) {
+		t.Parallel()
+		p := mustParse(t, `
+providers:
+- provider: github
+  allowedHosts: ["api.github.com"]
+`)
+		out, err := egressbroker.ResolveDialAllowlist(p, lookup(map[string][]net.IP{
+			// 64:ff9b::/96 embedding of the public 140.82.114.26.
+			"api.github.com": {net.ParseIP("64:ff9b::8c52:721a")},
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"64:ff9b::8c52:721a/128"}, out)
+	})
+
 	t.Run("mixed global + private answers keep only the global ones", func(t *testing.T) {
 		t.Parallel()
 		p := mustParse(t, `

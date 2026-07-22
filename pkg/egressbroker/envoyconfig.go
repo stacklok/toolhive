@@ -6,8 +6,10 @@ package egressbroker
 import (
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // EnvoyConfigParams carries the rendered Envoy bootstrap's variable parts.
@@ -118,7 +120,7 @@ const envoyBootstrapTemplate = `static_resources:
     address:
       socket_address:
         address: 127.0.0.1
-        port_value: {{PROXY_PORT}}
+        port_value: 0 # set from params at render time
     listener_filters:
     - name: envoy.filters.listener.tls_inspector
       typed_config:
@@ -146,8 +148,7 @@ const envoyBootstrapTemplate = `static_resources:
               "@type": type.googleapis.com/envoy.extensions.request_id.uuid.v3.UuidRequestIdConfig
           route_config:
             name: egress_routes
-            virtual_hosts:
-{{VHOSTS}}
+            virtual_hosts: [] # one vhost per allowlisted host, built as data at render time
           http_filters:
           - name: envoy.filters.http.lua
             typed_config:
@@ -177,7 +178,7 @@ const envoyBootstrapTemplate = `static_resources:
           - name: envoy.filters.http.ext_proc
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
-              failure_mode_allow: {{SCAN_FAIL_OPEN}}
+              failure_mode_allow: true # wired from broker scan config at render time
               message_timeout: 2s
               # NOTE: ext_proc has no per-filter body byte cap (no max_bytes or
               # allow_partial_message field exists on this filter in the pinned
@@ -232,8 +233,8 @@ const envoyBootstrapTemplate = `static_resources:
         - endpoint:
             address:
               socket_address:
-                address: {{EXT_AUTHZ_ADDRESS}}
-                port_value: {{EXT_AUTHZ_PORT}}
+                address: 127.0.0.1 # set from params at render time
+                port_value: 0      # set from params at render time
   - name: dynamic_forward_proxy_cluster
     lb_policy: CLUSTER_PROVIDED
     cluster_type:
@@ -253,57 +254,279 @@ const envoyBootstrapTemplate = `static_resources:
               filename: /etc/ssl/certs/ca-certificates.crt
 `
 
-// vhostTemplate is one allowlisted-host route entry. The CONNECT upgrade
-// terminates the tunnel downstream via the filter chain's on-demand SDS cert
-// (resource "host:<SNI>") and re-originates upstream through the dynamic
-// forward proxy; every request — the CONNECT itself and the decrypted tunneled
-// requests — passes ext_authz (no per-route disable: the credential injection
-// on tunneled traffic IS the feature). Non-CONNECT routes (plain absolute-form
-// HTTP through the proxy) share the same upstream. The D6c correlation
-// metadata is NOT set here: route filter_metadata values are stored literally
-// (no %REQ()% formatter substitution) — the Lua HTTP filter upstream in the
-// chain sets them instead.
-const vhostTemplate = `            - name: {{HOST_NAME}}
-              domains: ["{{HOST}}"]
-              routes:
-              - match:
-                  connect_matcher: {}
-                route:
-                  cluster: dynamic_forward_proxy_cluster
-                  upgrade_configs:
-                  - upgrade_type: CONNECT
-                    connect_config:
-                      terminate_connect: true
-              - match:
-                  prefix: /
-                route:
-                  cluster: dynamic_forward_proxy_cluster
-`
+// bootstrapDoc is the typed mirror of the rendered bootstrap: only the
+// config-derived values are typed fields; everything else round-trips through
+// raw yaml.Nodes (gopkg.in/yaml.v3 cannot decode into *yaml.Node sequence
+// elements, so every raw list is a single wrapping node).
+type bootstrapDoc struct {
+	StaticResources struct {
+		Listeners []struct {
+			Name    string `yaml:"name"`
+			Address struct {
+				SocketAddress struct {
+					Address   string `yaml:"address"`
+					PortValue int    `yaml:"port_value"`
+				} `yaml:"socket_address"`
+			} `yaml:"address"`
+			ListenerFilters yaml.Node `yaml:"listener_filters"`
+			FilterChains    []struct {
+				Filters         yaml.Node `yaml:"filters"`
+				TransportSocket yaml.Node `yaml:"transport_socket"`
+			} `yaml:"filter_chains"`
+		} `yaml:"listeners"`
+		Clusters []clusterDoc `yaml:"clusters"`
+	} `yaml:"static_resources"`
+}
+
+// clusterDoc mirrors one static cluster; the broker cluster's endpoint address
+// is config-derived (navigated into LoadAssignment), the rest is static.
+type clusterDoc struct {
+	Name                          string    `yaml:"name"`
+	Type                          string    `yaml:"type,omitempty"`
+	TypedExtensionProtocolOptions yaml.Node `yaml:"typed_extension_protocol_options,omitempty"`
+	LoadAssignment                yaml.Node `yaml:"load_assignment,omitempty"`
+	LBPolicy                      string    `yaml:"lb_policy,omitempty"`
+	ClusterType                   yaml.Node `yaml:"cluster_type,omitempty"`
+	TransportSocket               yaml.Node `yaml:"transport_socket,omitempty"`
+}
 
 // RenderEnvoyBootstrap renders the Envoy bootstrap YAML for params. The
 // result contains no secrets — the bump-CA material is delivered to Envoy
 // via SDS at runtime, not through the bootstrap file. AllowedHosts is sorted
 // so the rendered document is deterministic.
+//
+// Hybrid render (mirrors the operator's renderEgressPolicyYAML approach): the
+// static listener/filter skeleton stays a YAML template; EVERY config-derived
+// value (ports, addresses, scan fail-open, the allowlisted-host route table)
+// is built as typed data and re-emitted through yaml.Marshal — no
+// string substitution ever touches a value an operator could influence.
 func RenderEnvoyBootstrap(params EnvoyConfigParams) ([]byte, error) {
 	if err := params.Validate(); err != nil {
 		return nil, err
 	}
-	hosts := make([]string, len(params.AllowedHosts))
-	copy(hosts, params.AllowedHosts)
-	sort.Strings(hosts)
-
-	var vhosts strings.Builder
-	for i, host := range hosts {
-		entry := strings.ReplaceAll(vhostTemplate, "{{HOST_NAME}}", sanitizeRouteName(host, i))
-		entry = strings.ReplaceAll(entry, "{{HOST}}", host)
-		vhosts.WriteString(entry)
+	var doc bootstrapDoc
+	if err := yaml.Unmarshal([]byte(envoyBootstrapTemplate), &doc); err != nil {
+		return nil, fmt.Errorf("egressbroker: failed to parse envoy bootstrap template: %w", err)
 	}
-	out := strings.ReplaceAll(envoyBootstrapTemplate, "{{PROXY_PORT}}", fmt.Sprintf("%d", params.ProxyPort))
-	out = strings.ReplaceAll(out, "{{EXT_AUTHZ_ADDRESS}}", params.ExtAuthzAddress)
-	out = strings.ReplaceAll(out, "{{EXT_AUTHZ_PORT}}", fmt.Sprintf("%d", params.ExtAuthzPort))
-	out = strings.ReplaceAll(out, "{{SCAN_FAIL_OPEN}}", fmt.Sprintf("%t", params.ScanFailOpen))
-	out = strings.ReplaceAll(out, "{{VHOSTS}}", vhosts.String())
-	return []byte(out), nil
+
+	doc.StaticResources.Listeners[0].Address.SocketAddress.PortValue = params.ProxyPort
+
+	filters := doc.StaticResources.Listeners[0].FilterChains[0].Filters
+	hcm, err := nodeByName(filters.Content, "envoy.filters.network.http_connection_manager")
+	if err != nil {
+		return nil, err
+	}
+	if err := setNodeMapping(hcm, "typed_config.route_config.virtual_hosts",
+		buildVirtualHosts(params.AllowedHosts)); err != nil {
+		return nil, err
+	}
+	httpFilters, err := nodeByPath(hcm, "typed_config", "http_filters")
+	if err != nil {
+		return nil, err
+	}
+	if httpFilters.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("egressbroker: bootstrap template: http_filters is not a sequence")
+	}
+	extProc, err := nodeByName(httpFilters.Content, "envoy.filters.http.ext_proc")
+	if err != nil {
+		return nil, err
+	}
+	if err := setNodeMapping(extProc, "typed_config.failure_mode_allow",
+		boolNode(params.ScanFailOpen)); err != nil {
+		return nil, err
+	}
+
+	broker, err := clusterByName(doc.StaticResources.Clusters, "egress_broker")
+	if err != nil {
+		return nil, err
+	}
+	socketAddr, err := nodeByPath(&broker.LoadAssignment, "endpoints")
+	if err != nil {
+		return nil, err
+	}
+	socketAddr, err = nodeByIndex(socketAddr, 0, "lb_endpoints", 0, "endpoint", "address", "socket_address")
+	if err != nil {
+		return nil, err
+	}
+	if err := setNodeMapping(socketAddr, "address", scalarNode(params.ExtAuthzAddress)); err != nil {
+		return nil, err
+	}
+	if err := setNodeMapping(socketAddr, "port_value", intNode(params.ExtAuthzPort)); err != nil {
+		return nil, err
+	}
+
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("egressbroker: failed to marshal envoy bootstrap: %w", err)
+	}
+	return out, nil
+}
+
+// buildVirtualHosts builds one allowlisted-host route entry per host as data.
+// The CONNECT upgrade terminates the tunnel downstream via the filter chain's
+// on-demand SDS cert (resource "host:<SNI>") and re-originates upstream
+// through the dynamic forward proxy; every request — the CONNECT itself and
+// the decrypted tunneled requests — passes ext_authz (no per-route disable:
+// the credential injection on tunneled traffic IS the feature). Non-CONNECT
+// routes (plain absolute-form HTTP through the proxy) share the same
+// upstream. The D6c correlation metadata is NOT set here: route
+// filter_metadata values are stored literally (no %REQ()% formatter
+// substitution) — the Lua HTTP filter upstream in the chain sets them
+// instead. Host patterns are sorted so the render is deterministic.
+func buildVirtualHosts(allowedHosts []string) yaml.Node {
+	hosts := slices.Clone(allowedHosts)
+	slices.Sort(hosts)
+	vhosts := make([]any, 0, len(hosts))
+	for i, host := range hosts {
+		vhosts = append(vhosts, map[string]any{
+			"name":    sanitizeRouteName(host, i),
+			"domains": []string{host},
+			"routes": []any{
+				map[string]any{
+					"match": map[string]any{"connect_matcher": map[string]any{}},
+					"route": map[string]any{
+						"cluster": "dynamic_forward_proxy_cluster",
+						"upgrade_configs": []any{
+							map[string]any{
+								"upgrade_type":   "CONNECT",
+								"connect_config": map[string]any{"terminate_connect": true},
+							},
+						},
+					},
+				},
+				map[string]any{
+					"match": map[string]any{"prefix": "/"},
+					"route": map[string]any{"cluster": "dynamic_forward_proxy_cluster"},
+				},
+			},
+		})
+	}
+	var node yaml.Node
+	// The value tree is fully static-typed above; a marshal failure is
+	// unreachable.
+	_ = node.Encode(vhosts)
+	return node
+}
+
+// nodeByName finds the entry of a YAML sequence of {"name": ..., ...} maps
+// whose name matches (the elements are the same *yaml.Node pointers the
+// caller's struct holds, so mutations through the result are visible on
+// re-marshal).
+func nodeByName(seq []*yaml.Node, name string) (*yaml.Node, error) {
+	for _, entry := range seq {
+		if entry == nil || entry.Kind != yaml.MappingNode {
+			continue
+		}
+		for i := 0; i+1 < len(entry.Content); i += 2 {
+			if entry.Content[i].Value == "name" && entry.Content[i+1].Value == name {
+				return entry, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("egressbroker: bootstrap template: entry %q not found", name)
+}
+
+// nodeByPath walks mapping keys from node.
+func nodeByPath(node *yaml.Node, path ...string) (*yaml.Node, error) {
+	cur := node
+	for _, key := range path {
+		next, err := mappingValue(cur, key)
+		if err != nil {
+			return nil, err
+		}
+		cur = next
+	}
+	return cur, nil
+}
+
+// nodeByIndex walks sequence indexes (interleaved with mapping keys).
+func nodeByIndex(node *yaml.Node, index int, path ...any) (*yaml.Node, error) {
+	cur := node
+	if cur.Kind != yaml.SequenceNode || index >= len(cur.Content) {
+		return nil, fmt.Errorf("egressbroker: bootstrap template: missing sequence index %d", index)
+	}
+	cur = cur.Content[index]
+	for _, step := range path {
+		switch s := step.(type) {
+		case string:
+			next, err := mappingValue(cur, s)
+			if err != nil {
+				return nil, err
+			}
+			cur = next
+		case int:
+			if cur.Kind != yaml.SequenceNode || s >= len(cur.Content) {
+				return nil, fmt.Errorf("egressbroker: bootstrap template: missing sequence index %d", s)
+			}
+			cur = cur.Content[s]
+		}
+	}
+	return cur, nil
+}
+
+// mappingValue returns the value node for key in a mapping node.
+func mappingValue(node *yaml.Node, key string) (*yaml.Node, error) {
+	if node.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("egressbroker: bootstrap template: expected mapping at %q, got kind %d", key, node.Kind)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1], nil
+		}
+	}
+	return nil, fmt.Errorf("egressbroker: bootstrap template: key %q not found", key)
+}
+
+// setNodeMapping replaces the value at the end of a mapping-key path.
+func setNodeMapping(node *yaml.Node, path string, value yaml.Node) error {
+	parent := node
+	keys := strings.Split(path, ".")
+	for _, key := range keys[:len(keys)-1] {
+		next, err := mappingValue(parent, key)
+		if err != nil {
+			return err
+		}
+		parent = next
+	}
+	if parent.Kind != yaml.MappingNode {
+		return fmt.Errorf("egressbroker: bootstrap template: expected mapping at %q", path)
+	}
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == keys[len(keys)-1] {
+			v := value
+			parent.Content[i+1] = &v
+			return nil
+		}
+	}
+	return fmt.Errorf("egressbroker: bootstrap template: key %q not found", path)
+}
+
+// clusterByName finds a static cluster by name.
+func clusterByName(clusters []clusterDoc, name string) (*clusterDoc, error) {
+	for i := range clusters {
+		if clusters[i].Name == name {
+			return &clusters[i], nil
+		}
+	}
+	return nil, fmt.Errorf("egressbroker: bootstrap template: cluster %q not found", name)
+}
+
+func boolNode(b bool) yaml.Node {
+	var node yaml.Node
+	_ = node.Encode(b) // bool encode cannot fail
+	return node
+}
+
+func intNode(i int) yaml.Node {
+	var node yaml.Node
+	_ = node.Encode(i) // int encode cannot fail
+	return node
+}
+
+func scalarNode(s string) yaml.Node {
+	var node yaml.Node
+	_ = node.Encode(s) // string encode cannot fail
+	return node
 }
 
 // WriteEnvoyBootstrap renders and writes the bootstrap to path with

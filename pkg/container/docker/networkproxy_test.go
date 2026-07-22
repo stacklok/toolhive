@@ -18,6 +18,7 @@ func TestNewNetworkProxy(t *testing.T) {
 		name        string
 		envValue    string
 		wantSquid   bool
+		wantEnvoy   bool
 		wantErr     bool
 		errContains []string
 	}{
@@ -34,11 +35,14 @@ func TestNewNetworkProxy(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:        "envoy returns unsupported error",
-			envValue:    "envoy",
-			wantSquid:   false,
-			wantErr:     true,
-			errContains: []string{"envoy"},
+			// After Stage 1 this case becomes a success path — envoy returns
+			// *envoyProxy, no error. Flip wantErr to false and add wantEnvoy
+			// assertion once envoy.go exists.
+			name:      "envoy returns envoyProxy",
+			envValue:  "envoy",
+			wantSquid: false,
+			wantEnvoy: true,
+			wantErr:   false,
 		},
 		{
 			name:        "bogus value returns error",
@@ -72,6 +76,11 @@ func TestNewNetworkProxy(t *testing.T) {
 			if tt.wantSquid {
 				_, ok := proxy.(*squidProxy)
 				assert.True(t, ok, "expected proxy to be *squidProxy, got %T", proxy)
+			}
+
+			if tt.wantEnvoy {
+				_, ok := proxy.(*envoyProxy)
+				assert.True(t, ok, "expected proxy to be *envoyProxy, got %T", proxy)
 			}
 		})
 	}

@@ -248,7 +248,9 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			target := fmt.Sprintf("http://%s:%d/", dockerBridgeGatewayIP(), port)
 			server := startFetchServer("slow", "", "--allow-docker-gateway")
 
-			result := fetchThrough(server, target, 30*time.Second)
+			// 60s: 16s upstream sleep + generous MCP client round-trip headroom.
+			// The 30s default was too tight under CI infrastructure load.
+			result := fetchThrough(server, target, 60*time.Second)
 			if result.IsError {
 				Skip("docker bridge gateway is not routable to the host in this environment")
 			}

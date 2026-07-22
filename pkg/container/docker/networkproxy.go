@@ -80,6 +80,10 @@ type egressResult struct {
 	// EnvVars contains environment variables that must be merged into the MCP
 	// container's environment (e.g. HTTP_PROXY, HTTPS_PROXY).
 	EnvVars map[string]string
+	// ingressPort is the host-side ingress port reserved by a consolidated
+	// backend (envoy) when it created its container in SetupEgress. Per-container
+	// backends (squid) leave it 0 and bind the ingress port later in SetupIngress.
+	ingressPort int
 }
 
 // newNetworkProxy reads the TOOLHIVE_NETWORK_PROXY environment variable and

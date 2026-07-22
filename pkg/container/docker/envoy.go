@@ -731,8 +731,13 @@ type envoyProxy struct {
 	client *Client
 }
 
-// SetupProxies implements networkProxy for the Envoy backend.
-func (e *envoyProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyResult, error) {
+// SetupEgress implements networkProxy for the Envoy backend. Envoy consolidates
+// egress and ingress into a single container, so this creates that container
+// (both listeners) before the MCP container. Envoy's ingress upstream is a
+// STRICT_DNS cluster that resolves the MCP container lazily and keeps retrying,
+// so — unlike squid's cache_peer — pre-MCP creation is safe. The reserved
+// ingress port is carried back in egressResult for SetupIngress to return.
+func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error) {
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
 
 	bootstrap := envoyBootstrap{
@@ -754,7 +759,7 @@ func (e *envoyProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyRes
 	if spec.TransportType != "stdio" && spec.UpstreamPort > 0 {
 		port, err := networking.FindOrUsePort(spec.UpstreamPort + 1)
 		if err != nil {
-			return proxyResult{}, fmt.Errorf("failed to find ingress port: %w", err)
+			return egressResult{}, fmt.Errorf("failed to find ingress port: %w", err)
 		}
 		ingressPort = port
 		bootstrap.StaticResources.Listeners = append(
@@ -769,7 +774,7 @@ func (e *envoyProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyRes
 
 	configPath, err := writeEnvoyBootstrap(bootstrap)
 	if err != nil {
-		return proxyResult{}, fmt.Errorf("failed to write envoy bootstrap: %w", err)
+		return egressResult{}, fmt.Errorf("failed to write envoy bootstrap: %w", err)
 	}
 
 	envoyImage := getEnvoyImage()
@@ -778,7 +783,7 @@ func (e *envoyProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyRes
 	if err := e.client.imageManager.PullImage(ctx, envoyImage); err != nil {
 		_, inspectErr := e.client.imageManager.ImageExists(ctx, envoyImage)
 		if inspectErr != nil {
-			return proxyResult{}, fmt.Errorf("failed to pull envoy image: %w", err)
+			return egressResult{}, fmt.Errorf("failed to pull envoy image: %w", err)
 		}
 		slog.Debug("envoy image exists locally, continuing despite pull failure", "image", envoyImage)
 	}
@@ -821,19 +826,27 @@ func (e *envoyProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyRes
 	}
 	if portBindings != nil {
 		if err := setupPortBindings(hostConfig, portBindings); err != nil {
-			return proxyResult{}, fmt.Errorf("failed to setup port bindings: %w", err)
+			return egressResult{}, fmt.Errorf("failed to setup port bindings: %w", err)
 		}
 	}
 	if err := setupExposedPorts(config, exposedPorts); err != nil {
-		return proxyResult{}, fmt.Errorf("failed to setup exposed ports: %w", err)
+		return egressResult{}, fmt.Errorf("failed to setup exposed ports: %w", err)
 	}
 
 	if _, err := e.client.createContainer(ctx, egressContainerName, config, hostConfig, spec.Endpoints); err != nil {
-		return proxyResult{}, fmt.Errorf("failed to create envoy container: %w", err)
+		return egressResult{}, fmt.Errorf("failed to create envoy container: %w", err)
 	}
 
-	return proxyResult{
-		IngressHostPort: ingressPort,
-		EnvVars:         addEgressEnvVars(nil, egressContainerName),
+	return egressResult{
+		EnvVars:     addEgressEnvVars(nil, egressContainerName),
+		ingressPort: ingressPort,
 	}, nil
+}
+
+// SetupIngress implements networkProxy for the Envoy backend. Envoy already
+// created its ingress listener as part of the single container in SetupEgress,
+// so there is nothing more to create here — it simply returns the ingress port
+// reserved in SetupEgress (0 for stdio / UpstreamPort==0).
+func (*envoyProxy) SetupIngress(_ context.Context, _ proxySpec, egress egressResult) (int, error) {
+	return egress.ingressPort, nil
 }

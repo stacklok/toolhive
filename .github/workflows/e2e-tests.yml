@@ -147,6 +147,28 @@ jobs:
           LABEL_FILTER: ${{ matrix.label_filter }}
         run: ./test/e2e/run_tests.sh
 
+      - name: Capture Envoy container logs on failure (proxy shard only)
+        if: failure() && matrix.label_filter == 'proxy'
+        run: |
+          echo "=== Docker containers (nie-* workloads) ==="
+          docker ps -a --filter "name=nie-" --format "{{.Names}}\t{{.Status}}\t{{.Image}}" || true
+          echo ""
+          echo "=== Envoy egress container logs ==="
+          for c in $(docker ps -aq --filter "name=nie-.*egress"); do
+            name=$(docker inspect --format '{{.Name}}' "$c" 2>/dev/null | sed 's|/||')
+            echo "--- $name ---"
+            docker logs "$c" 2>&1 | tail -80 || true
+            echo ""
+          done
+          echo "=== thv workload logs (XDG: ~/.local/share/toolhive/logs/) ==="
+          # Linux uses XDG_DATA_HOME (~/.local/share), macOS uses ~/Library/Application Support
+          for dir in ~/.local/share/toolhive/logs ~/.config/toolhive/logs "$HOME/Library/Application Support/toolhive/logs"; do
+            if ls "$dir"/nie-*.log 2>/dev/null | head -1 | grep -q .; then
+              echo "Found logs in $dir:"
+              tail -100 "$dir"/nie-*.log 2>/dev/null || true
+            fi
+          done
+
       - name: Upload test results (${{ matrix.title }})
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

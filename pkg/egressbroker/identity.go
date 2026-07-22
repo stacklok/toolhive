@@ -49,6 +49,10 @@ const (
 	EnvSessionID = "THV_UNTRUSTED_SESSION"
 	// EnvMCPServer mirrors the pod's AnnotationMCPServerName annotation.
 	EnvMCPServer = "THV_UNTRUSTED_MCPSERVER"
+	// EnvPodName carries the pod's own name (metadata.name fieldRef) for audit
+	// context. Not part of the annotation contract (the name needs no
+	// annotation) and not identity-load-bearing: optional, empty tolerated.
+	EnvPodName = "THV_UNTRUSTED_POD_NAME"
 )
 
 // EnvToAnnotation is the complete downward-API contract: each env var name to
@@ -217,4 +221,10 @@ func NewPodIdentityResolver(getenv func(string) string) (*PodIdentityResolver, e
 // PodIdentity returns the validated identity.
 func (r *PodIdentityResolver) PodIdentity() PodIdentity {
 	return r.identity
+}
+
+// PodName returns the optional pod-name env (audit context only; "" when the
+// deployment does not set it — never identity-load-bearing).
+func (*PodIdentityResolver) PodName(getenv func(string) string) string {
+	return strings.TrimSpace(getenv(EnvPodName))
 }

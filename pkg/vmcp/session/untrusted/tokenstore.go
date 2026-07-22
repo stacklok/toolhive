@@ -30,6 +30,13 @@ type TokenStoreConfig struct {
 	// KeyPrefix is the auth-server per-tenant key prefix (e.g.
 	// "thv:auth:{ns:name}:"). Required; must end with ':'.
 	KeyPrefix string
+	// RedisPasswordSecret and RedisPasswordKey are the Secret COORDINATES of
+	// the token store's Redis ACL password — never the value (the KEK
+	// pattern). They render as a SecretKeyRef env (THV_SESSION_REDIS_PASSWORD)
+	// on the sidecar. All-or-nothing; empty on both means no password is
+	// wired and the broker fails loud at startup naming the env var.
+	RedisPasswordSecret string
+	RedisPasswordKey    string
 	// KEKSecret, when non-empty, names the Secret holding the base64
 	// token-encryption KEKs (one data entry per key ID, 32 bytes decoded).
 	// Every ID in KEKIDs is mounted as a per-ID SecretKeyRef env on the
@@ -63,6 +70,12 @@ func (c *TokenStoreConfig) validate() error {
 	}
 	if c.KeyPrefix == "" || c.KeyPrefix[len(c.KeyPrefix)-1] != ':' {
 		return fmt.Errorf("untrusted token store: KeyPrefix must be non-empty and end with ':'")
+	}
+	// Redis password coordinates are all-or-nothing (a half-reference would
+	// render a SecretKeyRef pointing nowhere).
+	if (c.RedisPasswordSecret == "") != (c.RedisPasswordKey == "") {
+		return fmt.Errorf("untrusted token store: RedisPasswordSecret and RedisPasswordKey " +
+			"must be set together (Secret coordinates of the Redis ACL password)")
 	}
 	// KEK coordinates are all-or-nothing: secret name + active ID + at least
 	// one key ID, with the active ID a member of the set.

@@ -55,33 +55,51 @@ func TestCredentialInjector(t *testing.T) {
 				}, nil, nil
 			})
 
-		decision := mustInjector(t, reader).Evaluate(ctx, githubDest)
+		decision := mustInjector(t, reader).Evaluate(ctx, githubDest, "req-1")
 		assert.True(t, decision.Allow)
 		assert.Equal(t, egressbroker.AuthorizationHeader, decision.HeaderName)
 		assert.Equal(t, "Bearer gho_secret", decision.HeaderValue)
-		assert.Empty(t, decision.DenyReason)
+		assert.Empty(t, decision.Reason)
 	})
 
 	t.Run("D5 ordering: credential load never happens on policy deny", func(t *testing.T) {
 		t.Parallel()
 
-		denyDests := map[string]egressbroker.Destination{
-			"non-allowlisted host":        {Host: "evil.example.com", Method: "GET", Path: "/"},
-			"superdomain of allowed":      {Host: "github.com", Method: "GET", Path: "/"},
-			"disallowed method":           {Host: "api.github.com", Method: "DELETE", Path: "/repos/foo"},
-			"disallowed path":             {Host: "api.github.com", Method: "GET", Path: "/admin"},
-			"method default is read-only": {Host: "slack.com", Method: "POST", Path: "/api/chat"},
+		denyDests := map[string]struct {
+			dest   egressbroker.Destination
+			reason egressbroker.DenyReason
+		}{
+			"non-allowlisted host": {
+				egressbroker.Destination{Host: "evil.example.com", Method: "GET", Path: "/"},
+				egressbroker.DenyReasonNoPolicy,
+			},
+			"superdomain of allowed": {
+				egressbroker.Destination{Host: "github.com", Method: "GET", Path: "/"},
+				egressbroker.DenyReasonNoPolicy,
+			},
+			"disallowed method": {
+				egressbroker.Destination{Host: "api.github.com", Method: "DELETE", Path: "/repos/foo"},
+				egressbroker.DenyReasonMethodNotAllowed,
+			},
+			"disallowed path": {
+				egressbroker.Destination{Host: "api.github.com", Method: "GET", Path: "/admin"},
+				egressbroker.DenyReasonPathNotAllowed,
+			},
+			"method default is read-only": {
+				egressbroker.Destination{Host: "slack.com", Method: "POST", Path: "/api/chat"},
+				egressbroker.DenyReasonMethodNotAllowed,
+			},
 		}
-		for name, dest := range denyDests {
+		for name, tc := range denyDests {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				ctrl := gomock.NewController(t)
 				reader := mocks.NewMockTokenReader(ctrl)
 				// No EXPECT: any call to the token reader fails the test.
 				// This proves D5 is evaluated before any credential load.
-				decision := mustInjector(t, reader).Evaluate(ctx, dest)
+				decision := mustInjector(t, reader).Evaluate(ctx, tc.dest, "req-1")
 				assert.False(t, decision.Allow)
-				assert.NotEmpty(t, decision.DenyReason)
+				assert.Equal(t, tc.reason, decision.Reason, "the deny reason names the failing policy dimension")
 				assert.Empty(t, decision.HeaderName, "deny path must never carry header material")
 				assert.Empty(t, decision.HeaderValue, "deny path must never carry header material")
 			})
@@ -95,7 +113,7 @@ func TestCredentialInjector(t *testing.T) {
 		// The reader would return a valid credential for ANY provider — but the
 		// destination binding must deny before it is ever consulted.
 		decision := mustInjector(t, reader).Evaluate(ctx,
-			egressbroker.Destination{Host: "attacker-controlled.example.com", Method: "GET", Path: "/"})
+			egressbroker.Destination{Host: "attacker-controlled.example.com", Method: "GET", Path: "/"}, "req-1")
 		assert.False(t, decision.Allow)
 		assert.Empty(t, decision.HeaderValue)
 	})
@@ -108,9 +126,9 @@ func TestCredentialInjector(t *testing.T) {
 			GetAllUpstreamCredentials(gomock.Any(), "session-abc", gomock.Any()).
 			Return(map[string]upstreamtoken.UpstreamCredential{}, nil, nil)
 
-		decision := mustInjector(t, reader).Evaluate(ctx, githubDest)
+		decision := mustInjector(t, reader).Evaluate(ctx, githubDest, "req-1")
 		assert.False(t, decision.Allow)
-		assert.Contains(t, decision.DenyReason, "re-consent")
+		assert.Contains(t, decision.DenyDetail, "re-consent")
 		assert.Empty(t, decision.HeaderValue)
 	})
 
@@ -122,7 +140,7 @@ func TestCredentialInjector(t *testing.T) {
 			GetAllUpstreamCredentials(gomock.Any(), "session-abc", gomock.Any()).
 			Return(map[string]upstreamtoken.UpstreamCredential{}, []string{"github"}, nil)
 
-		decision := mustInjector(t, reader).Evaluate(ctx, githubDest)
+		decision := mustInjector(t, reader).Evaluate(ctx, githubDest, "req-1")
 		assert.False(t, decision.Allow)
 		assert.Empty(t, decision.HeaderValue)
 	})
@@ -137,7 +155,7 @@ func TestCredentialInjector(t *testing.T) {
 				"github": {AccessToken: ""},
 			}, nil, nil)
 
-		decision := mustInjector(t, reader).Evaluate(ctx, githubDest)
+		decision := mustInjector(t, reader).Evaluate(ctx, githubDest, "req-1")
 		assert.False(t, decision.Allow)
 		assert.Empty(t, decision.HeaderValue)
 	})
@@ -150,11 +168,11 @@ func TestCredentialInjector(t *testing.T) {
 			GetAllUpstreamCredentials(gomock.Any(), "session-abc", gomock.Any()).
 			Return(nil, nil, fmt.Errorf("row has no owner: %w", storage.ErrInvalidBinding))
 
-		decision := mustInjector(t, reader).Evaluate(ctx, githubDest)
+		decision := mustInjector(t, reader).Evaluate(ctx, githubDest, "req-1")
 		assert.False(t, decision.Allow)
 		assert.Empty(t, decision.HeaderValue)
 		// The deny reason must not leak storage internals.
-		assert.NotContains(t, decision.DenyReason, "row")
+		assert.NotContains(t, decision.DenyDetail, "row")
 	})
 
 	t.Run("store down (Redis error) → deny, never passthrough", func(t *testing.T) {
@@ -165,7 +183,7 @@ func TestCredentialInjector(t *testing.T) {
 			GetAllUpstreamCredentials(gomock.Any(), "session-abc", gomock.Any()).
 			Return(nil, nil, errors.New("connection refused"))
 
-		decision := mustInjector(t, reader).Evaluate(ctx, githubDest)
+		decision := mustInjector(t, reader).Evaluate(ctx, githubDest, "req-1")
 		assert.False(t, decision.Allow)
 		assert.Empty(t, decision.HeaderValue)
 	})
@@ -183,7 +201,7 @@ func TestCredentialInjector(t *testing.T) {
 
 		// Wildcard github host: github credential, never the slack one.
 		decision := mustInjector(t, reader).Evaluate(ctx,
-			egressbroker.Destination{Host: "raw.githubusercontent.com", Method: "GET", Path: "/repos/x"})
+			egressbroker.Destination{Host: "raw.githubusercontent.com", Method: "GET", Path: "/repos/x"}, "req-1")
 		assert.True(t, decision.Allow)
 		assert.Equal(t, "Bearer gho_secret", decision.HeaderValue)
 		assert.NotContains(t, decision.HeaderValue, "xoxb")

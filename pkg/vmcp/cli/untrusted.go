@@ -46,6 +46,17 @@ const (
 	untrustedTokenStoreKEKIDsEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_KEK_IDS"    // #nosec G101 -- env var name, not a credential
 )
 
+// untrustedTokenStorePassword*EnvVars mirror the operator-side env vars
+// carrying the auth-server Redis ACL password Secret COORDINATES (name + key,
+// never the value — see buildUntrustedTokenStoreEnvVars). The sidecar reads
+// the password itself from THV_SESSION_REDIS_PASSWORD, rendered as a
+// SecretKeyRef env at clone time.
+const (
+	// #nosec G101 -- env var names, not credentials.
+	untrustedTokenStorePasswordSecretEnvVar = "THV_UNTRUSTED_TOKEN_STORE_PASSWORD_SECRET"
+	untrustedTokenStorePasswordKeyEnvVar    = "THV_UNTRUSTED_TOKEN_STORE_PASSWORD_KEY" // #nosec G101
+)
+
 // Platform-operator tunables (Wave-5 spec §3.1/§3.2/§4), resolved ONCE here at
 // the composition root — never hot-reloaded. Every one fails startup on an
 // unparseable/zero/negative value (fail loud).
@@ -230,6 +241,23 @@ func resolveTokenStoreConfig(namespace, vmcpName string) *untrusted.TokenStoreCo
 	ts := &untrusted.TokenStoreConfig{
 		RedisAddr: addr,
 		KeyPrefix: authstorage.DeriveKeyPrefix(namespace, vmcpName),
+	}
+	// The token-store Redis password: Secret coordinates only (KEK pattern —
+	// the value never transits an env literal). Missing coordinates mean the
+	// sidecar cannot AUTH and every injection denies: warn loudly so the
+	// operator sees the misconfiguration before the first credentialed call.
+	passwordSecret := os.Getenv(untrustedTokenStorePasswordSecretEnvVar)
+	passwordKey := os.Getenv(untrustedTokenStorePasswordKeyEnvVar)
+	if passwordSecret != "" && passwordKey != "" {
+		ts.RedisPasswordSecret = passwordSecret
+		ts.RedisPasswordKey = passwordKey
+	} else {
+		slog.Warn("untrusted token-store Redis password coordinates are not configured; "+
+			"egress-broker sidecars cannot authenticate against the token store "+
+			"(every upstream credential injection will deny)",
+			"secret_env_var", untrustedTokenStorePasswordSecretEnvVar,
+			"key_env_var", untrustedTokenStorePasswordKeyEnvVar,
+			"password_env_var", config.RedisPasswordEnvVar)
 	}
 	secretName := os.Getenv(untrustedTokenStoreKEKSecretEnvVar)
 	activeID := os.Getenv(untrustedTokenStoreKEKKeyEnvVar)

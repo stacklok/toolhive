@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/stacklok/toolhive/pkg/egressbroker"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // Wave-3 egress-broker wiring constants. Data-plane resource names come from
@@ -332,6 +333,14 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 		{Name: "THV_EGRESSBROKER_LISTEN_ADDRESS", Value: "127.0.0.1"},
 		{Name: "THV_EGRESSBROKER_LISTEN_PORT", Value: fmt.Sprintf("%d", brokerListenPort)},
 		{Name: "THV_EGRESSBROKER_ENVOY_BOOTSTRAP_OUT", Value: envoyConfigPath + "/envoy.yaml"},
+		// Pod name for the D11 audit trail (metadata context only — the
+		// identity contract above stays annotation-mirrored).
+		{
+			Name: egressbroker.EnvPodName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
+			},
+		},
 	}
 	for _, mapping := range sidecarEnv {
 		brokerEnv = append(brokerEnv, corev1.EnvVar{
@@ -354,6 +363,20 @@ func applyEgressBrokerSidecar(pod *corev1.Pod, req EnsurePodRequest) error {
 			corev1.EnvVar{Name: "THV_EGRESSBROKER_REDIS_ADDR", Value: req.TokenStore.RedisAddr},
 			corev1.EnvVar{Name: "THV_EGRESSBROKER_REDIS_KEY_PREFIX", Value: req.TokenStore.KeyPrefix},
 		)
+		// The token store's Redis password: SecretKeyRef only, never a literal
+		// (KEK pattern). The broker reads it via vmcpconfig.RedisPasswordEnvVar
+		// and fails loud at startup when it is absent.
+		if req.TokenStore.RedisPasswordSecret != "" {
+			brokerEnv = append(brokerEnv, corev1.EnvVar{
+				Name: vmcpconfig.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: req.TokenStore.RedisPasswordSecret},
+						Key:                  req.TokenStore.RedisPasswordKey,
+					},
+				},
+			})
+		}
 		if req.TokenStore.KEKSecret != "" {
 			brokerEnv = append(brokerEnv,
 				corev1.EnvVar{Name: "THV_EGRESSBROKER_KEK_ID", Value: req.TokenStore.KEKActiveID},

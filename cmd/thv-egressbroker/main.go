@@ -24,6 +24,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -60,6 +61,9 @@ const (
 	envEnvoyBootstrapOut = "THV_EGRESSBROKER_ENVOY_BOOTSTRAP_OUT"
 	// healthPingTimeout bounds the Redis reachability check per probe.
 	healthPingTimeout = 2 * time.Second
+	// scanEvictionSweep is the background TTL sweep cadence for the D6c
+	// scan-correlation map.
+	scanEvictionSweep = 30 * time.Second
 )
 
 func main() {
@@ -107,19 +111,7 @@ func run() error {
 		return err
 	}
 
-	injector, err := egressbroker.NewCredentialInjector(resolver.PodIdentity(), policy, tokens)
-	if err != nil {
-		return err
-	}
-	authz, err := egressbroker.NewAuthorizationServer(injector)
-	if err != nil {
-		return err
-	}
-	sds, err := egressbroker.NewSecretDiscoveryServer(ca, policy)
-	if err != nil {
-		return err
-	}
-	server, err := egressbroker.NewServer(cfg.ListenAddress, cfg.ListenPort, authz, sds)
+	server, err := buildGRPCServer(ctx, cfg, resolver, policy, ca, tokens)
 	if err != nil {
 		return err
 	}
@@ -143,6 +135,58 @@ func run() error {
 	}()
 
 	return server.Run(ctx)
+}
+
+// buildGRPCServer wires the broker's gRPC surface: the D6c response-scan
+// correlation map shared by ext_authz (record at injection) and ext_proc
+// (scan on response), the D11 audit/metrics sinks, the injector, and the
+// three Envoy services (ext_authz, SDS, ext_proc) on one loopback socket.
+func buildGRPCServer(
+	ctx context.Context,
+	cfg *egressbroker.Config,
+	resolver *egressbroker.PodIdentityResolver,
+	policy *egressbroker.EgressPolicy,
+	ca *egressbroker.BumpCA,
+	tokens *tokenStore,
+) (*egressbroker.Server, error) {
+	scanMap, err := egressbroker.NewTokenMap(egressbroker.ScanCorrelationTTL, egressbroker.ScanCorrelationMaxEntries)
+	if err != nil {
+		return nil, err
+	}
+	go scanMap.RunEvictionLoop(ctx, scanEvictionSweep)
+	auditLog := egressbroker.NewAuditLogger()
+	brokerMetrics, err := egressbroker.NewBrokerMetrics(otel.GetMeterProvider())
+	if err != nil {
+		return nil, err
+	}
+	podName := resolver.PodName(os.Getenv)
+
+	injector, err := egressbroker.NewCredentialInjector(resolver.PodIdentity(), policy, tokens)
+	if err != nil {
+		return nil, err
+	}
+	injector.WithScanCorrelation(scanMap).WithObservability(brokerMetrics, auditLog, podName)
+	authz, err := egressbroker.NewAuthorizationServer(injector)
+	if err != nil {
+		return nil, err
+	}
+	authz.WithObservability(auditLog, brokerMetrics, resolver.PodIdentity(), podName)
+	sds, err := egressbroker.NewSecretDiscoveryServer(ca, policy)
+	if err != nil {
+		return nil, err
+	}
+	extproc, err := egressbroker.NewExternalProcessorServer(
+		scanMap,
+		egressbroker.ScannerBounds{MaxBodyBytes: cfg.ScanMaxBodyBytes},
+		!cfg.ScanFailClosed, // failOpen: the documented default (D6c), inverted config knob
+		resolver.PodIdentity(),
+		brokerMetrics,
+		auditLog,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return egressbroker.NewServer(cfg.ListenAddress, cfg.ListenPort, authz, sds, extproc)
 }
 
 // redisPinger abstracts the Redis reachability check for tests.
@@ -219,17 +263,20 @@ func (h *healthServer) handle(w http.ResponseWriter, r *http.Request) {
 // shared config emptyDir, when configured. The bootstrap's route table
 // carries exactly the policy's host allowlist (D6b); the ext_authz cluster
 // points at this process (loopback); no redirect-following filter exists
-// (D6a).
+// (D6a). The ext_proc scanner's failure_mode_allow is the inverse of the
+// broker's fail-closed setting (D6c documented fail-open default).
 func renderEnvoyBootstrap(cfg *egressbroker.Config, policy *egressbroker.EgressPolicy) error {
 	out := strings.TrimSpace(os.Getenv(envEnvoyBootstrapOut))
 	if out == "" {
 		return nil
 	}
 	return egressbroker.WriteEnvoyBootstrap(out, egressbroker.EnvoyConfigParams{
-		ExtAuthzAddress: cfg.ListenAddress,
-		ExtAuthzPort:    cfg.ListenPort,
-		ProxyPort:       egressbroker.DefaultProxyPort,
-		AllowedHosts:    policy.HostAllowlist(),
+		ExtAuthzAddress:  cfg.ListenAddress,
+		ExtAuthzPort:     cfg.ListenPort,
+		ProxyPort:        egressbroker.DefaultProxyPort,
+		AllowedHosts:     policy.HostAllowlist(),
+		ScanFailOpen:     !cfg.ScanFailClosed,
+		ScanMaxBodyBytes: cfg.ScanMaxBodyBytes,
 	})
 }
 
@@ -246,12 +293,23 @@ type tokenStore struct {
 // ever dialing outside the policy's destination set. No refresh is wired (the
 // broker holds no OAuth client material): expired rows surface on the failed
 // list and deny with "re-consent required" (Wave 4 consent UX).
+//
+// The Redis ACL password arrives via vmcpconfig.RedisPasswordEnvVar,
+// rendered at clone time as a SecretKeyRef env (never a literal). It is
+// REQUIRED: without it every Redis call fails AUTH and every credential
+// injection denies — fail loud at startup instead of crash-looping on 403s.
 func buildTokenReader(_ context.Context, dialGuard *egressbroker.IPAllowlist) (*tokenStore, error) {
 	addr := strings.TrimSpace(os.Getenv(envRedisAddr))
 	keyPrefix := strings.TrimSpace(os.Getenv(envRedisKeyPrefix))
 	if addr == "" || keyPrefix == "" {
 		return nil, fmt.Errorf("egressbroker: %s and %s must be set (upstream token store)",
 			envRedisAddr, envRedisKeyPrefix)
+	}
+	password := os.Getenv(vmcpconfig.RedisPasswordEnvVar)
+	if password == "" {
+		return nil, fmt.Errorf("egressbroker: %s must be set (Redis ACL password for the upstream token store; "+
+			"the clone wiring renders it from the auth-server storage ACL Secret)",
+			vmcpconfig.RedisPasswordEnvVar)
 	}
 
 	opts, err := tokenEncOption()
@@ -261,7 +319,7 @@ func buildTokenReader(_ context.Context, dialGuard *egressbroker.IPAllowlist) (*
 
 	client := goredis.NewClient(&goredis.Options{
 		Addr:     addr,
-		Password: os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+		Password: password,
 		Dialer:   dialGuard.DialContext,
 	})
 	stor := storage.NewRedisStorageWithClient(client, keyPrefix, opts...)

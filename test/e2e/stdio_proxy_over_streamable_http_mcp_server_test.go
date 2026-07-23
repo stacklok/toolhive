@@ -39,7 +39,7 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			}
 		})
 
-		It("should respond to a single get_current_time request and a batch request", func() {
+		It("should respond to a single get_current_time request and reject a batch request", func() {
 			By("Starting the time MCP server with streamable-http proxy")
 			e2e.NewTHVCommand(config, "run",
 				"--name", serverName,
@@ -76,7 +76,7 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			result := mcpClient.ExpectToolCall(ctx, "get_current_time", arguments)
 			Expect(result.Content).ToNot(BeEmpty(), "Should return the current time")
 
-			By("Sending a batch JSON-RPC request")
+			By("Sending a batch JSON-RPC request, which the proxy must reject")
 			batch := []map[string]interface{}{
 				{
 					"method": "tools/call",
@@ -115,23 +115,23 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			resp, err := client.Do(req)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(200))
 
-			var responses []map[string]interface{}
+			// JSON-RPC batches were removed in MCP 2025-06-18 and are
+			// rejected by the proxy since they were invisible to authz,
+			// audit, and tool filtering (see #5931): a single -32600
+			// Invalid Request error with a null id and HTTP 400.
+			Expect(resp.StatusCode).To(Equal(400))
+
+			var errorResponse map[string]interface{}
 			decoder := json.NewDecoder(resp.Body)
-			err = decoder.Decode(&responses)
+			err = decoder.Decode(&errorResponse)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(responses).To(HaveLen(2))
 
-			ids := map[float64]bool{4: false, 5: false}
-			for _, r := range responses {
-				id, ok := r["id"].(float64)
-				Expect(ok).To(BeTrue(), "Each response should have an id")
-				ids[id] = true
-				Expect(r["result"]).ToNot(BeNil(), "Each response should have a result")
-			}
-			Expect(ids[4]).To(BeTrue())
-			Expect(ids[5]).To(BeTrue())
+			Expect(errorResponse["jsonrpc"]).To(Equal("2.0"))
+			Expect(errorResponse["id"]).To(BeNil(), "a batch rejection carries a null id")
+			rpcErr, ok := errorResponse["error"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "the body should be a JSON-RPC error response")
+			Expect(rpcErr["code"]).To(Equal(float64(-32600)), "batches are rejected as Invalid Request")
 		})
 	})
 })

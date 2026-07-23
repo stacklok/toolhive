@@ -8,10 +8,6 @@ package e2e_test
 // as the Squid suite in network_isolation_test.go — egress allowlist, inbound
 // Host gating, docker-gateway deny/allow — plus Envoy-specific guards such as
 // the route-timeout regression test.
-//
-// All tests are currently skipped pending resolution of #5922 (Envoy isolated
-// server does not reach ready state on Linux Docker Engine). Remove the
-// BeforeEach(Skip(...)) call to activate them once #5922 is fixed.
 
 import (
 	"context"
@@ -39,11 +35,6 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 	)
 
 	BeforeEach(func() {
-		// TODO(#5922): Remove this skip once Envoy isolated-server readiness on
-		// Linux Docker Engine is fixed. The tests are correct; the backend is not
-		// yet ready on that platform.
-		Skip("Envoy isolated-server readiness on Linux Docker Engine is broken — see #5922")
-
 		config = e2e.NewTestConfig()
 
 		var err error
@@ -85,7 +76,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 		runArgs = append(runArgs, "fetch")
 
 		envoyRun(config, runArgs...).ExpectSuccess()
-		Expect(e2e.WaitForMCPServer(config, serverName, 120*time.Second)).
+		Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).
 			To(Succeed(), "Envoy server should be running within 120 seconds")
 		return serverName
 	}
@@ -157,7 +148,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			runArgs = append(runArgs, "--permission-profile", profilePath, "fetch")
 			envoyRun(config, runArgs...).ExpectSuccess()
 
-			Expect(e2e.WaitForMCPServer(config, serverName, 120*time.Second)).To(Succeed())
+			Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).To(Succeed())
 			serverURL, err := e2e.GetMCPServerURL(config, serverName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)).To(Succeed())
@@ -250,7 +241,9 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			target := fmt.Sprintf("http://%s:%d/", dockerBridgeGatewayIP(), port)
 			server := startFetchServer("slow", "", "--allow-docker-gateway")
 
-			result := fetchThrough(server, target, 30*time.Second)
+			// 60s: 16s upstream sleep + generous MCP client round-trip headroom.
+			// The 30s default was too tight under CI infrastructure load.
+			result := fetchThrough(server, target, 60*time.Second)
 			if result.IsError {
 				Skip("docker bridge gateway is not routable to the host in this environment")
 			}

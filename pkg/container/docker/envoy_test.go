@@ -407,7 +407,11 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 			wantHostPortBound: 18080,
 		},
 		{
-			name: "inbound AllowHost restricts virtual host domains",
+			// Inbound.AllowHost is intentionally ignored for Envoy's ingress virtual
+			// host domains. The transparent proxy rewrites Host to include the port
+			// ("127.0.0.1:19090"), which would not match a bare hostname list. The
+			// inbound access restriction is enforced by the 127.0.0.1 port binding.
+			name: "inbound AllowHost is ignored — ingress always uses wildcard domain",
 			spec: proxySpec{
 				WorkloadName:  "svc",
 				UpstreamPort:  9090,
@@ -421,7 +425,7 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 			hostPort:          19090,
 			wantUpstreamRef:   "svc",
 			wantHostPortBound: 19090,
-			wantDomains:       []string{"app.example.com"},
+			wantDomains:       []string{`"*"`},
 		},
 		{
 			// No inbound AllowHost → wildcard virtual host. This is safe because
@@ -540,10 +544,12 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 
-	// Mode must be 0600 — not 0644 — so that other processes cannot read the
-	// bootstrap config (which may contain sensitive socket addresses).
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
-		"bootstrap file must be written at mode 0600")
+	// Mode must be 0644: world-readable so the Envoy distroless container
+	// (UID 101) can read the bind-mounted file on Linux Docker Engine, where
+	// strict POSIX permissions prevent a different UID from reading 0600 files.
+	// The bootstrap contains no secrets, so world-readable is safe.
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(),
+		"bootstrap file must be written at mode 0644")
 
 	// File must contain valid JSON that deserializes back into envoyBootstrap.
 	data, err := os.ReadFile(path)
@@ -783,16 +789,20 @@ func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 				Endpoints:     map[string]*network.EndpointSettings{},
 			}
 
+			// SetupEgress must NOT create the container — it only returns env vars.
+			// Container creation is deferred to SetupIngress so the MCP hostname
+			// resolves on first probe (see #5922).
 			egress, err := e.SetupEgress(t.Context(), spec)
 			require.NoError(t, err)
-			assert.Equal(t, "app-egress", createdName, "envoy container must reuse the -egress name")
+			assert.Empty(t, createdName, "SetupEgress must not create the container")
 			assert.Equal(t, "http://app-egress:3128", egress.EnvVars["HTTP_PROXY"])
 
+			// SetupIngress creates the container and returns the ingress port.
 			ingressPort, err := e.SetupIngress(t.Context(), spec, egress)
 			require.NoError(t, err)
+			assert.Equal(t, "app-egress", createdName, "SetupIngress must create the -egress container")
 			if tt.wantIngress {
 				assert.Positive(t, ingressPort, "non-stdio must reserve an ingress port")
-				assert.Equal(t, egress.ingressPort, ingressPort, "SetupIngress must return the port reserved in SetupEgress")
 			} else {
 				assert.Zero(t, ingressPort, "stdio must not reserve an ingress port")
 			}

@@ -286,12 +286,16 @@ type envoyConnectConfig struct{}
 
 // envoyCluster is an Envoy upstream cluster definition.
 type envoyCluster struct {
-	Name           string               `json:"name"`
-	ConnectTimeout string               `json:"connect_timeout"`
-	LbPolicy       string               `json:"lb_policy,omitempty"`
-	Type           string               `json:"type,omitempty"`
-	ClusterType    *envoyClusterType    `json:"cluster_type,omitempty"`
-	LoadAssignment *envoyLoadAssignment `json:"load_assignment,omitempty"`
+	Name           string `json:"name"`
+	ConnectTimeout string `json:"connect_timeout"`
+	LbPolicy       string `json:"lb_policy,omitempty"`
+	Type           string `json:"type,omitempty"`
+	// DnsLookupFamily restricts DNS resolution to IPv4 only. Without this,
+	// STRICT_DNS clusters attempt AAAA lookups first, which adds latency in
+	// environments where IPv6 is unavailable or times out.
+	DnsLookupFamily string               `json:"dns_lookup_family,omitempty"`
+	ClusterType     *envoyClusterType    `json:"cluster_type,omitempty"`
+	LoadAssignment  *envoyLoadAssignment `json:"load_assignment,omitempty"`
 }
 
 // envoyClusterType is the custom cluster discovery extension (e.g. DFP).
@@ -670,13 +674,13 @@ func buildIngressListener(spec proxySpec, hostPort int) envoyListener {
 }
 
 // ingressDomains returns the virtual host domain list for the ingress listener.
-// When Inbound.AllowHost is configured those entries are used; otherwise a
-// wildcard ("*") is returned so all hostnames are accepted.
-func ingressDomains(spec proxySpec) []string {
-	if spec.Permissions != nil && spec.Permissions.Inbound != nil &&
-		len(spec.Permissions.Inbound.AllowHost) > 0 {
-		return spec.Permissions.Inbound.AllowHost
-	}
+// Always returns a wildcard: the Inbound.AllowHost list contains bare hostnames
+// (e.g. "localhost", "127.0.0.1") but the transparent proxy sends a Host header
+// with a port suffix ("127.0.0.1:22354"), which Envoy would not match against
+// a bare hostname. The inbound access restriction is instead enforced by the
+// host-side port binding to 127.0.0.1, which already limits the ingress to
+// local connections only.
+func ingressDomains(_ proxySpec) []string {
 	return []string{"*"}
 }
 
@@ -684,9 +688,10 @@ func ingressDomains(spec proxySpec) []string {
 // listener, pointing at spec.WorkloadName:spec.UpstreamPort.
 func buildIngressCluster(spec proxySpec) envoyCluster {
 	return envoyCluster{
-		Name:           ingressClusterName,
-		ConnectTimeout: "10s",
-		Type:           "STRICT_DNS",
+		Name:            ingressClusterName,
+		ConnectTimeout:  "10s",
+		Type:            "STRICT_DNS",
+		DnsLookupFamily: "V4_ONLY",
 		LoadAssignment: &envoyLoadAssignment{
 			ClusterName: ingressClusterName,
 			Endpoints: []envoyEndpoint{
@@ -733,8 +738,12 @@ func writeEnvoyBootstrap(b envoyBootstrap) (string, error) {
 		_ = os.Remove(created)
 		return "", fmt.Errorf("failed to write envoy bootstrap: %w", err)
 	}
-	// 0600: only the owner can read — the file may contain network topology.
-	if err := tmpFile.Chmod(0o600); err != nil {
+	// 0o644: world-readable so the Envoy distroless container (UID 101) can
+	// read the bind-mounted file. On Linux Docker Engine, strict POSIX
+	// permissions apply — 0o600 prevents the container user from reading the
+	// file, causing Envoy to crash-loop. The bootstrap contains no secrets
+	// (only network topology: hostnames, ports, RBAC rules).
+	if err := tmpFile.Chmod(0o644); err != nil {
 		_ = os.Remove(created)
 		return "", fmt.Errorf("failed to set envoy bootstrap file permissions: %w", err)
 	}
@@ -752,13 +761,28 @@ type envoyProxy struct {
 	client *Client
 }
 
-// SetupEgress implements networkProxy for the Envoy backend. Envoy consolidates
-// egress and ingress into a single container, so this creates that container
-// (both listeners) before the MCP container. Envoy's ingress upstream is a
-// STRICT_DNS cluster that resolves the MCP container lazily and keeps retrying,
-// so — unlike squid's cache_peer — pre-MCP creation is safe. The reserved
-// ingress port is carried back in egressResult for SetupIngress to return.
-func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error) {
+// SetupEgress implements networkProxy for the Envoy backend.
+//
+// Only the egress proxy env vars are returned here — no container is created
+// yet. Container creation is deferred to SetupIngress (which runs after
+// createMcpContainer) so that the MCP container's hostname is resolvable the
+// moment the Envoy STRICT_DNS ingress cluster first probes it. Creating Envoy
+// before the MCP container caused the ingress cluster to cache a negative DNS
+// response on Linux Docker Engine, preventing the server from ever becoming
+// ready within the readiness window (see #5922).
+func (*envoyProxy) SetupEgress(_ context.Context, spec proxySpec) (egressResult, error) {
+	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
+	return egressResult{EnvVars: addEgressEnvVars(nil, egressContainerName)}, nil
+}
+
+// SetupIngress implements networkProxy for the Envoy backend.
+//
+// Creates the Envoy container after the MCP container exists, with both the
+// egress forward-proxy listener and (for non-stdio transports) the ingress
+// reverse-proxy listener. Running after createMcpContainer ensures the
+// STRICT_DNS upstream cluster resolves the MCP hostname on the first probe,
+// avoiding the Linux Docker Engine readiness failure described in #5922.
+func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressResult) (int, error) {
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
 
 	bootstrap := envoyBootstrap{
@@ -780,7 +804,7 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 	if spec.TransportType != "stdio" && spec.UpstreamPort > 0 {
 		port, err := networking.FindOrUsePort(spec.UpstreamPort + 1)
 		if err != nil {
-			return egressResult{}, fmt.Errorf("failed to find ingress port: %w", err)
+			return 0, fmt.Errorf("failed to find ingress port: %w", err)
 		}
 		ingressPort = port
 		bootstrap.StaticResources.Listeners = append(
@@ -795,11 +819,8 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 
 	configPath, err := writeEnvoyBootstrap(bootstrap)
 	if err != nil {
-		return egressResult{}, err // already wrapped with context
+		return 0, err
 	}
-	// On success the file must persist for the container's read-only bind mount,
-	// so it can't be unconditionally deferred away. Remove it only if setup fails
-	// past this point, so a failed deploy doesn't orphan a bootstrap in TempDir.
 	success := false
 	defer func() {
 		if !success {
@@ -812,12 +833,9 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 	slog.Debug("setting up envoy container", "name", egressContainerName, "image", envoyImage)
 
 	if err := e.client.imageManager.PullImage(ctx, envoyImage); err != nil {
-		// Fall back to a locally-present image; only proceed if it actually
-		// exists (ImageExists returns (false, nil) when absent, so the bool
-		// must be checked, not just the error).
 		exists, inspectErr := e.client.imageManager.ImageExists(ctx, envoyImage)
 		if inspectErr != nil || !exists {
-			return egressResult{}, fmt.Errorf("failed to pull envoy image: %w", err)
+			return 0, fmt.Errorf("failed to pull envoy image: %w", err)
 		}
 		//nolint:gosec // G706: envoy image name from config
 		slog.Debug("envoy image exists locally, continuing despite pull failure", "image", envoyImage)
@@ -827,18 +845,14 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 	lb.AddStandardLabels(envoyLabels, egressContainerName, egressContainerName, "stdio", 80)
 	envoyLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
 
-	config := &container.Config{
+	containerConfig := &container.Config{
 		Image:  envoyImage,
 		Cmd:    []string{"-c", "/etc/envoy/envoy.json"},
 		Labels: envoyLabels,
 	}
 
 	mounts := []runtime.Mount{
-		{
-			Source:   configPath,
-			Target:   "/etc/envoy/envoy.json",
-			ReadOnly: true,
-		},
+		{Source: configPath, Target: "/etc/envoy/envoy.json", ReadOnly: true},
 	}
 
 	var exposedPorts map[string]struct{}
@@ -856,36 +870,24 @@ func (e *envoyProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 		Mounts:      convertMounts(mounts),
 		NetworkMode: container.NetworkMode("bridge"),
 		SecurityOpt: []string{"label:disable"},
-		// Envoy distroless runs as nonroot and needs no capabilities; drop all.
-		CapDrop: []string{"ALL"},
+		CapDrop:     []string{"ALL"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
 	}
 	if portBindings != nil {
 		if err := setupPortBindings(hostConfig, portBindings); err != nil {
-			return egressResult{}, fmt.Errorf("failed to setup port bindings: %w", err)
+			return 0, fmt.Errorf("failed to setup port bindings: %w", err)
 		}
 	}
-	if err := setupExposedPorts(config, exposedPorts); err != nil {
-		return egressResult{}, fmt.Errorf("failed to setup exposed ports: %w", err)
+	if err := setupExposedPorts(containerConfig, exposedPorts); err != nil {
+		return 0, fmt.Errorf("failed to setup exposed ports: %w", err)
 	}
 
-	if _, err := e.client.createContainer(ctx, egressContainerName, config, hostConfig, spec.Endpoints); err != nil {
-		return egressResult{}, fmt.Errorf("failed to create envoy container: %w", err)
+	if _, err := e.client.createContainer(ctx, egressContainerName, containerConfig, hostConfig, spec.Endpoints); err != nil {
+		return 0, fmt.Errorf("failed to create envoy container: %w", err)
 	}
 
-	success = true // keep the bootstrap file; the container bind-mounts it
-	return egressResult{
-		EnvVars:     addEgressEnvVars(nil, egressContainerName),
-		ingressPort: ingressPort,
-	}, nil
-}
-
-// SetupIngress implements networkProxy for the Envoy backend. Envoy already
-// created its ingress listener as part of the single container in SetupEgress,
-// so there is nothing more to create here — it simply returns the ingress port
-// reserved in SetupEgress (0 for stdio / UpstreamPort==0).
-func (*envoyProxy) SetupIngress(_ context.Context, _ proxySpec, egress egressResult) (int, error) {
-	return egress.ingressPort, nil
+	success = true
+	return ingressPort, nil
 }

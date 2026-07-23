@@ -53,12 +53,15 @@ func startProxyWithBackend(t *testing.T, port int) (*HTTPProxy, context.Context,
 	return proxy, ctx, cancel
 }
 
-// TestGETReturns405 validates that GET on MCP endpoint returns 405 (server does not offer SSE here).
-func TestGETReturns405(t *testing.T) {
+// TestGETReturns405WhenStandaloneSSEDisabled validates that GET on the MCP
+// endpoint returns 405 when standalone SSE is explicitly disabled via
+// WithStandaloneSSE(false). By default GET opens a standalone SSE stream
+// instead -- see streamable_proxy_test.go's TestHandleGet_* for that behavior.
+func TestGETReturns405WhenStandaloneSSEDisabled(t *testing.T) {
 	t.Parallel()
 
 	const port = 8101
-	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil, WithStandaloneSSE(false))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

@@ -515,6 +515,183 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 - Ephemeral sessions for sessionless requests
 - DELETE `/mcp` to explicitly close session
 
+### Server->Client Routing (Streamable HTTP)
+
+**Implementation**: `pkg/transport/proxy/streamable/streamable_proxy.go`,
+`pkg/transport/proxy/streamable/dispatcher.go`,
+`pkg/transport/proxy/streamable/dispatcher_streams.go`,
+`pkg/transport/proxy/streamable/dispatcher_routing.go`
+
+The streamable HTTP proxy sits in front of a single shared backend process
+(one container, one stdio pipe -- see `pkg/transport/stdio.go`) that may be
+serving many concurrent MCP sessions. Every server->client message the
+backend emits arrives on one shared channel with **no built-in session
+attribution**, so the proxy must reconstruct "which session does this belong
+to" itself before it can deliver anything, and must drop -- never guess or
+broadcast -- whatever it cannot attribute. `dispatchResponses`
+(`dispatcher.go`) is the single place every such message passes through; it
+routes by concrete JSON-RPC type and method:
+
+- `*jsonrpc2.Response` -> the waiter-correlation path (`routeResponseToWaiter`,
+  unchanged): responses are matched back to the in-flight HTTP request that
+  sent them via a composite key (`compositeKey(sessID, idKey)`) baked into the
+  outgoing request's wire ID and echoed back by the backend.
+- `*jsonrpc2.Request` with no valid ID (a **notification**) -> routed by
+  method (`routeNotification`), described in detail below.
+- `*jsonrpc2.Request` with a valid ID (a server->client **request**, e.g.
+  `sampling/createMessage`, `elicitation/create`) -> `rejectServerRequestToBackend`
+  writes a JSON-RPC error (code `-32601`) back to the **backend** (not to any
+  client) via `SendMessageToDestination`, so the backend's own blocking call
+  unblocks instead of hanging until its own timeout. The shared-backend proxy
+  has no way to route a client's reply back to the correct originating backend
+  call across potentially many sessions, so it cannot forward this to any
+  client without either guessing (misdelivery) or broadcasting (cross-session
+  leakage). Per-session backends -- see the [Virtual MCP
+  architecture](10-virtual-mcp-architecture.md) -- are the correct place to
+  support server->client requests; tracked as a follow-up in #5744.
+
+#### Notification routing table
+
+| Method | Destination | Mechanism |
+|---|---|---|
+| `notifications/tools\|resources\|prompts/list_changed` | every connected session's standalone GET stream | `serverStreams.broadcast` -- GLOBAL, no session-specific payload |
+| `notifications/progress` | the ONE originating request's POST SSE stream | `routeProgress` + `sessionRouter`'s progress-token table |
+| `notifications/resources/updated` | only sessions subscribed to the notification's `uri` | `routeResourceUpdated` + `sessionRouter`'s subscription table |
+| `notifications/message` (logging) | nobody -- **SECURE-DROP** | shared-backend log content is unattributable to any session |
+| anything else | nobody | dropped, logged at Debug |
+
+**Progress correlation.** A client that wants progress for a request sets
+`params._meta.progressToken` and sends the request with
+`Accept: text/event-stream` (`handleSingleRequestSSE`). Before forwarding
+upstream, the proxy mints a fresh, proxy-only token (`ptGlobal`, a UUID),
+rewrites `_meta.progressToken` to it (`rewriteMetaProgressToken`, which copies
+rather than mutates the caller's request), and records a `progressRoute`
+(delivery channel + the client's *original* token) keyed by `ptGlobal` in
+`sessionRouter`. `handleSingleRequestSSE`'s response loop then `select`s over
+both that delivery channel and the final response's waiter channel,
+interleaving every progress notification the backend sends as its own SSE
+`data:` frame (with the original client token restored) and only returning
+once the final response (or a context/shutdown signal) arrives. The route is
+dropped as soon as the request completes (`defer`), so it can never be reused
+by a later, unrelated notification. A request with **no** `Accept:
+text/event-stream` (a plain JSON POST) gets no progress route at all -- its
+token is forwarded unrewritten, and any progress the backend sends for it is
+correctly dropped (no route is ever registered for it), since a non-streaming
+client has no channel to receive interim progress on anyway.
+
+Because `ptGlobal` is unique per request regardless of what token value the
+client chose, two different sessions asking for progress with the identical
+client-visible token can never cross-deliver: each is keyed internally by its
+own UUID.
+
+**Subscriptions.** `resources/subscribe` and `resources/unsubscribe` are
+ref-counted per `uri` in `sessionRouter`'s subscription table, for **Legacy,
+session-bearing requests only** (a request with no real, persisted session --
+Modern, or Legacy sessionless -- has nothing durable to track, so it always
+forwards upstream unmodified). The interception happens in `handlePost`
+*after* `applyMiddlewares`/authz has admitted the request, so an
+authorization-denied subscribe is never recorded. A `resources/subscribe` for
+a `uri` with no existing subscriber is forwarded upstream (`interceptSubscribe`,
+via `doRequest`, under `uriLocks` for that `uri`), and is recorded in the
+subscription table **only if that upstream call succeeds**: a backend
+rejection, error, or timeout is returned to the client as-is and leaves no
+trace in the subscription table, so a later session's subscribe for the same
+`uri` is free to try again upstream rather than being dedup-served a
+synthesized success for a subscription the backend never actually granted. A
+`resources/subscribe` for a `uri` that already has a recorded subscriber is
+answered with a locally synthesized success and never reaches the backend at
+all, avoiding redundant upstream subscribe calls -- this dedup is safe
+specifically because the entry it is deduping against is known to have
+succeeded upstream. Symmetrically, `resources/unsubscribe` only reaches the
+backend once the **last** subscriber for a `uri` leaves. `notifications/resources/updated`
+is then delivered only to that `uri`'s current subscribers' standalone GET
+streams (`serverStreams.deliverToMany`).
+
+**Trust-boundary note.** Because identical-`uri` subscriptions are ref-counted
+down to a single upstream `resources/subscribe`, a backend that performs its
+*own* per-resource access control inside its subscribe handler only ever sees
+and evaluates the **first** subscriber for a given `uri` -- sessions 2..N are
+served a synthesized success without the backend's handler ever running for
+them. ToolHive's own per-session middleware/authz still runs in front of
+*every* subscribe attempt regardless of dedup (see the authz-non-bypass note
+above), so this is not a bypass of ToolHive's own controls. It is a
+characteristic of the shared-backend proxy design worth calling out
+explicitly: any authorization a backend implements *inside its own
+subscribe handler*, keyed on the resource `uri`, is not re-invoked for the
+2nd..Nth subscriber of that `uri`. Deployments relying on backend-side,
+per-resource access control for `resources/subscribe` should account for this
+when sharing one backend across sessions with different resource
+entitlements.
+
+**Logging.** `logging/setLevel` is intercepted the same way: the client's
+requested level is recorded per-session, and if it changes the **maximum**
+verbosity requested across all sessions, a reconciled `logging/setLevel` is
+sent upstream with that maximum (see `logLevelRank`, aligned with RFC 5424
+syslog severity numbers) so no session is under-served by another session's
+less-verbose request silently overriding it. The client always gets an
+immediate synthesized success. The resulting `notifications/message` the
+backend then emits is dropped per the routing table above -- there is
+currently no way to safely forward it to the session that actually wanted
+that verbosity.
+
+**Lifecycle.** `sessionRouter`'s three tables (progress tokens, subscriptions,
+log levels) each have their own mutex (no shared locking). Progress tokens are
+request-scoped and dropped when their request completes.
+Subscriptions/log-levels are session-scoped and are purged in two ways: (1)
+explicitly, by `handleDelete` (`purgeSession`), and (2) periodically, by a
+reaper goroutine (`reapRoutingState`, started alongside `dispatchResponses` in
+`Start`) that ticks at `sessionTTL/2` (matching `session.Manager`'s own
+cleanup cadence) and drops state for any session `session.Manager` no longer
+reports as active. That liveness check is the session manager's ordinary
+`Get`, which -- by design, to keep genuinely active sessions alive -- refreshes
+the session's TTL on every call; using it here means a session that still owns
+routing state can have its expiry delayed by up to one reap tick beyond actual
+client inactivity. This is an accepted, documented tradeoff, not a leak: `Get`
+on an already-deleted session simply returns false without refreshing
+anything, so routing state can never outlive a session's true deletion.
+
+Because the GET handler (and every POST) is registered through the same
+`applyMiddlewares` chain, tool-filter and other response-shaping middleware
+see every frame written to any stream -- there is no separate, unfiltered code
+path for server->client messages.
+
+**Behavior and configuration:**
+
+- Standalone SSE is **on by default**. Pass `WithStandaloneSSE(false)` to
+  restore the prior behavior (GET returns 405).
+- Delivery is **best-effort and non-blocking** throughout: a stream (or
+  progress delivery channel) whose buffer is full has its message dropped
+  (logged) rather than blocking delivery to anything else.
+- A notification dispatched while no GET stream is connected for its target
+  session is dropped. There is no replay buffer or pending-message queue
+  (unlike `httpsse`'s SSE proxy, which queues for reconnecting clients) -- a
+  client that wants server->client notifications must keep a GET stream open.
+- Per MCP 2025-11-25, a server MUST NOT deliver the same notification to a
+  session more than once, so `serverStreamRegistry` allows **at most one
+  stream per session**: a second concurrent GET for the same session evicts
+  the first (its handler observes a closed per-stream `stop` signal and
+  returns). Each registered stream has two channels: a buffered `data` channel
+  that is **never closed** (only ever read from or sent to), and a `stop`
+  channel closed exactly once -- by an evicting `register` call or by proxy
+  `Stop`'s `closeAll` -- to signal the consumer to return. This avoids a
+  send-on-closed-channel panic if a concurrent broadcast/dispatch races
+  eviction/shutdown.
+
+**Forward-compatibility note**: the 2026-07-28 (Modern) MCP revision (see
+`mcp.MCPVersionModern` and `pkg/mcp/revision.go`) introduces
+`subscriptions/listen`, a POST method whose response stream stays open for
+server-pushed subscription events. `serverStreamRegistry` is a reasonable
+decoupled fan-out seam to build a future Modern handler for this method on top
+of, but it is **not** a drop-in reuse. Per the draft spec, real adaptation is
+required: `subscriptions/listen` is a long-lived POST, not a GET; Modern has no
+sessions, so streams must be keyed per-subscription-id rather than per session
+ID; delivery requires per-notification-type AND per-URI opt-in filtering, not
+blanket fan-out; an initial `notifications/subscriptions/acknowledged` must be
+sent; and deliveries must be tagged with `io.modelcontextprotocol/subscriptionId`.
+`dispatcher_streams.go` is intentionally kept transport-agnostic (no HTTP
+types) so that this adaptation, when it happens, does not also require
+rewriting the underlying fan-out primitives.
+
 ## Error Handling
 
 ### Connection Failures

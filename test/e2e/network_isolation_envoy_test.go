@@ -62,13 +62,6 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 	startFetchServer := func(nameSuffix, profileJSON string, extraRunArgs ...string) string {
 		serverName := fmt.Sprintf("nie-%s-%d", nameSuffix, GinkgoRandomSeed())
 		DeferCleanup(func() {
-			// Capture Envoy egress container logs BEFORE teardown so they appear
-			// in CI output for debugging readiness failures (see #5922).
-			egressName := serverName + "-egress"
-			//nolint:gosec // fixed, test-controlled container name
-			if out, err := exec.Command("docker", "logs", egressName).CombinedOutput(); err == nil {
-				GinkgoWriter.Printf("\n=== Envoy logs for %s ===\n%s\n===\n", egressName, out)
-			}
 			if config.CleanupAfter {
 				_ = e2e.StopAndRemoveMCPServer(config, serverName)
 			}

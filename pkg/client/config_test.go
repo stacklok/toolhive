@@ -465,7 +465,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpCli config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory, CopilotCli:
+			case Qoder, LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
 			case VSCodeServer:
@@ -524,7 +524,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
 				LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-				MistralVibe, Codex, KimiCli, Factory, CopilotCli:
+				MistralVibe, Codex, Qoder, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

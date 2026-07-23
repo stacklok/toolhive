@@ -93,7 +93,7 @@ const (
 	Factory ClientApp = "factory"
 	// CopilotCli represents the GitHub Copilot CLI.
 	CopilotCli ClientApp = "copilot-cli"
-	// QoderIDE represents the Qoder IDE.
+	// Qoder represents the Qoder IDE.
 	Qoder ClientApp = "qoder"
 )
 

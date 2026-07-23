@@ -46,6 +46,10 @@ type fakeDeployOps struct {
 	mcpPortBindings  map[string][]runtime.PortBinding
 	mcpIsolate       bool
 
+	// createMcpContainerStopped tracking
+	mcpStoppedCalled bool
+	mcpStoppedID     string // overrides the default generated container ID when set
+
 	// callOrder tracks the sequence of operation calls for ordering assertions.
 	callOrder *[]string
 
@@ -109,6 +113,49 @@ func (f *fakeDeployOps) createMcpContainer(
 	return f.errMcp
 }
 
+func (f *fakeDeployOps) createMcpContainerStopped(
+	_ context.Context,
+	name string,
+	networkName string,
+	image string,
+	command []string,
+	envVars map[string]string,
+	labels map[string]string,
+	attachStdio bool,
+	permissionConfig *runtime.PermissionConfig,
+	additionalDNS string,
+	exposedPorts map[string]struct{},
+	portBindings map[string][]runtime.PortBinding,
+	isolateNetwork bool,
+) (string, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createMcpContainerStopped")
+	}
+	f.mcpStoppedCalled = true
+	// reuse the same fields as createMcpContainer so callers can inspect them.
+	f.mcpCalled = false // stopped path, not the start path
+	f.mcpName = name
+	f.mcpNetworkName = networkName
+	f.mcpImage = image
+	f.mcpCommand = command
+	f.mcpEnvVars = envVars
+	f.mcpLabels = labels
+	f.mcpAttachStdio = attachStdio
+	f.mcpPermissionCfg = permissionConfig
+	f.mcpAdditionalDNS = additionalDNS
+	f.mcpExposedPorts = exposedPorts
+	f.mcpPortBindings = portBindings
+	f.mcpIsolate = isolateNetwork
+	if f.errMcp != nil {
+		return "", f.errMcp
+	}
+	id := "fake-mcp-stopped-" + name
+	if f.mcpStoppedID != "" {
+		id = f.mcpStoppedID
+	}
+	return id, nil
+}
+
 // fakeNetworkProxy implements networkProxy for testing DeployWorkload without real proxy containers.
 type fakeNetworkProxy struct {
 	setupCalled           bool // SetupEgress was called
@@ -149,6 +196,9 @@ func (f *fakeNetworkProxy) SetupIngress(_ context.Context, spec proxySpec, _ egr
 }
 
 func (f *fakeNetworkProxy) SetupTransparent(_ context.Context, _ proxySpec, workloadContainerID string) error {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "SetupTransparent")
+	}
 	f.transparentCalled = true
 	f.transparentWorkloadID = workloadContainerID
 	return f.err
@@ -223,8 +273,10 @@ func TestDeployWorkload_Stdio_IsolatedNetwork_SkipsIngressAndSetsEgressEnv(t *te
 	// AllowDockerGateway was not set
 	assert.False(t, fproxy.capturedSpec.AllowDockerGateway)
 
-	// MCP container created with egress env vars present
-	require.True(t, fops.mcpCalled)
+	// MCP container created (stopped) with egress env vars present.
+	// On the isolation path createMcpContainerStopped is used, not createMcpContainer.
+	require.True(t, fops.mcpStoppedCalled, "createMcpContainerStopped must be used on the isolation path")
+	assert.False(t, fops.mcpCalled, "createMcpContainer must NOT be called on the isolation path")
 	require.NotNil(t, fops.mcpEnvVars)
 	assert.Equal(t, "http://app-egress:3128", fops.mcpEnvVars["HTTP_PROXY"])
 	assert.Equal(t, "http://app-egress:3128", fops.mcpEnvVars["HTTPS_PROXY"])
@@ -277,7 +329,9 @@ func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *te
 	assert.True(t, fproxy.setupCalled)
 	// The upstream port should be the first exposed port (8080).
 	assert.Equal(t, 8080, fproxy.capturedSpec.UpstreamPort)
-	require.True(t, fops.mcpCalled)
+	// On the isolation path createMcpContainerStopped is used, not createMcpContainer.
+	require.True(t, fops.mcpStoppedCalled, "createMcpContainerStopped must be used on the isolation path")
+	assert.False(t, fops.mcpCalled, "createMcpContainer must NOT be called on the isolation path")
 	assert.Equal(t, "172.18.0.20", fops.mcpAdditionalDNS, "additionalDNS passed to MCP container should come from DNS container IP")
 }
 
@@ -493,15 +547,20 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported transport type")
 }
 
-// TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter locks in the ordering
-// contract: egress is provisioned BEFORE the MCP container (so proxy env vars are
-// injected), and ingress is provisioned AFTER it. Creating the ingress before the
-// MCP container caused the squid reverse proxy to cache a negative DNS lookup for
-// the not-yet-existent upstream and never recover, leaving the workload stuck.
-func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
+// TestDeployWorkload_Isolated_OperationOrdering locks in the full ordering contract
+// for the isolated network path:
+//  1. SetupEgress — before the MCP container so env vars can be injected
+//  2. createMcpContainerStopped — container created but not started
+//  3. SetupIngress — after the container exists so the STRICT_DNS ingress
+//     cluster can resolve the upstream hostname on first probe
+//  4. SetupTransparent — iptables rules installed before the process runs
+//
+// The workload is started by startContainer (not tracked in callOrder because
+// it goes through c.api, not c.ops or c.proxy).
+func TestDeployWorkload_Isolated_OperationOrdering(t *testing.T) {
 	t.Parallel()
 
-	callOrder := make([]string, 0, 3)
+	callOrder := make([]string, 0, 4)
 	fops := &fakeDeployOps{
 		dnsIP:     "172.18.0.10",
 		callOrder: &callOrder,
@@ -532,6 +591,56 @@ func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
-		"egress must be set up before the MCP container and ingress after it")
+	require.Equal(t,
+		[]string{"SetupEgress", "createMcpContainerStopped", "SetupIngress", "SetupTransparent"},
+		callOrder,
+		"egress → create-stopped → ingress → transparent must be the invariant ordering")
+}
+
+// TestDeployWorkload_Isolated_TransparentInterceptionSequence verifies that on
+// the isolated path: createMcpContainerStopped is called (not createMcpContainer),
+// SetupTransparent receives the container ID returned by createMcpContainerStopped,
+// and the workload is started (ContainerStart succeeds).
+func TestDeployWorkload_Isolated_TransparentInterceptionSequence(t *testing.T) {
+	t.Parallel()
+
+	const wantContainerID = "fake-mcp-stopped-iso-svc"
+
+	fops := &fakeDeployOps{
+		dnsIP:        "172.18.0.10",
+		mcpStoppedID: wantContainerID,
+	}
+	fproxy := &fakeNetworkProxy{
+		ingressPort: 18082,
+	}
+	c := newClientWithOpsAndProxy(fops, fproxy)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.ExposedPorts = map[string]struct{}{"9090/tcp": {}}
+	opts.PortBindings = map[string][]runtime.PortBinding{
+		"9090/tcp": {{HostIP: "127.0.0.1", HostPort: ""}},
+	}
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"iso-svc",
+		[]string{"serve"},
+		map[string]string{},
+		map[string]string{},
+		&permissions.Profile{},
+		"sse",
+		opts,
+		true,
+	)
+	require.NoError(t, err)
+
+	// createMcpContainerStopped must be used, not the start-in-one-shot variant.
+	assert.True(t, fops.mcpStoppedCalled, "createMcpContainerStopped must be called on the isolation path")
+	assert.False(t, fops.mcpCalled, "createMcpContainer must NOT be called on the isolation path")
+
+	// SetupTransparent must receive the container ID from createMcpContainerStopped.
+	assert.True(t, fproxy.transparentCalled, "SetupTransparent must be called on the isolation path")
+	assert.Equal(t, wantContainerID, fproxy.transparentWorkloadID,
+		"SetupTransparent must receive the container ID from createMcpContainerStopped")
 }

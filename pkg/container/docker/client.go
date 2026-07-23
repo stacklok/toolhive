@@ -115,6 +115,26 @@ type deployOps interface {
 		portBindings map[string][]runtime.PortBinding,
 		isolateNetwork bool,
 	) error
+	// createMcpContainerStopped creates the MCP workload container but does NOT
+	// start it. It is used on the transparent-interception path so that
+	// SetupTransparent can install iptables rules into the network namespace before
+	// the workload process runs. The caller is responsible for starting the container
+	// via startContainer after SetupTransparent succeeds.
+	createMcpContainerStopped(
+		ctx context.Context,
+		name string,
+		networkName string,
+		image string,
+		command []string,
+		envVars map[string]string,
+		labels map[string]string,
+		attachStdio bool,
+		permissionConfig *runtime.PermissionConfig,
+		additionalDNS string,
+		exposedPorts map[string]struct{},
+		portBindings map[string][]runtime.PortBinding,
+		isolateNetwork bool,
+	) (containerID string, err error)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -294,27 +314,62 @@ func (c *Client) DeployWorkload(
 	// about ingress/egress/dns containers.
 	lb.AddNetworkIsolationLabel(labels, networkIsolation)
 
-	err = c.ops.createMcpContainer(
-		ctx,
-		name,
-		networkName,
-		image,
-		command,
-		envVars,
-		labels,
-		attachStdio,
-		permissionConfig,
-		additionalDNS,
-		options.ExposedPorts,
-		newPortBindings,
-		effectiveIsolation,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create mcp container: %w", err)
+	// On the transparent-interception path the MCP container must be created
+	// (but not started) before SetupIngress, so that SetupTransparent can run
+	// the iptables init container in its network namespace. On the non-isolation
+	// path we use the original createMcpContainer (create + start in one step).
+	var mcpContainerID string
+	if effectiveIsolation {
+		mcpContainerID, err = c.ops.createMcpContainerStopped(
+			ctx,
+			name,
+			networkName,
+			image,
+			command,
+			envVars,
+			labels,
+			attachStdio,
+			permissionConfig,
+			additionalDNS,
+			options.ExposedPorts,
+			newPortBindings,
+			effectiveIsolation,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create mcp container: %w", err)
+		}
+	} else {
+		err = c.ops.createMcpContainer(
+			ctx,
+			name,
+			networkName,
+			image,
+			command,
+			envVars,
+			labels,
+			attachStdio,
+			permissionConfig,
+			additionalDNS,
+			options.ExposedPorts,
+			newPortBindings,
+			effectiveIsolation,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create mcp container: %w", err)
+		}
 	}
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
 	if transportType == "stdio" {
+		if effectiveIsolation {
+			// Start the workload after the transparent init container has run.
+			if err := c.proxy.SetupTransparent(ctx, pspec, mcpContainerID); err != nil {
+				return 0, fmt.Errorf("failed to set up transparent interception: %w", err)
+			}
+			if err := c.startContainer(ctx, mcpContainerID); err != nil {
+				return 0, fmt.Errorf("failed to start mcp container: %w", err)
+			}
+		}
 		return 0, nil
 	}
 
@@ -323,12 +378,21 @@ func (c *Client) DeployWorkload(
 		return 0, err // extractFirstPort already wraps the error with context.
 	}
 	if effectiveIsolation {
-		// SetupIngress runs after createMcpContainer so the reverse-proxy upstream
-		// resolves on first probe (a squid ingress created earlier would cache the
-		// negative DNS lookup and never recover).
+		// SetupIngress runs after createMcpContainerStopped so the reverse-proxy
+		// upstream resolves on first probe (a squid ingress created earlier would
+		// cache the negative DNS lookup and never recover).
 		hostPort, err = c.proxy.SetupIngress(ctx, pspec, egress)
 		if err != nil {
 			return 0, fmt.Errorf("failed to set up ingress proxy: %w", err)
+		}
+		// SetupTransparent installs iptables rules into the workload's network
+		// namespace before the workload process starts. It must run after
+		// SetupIngress so pspec.EnvoyInternalIP is populated by the Envoy backend.
+		if err := c.proxy.SetupTransparent(ctx, pspec, mcpContainerID); err != nil {
+			return 0, fmt.Errorf("failed to set up transparent interception: %w", err)
+		}
+		if err := c.startContainer(ctx, mcpContainerID); err != nil {
+			return 0, fmt.Errorf("failed to start mcp container: %w", err)
 		}
 	}
 
@@ -1619,6 +1683,96 @@ func (c *Client) createMcpContainer(
 
 	return nil
 
+}
+
+// createMcpContainerStopped creates the MCP container without starting it and
+// returns its container ID. It builds the same config as createMcpContainer but
+// calls createContainerStopped instead of createContainer, so the workload
+// process is not started yet. This enables SetupTransparent to install iptables
+// rules into the container's network namespace before any outbound connections
+// can escape. The caller must invoke startContainer after SetupTransparent.
+func (c *Client) createMcpContainerStopped(
+	ctx context.Context,
+	name string,
+	networkName string,
+	image string,
+	command []string,
+	envVars map[string]string,
+	labels map[string]string,
+	attachStdio bool,
+	permissionConfig *runtime.PermissionConfig,
+	additionalDNS string,
+	exposedPorts map[string]struct{},
+	portBindings map[string][]runtime.PortBinding,
+	isolateNetwork bool,
+) (string, error) {
+	// Create container configuration
+	config := &container.Config{
+		Image:        image,
+		Cmd:          command,
+		Env:          convertEnvVars(envVars),
+		Labels:       labels,
+		AttachStdin:  attachStdio,
+		AttachStdout: attachStdio,
+		AttachStderr: attachStdio,
+		OpenStdin:    attachStdio,
+		Tty:          false,
+	}
+
+	// Create host configuration
+	hostConfig := &container.HostConfig{
+		Mounts:      convertMounts(permissionConfig.Mounts),
+		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
+		CapAdd:      permissionConfig.CapAdd,
+		CapDrop:     permissionConfig.CapDrop,
+		SecurityOpt: permissionConfig.SecurityOpt,
+		Privileged:  permissionConfig.Privileged,
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+	}
+	if additionalDNS != "" {
+		dnsAddr, err := netip.ParseAddr(additionalDNS)
+		if err != nil {
+			return "", NewContainerError(err, "", fmt.Sprintf("invalid additional DNS address %q: %v", additionalDNS, err))
+		}
+		hostConfig.DNS = []netip.Addr{dnsAddr}
+	}
+
+	// Configure ports if options are provided
+	// Setup exposed ports
+	if err := setupExposedPorts(config, exposedPorts); err != nil {
+		return "", NewContainerError(err, "", err.Error())
+	}
+
+	// Setup port bindings
+	if err := setupPortBindings(hostConfig, portBindings); err != nil {
+		return "", NewContainerError(err, "", err.Error())
+	}
+
+	// Determine which network this container should join.
+	internalEndpointsConfig := map[string]*network.EndpointSettings{}
+	if !networking.IsBridgeMode(permissionConfig.NetworkMode) {
+		// For custom network modes like "host", "none", etc., don't add any endpoint configurations.
+		//nolint:gosec // G706: network mode from permission config
+		slog.Debug("using custom network mode", "network_mode", permissionConfig.NetworkMode)
+	} else if isolateNetwork {
+		internalEndpointsConfig[networkName] = &network.EndpointSettings{
+			NetworkID: networkName,
+		}
+	} else {
+		// for other workloads such as inspector, add to external network
+		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{
+			NetworkID: "toolhive-external",
+		}
+	}
+
+	id, err := c.createContainerStopped(ctx, name, config, hostConfig, internalEndpointsConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container: %w", err)
+	}
+
+	return id, nil
 }
 
 // addEgressEnvVars returns a new map containing all entries from envVars plus

@@ -871,11 +871,15 @@ func TestPostSSE_LoggingDroppedAndUpstreamLevelIsMaxAcrossSessions(t *testing.T)
 	}, 2*time.Second, 5*time.Millisecond, "upstream must reconcile to the new max (debug)")
 
 	// rank 3 < 7 (current max): must NOT reconcile upstream a third time.
+	// require.Never (rather than a fixed sleep) actively fails on an unexpected
+	// extra reconcile, including a slow-but-present one that a sleep would miss.
 	setLevel(sessA, "error")
-	time.Sleep(150 * time.Millisecond)
-	mu.Lock()
-	assert.Len(t, observedLevels, 2, "a session lowering below the current max must not reconcile upstream")
-	mu.Unlock()
+	require.Never(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(observedLevels) > 2
+	}, 500*time.Millisecond, 20*time.Millisecond,
+		"a session lowering below the current max must not reconcile upstream")
 
 	// A logging notification the backend sends is dropped, not delivered.
 	logMsg, err := jsonrpc2.NewNotification("notifications/message",

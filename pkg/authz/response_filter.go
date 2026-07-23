@@ -525,21 +525,29 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	return filteredResponse, nil
 }
 
+// filteringErrorBody renders a JSON-RPC 2.0 error body when response filtering
+// fails. Same envelope shape as unauthorizedErrorBody: hand-built lowercase
+// keys with an explicit "jsonrpc":"2.0". Do not json.Marshal a
+// *jsonrpc2.Response here (#5950).
+func filteringErrorBody(id jsonrpc2.ID, err error) []byte {
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"error": map[string]any{
+			"code":    int64(500),
+			"message": fmt.Sprintf("Error filtering response: %v", err),
+		},
+		"id": id.Raw(),
+	}
+	body, marshalErr := json.Marshal(resp)
+	if marshalErr != nil {
+		return []byte(`{"jsonrpc":"2.0","error":{"code":500,"message":"Internal server error"},"id":null}`)
+	}
+	return body
+}
+
 // writeErrorResponse writes an error response
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
-	errorResponse := &jsonrpc2.Response{
-		ID:    id,
-		Error: jsonrpc2.NewError(500, fmt.Sprintf("Error filtering response: %v", err)),
-	}
-
-	errorData, marshalErr := json.Marshal(errorResponse)
-	if marshalErr != nil {
-		// If we can't even marshal the error, write a simple error
-		rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
-		_, writeErr := rfw.ResponseWriter.Write([]byte(`{"error": "Internal server error"}`))
-		return writeErr
-	}
-
+	errorData := filteringErrorBody(id, err)
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(errorData)
 	return writeErr

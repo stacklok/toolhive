@@ -1173,3 +1173,24 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 	assert.NotContains(t, rr.Body.String(), "admin_tool",
 		"smuggled result on the application/json transport leaked past the filter")
 }
+
+// TestFilteringErrorBodyJSONRPCConformant guards the sibling encoder of #5950:
+// response-filter failure bodies must also use lowercase JSON-RPC 2.0 keys.
+func TestFilteringErrorBodyJSONRPCConformant(t *testing.T) {
+	t.Parallel()
+
+	body := filteringErrorBody(jsonrpc2.Int64ID(7), assert.AnError)
+	raw := string(body)
+	assert.NotContains(t, raw, `"Result"`)
+	assert.NotContains(t, raw, `"Error"`)
+	assert.NotContains(t, raw, `"ID"`)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	assert.Equal(t, "2.0", parsed["jsonrpc"])
+	assert.EqualValues(t, 7, parsed["id"])
+	errObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 500, errObj["code"])
+	assert.Contains(t, errObj["message"], "Error filtering response")
+}

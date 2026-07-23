@@ -497,14 +497,27 @@ func (*httpBackendClient) newSSEClient(
 	return c, nil
 }
 
-func (h *httpBackendClient) defaultClientFactory(
-	ctx context.Context, target *vmcp.BackendTarget, forwarding bool,
-) (*client.Client, error) {
-	// Build transport chain (outermost to innermost, request execution order):
-	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
-	//
-	// Build an isolated per-call transport so each client gets its own connection pool,
-	// preventing stale keep-alive connections from one backend affecting others.
+// buildBackendRoundTripper assembles the per-call backend RoundTripper chain
+// shared by every backend transport (streamable-HTTP, SSE, and the raw Modern
+// shim). Outermost to innermost, in request execution order:
+//
+//	trace propagation → identity propagation → header-forward → authentication → TLS/HTTP
+//
+// The nesting order is load-bearing: identity MUST wrap auth so the fresh
+// per-request identity is on the context before an auth strategy reads it (#5323).
+// The transport is isolated per call so each client gets its own connection pool,
+// preventing stale keep-alive connections from one backend affecting others.
+//
+// ctx is the LIVE per-call context: the header-forward and identity layers read
+// forwarded headers and the fallback identity/health-check marker off it, so
+// callers MUST pass the real request context, never context.Background().
+//
+// This returns the CHAIN, not a wrapped *http.Client: streamable-HTTP wraps it in
+// a size-limited/30s client, SSE wraps it bare (long-lived), and the Modern shim
+// picks its own bound — see the callers.
+func (h *httpBackendClient) buildBackendRoundTripper(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (http.RoundTripper, error) {
 	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData, h.dialControl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
@@ -593,6 +606,17 @@ func (h *httpBackendClient) defaultClientFactory(
 	baseTransport = &tracePropagatingRoundTripper{
 		base:       baseTransport,
 		propagator: otel.GetTextMapPropagator(),
+	}
+
+	return baseTransport, nil
+}
+
+func (h *httpBackendClient) defaultClientFactory(
+	ctx context.Context, target *vmcp.BackendTarget, forwarding bool,
+) (*client.Client, error) {
+	baseTransport, err := h.buildBackendRoundTripper(ctx, target)
+	if err != nil {
+		return nil, err
 	}
 
 	// Snapshot the bound server->client forwarders (nil when unbound). When set,

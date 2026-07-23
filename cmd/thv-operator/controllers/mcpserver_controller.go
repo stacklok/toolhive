@@ -408,6 +408,42 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Ensure the TRUSTED-mode egress NetworkPolicy from spec.permissionProfile
+	// (opt-in: only when network.outbound pins allowHost/allowPort and is NOT
+	// InsecureAllowAll; deleted otherwise). Terminal spec errors (unknown
+	// builtin, missing ConfigMap/key, malformed profile) surface as a condition
+	// and stop without requeue, per the gate pattern. SECURITY INVARIANT: this
+	// policy is blast-radius reduction only, never a credential boundary — the
+	// credential guarantee exists only in untrusted mode (broker + single-
+	// tenancy), which trusted workloads do not have.
+	if err := r.ensureTrustedEgressNetworkPolicy(ctx, mcpServer); err != nil {
+		var specErr *SpecValidationError
+		if stderrors.As(err, &specErr) {
+			ctxLogger.Error(err, "Permission profile rejected for egress NetworkPolicy")
+			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+			mcpServer.Status.Message = fmt.Sprintf("Invalid permission profile: %s", specErr.Error())
+			meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonPermissionProfileInvalid,
+				Message:            mcpServer.Status.Message,
+				ObservedGeneration: mcpServer.Generation,
+			})
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after permission profile validation failure")
+			}
+			return ctrl.Result{}, nil
+		}
+		ctxLogger.Error(err, "Failed to ensure trusted egress NetworkPolicy")
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure trusted egress NetworkPolicy: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after trusted egress NetworkPolicy error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")

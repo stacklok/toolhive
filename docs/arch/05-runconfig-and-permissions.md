@@ -744,20 +744,39 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - RunConfig permission profile → Security context
 - Volume mounts → PersistentVolumeClaims or HostPath
 
-**Network policies (untrusted mode):**
+**Network policies (trusted and untrusted modes):**
 
-NetworkPolicy generation is real — but scoped to **untrusted mode**, not
-general permission profiles. For MCPServers with `spec.untrusted: true`, the
-operator renders an egress-only NetworkPolicy from `spec.egressPolicy`: session
-pods may reach only loopback (the in-pod Envoy/broker sidecar), cluster DNS
-(kube-system / `k8s-app=kube-dns` pods only), and the CIDRs the policy's
-`allowedHosts` resolve to. In that mode
+NetworkPolicy generation is real for **both** egress dialects, which remain
+intentionally separate CRD vocabularies sharing only the NetworkPolicy
+rendering machinery (loopback + cluster-DNS + destination-CIDR rules).
+
+For **trusted** MCPServers (`spec.untrusted: false`, the default), the
+operator renders an egress-only NetworkPolicy named `<name>-egress` when
+`spec.permissionProfile` resolves to a profile whose
+`network.outbound` pins `allowHost` and/or `allowPort` — builtin `none`/`network`
+or ConfigMap-backed profiles. Opt-in semantics: `insecureAllowAll: true`
+(builtin `network`) or an empty `allowHost`/`allowPort` set (builtin `none`)
+means **no** NetworkPolicy — the operator never auto-default-denies; deleting
+the profile or turning it permissive deletes the policy. The policy selects
+the workload's pods (the standard `mcpserver` labels) and permits loopback,
+cluster DNS, the resolved `allowHost` CIDRs, and the `allowPort` ports.
+
+SECURITY INVARIANT: the trusted-mode NetworkPolicy is **blast-radius reduction
+only, never a credential boundary**. Trusted workloads hold their own
+credentials, so a compromise confined by this policy can still exfiltrate them
+to any *allowed* destination. The credential-boundary guarantee exists only in
+untrusted mode (broker + single-tenant pods).
+
+For **untrusted** MCPServers (`spec.untrusted: true`), the operator renders an
+egress-only NetworkPolicy from `spec.egressPolicy`: session pods may reach only
+loopback (the in-pod Envoy/broker sidecar), cluster DNS (kube-system /
+`k8s-app=kube-dns` pods only), the CIDRs the policy's `allowedHosts` resolve
+to, and the broker's token store. In that mode
 `permissionProfile.network.outbound` is **ignored** for the backend pod — the
 two are intentionally separate dialects: `permissionProfile` remains the
 Docker/Squid dialect (local mode, above), `egressPolicy` is the K8s
-untrusted-mode dialect. General profile → NetworkPolicy conversion for trusted
-workloads remains unimplemented; the load-bearing untrusted-mode controls are
-the broker's destination binding and per-dial IP validation, with the
+untrusted-mode dialect. The load-bearing untrusted-mode controls are the
+broker's destination binding and per-dial IP validation, with the
 NetworkPolicy as defense-in-depth. See
 [Untrusted Mode](16-untrusted-mode.md) and
 [ADR-0001](adr/0001-untrusted-mcp-egress-broker.md) (D7).

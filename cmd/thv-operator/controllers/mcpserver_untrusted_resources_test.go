@@ -40,26 +40,29 @@ func withEgressPolicy() v1beta1test.MCPServerOption {
 
 // Unit fixtures use hostname allowedHosts (the CRD grammar forbids IP
 // literals) plus a stubbed DNS lookup — no real resolution in unit tests. The
-// stub spans the test's whole lifetime (t.Cleanup restores it): a mid-test
-// restore would let a parallel sibling's Reconcile hit real DNS or a stale
-// stub. Tests calling this must NOT run in parallel (paralleltest nolint).
+// stub is installed once per test chain and spans the chain's whole lifetime
+// (t.Cleanup restores it and releases the serialization mutex): a parallel
+// sibling stubber blocks until this chain's cleanup runs, so it never hits
+// real DNS or this chain's stub. Subtests calling this must NOT run in
+// parallel (paralleltest nolint) — they share the parent's lock and run
+// serially after the parent body returns.
 func stubEgressDNS(t *testing.T, ips map[string][]net.IP) {
 	t.Helper()
-	untrustedDNSTestLock(t, stubDNSFor(ips, false))
+	installEgressDNSStubOnce(t, stubDNSFor(ips, false))
 }
 
 // stubEgressDNSStrict stubs DNS with exact map semantics (unknown hosts
-// fail) for tests asserting resolution failure.
+// fail) for tests asserting resolution failure. A strict-stubbing test
+// serializes against every other stubber, so no sibling's permissive stub
+// can leak into it (and vice versa).
 func stubEgressDNSStrict(t *testing.T, ips map[string][]net.IP) {
 	t.Helper()
-	untrustedDNSTestLock(t, stubDNSFor(ips, true))
+	installEgressDNSStubOnce(t, stubDNSFor(ips, true))
 }
 
 // stubDNSFor builds a DNS stub over ips. Non-strict stubs resolve unknown
-// hosts to the shared fixture IP so any test's stub is a valid stand-in for
-// any other's (a parallel sibling may run under this stub after this test's
-// cleanup already ran). Strict stubs fail unknown hosts (resolution-failure
-// assertions).
+// hosts to the shared fixture IP; strict stubs fail unknown hosts
+// (resolution-failure assertions).
 func stubDNSFor(ips map[string][]net.IP, strict bool) func(string) ([]net.IP, error) {
 	return func(host string) ([]net.IP, error) {
 		if resolved, ok := ips[host]; ok {
@@ -579,4 +582,229 @@ func TestRenderEgressPolicyYAML(t *testing.T) {
 	assert.True(t, policy.Allows("github", "POST", "/repos/x"))
 	assert.False(t, policy.Allows("github", "DELETE", "/repos/x"))
 	assert.False(t, policy.Allows("github", "GET", "/admin"))
+}
+
+// trustedProfileFixture is the ConfigMap-backed permission profile used by the
+// trusted egress NetworkPolicy tests (the same JSON document the runner mounts
+// at /etc/toolhive/profiles/<key>).
+const trustedProfileFixture = `{
+  "name": "custom-egress",
+  "network": {
+    "outbound": {
+      "insecure_allow_all": false,
+      "allow_host": ["api.github.com"],
+      "allow_port": [443]
+    }
+  }
+}`
+
+func withTrustedConfigMapProfile() v1beta1test.MCPServerOption {
+	return v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+		m.Spec.PermissionProfile = &mcpv1beta1.PermissionProfileRef{
+			Type: mcpv1beta1.PermissionProfileTypeConfigMap,
+			Name: "my-profile",
+			Key:  "profile.json",
+		}
+	})
+}
+
+// trustedProfileConfigMapWith returns the profile ConfigMap carrying a profile
+// whose allowHost is the given list. DNS-failure tests use a self-describing
+// fixture (a host absent from the strict stub's map) so the failure assertion
+// is pinned to the fixture, not to which stub happens to be installed.
+func trustedProfileConfigMapWith(allowHost string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-profile", Namespace: "default"},
+		Data: map[string]string{"profile.json": fmt.Sprintf(`{
+  "name": "custom-egress",
+  "network": {"outbound": {"insecure_allow_all": false, "allow_host": [%q], "allow_port": [443]}}
+}`, allowHost)},
+	}
+}
+
+func trustedProfileConfigMap() *corev1.ConfigMap {
+	return trustedProfileConfigMapWith("api.github.com")
+}
+
+//nolint:tparallel // Subtests swap the package-level DNS lookup stub; they must run serially.
+func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
+	t.Parallel()
+
+	//nolint:paralleltest // Swaps the package-level DNS lookup stub (held for the test lifetime).
+	t.Run("configmap profile with allowHost+allowPort renders loopback+DNS+destination+ports", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withTrustedConfigMapProfile())
+		stubEgressDNS(t, githubDNS)
+		r, _ := setupUntrustedReconciler(t, m, trustedProfileConfigMap())
+		ctx := t.Context()
+
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
+
+		np := &networkingv1.NetworkPolicy{}
+		require.NoError(t, r.Get(ctx, types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, np))
+		assertOwnerRef(t, np.OwnerReferences, m)
+		assert.Contains(t, np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
+
+		// The podSelector is the trusted workload label set — NOT the untrusted
+		// UID labels.
+		assert.Equal(t, labelsForMCPServer(m.Name), np.Spec.PodSelector.MatchLabels)
+		assert.NotContains(t, np.Spec.PodSelector.MatchLabels, "toolhive.stacklok.dev/mcpserver-uid")
+		assert.NotContains(t, np.Labels, "toolhive.stacklok.dev/untrusted-resource")
+
+		var cidrs []string
+		for _, rule := range np.Spec.Egress {
+			for _, peer := range rule.To {
+				if peer.IPBlock != nil {
+					cidrs = append(cidrs, peer.IPBlock.CIDR)
+				}
+			}
+		}
+		assert.Contains(t, cidrs, "127.0.0.1/32", "loopback must be permitted")
+		assert.Contains(t, cidrs, "140.82.114.26/32", "resolved allowHost must be permitted")
+		assertDNSRuleRestricted(t, np)
+
+		// allowPort produces a ports-only rule on TCP/443.
+		var foundPort bool
+		for _, rule := range np.Spec.Egress {
+			for _, p := range rule.Ports {
+				if p.Port != nil && p.Port.IntVal == 443 {
+					foundPort = true
+					assert.Empty(t, rule.To, "the allowPort rule must not be destination-scoped")
+				}
+			}
+		}
+		assert.True(t, foundPort, "allowPort 443 must produce a port rule")
+
+		// Idempotency: a second ensure performs no write.
+		before := np.ResourceVersion
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
+		after := &networkingv1.NetworkPolicy{}
+		require.NoError(t, r.Get(ctx, types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, after))
+		assert.Equal(t, before, after.ResourceVersion, "no-op reconcile must not rewrite the NetworkPolicy")
+	})
+
+	//nolint:paralleltest // Swaps the package-level DNS lookup stub (held for the test lifetime).
+	t.Run("builtin network profile (InsecureAllowAll) renders no NetworkPolicy", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.PermissionProfile = &mcpv1beta1.PermissionProfileRef{
+				Type: mcpv1beta1.PermissionProfileTypeBuiltin, Name: "network",
+			}
+		}))
+		r, _ := setupUntrustedReconciler(t, m)
+
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(t.Context(), m))
+		np := &networkingv1.NetworkPolicy{}
+		err := r.Get(t.Context(), types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, np)
+		assert.True(t, apierrors.IsNotFound(err), "InsecureAllowAll must never render a policy")
+	})
+
+	//nolint:paralleltest // Serial with sibling subtests that swap the DNS lookup stub.
+	t.Run("builtin none profile (empty allowHost) renders no NetworkPolicy", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.PermissionProfile = &mcpv1beta1.PermissionProfileRef{
+				Type: mcpv1beta1.PermissionProfileTypeBuiltin, Name: "none",
+			}
+		}))
+		r, _ := setupUntrustedReconciler(t, m)
+
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(t.Context(), m))
+		np := &networkingv1.NetworkPolicy{}
+		err := r.Get(t.Context(), types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, np)
+		assert.True(t, apierrors.IsNotFound(err), "empty allowHost/allowPort must never render a policy")
+	})
+
+	//nolint:paralleltest // Swaps the package-level DNS lookup stub (held for the test lifetime).
+	t.Run("policy is deleted when the profile is removed or becomes permissive", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withTrustedConfigMapProfile())
+		stubEgressDNS(t, githubDNS)
+		r, _ := setupUntrustedReconciler(t, m, trustedProfileConfigMap())
+		ctx := t.Context()
+
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
+		np := &networkingv1.NetworkPolicy{}
+		require.NoError(t, r.Get(ctx, types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, np))
+
+		// Profile turns permissive → policy deleted.
+		cm := trustedProfileConfigMap()
+		cm.Data["profile.json"] = `{"name":"p","network":{"outbound":{"insecure_allow_all":true}}}`
+		require.NoError(t, r.Update(ctx, cm))
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
+		err := r.Get(ctx, types.NamespacedName{Name: "github-mcp-egress", Namespace: "default"}, np)
+		assert.True(t, apierrors.IsNotFound(err), "a permissive profile must delete the policy")
+
+		// Restrictive again, then the profile is removed → policy deleted.
+		cm.Data["profile.json"] = trustedProfileFixture
+		require.NoError(t, r.Update(ctx, cm))
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
+		require.NoError(t, r.Get(ctx, types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, np))
+		m.Spec.PermissionProfile = nil
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
+		err = r.Get(ctx, types.NamespacedName{Name: "github-mcp-egress", Namespace: "default"}, np)
+		assert.True(t, apierrors.IsNotFound(err), "removing the profile must delete the policy")
+	})
+
+	//nolint:paralleltest // Serial with sibling subtests that swap the DNS lookup stub.
+	t.Run("missing ConfigMap or malformed profile is a terminal spec error", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withTrustedConfigMapProfile())
+		r, _ := setupUntrustedReconciler(t, m) // no ConfigMap seeded
+
+		err := r.ensureTrustedEgressNetworkPolicy(t.Context(), m)
+		require.Error(t, err)
+		var specErr *SpecValidationError
+		require.ErrorAs(t, err, &specErr)
+
+		badCM := trustedProfileConfigMap()
+		badCM.Data["profile.json"] = `{not json`
+		r2, _ := setupUntrustedReconciler(t, m, badCM)
+		err = r2.ensureTrustedEgressNetworkPolicy(t.Context(), m)
+		require.Error(t, err)
+		require.ErrorAs(t, err, &specErr)
+	})
+
+	//nolint:paralleltest // Swaps the package-level DNS lookup stub (held for the test lifetime).
+	t.Run("DNS failure is transient, never a terminal spec error", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withTrustedConfigMapProfile())
+		// The strict stub fails every lookup; the fixture host is deliberately
+		// absent from the map so the failure assertion is pinned to the fixture.
+		stubEgressDNSStrict(t, map[string][]net.IP{})
+		r, _ := setupUntrustedReconciler(t, m, trustedProfileConfigMapWith("unresolvable.invalid"))
+
+		err := r.ensureTrustedEgressNetworkPolicy(t.Context(), m)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, egressbroker.ErrDNSResolution)
+		var specErr *SpecValidationError
+		assert.False(t, errorAsSpecValidation(err, &specErr),
+			"a DNS blip must retry with backoff, not poison the workload: %v", err)
+	})
+}
+
+// TestRenderTrustedEgressNetworkPolicy pins the trusted render's shape and its
+// blast-radius-only security invariant (the doc comment carries the invariant;
+// the render carries no untrusted wiring).
+func TestRenderTrustedEgressNetworkPolicy(t *testing.T) {
+	t.Parallel()
+
+	m := v1beta1test.NewMCPServer("github-mcp", "default")
+	np := renderTrustedEgressNetworkPolicy(m, []string{"140.82.114.26/32"}, []int32{8443, 443})
+
+	assert.Equal(t, "github-mcp-egress", np.Name)
+	assert.Equal(t, labelsForMCPServer(m.Name), np.Spec.PodSelector.MatchLabels)
+	assert.Equal(t, labelsForMCPServer(m.Name), np.Labels)
+
+	// loopback + DNS + destination + ports = 4 rules; no token-store rule.
+	require.Len(t, np.Spec.Egress, 4)
+	portRule := np.Spec.Egress[3]
+	require.Len(t, portRule.Ports, 2)
+	assert.Equal(t, int32(443), portRule.Ports[0].Port.IntVal, "ports must be sorted (deterministic render)")
+	assert.Equal(t, int32(8443), portRule.Ports[1].Port.IntVal)
+	assert.Empty(t, portRule.To)
+
+	// No ports → no port rule.
+	np = renderTrustedEgressNetworkPolicy(m, []string{"140.82.114.26/32"}, nil)
+	require.Len(t, np.Spec.Egress, 3)
 }

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -109,11 +108,9 @@ func reconcileOnce(t *testing.T, r *MCPServerReconciler, mcpServer *mcpv1beta1.M
 	t.Helper()
 
 	// Install the fixture stub ONCE per test, held for its whole lifetime.
-	// untrustedDNSTestLock treats any installed stub (including a parallel
-	// sibling's) as "held" and skips locking, so calling it per reconcile
-	// lets a multi-reconcile test overwrite another test's stub mid-flight.
-	// stubOnce guarantees one lock+install per test no matter how many
-	// reconcileOnce calls follow; t.Cleanup releases it.
+	// installEgressDNSStubOnce guarantees one lock+install per test no matter
+	// how many reconcileOnce calls follow; a parallel sibling stubber blocks
+	// on the mutex until t.Cleanup releases it.
 	stubUntrustedDNSOnce(t)
 
 	ctx := log.IntoContext(t.Context(), log.Log)
@@ -126,31 +123,14 @@ func reconcileOnce(t *testing.T, r *MCPServerReconciler, mcpServer *mcpv1beta1.M
 	return result
 }
 
-// stubUntrustedDNSOnce installs the fixture DNS stub exactly once per test,
-// holding untrustedDNSTestMu for the test's whole lifetime. Reconciles after
-// the first reuse the already-installed stub; a parallel sibling blocks on
-// the mutex until t.Cleanup releases it. This removes the re-entry race in
-// untrustedDNSTestLock that let a multi-reconcile test clobber a sibling's
-// stub without holding the lock.
-var untrustedDNSStubOnce sync.Map // *testing.T -> struct{}{}
-
+// stubUntrustedDNSOnce installs the fixture DNS stub (every host resolves to
+// the shared fixture IP) exactly once per test via the shared once-per-test
+// install. Reconciles after the first reuse the already-installed stub; a
+// parallel sibling blocks on the mutex until t.Cleanup releases it.
 func stubUntrustedDNSOnce(t *testing.T) {
 	t.Helper()
-	if _, done := untrustedDNSStubOnce.LoadOrStore(t, struct{}{}); done {
-		return
-	}
-	untrustedDNSTestMu.Lock()
-	untrustedDNSLookupMu.Lock()
-	untrustedDNSLookupStub = func(string) ([]net.IP, error) {
+	installEgressDNSStubOnce(t, func(string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("140.82.114.26")}, nil
-	}
-	untrustedDNSLookupMu.Unlock()
-	t.Cleanup(func() {
-		untrustedDNSLookupMu.Lock()
-		untrustedDNSLookupStub = nil
-		untrustedDNSLookupMu.Unlock()
-		untrustedDNSTestMu.Unlock()
-		untrustedDNSStubOnce.Delete(t)
 	})
 }
 

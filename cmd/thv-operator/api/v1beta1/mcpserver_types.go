@@ -65,6 +65,13 @@ const (
 	// ConditionReasonNotReady so operators can tell "fix the spec" apart from
 	// "wait for convergence".
 	ConditionReasonUntrustedPolicyInvalid = "UntrustedEgressPolicyInvalid"
+
+	// ConditionReasonPermissionProfileInvalid indicates a terminal rejection of
+	// a trusted workload's spec.permissionProfile for egress NetworkPolicy
+	// rendering (unknown builtin name, missing ConfigMap/key, malformed profile
+	// JSON). Distinct from ConditionReasonNotReady so operators can tell "fix
+	// the spec" apart from "wait for convergence".
+	ConditionReasonPermissionProfileInvalid = "PermissionProfileInvalid"
 )
 
 // Condition type for CA bundle validation
@@ -416,7 +423,11 @@ type MCPServerSpec struct {
 	// When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend
 	// pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar
 	// + vMCP). Do not merge the two vocabularies: OutboundNetworkPermissions is the
-	// Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect.
+	// Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the
+	// NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the
+	// trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction
+	// only, never a credential boundary — the credential guarantee comes solely from this
+	// field's broker + single-tenant pods in untrusted mode.
 	// +optional
 	EgressPolicy *EgressPolicy `json:"egressPolicy,omitempty"`
 

@@ -357,7 +357,10 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	command []string,
 	envVars map[string]string,
 	containerLabels map[string]string,
-	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
+	// Permission profile egress is rendered by the thv-operator MCPServer
+	// controller (spec.permissionProfile → NetworkPolicy); this in-process
+	// client intentionally ignores it.
+	_ *permissions.Profile,
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	_ bool,

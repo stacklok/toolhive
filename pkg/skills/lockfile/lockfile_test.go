@@ -118,6 +118,50 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	assert.Equal(t, entry, loaded.Skills[0])
 }
 
+// TestUnknownFieldsSurviveLoadModifySave freezes the version-skew contract:
+// a lock file written by a newer binary (e.g. with Sigstore provenance
+// fields added under schema version 1) must round-trip through this
+// binary's Load -> modify -> Save without the unknown fields being
+// stripped — otherwise an older thv silently removes a teammate's signing
+// metadata on its next write.
+func TestUnknownFieldsSurviveLoadModifySave(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	path, err := root.Path()
+	require.NoError(t, err)
+
+	futureLock := "" +
+		"version: 1\n" +
+		"futureTopLevelField: keep-me\n" +
+		"skills:\n" +
+		"  - name: signed-skill\n" +
+		"    source: ghcr.io/org/signed-skill:1.0.0\n" +
+		"    digest: " + ociDigest(1) + "\n" +
+		"    provenance:\n" +
+		"      signerIdentity: dev@example.com\n" +
+		"      certIssuer: https://accounts.example.com\n"
+	require.NoError(t, os.WriteFile(path, []byte(futureLock), 0o644))
+
+	// Load, touch an unrelated entry, save — the classic older-binary write.
+	require.NoError(t, UpsertEntry(root, Entry{
+		Name:   "other-skill",
+		Source: "other-skill",
+		Digest: ociDigest(2),
+	}))
+
+	data, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	saved := string(data)
+	assert.Contains(t, saved, "signerIdentity: dev@example.com", "unknown entry fields must survive a Load->Save cycle")
+	assert.Contains(t, saved, "futureTopLevelField: keep-me", "unknown top-level fields must survive a Load->Save cycle")
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+	signed, ok := loaded.Get("signed-skill")
+	require.True(t, ok)
+	assert.Contains(t, signed.Extra, "provenance")
+}
+
 func TestSaveRejectsInvalidLockfile(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)

@@ -7,8 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+
+	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 )
 
 // ErrUnsupportedVersion indicates the lock file schema version is not
@@ -51,8 +55,69 @@ func validateLockfile(lf *Lockfile) error {
 			}
 		}
 	}
+
+	if cycle := findRequiredByCycle(lf.Skills); len(cycle) > 0 {
+		return fmt.Errorf("requiredBy cycle: %s", strings.Join(cycle, " -> "))
+	}
 	return nil
 }
+
+// findRequiredByCycle detects a cycle in the requiredBy graph and returns
+// one such cycle path, or nil. Normal installs can never produce a cycle
+// (the install-time Visited set breaks them), but a hand-edited or badly
+// merge-resolved lock file can — and a ring of mutually-required,
+// non-explicit entries would then be impossible to ever cascade-remove, so
+// it is rejected at validation instead of persisting silently.
+func findRequiredByCycle(entries []Entry) []string {
+	requiredBy := make(map[string][]string, len(entries))
+	for _, e := range entries {
+		requiredBy[e.Name] = e.RequiredBy
+	}
+
+	const (
+		unvisited = 0
+		inStack   = 1
+		done      = 2
+	)
+	state := make(map[string]int, len(entries))
+
+	var visit func(name string, path []string) []string
+	visit = func(name string, path []string) []string {
+		state[name] = inStack
+		path = append(path, name)
+		for _, parent := range requiredBy[name] {
+			switch state[parent] {
+			case inStack:
+				// Trim the path to start at the cycle entry point.
+				for i, n := range path {
+					if n == parent {
+						return append(path[i:], parent)
+					}
+				}
+			case unvisited:
+				if cycle := visit(parent, path); cycle != nil {
+					return cycle
+				}
+			}
+		}
+		state[name] = done
+		return nil
+	}
+
+	for _, e := range entries {
+		if state[e.Name] == unvisited {
+			if cycle := visit(e.Name, nil); cycle != nil {
+				return cycle
+			}
+		}
+	}
+	return nil
+}
+
+// maxReferenceLength bounds ResolvedReference: longer than any legitimate
+// OCI reference or git URL, short enough to stop megabyte-scale garbage
+// from a corrupted or hostile lock file reaching the fetch path.
+const maxReferenceLength = 512
 
 func validateEntry(entry Entry) error {
 	if err := skills.ValidateSkillName(entry.Name); err != nil {
@@ -71,6 +136,44 @@ func validateEntry(entry Entry) error {
 		if err := validateContentDigest(entry.ContentDigest); err != nil {
 			return fmt.Errorf("entry %q: contentDigest: %w", entry.Name, err)
 		}
+	}
+	if entry.ResolvedReference != "" {
+		if err := validateResolvedReference(entry.ResolvedReference); err != nil {
+			return fmt.Errorf("entry %q: resolvedReference: %w", entry.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateResolvedReference syntactically constrains the resolvedReference
+// field. Sync fetches from this value without re-resolving Source, and the
+// lock file is hand-editable, so a value that is not a plausible git:// or
+// OCI reference must never reach the fetch path. Validation is purely
+// syntactic — no network access, no allow-list policy.
+func validateResolvedReference(ref string) error {
+	if len(ref) > maxReferenceLength {
+		return fmt.Errorf("exceeds %d characters", maxReferenceLength)
+	}
+	if strings.TrimSpace(ref) != ref {
+		return errors.New("has leading or trailing whitespace")
+	}
+	for _, r := range ref {
+		if !unicode.IsGraphic(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("contains non-graphic or whitespace character %q", r)
+		}
+	}
+	if gitresolver.IsGitReference(ref) {
+		if _, err := gitresolver.ParseGitReference(ref); err != nil {
+			return fmt.Errorf("invalid git reference: %w", err)
+		}
+		return nil
+	}
+	// StrictValidation requires an explicit tag or digest, matching what the
+	// install path records (qualifiedOCIRef always includes one) — and,
+	// unlike weak validation, rejects URL-shaped strings such as
+	// "http://169.254.169.254/…" that must never reach the fetch path.
+	if _, err := nameref.ParseReference(ref, nameref.StrictValidation); err != nil {
+		return fmt.Errorf("not a valid git:// or OCI reference: %w", err)
 	}
 	return nil
 }

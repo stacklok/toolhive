@@ -35,6 +35,12 @@ type ContentFile struct {
 // The algorithm is frozen: lock files in the wild pin its output, so any
 // change would report every installed skill as drifted. Golden vectors in
 // the package tests guard against accidental changes.
+//
+// Known limitations (accepted, like go.sum's): the digest covers file
+// content only — file modes (e.g. an exec-bit flip) are invisible to it,
+// and [ContentDigestFromDir] skips symlinks and other non-regular files
+// entirely. Trust in the file set's provenance is the Sigstore
+// verification layer's job, not this integrity pin's.
 func ContentDigest(files []ContentFile) (string, error) {
 	if len(files) == 0 {
 		return "", fmt.Errorf("content digest requires at least one file")

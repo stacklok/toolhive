@@ -78,6 +78,39 @@ func TestValidateContentDigest(t *testing.T) {
 	}
 }
 
+func TestValidateResolvedReference(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ref     string
+		wantErr string
+	}{
+		{name: "valid OCI reference with tag", ref: "ghcr.io/org/skill:1.0.0"},
+		{name: "valid OCI reference with digest", ref: "ghcr.io/org/skill@sha256:" + validSHA256Hex},
+		{name: "valid git reference", ref: "git://github.com/org/repo@main#skills/my-skill"},
+		{name: "too long", ref: "ghcr.io/org/" + strings.Repeat("a", maxReferenceLength), wantErr: "exceeds"},
+		{name: "leading whitespace", ref: " ghcr.io/org/skill:1", wantErr: "whitespace"},
+		{name: "embedded newline", ref: "ghcr.io/org/\nskill:1", wantErr: "non-graphic"},
+		{name: "embedded ANSI escape", ref: "ghcr.io/org/\x1b[31mskill:1", wantErr: "non-graphic"},
+		{name: "malformed git reference", ref: "git://", wantErr: "invalid git reference"},
+		{name: "not a reference at all", ref: "http://169.254.169.254/latest/meta-data", wantErr: "not a valid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateResolvedReference(tt.ref)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestValidateLockfile(t *testing.T) {
 	t.Parallel()
 
@@ -139,6 +172,25 @@ func TestValidateLockfile(t *testing.T) {
 				{Name: "Not_Valid", Source: "x", Digest: validSHA256Digest},
 			}},
 			wantErr: "entry name",
+		},
+		{
+			// A mutual requiredBy ring of non-explicit entries would pass the
+			// per-edge checks yet be impossible to ever cascade-remove.
+			name: "requiredBy cycle",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "ring-a", Source: "a", Digest: validSHA256Digest, RequiredBy: []string{"ring-b"}},
+				{Name: "ring-b", Source: "b", Digest: validSHA256Digest, RequiredBy: []string{"ring-a"}},
+			}},
+			wantErr: "requiredBy cycle",
+		},
+		{
+			name: "requiredBy diamond is not a cycle",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "shared-dep", Source: "d", Digest: validSHA256Digest, RequiredBy: []string{"parent-a", "parent-b"}},
+				{Name: "parent-a", Source: "a", Digest: validSHA256Digest, RequiredBy: []string{"root"}},
+				{Name: "parent-b", Source: "b", Digest: validSHA256Digest, RequiredBy: []string{"root"}},
+				{Name: "root", Source: "r", Digest: validSHA256Digest, Explicit: true},
+			}},
 		},
 	}
 

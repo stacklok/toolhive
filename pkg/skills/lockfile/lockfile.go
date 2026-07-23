@@ -15,6 +15,8 @@
 package lockfile
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -64,6 +66,13 @@ type Entry struct {
 	// Explicit is true when the user directly installed this skill; explicit
 	// entries are exempt from cascade removal when RequiredBy becomes empty.
 	Explicit bool `yaml:"explicit,omitempty"`
+	// Extra round-trips fields this binary does not know about (e.g. the
+	// Sigstore provenance fields a future schema adds under version 1), so a
+	// Load→modify→Save cycle by an older binary preserves rather than strips
+	// them. It applies per entry: an entry this binary rewrites (reinstall,
+	// upgrade) is built fresh, so its unknown fields — which described the
+	// previous install — are intentionally dropped along with it.
+	Extra map[string]any `yaml:",inline"`
 }
 
 // Lockfile is the parsed contents of a project's toolhive.lock.yaml.
@@ -73,6 +82,8 @@ type Lockfile struct {
 	// Skills is the set of pinned skill installations, sorted by name for
 	// stable diffs.
 	Skills []Entry `yaml:"skills,omitempty"`
+	// Extra round-trips unknown top-level fields, mirroring Entry.Extra.
+	Extra map[string]any `yaml:",inline"`
 }
 
 // Root is a validated project root directory. It is the only way to address
@@ -210,17 +221,27 @@ func (l *Lockfile) RemoveParentFromRequiredBy(parent string) []string {
 }
 
 // tmpFileName is the temporary file Save writes before renaming it into
-// place. It is a fixed name (not a random suffix) because writes are already
-// serialized by the caller's file lock; a fixed name also keeps Save's
-// containment check on osRoot trivial.
-const tmpFileName = ".toolhive.lock.tmp"
+// tmpFileName returns a per-call temporary file name for Save's atomic
+// write. The random suffix means two concurrent direct Save calls (which,
+// unlike Update/UpsertEntry/RemoveEntry, hold no file lock) cannot write
+// to, rename, or delete each other's temp file — last rename still wins,
+// but neither can promote or destroy a half-written file.
+func tmpFileName() (string, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("generating temp file suffix: %w", err)
+	}
+	return ".toolhive.lock." + hex.EncodeToString(buf[:]) + ".tmp", nil
+}
 
 // Save writes the lock file into root atomically (temp file + rename), after
 // validating it with the same rules [Load] enforces on read. This prevents a
 // caller bug from writing a lock file that every subsequent Load/Update call
 // would then hard-fail on, with no recovery path through this package.
 // Callers that need read-modify-write atomicity across processes must use
-// [UpsertEntry], [RemoveEntry], or [Update] instead of Load+Save.
+// [UpsertEntry], [RemoveEntry], or [Update] instead of Load+Save — Save alone
+// is write-atomic but does nothing to serialize concurrent read-modify-write
+// cycles.
 func (l *Lockfile) Save(root Root) error {
 	osRoot, err := root.osRoot()
 	if err != nil {
@@ -242,13 +263,17 @@ func (l *Lockfile) Save(root Root) error {
 		return fmt.Errorf("marshaling lock file: %w", err)
 	}
 
+	tmpName, err := tmpFileName()
+	if err != nil {
+		return err
+	}
 	// The lock file is committed to git and not sensitive; 0o644 matches any
 	// other source file.
-	if err := osRoot.WriteFile(tmpFileName, data, 0o644); err != nil {
+	if err := osRoot.WriteFile(tmpName, data, 0o644); err != nil {
 		return fmt.Errorf("writing lock file: %w", err)
 	}
-	if err := osRoot.Rename(tmpFileName, FileName); err != nil {
-		_ = osRoot.Remove(tmpFileName)
+	if err := osRoot.Rename(tmpName, FileName); err != nil {
+		_ = osRoot.Remove(tmpName)
 		return fmt.Errorf("saving lock file: %w", err)
 	}
 	return nil

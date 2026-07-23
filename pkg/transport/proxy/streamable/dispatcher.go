@@ -10,14 +10,30 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 )
 
+// JSON-RPC method names used for server<->client routing decisions across
+// this package (dispatcher.go and streamable_proxy.go). Collected here as
+// the single source of truth so the two files can never drift on a wire
+// string; none of these are exported by any SDK the proxy depends on (see
+// #5744's review).
+const (
+	methodToolsListChanged     = "notifications/tools/list_changed"
+	methodResourcesListChanged = "notifications/resources/list_changed"
+	methodPromptsListChanged   = "notifications/prompts/list_changed"
+	methodProgress             = "notifications/progress"
+	methodResourcesUpdated     = "notifications/resources/updated"
+	methodLoggingMessage       = "notifications/message"
+	methodResourcesSubscribe   = "resources/subscribe"
+	methodResourcesUnsubscribe = "resources/unsubscribe"
+)
+
 // listChangedNotificationMethods is the set of server->client notification
 // methods that describe a server-wide capability change (not tied to any
 // particular request or subscription), so delivering one copy to every
 // connected session's standalone stream is correct and safe.
 var listChangedNotificationMethods = map[string]bool{
-	"notifications/tools/list_changed":     true,
-	"notifications/resources/list_changed": true,
-	"notifications/prompts/list_changed":   true,
+	methodToolsListChanged:     true,
+	methodResourcesListChanged: true,
+	methodPromptsListChanged:   true,
 }
 
 // dispatchResponses routes container messages arriving on responseCh to the
@@ -77,11 +93,11 @@ func (p *HTTPProxy) routeNotification(m *jsonrpc2.Request) {
 	switch {
 	case listChangedNotificationMethods[m.Method]:
 		p.serverStreams.broadcast(m)
-	case m.Method == "notifications/progress":
+	case m.Method == methodProgress:
 		p.routeProgress(m)
-	case m.Method == "notifications/resources/updated":
+	case m.Method == methodResourcesUpdated:
 		p.routeResourceUpdated(m)
-	case m.Method == "notifications/message":
+	case m.Method == methodLoggingMessage:
 		// SECURE-DROP: shared-backend log content is unattributable to any
 		// one session and forwarding it (to all sessions, or a guessed one)
 		// would leak cross-session information. Deferred to per-session

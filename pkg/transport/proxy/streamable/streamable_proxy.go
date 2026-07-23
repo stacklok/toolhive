@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -398,9 +399,8 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := assertFlushable(w)
 	if !ok {
-		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
 		return
 	}
 
@@ -414,9 +414,7 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setSSEHeaders(w)
 
 	s := p.serverStreams.register(sessID)
 	defer p.serverStreams.deregister(sessID, s)
@@ -424,7 +422,7 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 	// Send headers immediately so the client knows the stream is open.
 	flusher.Flush()
 
-	keepAliveTicker := time.NewTicker(30 * time.Second)
+	keepAliveTicker := time.NewTicker(sseKeepAliveInterval)
 	defer keepAliveTicker.Stop()
 
 	for {
@@ -441,11 +439,10 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-keepAliveTicker.C:
-			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+			if err := writeSSEKeepAlive(w, flusher); err != nil {
 				slog.Debug("failed to write keep-alive", "error", err)
 				return
 			}
-			flusher.Flush()
 		case <-s.stop:
 			// Evicted by a second GET for this session, or proxy Stop's closeAll.
 			return
@@ -644,18 +641,14 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	defer cancel()
 
 	// Prepare SSE response headers
-	flusher, ok := w.(http.Flusher)
+	var setMcpSessionID func()
+	if setSessionHeader {
+		setMcpSessionID = func() { w.Header().Set("Mcp-Session-Id", sessID) }
+	}
+	flusher, ok := startSSEStream(w, setMcpSessionID)
 	if !ok {
-		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	if setSessionHeader {
-		w.Header().Set("Mcp-Session-Id", sessID)
-	}
-	flusher.Flush()
 
 	outgoingReq, deliverCh, dropProgressRoute := p.setupProgressRouting(req)
 	defer dropProgressRoute()
@@ -1067,7 +1060,7 @@ func (p *HTTPProxy) resolveSessionForRequest(
 // entirely for it.
 func resourceSubscriptionURI(req *jsonrpc2.Request) (string, bool) {
 	switch req.Method {
-	case "resources/subscribe", "resources/unsubscribe":
+	case methodResourcesSubscribe, methodResourcesUnsubscribe:
 		uri, ok := extractStringParam(req.Params, "uri")
 		if !ok || uri == "" {
 			return "", false
@@ -1113,7 +1106,7 @@ func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.R
 	}
 
 	switch req.Method {
-	case "resources/subscribe":
+	case methodResourcesSubscribe:
 		uri, ok := extractStringParam(req.Params, "uri")
 		if !ok || uri == "" {
 			return nil, false
@@ -1123,7 +1116,7 @@ func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.R
 		}
 		return synthesizeSuccessResponse(req.ID), true
 
-	case "resources/unsubscribe":
+	case methodResourcesUnsubscribe:
 		uri, ok := extractStringParam(req.Params, "uri")
 		if !ok || uri == "" {
 			return nil, false
@@ -1133,7 +1126,7 @@ func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.R
 		}
 		return synthesizeSuccessResponse(req.ID), true
 
-	case "logging/setLevel":
+	case string(sdkmcp.MethodSetLogLevel):
 		// Unlike resources/subscribe|unsubscribe, this decision is NOT ordered
 		// with its upstream forward via uriLocks (there is no per-uri key to
 		// order on, and no uriLocks acquisition happens for this method -- see
@@ -1186,15 +1179,10 @@ func writeInterceptedResponse(
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := startSSEStream(w, nil)
 	if !ok {
-		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher.Flush()
 
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
@@ -1213,14 +1201,14 @@ func writeInterceptedResponse(
 // sessions" exactly the level that satisfies every session's request without
 // under-serving the most verbose one (see sessionRouter.setLogLevel).
 var logLevelRanks = map[string]int{
-	"emergency": 0,
-	"alert":     1,
-	"critical":  2,
-	"error":     3,
-	"warning":   4,
-	"notice":    5,
-	"info":      6,
-	"debug":     7,
+	string(sdkmcp.LoggingLevelEmergency): 0,
+	string(sdkmcp.LoggingLevelAlert):     1,
+	string(sdkmcp.LoggingLevelCritical):  2,
+	string(sdkmcp.LoggingLevelError):     3,
+	string(sdkmcp.LoggingLevelWarning):   4,
+	string(sdkmcp.LoggingLevelNotice):    5,
+	string(sdkmcp.LoggingLevelInfo):      6,
+	string(sdkmcp.LoggingLevelDebug):     7,
 }
 
 // logLevelRank returns level's verbosity rank (see logLevelRanks). An unknown
@@ -1233,7 +1221,7 @@ func logLevelRank(level string) int {
 		return rank
 	}
 	slog.Debug("unrecognized logging level; treating as most verbose", "level", level)
-	return logLevelRanks["debug"]
+	return logLevelRanks[string(sdkmcp.LoggingLevelDebug)]
 }
 
 // logLevelName returns the level name for rank (the inverse of logLevelRank),
@@ -1244,7 +1232,7 @@ func logLevelName(rank int) string {
 			return name
 		}
 	}
-	return "debug"
+	return string(sdkmcp.LoggingLevelDebug)
 }
 
 // reconcileUpstreamLogLevel sends a logging/setLevel request upstream with
@@ -1276,7 +1264,7 @@ func (p *HTTPProxy) reconcileUpstreamLogLevel(level string) {
 		slog.Warn("failed to mint id for upstream log level reconciliation", "error", err)
 		return
 	}
-	req, err := jsonrpc2.NewCall(jsonrpc2.StringID(id.String()), "logging/setLevel", map[string]any{"level": level})
+	req, err := jsonrpc2.NewCall(jsonrpc2.StringID(id.String()), string(sdkmcp.MethodSetLogLevel), map[string]any{"level": level})
 	if err != nil {
 		slog.Warn("failed to build upstream log level reconciliation request", "error", err)
 		return

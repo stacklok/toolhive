@@ -8,9 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"golang.org/x/exp/jsonrpc2"
 )
+
+// sseKeepAliveInterval is the cadence at which an otherwise-idle SSE stream
+// writes a ": keep-alive\n\n" comment (see writeSSEKeepAlive), so
+// intermediary proxies/load balancers do not close the connection for
+// inactivity.
+const sseKeepAliveInterval = 30 * time.Second
 
 // isNotification returns true if the JSON-RPC message is a notification (no ID).
 func isNotification(msg jsonrpc2.Message) bool {
@@ -39,6 +46,71 @@ func writeHTTPError(w http.ResponseWriter, status int, msg string) {
 // whether to end the stream; it does not itself log or close anything.
 func writeSSEData(w io.Writer, flusher http.Flusher, data []byte) error {
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+// assertFlushable type-asserts w as http.Flusher, which every SSE response in
+// this package requires so data can be pushed to the client as it is
+// written, rather than buffered until the handler returns. On failure it
+// writes the standard 500 "Streaming not supported" error to w and returns
+// (nil, false); the caller must return immediately without writing anything
+// else. On success it returns (w.(http.Flusher), true).
+func assertFlushable(w http.ResponseWriter) (http.Flusher, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
+		return nil, false
+	}
+	return flusher, true
+}
+
+// setSSEHeaders sets the standard response headers for an SSE stream:
+// Content-Type: text/event-stream, Cache-Control: no-cache, and
+// Connection: keep-alive.
+func setSSEHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+}
+
+// startSSEStream asserts that w supports flushing (see assertFlushable), sets
+// the standard SSE headers (see setSSEHeaders), and flushes them to the
+// client immediately so it knows the stream is open without waiting for the
+// first data: frame.
+//
+// If extra is non-nil, it is called after the SSE headers are set but before
+// the flush, letting a caller add further response headers (e.g.
+// Mcp-Session-Id) while they are still guaranteed to reach the client:
+// net/http locks in headers at the first Flush/WriteHeader call, so any
+// header set after this function returns would be silently dropped.
+//
+// It returns (flusher, true) on success. If w does not implement
+// http.Flusher, it writes the "Streaming not supported" 500 itself (see
+// assertFlushable) and returns (nil, false); the caller must return without
+// writing anything else, and extra is never called.
+func startSSEStream(w http.ResponseWriter, extra func()) (http.Flusher, bool) {
+	flusher, ok := assertFlushable(w)
+	if !ok {
+		return nil, false
+	}
+	setSSEHeaders(w)
+	if extra != nil {
+		extra()
+	}
+	flusher.Flush()
+	return flusher, true
+}
+
+// writeSSEKeepAlive writes a single SSE comment line (": keep-alive\n\n") to
+// w and flushes it, so intermediary proxies/load balancers do not close an
+// otherwise-idle SSE connection for inactivity. It returns the underlying
+// write error (if any), mirroring writeSSEData, so the caller can decide
+// whether to end the stream; it does not itself log or close anything.
+func writeSSEKeepAlive(w io.Writer, flusher http.Flusher) error {
+	if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil { //nolint:gosec // G705: fixed literal, not derived from any request
 		return err
 	}
 	flusher.Flush()

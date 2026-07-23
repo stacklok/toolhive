@@ -251,7 +251,7 @@ operator-injected values only. Violations surface as terminal status conditions
 | `THV_UNTRUSTED_BROKER_IMAGE` | `ghcr.io/stacklok/toolhive/egressbroker:v0.17.0` | broker sidecar image override |
 | `THV_UNTRUSTED_SIDECAR_CPU` / `THV_UNTRUSTED_SIDECAR_MEM` | `1.0` | multiplier on envoy/broker sidecar requests+limits (must be in (0, 100]) |
 
-Every tunable fails startup on an unparseable/zero/negative value. Image
+Every tunable fails startup on an unparsable/zero/negative value. Image
 overrides tagged `:latest` are rejected outright; non-digest-pinned overrides
 are honored with a loud warning.
 

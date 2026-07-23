@@ -33,7 +33,7 @@ import (
 type AuthorizationServer struct {
 	envoyauth.UnimplementedAuthorizationServer
 	injector *CredentialInjector
-	audit    AuditLogger // nil: deny events from unparseable requests are not audited
+	audit    AuditLogger // nil: deny events from unparsable requests are not audited
 	metrics  *BrokerMetrics
 	identity PodIdentity
 	podName  string
@@ -48,7 +48,7 @@ func NewAuthorizationServer(injector *CredentialInjector) (*AuthorizationServer,
 }
 
 // WithObservability attaches the audit/metrics sinks used for Check-level
-// denials that never reach the injector (unparseable destination).
+// denials that never reach the injector (unparsable destination).
 func (s *AuthorizationServer) WithObservability(
 	audit AuditLogger, metrics *BrokerMetrics, identity PodIdentity, podName string,
 ) *AuthorizationServer {
@@ -63,7 +63,7 @@ func (s *AuthorizationServer) WithObservability(
 func (s *AuthorizationServer) Check(ctx context.Context, req *envoyauth.CheckRequest) (*envoyauth.CheckResponse, error) {
 	dest, err := destinationFromCheckRequest(req)
 	if err != nil {
-		slog.DebugContext(ctx, "egressbroker: denying request with unparseable destination", "error", err)
+		slog.DebugContext(ctx, "egressbroker: denying request with unparsable destination", "error", err)
 		if s.audit != nil {
 			s.audit.Deny(ctx, DenyEvent{
 				InjectEvent: AuditEvent(s.identity, s.podName, Destination{}, ""),
@@ -71,7 +71,7 @@ func (s *AuthorizationServer) Check(ctx context.Context, req *envoyauth.CheckReq
 			})
 		}
 		s.metrics.RecordDenial(ctx, s.identity.MCPServer, "", DenyReasonMalformed)
-		return deniedResponse(codes.InvalidArgument, "unparseable destination"), nil
+		return deniedResponse(codes.InvalidArgument, "unparsable destination"), nil
 	}
 	requestID := requestIDFromCheckRequest(req)
 	decision := s.injector.Evaluate(ctx, dest, requestID)

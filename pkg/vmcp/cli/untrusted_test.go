@@ -113,7 +113,7 @@ func TestResolveTokenStoreConfig(t *testing.T) {
 }
 
 // TestResolveUntrustedTunables pins the Wave-5 platform knobs: defaults when
-// unset, overrides honored, and startup-fatal on unparseable/zero/negative
+// unset, overrides honored, and startup-fatal on unparsable/zero/negative
 // values. t.Setenv serializes subtests (no t.Parallel).
 //
 //nolint:paralleltest // t.Setenv modifies the process environment.
@@ -177,17 +177,17 @@ func TestResolveUntrustedTunables(t *testing.T) {
 			name string
 			env  map[string]string
 		}{
-			{"unparseable idle TTL", map[string]string{envUntrustedIdleTTL: "not-a-duration"}},
+			{"unparsable idle TTL", map[string]string{envUntrustedIdleTTL: "not-a-duration"}},
 			{"zero idle TTL", map[string]string{envUntrustedIdleTTL: "0s"}},
 			{"negative readiness timeout", map[string]string{envUntrustedReadinessTimeout: "-5s"}},
 			{"zero per-user quota", map[string]string{envUntrustedPerUserQuota: "0"}},
 			{"negative per-server cap", map[string]string{envUntrustedPerServerCap: "-3"}},
-			{"unparseable per-server cap", map[string]string{envUntrustedPerServerCap: "abc"}},
+			{"unparsable per-server cap", map[string]string{envUntrustedPerServerCap: "abc"}},
 			{"zero global cap ratio", map[string]string{envUntrustedGlobalCapRatio: "0"}},
 			{"negative global cap ratio", map[string]string{envUntrustedGlobalCapRatio: "-0.5"}},
 			{"NaN global cap ratio", map[string]string{envUntrustedGlobalCapRatio: "NaN"}},
 			{"negative sidecar cpu", map[string]string{envUntrustedSidecarCPU: "-1"}},
-			{"unparseable sidecar mem", map[string]string{envUntrustedSidecarMem: "lots"}},
+			{"unparsable sidecar mem", map[string]string{envUntrustedSidecarMem: "lots"}},
 			{"NaN sidecar cpu", map[string]string{envUntrustedSidecarCPU: "NaN"}},
 			{"+Inf sidecar mem", map[string]string{envUntrustedSidecarMem: "+Inf"}},
 			{"-Inf sidecar cpu", map[string]string{envUntrustedSidecarCPU: "-Inf"}},

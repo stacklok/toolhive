@@ -58,7 +58,7 @@ func ParseIPAllowlist(entries []string) (*IPAllowlist, error) {
 }
 
 // Allows reports whether addr (a host:port or bare IP dial target) resolves
-// inside the allowlist. Fails closed: unparseable targets, and IPs outside
+// inside the allowlist. Fails closed: unparsable targets, and IPs outside
 // every prefix, are refused.
 func (a *IPAllowlist) Allows(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)

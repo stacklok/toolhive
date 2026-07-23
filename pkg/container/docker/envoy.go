@@ -509,8 +509,16 @@ func buildAllowlistRBAC(spec proxySpec) *envoyHTTPRBAC {
 //   - spec.Permissions.Outbound is nil
 //
 // InsecureAllowAll produces a single wildcard policy. Each AllowHost entry
-// becomes a policy matching the :authority header via hostMatchRegex, which
-// mirrors Squid's dstdomain semantics (see hostMatchRegex for the syntax).
+// becomes a policy matching the :authority header via hostMatchRegex (Squid
+// dstdomain semantics). When AllowPort is also set, each host policy AND-s a
+// port-suffix permission so that host AND port must both match — mirroring
+// Squid's "allowed_ports AND allowed_dsts" combination.
+//
+// Known divergence from Squid: plain-HTTP requests omit the port from
+// :authority (e.g. "example.com" not "example.com:80"). A port-suffix matcher
+// for ":80" will not match the portless authority, so AllowPort:[80] with plain
+// HTTP is more restrictive than Squid's allowed_ports ACL. This is fail-closed
+// (over-blocks) rather than a bypass.
 //
 // When spec.AllowDockerGateway is set, an explicit ALLOW policy for the gateway
 // is added: omitting the deny filter alone is not enough, because the allowlist
@@ -539,22 +547,117 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 		}
 		return policies
 	}
-	for _, host := range out.AllowHost {
-		policies[host] = envoyRBACPolicy{
-			Permissions: []envoyPermission{
-				{
-					Header: &envoyHeaderMatcher{
-						Name: ":authority",
-						StringMatch: &envoyStringMatch{
-							SafeRegex: &envoySafeRegex{Regex: hostMatchRegex(host)},
-						},
-					},
+	if len(out.AllowHost) == 0 && len(out.AllowPort) > 0 {
+		// AllowPort only — any host, but only on the listed ports.
+		// Use a single regex so both the explicit-port ("host:80") and the
+		// bare-hostname ("host", implying port 80) forms are handled correctly.
+		policies["any-host-allowed-ports"] = envoyRBACPolicy{
+			Permissions: []envoyPermission{{
+				Header: &envoyHeaderMatcher{
+					Name:        ":authority",
+					StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: anyHostPortRegex(out.AllowPort)}},
 				},
-			},
+			}},
+			Principals: []envoyPrincipal{{Any: true}},
+		}
+		return policies
+	}
+
+	for _, host := range out.AllowHost {
+		var regex string
+		if len(out.AllowPort) > 0 {
+			// AllowHost + AllowPort: build a single regex that encodes both the
+			// host pattern and the allowed ports. Using a combined regex rather
+			// than separate AND-d permissions means plain-HTTP requests (where
+			// :authority omits the default port 80) are handled correctly — a
+			// bare "example.com" is permitted when port 80 is in the list.
+			regex = hostPortMatchRegex(host, out.AllowPort)
+		} else {
+			// AllowHost only — any port permitted.
+			regex = hostMatchRegex(host)
+		}
+		policies[host] = envoyRBACPolicy{
+			Permissions: []envoyPermission{{
+				Header: &envoyHeaderMatcher{
+					Name:        ":authority",
+					StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: regex}},
+				},
+			}},
 			Principals: []envoyPrincipal{{Any: true}},
 		}
 	}
 	return policies
+}
+
+// portGroupRegex builds the ":(?:port1|port2|…)" alternation for a list of
+// allowed ports. Returns (group, includes80) where includes80 indicates whether
+// port 80 is present (caller uses this to decide whether the port suffix is
+// optional). Shared by hostPortMatchRegex and anyHostPortRegex.
+func portGroupRegex(ports []int) (group string, includes80 bool) {
+	alts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		alts = append(alts, strconv.Itoa(p))
+		if p == 80 {
+			includes80 = true
+		}
+	}
+	return ":(?:" + strings.Join(alts, "|") + ")", includes80
+}
+
+// hostBasePattern returns the escaped, case-insensitive host portion of an
+// :authority regex — without any trailing port group. It mirrors hostMatchRegex
+// semantics: leading dot / *. = subdomain wildcard, optional trailing dot.
+// Shared by hostPortMatchRegex and hostMatchRegex.
+func hostBasePattern(host string) string {
+	subdomains := false
+	switch {
+	case strings.HasPrefix(host, "*."):
+		host = host[2:]
+		subdomains = true
+	case strings.HasPrefix(host, "."):
+		host = host[1:]
+		subdomains = true
+	}
+	p := regexp.QuoteMeta(host)
+	if subdomains {
+		p = `(.*\.)?` + p
+	}
+	return p
+}
+
+// hostPortMatchRegex builds a single anchored RE2 pattern that encodes both a
+// host allowlist entry and a port allowlist, so that AllowHost+AllowPort can be
+// expressed as one safe_regex permission rather than AND-ing two separate matchers.
+//
+// Port 80 is treated as the HTTP default: when 80 is in the ports list the port
+// suffix is optional, so a bare "example.com" authority (plain HTTP) is permitted
+// alongside "example.com:80". For all other ports the port suffix is required.
+//
+// The host portion mirrors hostMatchRegex semantics (leading dot / *. = subdomain
+// wildcard, case-insensitive, optional trailing dot, no port in the base pattern).
+func hostPortMatchRegex(host string, ports []int) string {
+	portGroup, includes80 := portGroupRegex(ports)
+	hostPattern := hostBasePattern(host)
+	if includes80 {
+		// Port is optional: bare "example.com" counts as port 80.
+		return `(?i)` + hostPattern + `\.?(` + portGroup + `)?`
+	}
+	// Port is required: bare hostname is not accepted.
+	return `(?i)` + hostPattern + `\.?` + portGroup
+}
+
+// anyHostPortRegex builds a regex matching any hostname on the given ports.
+// When port 80 is in the list the port suffix is optional (bare hostname implies
+// port 80 for plain HTTP). For other ports the port suffix is required.
+//
+// [^:]+ matches any hostname without an explicit port; IPv6 bracket addresses
+// (which contain colons) are outside the supported scope for this proxy backend.
+func anyHostPortRegex(ports []int) string {
+	portGroup, includes80 := portGroupRegex(ports)
+	if includes80 {
+		return `(?i)[^:]+(` + portGroup + `)?`
+	}
+	return `(?i)[^:]+` + portGroup
 }
 
 // hostMatchRegex builds an anchored, case-insensitive RE2 pattern that matches
@@ -569,20 +672,7 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 // The domain is regex-escaped so dots are literal, and the pattern is anchored
 // by Envoy so it cannot match "example.com.attacker.com".
 func hostMatchRegex(host string) string {
-	subdomains := false
-	switch {
-	case strings.HasPrefix(host, "*."):
-		host = host[2:]
-		subdomains = true
-	case strings.HasPrefix(host, "."):
-		host = host[1:]
-		subdomains = true
-	}
-	pattern := regexp.QuoteMeta(host)
-	if subdomains {
-		// Optional "sub." prefix at any depth, plus the apex itself.
-		pattern = `(.*\.)?` + pattern
-	}
+	pattern := hostBasePattern(host)
 	// (?i) case-insensitive (hostnames are); \.? tolerates a trailing-dot FQDN
 	// ("host.docker.internal." resolves identically and would otherwise bypass a
 	// deny); (:[0-9]+)? optional port.
@@ -616,8 +706,11 @@ func buildEgressCluster() envoyCluster {
 // localhost-only restriction; the container-side address must be 0.0.0.0 or
 // Docker's bridge forwarding cannot deliver traffic to the listener.
 //
-// When spec.Permissions.Inbound.AllowHost is set the virtual host domain list
-// is restricted to those entries; otherwise a wildcard domain ("*") is used.
+// The virtual host domain is always "*". Inbound host filtering is enforced
+// by the egress RBAC `:authority` matcher (hostMatchRegex), not the ingress
+// virtual host list — the transparent proxy sends "127.0.0.1:<port>" as the
+// Host header (port included), which would not match bare hostnames in a
+// domain list.
 func buildIngressListener(spec proxySpec, hostPort int) envoyListener {
 	domains := ingressDomains(spec)
 
@@ -783,6 +876,9 @@ func (*envoyProxy) SetupEgress(_ context.Context, spec proxySpec) (egressResult,
 // STRICT_DNS upstream cluster resolves the MCP hostname on the first probe,
 // avoiding the Linux Docker Engine readiness failure described in #5922.
 func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressResult) (int, error) {
+	// The container is named <name>-egress (not <name>-proxy or similar) to
+	// preserve parity with the Squid backend: addEgressEnvVars and the suffix-
+	// based cleanup loop both key off this name.
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
 
 	bootstrap := envoyBootstrap{

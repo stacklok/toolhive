@@ -16,6 +16,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// filteredToolNotFoundMessage is the generic message returned to a client
+// that called a tool blocked by the tool filter. It deliberately matches what
+// a client would see for a tool that doesn't exist at all: see the NOTE above
+// the *toolCallFilter case in NewToolCallMappingMiddleware for why a filtered
+// tool must not be distinguishable from a nonexistent one.
+const filteredToolNotFoundMessage = "tool not found"
+
 var errToolNameNotFound = errors.New("tool name not found")
 var errBug = errors.New("there's a bug")
 var errKeepBuffering = errors.New("keep buffering")
@@ -275,9 +282,22 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 				// Unfortunately, implementing this behaviour is not trivial and requires
 				// session management, as the SSE stream is managed by the proxy in an entirely
 				// different thread of execution. As a consequence, the best thing we can
-				// do that is still compliant with the spec is to return a 400 Bad Request
-				// to the client.
+				// do that is still compliant with the spec is to return a JSON-RPC error
+				// for this call, over HTTP 200, that looks the same as calling a tool that
+				// doesn't exist (see filteredToolNotFoundMessage above).
+				//
+				// A client that only accepts an event stream (the legacy HTTP+SSE
+				// transport, whose real response is delivered on a separate stream we
+				// don't control from this middleware) can't be answered this way: the
+				// body written here IS the only response this call gets, and it must be
+				// something other than a stray JSON blob on a connection the client
+				// expects to be text/event-stream. So that path keeps the 400, same as
+				// the session-management limitation described above.
 				case *toolCallFilter:
+					if clientAcceptsJSON(r) {
+						writeFilteredToolCallError(w, toolCallRequest.ID)
+						return
+					}
 					w.WriteHeader(http.StatusBadRequest)
 					return
 
@@ -298,7 +318,7 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 					r.ContentLength = int64(len(bodyBytes))
 
 				// According to the current version of the MCP spec at
-				// https://modelcontextprotocol.io/specification/2025-06-18/schema#calltoolrequest
+				// https://modelcontextprotocol.io/specification/2025-11-25/schema#calltoolrequest
 				// this case can only happen if the request is malformed. The proxied MCP
 				// server should be able to process the request, but since we detect it here
 				// we short-circuit returning an error.
@@ -318,6 +338,73 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 			next.ServeHTTP(w, r)
 		})
 	}, nil
+}
+
+// clientAcceptsJSON reports whether r's Accept header allows an
+// application/json response. An empty/absent header is treated as
+// accepting JSON, matching the common case of a client that doesn't bother
+// to negotiate. Each comma-separated entry's media-type token (i.e.
+// everything before any ";param=..." qualifier) is compared case-
+// insensitively against "application/json", the type wildcard
+// "application/*", and the full wildcard "*/*". Quality values (";q=") are
+// not honored: a token present with any q-value counts as accepted.
+func clientAcceptsJSON(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return true
+	}
+
+	for _, entry := range strings.Split(accept, ",") {
+		mediaType := strings.TrimSpace(strings.Split(entry, ";")[0])
+		if strings.EqualFold(mediaType, "application/json") ||
+			strings.EqualFold(mediaType, "application/*") ||
+			mediaType == "*/*" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// writeFilteredToolCallError writes a JSON-RPC error response, over HTTP 200,
+// for a tools/call request blocked by the tool filter. The error message is
+// the generic filteredToolNotFoundMessage: see the NOTE in NewToolCallMappingMiddleware
+// for why a filtered tool must look the same as one that doesn't exist.
+//
+// HTTP 200 (not 400) is deliberate: under MCP streamable HTTP, a validly
+// received JSON-RPC request that fails at the application level rides back
+// in a 200 response carrying a JSON-RPC error object, mirroring how
+// WriteClassificationError's peers (e.g. writeRateLimited) shape their body,
+// modulo status code.
+func writeFilteredToolCallError(w http.ResponseWriter, id any) {
+	body := filteredToolCallErrorBody(id)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
+	_, _ = w.Write(body)
+}
+
+// filteredToolCallErrorBody renders the JSON-RPC error body for a filtered
+// tool call, modeled on classificationErrorBody: the body is marshaled first
+// (with a hand-crafted fallback on marshal failure) so the caller only writes
+// headers/status once a valid body is ready.
+func filteredToolCallErrorBody(id any) []byte {
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"error": map[string]any{
+			"code":    CodeInvalidParams,
+			"message": filteredToolNotFoundMessage,
+		},
+		"id": id,
+	}
+
+	body, err := json.Marshal(resp)
+	if err != nil {
+		// This should never happen with simple map types, but return a
+		// hand-crafted fallback to guarantee a valid JSON-RPC error.
+		return []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"tool not found"},"id":null}`)
+	}
+	return body
 }
 
 // toolFilterWriter wraps http.ResponseWriter to capture and process SSE responses

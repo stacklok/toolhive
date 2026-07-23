@@ -37,12 +37,20 @@ type serverStream struct {
 // streamable_proxy.go) own translating a registered stream's messages into
 // wire frames.
 //
-// Forward-compatibility seam: the 2026-07-28 (Modern) revision's
+// Forward-compatibility note: the 2026-07-28 (Modern) revision's
 // "subscriptions/listen" method (see mcp.MCPVersionModern in
-// pkg/mcp/revision.go) is expected to be served by a future POST handler that
-// keeps its response stream open and registers with this SAME registry,
-// rather than introducing a second fan-out mechanism. Keep this type free of
-// HTTP/GET-specific assumptions so that reuse is possible without a rewrite.
+// pkg/mcp/revision.go) is a reasonable candidate to fan out through this SAME
+// decoupled registry rather than inventing a second mechanism, but it is NOT
+// a drop-in reuse. Per the draft spec, a future Modern handler will need real
+// adaptation on top of what is here today: "subscriptions/listen" is a
+// long-lived POST (not a GET), Modern has no sessions so streams must be
+// re-keyed per-subscription-id rather than per session ID, delivery requires
+// per-notification-type AND per-URI opt-in filtering (not blanket fan-out),
+// an initial notifications/subscriptions/acknowledged must be sent, and
+// deliveries must be tagged with io.modelcontextprotocol/subscriptionId. Keep
+// this type free of HTTP/GET-specific assumptions so that adaptation, when it
+// happens, does not also require a rewrite of the fan-out primitives
+// themselves.
 //
 // All fields are guarded by mu; do not add another synchronization primitive
 // over streams (see the "one synchronization primitive per data structure"
@@ -193,4 +201,46 @@ func (r *serverStreamRegistry) closeAll() {
 		close(s.stop)
 	}
 	r.streams = make(map[string]*serverStream)
+}
+
+// closeStream signals the single stream currently registered for routeKey (a
+// session ID) to stop, mirroring closeAll's single-close discipline but
+// scoped to one session: it closes stop (never data -- see serverStream's
+// doc comment) exactly once and removes routeKey's entry, so the stream's
+// consumer (handleGet) observes the closed stop channel and returns instead
+// of surviving until its underlying socket happens to close on its own (see
+// handleDelete and reapServerStreams, and FIX 2 in #5744's review). Unlike
+// deregister, this does not take an identity parameter: callers here (a
+// session teardown path) always want to evict WHATEVER stream is currently
+// registered for routeKey, regardless of which register call produced it --
+// there is no "stale handler" case to guard against as there is in
+// register's eviction path. It reports whether a stream was found and
+// closed, so callers can distinguish "nothing to tear down" from "torn down".
+func (r *serverStreamRegistry) closeStream(routeKey string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	s, ok := r.streams[routeKey]
+	if !ok {
+		return false
+	}
+	close(s.stop)
+	delete(r.streams, routeKey)
+	return true
+}
+
+// streamKeys returns a snapshot of every session ID that currently has a
+// registered stream. Used by reapServerStreams to find candidate streams
+// whose owning session may no longer be active, without holding mu while
+// resolving each candidate's liveness (see reapServerStreams's doc comment
+// for why that matters).
+func (r *serverStreamRegistry) streamKeys() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keys := make([]string, 0, len(r.streams))
+	for k := range r.streams {
+		keys = append(keys, k)
+	}
+	return keys
 }

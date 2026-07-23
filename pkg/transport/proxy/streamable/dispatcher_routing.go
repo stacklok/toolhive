@@ -88,12 +88,16 @@ func (r *sessionRouter) dropProgressToken(ptGlobal string) {
 }
 
 // addSubscription records sess as a subscriber of uri and reports whether
-// sess is the FIRST subscriber currently recorded for uri. The caller
-// (streamable_proxy.go's resources/subscribe handling) uses firstForURI to
-// decide whether to forward the subscribe upstream: once any session is
-// subscribed to uri, the shared backend is already sending updates for it, so
-// a second (or third...) subscribe for the same uri is served locally without
-// another upstream call.
+// sess is the FIRST subscriber currently recorded for uri.
+//
+// The forward-vs-dedup decision is NOT driven by this return value: to record
+// a subscription only after the upstream subscribe succeeds (see
+// interceptSubscribe), the caller first peeks subscribersOf(uri) to decide
+// whether an upstream call is needed, forwards, and only then calls
+// addSubscription on success. Once any session is subscribed to uri the shared
+// backend is already sending updates for it, so a later subscribe for the same
+// uri is served locally without another upstream call. firstForURI is retained
+// for tests/observability.
 func (r *sessionRouter) addSubscription(uri, sess string) (firstForURI bool) {
 	r.subMu.Lock()
 	defer r.subMu.Unlock()

@@ -591,13 +591,37 @@ Modern, or Legacy sessionless -- has nothing durable to track, so it always
 forwards upstream unmodified). The interception happens in `handlePost`
 *after* `applyMiddlewares`/authz has admitted the request, so an
 authorization-denied subscribe is never recorded. A `resources/subscribe` for
-a `uri` with no existing subscriber is forwarded upstream as normal; a
-`resources/subscribe` for a `uri` that already has a subscriber is answered
-with a locally synthesized success and never reaches the backend, avoiding
-redundant upstream subscribe calls. Symmetrically, `resources/unsubscribe`
-only reaches the backend once the **last** subscriber for a `uri` leaves.
-`notifications/resources/updated` is then delivered only to that `uri`'s
-current subscribers' standalone GET streams (`serverStreams.deliverToMany`).
+a `uri` with no existing subscriber is forwarded upstream (`interceptSubscribe`,
+via `doRequest`, under `uriLocks` for that `uri`), and is recorded in the
+subscription table **only if that upstream call succeeds**: a backend
+rejection, error, or timeout is returned to the client as-is and leaves no
+trace in the subscription table, so a later session's subscribe for the same
+`uri` is free to try again upstream rather than being dedup-served a
+synthesized success for a subscription the backend never actually granted. A
+`resources/subscribe` for a `uri` that already has a recorded subscriber is
+answered with a locally synthesized success and never reaches the backend at
+all, avoiding redundant upstream subscribe calls -- this dedup is safe
+specifically because the entry it is deduping against is known to have
+succeeded upstream. Symmetrically, `resources/unsubscribe` only reaches the
+backend once the **last** subscriber for a `uri` leaves. `notifications/resources/updated`
+is then delivered only to that `uri`'s current subscribers' standalone GET
+streams (`serverStreams.deliverToMany`).
+
+**Trust-boundary note.** Because identical-`uri` subscriptions are ref-counted
+down to a single upstream `resources/subscribe`, a backend that performs its
+*own* per-resource access control inside its subscribe handler only ever sees
+and evaluates the **first** subscriber for a given `uri` -- sessions 2..N are
+served a synthesized success without the backend's handler ever running for
+them. ToolHive's own per-session middleware/authz still runs in front of
+*every* subscribe attempt regardless of dedup (see the authz-non-bypass note
+above), so this is not a bypass of ToolHive's own controls. It is a
+characteristic of the shared-backend proxy design worth calling out
+explicitly: any authorization a backend implements *inside its own
+subscribe handler*, keyed on the resource `uri`, is not re-invoked for the
+2nd..Nth subscriber of that `uri`. Deployments relying on backend-side,
+per-resource access control for `resources/subscribe` should account for this
+when sharing one backend across sessions with different resource
+entitlements.
 
 **Logging.** `logging/setLevel` is intercepted the same way: the client's
 requested level is recorded per-session, and if it changes the **maximum**
@@ -656,11 +680,17 @@ path for server->client messages.
 **Forward-compatibility note**: the 2026-07-28 (Modern) MCP revision (see
 `mcp.MCPVersionModern` and `pkg/mcp/revision.go`) introduces
 `subscriptions/listen`, a POST method whose response stream stays open for
-server-pushed subscription events. A future Modern handler for this method is
-expected to register with the same `serverStreamRegistry` rather than
-introduce a second fan-out mechanism; `dispatcher_streams.go` is intentionally
-kept transport-agnostic (no HTTP types) to make that reuse possible without a
-rewrite.
+server-pushed subscription events. `serverStreamRegistry` is a reasonable
+decoupled fan-out seam to build a future Modern handler for this method on top
+of, but it is **not** a drop-in reuse. Per the draft spec, real adaptation is
+required: `subscriptions/listen` is a long-lived POST, not a GET; Modern has no
+sessions, so streams must be keyed per-subscription-id rather than per session
+ID; delivery requires per-notification-type AND per-URI opt-in filtering, not
+blanket fan-out; an initial `notifications/subscriptions/acknowledged` must be
+sent; and deliveries must be tagged with `io.modelcontextprotocol/subscriptionId`.
+`dispatcher_streams.go` is intentionally kept transport-agnostic (no HTTP
+types) so that this adaptation, when it happens, does not also require
+rewriting the underlying fan-out primitives.
 
 ## Error Handling
 

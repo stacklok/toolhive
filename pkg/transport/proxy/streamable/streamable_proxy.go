@@ -275,8 +275,9 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	// Route container responses to matching waiter channels
 	go p.dispatchResponses()
 
-	// Periodically bound routing's subscription/log-level maps to active
-	// sessions (see reapRoutingState's doc comment for the isActive tradeoff).
+	// Periodically bound routing's subscription/log-level maps, and
+	// serverStreams' standalone GET streams, to active sessions (see
+	// reapRoutingState's doc comment for the isActive tradeoff).
 	go p.reapRoutingState()
 
 	go func() {
@@ -478,6 +479,16 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 	// not worth an extra upstream round-trip on every DELETE.
 	p.routing.purgeSession(sessID)
 
+	// Tear down the session's standalone GET SSE stream (if any), so its
+	// handler goroutine (and the list_changed/subscription broadcasts it would
+	// otherwise keep receiving) stops immediately instead of surviving until
+	// the client eventually closes the underlying socket on its own (see FIX 2
+	// in #5744's review). Ordering matches the durable-before-in-memory style
+	// rule: the durable session delete and routing purge above have already
+	// happened, so nothing durable or in routing state can reference this
+	// session by the time its stream is closed.
+	p.serverStreams.closeStream(sessID)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -537,30 +548,36 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serialize the resources/subscribe|unsubscribe ref-count decision below
-	// with the upstream forward it may trigger, per uri, so a concurrent
-	// last-unsubscribe and first-subscribe for the SAME uri from different
-	// sessions can never reach the backend out of order (see uriLocks's doc
-	// comment and FIX 1 in #5744's review). Acquired BEFORE
-	// interceptSessionScopedRequest's decision and released (via defer, so
-	// every return path -- including handleSingleRequest/
-	// handleSingleRequestSSE's error paths -- is covered) only once this
-	// request's response has been fully written, whether that is the
-	// synthesized-locally path below or a real upstream forward further down.
-	// A different uri, or any non-subscription request, is never blocked by
-	// this: see resourceSubscriptionURI.
-	if uri, ok := resourceSubscriptionURI(req); ok {
-		unlock := p.uriLocks.lock(uri)
-		defer unlock()
-	}
-
 	// Intercept resources/subscribe, resources/unsubscribe, and
 	// logging/setLevel for session-bearing (Legacy) requests, AFTER
 	// applyMiddlewares/authz has admitted req (Start wraps handleStreamableRequest
 	// in the middleware chain, and handlePost is only ever reached through it),
 	// so an authz-denied request never gets recorded in routing.
-	if msg, handled := p.interceptSessionScopedRequest(sessID, req); handled {
-		writeInterceptedResponse(w, r, msg, sessID, setSessionHeader)
+	//
+	// For resources/subscribe|unsubscribe, uriLocks serializes the ref-count
+	// decision made inside interceptSessionScopedRequest WITH the upstream
+	// forward it may perform itself (see interceptSubscribe/
+	// interceptUnsubscribe), per uri, so a concurrent last-unsubscribe and
+	// first-subscribe for the SAME uri from different sessions can never reach
+	// the backend out of order (see uriLocks's doc comment and FIX 1 in
+	// #5744's review). The lock is scoped to ONLY this decision+forward+record
+	// -- acquired immediately before interceptSessionScopedRequest and released
+	// immediately after it returns, BEFORE writeInterceptedResponse or any
+	// client-facing streaming -- so a slow or SSE-streamed response never
+	// head-of-line-blocks a different session's request for the SAME uri (see
+	// FIX 3 in #5744's review). A different uri, or any non-subscription
+	// request, is never blocked by this at all: see resourceSubscriptionURI.
+	interceptedMsg, handled := func() (jsonrpc2.Message, bool) {
+		uri, ok := resourceSubscriptionURI(req)
+		if !ok {
+			return p.interceptSessionScopedRequest(ctx, sessID, req)
+		}
+		unlock := p.uriLocks.lock(uri)
+		defer unlock()
+		return p.interceptSessionScopedRequest(ctx, sessID, req)
+	}()
+	if handled {
+		writeInterceptedResponse(w, r, interceptedMsg, sessID, setSessionHeader)
 		return
 	}
 
@@ -1050,10 +1067,10 @@ func (p *HTTPProxy) resolveSessionForRequest(
 
 // resourceSubscriptionURI returns req's uri param and true if req is a
 // resources/subscribe or resources/unsubscribe request carrying a non-empty
-// uri -- the only requests whose ref-count decision (see
-// interceptSessionScopedRequest and sessionRouter.addSubscription/
-// removeSubscription) and upstream forward handlePost must serialize per-uri
-// via uriLocks. Any other request -- including logging/setLevel (whose
+// uri -- the only requests whose ref-count decision and upstream forward (see
+// interceptSubscribe/interceptUnsubscribe, called from
+// interceptSessionScopedRequest) handlePost must serialize per-uri via
+// uriLocks. Any other request -- including logging/setLevel (whose
 // reconciliation is best-effort-ordered, see reconcileUpstreamLogLevel) and a
 // subscribe/unsubscribe with no/empty uri (which interceptSessionScopedRequest
 // itself no-ops on) -- returns ("", false), so handlePost skips locking
@@ -1080,10 +1097,14 @@ func resourceSubscriptionURI(req *jsonrpc2.Request) (string, bool) {
 // routing -- see the "authz non-bypass" security test.
 //
 // For resources/subscribe|unsubscribe, the caller (handlePost) holds uriLocks
-// for req's uri around this call and the upstream forward it may trigger, so
-// the ref-count decision made here and that forward are atomic with respect
-// to any other session's concurrent (un)subscribe for the SAME uri -- see
-// resourceSubscriptionURI and FIX 1 in #5744's review.
+// for req's uri around this call, scoped to ONLY this call (see FIX 3 in
+// #5744's review): interceptSubscribe/interceptUnsubscribe perform their own
+// upstream round-trip (via p.doRequest, bounded by p.requestTimeout so the
+// lock is never held indefinitely) synchronously, INSIDE this call, rather
+// than reporting "forward it yourself" back to handlePost -- this is what
+// lets the ref-count decision, the forward, and recording the subscription be
+// atomic with respect to any other session's concurrent (un)subscribe for the
+// SAME uri (see resourceSubscriptionURI and FIX 1 in #5744's review).
 //
 // sessID identifies "a real session" (as opposed to a per-request routing
 // token minted for a Modern or Legacy-sessionless request, see
@@ -1091,16 +1112,17 @@ func resourceSubscriptionURI(req *jsonrpc2.Request) (string, bool) {
 // real sessions are ever stored there, so this single check both selects the
 // right requests AND naturally excludes ones with nothing durable to track.
 //
-// It returns (msg, true) when the caller should write msg to the client
-// WITHOUT forwarding req upstream at all: a synthesized success for a
-// non-first subscribe, a non-last unsubscribe, or any logging/setLevel
-// request (whose reconciled level, if any, is sent upstream separately -- see
-// reconcileUpstreamLogLevel). It returns (nil, false) when the caller must
-// proceed with the normal upstream request/response flow: the method isn't
-// one of the three above, the request isn't session-bearing, or it's the
-// first subscribe/last unsubscribe for its uri (which DOES need to reach the
-// backend).
-func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.Request) (jsonrpc2.Message, bool) {
+// It returns (msg, true) when the caller should write msg to the client and
+// nothing further needs to happen: msg may be a synthesized success (a
+// non-first subscribe, a non-last unsubscribe, or logging/setLevel), or the
+// real upstream response (success OR error) for a first subscribe/last
+// unsubscribe that this call forwarded itself. It returns (nil, false) only
+// when the method isn't one of the three above, or the request isn't
+// session-bearing -- in which case the caller must proceed with the normal
+// upstream request/response flow.
+func (p *HTTPProxy) interceptSessionScopedRequest(
+	ctx context.Context, sessID string, req *jsonrpc2.Request,
+) (jsonrpc2.Message, bool) {
 	if _, isSession := p.sessionManager.Get(sessID); !isSession {
 		return nil, false
 	}
@@ -1111,20 +1133,14 @@ func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.R
 		if !ok || uri == "" {
 			return nil, false
 		}
-		if first := p.routing.addSubscription(uri, sessID); first {
-			return nil, false
-		}
-		return synthesizeSuccessResponse(req.ID), true
+		return p.interceptSubscribe(ctx, sessID, uri, req), true
 
 	case methodResourcesUnsubscribe:
 		uri, ok := extractStringParam(req.Params, "uri")
 		if !ok || uri == "" {
 			return nil, false
 		}
-		if last := p.routing.removeSubscription(uri, sessID); last {
-			return nil, false
-		}
-		return synthesizeSuccessResponse(req.ID), true
+		return p.interceptUnsubscribe(ctx, sessID, uri, req), true
 
 	case string(sdkmcp.MethodSetLogLevel):
 		// Unlike resources/subscribe|unsubscribe, this decision is NOT ordered
@@ -1133,7 +1149,12 @@ func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.R
 		// resourceSubscriptionURI). Concurrent maxChanged transitions from
 		// different sessions may therefore reach the backend out of order; see
 		// reconcileUpstreamLogLevel's doc comment for why that is an accepted,
-		// harmless tradeoff for now.
+		// harmless tradeoff for now. The client's own synthesized success below
+		// is likewise a fire-and-forget, optimistic ack -- like subscribe's
+		// dedup path, it is served without waiting for reconcileUpstreamLogLevel
+		// to complete, which is intentional and low-stakes: notifications/message
+		// is unconditionally dropped (see routeNotification's SECURE-DROP), so
+		// there is no client-visible effect of the level change to get wrong.
 		level, _ := extractStringParam(req.Params, "level")
 		if maxChanged, newMax := p.routing.setLogLevel(sessID, logLevelRank(level)); maxChanged {
 			p.reconcileUpstreamLogLevel(logLevelName(newMax))
@@ -1143,6 +1164,111 @@ func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.R
 	default:
 		return nil, false
 	}
+}
+
+// interceptSubscribe handles a session-bearing resources/subscribe request
+// for uri, called from interceptSessionScopedRequest while the caller
+// (handlePost) holds uriLocks for uri. If uri already has at least one
+// recorded subscriber, the backend has already admitted the FIRST subscribe
+// and is sending updates for uri, so sess is simply recorded as an
+// additional subscriber and a synthesized success is returned WITHOUT another
+// upstream call -- dedup is safe here because the thing being deduped against
+// is a call that is known to have succeeded.
+//
+// Otherwise sess is (candidate) first subscriber: the request is forwarded
+// upstream via forwardUpstream, and sess is recorded as a subscriber ONLY if
+// that forward succeeds with a non-error response. If the backend errors,
+// times out, or the transport call itself fails, sess is NOT recorded and the
+// real failure is returned to the client -- recording on failure would leave
+// a phantom subscription entry that permanently starves every later
+// session's subscribe for the SAME uri (deduping it against an upstream
+// subscribe the backend never actually granted), and would violate the
+// "write durable(upstream) storage before updating in-memory state" style
+// rule. See FIX 1 in #5744's review.
+func (p *HTTPProxy) interceptSubscribe(ctx context.Context, sessID, uri string, req *jsonrpc2.Request) jsonrpc2.Message {
+	if len(p.routing.subscribersOf(uri)) > 0 {
+		p.routing.addSubscription(uri, sessID)
+		return synthesizeSuccessResponse(req.ID)
+	}
+
+	resp, err := p.forwardUpstream(ctx, sessID, req)
+	if err != nil {
+		return upstreamErrorResponse(req.ID, err)
+	}
+	if isErrorResponse(resp) {
+		// The backend rejected the first subscribe (e.g. resource not found):
+		// do not record. A later session's subscribe for the SAME uri must be
+		// free to try again upstream, not be dedup-served a fake success.
+		return resp
+	}
+	p.routing.addSubscription(uri, sessID)
+	return resp
+}
+
+// interceptUnsubscribe handles a session-bearing resources/unsubscribe
+// request for uri, called from interceptSessionScopedRequest while the
+// caller (handlePost) holds uriLocks for uri. sess is removed from uri's
+// recorded subscribers immediately, regardless of what happens next; the
+// request is forwarded upstream only if sess was the LAST recorded
+// subscriber (the backend should keep sending updates for uri as long as
+// anyone still wants them).
+//
+// Unlike subscribe, a failed/erroring upstream unsubscribe is not rolled
+// back: removeSubscription has already run, and there is no OTHER session to
+// re-attribute the subscription to even if we wanted to undo it. The worst
+// case is the backend keeps a subscription nobody is listening for anymore --
+// wasted upstream notifications that are silently dropped by
+// routeResourceUpdated finding no subscribers, not a correctness or security
+// issue -- so it is not worth the complexity of reversing removeSubscription
+// here.
+func (p *HTTPProxy) interceptUnsubscribe(ctx context.Context, sessID, uri string, req *jsonrpc2.Request) jsonrpc2.Message {
+	last := p.routing.removeSubscription(uri, sessID)
+	if !last {
+		return synthesizeSuccessResponse(req.ID)
+	}
+
+	resp, err := p.forwardUpstream(ctx, sessID, req)
+	if err != nil {
+		return upstreamErrorResponse(req.ID, err)
+	}
+	return resp
+}
+
+// forwardUpstream wraps ctx with p.requestTimeout and forwards req upstream
+// via doRequest, for interceptSubscribe/interceptUnsubscribe's synchronous
+// forward performed while still holding handlePost's per-uri uriLocks lock
+// for req's uri: the timeout bounds how long that lock can ever be held, so a
+// slow or unresponsive backend cannot indefinitely block other sessions'
+// resources/subscribe|unsubscribe requests for the SAME uri (see FIX 1 in
+// #5744's review).
+func (p *HTTPProxy) forwardUpstream(ctx context.Context, sessID string, req *jsonrpc2.Request) (jsonrpc2.Message, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
+	defer cancel()
+	return p.doRequest(ctx, sessID, req)
+}
+
+// isErrorResponse reports whether msg is a *jsonrpc2.Response carrying a
+// JSON-RPC error, used by interceptSubscribe to distinguish a successful
+// upstream resources/subscribe from one the backend rejected.
+func isErrorResponse(msg jsonrpc2.Message) bool {
+	resp, ok := msg.(*jsonrpc2.Response)
+	return ok && resp.Error != nil
+}
+
+// upstreamErrorResponse builds a JSON-RPC error response for id when the
+// upstream round-trip inside interceptSubscribe/interceptUnsubscribe itself
+// fails (timeout, proxy shutdown, or a transport-level send error, as opposed
+// to a JSON-RPC error the backend returned normally), mirroring the
+// timeout-vs-internal error code mapping writeSSEErrorEvent uses for the
+// normal request path.
+func upstreamErrorResponse(id jsonrpc2.ID, err error) jsonrpc2.Message {
+	var code int64 = -32603
+	msg := "Internal error"
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		code = -32000
+		msg = "Timeout"
+	}
+	return &jsonrpc2.Response{ID: id, Error: jsonrpc2.NewError(code, msg)}
 }
 
 // synthesizeSuccessResponse builds a locally-generated JSON-RPC success
@@ -1285,11 +1411,12 @@ func (p *HTTPProxy) reconcileUpstreamLogLevel(level string) {
 }
 
 // reapRoutingState periodically purges sessionRouter subscription and
-// log-level entries for sessions that are no longer active, bounding the
-// otherwise-unbounded growth of that state for a session whose owning client
-// disappears without ever sending DELETE (see handleDelete's purgeSession
-// call for the explicit-teardown path). It ticks at the same cadence as the
-// session manager's own cleanup routine (sessionTTL/2, see manager.go's
+// log-level entries, AND serverStreams' standalone GET streams, for sessions
+// that are no longer active, bounding the otherwise-unbounded growth/leakage
+// of that state for a session whose owning client disappears without ever
+// sending DELETE (see handleDelete's purgeSession/closeStream calls for the
+// explicit-teardown path). It ticks at the same cadence as the session
+// manager's own cleanup routine (sessionTTL/2, see manager.go's
 // cleanupRoutine), and exits when shutdownCh is closed.
 //
 // isActive is p.sessionManager.Get: the only session liveness check the
@@ -1319,8 +1446,38 @@ func (p *HTTPProxy) reapRoutingState() {
 		select {
 		case <-ticker.C:
 			p.routing.reap(isActive)
+			p.reapServerStreams(isActive)
 		case <-p.shutdownCh:
 			return
+		}
+	}
+}
+
+// reapServerStreams closes the standalone GET SSE stream (see
+// serverStreamRegistry.closeStream) for any session serverStreams currently
+// has registered that isActive no longer reports as live -- a session whose
+// owning client disappeared (crashed, or otherwise never sent DELETE) without
+// the proxy ever observing r.Context().Done() on its GET request. This mirrors
+// handleDelete's explicit p.serverStreams.closeStream(sessID) call for the
+// case where the client never disconnects and never calls DELETE either (see
+// FIX 2 in #5744's review).
+//
+// Liveness is resolved for every candidate stream key in a first pass with no
+// registry lock held, exactly like sessionRouter.reap's two-phase discipline:
+// isActive may perform I/O (e.g. a Redis-backed session.Manager), and running
+// it while holding serverStreams.mu would block every concurrent
+// broadcast/dispatchTo/deliverToMany/register/deregister call for the
+// (possibly slow) duration of every liveness check. closeStream itself only
+// ever takes the lock for the in-memory work of removing one already-decided
+// stale entry, never across isActive.
+func (p *HTTPProxy) reapServerStreams(isActive func(sess string) bool) {
+	for _, key := range p.serverStreams.streamKeys() {
+		if isActive(key) {
+			continue
+		}
+		if p.serverStreams.closeStream(key) {
+			//nolint:gosec // G706: session ID is server-minted, not user-controlled free text
+			slog.Debug("reaped standalone GET stream for inactive session", "session_id", key)
 		}
 	}
 }

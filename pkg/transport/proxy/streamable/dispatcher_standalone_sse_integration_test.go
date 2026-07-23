@@ -958,6 +958,95 @@ func TestPostSSE_SamplingRequestNeverReachesClientAndBackendGetsError(t *testing
 	assert.NotContains(t, got, "sampling/createMessage")
 }
 
+// TestPostSSE_FailedFirstSubscribeIsNotRecordedAndSecondSubscriberRetries is
+// the FIX 1 regression from #5744's review: interceptSubscribe used to record
+// a subscription BEFORE forwarding the FIRST resources/subscribe upstream, so
+// a backend rejection (or timeout) still left the uri's subscription table
+// entry in place -- every later session's subscribe for the SAME uri was then
+// dedup-served a synthesized success and never actually reached the backend,
+// permanently starving the uri of a real subscription.
+//
+// This proves all three parts of the fix: (a) the FIRST client whose backend
+// subscribe fails gets the real JSON-RPC error back, not a synthesized
+// success; (b) the routing table has NO subscriber recorded for the uri after
+// that failure; and (c) a SECOND client subscribing to the SAME uri actually
+// forwards upstream again (the backend's subscribe call count increments to
+// 2, proving it was not dedup-served) rather than being silently starved of a
+// real subscription.
+func TestPostSSE_FailedFirstSubscribeIsNotRecordedAndSecondSubscriberRetries(t *testing.T) {
+	t.Parallel()
+
+	const uri = "err-uri"
+
+	port := pickFreePort(t)
+	proxy, ctx := startProxyOnly(t, port)
+
+	var mu sync.Mutex
+	subscribeCalls := 0
+
+	go func() {
+		for {
+			select {
+			case msg := <-proxy.GetMessageChannel():
+				req, ok := msg.(*jsonrpc2.Request)
+				if !ok || !req.ID.IsValid() {
+					continue
+				}
+				if req.Method != "resources/subscribe" {
+					resp, _ := jsonrpc2.NewResponse(req.ID, map[string]any{}, nil)
+					_ = proxy.ForwardResponseToClients(ctx, resp)
+					continue
+				}
+
+				mu.Lock()
+				subscribeCalls++
+				callNum := subscribeCalls
+				mu.Unlock()
+
+				// The FIRST upstream resources/subscribe call fails (e.g. the
+				// resource does not exist); every subsequent call succeeds.
+				var resp *jsonrpc2.Response
+				if callNum == 1 {
+					resp = &jsonrpc2.Response{ID: req.ID, Error: jsonrpc2.NewError(-32002, "resource not found")}
+				} else {
+					resp, _ = jsonrpc2.NewResponse(req.ID, map[string]any{}, nil)
+				}
+				_ = proxy.ForwardResponseToClients(ctx, resp)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	sessA := establishSession(t, port)
+	sessB := establishSession(t, port)
+
+	// (a) sessA's subscribe gets the real backend error back.
+	subBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-a","method":"resources/subscribe","params":{"uri":%q}}`, uri)
+	respA, bodyA := postJSON(t, port, sessA, subBody)
+	assert.Equal(t, http.StatusOK, respA.StatusCode, "a JSON-RPC error is still an HTTP 200 envelope")
+	assert.Contains(t, string(bodyA), "resource not found", "the client must see the real backend error")
+	assert.Contains(t, string(bodyA), `"error"`)
+
+	// (b) the routing table must have NO subscriber recorded for uri.
+	assert.Empty(t, proxy.routing.subscribersOf(uri),
+		"a failed first subscribe must never be recorded in the routing table")
+
+	// (c) sessB's subscribe for the SAME uri must actually reach the backend
+	// again (call count 2), not be dedup-served a synthesized success.
+	subBodyB := fmt.Sprintf(`{"jsonrpc":"2.0","id":"sub-b","method":"resources/subscribe","params":{"uri":%q}}`, uri)
+	respB, bodyB := postJSON(t, port, sessB, subBodyB)
+	assert.Equal(t, http.StatusOK, respB.StatusCode)
+	assert.NotContains(t, string(bodyB), `"error"`, "sessB's subscribe should succeed against the backend")
+
+	mu.Lock()
+	assert.Equal(t, 2, subscribeCalls, "sessB's subscribe must actually forward upstream, not be deduped")
+	mu.Unlock()
+
+	assert.ElementsMatch(t, []string{sessB}, proxy.routing.subscribersOf(uri),
+		"only sessB (the successful subscriber) should be recorded")
+}
+
 // TestPostSSE_AuthzDeniedSubscribeNeverRecordedInRouting is the authz
 // non-bypass SECURITY regression: a resources/subscribe request blocked by
 // authorization middleware must NEVER be recorded in sessionRouter's
@@ -1006,7 +1095,11 @@ func TestPostSSE_AuthzDeniedSubscribeNeverRecordedInRouting(t *testing.T) {
 
 // TestHandleDelete_PurgesRoutingState verifies handleDelete purges a
 // session's subscription and log-level state from routing, alongside
-// deleting the session itself.
+// deleting the session itself, AND (FIX 2 in #5744's review) tears down the
+// session's standalone GET SSE stream: its handler goroutine must return
+// (ending the response from the server side) and the registry must no longer
+// retain an entry for the deleted session -- neither survives waiting for the
+// client to eventually close the underlying socket on its own.
 func TestHandleDelete_PurgesRoutingState(t *testing.T) {
 	t.Parallel()
 
@@ -1031,6 +1124,11 @@ func TestHandleDelete_PurgesRoutingState(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"sub-1","method":"resources/subscribe","params":{"uri":"uri1"}}`)
 	require.NotEmpty(t, proxy.routing.subscribersOf("uri1"), "subscription must be recorded before delete")
 
+	getResp, _ := openGETStream(ctx, t, port, sessID)
+	t.Cleanup(func() { _ = getResp.Body.Close() })
+	require.Eventually(t, func() bool { return proxy.serverStreams.streamCount() == 1 },
+		time.Second, 5*time.Millisecond, "GET stream was not registered")
+
 	delReq, err := http.NewRequest(http.MethodDelete, //nolint:noctx // test-only
 		fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint), nil)
 	require.NoError(t, err)
@@ -1041,6 +1139,53 @@ func TestHandleDelete_PurgesRoutingState(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode)
 
 	assert.Nil(t, proxy.routing.subscribersOf("uri1"), "subscription must be purged by handleDelete")
+
+	// The GET stream's handler goroutine must observe the closed stop channel
+	// and return, ending the response body from the server side (the client
+	// observes EOF) rather than staying open to keep receiving broadcasts.
+	getClosed := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, getResp.Body)
+		getClosed <- err
+	}()
+	select {
+	case err := <-getClosed:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("GET stream was not torn down by handleDelete")
+	}
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(),
+		"registry must no longer retain the deleted session's stream")
+}
+
+// TestReapServerStreams_ClosesStreamForInactiveSession is the FIX 2 reaper
+// regression from #5744's review: reapRoutingState used to leave
+// serverStreams entirely untouched, so a session whose owning client
+// disappeared without ever sending DELETE (and without the proxy observing
+// its GET request's context ending) would keep its standalone GET stream --
+// and the handler goroutine consuming it -- alive indefinitely. This verifies
+// reapServerStreams closes (and removes) the stream for a session isActive no
+// longer reports as live, while leaving a still-active session's stream
+// alone, using a real serverStreamRegistry and a stub isActive rather than
+// the production reapRoutingState goroutine's real timer (too slow to wait
+// out in a unit test).
+func TestReapServerStreams_ClosesStreamForInactiveSession(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
+	goneStream := proxy.serverStreams.register("gone-session")
+	proxy.serverStreams.register("still-here-session")
+
+	proxy.reapServerStreams(func(sess string) bool { return sess != "gone-session" })
+
+	assert.Equal(t, 1, proxy.serverStreams.streamCount(),
+		"only the inactive session's stream should be closed")
+	select {
+	case <-goneStream.stop:
+		// Expected: the reaper closed it.
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired session's stream was not closed by the reaper")
+	}
 }
 
 // TestSessionRouter_Reap_IntegratesWithProxy verifies the reaper wired into

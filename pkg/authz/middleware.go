@@ -13,8 +13,6 @@ import (
 	"net/http"
 	"strings"
 
-	"golang.org/x/exp/jsonrpc2"
-
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
@@ -124,34 +122,43 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
-// handleUnauthorized handles unauthorized requests.
-func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
-	// Create an error response
+// unauthorizedErrorBody renders a JSON-RPC 2.0 error body for an authorization
+// denial. Modeled on mcp.classificationErrorBody / filteredToolCallErrorBody:
+// marshal first (with a hand-crafted fallback) so callers only write headers
+// once a valid body is ready. Directly encoding *jsonrpc2.Response is wrong
+// here: that struct has no json tags / MarshalJSON, so encoding/json emits
+// capitalized keys and omits the mandatory "jsonrpc" field (#5950).
+func unauthorizedErrorBody(msgID any, err error) []byte {
 	errorMsg := "Unauthorized"
 	if err != nil {
 		errorMsg = err.Error()
 	}
 
-	// Create a JSON-RPC error response
-	id, err := mcp.ConvertToJSONRPC2ID(msgID)
-	if err != nil {
-		id = jsonrpc2.ID{} // Use empty ID if conversion fails
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"error": map[string]any{
+			"code":    mcp.JSONRPCCodeDenied,
+			"message": errorMsg,
+		},
+		"id": msgID,
 	}
-
-	errorResponse := &jsonrpc2.Response{
-		ID:    id,
-		Error: jsonrpc2.NewError(mcp.JSONRPCCodeDenied, errorMsg),
+	body, marshalErr := json.Marshal(resp)
+	if marshalErr != nil {
+		// This should never happen with simple map types, but return a
+		// hand-crafted fallback to guarantee a valid JSON-RPC error.
+		return []byte(`{"jsonrpc":"2.0","error":{"code":403,"message":"Unauthorized"},"id":null}`)
 	}
+	return body
+}
 
-	// Set the response headers
+// handleUnauthorized handles unauthorized requests.
+func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
+	body := unauthorizedErrorBody(msgID, err)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-
-	// Write the error response
-	if err := json.NewEncoder(w).Encode(errorResponse); err != nil {
-		// If we can't encode the error response, log it and return a simple error
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
+	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
+	_, _ = w.Write(body)
 }
 
 // Middleware creates an HTTP middleware that authorizes MCP requests.

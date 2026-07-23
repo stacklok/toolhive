@@ -1561,3 +1561,76 @@ func TestHandleToolsCall(t *testing.T) {
 		})
 	}
 }
+
+// TestUnauthorizedErrorBodyJSONRPCConformant guards #5950: authz denial bodies
+// must be valid JSON-RPC 2.0 (lowercase keys + mandatory "jsonrpc":"2.0").
+// encoding/json on *jsonrpc2.Response previously emitted Result/Error/ID.
+func TestUnauthorizedErrorBodyJSONRPCConformant(t *testing.T) {
+	t.Parallel()
+
+	body := unauthorizedErrorBody(float64(1), errors.New("unknown MCP method: server/discover (not configured for authorization)"))
+
+	// Wire-byte assertions: reject the pre-fix capitalized envelope.
+	raw := string(body)
+	assert.NotContains(t, raw, `"Result"`)
+	assert.NotContains(t, raw, `"Error"`)
+	assert.NotContains(t, raw, `"ID"`)
+	assert.Contains(t, raw, `"jsonrpc"`)
+	assert.Contains(t, raw, `"error"`)
+	assert.Contains(t, raw, `"id"`)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	assert.Equal(t, "2.0", parsed["jsonrpc"])
+	assert.EqualValues(t, 1, parsed["id"])
+
+	errObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, mcpparser.JSONRPCCodeDenied, errObj["code"])
+	assert.Contains(t, errObj["message"], "server/discover")
+	_, hasResult := parsed["result"]
+	assert.False(t, hasResult, "error responses must not include a result field")
+}
+
+// TestHandleUnauthorizedHTTPWireBytes exercises the product path for #5950:
+// unknown MCP method (server/discover) returns HTTP 403 with a conformant
+// JSON-RPC error body on the wire.
+func TestHandleUnauthorizedHTTPWireBytes(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	reqBody := []byte(`{"jsonrpc":"2.0","id":42,"method":"server/discover","params":{}}`)
+	req, err := http.NewRequest(http.MethodPost, "/mcp", bytes.NewBuffer(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123", Claims: jwt.MapClaims{"sub": "user123"}}}
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil)).ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	wire := rr.Body.Bytes()
+	t.Logf("wire bytes: %s", wire)
+
+	assert.NotContains(t, string(wire), `"Result"`)
+	assert.NotContains(t, string(wire), `"Error"`)
+	assert.NotContains(t, string(wire), `"ID"`)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(wire, &parsed))
+	assert.Equal(t, "2.0", parsed["jsonrpc"])
+	assert.EqualValues(t, 42, parsed["id"])
+	errObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, mcpparser.JSONRPCCodeDenied, errObj["code"])
+	assert.Contains(t, errObj["message"], "server/discover")
+}

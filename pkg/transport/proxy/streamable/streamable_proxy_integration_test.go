@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -88,23 +89,17 @@ func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 	assert.Equal(t, "req-123", responseData["id"])
 	assert.Equal(t, "operation complete", responseData["result"])
 
-	// Test batch request
+	// A batch request is rejected outright (see TestBatchRequestsRejected and
+	// #5745), not executed — batching was removed in MCP 2025-06-18.
 	batchJSON := `[{"jsonrpc": "2.0", "method": "test.batch", "id": "batch-1"}]`
 	resp2, err := http.Post(proxyURL, "application/json", bytes.NewReader([]byte(batchJSON)))
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp2.StatusCode)
-
-	var batchResponse []map[string]interface{}
-	err = json.NewDecoder(resp2.Body).Decode(&batchResponse)
+	assert.Equal(t, http.StatusBadRequest, resp2.StatusCode)
+	batchBody, err := io.ReadAll(resp2.Body)
 	require.NoError(t, err)
-
-	// Should have one response (notifications filtered out)
-	require.Len(t, batchResponse, 1)
-	assert.Equal(t, "2.0", batchResponse[0]["jsonrpc"])
-	assert.Equal(t, "batch-1", batchResponse[0]["id"])
-	assert.Equal(t, "operation complete", batchResponse[0]["result"])
+	assert.Contains(t, string(batchBody), `"code":-32600`)
 }
 
 // TestHTTPProxy_StartMountsAuthDiscoveryEndpoint is an integration test that

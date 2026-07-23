@@ -5,7 +5,6 @@
 package streamable
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -378,13 +377,13 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Batch vs single message
-	if isBatch(body) {
-		sessID, err := p.resolveSessionForBatch(w, r)
-		if err != nil {
-			return
-		}
-		p.handleBatchRequest(w, body, sessID)
+	// Reject JSON-RPC batches outright. Batching was removed in MCP revision
+	// 2025-06-18 and ToolHive serves only 2025-11-25 and 2026-07-28. Rejecting
+	// at the executor (not only in ParsingMiddleware) makes this independent of
+	// middleware presence, ordering, and Content-Type, so a batch can never
+	// reach the backend uninspected by authz/audit/tool-filtering (see #5745).
+	if mcp.IsBatchRequest(body) {
+		mcp.WriteBatchUnsupportedError(w)
 		return
 	}
 
@@ -418,42 +417,6 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 
 	// Request/response path with correlation (JSON response)
 	p.handleSingleRequest(ctx, w, sessID, req, setSessionHeader)
-}
-
-// handleBatchRequest processes a batch JSON-RPC request and writes a batch response.
-func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte, sessID string) {
-	rawMessages, ok := decodeBatch(w, body)
-	if !ok {
-		return
-	}
-
-	var responses []json.RawMessage
-	hadRequest := false
-
-	for _, raw := range rawMessages {
-		// Detect if this element is a request with an ID
-		if msg, err := jsonrpc2.DecodeMessage(raw); err == nil {
-			if req, ok := msg.(*jsonrpc2.Request); ok && req.ID.IsValid() {
-				hadRequest = true
-			}
-		}
-		resp := p.processSingleMessage(sessID, raw)
-		if resp != nil {
-			responses = append(responses, resp)
-		}
-	}
-
-	if !hadRequest {
-		// Per spec: batches containing only notifications/responses -> 202 Accepted, no body
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	// It's valid to return an empty array if requests produced no responses
-	if err := json.NewEncoder(w).Encode(responses); err != nil {
-		slog.Error("failed to encode batch response", "error", err)
-	}
 }
 
 // handleSingleRequest handles a single JSON-RPC request message end-to-end.
@@ -554,80 +517,6 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	flusher.Flush()
 }
 
-// processSingleMessage processes one raw JSON-RPC in a batch and returns encoded response bytes or nil.
-func (p *HTTPProxy) processSingleMessage(sessID string, raw json.RawMessage) json.RawMessage {
-	// Note: batch processing path
-	msg, err := jsonrpc2.DecodeMessage(raw)
-	if err != nil {
-		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
-		slog.Warn("skipping invalid message in batch", "raw", string(raw))
-		return nil
-	}
-
-	// Notifications: just forward and continue
-	if isNotification(msg) {
-		if err := p.SendMessageToDestination(msg); err != nil {
-			slog.Error("failed to send notification to destination", "error", err)
-		}
-		return nil
-	}
-
-	// Client responses: accept and forward, no HTTP body
-	if _, ok := msg.(*jsonrpc2.Response); ok {
-		if err := p.SendMessageToDestination(msg); err != nil {
-			slog.Error("failed to forward client response to destination", "error", err)
-		}
-		return nil
-	}
-
-	req, ok := msg.(*jsonrpc2.Request)
-	if !ok || !req.ID.IsValid() {
-		slog.Warn("skipping invalid batch item (not a request with ID/response/notification)",
-			"type", fmt.Sprintf("%T", msg))
-		return nil
-	}
-
-	waitCh, cleanup := p.createWaiter(sessID, req.ID)
-	defer cleanup()
-	bkey := idKeyFromID(req.ID)
-
-	// Transform outgoing request ID to composite and send
-	ck := compositeKey(sessID, bkey)
-	proxiedMsg, err := encodeRequestWithID(req, ck)
-	if err != nil {
-		slog.Error("failed to encode batch request", "error", err)
-		return nil
-	}
-	if err := p.SendMessageToDestination(proxiedMsg); err != nil {
-		slog.Error("failed to send message to destination", "error", err)
-		return nil
-	}
-
-	response := p.waitForResponse(waitCh, p.requestTimeout)
-	if response == nil {
-		slog.Warn("streamableHTTP: batch timeout waiting for key", "key", bkey)
-		return nil
-	}
-
-	if r, ok := response.(*jsonrpc2.Response); ok && r.ID.IsValid() {
-		restored, err := p.restoreResponseID(r, ck)
-		if err != nil {
-			slog.Error("failed to restore response ID", "error", err)
-			return nil
-		}
-		data, err := jsonrpc2.EncodeMessage(restored)
-		if err != nil {
-			slog.Error("failed to encode JSON-RPC response", "error", err)
-			return nil
-		}
-		return data
-	}
-
-	slog.Warn("received invalid message that is not a valid response",
-		"type", fmt.Sprintf("%T", response))
-	return nil
-}
-
 func encodeRequestWithID(req *jsonrpc2.Request, newID string) (jsonrpc2.Message, error) {
 	data, err := jsonrpc2.EncodeMessage(req)
 	if err != nil {
@@ -717,38 +606,6 @@ func (p *HTTPProxy) ensureSession(id string) error {
 	return p.sessionManager.AddWithID(id)
 }
 
-// resolveSessionForBatch resolves the session for batch POSTs.
-// Writes appropriate HTTP errors and returns an error when handling should stop.
-//
-// Batches don't exist under the Modern revision, so this path is Legacy-only
-// by construction; Modern message-shape enforcement (rejecting a batch outright)
-// is deferred.
-//
-// Sessionless POSTs receive a per-request UUID used solely as an in-process
-// routing token. Sessionless routing tokens MUST be unique per request:
-// sharing one (e.g. the empty string) across concurrent sessionless requests
-// causes waiters/idRestore overwrites in the in-process sync.Maps, which leaks
-// one client's response payload to another (with the JSON-RPC id rewritten to
-// the receiver's). This is a confidentiality bug, not a performance issue --
-// do not collapse the token. The UUID is not registered with sessionManager,
-// so no session object is created in any storage backend.
-func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Request) (string, error) {
-	sessID := r.Header.Get("Mcp-Session-Id")
-	if sessID == "" {
-		token, err := uuid.NewRandom()
-		if err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
-			return "", fmt.Errorf("generate routing token: %w", err)
-		}
-		return token.String(), nil
-	}
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, nil)
-		return "", fmt.Errorf("session not found")
-	}
-	return sessID, nil
-}
-
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
 //
 // It first classifies the request as Modern or Legacy MCP (mcp.ClassifyRevision).
@@ -778,8 +635,8 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	req *jsonrpc2.Request,
 ) (string, bool, error) {
 	// Classification/routing here applies only to the single id-bearing request
-	// path; the batch and notification/client-response paths are Legacy-only by
-	// construction, with Modern message-shape enforcement deferred.
+	// path; batches are rejected earlier in handlePost, and the
+	// notification/client-response path is Legacy-only by construction.
 	meta := mcp.ExtractMeta(req.Params)
 	protoHeader := r.Header.Get("MCP-Protocol-Version")
 	rev, err := mcp.ClassifyRevision(req.Method, meta, protoHeader)
@@ -839,22 +696,6 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return "", false, fmt.Errorf("session not found")
 	}
 	return sessID, false, nil
-}
-
-func isBatch(body []byte) bool {
-	t := bytes.TrimSpace(body)
-	return len(t) > 0 && t[0] == '['
-}
-
-func decodeBatch(w http.ResponseWriter, body []byte) ([]json.RawMessage, bool) {
-	var rawMessages []json.RawMessage
-	if err := json.Unmarshal(bytes.TrimSpace(body), &rawMessages); err != nil {
-		//nolint:gosec // G706: logging raw JSON-RPC batch data from HTTP request
-		slog.Warn("failed to decode batch JSON-RPC", "body", string(body))
-		writeHTTPError(w, http.StatusBadRequest, "Invalid batch JSON-RPC")
-		return nil, false
-	}
-	return rawMessages, true
 }
 
 // decodeJSONRPCMessage decodes a JSON-RPC message from the request body.

@@ -76,6 +76,11 @@ const (
 	// CodeInvalidParams is the standard JSON-RPC Invalid Params code, used
 	// as a fallback when the draft spec defines no dedicated code for the failure.
 	CodeInvalidParams int64 = -32602
+	// CodeInvalidRequest is the standard JSON-RPC Invalid Request code. ToolHive
+	// uses it to reject a message whose shape is not a valid single request for
+	// the negotiated protocol version — currently a JSON-RPC batch, which was
+	// removed from MCP in the 2025-06-18 revision (see batch.go).
+	CodeInvalidRequest int64 = -32600
 )
 
 // HeaderMismatchError indicates the MCP-Protocol-Version HTTP header did not match

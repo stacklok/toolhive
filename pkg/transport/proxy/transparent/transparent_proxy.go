@@ -582,6 +582,16 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
 	}
 
+	// Reject JSON-RPC batches before forwarding to the backend. This runs
+	// independently of Content-Type (unlike ParsingMiddleware), so a batch
+	// smuggled under a non-JSON content type cannot reach the backend where its
+	// nested calls would bypass authz/audit/tool-filtering. Batching was removed
+	// in MCP revision 2025-06-18; ToolHive serves only 2025-11-25 and 2026-07-28
+	// (see #5745).
+	if mcp.IsBatchRequest(reqBody) {
+		return mcp.BatchUnsupportedResponse(req), nil
+	}
+
 	// thv proxy does not provide the transport type, so we need to detect it from the request
 	path := req.URL.Path
 	isMCP := strings.HasPrefix(path, "/mcp")

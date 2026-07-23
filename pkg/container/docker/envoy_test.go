@@ -1026,11 +1026,18 @@ func TestBuildAllowlistPolicies_AllowPort_Structure(t *testing.T) {
 	require.NotNil(t, perm.Header, "permission must be a header matcher")
 	require.NotNil(t, perm.Header.StringMatch, "permission must have a string match")
 	require.NotNil(t, perm.Header.StringMatch.SafeRegex, "permission must use safe_regex")
-	// The regex must encode port alternatives and allow bare hostname when port 80 is listed.
+	// The regex must actually match the expected authorities — including bare
+	// hostname (plain HTTP) because port 80 is listed. Evaluating the full regex
+	// here rather than inspecting its text guards against a reimplementation that
+	// produces a different but equivalent string (N2: the previous assertion of
+	// assert.Contains(re,"?") was vacuous because "?" appears in non-capturing groups).
 	re := perm.Header.StringMatch.SafeRegex.Regex
-	assert.Contains(t, re, "80", "regex must reference port 80")
-	assert.Contains(t, re, "443", "regex must reference port 443")
-	assert.Contains(t, re, "?", "regex must make port optional when port 80 is listed (bare HTTP)")
+	compile := func(r string) *regexp.Regexp { return regexp.MustCompile("^(?:" + r + ")$") }
+	assert.True(t, compile(re).MatchString("example.com"), "bare hostname must match (plain HTTP, port 80 implied)")
+	assert.True(t, compile(re).MatchString("example.com:80"), "explicit port 80 must match")
+	assert.True(t, compile(re).MatchString("example.com:443"), "explicit port 443 must match")
+	assert.False(t, compile(re).MatchString("example.com:8080"), "non-listed port must not match")
+	assert.False(t, compile(re).MatchString("other.com:443"), "wrong host must not match")
 }
 
 // TestBuildAllowlistPolicies_AdditionalCases covers edge cases not in the main
@@ -1134,5 +1141,45 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		gatewayPats := collectAuthorityRegexes(deny)
 		assert.True(t, authorityMatched(gatewayPats, dockerDefaultBridgeGatewayIP+":443"),
 			"gateway IP on port 443 must be caught by the DENY filter")
+	})
+
+	// N3: AllowPort-only with port 443 (no port 80) — bare hostname denied,
+	// explicit :443 allowed. Exercises the includes80=false branch of anyHostPortRegex.
+	t.Run("AllowPort-only port-443 — bare hostname denied, explicit port allowed", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		assert.True(t, listenerAllowsAuthority(l, "anything.io:443"), "port 443 must be allowed")
+		assert.False(t, listenerAllowsAuthority(l, "anything.io"), "bare hostname must be denied (port 80 not listed)")
+		assert.False(t, listenerAllowsAuthority(l, "anything.io:80"), "port 80 must be denied")
+	})
+
+	// N4: Wildcard host + AllowPort — the subdomain (.*\.)? path in hostPortMatchRegex.
+	t.Run("wildcard AllowHost + AllowPort matches subdomains on listed ports only", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"*.example.com"},
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		assert.True(t, listenerAllowsAuthority(l, "api.example.com:443"), "subdomain on allowed port must match")
+		assert.True(t, listenerAllowsAuthority(l, "example.com:443"), "apex on allowed port must match")
+		assert.False(t, listenerAllowsAuthority(l, "api.example.com:80"), "subdomain on disallowed port must not match")
+		assert.False(t, listenerAllowsAuthority(l, "api.example.com"), "bare subdomain must not match (port 80 not listed)")
+		assert.False(t, listenerAllowsAuthority(l, "other.com:443"), "non-matching host must not match")
 	})
 }

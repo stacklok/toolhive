@@ -589,6 +589,42 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 	return policies
 }
 
+// portGroupRegex builds the ":(?:port1|port2|…)" alternation for a list of
+// allowed ports. Returns (group, includes80) where includes80 indicates whether
+// port 80 is present (caller uses this to decide whether the port suffix is
+// optional). Shared by hostPortMatchRegex and anyHostPortRegex.
+func portGroupRegex(ports []int) (group string, includes80 bool) {
+	alts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		alts = append(alts, strconv.Itoa(p))
+		if p == 80 {
+			includes80 = true
+		}
+	}
+	return ":(?:" + strings.Join(alts, "|") + ")", includes80
+}
+
+// hostBasePattern returns the escaped, case-insensitive host portion of an
+// :authority regex — without any trailing port group. It mirrors hostMatchRegex
+// semantics: leading dot / *. = subdomain wildcard, optional trailing dot.
+// Shared by hostPortMatchRegex and hostMatchRegex.
+func hostBasePattern(host string) string {
+	subdomains := false
+	switch {
+	case strings.HasPrefix(host, "*."):
+		host = host[2:]
+		subdomains = true
+	case strings.HasPrefix(host, "."):
+		host = host[1:]
+		subdomains = true
+	}
+	p := regexp.QuoteMeta(host)
+	if subdomains {
+		p = `(.*\.)?` + p
+	}
+	return p
+}
+
 // hostPortMatchRegex builds a single anchored RE2 pattern that encodes both a
 // host allowlist entry and a port allowlist, so that AllowHost+AllowPort can be
 // expressed as one safe_regex permission rather than AND-ing two separate matchers.
@@ -600,33 +636,8 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 // The host portion mirrors hostMatchRegex semantics (leading dot / *. = subdomain
 // wildcard, case-insensitive, optional trailing dot, no port in the base pattern).
 func hostPortMatchRegex(host string, ports []int) string {
-	// Build the host portion (same logic as hostMatchRegex but without the
-	// trailing optional-port group — we handle ports explicitly below).
-	subdomains := false
-	switch {
-	case strings.HasPrefix(host, "*."):
-		host = host[2:]
-		subdomains = true
-	case strings.HasPrefix(host, "."):
-		host = host[1:]
-		subdomains = true
-	}
-	hostPattern := regexp.QuoteMeta(host)
-	if subdomains {
-		hostPattern = `(.*\.)?` + hostPattern
-	}
-
-	// Build the port alternatives.
-	includes80 := false
-	portAlts := make([]string, 0, len(ports))
-	for _, p := range ports {
-		portAlts = append(portAlts, strconv.Itoa(p))
-		if p == 80 {
-			includes80 = true
-		}
-	}
-	portGroup := ":(?:" + strings.Join(portAlts, "|") + ")"
-
+	portGroup, includes80 := portGroupRegex(ports)
+	hostPattern := hostBasePattern(host)
 	if includes80 {
 		// Port is optional: bare "example.com" counts as port 80.
 		return `(?i)` + hostPattern + `\.?(` + portGroup + `)?`
@@ -638,18 +649,11 @@ func hostPortMatchRegex(host string, ports []int) string {
 // anyHostPortRegex builds a regex matching any hostname on the given ports.
 // When port 80 is in the list the port suffix is optional (bare hostname implies
 // port 80 for plain HTTP). For other ports the port suffix is required.
+//
+// [^:]+ matches any hostname without an explicit port; IPv6 bracket addresses
+// (which contain colons) are outside the supported scope for this proxy backend.
 func anyHostPortRegex(ports []int) string {
-	includes80 := false
-	portAlts := make([]string, 0, len(ports))
-	for _, p := range ports {
-		portAlts = append(portAlts, strconv.Itoa(p))
-		if p == 80 {
-			includes80 = true
-		}
-	}
-	// [^:]+ matches any hostname (hostnames contain no colons; IPv6 bracket
-	// addresses are outside the supported scope for this proxy backend).
-	portGroup := ":(?:" + strings.Join(portAlts, "|") + ")"
+	portGroup, includes80 := portGroupRegex(ports)
 	if includes80 {
 		return `(?i)[^:]+(` + portGroup + `)?`
 	}
@@ -668,20 +672,7 @@ func anyHostPortRegex(ports []int) string {
 // The domain is regex-escaped so dots are literal, and the pattern is anchored
 // by Envoy so it cannot match "example.com.attacker.com".
 func hostMatchRegex(host string) string {
-	subdomains := false
-	switch {
-	case strings.HasPrefix(host, "*."):
-		host = host[2:]
-		subdomains = true
-	case strings.HasPrefix(host, "."):
-		host = host[1:]
-		subdomains = true
-	}
-	pattern := regexp.QuoteMeta(host)
-	if subdomains {
-		// Optional "sub." prefix at any depth, plus the apex itself.
-		pattern = `(.*\.)?` + pattern
-	}
+	pattern := hostBasePattern(host)
 	// (?i) case-insensitive (hostnames are); \.? tolerates a trailing-dot FQDN
 	// ("host.docker.internal." resolves identically and would otherwise bypass a
 	// deny); (:[0-9]+)? optional port.

@@ -179,6 +179,8 @@ MCPServer supports referencing shared configuration CRDs:
 
 **Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`, `authServerConfigHash`) for change detection on referenced CRDs.
 
+**Untrusted mode**: `spec.untrusted: true` + `spec.egressPolicy` mark the server as untrusted third-party code running single-tenant behind the egress credential broker. CEL rules then require `groupRef` + `sessionAffinity: ClientIP` and forbid `secrets`, `podTemplateSpec`, and `backendReplicas`. See [Untrusted Mode](16-untrusted-mode.md) and the resources below under "Untrusted-mode resources".
+
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
 - [`examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml`](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) - With shared MCPOIDCConfig reference
@@ -507,6 +509,66 @@ The operator binary's `main` package delegates to `cmd/thv-operator/app/app.go`.
    - For RBAC permissions
    - Pod identity
 
+### Untrusted-mode resources
+
+**For each MCPServer with `spec.untrusted: true`, the operator additionally creates**
+(`cmd/thv-operator/controllers/mcpserver_untrusted_resources.go`, ADR-0001):
+
+1. **Bump CA Secret** (per CA generation, `<name>-bump-ca-<sha256[:16]>`)
+   - Self-signed ECDSA P-256 per-tenant CA (90-day validity, rotation due at 50%)
+   - Cert + key of ONE generation in ONE Secret, so a pod cloned mid-rotation
+     always mounts a consistent pair
+   - Generation-named, never updated in place; N and N-1 generations retained,
+     older ones GC'd each reconcile
+
+2. **Bump CA bundle ConfigMap** (per generation, `<name>-bump-ca-bundle-<sha>`)
+   - Public cert only; mounted by the trusted CA-seed init container in session pods
+
+3. **Egress-policy ConfigMap** (`<name>-egress-policy`)
+   - The broker-consumed policy document rendered from `spec.egressPolicy` plus the
+     operator-resolved `dialAllowlist` (destination CIDRs — the same list the
+     NetworkPolicy carries, so the sidecar's per-dial check and the pod-level
+     policy enforce one destination set)
+   - Policy-shape problems are terminal (`UntrustedEgressPolicyInvalid` status
+     condition); DNS lookup failures retry with backoff
+
+4. **NetworkPolicy** (`<name>-egress`, egress-only)
+   - Selects untrusted session pods (`toolhive.stacklok.dev/untrusted=true` +
+     `mcpserver-uid` label)
+   - Permits: loopback (the in-pod sidecar), cluster DNS (kube-system /
+     `k8s-app=kube-dns` pods only — a documented limitation on clusters whose
+     DNS lives elsewhere), and the policy-resolved destination CIDRs
+   - Requires a CNI that enforces NetworkPolicy (hard dependency)
+
+5. **CA generation stamp** on the backend StatefulSet's pod template
+   (`toolhive.stacklok.dev/bump-ca-generation` annotation) — the vMCP session
+   lifecycle clones pods mounting exactly that generation's Secret/bundle.
+
+All untrusted resources are owner-referenced to the MCPServer (GC on deletion)
+and carry the `toolhive.stacklok.dev/untrusted-resource=true` label; the
+untrusted→trusted flip deletes them explicitly. Session pods themselves are
+created by vMCP, not the operator — see
+[Untrusted Mode](16-untrusted-mode.md).
+
+**RBAC additions for untrusted mode** (on the MCPServer controller):
+`networkpolicies` (create/delete/get/list/patch/update/watch) and `secrets`
+(get/list/watch) — the operator mints and GCs bump-CA Secrets. The
+VirtualMCPServer controller additionally holds `secrets` create (KEK coordinate
+resolution for the untrusted token-store wiring).
+
+The **terminal/terminal-DNS split**: policy-shape errors (invalid hosts, a host
+resolving to nothing, empty resolved allowlist) are terminal spec errors —
+retrying cannot fix the spec — while DNS resolution failures are transient
+ordinary errors so controller-runtime retries with backoff.
+
+**Token encryption wiring**: when `spec.authServerConfig.storage.tokenEncryption`
+is set on a VirtualMCPServer, the vMCP Deployment gains one SecretKeyRef env per
+KEK (`TOOLHIVE_AUTHSERVER_TOKEN_ENCRYPTION_KEK_<ID>`) and the untrusted
+token-store coordinate env (`THV_UNTRUSTED_TOKEN_STORE_*`) forwarded to cloned
+sidecars — KEK values never appear in pod specs or ConfigMaps. Sentinel-managed
+Redis is unsupported for untrusted egress (Warning event
+`TokenEncryptionNotSupportedForUntrusted`).
+
 ## Deployment Pattern
 
 ```mermaid
@@ -729,5 +791,6 @@ spec:
 - [Core Concepts](02-core-concepts.md) - Operator concepts
 - [Registry System](06-registry-system.md) - MCPRegistry CRD
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - VirtualMCPServer details
+- [Untrusted Mode](16-untrusted-mode.md) - untrusted MCPServer egress broker resources
 - [Transport Architecture](03-transport-architecture.md) - Transport and proxy setup the proxy-runner performs in-cluster
 - Operator Design: `cmd/thv-operator/DESIGN.md`

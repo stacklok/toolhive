@@ -108,6 +108,7 @@ func (s *service) materializeDependencies(
 			Scope:            sk.Scope,
 			ProjectRoot:      sk.ProjectRoot,
 			Clients:          sk.Clients,
+			Group:            opts.Group, // deps join the parent's group, not the default one
 			RequiredByParent: sk.Metadata.Name,
 			Visited:          visited,
 		}

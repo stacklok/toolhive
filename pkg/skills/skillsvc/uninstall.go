@@ -36,9 +36,17 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	return s.uninstallOne(ctx, opts, scope)
 }
 
-// uninstallOne performs a single skill's file/DB/group cleanup and, when
-// applicable, its lock entry removal and cascade. It is called both for the
-// top-level Uninstall request and recursively for cascade candidates.
+// uninstallOne performs a single skill's lock-entry removal, file/DB/group
+// cleanup and, when applicable, its dependency cascade. It is called both
+// for the top-level Uninstall request and recursively for cascade candidates.
+//
+// The lock entry is removed FIRST, and its failure aborts the uninstall
+// while everything is still intact. The reverse order (files/DB first, lock
+// entry best-effort) had a resurrection hazard: a lock-write failure after
+// the record and files were gone left a stale entry that the next sync
+// silently reinstalled. Failing after the entry is removed leaves the
+// opposite, safe inconsistency — an installed-but-unlocked skill that sync
+// reports as removed-from-lock and prune can clean up.
 func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions, scope skills.Scope) error {
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
@@ -49,10 +57,25 @@ func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions
 		return err
 	}
 
+	visited := opts.Visited
+	if visited == nil {
+		visited = make(map[string]struct{})
+	}
+	visited[opts.Name] = struct{}{}
+
+	var cascadeCandidates []string
+	if scope == skills.ScopeProject && existing.Managed && skills.LockFileFeatureEnabled() {
+		cascadeCandidates, err = removeLockEntry(opts)
+		if err != nil {
+			return fmt.Errorf("updating project lock file: %w", err)
+		}
+	}
+
 	cleanupErrs := s.removeClientFiles(existing, opts, scope)
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
-		return err
+		cleanupErrs = append(cleanupErrs, err)
+		return errors.Join(cleanupErrs...)
 	}
 
 	// Remove the skill from all groups — best-effort, same pattern as file cleanup.
@@ -62,13 +85,8 @@ func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions
 		}
 	}
 
-	// Lock file cleanup is best-effort, matching every other cleanup step
-	// here: the DB record and files are already gone by this point, so there
-	// is nothing left to roll back to on failure.
-	if scope == skills.ScopeProject && existing.Managed && skills.LockFileFeatureEnabled() {
-		if cascadeErr := s.removeLockEntryAndCascade(ctx, opts, scope); cascadeErr != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("updating project lock file: %w", cascadeErr))
-		}
+	if cascadeErr := s.cascadeUninstall(ctx, cascadeCandidates, visited, opts.ProjectRoot, scope); cascadeErr != nil {
+		cleanupErrs = append(cleanupErrs, cascadeErr)
 	}
 
 	return errors.Join(cleanupErrs...)
@@ -110,20 +128,14 @@ func (s *service) removeClientFiles(
 	return errs
 }
 
-// removeLockEntryAndCascade removes opts.Name's lock entry and, for any
-// dependency that consequently loses its last requiring parent (and is not
-// itself explicit), uninstalls it too. A Visited set threaded through opts
-// prevents infinite recursion on a requiredBy cycle in a hand-edited lock.
-func (s *service) removeLockEntryAndCascade(ctx context.Context, opts skills.UninstallOptions, scope skills.Scope) error {
-	visited := opts.Visited
-	if visited == nil {
-		visited = make(map[string]struct{})
-	}
-	visited[opts.Name] = struct{}{}
-
+// removeLockEntry removes opts.Name's lock entry and strips it from every
+// other entry's RequiredBy list, returning the names of dependencies that
+// consequently lost their last requiring parent and are not explicit — the
+// cascade-removal candidates.
+func removeLockEntry(opts skills.UninstallOptions) ([]string, error) {
 	root, err := lockfile.OpenRoot(opts.ProjectRoot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var cascadeCandidates []string
 	if err := lockfile.Update(root, func(lf *lockfile.Lockfile) error {
@@ -131,11 +143,19 @@ func (s *service) removeLockEntryAndCascade(ctx context.Context, opts skills.Uni
 		cascadeCandidates = lf.RemoveParentFromRequiredBy(opts.Name)
 		return nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
+	return cascadeCandidates, nil
+}
 
+// cascadeUninstall uninstalls each candidate dependency that has not
+// already been visited. The visited set prevents infinite recursion on a
+// requiredBy cycle in a hand-edited lock.
+func (s *service) cascadeUninstall(
+	ctx context.Context, candidates []string, visited map[string]struct{}, projectRoot string, scope skills.Scope,
+) error {
 	var errs []error
-	for _, dep := range cascadeCandidates {
+	for _, dep := range candidates {
 		if _, seen := visited[dep]; seen {
 			continue
 		}
@@ -143,13 +163,13 @@ func (s *service) removeLockEntryAndCascade(ctx context.Context, opts skills.Uni
 		// A lock entry can reference a dependency whose install failed
 		// partway (or was already removed by hand); skip it rather than
 		// erroring on a missing DB record.
-		if _, getErr := s.store.Get(ctx, dep, scope, opts.ProjectRoot); getErr != nil {
+		if _, getErr := s.store.Get(ctx, dep, scope, projectRoot); getErr != nil {
 			continue
 		}
 		if uninstallErr := s.uninstallOne(ctx, skills.UninstallOptions{
 			Name:        dep,
 			Scope:       scope,
-			ProjectRoot: opts.ProjectRoot,
+			ProjectRoot: projectRoot,
 			Visited:     visited,
 		}, scope); uninstallErr != nil {
 			errs = append(errs, fmt.Errorf("cascade-removing dependency %q: %w", dep, uninstallErr))

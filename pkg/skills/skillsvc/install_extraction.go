@@ -33,6 +33,27 @@ func (s *service) installWithExtraction(
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
 	}
 
+	result, err := s.dispatchExtraction(ctx, opts, scope, existing, storeErr, clientTypes, clientDirs)
+	if err == nil && storeErr == nil {
+		// Preserve the pre-install record so a later rollback (e.g. a failed
+		// dependency materialization) can restore it rather than delete it.
+		pre := existing
+		result.PreExisting = &pre
+	}
+	return result, err
+}
+
+// dispatchExtraction routes an extraction-based install to the no-op,
+// same-digest, upgrade, or fresh path based on the pre-install store state.
+func (s *service) dispatchExtraction(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	existing skills.InstalledSkill,
+	storeErr error,
+	clientTypes []string,
+	clientDirs map[string]string,
+) (*skills.InstallResult, error) {
 	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &skills.InstallResult{Skill: existing}, nil
 	}

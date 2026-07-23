@@ -60,6 +60,11 @@ type InstallOptions struct {
 type InstallResult struct {
 	// Skill is the installed skill.
 	Skill InstalledSkill `json:"skill"`
+	// PreExisting is the store record as it was before this install, or nil
+	// when this install created the record. Rollback uses it to restore the
+	// previous state instead of destructively deleting a record this call
+	// did not create. Internal use only — NOT exposed via HTTP API.
+	PreExisting *InstalledSkill `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.

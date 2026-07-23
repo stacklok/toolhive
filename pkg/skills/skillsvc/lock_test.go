@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/groups"
+	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
@@ -349,4 +351,166 @@ func TestInstallProjectScope_DependencyFailureRollsBackParentLockEntry(t *testin
 		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"}, Force: true,
 	})
 	require.NoError(t, err, "retry after fixing the dependency must succeed")
+}
+
+// TestInstallProjectScope_SiblingDependencyRolledBackWithParent covers the
+// partial-success case: the first declared dependency installs cleanly, then
+// a later sibling fails. Rolling back only the parent would leak the
+// succeeded sibling as an orphan — installed, managed, and pinned with a
+// RequiredBy pointing at a parent that no longer exists.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_SiblingDependencyRolledBackWithParent(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	okDepRef, _ := gitRef("ok-dep")
+	missingDepRef, _ := gitRef("missing-dep") // never registered — Resolve fails
+	fx.register("ok-dep", gitSkill("ok-dep"))
+	fx.register("parent-skill", gitSkill("parent-skill", okDepRef, missingDepRef))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("parent-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.Error(t, err, "install must fail when a later dependency cannot be resolved")
+
+	lf := readLockfile(t, projectRoot)
+	_, ok := lf.Get("parent-skill")
+	assert.False(t, ok, "parent's lock entry must be rolled back")
+	_, ok = lf.Get("ok-dep")
+	assert.False(t, ok, "the succeeded sibling's lock entry must be rolled back too, not leaked as an orphan")
+
+	_, err = svc.Info(t.Context(), skills.InfoOptions{Name: "ok-dep", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.Error(t, err, "the succeeded sibling's DB record must be rolled back too")
+}
+
+// TestInstallProjectScope_RollbackRestoresPreExistingState covers the
+// destructive-rollback hazard: a --force reinstall of an already-installed,
+// lock-managed skill that fails partway (here: on a newly-declared
+// dependency) must restore the previously-valid DB record and lock entry —
+// including RequiredBy links other parents merged onto it — not delete them.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	sharedRef, _ := gitRef("shared-skill")
+	fx.register("shared-skill", gitSkill("shared-skill"))
+	fx.register("other-parent", gitSkill("other-parent", sharedRef))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	// shared-skill is installed both explicitly and as other-parent's
+	// dependency, so its entry carries Explicit=true and RequiredBy.
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: sharedRef, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	otherRef, _ := gitRef("other-parent")
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: otherRef, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	before, ok := readLockfile(t, projectRoot).Get("shared-skill")
+	require.True(t, ok)
+	require.Equal(t, []string{"other-parent"}, before.RequiredBy)
+
+	// Republish shared-skill with a new, unresolvable dependency and force-
+	// reinstall it: the install fails after the DB record and lock entry
+	// were already rewritten.
+	missingDepRef, _ := gitRef("missing-dep")
+	fx.register("shared-skill", gitSkill("shared-skill", missingDepRef))
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: sharedRef, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"}, Force: true,
+	})
+	require.Error(t, err, "reinstall must fail on the unresolvable dependency")
+
+	after, ok := readLockfile(t, projectRoot).Get("shared-skill")
+	require.True(t, ok, "a transient failure must not destroy the pre-existing lock entry")
+	assert.Equal(t, before.Digest, after.Digest, "the previous pin must be restored")
+	assert.Equal(t, before.RequiredBy, after.RequiredBy, "RequiredBy links from other parents must survive")
+	assert.True(t, after.Explicit)
+
+	info, err := svc.Info(t.Context(), skills.InfoOptions{Name: "shared-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.NoError(t, err, "the pre-existing DB record must survive")
+	assert.Equal(t, before.Digest, info.InstalledSkill.Digest, "the DB record must be restored to its previous state")
+}
+
+// TestInstallProjectScope_DependencyJoinsParentGroup asserts a transitively
+// materialized dependency is registered in the same group the parent was
+// installed into, rather than silently falling back to the default group.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_DependencyJoinsParentGroup(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	depRef, _ := gitRef("grouped-dep")
+	fx.register("grouped-dep", gitSkill("grouped-dep"))
+	fx.register("grouped-parent", gitSkill("grouped-parent", depRef))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	// Track which group each skill lands in via a stub manager.
+	skillGroups := make(map[string]string)
+	gm := groupmocks.NewMockManager(gomock.NewController(t))
+	gm.EXPECT().Get(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, name string) (*groups.Group, error) {
+			return &groups.Group{Name: name}, nil
+		})
+	gm.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, g *groups.Group) error {
+			for _, sk := range g.Skills {
+				skillGroups[sk] = g.Name
+			}
+			return nil
+		})
+	svcImpl := svc.(*service) //nolint:forcetypeassert // white-box test in the same package
+	svcImpl.groupManager = gm
+
+	ref, _ := gitRef("grouped-parent")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, Group: "custom-group",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom-group", skillGroups["grouped-parent"])
+	assert.Equal(t, "custom-group", skillGroups["grouped-dep"],
+		"a materialized dependency must join the parent's group, not the default one")
+}
+
+// TestUninstall_LockWriteFailureAbortsBeforeDestruction guards the uninstall
+// ordering: the lock entry is removed first, and if that fails the
+// uninstall aborts with everything intact. The reverse order left a stale
+// lock entry for a gone skill, which the next sync silently reinstalled.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	// Make the lock file unwritable: read-only project root blocks the
+	// temp-file write inside lockfile.Update.
+	require.NoError(t, os.Chmod(projectRoot, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(projectRoot, 0o755) })
+
+	err = svc.Uninstall(t.Context(), skills.UninstallOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "uninstall must fail when the lock entry cannot be removed")
+
+	require.NoError(t, os.Chmod(projectRoot, 0o755))
+	info, err := svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.NoError(t, err, "the skill must remain fully installed — nothing may be destroyed before the lock update")
+	assert.NotNil(t, info.InstalledSkill)
+	_, ok := readLockfile(t, projectRoot).Get("my-skill")
+	assert.True(t, ok, "the lock entry must be untouched")
+
+	skillMD := filepath.Join(projectRoot, ".claude", "skills", "my-skill", "SKILL.md")
+	_, statErr := os.Stat(skillMD)
+	require.NoError(t, statErr, "on-disk files must be untouched")
 }

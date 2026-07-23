@@ -223,13 +223,11 @@ func (s *service) registerSkillInGroup(ctx context.Context, groupName string, sk
 // and, for project-scope installs with the lock file feature enabled (see
 // skills.LockFileFeatureEnabled), records it — and any toolhive.requires
 // dependencies — in the project's toolhive.lock.yaml. If group registration
-// or the lock write fails, the DB record and any lock entry already written
-// for this skill are rolled back so that a retry starts fresh rather than
-// leaving the system in an inconsistent state (skill installed but not in
-// the expected group, or the lock file claiming a pin that Info() can't
-// find). Dependency materialization can write the top-level skill's lock
-// entry and then fail on a later dependency, which is why the lock entry is
-// always removed here rather than only when the write itself failed.
+// or the lock write fails, the DB record and lock entry are rolled back to
+// their pre-install state: restored when this call updated a pre-existing
+// record (a --force reinstall must not be destroyed by a transient failure),
+// deleted — with a dependency cascade cleaning up any freshly materialized
+// orphans — when this call created them.
 func (s *service) installAndRegister(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -239,24 +237,33 @@ func (s *service) installAndRegister(
 	skillName string,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
-	rollback := func() {
-		_ = s.store.Delete(ctx, skillName, scope, opts.ProjectRoot)
-		if scope == skills.ScopeProject && skills.LockFileFeatureEnabled() {
-			if root, err := lockfile.OpenRoot(opts.ProjectRoot); err == nil {
-				_ = lockfile.RemoveEntry(root, skillName)
+	lockScoped := scope == skills.ScopeProject && skills.LockFileFeatureEnabled()
+
+	// Snapshot the prior lock entry before anything below can write one, so
+	// rollback can reinstate it (RequiredBy links from other parents
+	// included) rather than blindly deleting it.
+	var prevEntry *lockfile.Entry
+	if lockScoped {
+		if root, rootErr := lockfile.OpenRoot(opts.ProjectRoot); rootErr == nil {
+			if lf, loadErr := lockfile.Load(root); loadErr == nil {
+				if e, ok := lf.Get(skillName); ok {
+					prevEntry = &e
+				}
 			}
 		}
 	}
 
+	rollback := func() { s.rollbackInstall(ctx, opts, result, skillName, scope, lockScoped, prevEntry) }
+
 	if err := s.registerSkillInGroup(ctx, groupName, skillName); err != nil {
-		// Best-effort rollback: remove the DB record so retries start fresh.
-		// Files on disk are left in place; a fresh install will detect them
-		// and either overwrite (force) or return a conflict.
+		// Best-effort rollback. Files on disk are left in place; a fresh
+		// install will detect them and either overwrite (force) or return a
+		// conflict.
 		rollback()
 		return nil, fmt.Errorf("registering skill in group: %w", err)
 	}
 
-	if scope == skills.ScopeProject && skills.LockFileFeatureEnabled() {
+	if lockScoped {
 		updated, err := s.recordLockState(ctx, opts, originalName, result.Skill)
 		if err != nil {
 			rollback()
@@ -269,4 +276,46 @@ func (s *service) installAndRegister(
 	}
 
 	return result, nil
+}
+
+// rollbackInstall undoes installAndRegister's side effects after a failure,
+// best-effort. The DB record is restored to its pre-install snapshot when
+// one exists (result.PreExisting) and deleted otherwise; the lock entry is
+// likewise reinstated from prevEntry or removed. When this call created the
+// entry, removal runs the same dependency cascade as uninstall so that
+// freshly materialized dependencies — installed, marked managed, and
+// required only by the now-rolled-back skill — do not leak as orphans,
+// while pre-existing dependencies with other parents (or explicit installs)
+// survive with this skill stripped from their RequiredBy.
+func (s *service) rollbackInstall(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	result *skills.InstallResult,
+	skillName string,
+	scope skills.Scope,
+	lockScoped bool,
+	prevEntry *lockfile.Entry,
+) {
+	if result.PreExisting != nil {
+		_ = s.store.Update(ctx, *result.PreExisting)
+	} else {
+		_ = s.store.Delete(ctx, skillName, scope, opts.ProjectRoot)
+	}
+
+	if !lockScoped {
+		return
+	}
+	if prevEntry != nil {
+		if root, err := lockfile.OpenRoot(opts.ProjectRoot); err == nil {
+			_ = lockfile.UpsertEntry(root, *prevEntry)
+		}
+		return
+	}
+	uninstallOpts := skills.UninstallOptions{Name: skillName, Scope: scope, ProjectRoot: opts.ProjectRoot}
+	candidates, err := removeLockEntry(uninstallOpts)
+	if err != nil {
+		return
+	}
+	visited := map[string]struct{}{skillName: {}}
+	_ = s.cascadeUninstall(ctx, candidates, visited, opts.ProjectRoot, scope)
 }

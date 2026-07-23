@@ -41,6 +41,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
@@ -754,7 +755,10 @@ func wrapBackendError(err error, backendID string, operation string) error {
 	// so we surface a clear message and classify as backend unavailable to allow recovery.
 	if errors.Is(err, transport.ErrLegacySSEServer) {
 		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
-		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
+		// Second %w preserves ErrLegacySSEServer in the chain so a revision
+		// mismatch (Legacy initialize against a Modern backend) is detectable via
+		// errors.Is; renders identically to %v.
+		return fmt.Errorf("%w: failed to %s for backend %s (%s): %w",
 			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
 	}
 
@@ -788,8 +792,11 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrBackendUnavailable, operation, backendID, err)
 	}
 
-	// Default to backend unavailable for unknown errors
-	return fmt.Errorf("%w: failed to %s for backend %s: %v",
+	// Default to backend unavailable for unknown errors. Second %w preserves the
+	// origin error (e.g. mcp.ErrMethodNotFound from a Legacy initialize against a
+	// Modern backend, or errWrongEra from a Modern probe against a Legacy backend)
+	// so a revision mismatch is detectable via errors.Is; renders identically to %v.
+	return fmt.Errorf("%w: failed to %s for backend %s: %w",
 		vmcp.ErrBackendUnavailable, operation, backendID, err)
 }
 
@@ -1195,39 +1202,46 @@ func newCapabilityListFromMCP(
 	return capabilities
 }
 
-// ListCapabilities queries a backend for its MCP capabilities.
-// Returns tools, resources, and prompts exposed by the backend.
+// ListCapabilities queries a backend for its MCP capabilities, selecting the
+// Legacy or Modern path by revision. Returns tools, resources, and prompts
+// exposed by the backend.
 //
-// On the first call for a backend it probes the MCP revision Modern-first
-// (probeRevision) and caches it. A Modern backend returns the discover-level
-// capability list; a Legacy backend takes the unchanged initialize+enumerate
-// path below. Subsequent calls read the cached revision and skip the probe.
+// Like the call verbs it routes through dispatch, so a mis-cached backend (e.g. a
+// first-probe blip that pinned Legacy) self-corrects: the failing path triggers a
+// re-probe and one retry under the corrected revision.
 func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
 	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
+	var out *vmcp.CapabilityList
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernListCapabilities(ctx, target)
+		} else {
+			out, err = h.legacyListCapabilities(ctx, target)
+		}
+		return err
+	})
+	return out, err
+}
 
-	rev, cached := h.cachedRevision(target.WorkloadID)
-	switch {
-	case !cached:
-		probed, modernCaps, err := h.probeRevision(ctx, target)
-		if err != nil {
-			return nil, wrapBackendError(err, target.WorkloadID, "probe revision")
-		}
-		if probed == mcpparser.RevisionModern {
-			return h.modernEnumerate(ctx, target, modernCaps)
-		}
-		// Legacy: fall through to the initialize+enumerate path below.
-	case rev == mcpparser.RevisionModern:
-		// Known Modern: one discover round-trip, no Legacy fallback. A -3202x
-		// protocol error is tolerated as nil caps so this cache-hit path yields
-		// the same empty enumeration as the first probe (probeRevision), rather
-		// than surfacing an error only on subsequent calls.
-		modernCaps, err := h.modernDiscover(ctx, target)
-		if err != nil && !errors.Is(err, errModernProtocolError) {
-			return nil, wrapBackendError(err, target.WorkloadID, "modern discover")
-		}
-		return h.modernEnumerate(ctx, target, modernCaps)
+// modernListCapabilities resolves capabilities via Modern server/discover +
+// enumeration. A -3202x protocol error is tolerated as nil caps (the backend is
+// Modern but rejected our discover), yielding an empty list — consistent with
+// probeRevision's classification.
+func (h *httpBackendClient) modernListCapabilities(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (*vmcp.CapabilityList, error) {
+	caps, err := h.modernDiscover(ctx, target)
+	if err != nil && !errors.Is(err, errModernProtocolError) {
+		return nil, wrapBackendError(err, target.WorkloadID, "modern discover")
 	}
+	return h.modernEnumerate(ctx, target, caps)
+}
 
+// legacyListCapabilities is the initialize + enumerate path (unchanged behavior).
+func (h *httpBackendClient) legacyListCapabilities(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (*vmcp.CapabilityList, error) {
 	// Create a client for this backend (not yet initialized)
 	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
@@ -1240,9 +1254,9 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	}()
 
 	// Initialize the client and get server capabilities
-	serverCaps, err := initializeClient(ctx, c)
+	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
 	if err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+		return nil, err
 	}
 
 	slog.Debug("backend capabilities",
@@ -1293,13 +1307,41 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	return capabilities, nil
 }
 
+// errLegacyInitFailed marks a Legacy initialize-step failure (see legacyInit).
+// It scopes the Legacy revision-mismatch signal to the initialize step so a
+// data-plane -32601 from a genuine tool/resource/prompt/completion call on a real
+// Legacy backend (a legitimately unimplemented method) never triggers a re-probe.
+var errLegacyInitFailed = errors.New("legacy initialize step failed")
+
+// legacyInit runs the Legacy initialize handshake, tagging any failure with
+// errLegacyInitFailed (in addition to wrapBackendError's classification) so the
+// revision-mismatch check can tell an initialize rejection apart from a
+// data-plane error later in the same call.
+func (*httpBackendClient) legacyInit(
+	ctx context.Context, c *client.Client, backendID string,
+) (*mcp.ServerCapabilities, error) {
+	caps, err := initializeClient(ctx, c)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
+	}
+	return caps, nil
+}
+
 // dispatch resolves the backend's MCP revision (cache hit, else probeRevision)
-// and runs fn exactly once with it. Every call verb routes through this seam so
-// revision selection lives in one place.
+// and runs fn with it. Every call verb AND ListCapabilities route through this
+// seam so revision selection — and self-correction — lives in one place.
 //
-// ponytail: retry-on-revision-mismatch is deferred — when the probe classifies
-// one era but the call reveals the other, fn would re-probe and run again. For
-// now fn runs exactly once, no re-probe.
+// On a revision mismatch (isRevisionMismatch), dispatch always re-probes
+// authoritatively and flips the cache so future calls use the corrected
+// revision. It RETRIES fn only when the failure proves the backend did NOT
+// execute the request — a protocol rejection (errWrongEra) or a Legacy
+// initialize-step failure. A Legacy-shaped success body (errLegacyResponseBody)
+// means a lenient backend MAY have executed a side-effecting request, so the
+// cache is flipped but fn is NOT re-run. The retry is unconditionally single
+// (no re-check), so it can never loop.
+//
+// When the revision was just probed in THIS call (uncached), a re-probe would
+// return the same answer, so a mismatch is surfaced directly without re-probing.
 func (h *httpBackendClient) dispatch(
 	ctx context.Context, target *vmcp.BackendTarget,
 	fn func(ctx context.Context, rev mcpparser.Revision) error,
@@ -1312,7 +1354,79 @@ func (h *httpBackendClient) dispatch(
 		}
 		rev = probed
 	}
-	return fn(ctx, rev)
+
+	err := fn(ctx, rev)
+	if err == nil || !isRevisionMismatch(rev, err) {
+		return err
+	}
+	if !cached {
+		// The revision was just probed authoritatively; a re-probe would agree, so
+		// this is a genuine error (or a lenient backend), not a stale cache.
+		return err
+	}
+
+	corrected := h.reclassify(ctx, target, rev)
+	if corrected == rev {
+		// Re-probe agreed with the cache: the mismatch was not a revision problem.
+		return err
+	}
+	if errors.Is(err, errLegacyResponseBody) {
+		// Cache is now corrected for future calls, but the backend may have
+		// already executed this request — do NOT re-run it (no double-execution).
+		return err
+	}
+	return fn(ctx, corrected)
+}
+
+// reclassify re-probes the backend authoritatively (overwriting the cached
+// revision via probeRevision) and returns the corrected revision. On an actual
+// era change it emits a WARN and increments the reclassification counter; a
+// same-era re-probe (or a re-probe that can't run) is silent and returns prev.
+func (h *httpBackendClient) reclassify(
+	ctx context.Context, target *vmcp.BackendTarget, prev mcpparser.Revision,
+) mcpparser.Revision {
+	corrected, _, err := h.probeRevision(ctx, target)
+	if err != nil {
+		// Transport couldn't even be built to re-probe; keep the prior revision.
+		return prev
+	}
+	if corrected != prev {
+		slog.WarnContext(ctx, "backend MCP revision reclassified after mismatch",
+			"backend", target.WorkloadID, "old", prev.String(), "new", corrected.String())
+		backendtelemetry.RecordRevisionReclassification(ctx)
+	}
+	return corrected
+}
+
+// isRevisionMismatch reports whether err from an attempt made under rev signals
+// that the backend actually speaks the OTHER MCP revision (triggering a cache
+// reclassification). It is deliberately narrow, and keyed on rev because the same
+// sentinel means different things per era:
+//
+//   - Modern attempt: errWrongEra (protocol rejection) or errLegacyResponseBody
+//     (a Legacy-shaped success body). A data-plane -32601 comes back as
+//     mcp.ErrMethodNotFound and is a real not-found on a genuine Modern backend,
+//     NOT a mismatch.
+//   - Legacy attempt: an initialize-STEP rejection only — errLegacyInitFailed
+//     together with mcp.ErrMethodNotFound or transport.ErrLegacySSEServer. A
+//     data-plane -32601 (a legitimately unimplemented method on a real Legacy
+//     backend) lacks the errLegacyInitFailed marker and is NOT a mismatch.
+//
+// Auth failures are never a mismatch: their sentinels (ErrUnauthorized,
+// ErrAuthorizationRequired, ErrUpstreamTokenNotFound, ErrAuthenticationFailed) do
+// not wrap the era sentinels above, so they are excluded by construction.
+//
+// NOTE: mismatch != safe-to-retry. dispatch reclassifies on any mismatch but only
+// re-runs fn when no execution could have occurred (see dispatch).
+func isRevisionMismatch(rev mcpparser.Revision, err error) bool {
+	if err == nil {
+		return false
+	}
+	if rev == mcpparser.RevisionModern {
+		return errors.Is(err, errWrongEra) || errors.Is(err, errLegacyResponseBody)
+	}
+	return errors.Is(err, errLegacyInitFailed) &&
+		(errors.Is(err, mcp.ErrMethodNotFound) || errors.Is(err, transport.ErrLegacySSEServer))
 }
 
 // CallTool invokes a tool on the backend MCP server, selecting the Legacy or
@@ -1384,9 +1498,9 @@ func (h *httpBackendClient) legacyCallTool(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := initializeClient(ctx, c)
+	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
 	if err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+		return nil, err
 	}
 
 	// When forwarders are bound and the backend advertises logging, request debug
@@ -1569,8 +1683,8 @@ func (h *httpBackendClient) legacyReadResource(
 	}()
 
 	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	if _, err := h.legacyInit(ctx, c, target.WorkloadID); err != nil {
+		return nil, err
 	}
 
 	// Read the resource using the original URI from the backend's perspective.
@@ -1686,8 +1800,8 @@ func (h *httpBackendClient) legacyGetPrompt(
 	}()
 
 	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	if _, err := h.legacyInit(ctx, c, target.WorkloadID); err != nil {
+		return nil, err
 	}
 
 	// Get the prompt using the original prompt name from the backend's perspective.
@@ -1826,9 +1940,9 @@ func (h *httpBackendClient) legacyComplete(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := initializeClient(ctx, c)
+	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
 	if err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+		return nil, err
 	}
 
 	// Backends that do not advertise completions cannot serve completion/complete;

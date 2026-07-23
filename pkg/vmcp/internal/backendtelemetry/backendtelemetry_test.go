@@ -4,8 +4,19 @@
 package backendtelemetry
 
 import (
+	"context"
 	"testing"
 )
+
+// TestRecordRevisionReclassification is a smoke test: the counter lazily binds to
+// the global meter provider and increments without panicking (the noop provider
+// makes the value unobservable here — the WARN in the same reclassify branch is
+// asserted in the client package's reclassify test).
+func TestRecordRevisionReclassification(t *testing.T) {
+	t.Parallel()
+	RecordRevisionReclassification(context.Background())
+	RecordRevisionReclassification(context.Background())
+}
 
 func TestMapActionToMCPMethod(t *testing.T) {
 	t.Parallel()

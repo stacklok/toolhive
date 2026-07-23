@@ -237,11 +237,11 @@ func TestModernCall_ErrorMapping(t *testing.T) {
 			wantErr:     errWrongEra,
 		},
 		{
-			name:        "200 with Legacy-shaped result (no resultType) is wrong-era",
+			name:        "200 with Legacy-shaped result (no resultType) is a legacy-response-body",
 			status:      http.StatusOK,
 			contentType: "application/json",
 			body:        `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
-			wantErr:     errWrongEra,
+			wantErr:     errLegacyResponseBody,
 		},
 		{
 			name:        "other JSON-RPC error surfaces as a call error, not wrong-era",

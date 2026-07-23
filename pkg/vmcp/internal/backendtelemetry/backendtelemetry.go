@@ -13,8 +13,10 @@ package backendtelemetry
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -29,6 +31,33 @@ import (
 const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+var (
+	reclassCounterOnce sync.Once
+	reclassCounter     metric.Int64Counter
+)
+
+// RecordRevisionReclassification increments the count of backends whose MCP
+// revision was reclassified after a call revealed the cached revision was wrong.
+//
+// The backend client resolves revisions below the telemetry decorator, so this
+// is a free function backed by the global meter provider rather than the injected
+// one used by MonitorBackends.
+//
+// ponytail: no labels yet — old/new revision labels (and the CRD status surface)
+// are deferred. If the global provider ever diverges from the injected one, thread
+// the meter down instead.
+func RecordRevisionReclassification(ctx context.Context) {
+	reclassCounterOnce.Do(func() {
+		reclassCounter, _ = otel.GetMeterProvider().Meter(instrumentationName).Int64Counter(
+			"toolhive_vmcp_backend_revision_reclassifications",
+			metric.WithDescription("Number of times a backend's MCP revision was reclassified after a mismatch"),
+		)
+	})
+	if reclassCounter != nil {
+		reclassCounter.Add(ctx, 1)
+	}
+}
 
 // MonitorBackends decorates the backend client so it records telemetry on each method call.
 // It also emits a gauge for the number of backends discovered once, since the number of backends is static.

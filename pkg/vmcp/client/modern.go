@@ -48,6 +48,14 @@ const jsonRPCCodeMethodNotFound = -32601
 // ordinary call error.
 var errWrongEra = errors.New("backend response is not a Modern (2026-07-28) MCP response")
 
+// errLegacyResponseBody is returned when a Modern request gets a well-formed 200
+// JSON-RPC SUCCESS result that is Legacy-shaped (no resultType). Unlike
+// errWrongEra (a transport/protocol rejection that proves the backend did NOT
+// process the request), a success body means a lenient Legacy backend MAY have
+// executed the request — so the caller MUST NOT auto-retry it (double-execution
+// of a side-effecting tool). The cache may still be reclassified.
+var errLegacyResponseBody = errors.New("backend returned a Legacy-shaped success result (no resultType); it may have executed the request")
+
 // errModernInputRequired is returned when a Modern envelope decodes with a
 // resultType other than "complete" (e.g. "input_required"). Multi-round tool
 // retrieval is deferred; this shim detects and errors rather than returning a
@@ -166,7 +174,10 @@ func modernCall(
 	case modernResultTypeComplete:
 		// proceed to decode
 	case "":
-		return errWrongEra
+		// A JSON-RPC success result with no resultType is a Legacy-shaped body: a
+		// lenient Legacy backend that ignored our Modern headers and executed the
+		// request. Distinct from errWrongEra so the caller does not auto-retry.
+		return errLegacyResponseBody
 	default:
 		return fmt.Errorf("%w: resultType=%q", errModernInputRequired, envelope.ResultType)
 	}

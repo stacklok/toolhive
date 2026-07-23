@@ -23,10 +23,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// revisionReporter is the optional accessor the concrete backend client exposes
+// for its cached MCP revision (see client.CachedRevision). It is NOT part of
+// vmcp.BackendClient, so it is reached via a type assertion — a client that does
+// not implement it simply reports no revision.
+type revisionReporter interface {
+	CachedRevision(workloadID string) (mcpparser.Revision, bool)
+}
 
 const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
@@ -132,6 +141,26 @@ type telemetryBackendClient struct {
 
 var _ vmcp.BackendClient = telemetryBackendClient{}
 
+// CachedRevision forwards to the wrapped client's optional revisionReporter so
+// callers reaching the client THROUGH this decorator (e.g. the health monitor)
+// can still read the negotiated revision. Returns (0, false) when the wrapped
+// client does not report revisions.
+func (t telemetryBackendClient) CachedRevision(workloadID string) (mcpparser.Revision, bool) {
+	if r, ok := t.backendClient.(revisionReporter); ok {
+		return r.CachedRevision(workloadID)
+	}
+	return 0, false
+}
+
+// revisionLabel returns the backend's negotiated MCP revision as a metric label
+// value, or "" when unprobed/unknown (low cardinality: 2 values + empty).
+func (t telemetryBackendClient) revisionLabel(workloadID string) string {
+	if rev, ok := t.CachedRevision(workloadID); ok {
+		return rev.String()
+	}
+	return ""
+}
+
 // mapActionToMCPMethod maps internal action names to MCP method names per the OTEL MCP spec.
 func mapActionToMCPMethod(action string) string {
 	switch action {
@@ -182,6 +211,8 @@ func (t telemetryBackendClient) record(
 		attribute.String("action", action),
 		// OTEL MCP spec-required attributes
 		attribute.String("mcp.method.name", mcpMethod),
+		// Negotiated MCP revision (low cardinality: 2 values + empty when unprobed).
+		attribute.String("mcp.protocol.revision", t.revisionLabel(target.WorkloadID)),
 	}
 
 	commonAttrs = append(commonAttrs, attrs...)

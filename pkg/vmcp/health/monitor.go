@@ -13,9 +13,18 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
+
+// revisionReporter is the optional accessor for a backend's cached MCP revision.
+// The backend client (directly or through the telemetry decorator) implements it;
+// it is NOT part of vmcp.BackendClient, so the monitor reaches it via a type
+// assertion and simply reports no revision when absent.
+type revisionReporter interface {
+	CachedRevision(workloadID string) (mcpparser.Revision, bool)
+}
 
 // WithHealthCheckMarker marks a context as a health check request.
 // Authentication layers can use IsHealthCheck to identify and skip authentication
@@ -118,6 +127,10 @@ func (bc *backendCheck) stop() {
 type Monitor struct {
 	// checker performs health checks on backends.
 	checker vmcp.HealthChecker
+
+	// revisions reads each backend's negotiated MCP revision for the status
+	// read-model. Nil when the client does not implement revisionReporter.
+	revisions revisionReporter
 
 	// statusTracker tracks health status for all backends.
 	statusTracker *statusTracker
@@ -252,8 +265,13 @@ func NewMonitor(
 	// The status tracker will lazily initialize circuit breakers as needed
 	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
 
+	// The client (directly or via the telemetry decorator) optionally reports the
+	// negotiated MCP revision for the status read-model; nil when unsupported.
+	revisions, _ := client.(revisionReporter)
+
 	return &Monitor{
 		checker:       checker,
+		revisions:     revisions,
 		statusTracker: statusTracker,
 		checkInterval: config.CheckInterval,
 		backends:      backends,
@@ -486,6 +504,14 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 		// RecordSuccess will further check for recovering state (had recent failures)
 		slog.Debug("health check succeeded for backend", "backend", backend.Name, "status", status)
 		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+	}
+
+	// Refresh the MCP revision read-model from the client's cache (empty until the
+	// backend is probed). Read-only; a no-op when the client doesn't report it.
+	if m.revisions != nil {
+		if rev, ok := m.revisions.CachedRevision(backend.ID); ok {
+			m.statusTracker.RecordRevision(backend.ID, rev.String())
+		}
 	}
 }
 
@@ -735,6 +761,7 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 				CircuitBreakerState: string(state.CircuitState),
 				CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
 				ConsecutiveFailures: state.ConsecutiveFailures,
+				MCPRevision:         state.MCPRevision,
 			})
 			continue
 		}
@@ -752,6 +779,7 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 			CircuitBreakerState: string(state.CircuitState),
 			CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
 			ConsecutiveFailures: state.ConsecutiveFailures,
+			MCPRevision:         state.MCPRevision,
 		})
 	}
 

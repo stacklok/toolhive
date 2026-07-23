@@ -946,6 +946,14 @@ func (h *httpBackendClient) setRevision(workloadID string, rev mcpparser.Revisio
 	h.revisions.Store(workloadID, rev)
 }
 
+// CachedRevision reports a backend's resolved MCP revision for status/telemetry
+// read-models. The second return is false when the backend has never been probed.
+// Exported (not on vmcp.BackendClient) so the telemetry decorator and health
+// monitor can read it via an optional interface without an interface/mock change.
+func (h *httpBackendClient) CachedRevision(workloadID string) (mcpparser.Revision, bool) {
+	return h.cachedRevision(workloadID)
+}
+
 // buildModernHTTPClient wraps the shared backend RoundTripper chain (auth,
 // identity, header-forward, trace, TLS/SSRF — see buildBackendRoundTripper) in an
 // *http.Client for the raw Modern shim. This is a LIVE production path: the

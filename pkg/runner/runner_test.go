@@ -5,8 +5,10 @@ package runner
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -265,6 +267,53 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		ctx := context.Background()
 		err := waitForInitializeSuccess(ctx, server.URL, "streamable", false, 5*time.Second)
 		assert.NoError(t, err)
+	})
+
+	t.Run("Streamable sends pinned probe protocol version in body only", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			mu             sync.Mutex
+			capturedBody   string
+			capturedHeader []string
+			headerPresent  bool
+		)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+
+				mu.Lock()
+				capturedBody = string(body)
+				capturedHeader, headerPresent = r.Header["Mcp-Protocol-Version"]
+				mu.Unlock()
+
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx := context.Background()
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 5*time.Second)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		// Assert against an independent literal (not probeProtocolVersion) so that
+		// changing the pin forces a conscious test update — the const is deliberately
+		// pinned and must not silently track mcp.LATEST_PROTOCOL_VERSION.
+		assert.Contains(t, capturedBody, `"protocolVersion":"2025-11-25"`)
+		assert.NotContains(t, capturedBody, "2024-11-05")
+		// The probe intentionally does not advertise the 2026-07-28 revision, which
+		// removes the initialize method the probe relies on.
+		assert.NotContains(t, capturedBody, "2026-07-28")
+		// The MCP-Protocol-Version header is intentionally NOT sent on the initialize
+		// request: it is scoped to post-initialize requests and a server MUST 400 an
+		// unsupported value, which would falsely mark an older backend as not-ready.
+		assert.False(t, headerPresent, "initialize probe must not send an MCP-Protocol-Version header, got %q", capturedHeader)
 	})
 
 	t.Run("SSE success", func(t *testing.T) {

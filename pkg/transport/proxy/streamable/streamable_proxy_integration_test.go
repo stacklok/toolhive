@@ -11,6 +11,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -143,4 +145,94 @@ func TestHTTPProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "https://example.com", body["resource"])
+}
+
+// syncMapLen counts entries in a sync.Map for test assertions.
+func syncMapLen(m *sync.Map) int {
+	n := 0
+	m.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
+// TestModernLoadDoesNotAccumulateState drives a burst of concurrent Modern
+// (2026-07-28) requests through the full per-request lifecycle --
+// resolveSessionForRequest mints a routing token, doRequest registers a
+// waiter/idRestore entry keyed on it and deletes both via its deferred
+// cleanup once the response arrives -- and proves nothing is left behind.
+// This is the regression test for the unbounded-growth concern behind
+// toolhive-core#169.
+//
+// waiters/idRestore/sessionManager are asserted as hard, exact-zero checks:
+// createWaiter's cleanup runs synchronously inside doRequest before
+// handleSingleRequest ever writes the HTTP response, so by the time every
+// client in the burst has read its response, every cleanup has already run --
+// no settle delay needed, and a regression that skips cleanup fails this
+// deterministically.
+//
+// The goroutine count is checked too, but only as a generous, best-effort
+// bound: this package's request path spawns no per-request goroutine, so any
+// growth here would come from net/http's own idle-connection handling, not
+// from code owned by this package -- hence the loose tolerance rather than a
+// strict equality.
+func TestModernLoadDoesNotAccumulateState(t *testing.T) {
+	port := pickFreePort(t)
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	t.Cleanup(cancel)
+	t.Cleanup(func() { _ = proxy.Stop(ctx) })
+
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+
+	const requestCount = 1000
+	// Cap in-flight requests well under the proxy's 100-slot message-channel
+	// buffer. Firing all 1000 at once can exceed that buffer and produce
+	// dropped-response 504s (#5952, a proxy backpressure gap) --
+	// unrelated to the accumulation invariant this test checks, so throttle
+	// around it rather than let it flake the run.
+	const maxInFlight = 50
+	sem := make(chan struct{}, maxInFlight)
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	for i := 0; i < requestCount; i++ {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			req, err := http.NewRequest(
+				http.MethodPost, url, bytes.NewReader([]byte(modernBody(id, "tools/list"))))
+			if !assert.NoError(t, err) {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			if !assert.NoError(t, err) {
+				return
+			}
+			defer func() {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}()
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for the request burst to complete")
+	}
+
+	assert.Zero(t, proxy.sessionManager.Count(), "Modern requests must never register a session")
+	assert.Zero(t, syncMapLen(&proxy.waiters), "waiters must be fully cleaned up once all responses are delivered")
+	assert.Zero(t, syncMapLen(&proxy.idRestore), "idRestore must be fully cleaned up once all responses are delivered")
+
+	http.DefaultClient.CloseIdleConnections()
+	assert.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= baseline+20
+	}, time.Second, 20*time.Millisecond, "goroutine count did not settle back near baseline after the burst")
 }

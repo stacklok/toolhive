@@ -244,7 +244,11 @@ spec:
                   broker may inject each provider's credential. Required when Untrusted is true.
                   When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend
                   pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar
-                  Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect.
+                  Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the
+                  NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the
+                  trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction
+                  only, never a credential boundary — the credential guarantee comes solely from this
+                  field's broker + single-tenant pods in untrusted mode.
                 properties:
                   providers:
                     description: |-
@@ -1294,7 +1298,11 @@ spec:
                   broker may inject each provider's credential. Required when Untrusted is true.
                   When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend
                   pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar
-                  Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect.
+                  Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the
+                  NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the
+                  trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction
+                  only, never a credential boundary — the credential guarantee comes solely from this
+                  field's broker + single-tenant pods in untrusted mode.
                 properties:
                   providers:
                     description: |-

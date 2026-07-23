@@ -1735,7 +1735,8 @@ components:
         managed:
           description: |-
             Managed indicates this install is tracked in the project's
-            toolhive.lock.yaml. Only ever true for project-scoped installs.
+            toolhive.lock.yaml. Only ever true for project-scoped installs. No
+            omitempty: false is an observable state (unmanaged), not an absence.
           type: boolean
         metadata:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata'

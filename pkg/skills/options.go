@@ -151,19 +151,21 @@ type SyncOptions struct {
 }
 
 // FailureReason is a typed failure reason for sync/upgrade operations, per
-// RFC THV-0080's exit-code and automation contract.
+// RFC THV-0080's exit-code and automation contract. Only reasons the current
+// feature set can actually produce are defined; the RFC's remaining values
+// (the Sigstore verification reasons and ref-change-blocked, which surfaces
+// as an UpgradeStatus rather than a failure) land together with the code
+// that emits them.
 type FailureReason string
 
 // Typed failure reasons for sync/upgrade operations.
 const (
+	// FailureReasonRegistryUnreachable means the skill's remote source — an
+	// OCI registry or a git host — could not be reached.
 	FailureReasonRegistryUnreachable FailureReason = "registry-unreachable"
 	FailureReasonDigestMissing       FailureReason = "digest-missing"
 	FailureReasonValidationRejected  FailureReason = "validation-rejected"
 	FailureReasonLockWriteFailed     FailureReason = "lock-write-failed"
-	FailureReasonRefChangeBlocked    FailureReason = "ref-change-blocked"
-	FailureReasonSignatureInvalid    FailureReason = "signature-invalid"
-	FailureReasonSignerMismatch      FailureReason = "signer-mismatch"
-	FailureReasonUnsignedRejected    FailureReason = "unsigned-rejected"
 	FailureReasonUnknown             FailureReason = "unknown"
 )
 

@@ -41,11 +41,16 @@ func writeHTTPError(w http.ResponseWriter, status int, msg string) {
 	http.Error(w, msg, status)
 }
 
-// writeSSEData writes data as a single SSE "data:" event to w and flushes it.
-// It returns the underlying write error (if any) so the caller can decide
-// whether to end the stream; it does not itself log or close anything.
+// writeSSEData writes a single JSON-RPC SSE frame with an explicit
+// "event: message" name plus a "data:" line, then flushes it. The event name
+// matches MCP reference transports and ToolHive's own ssecommon serializer;
+// clients that only dispatch named "message" events (for example @ai-sdk/mcp)
+// drop data-only frames. It returns the underlying write error (if any) so
+// the caller can decide whether to end the stream; it does not itself log or
+// close anything.
 func writeSSEData(w io.Writer, flusher http.Flusher, data []byte) error {
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+	//nolint:gosec // G705: SSE data from MCP protocol
+	if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", data); err != nil {
 		return err
 	}
 	flusher.Flush()

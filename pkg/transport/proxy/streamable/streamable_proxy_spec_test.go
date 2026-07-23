@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -314,6 +315,67 @@ func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
 	assert.Contains(t, string(body), `"id":"test-42"`)
+}
+
+// TestSSEResponseIncludesEventMessage verifies that a POST with
+// Accept: text/event-stream returns an SSE frame that starts with
+// "event: message" before the JSON-RPC data line. Regression for #5655:
+// data-only frames hang clients that require an explicit event name.
+func TestSSEResponseIncludesEventMessage(t *testing.T) {
+	t.Parallel()
+
+	port := pickFreePort(t)
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	t.Cleanup(cancel)
+	t.Cleanup(func() { _ = proxy.Stop(ctx) })
+
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"sse-event-test","version":"1.0"}}}`
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	got := string(raw)
+
+	assert.True(t, bytes.HasPrefix(raw, []byte("event: message\n")),
+		"SSE body must start with event: message; got %q", got)
+	assert.Contains(t, got, "\ndata: ")
+	assert.Contains(t, got, `"jsonrpc":"2.0"`)
+	assert.Contains(t, got, `"id":1`)
+	// Defend against a regression that writes data: first then event: later.
+	eventIdx := bytes.Index(raw, []byte("event: message\n"))
+	dataIdx := bytes.Index(raw, []byte("\ndata: "))
+	require.GreaterOrEqual(t, eventIdx, 0)
+	require.Greater(t, dataIdx, eventIdx, "event: message must appear before data:")
+}
+
+// TestSSEErrorEventIncludesEventMessage verifies the error SSE writer uses the
+// same event: message framing as the success path (writeSSEData).
+func TestSSEErrorEventIncludesEventMessage(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	writeSSEErrorEvent(rec, rec, jsonrpc2.StringID("7"), context.DeadlineExceeded)
+
+	raw := rec.Body.Bytes()
+	got := string(raw)
+	assert.True(t, bytes.HasPrefix(raw, []byte("event: message\n")),
+		"error SSE frame must start with event: message; got %q", got)
+	assert.Contains(t, got, `"id":"7"`)
+	assert.Contains(t, got, `"code":-32000`)
+	assert.Contains(t, got, `"Timeout"`)
 }
 
 // pickFreePort returns a TCP port the OS reports as available. There is a small

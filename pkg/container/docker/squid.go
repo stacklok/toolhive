@@ -353,6 +353,47 @@ func getSquidImage() string {
 	return defaultSquidImage
 }
 
+// squidProxy is the default networkProxy implementation. It creates egress and
+// ingress Squid-based proxy containers for isolated workloads.
+type squidProxy struct {
+	client *Client
+}
+
+// SetupEgress creates the egress Squid container before the MCP container is
+// created and returns the proxy env vars to inject into the workload.
+func (s *squidProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error) {
+	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
+	_, err := createEgressSquidContainer(
+		ctx, s.client, spec.WorkloadName, egressContainerName,
+		spec.AttachStdio, nil, spec.Endpoints, spec.Permissions,
+		spec.AllowDockerGateway, spec.GatewayIP,
+	)
+	if err != nil {
+		return egressResult{}, fmt.Errorf("failed to create egress container: %w", err)
+	}
+	// ingressPort stays 0: squid creates and binds the ingress container later,
+	// in SetupIngress, once the MCP container's hostname resolves.
+	return egressResult{EnvVars: addEgressEnvVars(nil, egressContainerName)}, nil
+}
+
+// SetupIngress creates the ingress Squid container after the MCP container
+// exists. Creating it here (rather than before the MCP container) ensures the
+// cache_peer hostname resolves on first probe; a Squid ingress created against a
+// not-yet-existent upstream caches the negative DNS lookup and never recovers
+// within the workload's readiness window.
+func (s *squidProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressResult) (int, error) {
+	if spec.TransportType == "stdio" || spec.UpstreamPort == 0 {
+		return 0, nil
+	}
+	ingressPort, err := s.client.setupIngressContainer(
+		ctx, spec.WorkloadName, spec.UpstreamPort, spec.AttachStdio, spec.Endpoints, spec.Permissions,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return ingressPort, nil
+}
+
 func createTempIngressSquidConf(
 	serverHostname string,
 	upstreamPort int,
@@ -398,11 +439,16 @@ func writeIngressProxyConfig(
 ) {
 	portNum := strconv.Itoa(upstreamPort)
 	squidPortNum := strconv.Itoa(squidPort)
+	// standby=2 keeps warm idle connections open to the upstream so the first
+	// request after a cold start (notably a long-lived GET SSE stream that a
+	// server-initiated request rides on) is forwarded without paying inline DNS
+	// + TCP connect latency. Without it, the cold first GET races behind a
+	// later POST that reuses a warmed path, reordering server->client streams.
 	sb.WriteString(
 		"\n# Reverse proxy setup for port " + portNum + "\n" +
 			"http_port 0.0.0.0:" + squidPortNum + " accel defaultsite=" + serverHostname + "\n" +
 			"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
-			portNum + " connect-timeout=5 connect-fail-limit=5\n")
+			portNum + " connect-timeout=5 connect-fail-limit=5 standby=2\n")
 
 	// Check if inbound network permissions are configured
 	if networkPermissions != nil && networkPermissions.Inbound != nil && len(networkPermissions.Inbound.AllowHost) > 0 {

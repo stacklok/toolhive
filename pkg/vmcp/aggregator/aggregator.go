@@ -74,6 +74,9 @@ type BackendCapabilities struct {
 	// Resources are the resources exposed by this backend.
 	Resources []vmcp.Resource
 
+	// ResourceTemplates are the resource templates exposed by this backend.
+	ResourceTemplates []vmcp.ResourceTemplate
+
 	// Prompts are the prompts exposed by this backend.
 	Prompts []vmcp.Prompt
 
@@ -93,6 +96,9 @@ type ResolvedCapabilities struct {
 
 	// Resources are passed through (conflicts rare, namespaced by URI).
 	Resources []vmcp.Resource
+
+	// ResourceTemplates are passed through (conflicts rare, namespaced by URI template).
+	ResourceTemplates []vmcp.ResourceTemplate
 
 	// Prompts are passed through (conflicts rare, namespaced by name).
 	Prompts []vmcp.Prompt
@@ -145,6 +151,9 @@ type AggregatedCapabilities struct {
 	// Resources are the aggregated resources.
 	Resources []vmcp.Resource
 
+	// ResourceTemplates are the aggregated resource templates.
+	ResourceTemplates []vmcp.ResourceTemplate
+
 	// Prompts are the aggregated prompts.
 	Prompts []vmcp.Prompt
 
@@ -171,6 +180,9 @@ type AggregationMetadata struct {
 
 	// ResourceCount is the total number of resources.
 	ResourceCount int
+
+	// ResourceTemplateCount is the total number of resource templates.
+	ResourceTemplateCount int
 
 	// PromptCount is the total number of prompts.
 	PromptCount int

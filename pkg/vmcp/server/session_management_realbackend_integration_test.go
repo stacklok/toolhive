@@ -237,6 +237,119 @@ func TestIntegration_RealBackend_NonSSEGetRejectedWithNotAcceptable(t *testing.T
 		"GET without Accept: text/event-stream must be rejected with 406")
 }
 
+// TestIntegration_RealBackend_ModernRequestRejectedByClassification verifies
+// the classificationMiddleware wiring end-to-end through the real chain (not
+// just the unit-level table covering classificationMiddleware in isolation):
+// a request that signals Modern (2026-07-28) via a reserved _meta key, but
+// carries a mismatched MCP-Protocol-Version header, is rejected with a
+// -32020 (HeaderMismatch) JSON-RPC error before ever reaching the backend.
+func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testing.T) {
+	t.Parallel()
+
+	// Rejected by classificationMiddleware before dispatch, so no real MCP
+	// backend is needed.
+	ts := newRealTestServer(t, "http://127.0.0.1:0")
+
+	body := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			// Presence of a reserved io.modelcontextprotocol/* _meta key is
+			// itself a Modern signal, regardless of its value (see
+			// pkg/mcp/revision.go). No protocolVersion is present, so the
+			// non-empty header below cannot be validated against the body
+			// and the request is a hard rejection.
+			"_meta":     map[string]any{"io.modelcontextprotocol/clientInfo": map[string]any{"name": "test"}},
+			"name":      "echo",
+			"arguments": map[string]any{},
+		},
+	}
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost, ts.URL+"/mcp", bytes.NewReader(payload))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", string(respBody))
+
+	var rpc struct {
+		Error struct {
+			Code int64 `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &rpc), "body: %s", string(respBody))
+	assert.Equal(t, int64(-32020), rpc.Error.Code, "expected CodeHeaderMismatch")
+}
+
+// TestIntegration_RealBackend_ModernRequestRejectedByHeaderMismatch verifies
+// the header-consistency path end-to-end through the real chain: a
+// well-formed Modern (2026-07-28) request — valid _meta.protocolVersion,
+// valid clientCapabilities, and a matching MCP-Protocol-Version header — is
+// still rejected with -32020 (HeaderMismatch) when its Mcp-Method HTTP header
+// disagrees with the JSON-RPC body's actual method. This exercises the real
+// ParsingMiddleware -> classificationMiddleware flow (unlike
+// TestClassificationMiddleware in classification_test.go, which injects a
+// pre-built ParsedMCPRequest and bypasses ParsingMiddleware), and covers a
+// genuine Mcp-Method/body mismatch rather than the protocolVersion mismatch
+// already covered by TestIntegration_RealBackend_ModernRequestRejectedByClassification.
+func TestIntegration_RealBackend_ModernRequestRejectedByHeaderMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Rejected by classificationMiddleware before dispatch, so no real MCP
+	// backend is needed.
+	ts := newRealTestServer(t, "http://127.0.0.1:0")
+
+	body := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			},
+			"name":      "echo",
+			"arguments": map[string]any{},
+		},
+	}
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost, ts.URL+"/mcp", bytes.NewReader(payload))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	// Mismatched: the body's actual method is "tools/call".
+	req.Header.Set("Mcp-Method", "resources/read")
+
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", string(respBody))
+
+	var rpc struct {
+		Error struct {
+			Code int64 `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &rpc), "body: %s", string(respBody))
+	assert.Equal(t, int64(-32020), rpc.Error.Code, "expected CodeHeaderMismatch")
+}
+
 // TestIntegration_RealBackend_Termination verifies the session termination path
 // against a real backend: a DELETE request closes the backend connection, and
 // subsequent requests with the terminated session ID are rejected.

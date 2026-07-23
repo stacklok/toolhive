@@ -57,8 +57,12 @@ jobs:
             label_filter: mcp-protocol
             artifact: e2e-test-results-mcp-protocol
           - title: proxy
-            label_filter: proxy
+            label_filter: "proxy && !isolation"
             artifact: e2e-test-results-proxy
+          - title: network-isolation
+            label_filter: isolation
+            artifact: e2e-test-results-network-isolation
+            test_timeout: 25m
           - title: middleware
             label_filter: 'middleware || stability'
             artifact: e2e-test-results-middleware
@@ -99,7 +103,7 @@ jobs:
           go mod download
       - name: Install Ginkgo CLI
         run: |
-          go install github.com/onsi/ginkgo/v2/ginkgo@latest
+          go install github.com/onsi/ginkgo/v2/ginkgo@v2.28.1
 
       - name: Download ToolHive binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -130,9 +134,13 @@ jobs:
           if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
             docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
           fi
-          # the time server is only used by the proxy (streamable-http) test suite
-          if [ "${{ matrix.label_filter }}" = "proxy" ]; then
+          # the time server is only used by the proxy test suite
+          if [ "${{ matrix.label_filter }}" = "proxy && !isolation" ]; then
             docker pull ghcr.io/stacklok/dockyard/uvx/mcp-server-time:2026.1.26 &
+          fi
+          # Envoy is only used by the network-isolation test suite
+          if [ "${{ matrix.title }}" = "network-isolation" ]; then
+            docker pull envoyproxy/envoy-distroless:v1.32.3 &
           fi
           wait
           echo "Pre-pulled images:"
@@ -160,6 +168,10 @@ jobs:
     runs-on: ubuntu-8cores-32gb
     needs: build-binary
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [proxy, vmcp]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
@@ -185,12 +197,13 @@ jobs:
       - name: Run MCP conformance suite
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv
+          CONFORMANCE_TARGET: ${{ matrix.target }}
         run: ./test/conformance/run-conformance.sh
 
       - name: Upload conformance results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: conformance-results
+          name: conformance-results-${{ matrix.target }}
           path: test/conformance/results
           retention-days: 7

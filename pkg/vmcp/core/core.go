@@ -74,6 +74,14 @@ type VMCP interface {
 	// ListResources returns the resources advertised to identity.
 	ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error)
 
+	// ListResourceTemplates returns the resource templates advertised to identity.
+	// Each template's URI template is treated as the resource id for the admission
+	// filter (the same read-side decision ListResources applies), so a template the
+	// identity may not read is withheld. Reading an expanded URI reuses ReadResource
+	// (the router matches the URI against these templates); there is no dedicated
+	// template read method.
+	ListResourceTemplates(ctx context.Context, identity *auth.Identity) ([]vmcp.ResourceTemplate, error)
+
 	// ReadResource reads the resource at uri on behalf of identity. The
 	// returned result's Meta may be nil (see the interface contract).
 	ReadResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
@@ -88,6 +96,27 @@ type VMCP interface {
 	// _meta to forward.
 	GetPrompt(ctx context.Context, identity *auth.Identity, name string,
 		args map[string]any) (*vmcp.PromptGetResult, error)
+
+	// Complete resolves argument-completion candidates for a prompt argument or a
+	// resource-template variable on behalf of identity (the completion/complete
+	// method).
+	//
+	// ref selects the target: a CompletionRefTypePrompt ref resolves the backend via
+	// the prompts routing table (by ref.Name); a CompletionRefTypeResource ref resolves
+	// it via the resource-templates routing table (matching ref.URI against templates)
+	// with an exact concrete-resource fallback. The referenced capability is
+	// admission-checked (the same get/read decision GetPrompt/ReadResource enforce)
+	// before the backend is queried.
+	//
+	// argName/argValue are the argument being completed; contextArgs carries
+	// previously-resolved argument values for multi-argument completion (may be nil).
+	//
+	// An unroutable ref, or a backend that does not advertise completions, yields an
+	// empty (non-nil) CompletionResult rather than an error — matching the MCP spec's
+	// lenient completion semantics. Admission denial still returns an error wrapping
+	// vmcp.ErrAuthorizationFailed. See ListTools for the nil/anonymous identity semantics.
+	Complete(ctx context.Context, identity *auth.Identity, ref vmcp.CompletionRef,
+		argName, argValue string, contextArgs map[string]string) (*vmcp.CompletionResult, error)
 
 	// LookupTool resolves an advertised tool name to its capability (incl.
 	// BackendID) WITHOUT invoking it. Returns an error for an unknown or

@@ -386,3 +386,137 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 
 	cancelServer()
 }
+
+// TestIntegration_TelemetryRunsBeforeClassificationRejection is a regression
+// guard for the middleware ordering in server.go: classificationMiddleware
+// must stay closer to the handler than the telemetry middleware, so a
+// request that classificationMiddleware rejects is still recorded as an
+// incoming request instead of being dropped before telemetry ever sees it.
+// If classification is ever reordered in front of telemetry, this test
+// starts failing because the rejected request would never reach it.
+//
+// Note: like TestIntegration_TelemetryMiddleware, this does not use
+// t.Parallel() since telemetry.NewProvider sets global OTel providers.
+//
+//nolint:paralleltest // shares global OTel provider state with other telemetry tests
+func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	ctx := context.Background()
+
+	telemetryProvider, err := telemetry.NewProvider(ctx, telemetry.Config{
+		ServiceName:                 "vmcp-telemetry-ordering-test",
+		ServiceVersion:              "1.0.0",
+		EnablePrometheusMetricsPath: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { telemetryProvider.Shutdown(ctx) })
+
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockBackendClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(&vmcp.CapabilityList{}, nil).
+		AnyTimes()
+
+	backends := []vmcp.Backend{
+		{
+			ID:            "search-svc",
+			Name:          "Search Service",
+			BaseURL:       "http://search-svc:8080",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+		},
+	}
+
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
+	agg := aggregator.NewDefaultAggregator(
+		mockBackendClient, aggregator.NewPrefixConflictResolver("{workload}_"), nil, nil)
+	factory := newBackendAwareTestFactory(nil, &vmcp.RoutingTable{})
+
+	srv, err := New(ctx, &Config{
+		Name:              "telemetry-ordering-vmcp",
+		Version:           "1.0.0",
+		Host:              "127.0.0.1",
+		Port:              0, // Random available port
+		TelemetryProvider: telemetryProvider,
+		SessionFactory:    factory,
+		Aggregator:        agg,
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
+	require.NoError(t, err)
+
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	t.Cleanup(cancelServer)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
+			serverErrCh <- err
+		}
+	}()
+
+	select {
+	case <-srv.Ready():
+	case err := <-serverErrCh:
+		t.Fatalf("Server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Server timeout waiting for ready")
+	}
+
+	baseURL := "http://" + srv.Address()
+
+	// Same malformed-Modern rejection payload as
+	// TestIntegration_RealBackend_ModernRequestRejectedByClassification: a
+	// reserved _meta key signals Modern, but no valid protocolVersion is
+	// present and the header names a different (Legacy) version, so
+	// classificationMiddleware rejects with -32020 before dispatch.
+	body := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"_meta":     map[string]any{"io.modelcontextprotocol/clientInfo": map[string]any{"name": "test"}},
+			"name":      "echo",
+			"arguments": map[string]any{},
+		},
+	}
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/mcp", bytes.NewReader(payload))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", string(respBody))
+
+	var rpc struct {
+		Error struct {
+			Code int64 `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &rpc), "body: %s", string(respBody))
+	require.Equal(t, int64(-32020), rpc.Error.Code, "expected CodeHeaderMismatch")
+
+	metricsResp, err := http.Get(baseURL + "/metrics")
+	require.NoError(t, err)
+	defer metricsResp.Body.Close()
+	require.Equal(t, http.StatusOK, metricsResp.StatusCode)
+
+	metricsBody, err := io.ReadAll(metricsResp.Body)
+	require.NoError(t, err)
+	metrics := string(metricsBody)
+
+	assert.Contains(t, metrics, "toolhive_mcp_requests",
+		"telemetry must record the request even though classification rejected it downstream")
+	assert.Contains(t, metrics, `server="telemetry-ordering-vmcp"`,
+		"request metrics should identify this vMCP server")
+
+	cancelServer()
+}

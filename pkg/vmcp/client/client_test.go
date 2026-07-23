@@ -372,6 +372,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
 
 		require.Error(t, err)
@@ -402,6 +403,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		data, err := backendClient.ReadResource(context.Background(), target, "test://resource")
 
 		require.Error(t, err)
@@ -432,6 +434,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		prompt, err := backendClient.GetPrompt(context.Background(), target, "test_prompt", map[string]any{"arg": "value"})
 
 		require.Error(t, err)

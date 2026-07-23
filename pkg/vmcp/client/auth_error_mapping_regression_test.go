@@ -293,6 +293,8 @@ func TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure(t *testin
 		TransportType: "streamable-http",
 	}
 
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

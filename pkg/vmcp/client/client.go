@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -149,9 +150,10 @@ type httpBackendClient struct {
 	// the Modern-first discover probe.
 	//
 	// ponytail: never evicted — a transient failure on the FIRST probe pins a
-	// backend to RevisionLegacy for the process lifetime. Recovery comes from
-	// Step 4's re-classification-on-error (re-probe + flip); add a TTL/re-probe
-	// only if flapping backends surface.
+	// backend to RevisionLegacy for the process lifetime. Recovery depends on
+	// re-classification-on-error (re-probe and flip the cached revision when a
+	// call reveals the other era); a TTL/periodic re-probe is deferred until
+	// flapping backends surface.
 	revisions sync.Map // map[string]mcpparser.Revision
 }
 
@@ -1087,6 +1089,7 @@ func (h *httpBackendClient) modernEnumerate(
 		switch {
 		case errors.Is(err, mcp.ErrMethodNotFound):
 			templates = nil
+			err = nil // clear so a later reader can't mistake it for a live error
 		case err != nil:
 			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
 		}
@@ -1290,10 +1293,31 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	return capabilities, nil
 }
 
-// CallTool invokes a tool on the backend MCP server.
-// Returns the complete tool result including _meta field.
+// dispatch resolves the backend's MCP revision (cache hit, else probeRevision)
+// and runs fn exactly once with it. Every call verb routes through this seam so
+// revision selection lives in one place.
 //
-//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
+// ponytail: retry-on-revision-mismatch is deferred — when the probe classifies
+// one era but the call reveals the other, fn would re-probe and run again. For
+// now fn runs exactly once, no re-probe.
+func (h *httpBackendClient) dispatch(
+	ctx context.Context, target *vmcp.BackendTarget,
+	fn func(ctx context.Context, rev mcpparser.Revision) error,
+) error {
+	rev, cached := h.cachedRevision(target.WorkloadID)
+	if !cached {
+		probed, _, err := h.probeRevision(ctx, target)
+		if err != nil {
+			return wrapBackendError(err, target.WorkloadID, "probe revision")
+		}
+		rev = probed
+	}
+	return fn(ctx, rev)
+}
+
+// CallTool invokes a tool on the backend MCP server, selecting the Legacy or
+// Modern (2026-07-28) path by the backend's resolved revision. Returns the
+// complete tool result including _meta.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -1302,7 +1326,52 @@ func (h *httpBackendClient) CallTool(
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
+	var out *vmcp.ToolCallResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernCallTool(ctx, target, toolName, arguments, meta)
+		} else {
+			out, err = h.legacyCallTool(ctx, target, toolName, arguments, meta)
+		}
+		return err
+	})
+	return out, err
+}
 
+// modernCallTool invokes tools/call over the Modern (2026-07-28) shim. The
+// advertised tool name is translated to the backend's capability name for BOTH
+// the body identifier and the Mcp-Name header — the server rejects a mismatch
+// (-32020). The caller's _meta is forwarded (modernCall strips reserved keys and
+// overlays vMCP's) and the result _meta is forwarded back to core.
+func (h *httpBackendClient) modernCallTool(
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any,
+) (*vmcp.ToolCallResult, error) {
+	backendToolName := target.GetBackendCapabilityName(toolName)
+	if backendToolName != toolName {
+		slog.Debug("translating tool name", "client_name", toolName, "backend_name", backendToolName)
+	}
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	params := map[string]any{"name": backendToolName, "arguments": arguments}
+	if len(meta) > 0 {
+		params["_meta"] = meta
+	}
+	var result mcp.CallToolResult
+	if err := modernCall(ctx, hc, target.BaseURL, "tools/call", params, backendToolName, &result); err != nil {
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+	}
+	return toolResultFromMCP(&result, toolName, target.WorkloadID), nil
+}
+
+// legacyCallTool is the initialize + SDK CallTool path (unchanged behavior).
+//
+//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
+func (h *httpBackendClient) legacyCallTool(
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any,
+) (*vmcp.ToolCallResult, error) {
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target, true)
 	if err != nil {
@@ -1352,6 +1421,13 @@ func (h *httpBackendClient) CallTool(
 	// dropped. See drainServerToClientNotifications for the lost-notification race.
 	h.drainServerToClientNotifications(ctx, c)
 
+	return toolResultFromMCP(result, toolName, target.WorkloadID), nil
+}
+
+// toolResultFromMCP converts an mcp.CallToolResult into the vmcp domain result,
+// shared by the Legacy and Modern tools/call paths so both handle IsError
+// logging, structuredContent, and _meta forwarding identically.
+func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *vmcp.ToolCallResult {
 	// Extract _meta field from backend response
 	responseMeta := conversion.FromMCPMeta(result.Meta)
 
@@ -1371,10 +1447,10 @@ func (h *httpBackendClient) CallTool(
 		// Log with metadata for distributed tracing
 		if responseMeta != nil {
 			slog.Warn("tool returned IsError=true",
-				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg, "meta", responseMeta)
+				"tool", toolName, "backend", backendID, "error", errorMsg, "meta", responseMeta)
 		} else {
 			slog.Warn("tool returned IsError=true",
-				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg)
+				"tool", toolName, "backend", backendID, "error", errorMsg)
 		}
 		// Continue processing - we return the result with IsError flag and metadata preserved
 	}
@@ -1388,12 +1464,12 @@ func (h *httpBackendClient) CallTool(
 	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
-			slog.Debug("using structured content from tool", "tool", toolName, "backend", target.WorkloadID)
+			slog.Debug("using structured content from tool", "tool", toolName, "backend", backendID)
 			structuredContent = structuredMap
 		} else {
 			// StructuredContent is not an object - fall through to Content processing
 			slog.Debug("structuredContent is not an object, falling back to Content",
-				"tool", toolName, "backend", target.WorkloadID)
+				"tool", toolName, "backend", backendID)
 		}
 	}
 
@@ -1409,16 +1485,78 @@ func (h *httpBackendClient) CallTool(
 		StructuredContent: structuredContent,
 		IsError:           result.IsError,
 		Meta:              responseMeta,
-	}, nil
+	}
 }
 
-// ReadResource retrieves a resource from the backend MCP server.
-// Returns the complete resource result including _meta field.
+// ReadResource retrieves a resource from the backend MCP server, selecting the
+// Legacy or Modern path by revision. Returns the complete resource result
+// including _meta.
 func (h *httpBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (*vmcp.ResourceReadResult, error) {
 	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
+	var out *vmcp.ResourceReadResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernReadResource(ctx, target, uri)
+		} else {
+			out, err = h.legacyReadResource(ctx, target, uri)
+		}
+		return err
+	})
+	return out, err
+}
 
+// modernReadResource invokes resources/read over the Modern shim. The URI is
+// translated to the backend's capability name for both the body and the Mcp-Name
+// header (server rejects a mismatch), and the result _meta is forwarded to core.
+func (h *httpBackendClient) modernReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
+	backendURI := target.GetBackendCapabilityName(uri)
+	if backendURI != uri {
+		slog.Debug("translating resource URI", "client_uri", uri, "backend_uri", backendURI)
+	}
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	// mcp.ResourceContents is an interface with no JSON unmarshaler, so it cannot
+	// decode directly. Decode the wire shape, rebuild the discriminated mcp types
+	// (blob takes precedence, symmetric with conversion.ToMCPResourceContents),
+	// then hand off to the SAME converter legacyReadResource uses so the
+	// content->vmcp mapping is shared, not duplicated.
+	var res struct {
+		Contents []struct {
+			URI      string `json:"uri"`
+			MIMEType string `json:"mimeType"`
+			Text     string `json:"text"`
+			Blob     string `json:"blob"`
+		} `json:"contents"`
+		Meta map[string]any `json:"_meta"`
+	}
+	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", map[string]any{"uri": backendURI}, backendURI, &res); err != nil {
+		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
+	}
+	mcpContents := make([]mcp.ResourceContents, len(res.Contents))
+	for i, c := range res.Contents {
+		if c.Blob != "" {
+			mcpContents[i] = mcp.BlobResourceContents{URI: c.URI, MIMEType: c.MIMEType, Blob: c.Blob}
+		} else {
+			mcpContents[i] = mcp.TextResourceContents{URI: c.URI, MIMEType: c.MIMEType, Text: c.Text}
+		}
+	}
+	return &vmcp.ResourceReadResult{
+		Contents: conversion.ConvertMCPResourceContents(mcpContents),
+		Meta:     res.Meta,
+	}, nil
+}
+
+// legacyReadResource is the initialize + SDK ReadResource path (unchanged behavior).
+func (h *httpBackendClient) legacyReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
@@ -1465,8 +1603,8 @@ func (h *httpBackendClient) ReadResource(
 	}, nil
 }
 
-// GetPrompt retrieves a prompt from the backend MCP server.
-// Returns the complete prompt result including _meta field.
+// GetPrompt retrieves a prompt from the backend MCP server, selecting the Legacy
+// or Modern path by revision. Returns the complete prompt result including _meta.
 func (h *httpBackendClient) GetPrompt(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -1474,7 +1612,68 @@ func (h *httpBackendClient) GetPrompt(
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
 	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
+	var out *vmcp.PromptGetResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernGetPrompt(ctx, target, name, arguments)
+		} else {
+			out, err = h.legacyGetPrompt(ctx, target, name, arguments)
+		}
+		return err
+	})
+	return out, err
+}
 
+// modernGetPrompt invokes prompts/get over the Modern shim. The prompt name is
+// translated to the backend's capability name for both the body and the Mcp-Name
+// header (server rejects a mismatch); the result _meta is forwarded to core.
+// Message content is decoded via mcp.UnmarshalContent so it goes through the same
+// content conversion as the Legacy path.
+func (h *httpBackendClient) modernGetPrompt(
+	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
+) (*vmcp.PromptGetResult, error) {
+	backendPromptName := target.GetBackendCapabilityName(name)
+	if backendPromptName != name {
+		slog.Debug("translating prompt name", "client_name", name, "backend_name", backendPromptName)
+	}
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	params := map[string]any{
+		"name":      backendPromptName,
+		"arguments": conversion.ConvertPromptArguments(arguments),
+	}
+	var res struct {
+		Description string `json:"description"`
+		Messages    []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Meta map[string]any `json:"_meta"`
+	}
+	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, &res); err != nil {
+		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
+	}
+	messages := make([]vmcp.PromptMessage, 0, len(res.Messages))
+	for _, m := range res.Messages {
+		content, err := mcp.UnmarshalContent(m.Content)
+		if err != nil {
+			return nil, fmt.Errorf("prompt get: decoding message content from backend %s: %w", target.WorkloadID, err)
+		}
+		messages = append(messages, vmcp.PromptMessage{
+			Role:    m.Role,
+			Content: conversion.ConvertMCPContent(content),
+		})
+	}
+	return &vmcp.PromptGetResult{Messages: messages, Description: res.Description, Meta: res.Meta}, nil
+}
+
+// legacyGetPrompt is the initialize + SDK GetPrompt path (unchanged behavior).
+func (h *httpBackendClient) legacyGetPrompt(
+	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
+) (*vmcp.PromptGetResult, error) {
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
@@ -1520,9 +1719,10 @@ func (h *httpBackendClient) GetPrompt(
 	}, nil
 }
 
-// Complete requests argument-completion candidates from the backend MCP server.
-// Returns an empty (non-nil) result when the backend does not advertise the
-// completions capability, matching the MCP spec's lenient completion semantics.
+// Complete requests argument-completion candidates from the backend MCP server,
+// selecting the Legacy or Modern path by revision. Returns an empty (non-nil)
+// result when the backend does not advertise completions, matching the MCP
+// spec's lenient completion semantics.
 func (h *httpBackendClient) Complete(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -1530,9 +1730,90 @@ func (h *httpBackendClient) Complete(
 	argName, argValue string,
 	contextArgs map[string]string,
 ) (*vmcp.CompletionResult, error) {
-	slog.Debug("requesting completion from backend",
-		"ref_type", ref.Type, "backend", target.WorkloadName)
+	slog.Debug("requesting completion from backend", "ref_type", ref.Type, "backend", target.WorkloadName)
+	var out *vmcp.CompletionResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernComplete(ctx, target, ref, argName, argValue, contextArgs)
+		} else {
+			out, err = h.legacyComplete(ctx, target, ref, argName, argValue, contextArgs)
+		}
+		return err
+	})
+	return out, err
+}
 
+// modernComplete invokes completion/complete over the Modern shim (not a
+// name-required method, so no Mcp-Name). A prompt ref's name is translated to the
+// backend capability name. A backend without completions answers -32601, which is
+// treated as an empty result (lenient completion semantics).
+func (h *httpBackendClient) modernComplete(
+	ctx context.Context, target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef, argName, argValue string, contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	refMap, err := modernCompletionRef(target, ref)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{
+		"ref":      refMap,
+		"argument": map[string]any{"name": argName, "value": argValue},
+	}
+	if len(contextArgs) > 0 {
+		params["context"] = map[string]any{"arguments": contextArgs}
+	}
+	var res struct {
+		Completion struct {
+			Values  []string `json:"values"`
+			Total   int      `json:"total"`
+			HasMore bool     `json:"hasMore"`
+		} `json:"completion"`
+	}
+	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", &res)
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		return &vmcp.CompletionResult{Values: []string{}}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("completion failed on backend %s: %w", target.WorkloadID, err)
+	}
+	values := res.Completion.Values
+	if values == nil {
+		values = []string{}
+	}
+	return &vmcp.CompletionResult{Values: values, Total: res.Completion.Total, HasMore: res.Completion.HasMore}, nil
+}
+
+// modernCompletionRef builds the Modern completion/complete ref params, mirroring
+// buildCompletionRef's translation: a prompt ref's name is translated to the
+// backend capability name; a resource ref's URI is passed through.
+func modernCompletionRef(target *vmcp.BackendTarget, ref vmcp.CompletionRef) (map[string]any, error) {
+	switch ref.Type {
+	case vmcp.CompletionRefTypePrompt:
+		backendName := target.GetBackendCapabilityName(ref.Name)
+		if backendName != ref.Name {
+			slog.Debug("translating prompt name for completion", "client_name", ref.Name, "backend_name", backendName)
+		}
+		return map[string]any{"type": ref.Type, "name": backendName}, nil
+	case vmcp.CompletionRefTypeResource:
+		return map[string]any{"type": ref.Type, "uri": ref.URI}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported completion ref type %q", vmcp.ErrInvalidInput, ref.Type)
+	}
+}
+
+// legacyComplete is the initialize + SDK Complete path (unchanged behavior).
+func (h *httpBackendClient) legacyComplete(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef,
+	argName, argValue string,
+	contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {

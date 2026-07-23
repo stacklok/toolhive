@@ -13,6 +13,7 @@ package backendtelemetry
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -20,20 +21,28 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
+
+	// healthStateLabel is the label key distinguishing the health state a gauge
+	// point represents. The gauge emits one point per (mcp_server, state) pair.
+	healthStateLabel = "state"
+
+	healthStateHealthy   = "healthy"
+	healthStateUnhealthy = "unhealthy"
 )
 
 // MonitorBackends decorates the backend client so it records telemetry on each method call.
-// It also emits a gauge for the number of backends discovered once, since the number of backends is static.
+// It also registers a live per-backend health gauge (stacklok.vmcp.mcp_server.health)
+// whose observable callback reports each backend's current health at every collection.
 func MonitorBackends(
-	ctx context.Context,
+	_ context.Context,
 	meterProvider metric.MeterProvider,
 	tracerProvider trace.TracerProvider,
 	backends []vmcp.Backend,
@@ -41,67 +50,95 @@ func MonitorBackends(
 ) (vmcp.BackendClient, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
-	backendCount, err := meter.Int64Gauge(
-		"toolhive_vmcp_backends_discovered",
-		metric.WithDescription("Number of backends discovered"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create backend count gauge: %w", err)
+	// Seed the health-state map from each backend's discovery-time HealthStatus.
+	// The map is subsequently mutated on request success/failure so the observable
+	// gauge reflects live health within one collection interval.
+	health := &backendHealth{states: make(map[string]bool, len(backends))}
+	for i := range backends {
+		health.set(backends[i].Name, backends[i].HealthStatus == vmcp.BackendHealthy)
 	}
-	backendCount.Record(ctx, int64(len(backends)))
 
-	requestsTotal, err := meter.Int64Counter(
-		"toolhive_vmcp_backend_requests",
-		metric.WithDescription("Total number of requests per backend"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create requests total counter: %w", err)
-	}
-	errorsTotal, err := meter.Int64Counter(
-		"toolhive_vmcp_backend_errors",
-		metric.WithDescription("Total number of errors per backend"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create errors total counter: %w", err)
-	}
-	requestsDuration, err := meter.Float64Histogram(
-		"toolhive_vmcp_backend_requests_duration",
-		metric.WithDescription("Duration of requests in seconds per backend"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
-	}
 	clientOperationDuration, err := meter.Float64Histogram(
 		"mcp.client.operation.duration",
 		metric.WithDescription("Duration of MCP client operations"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
 	}
 
-	return telemetryBackendClient{
+	healthGauge, err := meter.Int64ObservableGauge(
+		"stacklok.vmcp.mcp_server.health",
+		metric.WithDescription("Per-backend health: 1 for the observed state, 0 otherwise, per (mcp_server, state)"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create backend health gauge: %w", err)
+	}
+	if _, err = meter.RegisterCallback(
+		func(_ context.Context, o metric.Observer) error {
+			for name, healthy := range health.snapshot() {
+				healthyVal, unhealthyVal := int64(0), int64(1)
+				if healthy {
+					healthyVal, unhealthyVal = 1, 0
+				}
+				o.ObserveInt64(healthGauge, healthyVal, metric.WithAttributes(
+					attribute.String(coremetrics.LabelMCPServer, name),
+					attribute.String(healthStateLabel, healthStateHealthy),
+				))
+				o.ObserveInt64(healthGauge, unhealthyVal, metric.WithAttributes(
+					attribute.String(coremetrics.LabelMCPServer, name),
+					attribute.String(healthStateLabel, healthStateUnhealthy),
+				))
+			}
+			return nil
+		},
+		healthGauge,
+	); err != nil {
+		return nil, fmt.Errorf("failed to register backend health callback: %w", err)
+	}
+
+	return &telemetryBackendClient{
 		backendClient:           backendClient,
 		tracer:                  tracerProvider.Tracer(instrumentationName),
-		requestsTotal:           requestsTotal,
-		errorsTotal:             errorsTotal,
-		requestsDuration:        requestsDuration,
+		health:                  health,
 		clientOperationDuration: clientOperationDuration,
 	}, nil
+}
+
+// backendHealth tracks the latest observed health of each backend, keyed by
+// workload name. It is read by the observable-gauge callback and written on each
+// request's success/failure, so the gauge reflects live health.
+type backendHealth struct {
+	mu     sync.RWMutex
+	states map[string]bool
+}
+
+func (b *backendHealth) set(name string, healthy bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.states[name] = healthy
+}
+
+func (b *backendHealth) snapshot() map[string]bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make(map[string]bool, len(b.states))
+	for k, v := range b.states {
+		out[k] = v
+	}
+	return out
 }
 
 type telemetryBackendClient struct {
 	backendClient vmcp.BackendClient
 	tracer        trace.Tracer
+	health        *backendHealth
 
-	requestsTotal           metric.Int64Counter
-	errorsTotal             metric.Int64Counter
-	requestsDuration        metric.Float64Histogram
 	clientOperationDuration metric.Float64Histogram
 }
 
-var _ vmcp.BackendClient = telemetryBackendClient{}
+var _ vmcp.BackendClient = (*telemetryBackendClient)(nil)
 
 // mapActionToMCPMethod maps internal action names to MCP method names per the OTEL MCP spec.
 func mapActionToMCPMethod(action string) string {
@@ -131,7 +168,7 @@ func mapTransportTypeToNetworkTransport(transportType string) string {
 
 // record updates the metrics and creates a span for each method on the BackendClient interface.
 // It returns a function that should be deferred to record the duration, error, and end the span.
-func (t telemetryBackendClient) record(
+func (t *telemetryBackendClient) record(
 	ctx context.Context, target *vmcp.BackendTarget, action string, targetName string, err *error, attrs ...attribute.KeyValue,
 ) (context.Context, func()) {
 	mcpMethod := mapActionToMCPMethod(action)
@@ -163,9 +200,6 @@ func (t telemetryBackendClient) record(
 		trace.WithSpanKind(trace.SpanKindClient),
 	)
 
-	// Attributes for legacy metrics
-	legacyMetricAttrs := metric.WithAttributes(commonAttrs...)
-
 	// Attributes for mcp.client.operation.duration (spec-required)
 	specMetricAttrs := metric.WithAttributes(
 		attribute.String("mcp.method.name", mcpMethod),
@@ -173,11 +207,9 @@ func (t telemetryBackendClient) record(
 	)
 
 	start := time.Now()
-	t.requestsTotal.Add(ctx, 1, legacyMetricAttrs)
 
 	return ctx, func() {
 		duration := time.Since(start)
-		t.requestsDuration.Record(ctx, duration.Seconds(), legacyMetricAttrs)
 
 		// Record mcp.client.operation.duration with spec attributes
 		if err != nil && *err != nil {
@@ -189,17 +221,18 @@ func (t telemetryBackendClient) record(
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)
 
-			t.errorsTotal.Add(ctx, 1, legacyMetricAttrs)
+			t.health.set(target.WorkloadName, false)
 			span.RecordError(*err)
 			span.SetStatus(codes.Error, (*err).Error())
 		} else {
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrs)
+			t.health.set(target.WorkloadName, true)
 		}
 		span.End()
 	}
 }
 
-func (t telemetryBackendClient) CallTool(
+func (t *telemetryBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	toolName string,
@@ -219,7 +252,7 @@ func (t telemetryBackendClient) CallTool(
 	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
 }
 
-func (t telemetryBackendClient) ReadResource(
+func (t *telemetryBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (_ *vmcp.ResourceReadResult, retErr error) {
 	// Use empty targetName to avoid unbounded URI cardinality in span names.
@@ -237,7 +270,7 @@ func (t telemetryBackendClient) ReadResource(
 	return t.backendClient.ReadResource(ctx, target, uri)
 }
 
-func (t telemetryBackendClient) GetPrompt(
+func (t *telemetryBackendClient) GetPrompt(
 	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
 ) (_ *vmcp.PromptGetResult, retErr error) {
 	attrs := []attribute.KeyValue{

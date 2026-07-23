@@ -446,25 +446,27 @@ func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
 	// Log metrics for debugging
 	t.Logf("Metrics content:\n%s", metricsContent)
 
-	// Verify workflow execution metrics are present (composite tool).
-	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_workflow_executions_total"),
-		"Should contain workflow executions total metric")
-	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_workflow_duration_seconds"),
-		"Should contain workflow duration metric")
-	assert.True(t, strings.Contains(metricsContent, `workflow_name="echo_workflow"`),
-		"Should contain workflow name label")
+	// Verify composite-tool execution metrics are present (renamed from the
+	// toolhive_vmcp_workflow_* twins to the stacklok.vmcp.composite_tool.* vocabulary).
+	assert.True(t, strings.Contains(metricsContent, "stacklok_vmcp_composite_tool_executions_total"),
+		"Should contain composite-tool executions total metric")
+	assert.True(t, strings.Contains(metricsContent, "stacklok_vmcp_composite_tool_duration_seconds"),
+		"Should contain composite-tool duration metric")
+	assert.True(t, strings.Contains(metricsContent, `composite_tool="echo_workflow"`),
+		"Should contain composite_tool name label")
 
-	// Verify backend metrics are present.
-	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_backend_requests_total"),
-		"Should contain backend requests total metric")
-	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_backend_requests_duration"),
-		"Should contain backend requests duration metric")
+	// Verify backend metrics are present. The toolhive_vmcp_backend_requests* twins
+	// are deleted (RFC §3.5); the semconv client operation-duration histogram replaces them.
+	assert.True(t, strings.Contains(metricsContent, "mcp_client_operation_duration_seconds"),
+		"Should contain semconv client operation-duration metric for backend calls")
 
-	// Verify HTTP middleware metrics are present (incoming MCP requests).
-	assert.True(t, strings.Contains(metricsContent, "toolhive_mcp_requests_total"),
-		"Should contain HTTP middleware requests total metric")
-	assert.True(t, strings.Contains(metricsContent, "toolhive_mcp_request_duration_seconds"),
-		"Should contain HTTP middleware request duration metric")
+	// Verify incoming-request metrics are present. The toolhive_mcp_request* twins are
+	// deleted; mcp.server.operation.duration (MCP-method-bearing requests) and
+	// http.server.request.duration (transport level) are their semconv replacements.
+	assert.True(t, strings.Contains(metricsContent, "mcp_server_operation_duration_seconds"),
+		"Should contain semconv server operation-duration metric")
+	assert.True(t, strings.Contains(metricsContent, "http_server_request_duration_seconds"),
+		"Should contain semconv HTTP server request-duration metric")
 }
 
 // TestVMCPServer_DefaultResults_ConditionalSkip verifies that when a conditional step

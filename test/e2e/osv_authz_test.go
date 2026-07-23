@@ -239,46 +239,41 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 
 				GinkgoWriter.Printf("Metrics response length: %d bytes\n", len(metricsBody))
 
-				// Look for ToolHive-specific metrics
-				Expect(metricsBody).To(ContainSubstring("toolhive_mcp_requests_total"),
-					"Should contain ToolHive MCP request counter")
+				// Look for ToolHive-specific metrics. The legacy toolhive_mcp_requests_total
+				// twin is deleted (RFC §3.5); http.server.request.duration is its
+				// transport-level semconv replacement and carries the HTTP status code.
+				Expect(metricsBody).To(ContainSubstring("http_server_request_duration_seconds"),
+					"Should contain semconv HTTP server request-duration metric")
 
-				// Parse and verify metrics contain both success and error status codes
-				successCount := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status=\"success\"")
-				errorCount := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status=\"error\"")
-
-				GinkgoWriter.Printf("Success requests: %d\n", successCount)
-				GinkgoWriter.Printf("Error requests: %d\n", errorCount)
-
-				// We should have at least 1 successful request (authorized) and 2 error requests (unauthorized)
-				Expect(successCount).To(BeNumerically(">=", 1),
-					"Should have at least 1 successful request")
-				Expect(errorCount).To(BeNumerically(">=", 2),
-					"Should have at least 2 error requests (authorization denials)")
-
-				// Look for specific status codes
-				status200Count := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status_code=\"200\"")
-				status403Count := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status_code=\"403\"")
+				// Authorization outcome is reflected in the HTTP response status code:
+				// authorized requests get 200, denied requests get 403.
+				status200Count := extractMetricValue(metricsBody, "http_server_request_duration_seconds_count", "http_response_status_code=\"200\"")
+				status403Count := extractMetricValue(metricsBody, "http_server_request_duration_seconds_count", "http_response_status_code=\"403\"")
 
 				GinkgoWriter.Printf("HTTP 200 responses: %d\n", status200Count)
 				GinkgoWriter.Printf("HTTP 403 responses: %d\n", status403Count)
 
-				// We should see 403 responses for authorization denials
+				// We should have at least 1 authorized request (200) and at least 2
+				// authorization denials (403).
+				Expect(status200Count).To(BeNumerically(">=", 1),
+					"Should have at least 1 successful (HTTP 200) request")
 				Expect(status403Count).To(BeNumerically(">=", 2),
 					"Should have at least 2 HTTP 403 responses for authorization denials")
 
-				// Look for tool-specific metrics
-				if strings.Contains(metricsBody, "toolhive_mcp_tool_calls_total") {
-					toolCallsCount := extractMetricValue(metricsBody, "toolhive_mcp_tool_calls_total", "tool=\"query_vulnerability\"")
-					GinkgoWriter.Printf("Tool calls for query_vulnerability: %d\n", toolCallsCount)
+				// Tool calls surface via the semconv server operation-duration histogram
+				// with mcp_method_name="tools/call" (the toolhive_mcp_tool_calls_total twin
+				// is deleted).
+				if strings.Contains(metricsBody, "mcp_server_operation_duration_seconds") {
+					toolCallsCount := extractMetricValue(metricsBody, "mcp_server_operation_duration_seconds_count", "mcp_method_name=\"tools/call\"")
+					GinkgoWriter.Printf("Tool calls (tools/call): %d\n", toolCallsCount)
 
 					Expect(toolCallsCount).To(BeNumerically(">=", 1),
-						"Should have at least 1 successful tool call for query_vulnerability")
+						"Should have at least 1 tools/call operation recorded")
 				}
 
 				By("Verifying server name is included in metrics")
-				Expect(metricsBody).To(ContainSubstring(fmt.Sprintf("server=\"%s\"", serverName)),
-					"Metrics should include the server name")
+				Expect(metricsBody).To(ContainSubstring(fmt.Sprintf("mcp_server=\"%s\"", serverName)),
+					"Metrics should include the MCP server name")
 
 				GinkgoWriter.Printf("✅ Authorization metrics verification completed successfully\n")
 				GinkgoWriter.Printf("📊 Metrics show proper tracking of authorized vs unauthorized requests\n")

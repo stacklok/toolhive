@@ -45,9 +45,9 @@ func findMetric(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics 
 	return nil
 }
 
-// counterValue returns the sum of all data points for an Int64 counter metric.
-// Returns 0 if m is nil (metric not reported because it was never incremented).
-func counterValue(m *metricdata.Metrics) int64 {
+// counterValueForOutcome sums the data points of an int64 counter whose "outcome"
+// attribute equals want. Returns 0 if m is nil or no matching point exists.
+func counterValueForOutcome(m *metricdata.Metrics, want string) int64 {
 	if m == nil {
 		return 0
 	}
@@ -57,7 +57,9 @@ func counterValue(m *metricdata.Metrics) int64 {
 	}
 	var total int64
 	for _, dp := range sum.DataPoints {
-		total += dp.Value
+		if v, present := dp.Attributes.Value("outcome"); present && v.AsString() == want {
+			total += dp.Value
+		}
 	}
 	return total
 }
@@ -117,21 +119,24 @@ func TestTelemetryOptimizer(t *testing.T) {
 			},
 			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
 				t.Helper()
-				m := findMetric(rm, "toolhive_vmcp_optimizer_find_tool_requests")
+				m := findMetric(rm, "stacklok.vmcp.optimizer.find_tool.requests")
 				require.NotNil(t, m, "find_tool_requests metric should exist")
-				assert.Equal(t, int64(1), counterValue(m))
+				assert.Equal(t, int64(1), counterValueForOutcome(m, "success"),
+					`find_tool_requests must increment with outcome="success"`)
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "error"),
+					`find_tool_requests must record nothing under outcome="error" on success`)
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.find_tool.errors"),
+					"the split find_tool_errors counter must no longer exist")
 
-				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_find_tool_errors")))
-
-				m = findMetric(rm, "toolhive_vmcp_optimizer_find_tool_duration")
+				m = findMetric(rm, "stacklok.vmcp.optimizer.find_tool.duration")
 				require.NotNil(t, m, "find_tool_duration metric should exist")
 				assert.Equal(t, uint64(1), histogramCount(m))
 
-				m = findMetric(rm, "toolhive_vmcp_optimizer_find_tool_results")
+				m = findMetric(rm, "stacklok.vmcp.optimizer.find_tool.results")
 				require.NotNil(t, m, "find_tool_results metric should exist")
 				assert.Equal(t, uint64(1), histogramCount(m))
 
-				m = findMetric(rm, "toolhive_vmcp_optimizer_token_savings_percent")
+				m = findMetric(rm, "stacklok.vmcp.optimizer.token_savings")
 				require.NotNil(t, m, "token_savings_percent metric should exist")
 				assert.Equal(t, uint64(1), histogramCount(m))
 			},
@@ -154,19 +159,20 @@ func TestTelemetryOptimizer(t *testing.T) {
 			},
 			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
 				t.Helper()
-				m := findMetric(rm, "toolhive_vmcp_optimizer_find_tool_requests")
+				m := findMetric(rm, "stacklok.vmcp.optimizer.find_tool.requests")
 				require.NotNil(t, m)
-				assert.Equal(t, int64(1), counterValue(m))
+				assert.Equal(t, int64(1), counterValueForOutcome(m, "error"),
+					`find_tool_requests must increment with outcome="error" on failure`)
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "success"),
+					`find_tool_requests must record nothing under outcome="success" on failure`)
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.find_tool.errors"),
+					"the split find_tool_errors counter must no longer exist")
 
-				m = findMetric(rm, "toolhive_vmcp_optimizer_find_tool_errors")
-				require.NotNil(t, m)
-				assert.Equal(t, int64(1), counterValue(m))
-
-				m = findMetric(rm, "toolhive_vmcp_optimizer_find_tool_duration")
+				m = findMetric(rm, "stacklok.vmcp.optimizer.find_tool.duration")
 				require.NotNil(t, m)
 				assert.Equal(t, uint64(1), histogramCount(m))
 
-				assert.Equal(t, uint64(0), histogramCount(findMetric(rm, "toolhive_vmcp_optimizer_find_tool_results")))
+				assert.Equal(t, uint64(0), histogramCount(findMetric(rm, "stacklok.vmcp.optimizer.find_tool.results")))
 			},
 		},
 		{
@@ -190,14 +196,18 @@ func TestTelemetryOptimizer(t *testing.T) {
 			},
 			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
 				t.Helper()
-				m := findMetric(rm, "toolhive_vmcp_optimizer_call_tool_requests")
+				m := findMetric(rm, "stacklok.vmcp.optimizer.call_tool.requests")
 				require.NotNil(t, m, "call_tool_requests metric should exist")
-				assert.Equal(t, int64(1), counterValue(m))
+				assert.Equal(t, int64(1), counterValueForOutcome(m, "success"),
+					`call_tool_requests must increment with outcome="success"`)
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "error"))
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "not_found"))
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.call_tool.errors"),
+					"the split call_tool_errors counter must no longer exist")
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.call_tool.not_found"),
+					"the split call_tool_not_found counter must no longer exist")
 
-				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_errors")))
-				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_not_found")))
-
-				m = findMetric(rm, "toolhive_vmcp_optimizer_call_tool_duration")
+				m = findMetric(rm, "stacklok.vmcp.optimizer.call_tool.duration")
 				require.NotNil(t, m)
 				assert.Equal(t, uint64(1), histogramCount(m))
 			},
@@ -221,17 +231,16 @@ func TestTelemetryOptimizer(t *testing.T) {
 			},
 			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
 				t.Helper()
-				m := findMetric(rm, "toolhive_vmcp_optimizer_call_tool_requests")
+				m := findMetric(rm, "stacklok.vmcp.optimizer.call_tool.requests")
 				require.NotNil(t, m)
-				assert.Equal(t, int64(1), counterValue(m))
+				assert.Equal(t, int64(1), counterValueForOutcome(m, "not_found"),
+					`call_tool_requests must increment with outcome="not_found" when result.IsError is true`)
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "success"))
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "error"))
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.call_tool.not_found"),
+					"the split call_tool_not_found counter must no longer exist")
 
-				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_errors")))
-
-				m = findMetric(rm, "toolhive_vmcp_optimizer_call_tool_not_found")
-				require.NotNil(t, m, "not_found counter should exist")
-				assert.Equal(t, int64(1), counterValue(m))
-
-				m = findMetric(rm, "toolhive_vmcp_optimizer_call_tool_duration")
+				m = findMetric(rm, "stacklok.vmcp.optimizer.call_tool.duration")
 				require.NotNil(t, m)
 				assert.Equal(t, uint64(1), histogramCount(m))
 			},
@@ -254,15 +263,16 @@ func TestTelemetryOptimizer(t *testing.T) {
 			},
 			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
 				t.Helper()
-				m := findMetric(rm, "toolhive_vmcp_optimizer_call_tool_requests")
+				m := findMetric(rm, "stacklok.vmcp.optimizer.call_tool.requests")
 				require.NotNil(t, m)
-				assert.Equal(t, int64(1), counterValue(m))
-
-				m = findMetric(rm, "toolhive_vmcp_optimizer_call_tool_errors")
-				require.NotNil(t, m)
-				assert.Equal(t, int64(1), counterValue(m))
-
-				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_not_found")))
+				assert.Equal(t, int64(1), counterValueForOutcome(m, "error"),
+					`call_tool_requests must increment with outcome="error" on a Go error`)
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "success"))
+				assert.Equal(t, int64(0), counterValueForOutcome(m, "not_found"))
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.call_tool.errors"),
+					"the split call_tool_errors counter must no longer exist")
+				assert.Nil(t, findMetric(rm, "stacklok.vmcp.optimizer.call_tool.not_found"),
+					"the split call_tool_not_found counter must no longer exist")
 			},
 		},
 	}

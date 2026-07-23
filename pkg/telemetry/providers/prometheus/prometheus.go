@@ -11,8 +11,11 @@ import (
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 )
 
 // Config holds Prometheus-specific configuration
@@ -38,8 +41,15 @@ func NewReader(config Config) (sdkmetric.Reader, http.Handler, error) {
 		registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	}
 
-	// Create the Prometheus exporter (which is also a Reader)
-	exporter, err := prometheus.New(prometheus.WithRegisterer(registry))
+	// Create the Prometheus exporter (which is also a Reader). Promote the
+	// stacklok.component/stacklok.product resource attributes to per-series
+	// constant labels so dashboards can filter on them (D8).
+	exporter, err := prometheus.New(
+		prometheus.WithRegisterer(registry),
+		prometheus.WithResourceAsConstantLabels(attribute.NewAllowKeysFilter(
+			coremetrics.AttrStacklokComponent, coremetrics.AttrStacklokProduct,
+		)),
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
 	}

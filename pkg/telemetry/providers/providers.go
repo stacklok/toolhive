@@ -19,7 +19,13 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 )
+
+// componentName is toolhive's stacklok.component value (D8). toolhive-core
+// defines the AttrStacklokComponent key but leaves the value to each component.
+const componentName = "toolhive"
 
 // Config holds the telemetry configuration for all providers.
 // It contains service information, OTLP settings, and Prometheus configuration.
@@ -178,10 +184,14 @@ func NewCompositeProvider(
 	}
 
 	// Create resource for all providers
-	// Start with base attributes
+	// Start with base attributes. stacklok.component/stacklok.product identify
+	// the emitter across the platform (D8); the product value is frozen as
+	// "stacklok-platform".
 	baseAttrs := []attribute.KeyValue{
 		semconv.ServiceName(config.ServiceName),
 		semconv.ServiceVersion(config.ServiceVersion),
+		attribute.String(coremetrics.AttrStacklokComponent, componentName),
+		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
 	}
 
 	// Add custom attributes from CLI flags

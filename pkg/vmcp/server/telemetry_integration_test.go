@@ -112,10 +112,10 @@ func (f *backendAwareTestFactory) newSession(id string) *backendAwareTestSession
 // metrics when the telemetry middleware is enabled via TelemetryProvider.
 //
 // This validates:
-// 1. Incoming MCP requests are counted by toolhive_mcp_requests
-// 2. Request latency is tracked by toolhive_mcp_request_duration
-// 3. Backend calls are counted by toolhive_vmcp_backend_requests
-// 4. Backend discovery count is reported by toolhive_vmcp_backends_discovered
+// 1. Incoming MCP requests are tracked by mcp.server.operation.duration
+// 2. Transport-level latency is tracked by http.server.request.duration
+// 3. Backend calls are tracked by mcp.client.operation.duration
+// 4. Backend health is reported by stacklok.vmcp.mcp_server.health
 // 5. All metrics are accessible via the /metrics Prometheus endpoint
 //
 // Note: This test does not use t.Parallel() because subtests share the same
@@ -218,11 +218,11 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	// Create server with telemetry provider — this also wraps the backend
 	// client with monitorBackends() which instruments outgoing backend calls.
 	// Use backendAwareTestFactory so that CallTool delegates to the monitorBackends-wrapped
-	// backendClient, ensuring toolhive_vmcp_backend_requests metrics are recorded.
+	// backendClient, ensuring mcp.client.operation.duration metrics are recorded.
 	// The core sources the advertised set by aggregating over mockBackendClient (prefix
 	// resolver → "search-svc_search"). core.New wraps this same client with monitorBackends
 	// for telemetry, and core.CallTool routes tool calls through that wrapped client — so
-	// the backend instrumentation (toolhive_vmcp_backend_requests) is exercised without the
+	// the backend instrumentation (mcp.client.operation.duration) is exercised without the
 	// session factory needing to hold the wrapped client.
 	telemetryAgg := aggregator.NewDefaultAggregator(
 		mockBackendClient, aggregator.NewPrefixConflictResolver("{workload}_"), nil, nil)
@@ -335,43 +335,49 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		require.NoError(t, err)
 		metrics := string(body)
 
-		// --- Incoming request metrics (from telemetry middleware in pkg/telemetry/middleware.go) ---
+		// --- Deleted legacy twins must be absent (single-pass cutover) ---
+		assert.NotContains(t, metrics, "toolhive_mcp_requests",
+			"deleted incoming-request counter twin must be gone")
+		assert.NotContains(t, metrics, "toolhive_mcp_request_duration",
+			"deleted incoming-request duration twin must be gone")
+		assert.NotContains(t, metrics, "toolhive_mcp_tool_calls",
+			"deleted tool-calls twin must be gone")
+		assert.NotContains(t, metrics, "toolhive_vmcp_backend_requests",
+			"deleted backend-request counter twin must be gone")
+		assert.NotContains(t, metrics, "toolhive_vmcp_backend_errors",
+			"deleted backend-error counter twin must be gone")
+		assert.NotContains(t, metrics, "toolhive_vmcp_backend_requests_duration",
+			"deleted backend-request duration twin must be gone")
 
-		// Request counter
-		assert.Contains(t, metrics, "toolhive_mcp_requests",
-			"Should record incoming request counter")
-		assert.Contains(t, metrics, `server="telemetry-vmcp"`,
-			"Request metrics should identify the vMCP server name")
-		assert.Contains(t, metrics, `transport="streamable-http"`,
-			"Request metrics should identify the transport type")
+		// --- Incoming request metrics: semconv replacements (pkg/telemetry/middleware.go) ---
 
-		// MCP method labels — the telemetry middleware should distinguish request types
-		assert.Contains(t, metrics, `mcp_method="tools/call"`,
-			"Request counter should have mcp_method label for tool calls")
-		assert.Contains(t, metrics, `mcp_method="initialize"`,
-			"Request counter should have mcp_method label for initialize")
+		// mcp.server.operation.duration replaces the incoming request/duration twins
+		// for MCP-method-bearing requests. Rendered by the exporter to underscores.
+		assert.Contains(t, metrics, "mcp_server_operation_duration_seconds",
+			"Should record semconv server operation-duration histogram")
+		assert.Contains(t, metrics, `mcp_method_name="tools/call"`,
+			"operation duration should carry mcp.method.name for tool calls")
+		assert.Contains(t, metrics, `mcp_method_name="initialize"`,
+			"operation duration should carry mcp.method.name for initialize")
 
-		// Resource ID label — for tools/call the mcp_resource_id is the tool name
-		assert.Contains(t, metrics, `mcp_resource_id="search-svc_search"`,
-			"Request counter should have mcp_resource_id label with the called tool name")
-
-		// Request duration histogram
-		assert.Contains(t, metrics, "toolhive_mcp_request_duration",
-			"Should record request duration histogram")
+		// http.server.request.duration is the transport-level counterpart recorded
+		// for every request regardless of MCP method.
+		assert.Contains(t, metrics, "http_server_request_duration_seconds",
+			"Should record semconv HTTP server request-duration histogram")
 
 		// --- Backend metrics (from backendtelemetry.MonitorBackends) ---
 
-		// Backend request counter — recorded when the tool call was routed to the backend
-		assert.Contains(t, metrics, "toolhive_vmcp_backend_requests",
-			"Should record backend request counter from tool call routing")
+		// mcp.client.operation.duration replaces the backend request/duration twins.
+		assert.Contains(t, metrics, "mcp_client_operation_duration_seconds",
+			"Should record semconv client operation-duration histogram from tool call routing")
 
-		// Backend request duration histogram
-		assert.Contains(t, metrics, "toolhive_vmcp_backend_requests_duration",
-			"Should record backend request duration histogram")
-
-		// Backend discovery gauge — recorded during server.New() for the initial backend list
-		assert.Contains(t, metrics, "toolhive_vmcp_backends_discovered",
-			"Should record backend discovery count gauge")
+		// Backend health gauge — live per-backend health, renamed to stacklok.*
+		assert.Contains(t, metrics, "stacklok_vmcp_mcp_server_health",
+			"Should record live per-backend health gauge")
+		assert.NotContains(t, metrics, "toolhive_vmcp_mcp_server_health",
+			"the pre-rename health gauge name must be gone")
+		assert.NotContains(t, metrics, "toolhive_vmcp_backends_discovered",
+			"The fire-once backends_discovered gauge must be gone")
 
 		// --- Custom resource attributes (from Config.CustomAttributes) ---
 		// Custom attributes are added to the OTel resource and surface as labels on the
@@ -513,10 +519,15 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 	require.NoError(t, err)
 	metrics := string(metricsBody)
 
-	assert.Contains(t, metrics, "toolhive_mcp_requests",
+	// The request is rejected by classificationMiddleware before MCP dispatch, so
+	// no mcp.server.operation.duration is recorded — but the telemetry middleware
+	// runs first and records the transport-level http.server.request.duration with
+	// the rejection status. This is the semconv replacement for the deleted
+	// toolhive_mcp_requests twin (RFC §3.5).
+	assert.Contains(t, metrics, "http_server_request_duration_seconds",
 		"telemetry must record the request even though classification rejected it downstream")
-	assert.Contains(t, metrics, `server="telemetry-ordering-vmcp"`,
-		"request metrics should identify this vMCP server")
+	assert.Contains(t, metrics, `http_response_status_code="400"`,
+		"the rejected request should be recorded with its 400 status")
 
 	cancelServer()
 }

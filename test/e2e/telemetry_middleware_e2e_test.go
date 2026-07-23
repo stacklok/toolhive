@@ -234,8 +234,8 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 						metricsContent := string(body)
 						GinkgoWriter.Printf("Found metrics on port %s:\n%s\n", port, metricsContent)
 
-						// Look for ToolHive-specific metrics
-						if strings.Contains(metricsContent, "toolhive_mcp") {
+						// Look for ToolHive-specific metrics (stacklok.* namespace)
+						if strings.Contains(metricsContent, "stacklok_toolhive") {
 							metricsFound = true
 							break
 						}

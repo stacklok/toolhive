@@ -32,17 +32,14 @@ func newTestInstruments(t *testing.T) (*workflowInstruments, *sdkmetric.ManualRe
 	tp := tracesdk.NewTracerProvider()
 	meter := mp.Meter(instrumentationName)
 
-	executions, err := meter.Int64Counter("toolhive_vmcp_workflow_executions")
+	executions, err := meter.Int64Counter("stacklok.vmcp.composite_tool.executions")
 	require.NoError(t, err)
-	errs, err := meter.Int64Counter("toolhive_vmcp_workflow_errors")
-	require.NoError(t, err)
-	duration, err := meter.Float64Histogram("toolhive_vmcp_workflow_duration")
+	duration, err := meter.Float64Histogram("stacklok.vmcp.composite_tool.duration")
 	require.NoError(t, err)
 
 	return &workflowInstruments{
 		tracer:            tp.Tracer(instrumentationName),
 		executionsTotal:   executions,
-		errorsTotal:       errs,
 		executionDuration: duration,
 	}, reader
 }
@@ -67,7 +64,9 @@ func findMetricByName(rm metricdata.ResourceMetrics, name string) *metricdata.Me
 	return nil
 }
 
-func int64CounterValue(m *metricdata.Metrics) int64 {
+// int64CounterValueForOutcome sums the data points of an int64 counter whose
+// "outcome" attribute equals want. Returns 0 if no matching point exists.
+func int64CounterValueForOutcome(m *metricdata.Metrics, want string) int64 {
 	if m == nil {
 		return 0
 	}
@@ -77,7 +76,9 @@ func int64CounterValue(m *metricdata.Metrics) int64 {
 	}
 	var total int64
 	for _, dp := range s.DataPoints {
-		total += dp.Value
+		if v, present := dp.Attributes.Value("outcome"); present && v.AsString() == want {
+			total += dp.Value
+		}
 	}
 	return total
 }
@@ -98,8 +99,8 @@ func float64HistogramCount(m *metricdata.Metrics) uint64 {
 }
 
 // TestTelemetryComposer_Success verifies that on a successful ExecuteWorkflow call:
-// - the executions counter increments by 1
-// - the error counter stays at 0
+// - the merged executions counter increments by 1 with outcome="success"
+// - the same counter records nothing under outcome="error"
 // - the duration histogram records 1 observation
 // - the result from the inner composer is returned unchanged
 func TestTelemetryComposer_Success(t *testing.T) {
@@ -118,17 +119,20 @@ func TestTelemetryComposer_Success(t *testing.T) {
 	assert.Equal(t, want, got)
 
 	rm := collectMetrics(t, reader)
-	assert.Equal(t, int64(1), int64CounterValue(findMetricByName(rm, "toolhive_vmcp_workflow_executions")),
-		"executions counter must increment on success")
-	assert.Equal(t, int64(0), int64CounterValue(findMetricByName(rm, "toolhive_vmcp_workflow_errors")),
-		"errors counter must remain zero on success")
-	assert.Equal(t, uint64(1), float64HistogramCount(findMetricByName(rm, "toolhive_vmcp_workflow_duration")),
+	execs := findMetricByName(rm, "stacklok.vmcp.composite_tool.executions")
+	assert.Equal(t, int64(1), int64CounterValueForOutcome(execs, "success"),
+		`executions counter must increment with outcome="success"`)
+	assert.Equal(t, int64(0), int64CounterValueForOutcome(execs, "error"),
+		`executions counter must record nothing under outcome="error" on success`)
+	assert.Nil(t, findMetricByName(rm, "stacklok.vmcp.composite_tool.errors"),
+		"the split _errors counter must no longer exist")
+	assert.Equal(t, uint64(1), float64HistogramCount(findMetricByName(rm, "stacklok.vmcp.composite_tool.duration")),
 		"duration histogram must record exactly one observation")
 }
 
 // TestTelemetryComposer_Error verifies that on a failed ExecuteWorkflow call:
-// - the executions counter still increments by 1
-// - the error counter also increments by 1
+// - the merged executions counter increments by 1 with outcome="error"
+// - the same counter records nothing under outcome="success"
 // - the duration histogram records 1 observation
 // - the error from the inner composer is propagated
 func TestTelemetryComposer_Error(t *testing.T) {
@@ -146,11 +150,14 @@ func TestTelemetryComposer_Error(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 
 	rm := collectMetrics(t, reader)
-	assert.Equal(t, int64(1), int64CounterValue(findMetricByName(rm, "toolhive_vmcp_workflow_executions")),
-		"executions counter must increment even on failure")
-	assert.Equal(t, int64(1), int64CounterValue(findMetricByName(rm, "toolhive_vmcp_workflow_errors")),
-		"errors counter must increment on failure")
-	assert.Equal(t, uint64(1), float64HistogramCount(findMetricByName(rm, "toolhive_vmcp_workflow_duration")),
+	execs := findMetricByName(rm, "stacklok.vmcp.composite_tool.executions")
+	assert.Equal(t, int64(1), int64CounterValueForOutcome(execs, "error"),
+		`executions counter must increment with outcome="error" on failure`)
+	assert.Equal(t, int64(0), int64CounterValueForOutcome(execs, "success"),
+		`executions counter must record nothing under outcome="success" on failure`)
+	assert.Nil(t, findMetricByName(rm, "stacklok.vmcp.composite_tool.errors"),
+		"the split _errors counter must no longer exist")
+	assert.Equal(t, uint64(1), float64HistogramCount(findMetricByName(rm, "stacklok.vmcp.composite_tool.duration")),
 		"duration histogram must record one observation even on failure")
 }
 

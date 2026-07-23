@@ -58,7 +58,10 @@ type ParsedMCPRequest struct {
 	ProtocolVersion string
 	// IsRequest indicates if this is a JSON-RPC request (vs response or notification)
 	IsRequest bool
-	// IsBatch indicates if this is a batch request
+	// IsBatch indicates if this is a batch request. It is always false: JSON-RPC
+	// batches are rejected by ParsingMiddleware before a ParsedMCPRequest is ever
+	// constructed (batching was removed in MCP 2025-06-18; see batch.go). The
+	// field is retained for wire/telemetry compatibility.
 	IsBatch bool
 }
 
@@ -106,6 +109,17 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Restore the request body for downstream handlers
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		// Reject JSON-RPC batches before any downstream middleware or the
+		// transport proxy's batch executor can act on them. Batching was
+		// removed in MCP revision 2025-06-18; ToolHive serves only 2025-11-25
+		// and 2026-07-28. Authz, audit, and tool filtering each inspect a
+		// single parsed request per call, so a batch reaching the backend would
+		// smuggle every nested call past those controls (see #5745).
+		if IsBatchRequest(bodyBytes) {
+			WriteBatchUnsupportedError(w)
+			return
+		}
 
 		// Parse the MCP request and store in context
 		parsedRequest := parseMCPRequest(bodyBytes)
@@ -193,7 +207,9 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 		ClientInfo:      clientInfo,
 		ProtocolVersion: protocolVersion,
 		IsRequest:       true,
-		IsBatch:         false, // TODO: Add batch request support if needed
+		// Batches are rejected in ParsingMiddleware before reaching here, so a
+		// parsed request is always a single, non-batch message.
+		IsBatch: false,
 	}
 }
 

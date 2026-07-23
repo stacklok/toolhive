@@ -173,69 +173,87 @@ func TestPOSTNotificationOnlyAccepted(t *testing.T) {
 	assert.Equal(t, 0, len(body), "202 should have no body")
 }
 
-// TestBatchOnlyNotificationsAccepted returns 202 and no body per spec when no requests are present.
-func TestBatchOnlyNotificationsAccepted(t *testing.T) {
+// TestBatchRequestsRejected verifies that the streamable proxy rejects every
+// JSON-RPC batch (a top-level array) with an HTTP 400 JSON-RPC "Invalid Request"
+// (-32600) error instead of executing it. Batching was removed in MCP 2025-06-18
+// and ToolHive serves only 2025-11-25 and 2026-07-28, so a batch must never
+// reach the backend where its nested calls would bypass authz/audit/tool
+// filtering (see #5745). A backend is deliberately not started: reaching it
+// would itself be the bug under test.
+func TestBatchRequestsRejected(t *testing.T) {
 	t.Parallel()
 
 	const port = 8105
 	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	require.NoError(t, proxy.Start(ctx), "proxy start")
-	defer func() { _ = proxy.Stop(ctx) }()
+	t.Cleanup(func() { _ = proxy.Stop(ctx) })
 
 	time.Sleep(50 * time.Millisecond)
-
 	url := "http://127.0.0.1:8105" + StreamableHTTPEndpoint
 
-	// Batch of only notifications (no ids)
-	batch := `[{"jsonrpc":"2.0","method":"progress","params":{"pct":10}},{"jsonrpc":"2.0","method":"progress","params":{"pct":20}}]`
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(batch)))
-	req.Header.Set("Content-Type", "application/json")
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		sessionID   string
+	}{
+		{
+			name:        "only notifications",
+			body:        `[{"jsonrpc":"2.0","method":"progress","params":{"pct":10}},{"jsonrpc":"2.0","method":"progress","params":{"pct":20}}]`,
+			contentType: "application/json",
+		},
+		{
+			name:        "mixed notification and request",
+			body:        `[{"jsonrpc":"2.0","method":"progress"},{"jsonrpc":"2.0","id":"r1","method":"tools/list","params":{}}]`,
+			contentType: "application/json",
+		},
+		{
+			name:        "with stale session id",
+			body:        `[{"jsonrpc":"2.0","id":"b1","method":"tools/list"},{"jsonrpc":"2.0","id":"b2","method":"tools/list"}]`,
+			contentType: "application/json",
+			sessionID:   "expired-session-id",
+		},
+		{
+			// Regression for #5745: a batch smuggled under a non-JSON content
+			// type skips ParsingMiddleware/authz but must still be rejected at
+			// the executor.
+			name:        "non-json content type",
+			body:        `[{"jsonrpc":"2.0","id":"c1","method":"tools/call","params":{"name":"danger"}}]`,
+			contentType: "text/plain",
+		},
+		{
+			// Regression for #5745: leading Unicode whitespace must not let a
+			// batch evade detection (detector and json decoder must agree).
+			name:        "leading vertical tab",
+			body:        "\v[{\"jsonrpc\":\"2.0\",\"id\":\"d1\",\"method\":\"tools/call\"}]",
+			contentType: "application/json",
+		},
+	}
 
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(tt.body)))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", tt.contentType)
+			if tt.sessionID != "" {
+				req.Header.Set("Mcp-Session-Id", tt.sessionID)
+			}
 
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 0, len(body))
-}
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
 
-// TestBatchMixedNotificationsAndRequest returns an array with one response corresponding to the request id.
-func TestBatchMixedNotificationsAndRequest(t *testing.T) {
-	t.Parallel()
-
-	const port = 8106
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
-	defer cancel()
-	defer func() { _ = proxy.Stop(ctx) }()
-
-	url := "http://127.0.0.1:8106" + StreamableHTTPEndpoint
-
-	// Batch includes a notification and a request "r1"
-	batch := `[{"jsonrpc":"2.0","method":"progress","params":{"pct":99}},{"jsonrpc":"2.0","id":"r1","method":"tools/list","params":{}}]`
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(batch)))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-
-	var arr []map[string]any
-	err = json.NewDecoder(resp.Body).Decode(&arr)
-	require.NoError(t, err)
-	require.Len(t, arr, 1)
-
-	// Response should correspond to id "r1"
-	assert.Equal(t, "2.0", arr[0]["jsonrpc"])
-	assert.Equal(t, "r1", arr[0]["id"])
-	// And include a result map as sent by backend
-	_, hasResult := arr[0]["result"]
-	assert.True(t, hasResult, "batch response should include result")
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), `"code":-32600`)
+			assert.Contains(t, string(body), `"id":null`)
+		})
+	}
 }
 
 // TestDeleteUnknownSessionReturnsJSONRPCError verifies that DELETE with an
@@ -262,34 +280,6 @@ func TestDeleteUnknownSessionReturnsJSONRPCError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
 	assert.Contains(t, string(body), `"id":null`)
-}
-
-// TestBatchWithStaleSessionReturnsJSONRPCError verifies that a batch POST
-// with a stale session ID returns HTTP 404 with a JSON-RPC error body.
-func TestBatchWithStaleSessionReturnsJSONRPCError(t *testing.T) {
-	t.Parallel()
-
-	const port = 8108
-	proxy, ctx, cancel := startProxyWithBackend(t, port)
-	defer cancel()
-	defer func() { _ = proxy.Stop(ctx) }()
-
-	url := "http://127.0.0.1:8108" + StreamableHTTPEndpoint
-
-	batch := `[{"jsonrpc":"2.0","id":"b1","method":"tools/list","params":{}},{"jsonrpc":"2.0","id":"b2","method":"tools/list","params":{}}]`
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(batch)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Mcp-Session-Id", "expired-session-id")
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), `"code":-32001`)
 }
 
 // TestSingleRequestWithStaleSessionIncludesRequestID verifies that a single

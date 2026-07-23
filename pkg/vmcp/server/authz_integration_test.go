@@ -68,7 +68,7 @@ func parseRPCError(t *testing.T, body []byte) rpcErrorFields {
 // chain that replaced the legacy HTTP authz middleware on the Serve path.
 func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string) *httptest.Server {
 	t.Helper()
-	return buildCedarAuthzServer(t, backendURL, nil, nil, policies...)
+	return buildCedarAuthzServer(t, backendURL, nil, nil, nil, policies...)
 }
 
 // newCedarAuthzCodeModeServer is newCedarAuthzTestServer with code mode enabled, so
@@ -77,15 +77,17 @@ func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string
 // while a directly-denied tool still 403s.
 func newCedarAuthzCodeModeServer(t *testing.T, backendURL string, policies ...string) *httptest.Server {
 	t.Helper()
-	return buildCedarAuthzServer(t, backendURL, &codemode.Config{}, nil, policies...)
+	return buildCedarAuthzServer(t, backendURL, &codemode.Config{}, nil, nil, policies...)
 }
 
 // buildCedarAuthzServer builds the vMCP test server. A non-nil codeModeCfg enables
-// the codemode decorator; a non-nil auditCfg enables the audit middleware; a nil
-// policies slice leaves Authz unset (allow-all, gate not installed) — used by the
-// no-Authz parity guard.
+// the codemode decorator; a non-nil auditCfg enables the audit middleware; a
+// non-nil authMw replaces the default identity-injecting auth middleware (used by
+// the auth-failure audit test); a nil policies slice leaves Authz unset
+// (allow-all, gate not installed) — used by the no-Authz parity guard.
 func buildCedarAuthzServer(
-	t *testing.T, backendURL string, codeModeCfg *codemode.Config, auditCfg *audit.Config, policies ...string,
+	t *testing.T, backendURL string, codeModeCfg *codemode.Config, auditCfg *audit.Config,
+	authMw func(http.Handler) http.Handler, policies ...string,
 ) *httptest.Server {
 	t.Helper()
 
@@ -123,16 +125,19 @@ func buildCedarAuthzServer(
 	// The MCP parser is composed inside it, mirroring the production incoming-auth factory
 	// (see pkg/vmcp/auth/factory): audit and authz read parsed MCP data from the request
 	// context, and the audit middleware sits between auth and the parser applied in Handler.
-	identityMiddleware := func(next http.Handler) http.Handler {
-		withParser := mcpparser.ParsingMiddleware(next)
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-				Subject: "user-123",
-				Name:    "Test User",
-				Claims:  map[string]any{"sub": "user-123", "name": "Test User"},
-			}}
-			withParser.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
-		})
+	identityMiddleware := authMw
+	if identityMiddleware == nil {
+		identityMiddleware = func(next http.Handler) http.Handler {
+			withParser := mcpparser.ParsingMiddleware(next)
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-123",
+					Name:    "Test User",
+					Claims:  map[string]any{"sub": "user-123", "name": "Test User"},
+				}}
+				withParser.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+			})
+		}
 	}
 
 	// A nil policies slice means "no authz": leave Config.Authz nil so the gate is not
@@ -455,6 +460,7 @@ func TestIntegration_CedarAuthzDenialIsAudited(t *testing.T) {
 	// Permit only an unrelated tool: "echo" is default-denied.
 	ts := buildCedarAuthzServer(t, backendURL, nil,
 		&audit.Config{Component: "vmcp-server", LogFile: auditLogPath},
+		nil,
 		`permit(principal, action == Action::"call_tool", resource == Tool::"unrelated");`)
 
 	client := NewMCPTestClient(t, ts.URL)
@@ -474,6 +480,46 @@ func TestIntegration_CedarAuthzDenialIsAudited(t *testing.T) {
 	event := findAuditEvent(t, auditLogPath, "mcp_tool_call")
 	assert.Equal(t, "denied", event["outcome"],
 		"a policy-denied tools/call must be audited with outcome denied")
+	subjects, ok := event["subjects"].(map[string]any)
+	require.True(t, ok, "the event must carry subjects")
+	assert.Equal(t, "user-123", subjects["user_id"],
+		"audit wraps auth, so the identity must flow back via the auth.IdentityHolder carrier")
+}
+
+// TestIntegration_AuthFailureIsAudited proves that an authentication failure
+// (401 from the auth middleware) still produces an audit event: audit wraps
+// auth on the vMCP Serve path, so rejected requests are recorded with outcome
+// "denied" and an anonymous subject.
+func TestIntegration_AuthFailureIsAudited(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	auditLogPath := filepath.Join(t.TempDir(), "audit.log")
+	rejectAll := func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+		})
+	}
+	ts := buildCedarAuthzServer(t, backendURL, nil,
+		&audit.Config{Component: "vmcp-server", LogFile: auditLogPath},
+		rejectAll)
+
+	resp, err := http.Post(ts.URL+"/mcp", "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	require.Eventually(t, func() bool {
+		return findAuditEvent(t, auditLogPath, "http_request") != nil
+	}, 5*time.Second, 50*time.Millisecond, "an authentication failure must be audited")
+
+	event := findAuditEvent(t, auditLogPath, "http_request")
+	assert.Equal(t, "denied", event["outcome"])
+	subjects, ok := event["subjects"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "anonymous", subjects["user"],
+		"no identity exists when authentication fails")
 }
 
 // findAuditEvent reads the newline-delimited JSON audit log at path and returns

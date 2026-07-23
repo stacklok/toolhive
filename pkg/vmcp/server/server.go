@@ -537,8 +537,8 @@ func New(
 // This enables embedding the vmcp server inside another HTTP server or framework.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full middleware chain (recovery, body limit, header validation, auth,
-// rate limit, audit, MCP parsing, telemetry).
+// and the full middleware chain (recovery, body limit, header validation,
+// audit, auth, MCP parsing, telemetry).
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -598,14 +598,18 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
-	// Execution order: recovery → body-limit → header-val → auth →
-	//   rate-limit → audit → MCP-parsing → telemetry → handler
+	// Code wraps: audit → auth → MCP-parsing → telemetry
+	// Execution order: recovery → body-limit → header-val → audit → auth →
+	//   MCP-parsing → telemetry → handler
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
 	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
 	// any upstream refresh fails, and the middleware short-circuits with
-	// HTTP 401 + WWW-Authenticate before the request reaches any inner layer.
+	// HTTP 401 + WWW-Authenticate. Audit wraps auth, so those 401s (and every
+	// other rejection from the inner chain) still produce an audit event; the
+	// authenticated identity and parsed MCP data are read back through the
+	// holder carriers (auth.IdentityHolder, mcp.ParsedRequestHolder) that the
+	// inner auth/parser middlewares fill.
 	//
 	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been
 	// removed: every caller now routes through Serve, so authorization is enforced by the
@@ -635,7 +639,15 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
-	// Apply audit middleware if configured (runs after auth, before discovery)
+	// Apply authentication middleware if configured
+	if s.config.AuthMiddleware != nil {
+		mcpHandler = s.config.AuthMiddleware(mcpHandler)
+		slog.Info("authentication middleware enabled for MCP endpoints")
+	}
+
+	// Apply audit middleware if configured. It wraps authentication so auth
+	// failures (401) are audited too; the identity for successful requests is
+	// read back via the auth.IdentityHolder carrier.
 	if s.config.AuditConfig != nil {
 		if err := s.config.AuditConfig.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
@@ -649,12 +661,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		}
 		mcpHandler = auditor.Middleware(mcpHandler)
 		slog.Info("audit middleware enabled for MCP endpoints")
-	}
-
-	// Apply authentication middleware if configured (runs first in chain)
-	if s.config.AuthMiddleware != nil {
-		mcpHandler = s.config.AuthMiddleware(mcpHandler)
-		slog.Info("authentication middleware enabled for MCP endpoints")
 	}
 
 	mcpHandler = s.applyForwardedHeaderCapture(mcpHandler)

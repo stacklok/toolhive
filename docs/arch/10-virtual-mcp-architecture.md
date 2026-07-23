@@ -268,8 +268,8 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 1 | Recovery | Always | Catches panics, returns HTTP 500 |
 | 2 | WriteTimeout | Always | Clears the server `WriteTimeout` for qualifying SSE connections |
 | 3 | Header Validation | Always | Rejects GETs without `Accept: text/event-stream` before they reach the MCP handler |
-| 4 | Authentication (+ MCP parsing) | Optional | Validates incoming credentials (OIDC/local/anonymous); MCP parsing is composed inside so downstream layers see `ParsedMCPRequest` |
-| 5 | Audit | Optional | Logs request events for compliance |
+| 4 | Audit | Optional | Logs every request outcome, including 401s from the auth middleware it wraps; identity and parsed MCP data flow back via the `auth.IdentityHolder` / `mcp.ParsedRequestHolder` carriers |
+| 5 | Authentication (+ MCP parsing) | Optional | Validates incoming credentials (OIDC/local/anonymous); MCP parsing is composed inside so downstream layers see `ParsedMCPRequest` |
 | 6 | Discovery | Always | Aggregates backend capabilities per session |
 | 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
 | 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
@@ -316,7 +316,7 @@ This enriches audit events with the backend name for better observability.
 The server wires them around discovery/annotation-enrichment so the effective execution order is:
 
 ```
-Authentication → MCP Parsing → Audit → Discovery → Annotation Enrichment → Authorization → Next Handler
+Audit → Authentication → MCP Parsing → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
 
 **Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`

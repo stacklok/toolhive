@@ -6,6 +6,7 @@ package discovery
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -115,6 +116,12 @@ func TestRemoveServerInfo_NotFound(t *testing.T) {
 
 func TestWriteServerInfo_FilePermissions(t *testing.T) {
 	t.Parallel()
+	// POSIX file modes are advisory on NTFS; Windows reports 0666 for
+	// newly written files regardless of the mode passed to AtomicWriteFile.
+	// Directory ACL coverage for Windows lives in permissions_windows_test.go.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not meaningful on Windows")
+	}
 	dir := t.TempDir()
 
 	info := &ServerInfo{
@@ -132,6 +139,11 @@ func TestWriteServerInfo_FilePermissions(t *testing.T) {
 
 func TestWriteServerInfo_CreatesDirectoryWithCorrectPermissions(t *testing.T) {
 	t.Parallel()
+	// On Windows, writeServerInfoTo sets an explicit DACL instead of relying
+	// on os.Chmod; see TestWriteServerInfo_WindowsDACL_NoOtherInteractiveUsers.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory modes are not meaningful on Windows; see DACL tests")
+	}
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "nested", "server")
 
@@ -195,6 +207,11 @@ func TestReadServerInfo_RejectsSymlink(t *testing.T) {
 
 func TestWriteServerInfo_TightensExistingDirPermissions(t *testing.T) {
 	t.Parallel()
+	// On Windows the equivalent "tighten existing" path is covered by
+	// TestRestrictDiscoveryDirPermissions_ReplacesExistingLooseACL.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory modes are not meaningful on Windows; see DACL tests")
+	}
 
 	// Create a directory with deliberately too-loose permissions.
 	dir := t.TempDir()

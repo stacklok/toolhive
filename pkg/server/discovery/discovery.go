@@ -78,8 +78,10 @@ func writeServerInfoTo(dir string, info *ServerInfo) error {
 
 	// Tighten permissions on the directory in case it already existed with
 	// looser permissions. MkdirAll only applies mode to newly-created dirs.
-	if err := os.Chmod(dir, dirPermissions); err != nil {
-		return fmt.Errorf("failed to set discovery directory permissions: %w", err)
+	// On Windows this sets an explicit protected DACL (POSIX modes are
+	// advisory on NTFS); elsewhere it is os.Chmod(dirPermissions).
+	if err := restrictDiscoveryDirPermissions(dir); err != nil {
+		return err
 	}
 
 	path := filepath.Join(dir, "server.json")

@@ -171,7 +171,7 @@ func TestRoundTripClassifiesModernRequests(t *testing.T) {
 		assert.True(t, backendCalled.Load(), "backend must be contacted for a well-formed Modern request")
 	})
 
-	t.Run("batch with Modern header is forwarded, not rejected", func(t *testing.T) {
+	t.Run("batch is rejected before classification, backend not contacted", func(t *testing.T) {
 		t.Parallel()
 
 		var backendCalled atomic.Bool
@@ -181,6 +181,8 @@ func TestRoundTripClassifiesModernRequests(t *testing.T) {
 		})
 		tt, _ := newProxy(spy)
 
+		// Batches are rejected outright (batching was removed in MCP 2025-06-18)
+		// before revision classification or forwarding — see #5745.
 		req := httptest.NewRequest(http.MethodPost, "/mcp",
 			strings.NewReader(`[{"jsonrpc":"2.0","id":1,"method":"tools/call"}]`))
 		req.Header.Set("Content-Type", "application/json")
@@ -189,8 +191,8 @@ func TestRoundTripClassifiesModernRequests(t *testing.T) {
 		resp, err := tt.RoundTrip(req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
-		assert.Equal(t, http.StatusOK, resp.StatusCode, "batches are never classified, so they must be forwarded")
-		assert.True(t, backendCalled.Load(), "backend must be contacted for a forwarded batch")
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "batches must be rejected, not forwarded")
+		assert.False(t, backendCalled.Load(), "backend must not be contacted for a rejected batch")
 	})
 
 	t.Run("large-integer id is preserved verbatim in the 400 body", func(t *testing.T) {

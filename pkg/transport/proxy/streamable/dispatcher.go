@@ -6,7 +6,6 @@ package streamable
 import (
 	"fmt"
 	"log/slog"
-	"time"
 
 	"golang.org/x/exp/jsonrpc2"
 )
@@ -50,19 +49,5 @@ func (p *HTTPProxy) dispatchResponses() {
 			slog.Warn("non-string response id (expected composite string); dropping",
 				"raw_id", fmt.Sprintf("%v", rawID))
 		}
-	}
-}
-
-// waitForResponse waits for a response on the given channel with timeout.
-func (p *HTTPProxy) waitForResponse(ch <-chan jsonrpc2.Message, timeout time.Duration) jsonrpc2.Message {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case msg := <-ch:
-		return msg
-	case <-timer.C:
-		return nil
-	case <-p.shutdownCh:
-		return nil
 	}
 }

@@ -30,12 +30,10 @@ import (
 // coverage this file complements.
 //
 // Scope: this suite covers single-request Modern-signal forgery only. Batch
-// payloads are never revision-classified (batching was removed from MCP in
-// 2025-06-18), so they cannot carry a Modern signal and are out of scope
-// here. The separate, pre-existing question of whether a batch containing
-// "initialize" should be exempt from the unknown-session guard (see
-// TestRoundTripAllowsBatchInitializeWithUnknownSession) is Legacy behavior
-// tracked for follow-up, not a Modern-spoofing vector.
+// payloads are rejected outright before revision classification (batching was
+// removed from MCP in 2025-06-18; see TestRoundTripRejectsBatch and #5745), so
+// they can neither carry a Modern signal nor reach the unknown-session guard
+// and are out of scope here.
 
 // modernToolsCallBody is a well-formed Modern (2026-07-28) JSON-RPC request:
 // not "initialize", a valid non-null id, and params._meta carrying both

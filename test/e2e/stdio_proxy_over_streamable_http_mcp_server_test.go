@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -39,7 +40,7 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			}
 		})
 
-		It("should respond to a single get_current_time request and a batch request", func() {
+		It("should respond to a single get_current_time request and reject a batch request", func() {
 			By("Starting the time MCP server with streamable-http proxy")
 			e2e.NewTHVCommand(config, "run",
 				"--name", serverName,
@@ -76,7 +77,12 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			result := mcpClient.ExpectToolCall(ctx, "get_current_time", arguments)
 			Expect(result.Content).ToNot(BeEmpty(), "Should return the current time")
 
-			By("Sending a batch JSON-RPC request")
+			By("Sending a batch JSON-RPC request, which must be rejected")
+			// JSON-RPC batching was removed in MCP revision 2025-06-18. ToolHive
+			// serves only 2025-11-25 and 2026-07-28, so the proxy rejects any
+			// batch (a top-level JSON array) with an HTTP 400 / JSON-RPC -32600
+			// "Invalid Request" and a null id, rather than forwarding its nested
+			// calls past authz/audit/tool-filtering (see #5745, #5931).
 			batch := []map[string]interface{}{
 				{
 					"method": "tools/call",
@@ -115,23 +121,12 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			resp, err := client.Do(req)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(200))
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest), "Batch requests must be rejected")
 
-			var responses []map[string]interface{}
-			decoder := json.NewDecoder(resp.Body)
-			err = decoder.Decode(&responses)
+			body, err := io.ReadAll(resp.Body)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(responses).To(HaveLen(2))
-
-			ids := map[float64]bool{4: false, 5: false}
-			for _, r := range responses {
-				id, ok := r["id"].(float64)
-				Expect(ok).To(BeTrue(), "Each response should have an id")
-				ids[id] = true
-				Expect(r["result"]).ToNot(BeNil(), "Each response should have a result")
-			}
-			Expect(ids[4]).To(BeTrue())
-			Expect(ids[5]).To(BeTrue())
+			Expect(string(body)).To(ContainSubstring(`"code":-32600`), "Should carry a JSON-RPC Invalid Request error")
+			Expect(string(body)).To(ContainSubstring(`"id":null`), "Batch rejection carries a null JSON-RPC id")
 		})
 	})
 })

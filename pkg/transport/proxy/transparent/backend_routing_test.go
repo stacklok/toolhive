@@ -227,36 +227,70 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-// TestRoundTripAllowsBatchInitializeWithUnknownSession verifies that a JSON-RPC
-// batch payload containing an initialize call is forwarded even when its
-// Mcp-Session-Id is not yet in the session store.
-func TestRoundTripAllowsBatchInitializeWithUnknownSession(t *testing.T) {
+// TestRoundTripRejectsBatch verifies that the transparent proxy rejects JSON-RPC
+// batches with an HTTP 400 "Invalid Request" (-32600) instead of forwarding them
+// to the backend. Batching was removed in MCP 2025-06-18; forwarding a batch
+// would let its nested calls bypass authz/audit/tool-filtering (see #5745).
+// Rejection is Content-Type-independent: a batch under a non-JSON content type
+// must be rejected too (it skips the content-type-gated ParsingMiddleware). The
+// backend fails the test if it is ever reached.
+func TestRoundTripRejectsBatch(t *testing.T) {
 	t.Parallel()
 
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Mcp-Session-Id", uuid.New().String())
-		w.WriteHeader(http.StatusOK)
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("backend must not be reached: batch should be rejected at the proxy")
 	}))
-	defer backend.Close()
+	t.Cleanup(backend.Close)
 
-	tt := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
-		"localhost", 0, backend.URL,
-		nil, nil, nil,
-		false, false, "sse",
-		nil, nil, "", false,
-		nil,
-	))
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+	}{
+		{
+			name:        "batch containing initialize",
+			body:        `[{"method":"initialize"},{"method":"tools/list"}]`,
+			contentType: "application/json",
+		},
+		{
+			name:        "batch of tool calls",
+			body:        `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger"}}]`,
+			contentType: "application/json",
+		},
+		{
+			name:        "batch under non-json content type",
+			body:        `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger"}}]`,
+			contentType: "text/plain",
+		},
+	}
 
-	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
-		strings.NewReader(`[{"method":"initialize"},{"method":"tools/list"}]`))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown but batch contains initialize
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			transport := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
+				"localhost", 0, backend.URL,
+				nil, nil, nil,
+				false, false, "sse",
+				nil, nil, "", false,
+				nil,
+			))
 
-	resp, err := tt.RoundTrip(req)
-	require.NoError(t, err)
-	require.NotEqual(t, http.StatusBadRequest, resp.StatusCode)
-	_ = resp.Body.Close()
+			req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp", strings.NewReader(tt.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", tt.contentType)
+			req.Header.Set("Mcp-Session-Id", uuid.New().String())
+
+			resp, err := transport.RoundTrip(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), `"code":-32600`)
+			assert.Contains(t, string(body), `"id":null`)
+		})
+	}
 }
 
 // TestRoundTripStoresBackendURLOnInitialize verifies that when an initialize

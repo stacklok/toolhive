@@ -628,13 +628,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	var mcpHandler http.Handler = streamableServer
 
-	// Classify Modern (2026-07-28) vs Legacy at the decode seam and reject
-	// malformed Modern requests before dispatch. No routing change: Legacy
-	// and well-formed Modern requests both fall through to the same handler
-	// (Modern dispatch lands in Phase 2, #5756). Applied before telemetry
-	// (i.e. it runs closer to the handler) so a rejection is still recorded
-	// by the telemetry middleware instead of bypassing it entirely.
-	mcpHandler = classificationMiddleware(mcpHandler)
+	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
+	// malformed Modern requests before dispatch, and route well-formed Modern
+	// requests to the vMCP core (dispatchModern) instead of the SDK. Applied
+	// before telemetry (i.e. it runs closer to the handler) so a rejection or
+	// a dispatcher 403 is still recorded by the telemetry middleware instead
+	// of bypassing it entirely.
+	mcpHandler = s.classifyingHandler(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)

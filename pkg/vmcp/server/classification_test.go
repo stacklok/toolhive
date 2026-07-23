@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // Reserved Modern _meta keys, mirrored from pkg/mcp/revision.go's unexported
@@ -31,11 +32,25 @@ func sentinelEncode(v string) string {
 
 type classificationErrorBody struct {
 	Error struct {
-		Code int64 `json:"code"`
+		Code    int64  `json:"code"`
+		Message string `json:"message"`
 	} `json:"error"`
 }
 
-func TestClassificationMiddleware(t *testing.T) {
+// classifyingHandlerTestServer builds a minimal *Server for driving
+// classifyingHandler in isolation, carrying only the field the handler reads
+// beyond config scalars: the core a well-formed Modern request dispatches to.
+func classifyingHandlerTestServer() *Server {
+	return &Server{
+		config: &Config{
+			Name:    testServerName,
+			Version: testServerVersion,
+		},
+		core: &modernFakeCore{tools: []vmcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}},
+	}
+}
+
+func TestClassifyingHandler(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -43,6 +58,7 @@ func TestClassificationMiddleware(t *testing.T) {
 		parsed          *mcpparser.ParsedMCPRequest
 		protocolHeader  string
 		wantPassthrough bool
+		wantDispatched  bool
 		wantCode        int64
 	}{
 		{
@@ -58,16 +74,41 @@ func TestClassificationMiddleware(t *testing.T) {
 			wantPassthrough: true,
 		},
 		{
-			// tools/list is deliberately not in the Mcp-Name-required set, so this
-			// case only needs Mcp-Method (required on every Modern request) to pass.
-			name: "modern header and complete meta pass through",
+			// A non-Modern MCP-Protocol-Version header, with no reserved _meta key,
+			// is not a Modern signal (ClassifyRevision requires an exact match on
+			// MCPVersionModern): this must still reach next, never dispatchModern,
+			// now that Modern dispatch is unconditional for well-formed requests.
+			name: "legacy request with an old protocol version header still passes through",
 			parsed: &mcpparser.ParsedMCPRequest{
-				Method: "tools/list",
+				Method: "tools/call",
+			},
+			protocolHeader:  "2025-11-25",
+			wantPassthrough: true,
+		},
+		{
+			// tools/list is deliberately not in the Mcp-Name-required set, so this
+			// case only needs Mcp-Method (required on every Modern request) to pass
+			// ValidateHeaderConsistency; a well-formed Modern request then dispatches
+			// to the core unconditionally rather than falling through to next.
+			name:           "well-formed modern request dispatches to the core",
+			parsed:         wellFormedModernToolsList(),
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantDispatched: true,
+		},
+		{
+			// initialize is forced Legacy unconditionally (ClassifyRevision), even
+			// with a full spoofed Modern signal on both header and _meta -- mirrors
+			// revision_test.go's "legacy: initialize wins over spoofed modern meta
+			// and header" at the classifyingHandler boundary, so a future change
+			// ahead of the ClassifyRevision call can't silently route this to
+			// dispatchModern.
+			name: "initialize with spoofed modern signal still passes through",
+			parsed: &mcpparser.ParsedMCPRequest{
+				Method: "initialize",
 				Meta: map[string]any{
 					metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
 					metaKeyClientCapabilities: map[string]any{},
 				},
-				MCPMethodHeader: "tools/list",
 			},
 			protocolHeader:  mcpparser.MCPVersionModern,
 			wantPassthrough: true,
@@ -190,17 +231,43 @@ func TestClassificationMiddleware(t *testing.T) {
 			})
 
 			rec := httptest.NewRecorder()
-			classificationMiddleware(next).ServeHTTP(rec, req)
+			classifyingHandlerTestServer().classifyingHandler(next).ServeHTTP(rec, req)
 
 			if tt.wantPassthrough {
 				assert.True(t, nextCalled, "expected the request to fall through to next")
 				return
 			}
-
 			assert.False(t, nextCalled, "expected classification to short-circuit before next")
+
+			if tt.wantDispatched {
+				var body map[string]any
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+				result, ok := body["result"].(map[string]any)
+				require.True(t, ok, "expected a Modern result envelope, got %v", body)
+				assert.Equal(t, "complete", result["resultType"])
+				return
+			}
+
 			var body classificationErrorBody
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 			assert.Equal(t, tt.wantCode, body.Error.Code)
 		})
+	}
+}
+
+// wellFormedModernToolsList returns a well-formed Modern tools/list request:
+// tools/list is deliberately not in the Mcp-Name-required set, so only
+// Mcp-Method (required on every Modern request) is needed for it to pass
+// ValidateHeaderConsistency.
+func wellFormedModernToolsList() *mcpparser.ParsedMCPRequest {
+	return &mcpparser.ParsedMCPRequest{
+		Method:    "tools/list",
+		ID:        "1",
+		IsRequest: true,
+		Meta: map[string]any{
+			metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
+			metaKeyClientCapabilities: map[string]any{},
+		},
+		MCPMethodHeader: "tools/list",
 	}
 }

@@ -38,6 +38,9 @@ import (
 // newRealTestHandler builds the full vMCP handler backed by the MCP server at
 // backendURL. It is the low-level helper used by newRealTestServer and any test
 // that needs control over the httptest.Server configuration (e.g. WriteTimeout).
+// A well-formed Modern (2026-07-28) request always routes through
+// classifyingHandler -> dispatchModern; a Legacy request is unaffected and
+// still falls through to the SDK.
 func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	t.Helper()
 
@@ -238,15 +241,15 @@ func TestIntegration_RealBackend_NonSSEGetRejectedWithNotAcceptable(t *testing.T
 }
 
 // TestIntegration_RealBackend_ModernRequestRejectedByClassification verifies
-// the classificationMiddleware wiring end-to-end through the real chain (not
-// just the unit-level table covering classificationMiddleware in isolation):
+// the classifyingHandler wiring end-to-end through the real chain (not
+// just the unit-level table covering classifyingHandler in isolation):
 // a request that signals Modern (2026-07-28) via a reserved _meta key, but
 // carries a mismatched MCP-Protocol-Version header, is rejected with a
 // -32020 (HeaderMismatch) JSON-RPC error before ever reaching the backend.
 func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testing.T) {
 	t.Parallel()
 
-	// Rejected by classificationMiddleware before dispatch, so no real MCP
+	// Rejected by classifyingHandler before dispatch, so no real MCP
 	// backend is needed.
 	ts := newRealTestServer(t, "http://127.0.0.1:0")
 
@@ -297,7 +300,7 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 // valid clientCapabilities, and a matching MCP-Protocol-Version header — is
 // still rejected with -32020 (HeaderMismatch) when its Mcp-Method HTTP header
 // disagrees with the JSON-RPC body's actual method. This exercises the real
-// ParsingMiddleware -> classificationMiddleware flow (unlike
+// ParsingMiddleware -> classifyingHandler flow (unlike
 // TestClassificationMiddleware in classification_test.go, which injects a
 // pre-built ParsedMCPRequest and bypasses ParsingMiddleware), and covers a
 // genuine Mcp-Method/body mismatch rather than the protocolVersion mismatch
@@ -305,7 +308,7 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 func TestIntegration_RealBackend_ModernRequestRejectedByHeaderMismatch(t *testing.T) {
 	t.Parallel()
 
-	// Rejected by classificationMiddleware before dispatch, so no real MCP
+	// Rejected by classifyingHandler before dispatch, so no real MCP
 	// backend is needed.
 	ts := newRealTestServer(t, "http://127.0.0.1:0")
 

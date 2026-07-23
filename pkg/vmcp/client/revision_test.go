@@ -168,16 +168,25 @@ func TestProbeRevision_TimeoutFallsBackToLegacy(t *testing.T) {
 
 // TestListCapabilities_ModernServedFromCache verifies the cache: a Modern
 // backend is probed once, and a second ListCapabilities is served from the
-// cached revision (one discover round-trip, no re-probe fallback ladder).
+// cached revision (discover + enumerate, never a Legacy initialize handshake).
 func TestListCapabilities_ModernServedFromCache(t *testing.T) {
 	t.Parallel()
 
-	var discoverCalls atomic.Int32
+	var initializeCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		discoverCalls.Add(1)
-		assert.Equal(t, "server/discover", r.Header.Get("Mcp-Method"))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(discoverEnvelope(t, r))
+		id, _ := modernReq(t, r)
+		switch r.Header.Get("Mcp-Method") {
+		case "server/discover":
+			writeModernResult(t, w, id, map[string]any{"capabilities": map[string]any{"tools": map[string]any{}}})
+		case "tools/list":
+			writeModernResult(t, w, id, map[string]any{
+				"tools": []any{map[string]any{"name": "echo", "inputSchema": map[string]any{"type": "object"}}},
+			})
+		default:
+			// Any non-Modern method (e.g. initialize) is a regression.
+			initializeCalls.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	t.Cleanup(srv.Close)
 
@@ -186,22 +195,18 @@ func TestListCapabilities_ModernServedFromCache(t *testing.T) {
 
 	caps1, err := h.ListCapabilities(context.Background(), target)
 	require.NoError(t, err)
-	require.NotNil(t, caps1)
+	require.Len(t, caps1.Tools, 1)
 
 	rev, ok := h.cachedRevision("modern")
 	require.True(t, ok)
 	assert.Equal(t, mcpparser.RevisionModern, rev)
 
+	// Second call is served via the cached Modern revision (discover+enumerate),
+	// not a re-probe ladder, and still returns the enumerated tool.
 	caps2, err := h.ListCapabilities(context.Background(), target)
 	require.NoError(t, err)
-	require.NotNil(t, caps2)
+	require.Len(t, caps2.Tools, 1)
+	assert.Equal(t, "echo", caps2.Tools[0].Name)
 
-	// Step 2a is discover-only: enumerations are empty (Step 2b fills them).
-	assert.Empty(t, caps2.Tools)
-
-	// Two ListCapabilities calls => exactly two discover round-trips (one probe,
-	// one cache-hit discover). If the cache were ignored, a re-probe would still
-	// be two, so the real signal is that no OTHER method was ever called and the
-	// backend never received an initialize handshake.
-	assert.EqualValues(t, 2, discoverCalls.Load())
+	assert.Zero(t, initializeCalls.Load(), "a Modern backend must never receive a Legacy initialize")
 }

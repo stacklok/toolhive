@@ -1004,9 +1004,10 @@ func (h *httpBackendClient) probeRevision(
 	case errors.Is(err, errModernProtocolError):
 		// The peer validated our Modern protocol metadata and rejected it: it IS
 		// Modern, discover just failed application-side. No usable caps.
-		// ponytail: first probe yields an empty-but-successful capability list
-		// here (nil caps); later cache-hit modernDiscover re-surfaces this error.
-		// Reconciled in Step 2b when enumeration replaces the discover-only list.
+		// nil caps => modernEnumerate returns an empty list. The cache-hit path
+		// tolerates the same -3202x error to nil caps, so both yield an empty
+		// list consistently (a Modern backend that rejects our discover exposes
+		// no enumerable capabilities).
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
 		return mcpparser.RevisionModern, nil, nil
 	default:
@@ -1017,24 +1018,178 @@ func (h *httpBackendClient) probeRevision(
 	}
 }
 
-// modernCapabilityList builds the discover-level CapabilityList for a Modern
-// backend from its server/discover capability flags.
-func (*httpBackendClient) modernCapabilityList(
-	target *vmcp.BackendTarget, caps *mcp.ServerCapabilities,
-) *vmcp.CapabilityList {
-	slog.Debug("backend speaks Modern; discover capability flags",
-		"backend", target.WorkloadID,
-		"tools", caps != nil && caps.Tools != nil,
-		"resources", caps != nil && caps.Resources != nil,
-		"prompts", caps != nil && caps.Prompts != nil)
-	// ponytail: Modern tools/resources/prompts enumeration lands in Step 2b (#5911).
-	// For now discover only reports presence; the enumerations stay empty.
-	return &vmcp.CapabilityList{
-		Tools:             []vmcp.Tool{},
-		Resources:         []vmcp.Resource{},
-		ResourceTemplates: []vmcp.ResourceTemplate{},
-		Prompts:           []vmcp.Prompt{},
+// modernEnumerate builds a backend's CapabilityList by enumerating each
+// capability the discover flags advertise, via the Modern (2026-07-28) shim.
+// Each list is gated on the matching discover flag (mirroring the Legacy
+// initialize-path gating) and follows nextCursor across pages (#5851).
+//
+// caps may be nil: a Modern backend that rejected our discover with a -3202x
+// protocol error (errModernProtocolError) is still classified Modern but yields
+// no capability flags, so nothing is enumerated and an empty list is returned —
+// the same outcome on the first probe and on later cache hits.
+func (h *httpBackendClient) modernEnumerate(
+	ctx context.Context, target *vmcp.BackendTarget, caps *mcp.ServerCapabilities,
+) (*vmcp.CapabilityList, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
+	endpoint := target.BaseURL
+
+	var tools []mcp.Tool
+	if caps != nil && caps.Tools != nil {
+		tools, err = pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+			var page struct {
+				Tools      []mcp.Tool `json:"tools"`
+				NextCursor mcp.Cursor `json:"nextCursor"`
+			}
+			if err := modernCall(ctx, hc, endpoint, "tools/list", cursorParams(cursor), "", &page); err != nil {
+				return nil, "", err
+			}
+			return page.Tools, page.NextCursor, nil
+		})
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list tools")
+		}
+	}
+
+	var resources []mcp.Resource
+	var templates []mcp.ResourceTemplate
+	if caps != nil && caps.Resources != nil {
+		resources, err = pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+			var page struct {
+				Resources  []mcp.Resource `json:"resources"`
+				NextCursor mcp.Cursor     `json:"nextCursor"`
+			}
+			if err := modernCall(ctx, hc, endpoint, "resources/list", cursorParams(cursor), "", &page); err != nil {
+				return nil, "", err
+			}
+			return page.Resources, page.NextCursor, nil
+		})
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
+		}
+
+		// Resource templates share the resources capability flag. A backend that
+		// does not implement resources/templates/list (-32601) degrades to an
+		// empty template list, mirroring the Legacy queryResourceTemplates path.
+		templates, err = pagination.ListAll(
+			ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.ResourceTemplate, mcp.Cursor, error) {
+				var page struct {
+					ResourceTemplates []mcp.ResourceTemplate `json:"resourceTemplates"`
+					NextCursor        mcp.Cursor             `json:"nextCursor"`
+				}
+				if err := modernCall(ctx, hc, endpoint, "resources/templates/list", cursorParams(cursor), "", &page); err != nil {
+					return nil, "", err
+				}
+				return page.ResourceTemplates, page.NextCursor, nil
+			})
+		switch {
+		case errors.Is(err, mcp.ErrMethodNotFound):
+			templates = nil
+		case err != nil:
+			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
+		}
+	}
+
+	var prompts []mcp.Prompt
+	if caps != nil && caps.Prompts != nil {
+		prompts, err = pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+			var page struct {
+				Prompts    []mcp.Prompt `json:"prompts"`
+				NextCursor mcp.Cursor   `json:"nextCursor"`
+			}
+			if err := modernCall(ctx, hc, endpoint, "prompts/list", cursorParams(cursor), "", &page); err != nil {
+				return nil, "", err
+			}
+			return page.Prompts, page.NextCursor, nil
+		})
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
+		}
+	}
+
+	slog.Debug("backend capabilities queried (modern)",
+		"backend", target.WorkloadName,
+		"tools", len(tools), "resources", len(resources),
+		"resource_templates", len(templates), "prompts", len(prompts))
+	return newCapabilityListFromMCP(target.WorkloadID, tools, resources, templates, prompts), nil
+}
+
+// cursorParams builds the Modern list request params carrying a pagination
+// cursor, or nil for the first page.
+func cursorParams(cursor mcp.Cursor) map[string]any {
+	if cursor == "" {
+		return nil
+	}
+	return map[string]any{"cursor": string(cursor)}
+}
+
+// newCapabilityListFromMCP converts backend mcp types into the vmcp domain
+// CapabilityList, tagging every item with backendID. Shared by the Legacy
+// (initialize+enumerate) and Modern (discover+enumerate) paths so both produce
+// identical domain shapes.
+func newCapabilityListFromMCP(
+	backendID string,
+	tools []mcp.Tool, resources []mcp.Resource, templates []mcp.ResourceTemplate, prompts []mcp.Prompt,
+) *vmcp.CapabilityList {
+	capabilities := &vmcp.CapabilityList{
+		Tools:             make([]vmcp.Tool, len(tools)),
+		Resources:         make([]vmcp.Resource, len(resources)),
+		ResourceTemplates: make([]vmcp.ResourceTemplate, len(templates)),
+		Prompts:           make([]vmcp.Prompt, len(prompts)),
+	}
+
+	for i, tool := range tools {
+		capabilities.Tools[i] = vmcp.Tool{
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  conversion.ConvertToolInputSchema(tool.InputSchema),
+			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
+			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
+			BackendID:    backendID,
+		}
+	}
+
+	for i, resource := range resources {
+		capabilities.Resources[i] = vmcp.Resource{
+			URI:         resource.URI,
+			Name:        resource.Name,
+			Description: resource.Description,
+			MimeType:    resource.MIMEType,
+			BackendID:   backendID,
+		}
+	}
+
+	// Resource templates are a pass-through: no URI-template rewriting, like resources.
+	for i, template := range templates {
+		capabilities.ResourceTemplates[i] = vmcp.ResourceTemplate{
+			URITemplate: template.URITemplate,
+			Name:        template.Name,
+			Description: template.Description,
+			MimeType:    template.MIMEType,
+			BackendID:   backendID,
+		}
+	}
+
+	for i, prompt := range prompts {
+		args := make([]vmcp.PromptArgument, len(prompt.Arguments))
+		for j, arg := range prompt.Arguments {
+			args[j] = vmcp.PromptArgument{
+				Name:        arg.Name,
+				Description: arg.Description,
+				Required:    arg.Required,
+			}
+		}
+		capabilities.Prompts[i] = vmcp.Prompt{
+			Name:        prompt.Name,
+			Description: prompt.Description,
+			Arguments:   args,
+			BackendID:   backendID,
+		}
+	}
+
+	return capabilities
 }
 
 // ListCapabilities queries a backend for its MCP capabilities.
@@ -1055,16 +1210,19 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 			return nil, wrapBackendError(err, target.WorkloadID, "probe revision")
 		}
 		if probed == mcpparser.RevisionModern {
-			return h.modernCapabilityList(target, modernCaps), nil
+			return h.modernEnumerate(ctx, target, modernCaps)
 		}
 		// Legacy: fall through to the initialize+enumerate path below.
 	case rev == mcpparser.RevisionModern:
-		// Known Modern: one discover round-trip, no Legacy fallback.
+		// Known Modern: one discover round-trip, no Legacy fallback. A -3202x
+		// protocol error is tolerated as nil caps so this cache-hit path yields
+		// the same empty enumeration as the first probe (probeRevision), rather
+		// than surfacing an error only on subsequent calls.
 		modernCaps, err := h.modernDiscover(ctx, target)
-		if err != nil {
+		if err != nil && !errors.Is(err, errModernProtocolError) {
 			return nil, wrapBackendError(err, target.WorkloadID, "modern discover")
 		}
-		return h.modernCapabilityList(target, modernCaps), nil
+		return h.modernEnumerate(ctx, target, modernCaps)
 	}
 
 	// Create a client for this backend (not yet initialized)
@@ -1113,66 +1271,11 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 	}
 
-	// Convert MCP types to vmcp types
-	capabilities := &vmcp.CapabilityList{
-		Tools:             make([]vmcp.Tool, len(toolsResp.Tools)),
-		Resources:         make([]vmcp.Resource, len(resourcesResp.Resources)),
-		ResourceTemplates: make([]vmcp.ResourceTemplate, len(resourceTemplatesResp.ResourceTemplates)),
-		Prompts:           make([]vmcp.Prompt, len(promptsResp.Prompts)),
-	}
-
-	// Convert tools
-	for i, tool := range toolsResp.Tools {
-		capabilities.Tools[i] = vmcp.Tool{
-			Name:         tool.Name,
-			Description:  tool.Description,
-			InputSchema:  conversion.ConvertToolInputSchema(tool.InputSchema),
-			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
-			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
-			BackendID:    target.WorkloadID,
-		}
-	}
-
-	// Convert resources
-	for i, resource := range resourcesResp.Resources {
-		capabilities.Resources[i] = vmcp.Resource{
-			URI:         resource.URI,
-			Name:        resource.Name,
-			Description: resource.Description,
-			MimeType:    resource.MIMEType,
-			BackendID:   target.WorkloadID,
-		}
-	}
-
-	// Convert resource templates (pass-through: no URI-template rewriting, like resources)
-	for i, template := range resourceTemplatesResp.ResourceTemplates {
-		capabilities.ResourceTemplates[i] = vmcp.ResourceTemplate{
-			URITemplate: template.URITemplate,
-			Name:        template.Name,
-			Description: template.Description,
-			MimeType:    template.MIMEType,
-			BackendID:   target.WorkloadID,
-		}
-	}
-
-	// Convert prompts
-	for i, prompt := range promptsResp.Prompts {
-		args := make([]vmcp.PromptArgument, len(prompt.Arguments))
-		for j, arg := range prompt.Arguments {
-			args[j] = vmcp.PromptArgument{
-				Name:        arg.Name,
-				Description: arg.Description,
-				Required:    arg.Required,
-			}
-		}
-
-		capabilities.Prompts[i] = vmcp.Prompt{
-			Name:        prompt.Name,
-			Description: prompt.Description,
-			Arguments:   args,
-			BackendID:   target.WorkloadID,
-		}
-	}
+	// Convert MCP types to vmcp types (shared with the Modern enumeration path).
+	capabilities := newCapabilityListFromMCP(
+		target.WorkloadID,
+		toolsResp.Tools, resourcesResp.Resources, resourceTemplatesResp.ResourceTemplates, promptsResp.Prompts,
+	)
 
 	// TODO: Query server capabilities to detect logging/sampling support
 	// This requires additional MCP protocol support for capabilities introspection

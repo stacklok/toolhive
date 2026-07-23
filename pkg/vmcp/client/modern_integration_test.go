@@ -18,6 +18,7 @@ import (
 	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -161,4 +162,37 @@ func TestIntegration_ModernCall_Discover(t *testing.T) {
 	assert.NotEmpty(t, out.Capabilities.Completions, "completions is advertised unconditionally")
 	assert.Empty(t, out.Capabilities.Resources, "echo backend exposes no resources")
 	assert.Empty(t, out.Capabilities.Prompts, "echo backend exposes no prompts")
+}
+
+// TestIntegration_ModernListCapabilities proves the full Modern enumeration path
+// end-to-end: ListCapabilities probes the Phase-2 dispatchModern server as
+// Modern, then enumerates its real capabilities (tools/list) via the shim — no
+// initialize handshake, no Mcp-Session-Id — and returns the echo backend's tool.
+func TestIntegration_ModernListCapabilities(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startEchoBackend(t)
+	vmcpSrv := newModernVMCPServer(t, backendURL)
+
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "vmcp-modern",
+		WorkloadName:  "vMCP Modern",
+		BaseURL:       vmcpSrv.URL + "/mcp",
+		TransportType: "streamable-http",
+	}
+
+	caps, err := h.ListCapabilities(context.Background(), target)
+	require.NoError(t, err)
+
+	// Classified Modern (not Legacy initialize) and the echo tool enumerated.
+	rev, ok := h.cachedRevision(target.WorkloadID)
+	require.True(t, ok)
+	assert.Equal(t, mcpparser.RevisionModern, rev)
+
+	require.Len(t, caps.Tools, 1, "the echo backend's tool must enumerate through Modern")
+	assert.Equal(t, "echo", caps.Tools[0].Name)
+	assert.Equal(t, target.WorkloadID, caps.Tools[0].BackendID)
+	assert.Empty(t, caps.Resources, "echo backend exposes no resources")
+	assert.Empty(t, caps.Prompts, "echo backend exposes no prompts")
 }

@@ -205,7 +205,13 @@ func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, with
 // waitNotification blocks for a forwarded notification with the given method.
 func (dc *downstreamClient) waitNotification(t *testing.T, method string) mcpmcp.JSONRPCNotification {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	// Give the forwarded notification generous headroom: these are async,
+	// server-initiated messages relayed backend -> vMCP -> downstream, and under
+	// the full-suite parallel `-race` load on CI the round trip can take well over
+	// a second. The previous 5s deadline flaked (timed out) there while passing in
+	// milliseconds locally. Stay under the callers' 20s context so a genuine hang
+	// still fails cleanly rather than blocking to the context deadline.
+	deadline := time.After(15 * time.Second)
 	for {
 		select {
 		case n := <-dc.notifCh:

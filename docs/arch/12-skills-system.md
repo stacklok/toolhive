@@ -329,6 +329,8 @@ oci_tags table (reserved; not currently populated)
 
 RFC [THV-0080](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0080-skills-lock-file.md) adds a project-level `toolhive.lock.yaml`, committed at the project root, that pins the exact content of every project-scoped skill install — the same guarantee `package-lock.json`, `Cargo.lock`, and `go.sum` provide elsewhere. Two teammates (or a CI runner) cloning the same repo restore identical skill content via `thv skill sync`, rather than whatever the source currently resolves to.
 
+**Trust model, stated plainly:** until the RFC's Sigstore signing/verification stack lands, the lock file provides *reproducibility and drift detection over a repository-editable file* — not verified integrity. A committed digest is an unauthenticated trust root: anyone who can change `toolhive.lock.yaml` in the repository controls what `sync` installs. Reviewing lock-file diffs (especially `digest` and `resolvedReference` changes) carries the same weight as reviewing the AI-executed skill content itself. Signature verification on consume is what upgrades this from drift detection to integrity, and is why the whole feature ships gated until that half exists.
+
 ### Rollout
 
 The feature is gated behind the `TOOLHIVE_SKILLS_LOCK_ENABLED` environment variable (`skills.LockFileFeatureEnabled()`) while it lands across a stack of PRs, following the existing `TOOLHIVE_DEV` precedent for staged rollouts (`pkg/skills/gitresolver/reference.go`). With the flag unset, project-scope installs behave exactly as they did before this RFC — no lock file is written, no `toolhive.requires` materialization happens, `sync`/`upgrade` refuse with a clear "experimental" error.
@@ -384,13 +386,13 @@ Reinstalling *at the pinned reference* (never re-resolving `source`) uses `build
 
 ### Upgrade
 
-`thv skill upgrade [name...]` re-resolves each targeted entry's `source` (via the same git/OCI/registry dispatch order `Install` uses, stopping short of extraction — `resolveLatestState`) and installs newer content when the resolved digest changed. Entries pinned to an immutable reference (an OCI digest, or a git reference already pinned to a full commit hash — `isImmutableSource`) are reported not-upgradable. `--preview` reports what would change without persisting it (an OCI preview still pulls the artifact into the local store — there's no lighter "digest only" primitive — so it is not fully side-effect-free, matching the RFC's own caveat). `--allow-ref-change` permits the resolved reference itself changing; `--fail-on-changes` gives CI a freshness gate.
+`thv skill upgrade [name...]` re-resolves each targeted entry's `source` (via the same git/OCI/registry dispatch order `Install` uses, stopping short of extraction — `resolveLatestState`) and installs newer content when the resolved digest changed. Entries pinned to an immutable reference (an OCI digest, or a git reference already pinned to a full commit hash — `isImmutableSource`) are reported not-upgradable. `--preview` reports what would change without persisting it (an OCI preview still pulls the artifact into the local store — there's no lighter "digest only" primitive — so it is not fully side-effect-free, matching the RFC's own caveat). `--allow-ref-change` permits the resolved reference itself changing; `--fail-on-changes` gives CI a freshness gate — it evaluates the same plan, never installs, and returns the full outcome set (exit codes are derived client-side from the outcomes, so a genuine resolution failure still surfaces as a partial failure rather than "lock is stale").
 
 **Implementation:** `pkg/skills/skillsvc/upgrade.go`
 
 ### CLI Confirmation and Exit Codes
 
-Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding.
+Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`/`--fail-on-changes`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). The prompt is printed to stderr together with a summary of the lock entries being acted on (name, source, short digest) so the human gate has something concrete to judge, and everything echoed into it is stripped of non-graphic characters so a hostile directory or entry name cannot repaint the prompt with terminal escapes. On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding. Until Sigstore verification lands, this prompt is a speed bump, not a security boundary — see the trust-model note above.
 
 Exit codes follow a CI-oriented contract distinct from the generic `1` used elsewhere in the CLI:
 
@@ -398,7 +400,7 @@ Exit codes follow a CI-oriented contract distinct from the generic `1` used else
 |---|---|
 | `0` | Success |
 | `1` | Generic/unclassified error (cobra's default) |
-| `2` | Check/freshness failure — `sync --check` found drift, or `upgrade --fail-on-changes` found available changes |
+| `2` | Check/freshness failure — `sync --check` found drifted or missing installs, or `upgrade --fail-on-changes` found available changes |
 | `3` | Partial failure — some, but not all, targeted skills failed |
 | `4` | Policy rejection — the confirmation gate declined a non-interactive run, or `--allow-ref-change` blocked a reference change |
 

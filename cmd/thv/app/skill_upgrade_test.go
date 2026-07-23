@@ -16,10 +16,11 @@ func TestUpgradeExitError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		outcomes []skills.UpgradeOutcome
-		preview  bool
-		wantCode int
+		name          string
+		outcomes      []skills.UpgradeOutcome
+		preview       bool
+		failOnChanges bool
+		wantCode      int
 	}{
 		{
 			name:     "all up to date",
@@ -68,12 +69,42 @@ func TestUpgradeExitError(t *testing.T) {
 			preview:  true,
 			wantCode: ExitCodePartialFailure,
 		},
+		{
+			name:          "fail-on-changes with pending upgrade is a check failure",
+			outcomes:      []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusUpgraded}},
+			failOnChanges: true,
+			wantCode:      ExitCodeCheckFailure,
+		},
+		{
+			name:          "fail-on-changes with a blocked ref change is a check failure",
+			outcomes:      []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusRefChangeBlocked}},
+			failOnChanges: true,
+			wantCode:      ExitCodeCheckFailure,
+		},
+		{
+			name:          "fail-on-changes with everything current exits clean",
+			outcomes:      []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusUpToDate}},
+			failOnChanges: true,
+			wantCode:      0,
+		},
+		{
+			// The exit-code inversion from the panel review: a genuine
+			// resolution failure during the CI gate must exit 3, not be
+			// silently downgraded to "lock is stale" (exit 2).
+			name: "fail-on-changes with a genuine failure is a partial failure, not a check failure",
+			outcomes: []skills.UpgradeOutcome{
+				{Name: "a", Status: skills.UpgradeStatusUpgraded},
+				{Name: "b", Status: skills.UpgradeStatusFailed},
+			},
+			failOnChanges: true,
+			wantCode:      ExitCodePartialFailure,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := upgradeExitError(&skills.UpgradeResult{Outcomes: tt.outcomes}, tt.preview)
+			err := upgradeExitError(&skills.UpgradeResult{Outcomes: tt.outcomes}, tt.preview, tt.failOnChanges)
 			assert.Equal(t, tt.wantCode, ExitCodeFromError(err))
 		})
 	}
@@ -83,13 +114,13 @@ func TestPrintUpgradeResultJSON(t *testing.T) {
 	t.Parallel()
 	err := printUpgradeResult(&skills.UpgradeResult{
 		Outcomes: []skills.UpgradeOutcome{{Name: "my-skill", Status: skills.UpgradeStatusUpgraded}},
-	}, FormatJSON)
+	}, FormatJSON, false)
 	require.NoError(t, err)
 }
 
 func TestPrintUpgradeResultTextNoOutcomes(t *testing.T) {
 	t.Parallel()
-	err := printUpgradeResult(&skills.UpgradeResult{}, FormatText)
+	err := printUpgradeResult(&skills.UpgradeResult{}, FormatText, false)
 	require.NoError(t, err)
 }
 
@@ -101,6 +132,6 @@ func TestPrintUpgradeResultTextEveryStatus(t *testing.T) {
 		{Name: "pinned-skill", Status: skills.UpgradeStatusNotUpgradable},
 		{Name: "blocked-skill", Status: skills.UpgradeStatusRefChangeBlocked, NewResolvedReference: "new-ref"},
 		{Name: "failed-skill", Status: skills.UpgradeStatusFailed, Reason: skills.FailureReasonUnknown, Error: "boom"},
-	}}, FormatText)
+	}}, FormatText, true)
 	require.NoError(t, err)
 }

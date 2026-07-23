@@ -11,11 +11,14 @@ mdx:
 
 ## thv skill upgrade
 
-Upgrade project skills to newer pinned content
+Upgrade project skills to newer pinned content (experimental)
 
 ### Synopsis
 
 Re-resolve a project's lock entries and install newer content where available.
+
+Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
+server while the lock file feature rolls out.
 
 Skills pinned to an immutable reference (an OCI digest or a full git commit
 hash) are reported not-upgradable — there is nothing newer to resolve to.

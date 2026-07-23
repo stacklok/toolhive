@@ -111,6 +111,61 @@ var _ = Describe("Skills CLI lock file exit codes (RFC THV-0080)", Label("api", 
 		})
 	})
 
+	Describe("thv skill sync partial failure", func() {
+		It("exits 3 when a pinned skill cannot be reinstalled", func() {
+			projectRoot := makeE2EProjectRoot()
+			skillName := "cli-lock-exit3-skill"
+
+			ociRegistry := httptest.NewServer(registry.New())
+			ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill whose registry will vanish")
+
+			installResp := installSkill(apiServer, installSkillRequest{
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(201))
+
+			By("Tampering with the installed files and killing the registry, so the repair reinstall must fail")
+			skillMD := filepath.Join(projectRoot, ".claude", "skills", skillName, "SKILL.md")
+			Expect(os.WriteFile(skillMD, []byte("tampered"), 0o644)).To(Succeed())
+			ociRegistry.Close()
+
+			_, _, err := thvSkillCmd("sync", "--yes", "--project-root", projectRoot).Run()
+			Expect(err).To(HaveOccurred(), "a failed repair must not exit 0")
+			Expect(exitCodeOf(err)).To(Equal(3), "an operational failure is exit 3, not a freshness signal")
+		})
+	})
+
+	Describe("thv skill sync --check on a fresh clone", func() {
+		It("exits 2 when the lock file has entries but nothing is installed", func() {
+			projectRoot := makeE2EProjectRoot()
+			skillName := "cli-lock-freshclone-skill"
+
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for the fresh-clone gate")
+
+			installResp := installSkill(apiServer, installSkillRequest{
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(201))
+
+			By("Simulating a fresh clone: the committed lock file survives, local install state does not")
+			lockPath := filepath.Join(projectRoot, "toolhive.lock.yaml")
+			lockBytes, err := os.ReadFile(lockPath) //nolint:gosec // fixed test path
+			Expect(err).ToNot(HaveOccurred())
+			uninstallResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
+			defer uninstallResp.Body.Close()
+			Expect(uninstallResp.StatusCode).To(Equal(204))
+			Expect(os.WriteFile(lockPath, lockBytes, 0o644)).To(Succeed())
+
+			_, _, cmdErr := thvSkillCmd("sync", "--check", "--project-root", projectRoot).Run()
+			Expect(cmdErr).To(HaveOccurred(), "the CI gate must not green-light a checkout with nothing installed")
+			Expect(exitCodeOf(cmdErr)).To(Equal(2))
+		})
+	})
+
 	Describe("thv skill upgrade --fail-on-changes", func() {
 		It("exits 2 when a skill would change, without installing it", func() {
 			projectRoot := makeE2EProjectRoot()

@@ -24,8 +24,11 @@ var (
 
 var skillSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Restore project skills to match the lock file",
+	Short: "Restore project skills to match the lock file (experimental)",
 	Long: `Restore a project's installed skills to match toolhive.lock.yaml.
+
+Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
+server while the lock file feature rolls out.
 
 Missing or drifted skills are reinstalled at their pinned digest. Use
 --check to report drift without installing anything (suitable for CI).
@@ -66,6 +69,9 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	if !skillSyncCheck {
+		if !skillSyncYes {
+			printLockEntriesSummary(projectRoot)
+		}
 		confirmed, confirmErr := requireConfirmation("Sync skills for "+projectRoot, skillSyncYes)
 		if confirmErr != nil {
 			return confirmErr
@@ -97,13 +103,18 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 // syncExitError maps a SyncResult to RFC THV-0080's exit-code contract.
 // Partial failure takes precedence over check-mode drift: something
 // actually going wrong is a stronger signal than the project merely not
-// matching its lock file.
+// matching its lock file. Missing counts toward the check failure exactly
+// like drift — on a fresh clone every locked skill is missing, and that is
+// the canonical state the CI gate exists to catch.
 func syncExitError(result *skills.SyncResult, check bool) error {
 	if len(result.Failed) > 0 {
 		return withExitCode(fmt.Errorf("sync failed for %d skill(s)", len(result.Failed)), ExitCodePartialFailure)
 	}
-	if check && len(result.Drifted) > 0 {
-		return withExitCode(fmt.Errorf("%d skill(s) drifted from the lock file", len(result.Drifted)), ExitCodeCheckFailure)
+	if outOfSync := len(result.Drifted) + len(result.Missing); check && outOfSync > 0 {
+		return withExitCode(
+			fmt.Errorf("%d skill(s) drifted from or are missing against the lock file", outOfSync),
+			ExitCodeCheckFailure,
+		)
 	}
 	return nil
 }

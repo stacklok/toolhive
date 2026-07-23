@@ -6,11 +6,9 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -26,8 +24,11 @@ var (
 
 var skillUpgradeCmd = &cobra.Command{
 	Use:   "upgrade [skill-name...]",
-	Short: "Upgrade project skills to newer pinned content",
+	Short: "Upgrade project skills to newer pinned content (experimental)",
 	Long: `Re-resolve a project's lock entries and install newer content where available.
+
+Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
+server while the lock file feature rolls out.
 
 Skills pinned to an immutable reference (an OCI digest or a full git commit
 hash) are reported not-upgradable — there is nothing newer to resolve to.
@@ -71,7 +72,10 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if !skillUpgradePreview {
+	if !skillUpgradePreview && !skillUpgradeFailOnChanges {
+		if !skillUpgradeYes {
+			printLockEntriesSummary(projectRoot)
+		}
 		confirmed, confirmErr := requireConfirmation("Upgrade skills for "+projectRoot, skillUpgradeYes)
 		if confirmErr != nil {
 			return confirmErr
@@ -92,44 +96,48 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 		AllowRefChange: skillUpgradeAllowRefChange,
 	})
 	if err != nil {
-		wrapped := formatSkillError("upgrade skills", err)
-		if httperr.Code(err) == http.StatusConflict {
-			// --fail-on-changes tripped: a CI freshness gate, not an
-			// operational failure.
-			return withExitCode(wrapped, ExitCodeCheckFailure)
-		}
-		return wrapped
+		return formatSkillError("upgrade skills", err)
 	}
 
-	if err := printUpgradeResult(result, skillUpgradeFormat); err != nil {
+	if err := printUpgradeResult(result, skillUpgradeFormat, skillUpgradePreview || skillUpgradeFailOnChanges); err != nil {
 		return err
 	}
-	return upgradeExitError(result, skillUpgradePreview)
+	return upgradeExitError(result, skillUpgradePreview, skillUpgradeFailOnChanges)
 }
 
 // upgradeExitError maps an UpgradeResult to RFC THV-0080's exit-code
-// contract. A failed outcome takes precedence over a ref-change block:
-// something actually going wrong is a stronger signal than a guard doing
-// its job. preview gates the ref-change-blocked exit code the same way
-// syncExitError gates Drifted behind --check: during --preview nothing was
-// actually blocked, only reported, so a block must not exit as a policy
-// rejection.
-func upgradeExitError(result *skills.UpgradeResult, preview bool) error {
-	var failed, refBlocked int
+// contract, entirely from the reported outcomes. Precedence: a failed
+// outcome (exit 3) beats everything — a genuine failure must never be
+// masked as "lock is stale" (exit 2) or a guard doing its job (exit 4).
+// With failOnChanges, any would-change outcome is the CI freshness signal
+// (exit 2). A ref-change block maps to a policy rejection (exit 4) only
+// when the run wasn't a preview/gate evaluation — during those nothing was
+// actually blocked, only reported.
+func upgradeExitError(result *skills.UpgradeResult, preview, failOnChanges bool) error {
+	var failed, refBlocked, wouldChange int
 	for _, o := range result.Outcomes {
 		switch o.Status {
 		case skills.UpgradeStatusFailed:
 			failed++
 		case skills.UpgradeStatusRefChangeBlocked:
 			refBlocked++
-		case skills.UpgradeStatusUpgraded, skills.UpgradeStatusUpToDate, skills.UpgradeStatusNotUpgradable:
+			wouldChange++
+		case skills.UpgradeStatusUpgraded:
+			wouldChange++
+		case skills.UpgradeStatusUpToDate, skills.UpgradeStatusNotUpgradable:
 			// No exit-code impact.
 		}
 	}
 	if failed > 0 {
 		return withExitCode(fmt.Errorf("upgrade failed for %d skill(s)", failed), ExitCodePartialFailure)
 	}
-	if !preview && refBlocked > 0 {
+	if failOnChanges && wouldChange > 0 {
+		return withExitCode(
+			fmt.Errorf("%d skill(s) would change; the lock file is stale", wouldChange),
+			ExitCodeCheckFailure,
+		)
+	}
+	if !preview && !failOnChanges && refBlocked > 0 {
 		return withExitCode(
 			fmt.Errorf("%d skill(s) blocked by a reference change; use --allow-ref-change", refBlocked),
 			ExitCodePolicyRejection,
@@ -138,7 +146,10 @@ func upgradeExitError(result *skills.UpgradeResult, preview bool) error {
 	return nil
 }
 
-func printUpgradeResult(result *skills.UpgradeResult, format string) error {
+// printUpgradeResult renders the outcomes. planOnly (a --preview or
+// --fail-on-changes run) switches "upgraded" to "would upgrade": nothing
+// was installed in those modes, and saying otherwise misreads the gate.
+func printUpgradeResult(result *skills.UpgradeResult, format string, planOnly bool) error {
 	if format == FormatJSON {
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -152,10 +163,14 @@ func printUpgradeResult(result *skills.UpgradeResult, format string) error {
 		fmt.Println("No skills in the project's lock file")
 		return nil
 	}
+	upgradedVerb := "upgraded"
+	if planOnly {
+		upgradedVerb = "would upgrade"
+	}
 	for _, o := range result.Outcomes {
 		switch o.Status {
 		case skills.UpgradeStatusUpgraded:
-			fmt.Printf("%s: upgraded %s -> %s\n", o.Name, o.OldDigest, o.NewDigest)
+			fmt.Printf("%s: %s %s -> %s\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
 		case skills.UpgradeStatusUpToDate:
 			fmt.Printf("%s: up to date\n", o.Name)
 		case skills.UpgradeStatusNotUpgradable:

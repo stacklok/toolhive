@@ -29,8 +29,22 @@ func TestSyncExitError(t *testing.T) {
 			wantCode: ExitCodeCheckFailure,
 		},
 		{
+			// The fresh-clone CI gate: a lock entry with no install record
+			// at all must fail --check exactly like drift does.
+			name:     "check finds missing installs",
+			result:   &skills.SyncResult{Missing: []string{"a"}},
+			check:    true,
+			wantCode: ExitCodeCheckFailure,
+		},
+		{
 			name:     "non-check drift is not a failure (already reinstalled)",
 			result:   &skills.SyncResult{Drifted: []string{"a"}, Installed: []string{"a"}},
+			check:    false,
+			wantCode: 0,
+		},
+		{
+			name:     "non-check missing is not a failure (already installed)",
+			result:   &skills.SyncResult{Missing: []string{"a"}, Installed: []string{"a"}},
 			check:    false,
 			wantCode: 0,
 		},

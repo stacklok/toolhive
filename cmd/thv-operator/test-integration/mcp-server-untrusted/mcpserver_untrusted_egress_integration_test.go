@@ -128,48 +128,79 @@ var _ = Describe("MCPServer untrusted egress resources", Label("k8s", "untrusted
 		})
 
 		It("Should rotate into a new generation, keep N-1, and GC older generations", func() {
-			// Force rotation: age the current Secret's CA into the rotation
-			// window by replacing its material with an aged CA (name follows
-			// the cert hash, so create the aged generation and delete the
-			// fresh one).
+			// Force rotation atomically: replace the CURRENT Secret's CA
+			// material in place with an aged CA (past the 50% rotation window).
+			// Updating data on the same object is a single apiserver write, so
+			// there is no empty-set window for a reconcile to misread as "no
+			// CA" and no third object for the GC to race. The rotation path
+			// keys on the cert's notAfter (not the Secret name), so a sole aged
+			// CA makes the next ensure rotate: mint N, retain the aged CA as
+			// N-1.
 			current := &corev1.Secret{}
 			Eventually(func() error {
 				return getCurrentCASecret(current)
 			}, timeout, interval).Should(Succeed())
 
 			agedCert, agedKey := mintAgedCAForRotation()
-			agedGen := egressbroker.CAGeneration(agedCert)
-			aged := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      egressbroker.ResourceNamesFor(serverName, agedGen).CASecret,
-					Namespace: "default",
-					Labels:    current.Labels,
-				},
-				Data: map[string][]byte{"ca.crt": agedCert, "ca.key": agedKey},
-			}
-			Expect(untrustedK8sClient.Create(untrustedCtx, aged)).To(Succeed())
-			Expect(untrustedK8sClient.Delete(untrustedCtx, current)).To(Succeed())
+			freshName := current.Name
+			current.Data = map[string][]byte{"ca.crt": agedCert, "ca.key": agedKey}
+			Expect(untrustedK8sClient.Update(untrustedCtx, current)).To(Succeed())
 
-			// The reconcile must mint a NEW generation alongside the aged one.
-			Eventually(func() int {
+			// The reconcile must mint a NEW generation alongside the aged one
+			// and settle to exactly N and N-1 (the aged in-place Secret is the
+			// retained previous; any older duplicate from the initial mint is
+			// GC'd). Poll the cert set, not a transient count.
+			listCA := func() []corev1.Secret {
 				secrets := &corev1.SecretList{}
 				if err := untrustedK8sClient.List(untrustedCtx, secrets,
 					client.InNamespace("default"), client.MatchingLabels(current.Labels)); err != nil {
-					return 0
+					return nil
 				}
-				return len(secrets.Items)
-			}, timeout, interval).Should(Equal(2), "rotation keeps N and N-1 generations")
+				return secrets.Items
+			}
+			Eventually(func() bool {
+				items := listCA()
+				if len(items) != 2 {
+					return false
+				}
+				var sawAged, sawFresh bool
+				for i := range items {
+					if items[i].Name == freshName && string(items[i].Data["ca.crt"]) == string(agedCert) {
+						sawAged = true // the in-place aged CA, retained as N-1
+					}
+					if items[i].Name != freshName {
+						if ca, err := egressbroker.ParseBumpCA(items[i].Data["ca.crt"], items[i].Data["ca.key"]); err == nil &&
+							!ca.NeedsRotation(time.Now()) {
+							sawFresh = true // the freshly minted current generation
+						}
+					}
+				}
+				return sawAged && sawFresh
+			}, timeout, interval).Should(BeTrue(),
+				"rotation settles to the aged N-1 plus a fresh N, older generations GC'd")
 
-			// The aged generation's bundle converges on its own cert.
-			bundle := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return untrustedK8sClient.Get(untrustedCtx, types.NamespacedName{
-					Name:      egressbroker.ResourceNamesFor(serverName, agedGen).CABundle,
-					Namespace: "default",
-				}, bundle)
-			}, timeout, interval).Should(Succeed())
-			Expect(bundle.Data["ca.crt"]).To(Equal(string(agedCert)),
-				"the N-1 bundle must carry the N-1 cert (mid-rotation consistency)")
+			// Every retained generation's bundle converges on its own Secret's
+			// cert (mid-rotation consistency: N and N-1 pairs stay coherent).
+			Eventually(func() bool {
+				for _, s := range listCA() {
+					gen, ok := egressbroker.TrimGeneration(s.Name, egressbroker.BaseCASecretName(serverName))
+					if !ok {
+						continue
+					}
+					b := &corev1.ConfigMap{}
+					if err := untrustedK8sClient.Get(untrustedCtx, types.NamespacedName{
+						Name:      egressbroker.ResourceNamesFor(serverName, gen).CABundle,
+						Namespace: "default",
+					}, b); err != nil {
+						return false
+					}
+					if b.Data["ca.crt"] != string(s.Data["ca.crt"]) {
+						return false
+					}
+				}
+				return true
+			}, timeout, interval).Should(BeTrue(),
+				"each retained generation's bundle must carry that generation's cert")
 		})
 
 		It("Should render the egress policy ConfigMap from the CRD EgressPolicy", func() {

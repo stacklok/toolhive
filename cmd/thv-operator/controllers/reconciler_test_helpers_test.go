@@ -63,6 +63,8 @@ func newTestMCPServerReconciler(
 		Client:           k8sClient,
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
+		// The fake client reads its own writes, so it serves as the APIReader.
+		APIReader: k8sClient,
 	}
 }
 

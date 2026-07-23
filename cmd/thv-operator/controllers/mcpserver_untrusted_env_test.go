@@ -125,6 +125,9 @@ func setupUntrustedReconciler(t *testing.T, objs ...client.Object) (*MCPServerRe
 		Scheme:           s,
 		Recorder:         eventRecorder,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		// The fake client reads its own writes, so it serves as the APIReader
+		// (read-your-write) the untrusted CA path needs.
+		APIReader: fakeClient,
 	}
 	return r, eventRecorder
 }

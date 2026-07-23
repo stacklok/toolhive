@@ -46,6 +46,10 @@ const (
 	// does not affect responses, so SSE response streams are unaffected. Matches
 	// the vMCP server default.
 	defaultReadTimeout = 30 * time.Second
+
+	// proxyChannelBufferSize is the buffer size for the messageCh and
+	// responseCh channels connecting the HTTP proxy to the container runner.
+	proxyChannelBufferSize = 100
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
@@ -90,6 +94,30 @@ type HTTPProxy struct {
 	// Keyed by the same compositeKey(sessID, idKey); stores the original client JSON-RPC ID
 	// to restore before replying. Same uniqueness requirement as `waiters`.
 	idRestore sync.Map // map[string]jsonrpc2.ID
+
+	// serverStreams delivers server->client notifications to connected
+	// sessions' SSE streams (the standalone GET stream for global
+	// notifications, or a specific session's stream for subscription-scoped
+	// ones). See dispatcher_streams.go.
+	serverStreams *serverStreamRegistry
+
+	// routing owns the per-session routing state (progress tokens,
+	// subscriptions, log levels) that dispatcher.go's routeNotification uses
+	// to deliver server->client messages to the correct session(s) without
+	// cross-session leakage. See dispatcher_routing.go.
+	routing *sessionRouter
+
+	// uriLocks serializes each uri's resources/subscribe|unsubscribe ref-count
+	// decision with the upstream forward it may trigger, so concurrent
+	// subscribe/unsubscribe calls for the SAME uri from different sessions can
+	// never reach the backend out of order. See keyed_mutex.go and
+	// handlePost/interceptSessionScopedRequest.
+	uriLocks *keyedMutex
+
+	// standaloneSSE controls whether GET /mcp opens a standalone SSE stream for
+	// server->client notifications (the default) or returns 405. Set via
+	// WithStandaloneSSE(false) to opt out.
+	standaloneSSE bool
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
@@ -152,6 +180,15 @@ func WithPrefixHandlers(handlers map[string]http.Handler) Option {
 	}
 }
 
+// WithStandaloneSSE controls whether GET /mcp opens a standalone SSE stream
+// for server->client notifications. It defaults to enabled; pass false to opt
+// out and restore the prior behavior of returning 405 for GET requests.
+func WithStandaloneSSE(enabled bool) Option {
+	return func(p *HTTPProxy) {
+		p.standaloneSSE = enabled
+	}
+}
+
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
 func NewHTTPProxy(
 	host string,
@@ -171,9 +208,13 @@ func NewHTTPProxy(
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
-		messageCh:         make(chan jsonrpc2.Message, 100),
-		responseCh:        make(chan jsonrpc2.Message, 100),
+		messageCh:         make(chan jsonrpc2.Message, proxyChannelBufferSize),
+		responseCh:        make(chan jsonrpc2.Message, proxyChannelBufferSize),
 		sessionTTL:        session.DefaultSessionTTL,
+		serverStreams:     newServerStreamRegistry(),
+		routing:           newSessionRouter(),
+		uriLocks:          newKeyedMutex(),
+		standaloneSSE:     true,
 	}
 
 	for _, opt := range opts {
@@ -233,6 +274,10 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	// Route container responses to matching waiter channels
 	go p.dispatchResponses()
 
+	// Periodically bound routing's subscription/log-level maps to active
+	// sessions (see reapRoutingState's doc comment for the isActive tradeoff).
+	go p.reapRoutingState()
+
 	go func() {
 		slog.Debug("streamable HTTP proxy started", "port", p.port)
 		//nolint:gosec // G706: logging configured host and port
@@ -252,6 +297,11 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 
 	p.stopOnce.Do(func() {
 		close(p.shutdownCh)
+
+		// Signal every live GET SSE stream's stop channel so in-flight handlers
+		// observe a closed per-stream stop signal and unblock/return promptly,
+		// rather than relying solely on shutdownCh (which they also select on).
+		p.serverStreams.closeAll()
 
 		// Stop session manager cleanup; active sessions expire via TTL
 		if p.sessionManager != nil {
@@ -331,9 +381,80 @@ func (p *HTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (*HTTPProxy) handleGet(w http.ResponseWriter, _ *http.Request) {
-	// SSE not offered here; explicit 405 is spec-compliant
-	writeHTTPError(w, http.StatusMethodNotAllowed, "SSE not supported on this endpoint")
+// handleGet serves a standalone GET SSE stream for unsolicited server->client
+// notifications (progress, resources/updated, */list_changed, logging/message).
+// It is enabled by default; WithStandaloneSSE(false) restores the prior 405
+// behavior. The caller MUST provide a known Mcp-Session-Id header: an empty
+// header is rejected with 400, and an unknown one with 404 (mirroring
+// handleDelete). A session's stream is one-per-session: a second GET for the
+// same session evicts the first (see serverStreamRegistry.register). Per the
+// locked product decision, a notification dispatched while no GET stream is
+// connected for a session is dropped -- there is no replay or pending queue
+// for this stream.
+func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
+	if !p.standaloneSSE {
+		// SSE not offered here; explicit 405 is spec-compliant
+		writeHTTPError(w, http.StatusMethodNotAllowed, "SSE not supported on this endpoint")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
+		return
+	}
+
+	sessID := r.Header.Get("Mcp-Session-Id")
+	if sessID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required for standalone SSE")
+		return
+	}
+	if _, ok := p.sessionManager.Get(sessID); !ok {
+		session.WriteNotFound(w, nil)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	s := p.serverStreams.register(sessID)
+	defer p.serverStreams.deregister(sessID, s)
+
+	// Send headers immediately so the client knows the stream is open.
+	flusher.Flush()
+
+	keepAliveTicker := time.NewTicker(30 * time.Second)
+	defer keepAliveTicker.Stop()
+
+	for {
+		select {
+		case msg := <-s.data:
+			// No ok-check: data is never closed (see serverStream's doc comment).
+			data, err := jsonrpc2.EncodeMessage(msg)
+			if err != nil {
+				slog.Error("failed to encode server->client notification", "error", err)
+				continue
+			}
+			if err := writeSSEData(w, flusher, data); err != nil {
+				slog.Debug("failed to write notification to GET SSE stream", "error", err)
+				return
+			}
+		case <-keepAliveTicker.C:
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				slog.Debug("failed to write keep-alive", "error", err)
+				return
+			}
+			flusher.Flush()
+		case <-s.stop:
+			// Evicted by a second GET for this session, or proxy Stop's closeAll.
+			return
+		case <-r.Context().Done():
+			return
+		case <-p.shutdownCh:
+			return
+		}
+	}
 }
 
 func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +471,16 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 		//nolint:gosec // G706: session ID is from validated request header
 		slog.Debug("failed to delete session", "session_id", sessID, "error", err)
 	}
+
+	// Purge routing state (subscriptions, log level) for the deleted session so
+	// it cannot outlive the session itself. maxChanged is intentionally not
+	// reconciled upstream here: if the deleted session held the max-verbosity
+	// log level, the shared backend simply stays MORE verbose than strictly
+	// necessary for the remaining sessions until one of them changes the level
+	// again -- extra log volume, not a correctness or security issue, so it is
+	// not worth an extra upstream round-trip on every DELETE.
+	p.routing.purgeSession(sessID)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -409,6 +540,33 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serialize the resources/subscribe|unsubscribe ref-count decision below
+	// with the upstream forward it may trigger, per uri, so a concurrent
+	// last-unsubscribe and first-subscribe for the SAME uri from different
+	// sessions can never reach the backend out of order (see uriLocks's doc
+	// comment and FIX 1 in #5744's review). Acquired BEFORE
+	// interceptSessionScopedRequest's decision and released (via defer, so
+	// every return path -- including handleSingleRequest/
+	// handleSingleRequestSSE's error paths -- is covered) only once this
+	// request's response has been fully written, whether that is the
+	// synthesized-locally path below or a real upstream forward further down.
+	// A different uri, or any non-subscription request, is never blocked by
+	// this: see resourceSubscriptionURI.
+	if uri, ok := resourceSubscriptionURI(req); ok {
+		unlock := p.uriLocks.lock(uri)
+		defer unlock()
+	}
+
+	// Intercept resources/subscribe, resources/unsubscribe, and
+	// logging/setLevel for session-bearing (Legacy) requests, AFTER
+	// applyMiddlewares/authz has admitted req (Start wraps handleStreamableRequest
+	// in the middleware chain, and handlePost is only ever reached through it),
+	// so an authz-denied request never gets recorded in routing.
+	if msg, handled := p.interceptSessionScopedRequest(sessID, req); handled {
+		writeInterceptedResponse(w, r, msg, sessID, setSessionHeader)
+		return
+	}
+
 	// If client accepts SSE, stream the response on an SSE stream for this request
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		p.handleSingleRequestSSE(ctx, w, sessID, req, setSessionHeader)
@@ -420,6 +578,15 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSingleRequest handles a single JSON-RPC request message end-to-end.
+//
+// If req carries a params._meta.progressToken, it is forwarded upstream
+// UNREWRITTEN: a plain JSON POST response has no stream to carry interim
+// progress on, so there is nothing to correlate a progress route to, and no
+// progress routing is set up (see handleSingleRequestSSE for the SSE path,
+// which does). Any notifications/progress the backend later sends for this
+// request's original token will simply find no registered route in
+// dispatcher.go's routeProgress and be dropped, which is correct: this
+// non-streaming client could never have received them anyway.
 func (p *HTTPProxy) handleSingleRequest(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -452,6 +619,20 @@ func (p *HTTPProxy) handleSingleRequest(
 	}
 }
 
+// handleSingleRequestSSE handles a single JSON-RPC request whose client asked
+// for an SSE response (Accept: text/event-stream). Unlike handleSingleRequest,
+// this stream stays open for the lifetime of the request, so it is the
+// correct destination for any interim notifications/progress the backend
+// sends while it works -- per MCP, request-related messages belong on the
+// originating request's stream, not the standalone GET stream (see
+// dispatcher.go's routeProgress and docs/arch/03-transport-architecture.md).
+//
+// If req carries a params._meta.progressToken, setupProgressRouting mints a
+// proxy-only token, rewrites the outgoing request to carry it, and registers a
+// delivery route for it; the select loop below then interleaves any progress
+// notifications delivered on that route with the final response, writing each
+// as its own SSE data: frame, and only returns once the final response (or a
+// context/shutdown signal) arrives.
 func (p *HTTPProxy) handleSingleRequestSSE(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -476,45 +657,106 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	}
 	flusher.Flush()
 
-	msg, err := p.doRequest(ctx, sessID, req)
+	outgoingReq, deliverCh, dropProgressRoute := p.setupProgressRouting(req)
+	defer dropProgressRoute()
+
+	waitCh, ck, cleanup, err := p.sendCorrelatedRequest(sessID, outgoingReq)
 	if err != nil {
-		// Send a best-effort error event
-		errMsg := "Internal error"
-		code := -32603
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			errMsg = "Timeout"
-			code = -32000
-		}
-		errObj := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      req.ID.Raw(),
-			"error": map[string]any{
-				"code":    code,
-				"message": errMsg,
-			},
-		}
-		if data, mErr := json.Marshal(errObj); mErr == nil {
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-				slog.Debug("failed to write error message", "error", err)
+		//nolint:gosec // G706: method is from parsed JSON-RPC request
+		slog.Error("failed to send request upstream", "method", req.Method, "error", err)
+		writeSSEErrorEvent(w, flusher, req.ID, err)
+		return
+	}
+	defer cleanup()
+
+	for {
+		select {
+		case progressMsg := <-deliverCh:
+			// deliverCh is nil when req carried no progressToken (see
+			// setupProgressRouting); a nil channel's case is never selected,
+			// so this arm only fires when progress routing is active.
+			data, err := jsonrpc2.EncodeMessage(progressMsg)
+			if err != nil {
+				slog.Error("failed to encode progress notification", "error", err)
+				continue
+			}
+			if err := writeSSEData(w, flusher, data); err != nil {
+				slog.Debug("failed to write progress notification to SSE stream", "error", err)
 				return
 			}
-			flusher.Flush()
+			// Progress does not end the request; keep waiting for more
+			// progress or the final response.
+		case msg := <-waitCh:
+			p.writeSingleRequestSSEFinalResponse(w, flusher, msg, ck)
+			return
+		case <-ctx.Done():
+			writeSSEErrorEvent(w, flusher, req.ID, ctx.Err())
+			return
+		case <-p.shutdownCh:
+			// Matches the prior (pre-progress) behavior: proxy shutdown while a
+			// request is in flight is reported to the client as a best-effort
+			// Timeout error event, the same as context.Canceled.
+			writeSSEErrorEvent(w, flusher, req.ID, context.Canceled)
+			return
 		}
-		return
+	}
+}
+
+// writeSingleRequestSSEFinalResponse restores msg's original client ID (if it
+// is a correlated *jsonrpc2.Response) and writes it as the final SSE data:
+// frame for handleSingleRequestSSE's request. Errors encoding/restoring are
+// logged; the client simply does not get a final frame in that case, matching
+// the prior (pre-progress) behavior's error handling.
+func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
+	w http.ResponseWriter, flusher http.Flusher, msg jsonrpc2.Message, ck string,
+) {
+	finalMsg := msg
+	if r, ok := msg.(*jsonrpc2.Response); ok && r.ID.IsValid() {
+		restored, err := p.restoreResponseID(r, ck)
+		if err != nil {
+			slog.Error("failed to restore response id", "error", err)
+			return
+		}
+		finalMsg = restored
 	}
 
-	data, err := jsonrpc2.EncodeMessage(msg)
+	data, err := jsonrpc2.EncodeMessage(finalMsg)
 	if err != nil {
 		slog.Error("failed to encode JSON-RPC response", "error", err)
-		writeHTTPError(w, http.StatusInternalServerError, "Failed to encode response")
 		return
 	}
-	// Write SSE event with the JSON-RPC response and flush
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+	if err := writeSSEData(w, flusher, data); err != nil {
 		slog.Debug("failed to write response", "error", err)
+	}
+}
+
+// writeSSEErrorEvent writes a best-effort JSON-RPC error as a single SSE
+// data: frame, for a request whose response headers (200 + text/event-stream)
+// have already been sent -- an HTTP error status can no longer be set at this
+// point, so the error must be communicated in-band as the response payload.
+func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, id jsonrpc2.ID, err error) {
+	errMsg := "Internal error"
+	code := -32603
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		errMsg = "Timeout"
+		code = -32000
+	}
+	errObj := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id.Raw(),
+		"error": map[string]any{
+			"code":    code,
+			"message": errMsg,
+		},
+	}
+	data, mErr := json.Marshal(errObj)
+	if mErr != nil {
+		slog.Error("failed to encode SSE error event", "error", mErr)
 		return
 	}
-	flusher.Flush()
+	if err := writeSSEData(w, flusher, data); err != nil {
+		slog.Debug("failed to write error message", "error", err)
+	}
 }
 
 func encodeRequestWithID(req *jsonrpc2.Request, newID string) (jsonrpc2.Message, error) {
@@ -532,6 +774,99 @@ func encodeRequestWithID(req *jsonrpc2.Request, newID string) (jsonrpc2.Message,
 		return nil, err
 	}
 	return jsonrpc2.DecodeMessage(data2)
+}
+
+// progressDeliverBufferSize bounds how many not-yet-written progress
+// notifications may queue for a single in-flight POST-SSE request before
+// further ones are dropped (see routeProgress's non-blocking send).
+const progressDeliverBufferSize = 16
+
+// rewriteMetaProgressToken returns a request identical to req except that, if
+// params._meta.progressToken is present, it is replaced with ptGlobal. This
+// lets dispatcher.go's routeProgress correlate the backend's later
+// notifications/progress replies (which echo the token verbatim) back to the
+// specific POST-SSE request that asked for them, without ever exposing
+// ptGlobal -- or any other session's progress -- to more than the one client
+// that requested it.
+//
+// It returns hadToken=false (with rewritten == req, unchanged) if req carried
+// no progressToken, telling the caller not to set up progress routing at all.
+// originalToken is the client's own progressToken value (string or number),
+// to be restored before delivering progress back to the client.
+//
+// Per the "copy before mutating caller input" style rule, req's params map is
+// decoded into fresh copies before any mutation, so req itself (and any
+// caller-held reference to it) is never modified.
+func rewriteMetaProgressToken(
+	req *jsonrpc2.Request, ptGlobal string,
+) (originalToken any, hadToken bool, rewritten *jsonrpc2.Request, err error) {
+	if len(req.Params) == 0 {
+		return nil, false, req, nil
+	}
+	var paramsMap map[string]any
+	if err := json.Unmarshal(req.Params, &paramsMap); err != nil {
+		return nil, false, nil, err
+	}
+	meta, ok := paramsMap["_meta"].(map[string]any)
+	if !ok {
+		return nil, false, req, nil
+	}
+	original, ok := meta["progressToken"]
+	if !ok {
+		return nil, false, req, nil
+	}
+
+	metaCopy := maps.Clone(meta)
+	metaCopy["progressToken"] = ptGlobal
+	paramsCopy := maps.Clone(paramsMap)
+	paramsCopy["_meta"] = metaCopy
+
+	data, err := json.Marshal(paramsCopy)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return original, true, &jsonrpc2.Request{ID: req.ID, Method: req.Method, Params: data}, nil
+}
+
+// setupProgressRouting mints a fresh proxy-only progress-routing token and
+// rewrites req's params._meta.progressToken to it (see
+// rewriteMetaProgressToken), registering a progressRoute so the backend's
+// later notifications/progress messages that echo the token are delivered on
+// the returned channel rather than leaking to the standalone GET stream or
+// another session.
+//
+// If req carries no progressToken (or minting/rewriting fails, logged as a
+// warning), the returned request is req itself, unmodified, and the returned
+// channel is nil: a select on a nil channel never fires, so callers can select
+// on it unconditionally without special-casing "no progress requested".
+//
+// The returned cleanup func drops the progress token and MUST be deferred by
+// the caller; it is always safe to call, including when no route was
+// registered.
+func (p *HTTPProxy) setupProgressRouting(req *jsonrpc2.Request) (*jsonrpc2.Request, <-chan jsonrpc2.Message, func()) {
+	noop := func() {}
+
+	ptGlobal, err := uuid.NewRandom()
+	if err != nil {
+		slog.Warn("failed to mint progress routing token; interim progress will not be delivered for this request",
+			"error", err)
+		return req, nil, noop
+	}
+
+	originalToken, hadToken, rewritten, err := rewriteMetaProgressToken(req, ptGlobal.String())
+	if err != nil {
+		slog.Warn("failed to rewrite progress token; interim progress will not be delivered for this request",
+			"error", err)
+		return req, nil, noop
+	}
+	if !hadToken {
+		return req, nil, noop
+	}
+
+	key := ptGlobal.String()
+	deliver := make(chan jsonrpc2.Message, progressDeliverBufferSize)
+	p.routing.recordProgressToken(key, progressRoute{deliver: deliver, originalToken: originalToken})
+	return rewritten, deliver, func() { p.routing.dropProgressToken(key) }
 }
 
 func (p *HTTPProxy) restoreResponseID(resp *jsonrpc2.Response, ck string) (jsonrpc2.Message, error) {
@@ -558,20 +893,42 @@ func (p *HTTPProxy) restoreResponseID(resp *jsonrpc2.Response, ck string) (jsonr
 	return jsonrpc2.DecodeMessage(data2)
 }
 
-func (p *HTTPProxy) doRequest(ctx context.Context, sessID string, req *jsonrpc2.Request) (jsonrpc2.Message, error) {
+// sendCorrelatedRequest mints the composite-key waiter for req, rewrites its
+// wire ID to that composite key, and sends it upstream. It returns the waiter
+// channel and ck (needed to restore the original ID on the eventual response,
+// see restoreResponseID), plus a cleanup func the caller MUST call (typically
+// via defer) to release the waiter/idRestore entries once done waiting.
+//
+// This is split out from doRequest so callers that need to interleave OTHER
+// events (e.g. handleSingleRequestSSE's progress notifications) with the wait
+// for the final response can select over both, instead of being limited to
+// doRequest's single blocking wait.
+func (p *HTTPProxy) sendCorrelatedRequest(
+	sessID string, req *jsonrpc2.Request,
+) (waitCh chan jsonrpc2.Message, ck string, cleanup func(), err error) {
 	key := idKeyFromID(req.ID)
-	ck := compositeKey(sessID, key)
+	ck = compositeKey(sessID, key)
 
-	waitCh, cleanup := p.createWaiter(sessID, req.ID)
-	defer cleanup()
+	waitCh, cleanup = p.createWaiter(sessID, req.ID)
 
 	proxiedMsg, err := encodeRequestWithID(req, ck)
 	if err != nil {
-		return nil, fmt.Errorf("encode request: %w", err)
+		cleanup()
+		return nil, "", nil, fmt.Errorf("encode request: %w", err)
 	}
 	if err := p.SendMessageToDestination(proxiedMsg); err != nil {
-		return nil, fmt.Errorf("send message: %w", err)
+		cleanup()
+		return nil, "", nil, fmt.Errorf("send message: %w", err)
 	}
+	return waitCh, ck, cleanup, nil
+}
+
+func (p *HTTPProxy) doRequest(ctx context.Context, sessID string, req *jsonrpc2.Request) (jsonrpc2.Message, error) {
+	waitCh, ck, cleanup, err := p.sendCorrelatedRequest(sessID, req)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 
 	select {
 	case msg := <-waitCh:
@@ -698,6 +1055,288 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	return sessID, false, nil
 }
 
+// resourceSubscriptionURI returns req's uri param and true if req is a
+// resources/subscribe or resources/unsubscribe request carrying a non-empty
+// uri -- the only requests whose ref-count decision (see
+// interceptSessionScopedRequest and sessionRouter.addSubscription/
+// removeSubscription) and upstream forward handlePost must serialize per-uri
+// via uriLocks. Any other request -- including logging/setLevel (whose
+// reconciliation is best-effort-ordered, see reconcileUpstreamLogLevel) and a
+// subscribe/unsubscribe with no/empty uri (which interceptSessionScopedRequest
+// itself no-ops on) -- returns ("", false), so handlePost skips locking
+// entirely for it.
+func resourceSubscriptionURI(req *jsonrpc2.Request) (string, bool) {
+	switch req.Method {
+	case "resources/subscribe", "resources/unsubscribe":
+		uri, ok := extractStringParam(req.Params, "uri")
+		if !ok || uri == "" {
+			return "", false
+		}
+		return uri, true
+	default:
+		return "", false
+	}
+}
+
+// interceptSessionScopedRequest applies ref-counted resources/subscribe and
+// resources/unsubscribe forwarding, and logging/setLevel max-verbosity
+// reconciliation, for a request that belongs to a real, persisted Legacy
+// session. It MUST be called only after applyMiddlewares/authz has admitted
+// req (handlePost is only ever reached through Start's applyMiddlewares-
+// wrapped mux entry), so an authz-denied subscribe is never recorded in
+// routing -- see the "authz non-bypass" security test.
+//
+// For resources/subscribe|unsubscribe, the caller (handlePost) holds uriLocks
+// for req's uri around this call and the upstream forward it may trigger, so
+// the ref-count decision made here and that forward are atomic with respect
+// to any other session's concurrent (un)subscribe for the SAME uri -- see
+// resourceSubscriptionURI and FIX 1 in #5744's review.
+//
+// sessID identifies "a real session" (as opposed to a per-request routing
+// token minted for a Modern or Legacy-sessionless request, see
+// resolveSessionForRequest) by whether sessionManager currently has it: only
+// real sessions are ever stored there, so this single check both selects the
+// right requests AND naturally excludes ones with nothing durable to track.
+//
+// It returns (msg, true) when the caller should write msg to the client
+// WITHOUT forwarding req upstream at all: a synthesized success for a
+// non-first subscribe, a non-last unsubscribe, or any logging/setLevel
+// request (whose reconciled level, if any, is sent upstream separately -- see
+// reconcileUpstreamLogLevel). It returns (nil, false) when the caller must
+// proceed with the normal upstream request/response flow: the method isn't
+// one of the three above, the request isn't session-bearing, or it's the
+// first subscribe/last unsubscribe for its uri (which DOES need to reach the
+// backend).
+func (p *HTTPProxy) interceptSessionScopedRequest(sessID string, req *jsonrpc2.Request) (jsonrpc2.Message, bool) {
+	if _, isSession := p.sessionManager.Get(sessID); !isSession {
+		return nil, false
+	}
+
+	switch req.Method {
+	case "resources/subscribe":
+		uri, ok := extractStringParam(req.Params, "uri")
+		if !ok || uri == "" {
+			return nil, false
+		}
+		if first := p.routing.addSubscription(uri, sessID); first {
+			return nil, false
+		}
+		return synthesizeSuccessResponse(req.ID), true
+
+	case "resources/unsubscribe":
+		uri, ok := extractStringParam(req.Params, "uri")
+		if !ok || uri == "" {
+			return nil, false
+		}
+		if last := p.routing.removeSubscription(uri, sessID); last {
+			return nil, false
+		}
+		return synthesizeSuccessResponse(req.ID), true
+
+	case "logging/setLevel":
+		// Unlike resources/subscribe|unsubscribe, this decision is NOT ordered
+		// with its upstream forward via uriLocks (there is no per-uri key to
+		// order on, and no uriLocks acquisition happens for this method -- see
+		// resourceSubscriptionURI). Concurrent maxChanged transitions from
+		// different sessions may therefore reach the backend out of order; see
+		// reconcileUpstreamLogLevel's doc comment for why that is an accepted,
+		// harmless tradeoff for now.
+		level, _ := extractStringParam(req.Params, "level")
+		if maxChanged, newMax := p.routing.setLogLevel(sessID, logLevelRank(level)); maxChanged {
+			p.reconcileUpstreamLogLevel(logLevelName(newMax))
+		}
+		return synthesizeSuccessResponse(req.ID), true
+
+	default:
+		return nil, false
+	}
+}
+
+// synthesizeSuccessResponse builds a locally-generated JSON-RPC success
+// response for id with an empty result object, used by
+// interceptSessionScopedRequest when a request is served without an upstream
+// round-trip.
+func synthesizeSuccessResponse(id jsonrpc2.ID) jsonrpc2.Message {
+	resp, err := jsonrpc2.NewResponse(id, map[string]any{}, nil)
+	if err != nil {
+		// marshalToRaw(map[string]any{}) cannot fail; NewResponse's only
+		// error path is result marshaling.
+		slog.Error("failed to synthesize success response", "error", err)
+		return &jsonrpc2.Response{ID: id, Error: jsonrpc2.NewError(-32603, "internal error")}
+	}
+	return resp
+}
+
+// writeInterceptedResponse writes msg (from interceptSessionScopedRequest) to
+// the client, honoring the same Accept-header-driven JSON-vs-SSE choice and
+// Mcp-Session-Id header behavior as the normal handleSingleRequest /
+// handleSingleRequestSSE paths, but without any upstream correlation (msg is
+// already the complete, final response).
+func writeInterceptedResponse(
+	w http.ResponseWriter, r *http.Request, msg jsonrpc2.Message, sessID string, setSessionHeader bool,
+) {
+	if setSessionHeader {
+		w.Header().Set("Mcp-Session-Id", sessID)
+	}
+
+	if !strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		if err := writeJSONRPC(w, msg); err != nil {
+			slog.Error("failed to write JSON-RPC response", "error", err)
+		}
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+
+	data, err := jsonrpc2.EncodeMessage(msg)
+	if err != nil {
+		slog.Error("failed to encode JSON-RPC response", "error", err)
+		return
+	}
+	if err := writeSSEData(w, flusher, data); err != nil {
+		slog.Debug("failed to write response", "error", err)
+	}
+}
+
+// logLevelRanks assigns each MCP logging level a verbosity rank following the
+// RFC 5424 syslog severity numbers MCP's logging capability is aligned with:
+// higher number = more verbose = lower severity. "debug" (7) is the most
+// verbose; "emergency" (0) is the least. This makes "the maximum rank across
+// sessions" exactly the level that satisfies every session's request without
+// under-serving the most verbose one (see sessionRouter.setLogLevel).
+var logLevelRanks = map[string]int{
+	"emergency": 0,
+	"alert":     1,
+	"critical":  2,
+	"error":     3,
+	"warning":   4,
+	"notice":    5,
+	"info":      6,
+	"debug":     7,
+}
+
+// logLevelRank returns level's verbosity rank (see logLevelRanks). An unknown
+// or empty level is treated as the MOST verbose (debug's rank): if we can't
+// recognize what the client asked for, we would rather over-serve (extra log
+// volume) than silently under-serve a session that asked for a level we
+// failed to parse.
+func logLevelRank(level string) int {
+	if rank, ok := logLevelRanks[level]; ok {
+		return rank
+	}
+	slog.Debug("unrecognized logging level; treating as most verbose", "level", level)
+	return logLevelRanks["debug"]
+}
+
+// logLevelName returns the level name for rank (the inverse of logLevelRank),
+// used to build the reconciled upstream logging/setLevel request.
+func logLevelName(rank int) string {
+	for name, r := range logLevelRanks {
+		if r == rank {
+			return name
+		}
+	}
+	return "debug"
+}
+
+// reconcileUpstreamLogLevel sends a logging/setLevel request upstream with
+// level, reconciling the shared backend's single process-wide log level to
+// the maximum verbosity requested by any session (see
+// interceptSessionScopedRequest). It is fire-and-forget from the calling
+// client request's perspective: the reconciliation happens in the background
+// via the normal composite-key request/response correlation (so the eventual
+// response, if any, is routed and cleaned up correctly instead of leaking a
+// waiter), but its result is not surfaced to any client -- the client that
+// triggered reconciliation already received its own synthesized success (see
+// interceptSessionScopedRequest).
+//
+// Ordering tradeoff: this reconciliation is best-effort-ordered, NOT
+// serialized the way resources/subscribe|unsubscribe is via uriLocks (see FIX
+// 1 in #5744's review). Each call runs in its own goroutine, so two
+// concurrent maxChanged transitions from different sessions' logging/setLevel
+// requests can reach the backend in either order, and the backend could
+// briefly end up at a lower verbosity than the CURRENT true max until the
+// next transition reconciles it again. This is harmless while
+// notifications/message is secure-dropped (see routeNotification): the
+// backend's log level is not observable by any client either way, only its
+// log volume is affected. Proper ordering (e.g. via a keyed lock analogous to
+// uriLocks, or a monotonic sequence check) is deferred to the per-session
+// backend / log-delivery follow-up (see the vMCP architecture, #5744).
+func (p *HTTPProxy) reconcileUpstreamLogLevel(level string) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		slog.Warn("failed to mint id for upstream log level reconciliation", "error", err)
+		return
+	}
+	req, err := jsonrpc2.NewCall(jsonrpc2.StringID(id.String()), "logging/setLevel", map[string]any{"level": level})
+	if err != nil {
+		slog.Warn("failed to build upstream log level reconciliation request", "error", err)
+		return
+	}
+
+	go func() {
+		// internalReconciliationSessionID keys this request's waiter under a
+		// session ID no real request ever uses: resolveSessionForRequest
+		// always assigns a non-empty UUID (real session or per-request
+		// routing token), so "" can never collide with one.
+		const internalReconciliationSessionID = ""
+		ctx, cancel := context.WithTimeout(context.Background(), p.requestTimeout)
+		defer cancel()
+		if _, err := p.doRequest(ctx, internalReconciliationSessionID, req); err != nil {
+			slog.Debug("upstream log level reconciliation did not complete", "error", err)
+		}
+	}()
+}
+
+// reapRoutingState periodically purges sessionRouter subscription and
+// log-level entries for sessions that are no longer active, bounding the
+// otherwise-unbounded growth of that state for a session whose owning client
+// disappears without ever sending DELETE (see handleDelete's purgeSession
+// call for the explicit-teardown path). It ticks at the same cadence as the
+// session manager's own cleanup routine (sessionTTL/2, see manager.go's
+// cleanupRoutine), and exits when shutdownCh is closed.
+//
+// isActive is p.sessionManager.Get: the only session liveness check the
+// session.Manager/Storage interfaces currently expose. Every Storage
+// implementation intentionally refreshes its backend's TTL on every read
+// (LocalStorage's Load, RedisStorage's GETEX) to keep genuinely active
+// sessions alive -- there is no "peek without refreshing" method today (see
+// manager.go and storage.go). Using Get here as isActive means: a session
+// that still owns routing state (e.g. an open subscription) has its TTL
+// refreshed by this reaper's own liveness check, which can delay that
+// session's expiry by up to one reap tick (sessionTTL/2) beyond actual client
+// inactivity. This is an accepted, documented tradeoff, not a security gap:
+// Get on an ALREADY-deleted session correctly returns false without
+// refreshing anything, so reap can never retain routing state past a
+// session's true deletion -- it can only delay reaping state for a session
+// that reap's own check just observed to still be nominally alive.
+func (p *HTTPProxy) reapRoutingState() {
+	ticker := time.NewTicker(p.sessionTTL / 2)
+	defer ticker.Stop()
+
+	isActive := func(sess string) bool {
+		_, ok := p.sessionManager.Get(sess)
+		return ok
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			p.routing.reap(isActive)
+		case <-p.shutdownCh:
+			return
+		}
+	}
+}
+
 // decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
 func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
 	msg, err := jsonrpc2.DecodeMessage(body)
@@ -713,7 +1352,7 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 // handleNotificationOrClientResponse handles notifications and client responses
 // as Legacy today; Modern-aware handling of this path is deferred.
 func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, sessID string, msg jsonrpc2.Message) bool {
-	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
+	if isNotification(msg) || isClientResponse(msg) {
 		// Refresh TTL so a client sending only notifications doesn't get evicted.
 		if sessID != "" {
 			p.sessionManager.Get(sessID)

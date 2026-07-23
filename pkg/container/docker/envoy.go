@@ -35,6 +35,15 @@ const (
 	typeRouter     = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
 	typeDFPCluster = "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig"
 
+	// typeNetworkRBAC is the protobuf @type URL for the network-layer RBAC filter.
+	// Unlike typeHTTPRBAC (which operates on HTTP headers inside HCM), this filter
+	// operates at the TCP/L3 level and is placed directly in an envoyFilterChain.
+	typeNetworkRBAC = "type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC"
+
+	// typeTCPProxy is the protobuf @type URL for the TCP proxy filter, which
+	// forwards raw TCP connections to an upstream cluster.
+	typeTCPProxy = "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy"
+
 	// dfpCacheName is the shared DNS cache config name used by both the DFP
 	// HTTP filter and the DFP cluster extension.
 	dfpCacheName = "dynamic_forward_proxy_cache_config"
@@ -44,6 +53,10 @@ const (
 
 	// ingressClusterName is the cluster referenced by the ingress route config.
 	ingressClusterName = "ingress_upstream"
+
+	// originalDstClusterName is the cluster used by the transparent listener to
+	// forward connections to their original destination via SO_ORIGINAL_DST.
+	originalDstClusterName = "original_dst_cluster"
 
 	// defaultTransparentPort is the port Envoy's transparent listener binds on
 	// inside the Envoy container when spec.TransparentPort is not set.
@@ -93,8 +106,12 @@ type envoySocketAddress struct {
 
 // envoyListener is an Envoy listener binding on a socket address.
 type envoyListener struct {
-	Name         string             `json:"name"`
-	Address      envoyAddress       `json:"address"`
+	Name    string       `json:"name"`
+	Address envoyAddress `json:"address"`
+	// Transparent, when true, enables SO_ORIGINAL_DST on accepted sockets so the
+	// transparent listener can recover the original destination address overwritten
+	// by iptables DNAT. Must be true for the original_dst_cluster to work correctly.
+	Transparent  bool               `json:"transparent,omitempty"`
 	FilterChains []envoyFilterChain `json:"filter_chains"`
 }
 
@@ -218,6 +235,85 @@ type envoySafeRegex struct {
 // envoyPrincipal matches a downstream principal. Any:true is a wildcard.
 type envoyPrincipal struct {
 	Any bool `json:"any"`
+}
+
+// ── Network RBAC (L3/L4) ─────────────────────────────────────────────────────
+
+// envoyNetworkRBAC is the typed config for envoy.filters.network.rbac.
+// It operates at the TCP level — distinct from envoyHTTPRBAC which lives inside
+// an HCM and matches HTTP headers. Network RBAC matches on IP/port tuples and
+// is placed directly in an envoyFilterChain, not inside an HCM.
+//
+// In the transparent listener, destination_ip correctly reflects the upstream's
+// real address (via SO_ORIGINAL_DST), unlike the forward-proxy listener where
+// destination_ip resolves to Envoy's own socket and is inert.
+type envoyNetworkRBAC struct {
+	Type  string                `json:"@type"`
+	Rules envoyNetworkRBACRules `json:"rules"`
+}
+
+// envoyNetworkRBACRules holds the action and policy map for a network RBAC filter.
+// CRITICAL: Policies must NOT have omitempty. An empty map serializes as {} and
+// is intentional — an absent field would silently turn deny-all into allow-all
+// under the ALLOW action.
+type envoyNetworkRBACRules struct {
+	Action   string                        `json:"action"`
+	Policies map[string]envoyNetworkPolicy `json:"policies"`
+}
+
+// envoyNetworkPolicy pairs L3/L4 permissions with principals for a single
+// network RBAC policy entry.
+type envoyNetworkPolicy struct {
+	Permissions []envoyNetworkPermission `json:"permissions"`
+	Principals  []envoyPrincipal         `json:"principals"`
+}
+
+// envoyNetworkPermission is an L3/L4 permission matching on destination IP or
+// port. Different from envoyPermission which uses HTTP header matchers. Exactly
+// one field should be set per permission entry.
+type envoyNetworkPermission struct {
+	// DestinationIP matches the connection's destination CIDR range. For the
+	// transparent listener, this is the real upstream address (via SO_ORIGINAL_DST),
+	// making it effective for gateway-deny rules.
+	DestinationIP *envoyCIDRRange `json:"destination_ip,omitempty"`
+	// DestinationPort matches the connection's destination port. A PortRange with
+	// Start == End matches a single exact port.
+	DestinationPort *envoyPortRange `json:"destination_port,omitempty"`
+	// OrRules composes multiple network permissions with logical OR.
+	OrRules *envoyNetworkOrRules `json:"or_rules,omitempty"`
+	// Any, when true, matches all connections (wildcard permission).
+	Any *bool `json:"any,omitempty"`
+}
+
+// envoyCIDRRange is a CIDR IP range matcher used by network RBAC destination_ip.
+type envoyCIDRRange struct {
+	AddressPrefix string `json:"address_prefix"`
+	PrefixLen     uint32 `json:"prefix_len"`
+}
+
+// envoyPortRange matches a destination port range. For exact port matching,
+// set Start == End. Envoy's network RBAC permission.destination_port maps to
+// envoy.config.rbac.v3.Permission.destination_port (type: PortRange).
+type envoyPortRange struct {
+	Start uint32 `json:"start"`
+	End   uint32 `json:"end"`
+}
+
+// envoyNetworkOrRules composes multiple network permissions with logical OR.
+type envoyNetworkOrRules struct {
+	Rules []envoyNetworkPermission `json:"rules"`
+}
+
+// ── TCP proxy ─────────────────────────────────────────────────────────────────
+
+// envoyTCPProxy is the typed config for envoy.filters.network.tcp_proxy.
+// It forwards raw TCP connections to the named upstream cluster. Used in the
+// transparent listener's filter chain to route allowed connections to
+// original_dst_cluster after the network RBAC filters have made their decision.
+type envoyTCPProxy struct {
+	Type       string `json:"@type"`
+	StatPrefix string `json:"stat_prefix"`
+	Cluster    string `json:"cluster"`
 }
 
 // ── DFP filter ───────────────────────────────────────────────────────────────
@@ -703,6 +799,169 @@ func buildEgressCluster() envoyCluster {
 	}
 }
 
+// buildTransparentListener returns an Envoy listener for transparent TCP
+// interception. It binds on 0.0.0.0:transparentPort with transparent:true,
+// which enables SO_ORIGINAL_DST so each accepted socket carries the real
+// upstream destination address (as recovered via conntrack from the iptables
+// DNAT rule installed by SetupTransparent).
+//
+// The filter chain has three network filters in order:
+//  1. Network RBAC DENY — blocks traffic to the Docker gateway by destination_ip
+//     CIDR. SO_ORIGINAL_DST makes this accurate (unlike the forward-proxy listener
+//     where destination_ip resolves to Envoy's own socket).
+//  2. Network RBAC ALLOW — permits traffic to configured destinations by port.
+//     Empty policies map is Envoy's deny-all under the ALLOW action.
+//  3. TCP proxy — forwards allowed connections to original_dst_cluster, which
+//     routes them to their original destinations using SO_ORIGINAL_DST.
+func buildTransparentListener(spec proxySpec) envoyListener {
+	tport := transparentPort(spec)
+	filters := buildTransparentNetworkFilters(spec)
+
+	return envoyListener{
+		Name: fmt.Sprintf("%s-transparent", spec.WorkloadName),
+		Address: envoyAddress{
+			SocketAddress: envoySocketAddress{
+				Address:   "0.0.0.0",
+				PortValue: tport,
+			},
+		},
+		Transparent: true,
+		FilterChains: []envoyFilterChain{
+			{Filters: filters},
+		},
+	}
+}
+
+// buildTransparentNetworkFilters constructs the ordered network filter list for
+// the transparent listener's single filter chain. The order is:
+//  1. DENY gateway by destination_ip (effective here: SO_ORIGINAL_DST gives the
+//     real upstream address, not Envoy's own socket as in the forward proxy).
+//  2. ALLOW by port (empty map = Envoy deny-all under ALLOW action).
+//  3. TCP proxy forwarding to original_dst_cluster.
+func buildTransparentNetworkFilters(spec proxySpec) []envoyNetworkFilter {
+	return []envoyNetworkFilter{
+		{
+			Name:        "envoy.filters.network.rbac",
+			TypedConfig: buildTransparentGatewayDenyRBAC(spec.GatewayIP),
+		},
+		{
+			Name:        "envoy.filters.network.rbac",
+			TypedConfig: buildTransparentAllowRBAC(spec),
+		},
+		{
+			Name: "envoy.filters.network.tcp_proxy",
+			TypedConfig: &envoyTCPProxy{
+				Type:       typeTCPProxy,
+				StatPrefix: "transparent",
+				Cluster:    originalDstClusterName,
+			},
+		},
+	}
+}
+
+// buildTransparentGatewayDenyRBAC builds a network-layer RBAC DENY filter that
+// blocks connections whose destination_ip matches the Docker bridge gateway CIDR.
+// This is correct for the transparent listener (unlike the forward-proxy listener)
+// because SO_ORIGINAL_DST provides the actual upstream address, not Envoy's own
+// socket address.
+func buildTransparentGatewayDenyRBAC(gatewayIP string) *envoyNetworkRBAC {
+	var gatewayPolicies map[string]envoyNetworkPolicy
+	if gatewayIP != "" {
+		gatewayPolicies = map[string]envoyNetworkPolicy{
+			"gateway": {
+				Permissions: []envoyNetworkPermission{
+					{
+						DestinationIP: &envoyCIDRRange{
+							AddressPrefix: gatewayIP,
+							PrefixLen:     32,
+						},
+					},
+				},
+				Principals: []envoyPrincipal{{Any: true}},
+			},
+		}
+	} else {
+		gatewayPolicies = map[string]envoyNetworkPolicy{}
+	}
+
+	return &envoyNetworkRBAC{
+		Type: typeNetworkRBAC,
+		Rules: envoyNetworkRBACRules{
+			Action:   "DENY",
+			Policies: gatewayPolicies,
+		},
+	}
+}
+
+// buildTransparentAllowRBAC builds a network-layer RBAC ALLOW filter for the
+// transparent listener. An empty Policies map is Envoy's deny-all under ALLOW.
+//
+// When spec.Permissions.Outbound.AllowPort is non-empty, one policy per port is
+// added using destination_port with Start==End for exact matching. When AllowPort
+// is absent or permissions are nil, the empty map produces deny-all semantics,
+// blocking all outbound TCP.
+func buildTransparentAllowRBAC(spec proxySpec) *envoyNetworkRBAC {
+	policies := buildTransparentAllowPolicies(spec)
+	return &envoyNetworkRBAC{
+		Type: typeNetworkRBAC,
+		Rules: envoyNetworkRBACRules{
+			Action:   "ALLOW",
+			Policies: policies,
+		},
+	}
+}
+
+// buildTransparentAllowPolicies returns the policy map for the transparent
+// listener's ALLOW RBAC filter. An empty map (deny-all) is returned when:
+//   - spec.Permissions is nil
+//   - spec.Permissions.Outbound is nil
+//   - spec.Permissions.Outbound.AllowPort is empty
+//
+// InsecureAllowAll produces a single wildcard policy permitting all connections.
+// Each AllowPort entry produces a policy matching that exact destination port.
+func buildTransparentAllowPolicies(spec proxySpec) map[string]envoyNetworkPolicy {
+	policies := make(map[string]envoyNetworkPolicy)
+	if spec.Permissions == nil || spec.Permissions.Outbound == nil {
+		return policies
+	}
+	out := spec.Permissions.Outbound
+	if out.InsecureAllowAll {
+		boolTrue := true
+		policies["allow-all"] = envoyNetworkPolicy{
+			Permissions: []envoyNetworkPermission{{Any: &boolTrue}},
+			Principals:  []envoyPrincipal{{Any: true}},
+		}
+		return policies
+	}
+	for _, port := range out.AllowPort {
+		p := uint32(port) //nolint:gosec // G115: port is always a valid port number
+		portKey := fmt.Sprintf("port-%d", port)
+		policies[portKey] = envoyNetworkPolicy{
+			Permissions: []envoyNetworkPermission{
+				{DestinationPort: &envoyPortRange{Start: p, End: p}},
+			},
+			Principals: []envoyPrincipal{{Any: true}},
+		}
+	}
+	return policies
+}
+
+// buildOriginalDstCluster returns the Envoy cluster that routes connections to
+// their original destination, read from SO_ORIGINAL_DST via conntrack. This
+// cluster is referenced by the transparent listener's tcp_proxy filter.
+//
+// ORIGINAL_DST type requires lb_policy: CLUSTER_PROVIDED — Envoy reads the
+// destination from the socket metadata (set by SO_ORIGINAL_DST) rather than
+// load-balancing across a static endpoint list.
+func buildOriginalDstCluster() envoyCluster {
+	return envoyCluster{
+		Name:           originalDstClusterName,
+		Type:           "ORIGINAL_DST",
+		ConnectTimeout: "30s",
+		LbPolicy:       "CLUSTER_PROVIDED",
+	}
+}
+
 // buildIngressListener builds the Envoy listener config for inbound (ingress)
 // traffic. It binds on 0.0.0.0:hostPort inside the container so that Docker's
 // port forwarding (host:127.0.0.1:<hostPort> → container:<hostPort>) can reach
@@ -916,6 +1175,19 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 			buildIngressCluster(spec),
 		)
 	}
+
+	// Add transparent listener and original_dst cluster for L3/L4 interception.
+	// The transparent listener uses SO_ORIGINAL_DST (set by iptables DNAT rules
+	// installed by SetupTransparent) to recover the real upstream destination and
+	// route connections through the network RBAC filters before forwarding.
+	bootstrap.StaticResources.Listeners = append(
+		bootstrap.StaticResources.Listeners,
+		buildTransparentListener(spec),
+	)
+	bootstrap.StaticResources.Clusters = append(
+		bootstrap.StaticResources.Clusters,
+		buildOriginalDstCluster(),
+	)
 
 	configPath, err := writeEnvoyBootstrap(bootstrap)
 	if err != nil {

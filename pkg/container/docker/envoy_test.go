@@ -751,6 +751,9 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 				listeners = append(listeners, buildIngressListener(tc.spec, 18080))
 				clusters = append(clusters, buildIngressCluster(tc.spec))
 			}
+			// Always include the transparent listener and original_dst cluster.
+			listeners = append(listeners, buildTransparentListener(tc.spec))
+			clusters = append(clusters, buildOriginalDstCluster())
 			b := envoyBootstrap{
 				Admin:           &envoyAdmin{Address: envoyAddress{SocketAddress: envoySocketAddress{Address: "127.0.0.1", PortValue: 9901}}},
 				StaticResources: envoyStaticResources{Listeners: listeners, Clusters: clusters},
@@ -771,6 +774,181 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 			assert.Contains(t, string(out), "configuration '' OK")
 		})
 	}
+}
+
+// TestBuildTransparentListener verifies that buildTransparentListener produces a
+// listener with transparent:true, the correct network RBAC filter sequence, and
+// a tcp_proxy filter routing to original_dst_cluster. Uses table-driven cases to
+// cover nil permissions (deny-all) and AllowPort configurations.
+func TestBuildTransparentListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		spec                proxySpec
+		wantTransparent     bool
+		wantDenyGateway     bool // DENY filter must have a "gateway" policy
+		wantAllowPolicies   []string
+		wantEmptyAllow      bool // ALLOW filter must have empty policies (deny-all)
+		wantAllowPortKeys   []string
+		wantEnvoyInternalIP string // for gateway DENY check
+	}{
+		{
+			name: "nil permissions produces deny-all ALLOW and gateway DENY",
+			spec: proxySpec{
+				WorkloadName: "srv",
+				GatewayIP:    dockerDefaultBridgeGatewayIP,
+				Permissions:  nil,
+			},
+			wantTransparent: true,
+			wantDenyGateway: true,
+			wantEmptyAllow:  true,
+		},
+		{
+			name: "AllowPort list produces port policies in ALLOW filter",
+			spec: proxySpec{
+				WorkloadName: "srv",
+				GatewayIP:    dockerDefaultBridgeGatewayIP,
+				Permissions: &permissions.NetworkPermissions{
+					Outbound: &permissions.OutboundNetworkPermissions{
+						AllowPort: []int{443, 5432},
+					},
+				},
+			},
+			wantTransparent:   true,
+			wantDenyGateway:   true,
+			wantAllowPortKeys: []string{"port-443", "port-5432"},
+		},
+		{
+			name: "InsecureAllowAll produces single wildcard policy in ALLOW filter",
+			spec: proxySpec{
+				WorkloadName: "srv",
+				GatewayIP:    dockerDefaultBridgeGatewayIP,
+				Permissions: &permissions.NetworkPermissions{
+					Outbound: &permissions.OutboundNetworkPermissions{
+						InsecureAllowAll: true,
+					},
+				},
+			},
+			wantTransparent:   true,
+			wantDenyGateway:   true,
+			wantAllowPolicies: []string{"allow-all"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			listener := buildTransparentListener(tt.spec)
+
+			// transparent:true must appear in the serialized JSON.
+			raw, err := json.Marshal(listener)
+			require.NoError(t, err)
+			s := string(raw)
+			if tt.wantTransparent {
+				assert.Contains(t, s, `"transparent":true`,
+					"transparent listener must serialize transparent:true")
+			}
+
+			// There must be exactly one filter chain with at least 3 filters.
+			require.Len(t, listener.FilterChains, 1)
+			filters := listener.FilterChains[0].Filters
+			require.GreaterOrEqual(t, len(filters), 3,
+				"transparent filter chain must have at least DENY RBAC, ALLOW RBAC, and TCP proxy")
+
+			// First filter: network RBAC DENY
+			denyRBAC, ok := filters[0].TypedConfig.(*envoyNetworkRBAC)
+			require.True(t, ok, "first network filter must be *envoyNetworkRBAC")
+			assert.Equal(t, "DENY", denyRBAC.Rules.Action)
+			assert.Equal(t, typeNetworkRBAC, denyRBAC.Type)
+
+			if tt.wantDenyGateway && tt.spec.GatewayIP != "" {
+				gatewayPolicy, present := denyRBAC.Rules.Policies["gateway"]
+				assert.True(t, present, "DENY filter must have a 'gateway' policy")
+				if present {
+					require.NotEmpty(t, gatewayPolicy.Permissions)
+					require.NotNil(t, gatewayPolicy.Permissions[0].DestinationIP,
+						"gateway DENY permission must use destination_ip (L3 rule)")
+					assert.Equal(t, tt.spec.GatewayIP,
+						gatewayPolicy.Permissions[0].DestinationIP.AddressPrefix,
+						"gateway DENY must match the gateway IP")
+					assert.Equal(t, uint32(32),
+						gatewayPolicy.Permissions[0].DestinationIP.PrefixLen,
+						"gateway DENY must use /32 for exact-host matching")
+				}
+			}
+
+			// Second filter: network RBAC ALLOW
+			allowRBAC, ok := filters[1].TypedConfig.(*envoyNetworkRBAC)
+			require.True(t, ok, "second network filter must be *envoyNetworkRBAC")
+			assert.Equal(t, "ALLOW", allowRBAC.Rules.Action)
+			assert.Equal(t, typeNetworkRBAC, allowRBAC.Type)
+			// policies must not be nil — only absent field is allow-all; {} is deny-all
+			assert.NotNil(t, allowRBAC.Rules.Policies,
+				"ALLOW filter policies must not be nil (nil would serialize as null, not {})")
+
+			if tt.wantEmptyAllow {
+				assert.Empty(t, allowRBAC.Rules.Policies,
+					"nil permissions must produce empty policy map (Envoy deny-all)")
+			}
+			for _, key := range tt.wantAllowPolicies {
+				_, present := allowRBAC.Rules.Policies[key]
+				assert.True(t, present, "expected ALLOW policy %q", key)
+			}
+			for _, portKey := range tt.wantAllowPortKeys {
+				pol, present := allowRBAC.Rules.Policies[portKey]
+				assert.True(t, present, "expected ALLOW port policy %q", portKey)
+				if present {
+					require.NotEmpty(t, pol.Permissions)
+					require.NotNil(t, pol.Permissions[0].DestinationPort,
+						"port policy must use destination_port")
+					assert.Equal(t, pol.Permissions[0].DestinationPort.Start,
+						pol.Permissions[0].DestinationPort.End,
+						"exact port match requires Start == End")
+				}
+			}
+
+			// Third filter: TCP proxy targeting original_dst_cluster.
+			tcpProxy, ok := filters[2].TypedConfig.(*envoyTCPProxy)
+			require.True(t, ok, "third network filter must be *envoyTCPProxy")
+			assert.Equal(t, typeTCPProxy, tcpProxy.Type)
+			assert.Equal(t, originalDstClusterName, tcpProxy.Cluster,
+				"tcp_proxy must route to original_dst_cluster")
+
+			// Verify the allow-all policy carries Any:true when present.
+			if allowAllPol, ok := allowRBAC.Rules.Policies["allow-all"]; ok {
+				require.NotEmpty(t, allowAllPol.Permissions)
+				require.NotNil(t, allowAllPol.Permissions[0].Any)
+				assert.True(t, *allowAllPol.Permissions[0].Any,
+					"allow-all policy must use Any:true permission")
+			}
+		})
+	}
+}
+
+// TestBuildOriginalDstCluster verifies that buildOriginalDstCluster produces an
+// ORIGINAL_DST cluster with CLUSTER_PROVIDED lb_policy.
+func TestBuildOriginalDstCluster(t *testing.T) {
+	t.Parallel()
+
+	cluster := buildOriginalDstCluster()
+
+	assert.Equal(t, originalDstClusterName, cluster.Name)
+	assert.Equal(t, "ORIGINAL_DST", cluster.Type,
+		"original_dst cluster must use ORIGINAL_DST discovery type")
+	assert.Equal(t, "CLUSTER_PROVIDED", cluster.LbPolicy,
+		"ORIGINAL_DST cluster requires CLUSTER_PROVIDED lb_policy")
+	assert.NotEmpty(t, cluster.ConnectTimeout,
+		"connect_timeout must be set")
+
+	// Verify JSON serialization contains the required fields.
+	raw, err := json.Marshal(cluster)
+	require.NoError(t, err)
+	s := string(raw)
+	assert.Contains(t, s, `"ORIGINAL_DST"`)
+	assert.Contains(t, s, `"CLUSTER_PROVIDED"`)
+	assert.Contains(t, s, originalDstClusterName)
 }
 
 // TestEnvoyProxy_SetupOrchestration covers the container-orchestration branch

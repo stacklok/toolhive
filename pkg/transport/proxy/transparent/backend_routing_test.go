@@ -28,7 +28,7 @@ func startProxy(t *testing.T, targetURL string) (proxy *TransparentProxy, addr s
 		"127.0.0.1", 0, targetURL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -176,7 +176,7 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -211,7 +211,7 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -243,7 +243,7 @@ func TestRoundTripAllowsBatchInitializeWithUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 

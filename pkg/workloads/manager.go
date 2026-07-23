@@ -1824,12 +1824,16 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 
 		// Apply listAll filter. AuthRetrying is intentionally surfaced
 		// alongside Running because the workload is still self-recovering
-		// without user intervention on a longer cadence — every other
-		// non-Running status is terminal until external intervention,
-		// and is hidden. Mirrors the filter in file_status.go:ListWorkloads.
+		// without user intervention on a longer cadence. Unhealthy and
+		// Unauthenticated are also surfaced so users see remote workloads
+		// that need attention without passing -a. Every other non-Running
+		// status is terminal until external intervention, and is hidden.
+		// Mirrors the filter in file_status.go:ListWorkloads.
 		if !listAll &&
 			workloadStatus.Status != rt.WorkloadStatusRunning &&
-			workloadStatus.Status != rt.WorkloadStatusAuthRetrying {
+			workloadStatus.Status != rt.WorkloadStatusAuthRetrying &&
+			workloadStatus.Status != rt.WorkloadStatusUnhealthy &&
+			workloadStatus.Status != rt.WorkloadStatusUnauthenticated {
 			continue
 		}
 
@@ -1857,6 +1861,7 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			Name:          name,
 			Package:       "remote",
 			Status:        workloadStatus.Status,
+			StatusContext: workloadStatus.StatusContext,
 			URL:           proxyURL,
 			Port:          runConfig.Port,
 			TransportType: transportType,

@@ -95,7 +95,7 @@ func TestRemoteQueryForwarding(t *testing.T) {
 				"127.0.0.1", 0, targetURI,
 				nil, nil, nil,
 				false, true, "streamable-http",
-				nil, nil,
+				nil, nil, nil,
 				"", false,
 				nil, // middlewares
 				opts...,
@@ -225,7 +225,7 @@ func TestRemotePathForwarding(t *testing.T) {
 				"127.0.0.1", 0, targetURI,
 				nil, nil, nil,
 				false, true, "streamable-http",
-				nil, nil,
+				nil, nil, nil,
 				"", false,
 				nil, // middlewares
 				opts...,

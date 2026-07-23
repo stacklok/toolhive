@@ -66,7 +66,7 @@ func TestTransparentProxy_ReadTimeoutConfigured(t *testing.T) {
 				"127.0.0.1", 0, backend.URL,
 				nil, nil, nil,
 				false, false, "sse",
-				nil, nil, "", false,
+				nil, nil, nil, "", false,
 				nil,
 				tt.opts...,
 			)
@@ -103,7 +103,7 @@ func TestTransparentProxy_SlowBodyUploadTerminatedByReadTimeout(t *testing.T) {
 		"127.0.0.1", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 		WithReadTimeout(readTimeout),
 	)

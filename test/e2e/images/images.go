@@ -12,7 +12,7 @@ package images
 
 const (
 	yardstickServerImageURL = "ghcr.io/stackloklabs/yardstick/yardstick-server"
-	yardstickServerImageTag = "1.1.1"
+	yardstickServerImageTag = "1.2.0"
 	// YardstickServerImage is used in operator tests across multiple transport protocols
 	// (stdio, SSE, streamable-http) and tenancy modes.
 	// Note: This image is also referenced in 8 YAML fixture files under

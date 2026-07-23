@@ -132,11 +132,13 @@ jobs:
           docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
           # yardstick is only needed for the vmcp test suite
           if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
-            docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
+            docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0 &
           fi
-          # the time server is only used by the proxy test suite
+          # the time server and yardstick (dual-era barrier mode) are only
+          # used by the proxy (streamable-http) test suite
           if [ "${{ matrix.label_filter }}" = "proxy && !isolation" ]; then
             docker pull ghcr.io/stacklok/dockyard/uvx/mcp-server-time:2026.1.26 &
+            docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0 &
           fi
           # Envoy is only used by the network-isolation test suite
           if [ "${{ matrix.title }}" = "network-isolation" ]; then

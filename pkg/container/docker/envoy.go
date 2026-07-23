@@ -547,70 +547,113 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 		}
 		return policies
 	}
-	// Build the port constraint once (shared across all host policies).
-	portPerm := portMatchPermission(out.AllowPort)
-
-	if len(out.AllowHost) == 0 && portPerm != nil {
-		// AllowPort only — any host on the listed ports.
+	if len(out.AllowHost) == 0 && len(out.AllowPort) > 0 {
+		// AllowPort only — any host, but only on the listed ports.
+		// Use a single regex so both the explicit-port ("host:80") and the
+		// bare-hostname ("host", implying port 80) forms are handled correctly.
 		policies["any-host-allowed-ports"] = envoyRBACPolicy{
-			Permissions: []envoyPermission{*portPerm},
-			Principals:  []envoyPrincipal{{Any: true}},
+			Permissions: []envoyPermission{{
+				Header: &envoyHeaderMatcher{
+					Name:        ":authority",
+					StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: anyHostPortRegex(out.AllowPort)}},
+				},
+			}},
+			Principals: []envoyPrincipal{{Any: true}},
 		}
 		return policies
 	}
 
 	for _, host := range out.AllowHost {
-		hostPerm := envoyPermission{
-			Header: &envoyHeaderMatcher{
-				Name:        ":authority",
-				StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: hostMatchRegex(host)}},
-			},
-		}
-		var perms []envoyPermission
-		if portPerm != nil {
-			// AllowHost + AllowPort: both must match (AND semantics within a policy).
-			// The host regex already tolerates an optional ":port" suffix; the port
-			// permission anchors it to exactly the listed port numbers, matching
-			// Squid's "allowed_ports AND allowed_dsts" ACL combination.
-			perms = []envoyPermission{hostPerm, *portPerm}
+		var regex string
+		if len(out.AllowPort) > 0 {
+			// AllowHost + AllowPort: build a single regex that encodes both the
+			// host pattern and the allowed ports. Using a combined regex rather
+			// than separate AND-d permissions means plain-HTTP requests (where
+			// :authority omits the default port 80) are handled correctly — a
+			// bare "example.com" is permitted when port 80 is in the list.
+			regex = hostPortMatchRegex(host, out.AllowPort)
 		} else {
-			// AllowHost only — any port (matches original behaviour).
-			perms = []envoyPermission{hostPerm}
+			// AllowHost only — any port permitted.
+			regex = hostMatchRegex(host)
 		}
 		policies[host] = envoyRBACPolicy{
-			Permissions: perms,
-			Principals:  []envoyPrincipal{{Any: true}},
+			Permissions: []envoyPermission{{
+				Header: &envoyHeaderMatcher{
+					Name:        ":authority",
+					StringMatch: &envoyStringMatch{SafeRegex: &envoySafeRegex{Regex: regex}},
+				},
+			}},
+			Principals: []envoyPrincipal{{Any: true}},
 		}
 	}
 	return policies
 }
 
-// portMatchPermission returns an envoyPermission that matches the :authority
-// port suffix against the given allowed ports, or nil when the list is empty
-// (meaning no port constraint). The permission uses an OR of exact port-suffix
-// matchers (":80", ":443", …) so it fires when the authority ends with any of
-// the allowed ports — covering both plain HTTP and HTTPS CONNECT, where the
-// authority always carries the port. Hosts accessed via plain HTTP without an
-// explicit port (authority = "example.com") are NOT matched by this permission,
-// which is conservative: if a caller specifies AllowPort they intend to
-// constrain traffic to those ports.
-func portMatchPermission(ports []int) *envoyPermission {
-	if len(ports) == 0 {
-		return nil
+// hostPortMatchRegex builds a single anchored RE2 pattern that encodes both a
+// host allowlist entry and a port allowlist, so that AllowHost+AllowPort can be
+// expressed as one safe_regex permission rather than AND-ing two separate matchers.
+//
+// Port 80 is treated as the HTTP default: when 80 is in the ports list the port
+// suffix is optional, so a bare "example.com" authority (plain HTTP) is permitted
+// alongside "example.com:80". For all other ports the port suffix is required.
+//
+// The host portion mirrors hostMatchRegex semantics (leading dot / *. = subdomain
+// wildcard, case-insensitive, optional trailing dot, no port in the base pattern).
+func hostPortMatchRegex(host string, ports []int) string {
+	// Build the host portion (same logic as hostMatchRegex but without the
+	// trailing optional-port group — we handle ports explicitly below).
+	subdomains := false
+	switch {
+	case strings.HasPrefix(host, "*."):
+		host = host[2:]
+		subdomains = true
+	case strings.HasPrefix(host, "."):
+		host = host[1:]
+		subdomains = true
 	}
-	rules := make([]envoyPermission, 0, len(ports))
+	hostPattern := regexp.QuoteMeta(host)
+	if subdomains {
+		hostPattern = `(.*\.)?` + hostPattern
+	}
+
+	// Build the port alternatives.
+	includes80 := false
+	portAlts := make([]string, 0, len(ports))
 	for _, p := range ports {
-		rules = append(rules, envoyPermission{
-			Header: &envoyHeaderMatcher{
-				Name:        ":authority",
-				StringMatch: &envoyStringMatch{Suffix: ":" + strconv.Itoa(p)},
-			},
-		})
+		portAlts = append(portAlts, strconv.Itoa(p))
+		if p == 80 {
+			includes80 = true
+		}
 	}
-	if len(rules) == 1 {
-		return &rules[0]
+	portGroup := ":(?:" + strings.Join(portAlts, "|") + ")"
+
+	if includes80 {
+		// Port is optional: bare "example.com" counts as port 80.
+		return `(?i)` + hostPattern + `\.?(` + portGroup + `)?`
 	}
-	return &envoyPermission{OrRules: &envoyOrRules{Rules: rules}}
+	// Port is required: bare hostname is not accepted.
+	return `(?i)` + hostPattern + `\.?` + portGroup
+}
+
+// anyHostPortRegex builds a regex matching any hostname on the given ports.
+// When port 80 is in the list the port suffix is optional (bare hostname implies
+// port 80 for plain HTTP). For other ports the port suffix is required.
+func anyHostPortRegex(ports []int) string {
+	includes80 := false
+	portAlts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		portAlts = append(portAlts, strconv.Itoa(p))
+		if p == 80 {
+			includes80 = true
+		}
+	}
+	// [^:]+ matches any hostname (hostnames contain no colons; IPv6 bracket
+	// addresses are outside the supported scope for this proxy backend).
+	portGroup := ":(?:" + strings.Join(portAlts, "|") + ")"
+	if includes80 {
+		return `(?i)[^:]+(` + portGroup + `)?`
+	}
+	return `(?i)[^:]+` + portGroup
 }
 
 // hostMatchRegex builds an anchored, case-insensitive RE2 pattern that matches

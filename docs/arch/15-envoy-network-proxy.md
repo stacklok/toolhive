@@ -218,7 +218,7 @@ backend is stable.
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
 | Destination IP deny | ✓ (`dst` ACL, resolved IP) | ~ (IP literal in `:authority` only; resolved IP not enforced — see Known Limitations) |
 | Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
-| Port-based allowlist | ✓ (`AllowPort` ACL, AND-d with host) | ~ (`:authority` suffix match, AND-d with host; plain-HTTP requests omit the port from `:authority` so `AllowPort:[80]` is more restrictive than Squid for unencrypted traffic — fail-closed, see Known Limitations) |
+| Port-based allowlist | ✓ (`AllowPort` ACL, AND-d with host) | ✓ (combined host+port regex; bare hostname allowed when port 80 is listed, matching Squid's plain-HTTP behaviour) |
 | Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
 | Access logs | Per-container, text format | Unified stdout, structured |
 | Config format | Text template | Typed Go structs → protobuf-JSON |
@@ -238,13 +238,13 @@ backend is stable.
   tunnel closes, not when it opens. With keep-alive HTTP clients the log entry
   may be delayed by minutes. Egress access logs are visible in `docker logs` but
   appear after the connection closes.
-- **`AllowPort` is more restrictive than Squid for plain-HTTP traffic.** The
-  port constraint is matched against the HTTP `:authority` header. HTTPS CONNECT
-  tunnels always carry the port (`example.com:443`), so `AllowPort:[443]` works
-  correctly. Plain-HTTP requests omit the default port from `:authority`
-  (`example.com`, not `example.com:80`), so `AllowPort:[80]` will deny
-  plain-HTTP even to an allowlisted host. This is fail-closed (over-blocks, not
-  a bypass); Squid derives the port from the request URL and allows it.
+- **`AllowPort` with port 443 only will deny plain-HTTP traffic.** Port 80 is
+  treated as the HTTP default: when 80 is in `AllowPort`, a bare `:authority`
+  header (plain HTTP, which omits the default port) is permitted alongside the
+  explicit `host:80` form — matching Squid's `allowed_ports` behaviour. When
+  port 80 is NOT in `AllowPort` (e.g., `AllowPort:[443]` only), bare-hostname
+  authorities are denied since port 80 is not listed. This is fail-closed (over-
+  blocks rather than a bypass).
 - **No transparent L3/L4.** Non-cooperative traffic (workloads that ignore
   `HTTP_PROXY`) is contained by the `Internal: true` network, not Envoy. True
   non-bypassable enforcement requires iptables TPROXY + an init container with

@@ -742,8 +742,25 @@ Custom permission profiles can be defined in JSON files for reusable security po
 
 **Pod security context:**
 - RunConfig permission profile → Security context
-- Network policies generated from profile
 - Volume mounts → PersistentVolumeClaims or HostPath
+
+**Network policies (untrusted mode):**
+
+NetworkPolicy generation is real — but scoped to **untrusted mode**, not
+general permission profiles. For MCPServers with `spec.untrusted: true`, the
+operator renders an egress-only NetworkPolicy from `spec.egressPolicy`: session
+pods may reach only loopback (the in-pod Envoy/broker sidecar), cluster DNS
+(kube-system / `k8s-app=kube-dns` pods only), and the CIDRs the policy's
+`allowedHosts` resolve to. In that mode
+`permissionProfile.network.outbound` is **ignored** for the backend pod — the
+two are intentionally separate dialects: `permissionProfile` remains the
+Docker/Squid dialect (local mode, above), `egressPolicy` is the K8s
+untrusted-mode dialect. General profile → NetworkPolicy conversion for trusted
+workloads remains unimplemented; the load-bearing untrusted-mode controls are
+the broker's destination binding and per-dial IP validation, with the
+NetworkPolicy as defense-in-depth. See
+[Untrusted Mode](16-untrusted-mode.md) and
+[ADR-0001](adr/0001-untrusted-mcp-egress-broker.md) (D7).
 
 **Pod template patches:**
 ```json
@@ -771,4 +788,5 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - [Deployment Modes](01-deployment-modes.md) - RunConfig portability
 - [Transport Architecture](03-transport-architecture.md) - Transport configuration
 - [Operator Architecture](09-operator-architecture.md) - K8s-specific configuration
+- [Untrusted Mode](16-untrusted-mode.md) - K8s egressPolicy dialect and NetworkPolicy generation
 - [Registry System](06-registry-system.md) - Registry metadata that seeds RunConfig for a server

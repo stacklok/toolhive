@@ -190,6 +190,39 @@ session to a single pod. For production stateful workloads, prefer vertical
 scaling over horizontal scaling. See `docs/arch/10-virtual-mcp-architecture.md`
 for session affinity design details.
 
+## Single-tenant untrusted backend fan-out
+
+MCPServers marked `spec.untrusted: true` (ADR-0001) do **not** share the
+replica-based backend StatefulSet: each active `(user, MCPServer)` pair gets
+its own cloned backend pod carrying an Envoy + credential-broker sidecar. This
+is the deliberate cost of per-user egress attribution — pod identity *is* user
+identity — and it changes the capacity math above:
+
+- **Fan-out** ≈ active users × untrusted servers each user touches. 100 users ×
+  3 untrusted servers = 300 extra pods, each with ~75m CPU / ~96Mi RAM of
+  sidecar overhead on top of the backend container.
+- **Global cap**: total untrusted pods is bounded at `0.8 × session cache
+  capacity` (0.8 × 1,000 = 800 by default), so untrusted fan-out can never
+  crowd out the 1,000-session LRU entirely. Tunable via
+  `THV_UNTRUSTED_GLOBAL_CAP_RATIO`.
+- **DoS admission controls** (checked before any pod write, all fail closed on
+  Redis outage): per-user concurrent quota (10, `THV_UNTRUSTED_PER_USER_QUOTA`),
+  per-user create rate (5/min), per-MCPServer cap (200,
+  `THV_UNTRUSTED_PER_SERVER_CAP`). Denials are soft — the backend is excluded
+  from the session under partial-init semantics, not a session failure.
+- **Cold start**: session restore blocks up to the readiness budget (120s
+  default, `THV_UNTRUSTED_READINESS_TIMEOUT`) while the pod is cloned and goes
+  Ready; pods that never go Ready are reaped.
+- **Teardown**: idle pods are deleted after the idle TTL (30m default,
+  `THV_UNTRUSTED_IDLE_TTL`); a reaper (60s tick, every vMCP replica) owns GC —
+  readiness-timeout, idle, and zombie (owning vMCP heartbeat gone) rules —
+  and rebuilds admission counters from the authoritative pod LIST each tick.
+
+Sizing implication: with untrusted backends, plan node capacity for the pod
+fan-out in addition to the per-vMCP-pod fd/memory limits in this document, and
+watch the `untrusted_backend_pods` gauge per MCPServer against the 200 cap.
+Full lifecycle details: [Untrusted Mode](16-untrusted-mode.md).
+
 ## Hardcoded limits summary
 
 | Limit | Value | Source | Tunable? |
@@ -201,6 +234,11 @@ for session affinity design details.
 | Redis read timeout | 3 s | `toolhive-core/redis/config.go:DefaultReadTimeout` | Via `tcredis.Config.ReadTimeout` |
 | Redis write timeout | 3 s | `toolhive-core/redis/config.go:DefaultWriteTimeout` | Via `tcredis.Config.WriteTimeout` |
 | forEach max iterations | 1,000 | `vmcp/config/composite_validation.go:MaxForEachIterations` | Via `WorkflowStepConfig.MaxIterations` (capped at 1,000) |
+| Untrusted pods per user | 10 | `vmcp/session/untrusted/admission.go:defaultPerUserPodQuota` | `THV_UNTRUSTED_PER_USER_QUOTA` |
+| Untrusted pods per MCPServer | 200 | `vmcp/session/untrusted/admission.go:defaultPerMCPServerCap` | `THV_UNTRUSTED_PER_SERVER_CAP` |
+| Untrusted pods global | 0.8 × cache capacity (800) | `vmcp/session/untrusted/admission.go:defaultGlobalCapFactor` | `THV_UNTRUSTED_GLOBAL_CAP_RATIO` |
+| Untrusted pod idle TTL | 30 minutes | `vmcp/session/untrusted/reaper.go:defaultIdleTTL` | `THV_UNTRUSTED_IDLE_TTL` |
+| Untrusted pod readiness budget | 120 s | `vmcp/session/untrusted/lifecycle.go:DefaultReadyBudget` | `THV_UNTRUSTED_READINESS_TIMEOUT` |
 
 ## Related
 
@@ -210,3 +248,4 @@ for session affinity design details.
 - `github.com/stacklok/toolhive-core/redis/config.go` — Redis client config and timeout defaults
 - `docs/arch/10-virtual-mcp-architecture.md` — overall vMCP architecture
 - `docs/arch/11-auth-server-storage.md` — Redis Sentinel for auth server sessions
+- `docs/arch/16-untrusted-mode.md` — single-tenant untrusted backend lifecycle and caps

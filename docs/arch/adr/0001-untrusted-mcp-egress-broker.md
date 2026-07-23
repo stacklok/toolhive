@@ -1,6 +1,6 @@
 # ADR-0001: Untrusted MCP Server Egress Credential Broker
 
-- **Status**: Accepted
+- **Status**: Implemented (Waves 0–7)
 - **Date**: 2026-07-21
 - **Deciders**: ToolHive core team
 - **Source**: Final consolidated plan, `.claude/scratch/untrusted-mcp-egress-broker-plan.md` §9
@@ -336,3 +336,47 @@ is not over-trusted.
 2. Per-tenant vs cluster bump CA — default per-tenant where feasible (D9).
 3. Idle-TTL default and cold-start SLO for session-scoped pods — Wave 2.
 4. Non-HTTP upstreams (DBs, gRPC, SSH-git): deny by default; revisit per demand.
+
+---
+
+## 8. As-built deviations (recorded at closeout, Waves 0–7)
+
+The shipped system matches D1–D11 with these recorded deviations from the
+original text:
+
+- **Sidecar topology confirmed** (D3): Envoy per session pod + Go broker serving
+  `ext_authz` (injection), on-demand SDS (bump certs), **and** `ext_proc`
+  (response scanning, D6c) on one loopback socket. The Wave-3 deferral of
+  ext_proc was resolved in Wave 5 — both filters now ship, with a Lua filter
+  copying `x-request-id`/`:authority` into dynamic metadata as the only working
+  request→response correlation path (route `filter_metadata` is literal;
+  response-path ext_proc cannot see request headers).
+- **D6c scanner default is fail-open** (`failure_mode_allow: true`,
+  `THV_EGRESSBROKER_SCAN_FAIL_CLOSED=true` to flip): a scanner outage must not
+  hard-down every untrusted workload. A detected echo always blocks in both
+  modes. The byte-exact (+base64) match limit is recorded in §5 item 3.
+- **Audit is slog, not `pkg/audit`** (D11): `pkg/audit` is HTTP-middleware-shaped;
+  the broker is gRPC. One structured slog line per Inject/Deny/Leak event to
+  stdout; sub appears hashed only there, never in metric labels.
+- **Tunables are env vars, not CRD fields** (`THV_UNTRUSTED_*`, resolved once at
+  the vMCP composition root): platform-operator knobs, not per-workload API.
+- **KEK surface added**: `tokenEncryption` on the auth-server storage config
+  (CEL: requires `type: redis`); KEKs reach the vMCP and the cloned sidecars as
+  SecretKeyRef env only — coordinates, never values. Sentinel-managed Redis is
+  unsupported for the untrusted token store (Warning event, fail closed).
+- **Bump CA is generation-named** (D9 implementation): cert+key of one
+  generation in one Secret (`<name>-bump-ca-<sha256[:16]>`), N/N-1 retained,
+  StatefulSet pod-template annotation publishes the current generation — no
+  in-place rotation race.
+- **Images pinned**: Envoy by tag+digest, broker by release tag; per-install
+  overrides via `THV_UNTRUSTED_ENVOY_IMAGE` / `THV_UNTRUSTED_BROKER_IMAGE`
+  (`:latest` rejected).
+- **Sidecar resources set** (envoy 50m/64Mi–500m/256Mi, broker 25m/32Mi–250m/128Mi,
+  init 10m/16Mi–50m/32Mi) and broker `/healthz` on :15083 (Redis + policy + CA)
+  wired to readiness/liveness probes.
+- **Data-plane resource naming is shared** across the operator/vMCP module
+  boundary via `pkg/egressbroker` (`ResourceNamesFor`, `CAGeneration`,
+  identity annotation↔env contract), pinned by tests on both sides.
+
+Full architecture and operations documentation: `docs/arch/16-untrusted-mode.md`;
+operator how-to: `docs/operator/untrusted-mode.md`.

@@ -766,9 +766,10 @@ func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
 }
 
 // writeSSEErrorEvent writes a best-effort JSON-RPC error as a single SSE
-// data: frame, for a request whose response headers (200 + text/event-stream)
-// have already been sent -- an HTTP error status can no longer be set at this
-// point, so the error must be communicated in-band as the response payload.
+// message event (via writeSSEData), for a request whose response headers
+// (200 + text/event-stream) have already been sent -- an HTTP error status can
+// no longer be set at this point, so the error must be communicated in-band as
+// the response payload.
 //
 // The "id" key is included only if id.IsValid(); MCP narrows base JSON-RPC
 // 2.0 here (schema/2025-11-25 types the error response id as optional,

@@ -5,6 +5,7 @@ package skillsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -74,8 +75,11 @@ var errExperimentalLockFeature = httperr.WithCode(
 // syncLockedEntry reconciles one lock file entry against installed state,
 // appending its outcome to result. Missing (dbOK false) and drifted (digest
 // or contentDigest mismatch) entries are reinstalled at the pinned reference
-// unless opts.Check is set, in which case nothing is written — drift is
-// still reported in result.Drifted, never as a failure.
+// unless opts.Check is set, in which case nothing is written — both states
+// are still reported (Missing/Drifted), never as failures. Recording
+// Missing before the Check return is what makes --check a real gate on a
+// fresh clone or CI runner, where every entry has a lock entry but no
+// install record.
 func (s *service) syncLockedEntry(
 	ctx context.Context,
 	opts skills.SyncOptions,
@@ -90,6 +94,8 @@ func (s *service) syncLockedEntry(
 	}
 	if dbOK {
 		result.Drifted = append(result.Drifted, entry.Name)
+	} else {
+		result.Missing = append(result.Missing, entry.Name)
 	}
 	if opts.Check {
 		return
@@ -104,13 +110,28 @@ func (s *service) syncLockedEntry(
 }
 
 // entryMatchesInstalled reports whether the installed skill's pinned digest
-// and on-disk contentDigest both still match the lock entry.
+// still matches the lock entry and EVERY client directory's on-disk
+// contentDigest does too. Checking only one client's copy would leave
+// tampering with any other client's materialized files invisible to
+// --check — and which directory got checked would depend on install order.
 func entryMatchesInstalled(pathResolver skills.PathResolver, entry lockfile.Entry, sk skills.InstalledSkill) bool {
 	if sk.Digest != entry.Digest {
 		return false
 	}
-	contentDigest, err := computeContentDigest(pathResolver, sk)
-	return err == nil && contentDigest == entry.ContentDigest
+	if len(sk.Clients) == 0 {
+		return false
+	}
+	for _, client := range sk.Clients {
+		dir, err := pathResolver.GetSkillPath(client, sk.Metadata.Name, sk.Scope, sk.ProjectRoot)
+		if err != nil {
+			return false
+		}
+		contentDigest, err := lockfile.ContentDigestFromDir(dir)
+		if err != nil || contentDigest != entry.ContentDigest {
+			return false
+		}
+	}
+	return true
 }
 
 // reinstallPinned reinstalls entry at its pinned reference, preserving its
@@ -190,7 +211,7 @@ func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) erro
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
 	}); err != nil {
-		return fmt.Errorf("writing lock entry: %w", err)
+		return fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
 	sk.Managed = true
 	if err := s.store.Update(ctx, sk); err != nil {
@@ -200,10 +221,16 @@ func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) erro
 }
 
 // classifySyncFailure maps an error from the install/uninstall path to an
-// RFC THV-0080 typed failure reason using its HTTP status code — the
-// structured signal those paths already attach via httperr — rather than
-// matching on error message text.
+// RFC THV-0080 typed failure reason using structured signals those paths
+// already attach — the errLockWrite sentinel and httperr status codes —
+// rather than matching on error message text. Lock-write failures are
+// identified by the sentinel specifically: mapping every HTTP 500 to
+// lock-write-failed would mislabel unrelated internal errors (e.g. a
+// missing resolver) for the automation that keys on this reason.
 func classifySyncFailure(err error) skills.FailureReason {
+	if errors.Is(err, errLockWrite) {
+		return skills.FailureReasonLockWriteFailed
+	}
 	switch httperr.Code(err) {
 	case http.StatusNotFound:
 		return skills.FailureReasonDigestMissing
@@ -211,8 +238,6 @@ func classifySyncFailure(err error) skills.FailureReason {
 		return skills.FailureReasonRegistryUnreachable
 	case http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusConflict:
 		return skills.FailureReasonValidationRejected
-	case http.StatusInternalServerError:
-		return skills.FailureReasonLockWriteFailed
 	default:
 		return skills.FailureReasonUnknown
 	}

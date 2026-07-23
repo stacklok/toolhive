@@ -1705,10 +1705,6 @@ components:
       - digest-missing
       - validation-rejected
       - lock-write-failed
-      - ref-change-blocked
-      - signature-invalid
-      - signer-mismatch
-      - unsigned-rejected
       - unknown
       type: string
       x-enum-varnames:
@@ -1716,10 +1712,6 @@ components:
       - FailureReasonDigestMissing
       - FailureReasonValidationRejected
       - FailureReasonLockWriteFailed
-      - FailureReasonRefChangeBlocked
-      - FailureReasonSignatureInvalid
-      - FailureReasonSignerMismatch
-      - FailureReasonUnsignedRejected
       - FailureReasonUnknown
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:
       description: Status is the current installation status.
@@ -1910,6 +1902,16 @@ components:
         installed:
           description: Installed lists skills that were installed or reinstalled to
             match the lock file.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        missing:
+          description: |-
+            Missing lists lock entries with no corresponding install record at all
+            — the fresh-clone state. Normally these are installed at their pinned
+            reference; when Check is set, nothing is written and this field
+            reports the gap only.
           items:
             type: string
           type: array

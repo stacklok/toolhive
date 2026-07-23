@@ -85,6 +85,7 @@ func printSyncResult(result *skills.SyncResult, format string) error {
 
 	printSkillNameGroup("Installed", result.Installed)
 	printSkillNameGroup("Drifted", result.Drifted)
+	printSkillNameGroup("Missing (not installed)", result.Missing)
 	printSkillNameGroup("Up to date", result.AlreadyCurrent)
 	printSkillNameGroup("Never managed (use --adopt to record)", result.NeverManaged)
 	printSkillNameGroup("Removed from lock (use --prune to remove)", result.RemovedFromLock)
@@ -114,6 +115,7 @@ func printSkillNameGroup(label string, names []string) {
 func isSyncResultEmpty(result *skills.SyncResult) bool {
 	return len(result.Installed) == 0 &&
 		len(result.Drifted) == 0 &&
+		len(result.Missing) == 0 &&
 		len(result.AlreadyCurrent) == 0 &&
 		len(result.NeverManaged) == 0 &&
 		len(result.RemovedFromLock) == 0 &&

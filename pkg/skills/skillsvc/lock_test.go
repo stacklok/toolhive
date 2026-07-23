@@ -59,6 +59,15 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver) (skills.SkillSe
 	return svc, projectRoot
 }
 
+// gitSkillVersion builds SKILL.md content for a git-resolved test fixture
+// with a distinct version ("2.0.0"), for tests simulating newer content
+// published at the same source (e.g. an upgrade scenario). It never
+// declares requires.
+func gitSkillVersion(name string) []byte {
+	fm := fmt.Sprintf("---\nname: %s\ndescription: test skill\nversion: 2.0.0\n---\n# %s\n", name, name)
+	return []byte(fm)
+}
+
 // gitSkill builds SKILL.md content for a git-resolved test fixture,
 // optionally declaring toolhive.requires dependencies.
 func gitSkill(name string, requires ...string) []byte {
@@ -97,14 +106,27 @@ type gitFixture struct {
 
 // fakeGitFixtures dispatches a MockResolver's Resolve calls by matching the
 // reference URL against a fixed set of registered skills, each getting its
-// own commit hash so digests differ.
+// own commit hash so digests differ. Like a real repository, it keeps every
+// registered revision: resolving a reference pinned to a full commit hash
+// returns that revision's content, while an unpinned reference returns the
+// latest — so sync's pinned restores behave the way real git checkouts do.
 type fakeGitFixtures struct {
-	skills map[string]gitFixture // keyed by URL
+	skills  map[string]gitFixture            // latest content, keyed by URL
+	history map[string]map[string]gitFixture // URL -> commit hash -> content
+}
+
+// fixtureCommitHash derives the deterministic per-revision commit hash the
+// fake resolver reports for a registered fixture.
+func fixtureCommitHash(url string, content []byte) string {
+	return fmt.Sprintf("%040x", len(content)+len(url))
 }
 
 func newGitResolverMock(t *testing.T) (*gitmocks.MockResolver, *fakeGitFixtures) {
 	t.Helper()
-	fx := &fakeGitFixtures{skills: make(map[string]gitFixture)}
+	fx := &fakeGitFixtures{
+		skills:  make(map[string]gitFixture),
+		history: make(map[string]map[string]gitFixture),
+	}
 	gr := gitmocks.NewMockResolver(gomock.NewController(t))
 	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, ref *gitresolver.GitReference) (*gitresolver.ResolveResult, error) {
@@ -112,10 +134,13 @@ func newGitResolverMock(t *testing.T) (*gitmocks.MockResolver, *fakeGitFixtures)
 			if !ok {
 				return nil, fmt.Errorf("no fixture registered for %q", ref.URL)
 			}
+			if pinned, isPinned := fx.history[ref.URL][ref.Ref]; isPinned {
+				fixture = pinned
+			}
 			return &gitresolver.ResolveResult{
 				SkillConfig: &skills.ParseResult{Name: fixture.name},
 				Files:       []gitresolver.FileEntry{{Path: "SKILL.md", Content: fixture.content, Mode: 0644}},
-				CommitHash:  fmt.Sprintf("%040x", len(fixture.content)+len(ref.URL)), // deterministic, distinct per fixture
+				CommitHash:  fixtureCommitHash(ref.URL, fixture.content),
 			}, nil
 		})
 	return gr, fx
@@ -123,7 +148,12 @@ func newGitResolverMock(t *testing.T) (*gitmocks.MockResolver, *fakeGitFixtures)
 
 func (f *fakeGitFixtures) register(name string, content []byte) {
 	_, url := gitRef(name)
-	f.skills[url] = gitFixture{name: name, content: content}
+	fixture := gitFixture{name: name, content: content}
+	f.skills[url] = fixture
+	if f.history[url] == nil {
+		f.history[url] = make(map[string]gitFixture)
+	}
+	f.history[url][fixtureCommitHash(url, content)] = fixture
 }
 
 func mustOpenRoot(t *testing.T, projectRoot string) lockfile.Root {

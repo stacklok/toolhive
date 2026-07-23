@@ -231,6 +231,11 @@ type SyncResult struct {
 	// file. Normally these are reinstalled to match it; when Check is set,
 	// nothing is written and this field reports the drift only.
 	Drifted []string `json:"drifted,omitempty"`
+	// Missing lists lock entries with no corresponding install record at all
+	// — the fresh-clone state. Normally these are installed at their pinned
+	// reference; when Check is set, nothing is written and this field
+	// reports the gap only.
+	Missing []string `json:"missing,omitempty"`
 	// AlreadyCurrent lists skills that already matched the lock file.
 	AlreadyCurrent []string `json:"already_current,omitempty"`
 	// NeverManaged lists project-scoped skills never recorded as lock-managed.

@@ -1657,10 +1657,6 @@ const docTemplate = `{
                     "digest-missing",
                     "validation-rejected",
                     "lock-write-failed",
-                    "ref-change-blocked",
-                    "signature-invalid",
-                    "signer-mismatch",
-                    "unsigned-rejected",
                     "unknown"
                 ],
                 "type": "string",
@@ -1669,10 +1665,6 @@ const docTemplate = `{
                     "FailureReasonDigestMissing",
                     "FailureReasonValidationRejected",
                     "FailureReasonLockWriteFailed",
-                    "FailureReasonRefChangeBlocked",
-                    "FailureReasonSignatureInvalid",
-                    "FailureReasonSignerMismatch",
-                    "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
             },
@@ -1913,6 +1905,14 @@ const docTemplate = `{
                     },
                     "installed": {
                         "description": "Installed lists skills that were installed or reinstalled to match the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "missing": {
+                        "description": "Missing lists lock entries with no corresponding install record at all\n— the fresh-clone state. Normally these are installed at their pinned\nreference; when Check is set, nothing is written and this field\nreports the gap only.",
                         "items": {
                             "type": "string"
                         },

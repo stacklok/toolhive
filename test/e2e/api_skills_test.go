@@ -1235,7 +1235,7 @@ type syncSkillsRequest struct {
 type syncResultResponse struct {
 	Installed       []string `json:"installed,omitempty"`
 	Drifted         []string `json:"drifted,omitempty"`
-	AlreadyCurrent  []string `json:"up_to_date,omitempty"`
+	AlreadyCurrent  []string `json:"already_current,omitempty"`
 	NeverManaged    []string `json:"never_managed,omitempty"`
 	RemovedFromLock []string `json:"removed_from_lock,omitempty"`
 	Pruned          []string `json:"pruned,omitempty"`

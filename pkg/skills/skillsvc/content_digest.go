@@ -16,9 +16,11 @@ import (
 const skillMDFileName = "SKILL.md"
 
 // computeContentDigest hashes the on-disk file set for an installed skill,
-// for lock file integrity verification. Every client directory a skill is
-// installed into is written from the same source, so any one of them is
-// representative; the first client in the skill's Clients list is used.
+// for recording in the lock file at install time. Every client directory is
+// written from the same source in the same operation, so the first client's
+// copy is representative *at record time*; verification (sync --check) must
+// not make that assumption and checks every client directory — see
+// entryMatchesInstalled.
 func computeContentDigest(pathResolver skills.PathResolver, sk skills.InstalledSkill) (string, error) {
 	dir, err := installedSkillDir(pathResolver, sk)
 	if err != nil {

@@ -486,7 +486,7 @@ func TestCreateContainer_StartExistingError_Wrapped(t *testing.T) {
 
 	_, err := c.createContainer(ctx, "svc", &container.Config{}, &container.HostConfig{}, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to start existing container")
+	assert.Contains(t, err.Error(), "failed to start container")
 }
 
 func TestCreateContainer_CreateError_Wrapped(t *testing.T) {
@@ -560,4 +560,123 @@ func TestCreateContainer_RemoveError_Propagates(t *testing.T) {
 	_, err := c.createContainer(ctx, "svc", &container.Config{Image: "desired"}, &container.HostConfig{}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to remove container")
+}
+
+func TestCreateContainerStopped_DoesNotStart(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	var created bool
+
+	api := &fakeDockerAPI{
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+			return []container.Summary{}, nil
+		},
+		createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, name string) (container.CreateResponse, error) {
+			created = true
+			assert.Equal(t, "stopped-svc", name)
+			return container.CreateResponse{ID: "cid-stopped"}, nil
+		},
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
+			t.Fatal("ContainerStart must NOT be called by createContainerStopped")
+			return nil
+		},
+	}
+	c := &Client{api: api}
+
+	id, err := c.createContainerStopped(ctx, "stopped-svc", &container.Config{}, &container.HostConfig{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "cid-stopped", id)
+	assert.True(t, created, "ContainerCreate must be called")
+}
+
+func TestCreateContainerStopped_ReusesExisting(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	var createCalled bool
+
+	api := &fakeDockerAPI{
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{ID: "cid-exist", Names: []string{"/svc-reuse"}},
+			}, nil
+		},
+		inspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {
+			assert.Equal(t, "cid-exist", id)
+			// Config matches desired (all zero values) — reuse path.
+			return container.InspectResponse{
+				Config:     &container.Config{},
+				HostConfig: &container.HostConfig{},
+				State:      &container.State{Status: "exited", Running: false},
+			}, nil
+		},
+		createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
+			createCalled = true
+			return container.CreateResponse{ID: "cid-should-not"}, nil
+		},
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
+			t.Fatal("ContainerStart must NOT be called by createContainerStopped")
+			return nil
+		},
+	}
+	c := &Client{api: api}
+
+	id, err := c.createContainerStopped(ctx, "svc-reuse", &container.Config{}, &container.HostConfig{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "cid-exist", id)
+	assert.False(t, createCalled, "ContainerCreate must not be called when reusing an existing container")
+}
+
+func TestStartContainer_StartsById(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	var startedID string
+
+	api := &fakeDockerAPI{
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
+			startedID = id
+			return nil
+		},
+	}
+	c := &Client{api: api}
+
+	err := c.startContainer(ctx, "cid-to-start")
+	require.NoError(t, err)
+	assert.Equal(t, "cid-to-start", startedID)
+}
+
+func TestCreateContainer_StillCallsBoth(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	var created bool
+	var started bool
+
+	api := &fakeDockerAPI{
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+			return []container.Summary{}, nil
+		},
+		createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
+			created = true
+			return container.CreateResponse{ID: "cid-both"}, nil
+		},
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
+			started = true
+			assert.Equal(t, "cid-both", id)
+			return nil
+		},
+	}
+	c := &Client{api: api}
+
+	id, err := c.createContainer(ctx, "both-svc", &container.Config{}, &container.HostConfig{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "cid-both", id)
+	assert.True(t, created, "ContainerCreate must be called")
+	assert.True(t, started, "ContainerStart must be called")
 }

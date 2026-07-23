@@ -1111,48 +1111,6 @@ func compareContainerConfig(
 	return true
 }
 
-// handleExistingContainer checks if an existing container's configuration matches the desired configuration
-// Returns true if the container can be reused, false if it was removed and needs to be recreated
-func (c *Client) handleExistingContainer(
-	ctx context.Context,
-	containerID string,
-	desiredConfig *container.Config,
-	desiredHostConfig *container.HostConfig,
-) (bool, error) {
-	// Get container info
-	inspectResult, err := c.api.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
-	if err != nil {
-		return false, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
-	}
-	info := inspectResult.Container
-
-	// Compare configurations
-	if compareContainerConfig(&info, desiredConfig, desiredHostConfig) {
-		// Configurations match, container can be reused
-
-		// Check if the container is running
-		if !info.State.Running {
-			// Container exists but is not running, start it
-			_, err = c.api.ContainerStart(ctx, containerID, mobyclient.ContainerStartOptions{})
-			if err != nil {
-				return false, NewContainerError(err, containerID, fmt.Sprintf("failed to start existing container: %v", err))
-			}
-		}
-
-		return true, nil
-	}
-
-	// Configurations don't match, we need to recreate the container.
-	// Remove only this container, leave any associated networks and containers intact
-	// Any proxy containers (like ingress/egress) will have already recreated themselves at this point
-	if err := c.removeContainer(ctx, containerID); err != nil {
-		return false, err
-	}
-
-	// Container was removed and needs to be recreated
-	return false, nil
-}
-
 // CreateNetwork creates a network following configuration.
 func (c *Client) createNetwork(
 	ctx context.Context,
@@ -1391,7 +1349,13 @@ func parseHostIP(hostIP string) (netip.Addr, error) {
 	return netip.ParseAddr(hostIP)
 }
 
-func (c *Client) createContainer(
+// createContainerStopped creates a container without starting it and returns
+// the container ID. It handles existing container reuse the same way as
+// createContainer: if an existing container's config matches, it is returned
+// as-is (but NOT started even if stopped); if the config mismatches, the old
+// container is removed and a fresh one is created (also not started). The
+// caller is responsible for starting the container via startContainer.
+func (c *Client) createContainerStopped(
 	ctx context.Context,
 	containerName string,
 	config *container.Config,
@@ -1405,16 +1369,16 @@ func (c *Client) createContainer(
 
 	// If container exists, check if we need to recreate it
 	if existingID != "" {
-		canReuse, err := c.handleExistingContainer(ctx, existingID, config, hostConfig)
+		canReuse, err := c.handleExistingContainerStopped(ctx, existingID, config, hostConfig)
 		if err != nil {
 			return "", err
 		}
 
 		if canReuse {
-			// Container exists with the right configuration, return its ID
+			// Container exists with the right configuration, return its ID without starting it.
 			return existingID, nil
 		}
-		// Container was removed and needs to be recreated
+		// Container was removed and needs to be recreated.
 	}
 
 	// network config
@@ -1422,7 +1386,7 @@ func (c *Client) createContainer(
 		EndpointsConfig: endpointsConfig,
 	}
 
-	// Create the container
+	// Create the container but do not start it.
 	resp, err := c.api.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
 		Config:           config,
 		HostConfig:       hostConfig,
@@ -1438,13 +1402,68 @@ func (c *Client) createContainer(
 		slog.Debug("container creation warnings", "warnings", resp.Warnings)
 	}
 
-	// Start the container
-	_, err = c.api.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{})
+	return resp.ID, nil
+}
+
+// startContainer starts a previously created (but not yet started) container
+// identified by containerID.
+func (c *Client) startContainer(ctx context.Context, containerID string) error {
+	_, err := c.api.ContainerStart(ctx, containerID, mobyclient.ContainerStartOptions{})
 	if err != nil {
-		return "", NewContainerError(err, resp.ID, fmt.Sprintf("failed to start container: %v", err))
+		return NewContainerError(err, containerID, fmt.Sprintf("failed to start container: %v", err))
+	}
+	return nil
+}
+
+// handleExistingContainerStopped is like handleExistingContainer but does NOT
+// start a stopped container. It returns true when the existing container can be
+// reused (regardless of its running state), and false when the container had to
+// be removed so it can be recreated.
+func (c *Client) handleExistingContainerStopped(
+	ctx context.Context,
+	containerID string,
+	desiredConfig *container.Config,
+	desiredHostConfig *container.HostConfig,
+) (bool, error) {
+	inspectResult, err := c.api.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return false, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
+	}
+	info := inspectResult.Container
+
+	if compareContainerConfig(&info, desiredConfig, desiredHostConfig) {
+		// Configurations match — container can be reused as-is; caller will start it.
+		return true, nil
 	}
 
-	return resp.ID, nil
+	// Configurations don't match; remove so the caller can recreate it.
+	if err := c.removeContainer(ctx, containerID); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (c *Client) createContainer(
+	ctx context.Context,
+	containerName string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	endpointsConfig map[string]*network.EndpointSettings,
+) (string, error) {
+	id, err := c.createContainerStopped(ctx, containerName, config, hostConfig, endpointsConfig)
+	if err != nil {
+		return "", err
+	}
+
+	// createContainerStopped never starts the container, so we always start it
+	// here — whether it was reused, newly created, or recreated after a config
+	// mismatch. For an already-running reused container, ContainerStart is a
+	// no-op on the Docker daemon side.
+	if err := c.startContainer(ctx, id); err != nil {
+		return "", err
+	}
+
+	return id, nil
 }
 
 func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string,

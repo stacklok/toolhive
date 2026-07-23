@@ -83,6 +83,28 @@ func authorityMatched(patterns []string, authority string) bool {
 	return false
 }
 
+// listenerAllowsAuthority returns true when the ALLOW RBAC filter in the given
+// listener would permit a request with the given :authority value.
+func listenerAllowsAuthority(listener envoyListener, authority string) bool {
+	rbac := findRBACFilter(listener)
+	if rbac == nil {
+		return false
+	}
+	for _, policy := range rbac.Rules.Policies {
+		allMatch := true
+		for _, perm := range policy.Permissions {
+			if !permMatchesAuthority(perm, authority) {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			return true
+		}
+	}
+	return false
+}
+
 // findDenyRBACFilter returns the first RBAC filter with action == "DENY" from
 // the HCM inside the listener's first filter chain.
 func findDenyRBACFilter(listener envoyListener) *envoyHTTPRBAC {
@@ -881,31 +903,6 @@ func TestListenerTimeoutsDisabledForStreaming(t *testing.T) {
 func TestBuildAllowlistPolicies_AllowPort(t *testing.T) {
 	t.Parallel()
 
-	// authorityAllowed checks whether the ALLOW RBAC filter in l permits the
-	// given :authority value by walking all policies and testing each permission
-	// against the authority string (replicating Envoy's full-string anchoring).
-	authorityAllowed := func(t *testing.T, l envoyListener, authority string) bool {
-		t.Helper()
-		rbac := findRBACFilter(l)
-		if rbac == nil {
-			return false
-		}
-		// A request is allowed when at least one policy's permissions all match.
-		for _, policy := range rbac.Rules.Policies {
-			allMatch := true
-			for _, perm := range policy.Permissions {
-				if !permMatchesAuthority(perm, authority) {
-					allMatch = false
-					break
-				}
-			}
-			if allMatch {
-				return true
-			}
-		}
-		return false
-	}
-
 	tests := []struct {
 		name string
 		out  *permissions.OutboundNetworkPermissions
@@ -958,11 +955,11 @@ func TestBuildAllowlistPolicies_AllowPort(t *testing.T) {
 			}
 			listener := buildEgressListener(spec)
 			for _, a := range tt.allowed {
-				assert.True(t, authorityAllowed(t, listener, a),
+				assert.True(t, listenerAllowsAuthority(listener, a),
 					"authority %q should be allowed", a)
 			}
 			for _, a := range tt.denied {
-				assert.False(t, authorityAllowed(t, listener, a),
+				assert.False(t, listenerAllowsAuthority(listener, a),
 					"authority %q should be denied", a)
 			}
 		})
@@ -997,4 +994,125 @@ func permMatchesAuthority(perm envoyPermission, authority string) bool {
 		}
 	}
 	return false
+}
+
+// TestBuildAllowlistPolicies_AllowPort_Structure guards against a wrong
+// permMatchesAuthority re-implementation masking a config regression: it checks
+// the actual RBAC policy shape (SafeRegex host + Suffix port) rather than just
+// whether the helper says the authority is allowed or denied (F6).
+func TestBuildAllowlistPolicies_AllowPort_Structure(t *testing.T) {
+	t.Parallel()
+	spec := proxySpec{
+		WorkloadName: "app",
+		GatewayIP:    dockerDefaultBridgeGatewayIP,
+		Permissions: &permissions.NetworkPermissions{
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+				AllowPort: []int{80, 443},
+			},
+		},
+	}
+	listener := buildEgressListener(spec)
+	rbac := findRBACFilter(listener)
+	require.NotNil(t, rbac)
+	policy, ok := rbac.Rules.Policies["example.com"]
+	require.True(t, ok, "expected policy keyed 'example.com'")
+	// Must have exactly 2 permissions: host regex AND port OR-rules.
+	require.Len(t, policy.Permissions, 2,
+		"AllowHost+AllowPort policy must have exactly 2 permissions (host AND port)")
+	hostPerm := policy.Permissions[0]
+	require.NotNil(t, hostPerm.Header, "first permission must be a header matcher")
+	require.NotNil(t, hostPerm.Header.StringMatch.SafeRegex, "host must use safe_regex")
+	portPerm := policy.Permissions[1]
+	require.NotNil(t, portPerm.OrRules, "second permission must be or_rules for port alternatives")
+	for _, r := range portPerm.OrRules.Rules {
+		require.NotNil(t, r.Header, "each port rule must be a header matcher")
+		require.NotEmpty(t, r.Header.StringMatch.Suffix, "port rule must use suffix match")
+	}
+}
+
+// TestBuildAllowlistPolicies_AdditionalCases covers edge cases not in the main
+// AllowPort table (F7): multi-port OR shape, port-less authority divergence from
+// Squid, and gateway-deny ordering under AllowPort-only (F8).
+func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
+	t.Parallel()
+
+	// F7a: AllowHost + multi-port — authority with a non-listed port is denied.
+	t.Run("AllowHost+multi-port denies non-listed port", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{80, 443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		assert.True(t, listenerAllowsAuthority(l, "example.com:443"), "port 443 must be allowed")
+		assert.True(t, listenerAllowsAuthority(l, "example.com:80"), "port 80 must be allowed")
+		assert.False(t, listenerAllowsAuthority(l, "example.com:8080"), "port 8080 must be denied")
+		assert.False(t, listenerAllowsAuthority(l, "other.com:443"), "wrong host must be denied")
+	})
+
+	// F7b: Port-less authority (plain HTTP default port) — documents the known
+	// divergence from Squid where "example.com" (no port) does not match ":80".
+	t.Run("port-less authority is denied when AllowPort is set (known Squid divergence)", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{80},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		// Plain HTTP omits the port from :authority — "example.com" without ":80"
+		// does not satisfy the port suffix matcher. This is fail-closed (over-blocks)
+		// rather than a bypass; Squid allows this via the URL's implicit port.
+		assert.False(t, listenerAllowsAuthority(l, "example.com"),
+			"port-less authority must be denied when AllowPort is set (see F1 divergence note)")
+		assert.True(t, listenerAllowsAuthority(l, "example.com:80"),
+			"explicit port 80 must be allowed")
+	})
+
+	// F8: Gateway-deny DENY filter is evaluated before the ALLOW filter even
+	// when AllowPort-only is configured (deny-before-allow ordering).
+	t.Run("gateway-deny precedes AllowPort-only allow", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		// The gateway deny filter must precede the allow filter.
+		deny := findDenyRBACFilter(l)
+		require.NotNil(t, deny, "DENY filter must be present")
+		hcm := l.FilterChains[0].Filters[0].TypedConfig.(*envoyHCM)
+		var denyIdx, allowIdx int
+		for i, f := range hcm.HTTPFilters {
+			if rbac, ok := f.TypedConfig.(*envoyHTTPRBAC); ok {
+				if rbac.Rules.Action == "DENY" {
+					denyIdx = i
+				} else {
+					allowIdx = i
+				}
+			}
+		}
+		assert.Less(t, denyIdx, allowIdx, "DENY filter must appear before ALLOW filter")
+		// Gateway IP must be denied even though port 443 is in AllowPort.
+		gatewayPats := collectAuthorityRegexes(deny)
+		assert.True(t, authorityMatched(gatewayPats, dockerDefaultBridgeGatewayIP+":443"),
+			"gateway IP on port 443 must be caught by the DENY filter")
+	})
 }

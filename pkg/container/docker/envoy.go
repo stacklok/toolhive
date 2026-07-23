@@ -509,8 +509,16 @@ func buildAllowlistRBAC(spec proxySpec) *envoyHTTPRBAC {
 //   - spec.Permissions.Outbound is nil
 //
 // InsecureAllowAll produces a single wildcard policy. Each AllowHost entry
-// becomes a policy matching the :authority header via hostMatchRegex, which
-// mirrors Squid's dstdomain semantics (see hostMatchRegex for the syntax).
+// becomes a policy matching the :authority header via hostMatchRegex (Squid
+// dstdomain semantics). When AllowPort is also set, each host policy AND-s a
+// port-suffix permission so that host AND port must both match — mirroring
+// Squid's "allowed_ports AND allowed_dsts" combination.
+//
+// Known divergence from Squid: plain-HTTP requests omit the port from
+// :authority (e.g. "example.com" not "example.com:80"). A port-suffix matcher
+// for ":80" will not match the portless authority, so AllowPort:[80] with plain
+// HTTP is more restrictive than Squid's allowed_ports ACL. This is fail-closed
+// (over-blocks) rather than a bypass.
 //
 // When spec.AllowDockerGateway is set, an explicit ALLOW policy for the gateway
 // is added: omitting the deny filter alone is not enough, because the allowlist
@@ -834,6 +842,9 @@ func (*envoyProxy) SetupEgress(_ context.Context, spec proxySpec) (egressResult,
 // STRICT_DNS upstream cluster resolves the MCP hostname on the first probe,
 // avoiding the Linux Docker Engine readiness failure described in #5922.
 func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressResult) (int, error) {
+	// The container is named <name>-egress (not <name>-proxy or similar) to
+	// preserve parity with the Squid backend: addEgressEnvVars and the suffix-
+	// based cleanup loop both key off this name.
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
 
 	bootstrap := envoyBootstrap{

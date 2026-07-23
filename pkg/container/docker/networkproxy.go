@@ -27,20 +27,26 @@ import (
 type networkProxy interface {
 	// SetupEgress provisions egress enforcement BEFORE the MCP container is
 	// created and returns the environment variables to inject into the workload
-	// (HTTP_PROXY etc.). Both per-container (squid) and consolidated (envoy)
-	// backends create only their egress proxy here; ingress creation is always
-	// deferred to SetupIngress so the upstream hostname is resolvable on first
-	// probe.
+	// (HTTP_PROXY etc.).
+	//
+	// Squid creates its egress container here. The Envoy backend creates no
+	// container in SetupEgress — it returns only env vars — and defers all
+	// container creation (both egress and ingress listeners, one container) to
+	// SetupIngress so the STRICT_DNS ingress cluster can resolve the MCP hostname
+	// on its first probe.
 	//
 	// It must run before createMcpContainer so the returned env vars land in the
-	// workload's environment and the egress proxy has a head start.
+	// workload's environment.
 	SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error)
 
 	// SetupIngress creates the ingress proxy AFTER the MCP container exists and
-	// returns the host-side ingress port (0 for stdio / UpstreamPort==0). Both
-	// backends create their ingress container here — once the MCP container exists
-	// its hostname resolves immediately, avoiding a cached negative DNS lookup
-	// that would leave the reverse proxy permanently unable to reach the upstream.
+	// returns the host-side ingress port (0 for stdio / UpstreamPort==0).
+	//
+	// Squid creates its ingress container here. The Envoy backend creates its
+	// single dual-listener container here (both egress forward-proxy and ingress
+	// reverse-proxy listeners). Running after createMcpContainer ensures the MCP
+	// container's hostname resolves on first probe, avoiding a cached negative DNS
+	// lookup that would leave the ingress permanently unable to reach the upstream.
 	//
 	// It must run after createMcpContainer.
 	SetupIngress(ctx context.Context, spec proxySpec, egress egressResult) (int, error)

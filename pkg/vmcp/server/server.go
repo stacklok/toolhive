@@ -598,9 +598,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
+	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry → classification
 	// Execution order: recovery → body-limit → header-val → auth →
-	//   rate-limit → audit → MCP-parsing → telemetry → handler
+	//   rate-limit → audit → MCP-parsing → telemetry → classification → handler
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
 	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
@@ -620,6 +620,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// audited with outcome "denied". See call_gate.go.
 
 	var mcpHandler http.Handler = streamableServer
+
+	// Classify Modern (2026-07-28) vs Legacy at the decode seam and reject
+	// malformed Modern requests before dispatch. No routing change: Legacy
+	// and well-formed Modern requests both fall through to the same handler
+	// (Modern dispatch lands in Phase 2, #5756). Applied before telemetry
+	// (i.e. it runs closer to the handler) so a rejection is still recorded
+	// by the telemetry middleware instead of bypassing it entirely.
+	mcpHandler = classificationMiddleware(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)

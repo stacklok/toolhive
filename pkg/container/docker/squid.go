@@ -376,6 +376,12 @@ func (s *squidProxy) SetupEgress(ctx context.Context, spec proxySpec) (egressRes
 	return egressResult{EnvVars: addEgressEnvVars(nil, egressContainerName)}, nil
 }
 
+// SetupTransparent is a no-op for Squid: Squid does not support transparent
+// interception. Cooperative HTTP proxy enforcement only.
+func (*squidProxy) SetupTransparent(_ context.Context, _ proxySpec, _ string) error {
+	return nil
+}
+
 // SetupIngress creates the ingress Squid container after the MCP container
 // exists. Creating it here (rather than before the MCP container) ensures the
 // cache_peer hostname resolves on first probe; a Squid ingress created against a

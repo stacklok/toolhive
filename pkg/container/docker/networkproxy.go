@@ -50,6 +50,20 @@ type networkProxy interface {
 	//
 	// It must run after createMcpContainer.
 	SetupIngress(ctx context.Context, spec proxySpec, egress egressResult) (int, error)
+
+	// SetupTransparent installs transparent TCP interception into the workload
+	// container's network namespace. It MUST be called after the workload container
+	// has been CREATED (via createContainerStopped) but before it is STARTED.
+	//
+	// It runs an ephemeral init container in the workload's network namespace via
+	// --network container:{id}, installs iptables DNAT rules redirecting all
+	// outbound TCP (except to Envoy itself) to Envoy's transparent listener, then
+	// removes the init container.
+	//
+	// Returns an error if rule installation fails. The caller MUST NOT start the
+	// workload if this returns an error — leave it in the fail-closed Internal:true
+	// state.
+	SetupTransparent(ctx context.Context, spec proxySpec, workloadContainerID string) error
 }
 
 // proxySpec contains all the parameters needed to set up proxy containers for
@@ -76,6 +90,16 @@ type proxySpec struct {
 	// Endpoints is the set of network endpoints the proxy containers should
 	// join, keyed by network name.
 	Endpoints map[string]*network.EndpointSettings
+
+	// EnvoyInternalIP is the Envoy container's IP on the toolhive-{name}-internal
+	// network. Populated by SetupIngress after the Envoy container is created;
+	// used by SetupTransparent to write the DNAT destination and exclusion rule.
+	EnvoyInternalIP string
+
+	// TransparentPort is the port Envoy's transparent listener binds on inside
+	// the Envoy container. Defaults to 15001 when not set.
+	// Separate from :3128 (HTTP forward proxy port).
+	TransparentPort int
 }
 
 // egressResult is the output of a successful SetupEgress call. It is passed to

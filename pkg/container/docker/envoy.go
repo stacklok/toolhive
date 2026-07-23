@@ -44,6 +44,10 @@ const (
 
 	// ingressClusterName is the cluster referenced by the ingress route config.
 	ingressClusterName = "ingress_upstream"
+
+	// defaultTransparentPort is the port Envoy's transparent listener binds on
+	// inside the Envoy container when spec.TransparentPort is not set.
+	defaultTransparentPort = 15001
 )
 
 func getEnvoyImage() string {
@@ -986,4 +990,20 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 
 	success = true
 	return ingressPort, nil
+}
+
+// SetupTransparent runs the iptables init container in the workload's network
+// namespace to redirect all outbound TCP to Envoy's transparent listener.
+// Full implementation: see runTransparentInitContainer.
+func (e *envoyProxy) SetupTransparent(ctx context.Context, spec proxySpec, workloadContainerID string) error {
+	return runTransparentInitContainer(ctx, e.client, workloadContainerID, spec.EnvoyInternalIP, transparentPort(spec))
+}
+
+// transparentPort returns the transparent listener port from the spec,
+// defaulting to defaultTransparentPort (15001).
+func transparentPort(spec proxySpec) int {
+	if spec.TransparentPort > 0 {
+		return spec.TransparentPort
+	}
+	return defaultTransparentPort
 }

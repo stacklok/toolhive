@@ -111,11 +111,13 @@ func (f *fakeDeployOps) createMcpContainer(
 
 // fakeNetworkProxy implements networkProxy for testing DeployWorkload without real proxy containers.
 type fakeNetworkProxy struct {
-	setupCalled   bool // SetupEgress was called
-	ingressCalled bool // SetupIngress was called
-	capturedSpec  proxySpec
-	ingressPort   int // returned by SetupIngress
-	err           error
+	setupCalled           bool // SetupEgress was called
+	ingressCalled         bool // SetupIngress was called
+	transparentCalled     bool
+	transparentWorkloadID string
+	capturedSpec          proxySpec
+	ingressPort           int // returned by SetupIngress
+	err                   error
 	// callOrder tracks cross-component ordering when shared with fakeDeployOps.
 	callOrder *[]string
 }
@@ -144,6 +146,12 @@ func (f *fakeNetworkProxy) SetupIngress(_ context.Context, spec proxySpec, _ egr
 		return 0, f.err
 	}
 	return f.ingressPort, nil
+}
+
+func (f *fakeNetworkProxy) SetupTransparent(_ context.Context, _ proxySpec, workloadContainerID string) error {
+	f.transparentCalled = true
+	f.transparentWorkloadID = workloadContainerID
+	return f.err
 }
 
 // newClientWithOpsAndProxy creates a minimal client with the provided ops, proxy, and a fake dockerAPI.

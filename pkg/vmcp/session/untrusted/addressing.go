@@ -146,7 +146,7 @@ func (r *podAddressResolver) resolveOne(
 
 	port, suffix, err := BackendPortAndSuffix(b.BaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("untrusted backend %q has unparseable BaseURL: %w", b.Name, err)
+		return nil, fmt.Errorf("untrusted backend %q has unparsable BaseURL: %w", b.Name, err)
 	}
 
 	pod, err := r.lifecycle.EnsurePod(ctx, EnsurePodRequest{

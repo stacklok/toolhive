@@ -59,7 +59,7 @@ const (
 
 // Platform-operator tunables (Wave-5 spec §3.1/§3.2/§4), resolved ONCE here at
 // the composition root — never hot-reloaded. Every one fails startup on an
-// unparseable/zero/negative value (fail loud).
+// unparsable/zero/negative value (fail loud).
 const (
 	// envUntrustedEnvoyImage overrides the pinned Envoy data-plane image
 	// (air-gapped mirrors).
@@ -311,7 +311,7 @@ type untrustedTunables struct {
 }
 
 // resolveUntrustedTunables reads the THV_UNTRUSTED_* env vars once. Absent
-// vars take defaults; an unparseable or non-positive value is a startup-fatal
+// vars take defaults; an unparsable or non-positive value is a startup-fatal
 // error (fail loud — a silently-defaulted quota or timeout is a misconfig the
 // operator cannot see).
 func resolveUntrustedTunables() (*untrustedTunables, error) {

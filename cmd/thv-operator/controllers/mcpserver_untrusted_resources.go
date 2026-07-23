@@ -32,7 +32,7 @@ import (
 )
 
 // Untrusted-mode wiring constants (ADR-0001 Wave 3). Resource naming is NOT
-// re-declared here: it comes from egressbroker.ResourceNamesFor /
+// redeclared here: it comes from egressbroker.ResourceNamesFor /
 // BaseCASecretName / TrimGeneration, the shared naming contract both sides of
 // the module boundary import (the vMCP side resolves the same names in
 // pkg/vmcp/session/untrusted/egress.go). Data keys come from
@@ -327,7 +327,7 @@ func (r *MCPServerReconciler) ensureUntrustedCA(ctx context.Context, m *mcpv1bet
 // currentCAMaterial selects the current CA generation from the listed
 // generation Secrets and returns its cert PEM (plus key PEM only when a fresh
 // CA was minted this pass — no Secret, or rotation due). The current
-// generation is the parseable Secret with the latest notAfter; unparseable
+// generation is the parseable Secret with the latest notAfter; unparsable
 // Secrets are ignored here (the GC pass deletes them — they match no
 // published generation).
 func currentCAMaterial(mcpserverName string, secrets []corev1.Secret) (certPEM, keyPEM []byte, err error) {

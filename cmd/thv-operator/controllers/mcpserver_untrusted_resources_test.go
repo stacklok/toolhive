@@ -265,7 +265,7 @@ func TestEnsureUntrustedResources(t *testing.T) {
 	})
 
 	//nolint:paralleltest // Swaps the package-level DNS lookup stub (restored after each ensure).
-	t.Run("unparseable CA Secret is garbage-collected and a fresh generation minted", func(t *testing.T) {
+	t.Run("unparsable CA Secret is garbage-collected and a fresh generation minted", func(t *testing.T) {
 		m := v1beta1test.NewMCPServer("github-mcp", "default", withEgressPolicy())
 		stubEgressDNS(t, githubDNS)
 		r, _ := setupUntrustedReconciler(t, m)

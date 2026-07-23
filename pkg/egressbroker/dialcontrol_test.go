@@ -72,7 +72,7 @@ func TestIPAllowlist(t *testing.T) {
 		require.Error(t, allow.DialControl("tcp", "[::ffff:10.0.0.5]:443", nil))
 	})
 
-	t.Run("unparseable target fails closed", func(t *testing.T) {
+	t.Run("unparsable target fails closed", func(t *testing.T) {
 		t.Parallel()
 		require.Error(t, allow.DialControl("tcp", "not-an-ip-literal:443", nil))
 	})

@@ -15,10 +15,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
-func untrustedTestBackend(id string) vmcp.Backend {
+func untrustedTestBackend() vmcp.Backend {
 	return vmcp.Backend{
-		ID:   id,
-		Name: id,
+		ID:   "b",
+		Name: "b",
 		Metadata: map[string]string{
 			untrusted.MetadataKeyUntrusted:    "true",
 			untrusted.MetadataKeyMCPServerUID: "uid-1",
@@ -37,7 +37,7 @@ func TestGroupHasUntrustedBackend(t *testing.T) {
 	assert.False(t, groupHasUntrustedBackend(nil), "no backends = off")
 	assert.False(t, groupHasUntrustedBackend([]vmcp.Backend{trustedTestBackend()}), "trusted-only = off")
 	assert.True(t, groupHasUntrustedBackend(
-		[]vmcp.Backend{trustedTestBackend(), untrustedTestBackend("b")}), "any untrusted = on")
+		[]vmcp.Backend{trustedTestBackend(), untrustedTestBackend()}), "any untrusted = on")
 }
 
 //nolint:paralleltest // t.Setenv modifies the process environment; subtests cannot run in parallel.
@@ -216,11 +216,13 @@ func TestResolveUntrustedTunables(t *testing.T) {
 }
 
 // TestBuildUntrustedStack_Gating pins the startup feature gate: the stack is
-// only wired when the group actually contains an untrusted backend, and the
-// hard prerequisites (Redis session storage, resolvable namespace) fail loudly
+// only wired when the group actually contains an untrusted backend AND
+// untrusted mode is enabled (TOOLHIVE_ENABLE_UNTRUSTED_MODE), and the hard
+// prerequisites (Redis session storage, resolvable namespace) fail loudly
 // rather than silently degrading.
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
 func TestBuildUntrustedStack_Gating(t *testing.T) {
-	t.Parallel()
 	ctx := t.Context()
 
 	redisCfg := &config.Config{
@@ -232,14 +234,14 @@ func TestBuildUntrustedStack_Gating(t *testing.T) {
 	}
 
 	t.Run("off when no untrusted backend (nil, no error)", func(t *testing.T) {
-		t.Parallel()
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 		bundle, err := buildUntrustedStack(ctx, redisCfg, []vmcp.Backend{trustedTestBackend()}, "toolhive", "vmcp", nil)
 		require.NoError(t, err)
 		assert.Nil(t, bundle)
 	})
 
 	t.Run("off ignores missing session storage when gate is closed", func(t *testing.T) {
-		t.Parallel()
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 		noStorage := &config.Config{Group: "g"}
 		bundle, err := buildUntrustedStack(ctx, noStorage, []vmcp.Backend{trustedTestBackend()}, "toolhive", "vmcp", nil)
 		require.NoError(t, err)
@@ -247,17 +249,42 @@ func TestBuildUntrustedStack_Gating(t *testing.T) {
 	})
 
 	t.Run("untrusted backend + non-Redis storage is a hard error", func(t *testing.T) {
-		t.Parallel()
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 		noStorage := &config.Config{Group: "g"}
-		_, err := buildUntrustedStack(ctx, noStorage, []vmcp.Backend{untrustedTestBackend("b")}, "toolhive", "vmcp", nil)
+		_, err := buildUntrustedStack(ctx, noStorage, []vmcp.Backend{untrustedTestBackend()}, "toolhive", "vmcp", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sessionStorage.provider=redis")
 	})
 
 	t.Run("untrusted backend + unresolvable namespace is a hard error", func(t *testing.T) {
-		t.Parallel()
-		_, err := buildUntrustedStack(ctx, redisCfg, []vmcp.Backend{untrustedTestBackend("b")}, "local", "vmcp", nil)
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
+		_, err := buildUntrustedStack(ctx, redisCfg, []vmcp.Backend{untrustedTestBackend()}, "local", "vmcp", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "namespace")
+	})
+
+	// The env gate is checked before any backend/prerequisite logic: with the
+	// flag off an untrusted backend must silently degrade to trusted service,
+	// not error — and must not reach the Redis prerequisite check.
+	t.Run("mode disabled returns nil even with an untrusted backend", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+		bundle, err := buildUntrustedStack(ctx, redisCfg, []vmcp.Backend{untrustedTestBackend()}, "toolhive", "vmcp", nil)
+		require.NoError(t, err)
+		assert.Nil(t, bundle)
+	})
+
+	t.Run("mode disabled by default (env unset) returns nil", func(t *testing.T) {
+		// No t.Setenv: assert the absent-env default is OFF.
+		bundle, err := buildUntrustedStack(ctx, redisCfg, []vmcp.Backend{untrustedTestBackend()}, "toolhive", "vmcp", nil)
+		require.NoError(t, err)
+		assert.Nil(t, bundle)
+	})
+
+	t.Run("mode disabled ignores every prerequisite (no error path)", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "")
+		noStorage := &config.Config{Group: "g"}
+		bundle, err := buildUntrustedStack(ctx, noStorage, []vmcp.Backend{untrustedTestBackend()}, "local", "vmcp", nil)
+		require.NoError(t, err)
+		assert.Nil(t, bundle)
 	})
 }

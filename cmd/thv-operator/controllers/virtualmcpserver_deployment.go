@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +32,7 @@ import (
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -459,6 +461,16 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	}
 	env = append(env, tokenStoreEnv...)
 
+	// Forward the operator's untrusted-mode feature flag so one chart value
+	// (operator.features.untrustedMode) controls both processes. The vMCP's
+	// own TOOLHIVE_ENABLE_UNTRUSTED_MODE gates its untrusted stack
+	// (buildUntrustedStack + the discovery metadata stamp); the operator never
+	// stamps untrusted behavior the vMCP would then act on.
+	env = append(env, corev1.EnvVar{
+		Name:  untrusted.EnvEnableUntrustedMode,
+		Value: strconv.FormatBool(untrusted.ModeEnabled()),
+	})
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }
 
@@ -477,6 +489,13 @@ func (r *VirtualMCPServerReconciler) buildUntrustedTokenStoreEnvVars(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) ([]corev1.EnvVar, error) {
+	// Untrusted mode disabled (the operator's own feature flag): the vMCP
+	// never provisions untrusted pods, so no sidecar ever consumes these
+	// coordinates — and the operator's isUntrusted gate means no backend
+	// carries untrusted-mode resources for them to reference.
+	if !untrusted.ModeEnabled() {
+		return nil, nil
+	}
 	as := vmcp.Spec.AuthServerConfig
 	if as == nil || as.Storage == nil ||
 		as.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis ||

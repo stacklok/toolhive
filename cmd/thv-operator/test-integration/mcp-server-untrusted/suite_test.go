@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -39,6 +40,14 @@ func TestMCPServerUntrusted(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// Untrusted mode is opt-in (TOOLHIVE_ENABLE_UNTRUSTED_MODE, default off);
+	// this suite exercises untrusted behavior end to end, so the operator
+	// process under test must run with the mode enabled. Ginkgo keeps the
+	// entire suite in one process, so setting the env var here (before the
+	// manager starts) is equivalent to the chart injecting it on the
+	// operator Deployment.
+	Expect(os.Setenv("TOOLHIVE_ENABLE_UNTRUSTED_MODE", "true")).To(Succeed())
+
 	untrustedSuiteEnv = testutil.StartSuite(testutil.SuiteOptions{
 		RegisterGroupRefIndexers: true,
 	})

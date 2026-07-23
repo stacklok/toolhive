@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -34,12 +35,6 @@ const (
 	metadataKeyWorkloadStatus = "workload_status"
 	metadataKeyNamespace      = "namespace"
 	metadataKeyRemoteURL      = "remote_url"
-
-	// metadataKeyUntrusted mirrors untrusted.MetadataKeyUntrusted (the untrusted
-	// session package must not be imported here; the values must stay in sync).
-	metadataKeyUntrusted = "toolhive.stacklok.dev/untrusted"
-	// metadataKeyMCPServerUID mirrors untrusted.MetadataKeyMCPServerUID.
-	metadataKeyMCPServerUID = "toolhive.stacklok.dev/mcpserver-uid"
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
@@ -294,11 +289,11 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 
 	// Mark untrusted backends for the per-session address resolver. The UID is
 	// rename-safe identity: pods/StatefulSets are keyed on it (handoff §4), so
-	// an MCPServer rename cannot strand a session pod's ownership.
-	if mcpServer.Spec.Untrusted {
-		backend.Metadata[metadataKeyUntrusted] = "true"
-		backend.Metadata[metadataKeyMCPServerUID] = string(mcpServer.UID)
-	}
+	// an MCPServer rename cannot strand a session pod's ownership. MarkBackend
+	// suppresses the stamp when untrusted mode is disabled for this process
+	// (TOOLHIVE_ENABLE_UNTRUSTED_MODE): the backend is then served through the
+	// trusted shared StatefulSet.
+	untrusted.MarkBackend(mcpServer, backend.Metadata)
 
 	// Discover and populate authentication configuration from MCPServer
 	if err := d.discoverAuthConfig(ctx, mcpServer, backend); err != nil {

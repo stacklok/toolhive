@@ -120,8 +120,14 @@ func groupHasUntrustedBackend(backends []vmcp.Backend) bool {
 
 // buildUntrustedStack wires the untrusted-mode stack for the vMCP serve path.
 //
-// It returns (nil, nil) — untrusted mode off — unless the group contains at
-// least one untrusted backend (the feature gate). When the gate is on it
+// It returns (nil, nil) — untrusted mode off — when the mode is disabled for
+// this process (untrusted.ModeEnabled, the TOOLHIVE_ENABLE_UNTRUSTED_MODE env
+// gate) or when the group contains no untrusted backend (the feature gate).
+// When the mode is disabled, untrusted backends are served through the
+// trusted multi-tenant path — their untrusted metadata stamp is already
+// suppressed at discovery (untrusted.MarkBackend), so groupHasUntrustedBackend
+// never fires for them either; the env gate here is defense-in-depth.
+// When the gate is on it
 // requires Redis-backed session storage (multi-pod admission counters and pod
 // leases are Redis state) and a resolvable vMCP namespace (untrusted mode is
 // Kubernetes-only); both are hard startup errors rather than silent
@@ -147,6 +153,9 @@ func buildUntrustedStack(
 	vmcpName string,
 	meterProvider metric.MeterProvider,
 ) (*untrustedBundle, error) {
+	if !untrusted.ModeEnabled() {
+		return nil, nil
+	}
 	if !groupHasUntrustedBackend(backends) {
 		return nil, nil
 	}

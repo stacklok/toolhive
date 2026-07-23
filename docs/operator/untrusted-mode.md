@@ -13,6 +13,22 @@ model, and the full security boundary:
 
 ## Prerequisites
 
+- **Untrusted mode is opt-in and disabled by default.** Set the operator helm
+  value `operator.features.untrustedMode: true` (this sets
+  `TOOLHIVE_ENABLE_UNTRUSTED_MODE=true` on the operator Deployment, which the
+  operator forwards to every vMCP Deployment it creates — one value controls
+  both processes). Enable it only if you accept the cost: untrusted mode runs
+  one backend pod per (user, session, untrusted MCPServer) plus Envoy/broker
+  sidecars per pod.
+  - When the flag is off, an `MCPServer` with `spec.untrusted: true` is
+    reconciled as a normal **trusted** workload: no per-session pods, no bump
+    CA, no egress-lockdown NetworkPolicy, no egress broker, and the
+    secretKeyRef backend-env gate does not apply. The operator surfaces this
+    on the `UntrustedMode` status condition (`False` /
+    `UntrustedModeDisabled`) and emits a one-shot Warning event.
+  - The CRD fields (`spec.untrusted`, `spec.egressPolicy`), CEL validation,
+    and the trusted-mode egress `NetworkPolicy` from `spec.permissionProfile`
+    work regardless of the flag.
 - A `VirtualMCPServer` fronting an `MCPGroup` (untrusted workloads must be
   group members — enforced by CEL).
 - The vMCP's embedded auth server with the upstream provider(s) configured and

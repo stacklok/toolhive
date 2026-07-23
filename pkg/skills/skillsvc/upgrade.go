@@ -52,30 +52,23 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 	}
 
 	// Resolve every target's latest state first, without installing
-	// anything. This lets --fail-on-changes be checked against the whole
-	// batch before any of it is applied — a mutating call must not upgrade
-	// some skills for real and then report a conflict, leaving a partially
-	// upgraded project with no clear signal of what happened.
+	// anything. FailOnChanges is a CI freshness gate: it reports the full
+	// planned outcome set and never runs the apply pass at all — returning
+	// the outcomes (rather than an error that discards them) lets callers
+	// see exactly which skills are stale and distinguish "would change"
+	// from a genuine resolution failure. Exit-code mapping happens in the
+	// CLI from these outcomes, mirroring how sync --check works.
 	plans := make([]upgradePlan, len(targets))
 	for i, entry := range targets {
 		plans[i] = s.planUpgrade(ctx, opts, entry)
 	}
 
-	if opts.FailOnChanges {
-		result := &skills.UpgradeResult{}
-		for _, p := range plans {
-			result.Outcomes = append(result.Outcomes, p.outcome)
-			if p.outcome.Status != skills.UpgradeStatusUpToDate && p.outcome.Status != skills.UpgradeStatusNotUpgradable {
-				return result, httperr.WithCode(
-					fmt.Errorf("skill %q would change (%s); failing due to --fail-on-changes", p.outcome.Name, p.outcome.Status),
-					http.StatusConflict,
-				)
-			}
-		}
-	}
-
-	result := &skills.UpgradeResult{}
+	result := &skills.UpgradeResult{Outcomes: make([]skills.UpgradeOutcome, 0, len(plans))}
 	for _, p := range plans {
+		if opts.FailOnChanges {
+			result.Outcomes = append(result.Outcomes, p.outcome)
+			continue
+		}
 		result.Outcomes = append(result.Outcomes, s.applyUpgrade(ctx, opts, p))
 	}
 	return result, nil
@@ -199,11 +192,12 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 
 // resolveLatestState re-resolves source (a lock entry's original Source
 // value) to its current resolvedReference and digest, using the same
-// dispatch order as Install (git, direct OCI, registry name), but stopping
-// short of extraction or any DB/lock write. For OCI sources this still pulls
-// the artifact into the local store — there is no lighter "digest only"
-// primitive in RegistryClient — matching the RFC's "preview is not
-// side-effect-free" note; git sources resolve without touching disk.
+// dispatch order as Install (git, direct OCI with registry fallback,
+// registry name), but stopping short of extraction or any DB/lock write.
+// For OCI sources this still pulls the artifact into the local store —
+// there is no lighter "digest only" primitive in RegistryClient — matching
+// the RFC's "preview is not side-effect-free" note; git sources resolve
+// without touching disk.
 func (s *service) resolveLatestState(ctx context.Context, source string) (resolvedRef, digestStr string, err error) {
 	if gitresolver.IsGitReference(source) {
 		return s.resolveGitLatest(ctx, source)
@@ -214,7 +208,24 @@ func (s *service) resolveLatestState(ctx context.Context, source string) (resolv
 		return "", "", httperr.WithCode(fmt.Errorf("invalid OCI reference %q: %w", source, err), http.StatusBadRequest)
 	}
 	if isOCI {
-		return s.resolveOCILatest(ctx, ref)
+		newRef, newDigest, ociErr := s.resolveOCILatest(ctx, ref)
+		if ociErr == nil {
+			return newRef, newDigest, nil
+		}
+		// Mirror Install's fallback: an ambiguous "namespace/name" that
+		// fails as a direct OCI pull may be a registry catalogue name — the
+		// path the skill was originally installed through. Without this
+		// branch, a skill that installs cleanly via the registry fallback
+		// could never be upgraded (its source fails the direct pull exactly
+		// as it did at install time).
+		if isUnambiguousOCIRef(source, ref) {
+			return "", "", ociErr
+		}
+		resolved, regErr := s.resolveFromRegistry(source)
+		if regErr != nil || resolved == nil {
+			return "", "", ociErr
+		}
+		return s.resolveRegistryLatest(ctx, source, resolved)
 	}
 
 	resolved, regErr := s.resolveFromRegistry(source)
@@ -224,6 +235,14 @@ func (s *service) resolveLatestState(ctx context.Context, source string) (resolv
 	if resolved == nil {
 		return "", "", httperr.WithCode(fmt.Errorf("skill %q not found in registry", source), http.StatusNotFound)
 	}
+	return s.resolveRegistryLatest(ctx, source, resolved)
+}
+
+// resolveRegistryLatest resolves the latest state of a registry catalogue
+// result, dispatching to the OCI or git resolver it points at.
+func (s *service) resolveRegistryLatest(
+	ctx context.Context, source string, resolved *registryResolveResult,
+) (string, string, error) {
 	switch {
 	case resolved.OCIRef != nil:
 		return s.resolveOCILatest(ctx, resolved.OCIRef)
@@ -259,5 +278,10 @@ func (s *service) resolveOCILatest(ctx context.Context, ref nameref.Reference) (
 	if err != nil {
 		return "", "", httperr.WithCode(fmt.Errorf("pulling %q: %w", ref.String(), err), classifyPullError(err))
 	}
-	return ref.String(), d.String(), nil
+	// qualifiedOCIRef, not ref.String(): install records the qualified form
+	// (implicit ":latest" made explicit) in ResolvedReference, and this value
+	// is compared against it for the ref-change guard. The unqualified form
+	// would misreport every digest change on a tag-less source as a blocked
+	// reference change.
+	return qualifiedOCIRef(ref), d.String(), nil
 }

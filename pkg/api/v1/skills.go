@@ -419,7 +419,9 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 }
 
 // upgradeSkills re-resolves a project's lock entries and installs newer
-// content where available.
+// content where available. With fail_on_changes set, it evaluates the plan
+// and returns the outcomes without installing anything — clients derive the
+// freshness verdict from the outcome statuses, mirroring sync's check mode.
 //
 //	@Summary		Upgrade project skills
 //	@Description	Re-resolve a project's lock entries and install newer content where available
@@ -431,7 +433,6 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		403		{string}	string	"Forbidden (feature not enabled)"
 //	@Failure		404		{string}	string	"Not Found (a requested name is not in the lock file)"
-//	@Failure		409		{string}	string	"Conflict (--fail-on-changes tripped)"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Failure		501		{string}	string	"Not Implemented"
 //	@Router			/api/v1beta/skills/upgrade [post]

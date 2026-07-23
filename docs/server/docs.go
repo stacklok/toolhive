@@ -6626,16 +6626,6 @@ const docTemplate = `{
                         },
                         "description": "Not Found (a requested name is not in the lock file)"
                     },
-                    "409": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "description": "Conflict (--fail-on-changes tripped)"
-                    },
                     "500": {
                         "content": {
                             "application/json": {

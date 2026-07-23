@@ -178,8 +178,14 @@ func TestUpgrade_UnknownNameReturnsNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, httperr.Code(err))
 }
 
+// TestUpgrade_FailOnChangesReportsOutcomesWithoutError: the gate returns
+// the full outcome set with a 200 rather than an error — callers (and the
+// CLI's exit-code mapping) derive the freshness verdict from the outcomes,
+// which also distinguishes "would change" from a genuine resolution
+// failure and names the stale skills.
+//
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestUpgrade_FailOnChangesWithPreviewReportsConflictWithoutWriting(t *testing.T) {
+func TestUpgrade_FailOnChangesReportsOutcomesWithoutError(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
 	fx.register("my-skill", gitSkill("my-skill"))
 	svc, projectRoot := newLockTestService(t, gr)
@@ -192,11 +198,13 @@ func TestUpgrade_FailOnChangesWithPreviewReportsConflictWithoutWriting(t *testin
 
 	fx.register("my-skill", gitSkillVersion("my-skill"))
 
-	_, err = svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
-		ProjectRoot: projectRoot, Preview: true, FailOnChanges: true,
+	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
+		ProjectRoot: projectRoot, FailOnChanges: true,
 	})
-	require.Error(t, err)
-	assert.Equal(t, http.StatusConflict, httperr.Code(err))
+	require.NoError(t, err, "fail-on-changes reports outcomes, it does not error")
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status,
+		"the outcome reports what would change so callers can name the stale skill")
 }
 
 // TestUpgrade_FailOnChangesWithoutPreviewDoesNotMutateAnyEntry covers the
@@ -232,11 +240,11 @@ func TestUpgrade_FailOnChangesWithoutPreviewDoesNotMutateAnyEntry(t *testing.T) 
 	// Republish newer content for only one of the two skills.
 	fx.register("changed-skill", gitSkillVersion("changed-skill"))
 
-	_, err = svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
+	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
 		ProjectRoot: projectRoot, FailOnChanges: true,
 	})
-	require.Error(t, err)
-	assert.Equal(t, http.StatusConflict, httperr.Code(err))
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 2)
 
 	after := readLockfile(t, projectRoot)
 	changedAfter, ok := after.Get("changed-skill")

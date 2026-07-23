@@ -19,9 +19,12 @@ Re-resolve a project's lock entries and install newer content where available.
 
 Skills pinned to an immutable reference (an OCI digest or a full git commit
 hash) are reported not-upgradable — there is nothing newer to resolve to.
-Use --preview to see what would change without installing, and
---allow-ref-change to permit the resolved reference itself changing (e.g. a
-registry entry repointed at a different repository).
+Use --preview to see what would change without persisting anything (OCI
+sources are still fetched into the local artifact store to compare digests),
+and --allow-ref-change to permit the resolved reference itself changing
+(e.g. a registry entry repointed at a different repository).
+--fail-on-changes evaluates the same plan and never installs: it is a CI
+freshness gate.
 
 ```
 thv skill upgrade [skill-name...] [flags]
@@ -32,10 +35,10 @@ thv skill upgrade [skill-name...] [flags]
 ```
       --allow-ref-change      Permit the resolved reference itself to change during upgrade
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
-      --fail-on-changes       Exit with an error if any skill would change (a CI freshness gate)
+      --fail-on-changes       Report what would change without installing anything; a CI freshness gate
       --format string         Output format (json, text) (default "text")
   -h, --help                  help for upgrade
-      --preview               Report what would change without installing anything
+      --preview               Report what would change without persisting anything (OCI sources are still fetched to compare digests)
       --project-root string   Project root path (default: auto-detected from the current directory)
 ```
 

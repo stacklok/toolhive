@@ -3,7 +3,19 @@
 # List scenario names here that are KNOWN to fail and accepted. The suite fails
 # CI only on failures NOT listed here. Note: an entry that starts passing again
 # is reported as a STALE entry and also fails CI — keep this list accurate.
-#
-# The CLI proxy is transport-transparent, so this list is empty: every scenario
-# in the `active` suite is expected to pass.
-server: []
+server:
+  # Server-INITIATED requests (elicitation/sampling) cannot be delivered
+  # correctly over the shared single-backend `thv run` proxy. The backend
+  # multiplexes every downstream session onto one MCP connection and emits
+  # elicitation/create with no session attribution, so the proxy cannot know
+  # which client should answer; forwarding it would be a guess and a
+  # cross-session hazard (one client could answer another's elicitation). The
+  # proxy therefore refuses it securely with JSON-RPC -32601 rather than
+  # mis-delivering (see pkg/transport/proxy/streamable/dispatcher.go). Correct
+  # support requires per-session backend connections — the vMCP deployment
+  # model, which forwards elicitation/sampling per session (see
+  # expected-failures-vmcp.yaml). Tracked as a #5744 follow-up.
+  #
+  # NOTE: tools-call-sampling is handled separately (flaky-ignored, #5888) and
+  # is deliberately NOT listed here.
+  - tools-call-elicitation

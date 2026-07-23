@@ -19,6 +19,12 @@ const (
 
 	// ConditionPodTemplateValid indicates whether the PodTemplateSpec is valid
 	ConditionPodTemplateValid = "PodTemplateValid"
+
+	// ConditionTypeUntrustedMode reports the effective untrusted-mode posture
+	// when spec.untrusted is true: "false" with ReasonUntrustedModeDisabled
+	// when the operator runs with TOOLHIVE_ENABLE_UNTRUSTED_MODE off (the
+	// workload is reconciled as trusted), "true" otherwise.
+	ConditionTypeUntrustedMode = "UntrustedMode"
 )
 
 const (
@@ -65,6 +71,18 @@ const (
 	// ConditionReasonNotReady so operators can tell "fix the spec" apart from
 	// "wait for convergence".
 	ConditionReasonUntrustedPolicyInvalid = "UntrustedEgressPolicyInvalid"
+
+	// ConditionReasonUntrustedModeDisabled indicates spec.untrusted is true but
+	// the operator runs with untrusted mode disabled
+	// (TOOLHIVE_ENABLE_UNTRUSTED_MODE unset/false): the workload is reconciled
+	// as a normal trusted workload — no per-session pods, no egress broker,
+	// and secretKeyRef backend env is admitted.
+	ConditionReasonUntrustedModeDisabled = "UntrustedModeDisabled"
+
+	// ConditionReasonUntrustedModeEnabled indicates spec.untrusted is true and
+	// the operator runs with untrusted mode enabled; the workload gets the
+	// full single-tenant data plane.
+	ConditionReasonUntrustedModeEnabled = "UntrustedModeEnabled"
 
 	// ConditionReasonPermissionProfileInvalid indicates a terminal rejection of
 	// a trusted workload's spec.permissionProfile for egress NetworkPolicy

@@ -8,6 +8,16 @@ operator:
   features:
     # -- Enable experimental features
     experimental: false
+    # -- Enable untrusted single-tenant MCP server mode (one backend pod per
+    # (user, session, untrusted MCPServer) with an egress-broker data plane).
+    # Disabled by default: the per-user pod-per-session tenancy model carries
+    # a significant resource cost, so only operators who accept that cost and
+    # risk should enable it. When disabled, MCPServers with spec.untrusted=true
+    # are reconciled as normal trusted workloads and an UntrustedMode status
+    # condition plus a Warning event surface the degradation. Sets
+    # TOOLHIVE_ENABLE_UNTRUSTED_MODE on the operator deployment, which the
+    # operator forwards to every vMCP Deployment it creates.
+    untrustedMode: false
     # -- Enable the StorageVersionMigrator controller, which auto-cleans
     # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
     # future release can drop deprecated versions (e.g. v1alpha1) without

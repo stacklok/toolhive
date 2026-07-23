@@ -156,6 +156,17 @@ pod template.
 user touches. 100 users each driving 3 untrusted servers = 300 pods. This is
 the deliberate cost of attribution (ADR D2): pod identity *is* user identity.
 
+**Opt-in gate.** Because of that cost, untrusted mode ships **disabled by
+default**: the operator helm value `operator.features.untrustedMode` (default
+`false`) sets `TOOLHIVE_ENABLE_UNTRUSTED_MODE` on the operator Deployment, and
+the operator forwards its own value to every vMCP Deployment it creates — one
+value controls both processes. With the flag off, `spec.untrusted: true` is
+reconciled as a trusted workload (no per-session pods, no bump CA, no egress
+lockdown, no egress broker, no secretKeyRef gate) and the operator reports the
+degradation on the MCPServer's `UntrustedMode` status condition plus a Warning
+event. The CRD fields, CEL validation, and the trusted-mode egress
+NetworkPolicy from `spec.permissionProfile` work regardless of the flag.
+
 **Caps** (admission gate, all fail closed when Redis is unreachable):
 
 | Control | Default | Tunable |

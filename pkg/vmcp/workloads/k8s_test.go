@@ -19,6 +19,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 const testNamespace = "test-namespace"
@@ -376,12 +377,11 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
 
+//nolint:paralleltest // Subtests use t.Setenv (env mutation serializes them).
 func TestMCPServerToBackend_UntrustedMetadata(t *testing.T) {
-	t.Parallel()
-
 	namespace := testNamespace
 
-	newServer := func(untrusted bool) *mcpv1beta1.MCPServer {
+	newServer := func(untrustedFlag bool) *mcpv1beta1.MCPServer {
 		return &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-server",
@@ -392,7 +392,7 @@ func TestMCPServerToBackend_UntrustedMetadata(t *testing.T) {
 				Image:     "test-image:latest",
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				Untrusted: untrusted,
+				Untrusted: untrustedFlag,
 			},
 			Status: mcpv1beta1.MCPServerStatus{
 				Phase: mcpv1beta1.MCPServerPhaseReady,
@@ -401,8 +401,9 @@ func TestMCPServerToBackend_UntrustedMetadata(t *testing.T) {
 		}
 	}
 
-	t.Run("untrusted server is marked with UID", func(t *testing.T) {
-		t.Parallel()
+	//nolint:paralleltest // t.Setenv modifies the process environment.
+	t.Run("untrusted server is marked with UID when the mode is enabled", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 		srv := newServer(true)
 		discoverer := NewK8SDiscovererWithClient(setupTestClient(t, srv), namespace).(*k8sDiscoverer)
 		backend := discoverer.mcpServerToBackend(context.Background(), srv)
@@ -411,8 +412,20 @@ func TestMCPServerToBackend_UntrustedMetadata(t *testing.T) {
 		assert.Equal(t, "uid-abc-123", backend.Metadata["toolhive.stacklok.dev/mcpserver-uid"])
 	})
 
+	//nolint:paralleltest // t.Setenv modifies the process environment.
+	t.Run("untrusted server carries no untrusted metadata when the mode is disabled", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+		srv := newServer(true)
+		discoverer := NewK8SDiscovererWithClient(setupTestClient(t, srv), namespace).(*k8sDiscoverer)
+		backend := discoverer.mcpServerToBackend(context.Background(), srv)
+		require.NotNil(t, backend)
+		_, hasUntrusted := backend.Metadata["toolhive.stacklok.dev/untrusted"]
+		_, hasUID := backend.Metadata["toolhive.stacklok.dev/mcpserver-uid"]
+		assert.False(t, hasUntrusted, "flag-off untrusted servers are served as trusted: no untrusted stamp")
+		assert.False(t, hasUID)
+	})
+
 	t.Run("trusted server carries no untrusted metadata", func(t *testing.T) {
-		t.Parallel()
 		srv := newServer(false)
 		discoverer := NewK8SDiscovererWithClient(setupTestClient(t, srv), namespace).(*k8sDiscoverer)
 		backend := discoverer.mcpServerToBackend(context.Background(), srv)

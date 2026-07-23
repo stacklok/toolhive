@@ -29,11 +29,17 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 // withUntrustedSpec marks the MCPServer fixture as untrusted via the
-// Wave-1 spec.untrusted field.
-func withUntrustedSpec() v1beta1test.MCPServerOption {
+// Wave-1 spec.untrusted field and enables untrusted mode for the test
+// process (TOOLHIVE_ENABLE_UNTRUSTED_MODE) — the mode is opt-in and
+// isUntrusted requires both, so untrusted fixtures must also flip the flag.
+// t.Setenv auto-restores, but it serializes the calling test (no t.Parallel).
+func withUntrustedSpec(t *testing.T) v1beta1test.MCPServerOption {
+	t.Helper()
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 	return func(m *mcpv1beta1.MCPServer) {
 		m.Spec.Untrusted = true
 	}
@@ -41,10 +47,13 @@ func withUntrustedSpec() v1beta1test.MCPServerOption {
 
 // withUntrustedCompliantPolicy adds a minimal valid EgressPolicy (hostname
 // destination; reconcile-path tests stub untrustedDNSLookup so no real DNS
-// resolution happens). Wave 3: untrusted servers without an EgressPolicy
-// terminate at the egress-resource gate, so fixtures that must proceed down
-// the normal reconcile path need this.
-func withUntrustedCompliantPolicy() v1beta1test.MCPServerOption {
+// resolution happens) and enables untrusted mode for the test. Wave 3:
+// untrusted servers without an EgressPolicy terminate at the egress-resource
+// gate, so fixtures that must proceed down the normal reconcile path need
+// this.
+func withUntrustedCompliantPolicy(t *testing.T) v1beta1test.MCPServerOption {
+	t.Helper()
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 	return v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 		m.Spec.Untrusted = true
 		m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{
@@ -62,18 +71,39 @@ func withSecrets(secrets ...mcpv1beta1.SecretRef) v1beta1test.MCPServerOption {
 	}
 }
 
-// TestIsUntrusted pins the Wave-1 body of isUntrusted: it reads spec.untrusted
-// and nothing else — in particular the interim Wave-0 annotation is inert.
+// TestIsUntrusted pins the isUntrusted gate: spec.untrusted AND the
+// TOOLHIVE_ENABLE_UNTRUSTED_MODE env flag must both be on — the mode is
+// opt-in, so the spec field alone is inert while the operator runs with the
+// mode disabled. The interim Wave-0 annotation is inert either way.
+// t.Setenv serializes the subtests (no t.Parallel).
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
 func TestIsUntrusted(t *testing.T) {
-	t.Parallel()
+	t.Run("mode enabled", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
-	assert.False(t, isUntrusted(v1beta1test.NewMCPServer("plain", "default")))
-	assert.True(t, isUntrusted(v1beta1test.NewMCPServer("flagged", "default", withUntrustedSpec())))
+		assert.False(t, isUntrusted(v1beta1test.NewMCPServer("plain", "default")))
+		assert.True(t, isUntrusted(v1beta1test.NewMCPServer("flagged", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))))
 
-	annotated := v1beta1test.NewMCPServer("annotated", "default", v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-		m.Annotations = map[string]string{"toolhive.stacklok.dev/untrusted": "true"}
-	}))
-	assert.False(t, isUntrusted(annotated), "the interim Wave-0 annotation must have no effect in Wave 1")
+		annotated := v1beta1test.NewMCPServer("annotated", "default", v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Annotations = map[string]string{"toolhive.stacklok.dev/untrusted": "true"}
+		}))
+		assert.False(t, isUntrusted(annotated), "the interim Wave-0 annotation must have no effect")
+	})
+
+	t.Run("mode disabled treats spec.untrusted=true as trusted", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+		assert.False(t, isUntrusted(v1beta1test.NewMCPServer("flagged", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))))
+	})
+
+	t.Run("mode unset defaults to disabled", func(t *testing.T) {
+		// No t.Setenv: the absent-env default is OFF.
+		assert.False(t, untrusted.ModeEnabled(), "fixture precondition: the env var must be unset")
+		assert.False(t, isUntrusted(v1beta1test.NewMCPServer("flagged", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))))
+	})
 }
 
 // setupUntrustedReconciler builds a fake-client-backed reconciler for the
@@ -134,11 +164,10 @@ func stubUntrustedDNSOnce(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // withUntrustedSpec calls t.Setenv (serializes the test).
 func TestMCPServerReconciler_UntrustedSecretEnvRejected(t *testing.T) {
-	t.Parallel()
-
 	mcpServer := v1beta1test.NewMCPServer("untrusted-secrets", "default",
-		withUntrustedSpec(),
+		withUntrustedSpec(t),
 		withSecrets(mcpv1beta1.SecretRef{Name: "backend-creds", Key: "token", TargetEnvName: "API_TOKEN"}),
 	)
 
@@ -252,12 +281,11 @@ func TestMCPServerReconciler_InterimAnnotationIsInert(t *testing.T) {
 		"annotated-but-trusted reconcile should continue down the normal path")
 }
 
+//nolint:paralleltest // withUntrustedSpec calls t.Setenv (serializes the test).
 func TestMCPServerReconciler_UntrustedRawTemplateSecretEnvRejected(t *testing.T) {
-	t.Parallel()
-
 	// #13: spec.untrusted + raw podTemplateSpec smuggling secretKeyRef onto the mcp container.
 	mcpServer := v1beta1test.NewMCPServer("untrusted-raw-template", "default",
-		withUntrustedSpec(),
+		withUntrustedSpec(t),
 		v1beta1test.WithPodTemplateSpec(&runtime.RawExtension{
 			Raw: []byte(`{"spec":{"containers":[{"name":"mcp","env":[{"name":"API_TOKEN","valueFrom":{"secretKeyRef":{"name":"smuggled-secret","key":"token"}}}]}]}}`),
 		}),
@@ -283,13 +311,12 @@ func TestMCPServerReconciler_UntrustedRawTemplateSecretEnvRejected(t *testing.T)
 	}, 2*time.Second, 10*time.Millisecond, "expected one Warning event on the invalid transition")
 }
 
+//nolint:paralleltest // withUntrustedCompliantPolicy calls t.Setenv (serializes the test).
 func TestMCPServerReconciler_UntrustedCompliantDeploys(t *testing.T) {
-	t.Parallel()
-
 	// #15: untrusted but compliant (literal env only) —
 	// the gate passes and the reconcile proceeds normally.
 	mcpServer := v1beta1test.NewMCPServer("untrusted-compliant", "default",
-		withUntrustedCompliantPolicy(),
+		withUntrustedCompliantPolicy(t),
 		v1beta1test.WithEnv(mcpv1beta1.EnvVar{Name: "SENTINEL", Value: "literal-value"}),
 		v1beta1test.WithPodTemplateSpec(&runtime.RawExtension{
 			Raw: []byte(`{"spec":{"containers":[{"name":"mcp","env":[{"name":"LITERAL","value":"ok"}]}]}}`),
@@ -318,14 +345,14 @@ func TestMCPServerReconciler_UntrustedCompliantDeploys(t *testing.T) {
 //  3. Re-breaking the spec latches Valid=False again AND the one-shot Warning
 //     fires a second time — proving the pass path genuinely un-poisons the
 //     latch instead of leaving the workload permanently silenced.
+//
+//nolint:paralleltest // withUntrustedCompliantPolicy calls t.Setenv (serializes the test).
 func TestMCPServerReconciler_UntrustedLatchClearsAndWarningReArms(t *testing.T) {
-	t.Parallel()
-
 	ctx := log.IntoContext(t.Context(), log.Log)
 
 	// Start REJECTED: untrusted + spec.secrets.
 	mcpServer := v1beta1test.NewMCPServer("untrusted-latch", "default",
-		withUntrustedCompliantPolicy(),
+		withUntrustedCompliantPolicy(t),
 		withSecrets(mcpv1beta1.SecretRef{Name: "backend-creds", Key: "token", TargetEnvName: "API_TOKEN"}),
 	)
 	r, recorder := setupUntrustedReconciler(t, mcpServer)
@@ -373,13 +400,12 @@ func TestMCPServerReconciler_UntrustedLatchClearsAndWarningReArms(t *testing.T) 
 		"the Warning must fire on the second invalid transition (latch-poisoning case)")
 }
 
+//nolint:paralleltest // withUntrustedSpec calls t.Setenv (serializes the test).
 func TestDeploymentForMCPServer_UntrustedSecretEnvRejectedAtBuildTime(t *testing.T) {
-	t.Parallel()
-
 	// Defense-in-depth: deploymentForMCPServer itself rejects the built patch
 	// for untrusted workloads (spec.secrets seam)...
 	mcpServer := v1beta1test.NewMCPServer("untrusted-build-gate", "default",
-		withUntrustedSpec(),
+		withUntrustedSpec(t),
 		withSecrets(mcpv1beta1.SecretRef{Name: "backend-creds", Key: "token", TargetEnvName: "API_TOKEN"}),
 	)
 
@@ -411,11 +437,11 @@ func TestDeploymentForMCPServer_UntrustedSecretEnvRejectedAtBuildTime(t *testing
 // seam in deploymentForMCPServer: for an untrusted workload with a declared
 // credentialEnvName, the --k8s-pod-patch argument carries the literal sentinel
 // env var on the mcp container, and the pod patch still passes the Wave-0 gate.
+//
+//nolint:paralleltest // withUntrustedSpec calls t.Setenv (serializes the test).
 func TestDeploymentForMCPServer_UntrustedSentinelInjection(t *testing.T) {
-	t.Parallel()
-
 	mcpServer := v1beta1test.NewMCPServer("untrusted-sentinel", "default",
-		withUntrustedSpec(),
+		withUntrustedSpec(t),
 		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 			m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{Providers: []mcpv1beta1.ProviderEgress{{
 				Provider:          "github",
@@ -446,11 +472,11 @@ func TestDeploymentForMCPServer_UntrustedSentinelInjection(t *testing.T) {
 
 // TestDeploymentForMCPServer_UntrustedSentinelCollision pins the terminal rejection
 // when a declared credentialEnvName collides with user-declared env.
+//
+//nolint:paralleltest // withUntrustedSpec calls t.Setenv (serializes the test).
 func TestDeploymentForMCPServer_UntrustedSentinelCollision(t *testing.T) {
-	t.Parallel()
-
 	mcpServer := v1beta1test.NewMCPServer("untrusted-collision", "default",
-		withUntrustedSpec(),
+		withUntrustedSpec(t),
 		v1beta1test.WithEnv(mcpv1beta1.EnvVar{Name: "GITHUB_TOKEN", Value: "user-value"}),
 		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 			m.Spec.PodTemplateSpec = &runtime.RawExtension{
@@ -478,11 +504,11 @@ func TestDeploymentForMCPServer_UntrustedSentinelCollision(t *testing.T) {
 
 // TestDeploymentForMCPServer_UntrustedSentinelForgery pins the terminal rejection
 // of a user-forged sentinel literal in the raw pod template.
+//
+//nolint:paralleltest // withUntrustedSpec calls t.Setenv (serializes the test).
 func TestDeploymentForMCPServer_UntrustedSentinelForgery(t *testing.T) {
-	t.Parallel()
-
 	mcpServer := v1beta1test.NewMCPServer("untrusted-forgery", "default",
-		withUntrustedSpec(),
+		withUntrustedSpec(t),
 		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 			m.Spec.PodTemplateSpec = &runtime.RawExtension{
 				Raw: []byte(`{"spec":{"containers":[{"name":"mcp","env":[{"name":"FORGED","value":"thv-untrusted-sentinel:attacker"}]}]}}`),
@@ -562,8 +588,12 @@ func podPatchFromDeployment(t *testing.T, deployment *appsv1.Deployment) *corev1
 // has no fronting VirtualMCPServer gets GroupRefValidated=False with the
 // dedicated reason; the same workload reports valid once a vMCP fronts the
 // group. Trusted workloads in the same un-fronted group are unaffected.
+//
+//nolint:paralleltest // t.Setenv at the parent serializes the subtests' env view.
 func TestMCPServerReconciler_UntrustedGroupRefNotVMCPFronted(t *testing.T) {
-	t.Parallel()
+	// Untrusted mode must be ON for the untrusted groupRef check to arm; set it
+	// once for the whole test (parent-level t.Setenv covers all subtests).
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
 	readyGroup := func(name string) *mcpv1beta1.MCPGroup {
 		return &mcpv1beta1.MCPGroup{
@@ -573,15 +603,21 @@ func TestMCPServerReconciler_UntrustedGroupRefNotVMCPFronted(t *testing.T) {
 	}
 	untrustedInGroup := func(name, group string) *mcpv1beta1.MCPServer {
 		return v1beta1test.NewMCPServer(name, "default",
-			withUntrustedCompliantPolicy(),
 			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				m.Spec.Untrusted = true
+				m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{
+					Providers: []mcpv1beta1.ProviderEgress{{
+						Provider:     "github",
+						AllowedHosts: []string{"api.github.com"},
+					}},
+				}
 				m.Spec.GroupRef = &mcpv1beta1.MCPGroupRef{Name: group}
 			}),
 		)
 	}
 
 	t.Run("untrusted workload in an un-fronted group gets the dedicated condition", func(t *testing.T) {
-		t.Parallel()
+
 		group := readyGroup("lonely-group")
 		mcpServer := untrustedInGroup("untrusted-no-front", "lonely-group")
 		r, _ := setupUntrustedReconciler(t, group, mcpServer)
@@ -599,7 +635,7 @@ func TestMCPServerReconciler_UntrustedGroupRefNotVMCPFronted(t *testing.T) {
 	})
 
 	t.Run("untrusted workload in a vMCP-fronted group validates", func(t *testing.T) {
-		t.Parallel()
+
 		group := readyGroup("fronted-group")
 		vmcp := v1beta1test.NewVirtualMCPServer("front", "default", v1beta1test.WithVMCPGroupRef("fronted-group"))
 		mcpServer := untrustedInGroup("untrusted-fronted", "fronted-group")
@@ -616,7 +652,7 @@ func TestMCPServerReconciler_UntrustedGroupRefNotVMCPFronted(t *testing.T) {
 	})
 
 	t.Run("trusted workload in an un-fronted group is unaffected", func(t *testing.T) {
-		t.Parallel()
+
 		group := readyGroup("trusted-group")
 		mcpServer := v1beta1test.NewMCPServer("trusted-no-front", "default",
 			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
@@ -633,5 +669,189 @@ func TestMCPServerReconciler_UntrustedGroupRefNotVMCPFronted(t *testing.T) {
 		require.NotNil(t, condition)
 		assert.Equal(t, metav1.ConditionTrue, condition.Status,
 			"the vMCP-front requirement applies to untrusted workloads only")
+	})
+}
+
+// TestMCPServerReconciler_UntrustedModeDisabledReconcilesAsTrusted pins the
+// feature-flag behavior: with TOOLHIVE_ENABLE_UNTRUSTED_MODE off, a
+// spec.untrusted=true workload reconciles as a normal trusted workload — the
+// secretKeyRef env gate does NOT fire, no untrusted data-plane resources are
+// created — and the degradation is surfaced on the UntrustedMode condition
+// (False/UntrustedModeDisabled) plus a one-shot Warning event.
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
+func TestMCPServerReconciler_UntrustedModeDisabledReconcilesAsTrusted(t *testing.T) {
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+
+	mcpServer := v1beta1test.NewMCPServer("untrusted-flag-off", "default",
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.Untrusted = true
+			m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{
+				Providers: []mcpv1beta1.ProviderEgress{{
+					Provider:     "github",
+					AllowedHosts: []string{"api.github.com"},
+				}},
+			}
+		}),
+		withSecrets(mcpv1beta1.SecretRef{Name: "backend-creds", Key: "token", TargetEnvName: "API_TOKEN"}),
+	)
+
+	r, recorder := setupUntrustedReconciler(t, mcpServer)
+
+	// The reconcile must continue down the normal trusted path (requeue waiting
+	// on the runconfig ConfigMap) — it must NOT fail the workload.
+	result := reconcileOnce(t, r, mcpServer)
+	assert.False(t, result.IsZero(), "flag-off untrusted workload must reconcile as trusted, not terminate")
+
+	updated := &mcpv1beta1.MCPServer{}
+	require.NoError(t, r.Get(t.Context(), client.ObjectKeyFromObject(mcpServer), updated))
+
+	// The secretKeyRef gate must NOT have fired: the flag-off workload is
+	// trusted and trusted workloads may source backend env from Secrets.
+	assert.Nil(t, meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid),
+		"the untrusted env gate must not arm while the mode is disabled")
+	assert.NotEqual(t, mcpv1beta1.MCPServerPhaseFailed, updated.Status.Phase)
+
+	// The degradation is surfaced on the UntrustedMode condition.
+	cond := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeUntrustedMode)
+	require.NotNil(t, cond, "UntrustedMode condition must be set")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUntrustedModeDisabled, cond.Reason)
+	assert.Equal(t, updated.Generation, cond.ObservedGeneration)
+	assert.Contains(t, cond.Message, untrusted.EnvEnableUntrustedMode)
+
+	// ...and with a one-shot Warning event on the transition.
+	require.Eventually(t, func() bool {
+		return countContaining(drainEvents(recorder), mcpv1beta1.ConditionReasonUntrustedModeDisabled) == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected one Warning event on the disabled transition")
+
+	// No untrusted data-plane resources may exist (the ensure call deletes them).
+	assert.Empty(t, listCASecrets(t, r, mcpServer), "no bump CA Secrets may be created while the mode is disabled")
+
+	// Idempotency: a second reconcile must not churn the condition or re-fire
+	// the event.
+	result = reconcileOnce(t, r, mcpServer)
+	afterSecond := &mcpv1beta1.MCPServer{}
+	require.NoError(t, r.Get(t.Context(), client.ObjectKeyFromObject(mcpServer), afterSecond))
+	condAfter := meta.FindStatusCondition(afterSecond.Status.Conditions, mcpv1beta1.ConditionTypeUntrustedMode)
+	require.NotNil(t, condAfter)
+	assert.Equal(t, *cond, *condAfter, "UntrustedMode condition must not churn on re-observe")
+	assert.False(t, result.IsZero())
+	time.Sleep(50 * time.Millisecond) // let any async event emission settle
+	assert.Empty(t, drainEvents(recorder), "no event expected while the mode stays disabled")
+}
+
+// TestMCPServerReconciler_UntrustedModeDisabledSentinelsNotInjected pins that
+// flag-off untrusted workloads build a Deployment without sentinel env: the
+// sentinel seam keys on isUntrusted, which is false while the mode is off.
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
+func TestMCPServerReconciler_UntrustedModeDisabledSentinelsNotInjected(t *testing.T) {
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+
+	mcpServer := v1beta1test.NewMCPServer("untrusted-flag-off-build", "default",
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.Untrusted = true
+			m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{Providers: []mcpv1beta1.ProviderEgress{{
+				Provider:          "github",
+				AllowedHosts:      []string{"api.github.com"},
+				CredentialEnvName: "GITHUB_TOKEN",
+			}}}
+		}),
+	)
+
+	r, _ := setupUntrustedReconciler(t, mcpServer)
+	ctx := log.IntoContext(t.Context(), log.Log)
+
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	patch := podPatchFromDeployment(t, deployment)
+	for _, c := range patch.Spec.Containers {
+		for _, env := range c.Env {
+			assert.NotContains(t, env.Value, "thv-untrusted-sentinel:",
+				"flag-off untrusted workloads must never receive sentinel env")
+		}
+	}
+}
+
+// TestMCPServerReconciler_SurfaceUntrustedModeConditionLifecycle pins the
+// condition lifecycle independent of the reconcile path: enabled → True,
+// disabled → False + Warning, spec.untrusted=false → cleared.
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
+func TestMCPServerReconciler_SurfaceUntrustedModeConditionLifecycle(t *testing.T) {
+	ctx := log.IntoContext(t.Context(), log.Log)
+
+	find := func(r *MCPServerReconciler, key client.ObjectKey) *metav1.Condition {
+		m := &mcpv1beta1.MCPServer{}
+		require.NoError(t, r.Get(ctx, key, m))
+		return meta.FindStatusCondition(m.Status.Conditions, mcpv1beta1.ConditionTypeUntrustedMode)
+	}
+
+	t.Run("enabled reports True", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
+		mcpServer := v1beta1test.NewMCPServer("mode-on", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))
+		r, recorder := setupUntrustedReconciler(t, mcpServer)
+
+		r.surfaceUntrustedModeCondition(ctx, mcpServer)
+
+		cond := find(r, client.ObjectKeyFromObject(mcpServer))
+		require.NotNil(t, cond)
+		assert.Equal(t, metav1.ConditionTrue, cond.Status)
+		assert.Equal(t, mcpv1beta1.ConditionReasonUntrustedModeEnabled, cond.Reason)
+		time.Sleep(50 * time.Millisecond)
+		assert.Empty(t, drainEvents(recorder), "no Warning when the mode is enabled")
+	})
+
+	t.Run("spec.untrusted=false clears the condition", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+		mcpServer := v1beta1test.NewMCPServer("mode-cleared", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))
+		r, _ := setupUntrustedReconciler(t, mcpServer)
+
+		r.surfaceUntrustedModeCondition(ctx, mcpServer)
+		require.NotNil(t, find(r, client.ObjectKeyFromObject(mcpServer)), "precondition: condition latched")
+
+		// Flip to trusted; the condition must be removed.
+		current := &mcpv1beta1.MCPServer{}
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(mcpServer), current))
+		current.Spec.Untrusted = false
+		require.NoError(t, r.Update(ctx, current))
+		r.surfaceUntrustedModeCondition(ctx, current)
+
+		assert.Nil(t, find(r, client.ObjectKeyFromObject(mcpServer)),
+			"UntrustedMode condition must clear when spec.untrusted flips to false")
+	})
+
+	t.Run("warning re-arms after the condition clears", func(t *testing.T) {
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+		mcpServer := v1beta1test.NewMCPServer("mode-rearm", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))
+		r, recorder := setupUntrustedReconciler(t, mcpServer)
+
+		r.surfaceUntrustedModeCondition(ctx, mcpServer)
+		require.Eventually(t, func() bool {
+			return countContaining(drainEvents(recorder), mcpv1beta1.ConditionReasonUntrustedModeDisabled) == 1
+		}, 2*time.Second, 10*time.Millisecond)
+
+		// untrusted→trusted→untrusted: the Warning must fire again on the
+		// second disabled transition.
+		current := &mcpv1beta1.MCPServer{}
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(mcpServer), current))
+		current.Spec.Untrusted = false
+		require.NoError(t, r.Update(ctx, current))
+		r.surfaceUntrustedModeCondition(ctx, current)
+
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(mcpServer), current))
+		current.Spec.Untrusted = true
+		require.NoError(t, r.Update(ctx, current))
+		r.surfaceUntrustedModeCondition(ctx, current)
+
+		require.Eventually(t, func() bool {
+			return countContaining(drainEvents(recorder), mcpv1beta1.ConditionReasonUntrustedModeDisabled) == 1
+		}, 2*time.Second, 10*time.Millisecond, "the Warning must fire on the second disabled transition")
 	})
 }

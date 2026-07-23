@@ -18,6 +18,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 // TestVmcpDiscoveredRBACRules_PodsRule pins the untrusted-mode pods grant:
@@ -103,6 +104,10 @@ func untrustedRedisStorage(addr string, te *mcpv1beta1.TokenEncryptionConfig) *m
 // with objects. The status manager is nil: none of the address-only paths
 // touch it (only the Sentinel+tokenEncryption condition does, and that test
 // supplies a mock).
+//
+// The token-store env vars are untrusted-mode wiring, so every caller must
+// enable the mode (t.Setenv) or buildUntrustedTokenStoreEnvVars short-circuits
+// to empty.
 func newTokenStoreTestReconciler(t *testing.T, objects ...*corev1.Secret) *VirtualMCPServerReconciler {
 	t.Helper()
 	scheme := testutil.NewScheme(t)
@@ -118,8 +123,10 @@ func newTokenStoreTestReconciler(t *testing.T, objects ...*corev1.Secret) *Virtu
 // address when the embedded auth server uses standalone/cluster Redis storage,
 // and nothing otherwise. The KEK values are never injected here — they stay
 // Secret-only and reach sidecars as SecretKeyRef envs resolved at clone time.
+//
+//nolint:paralleltest // t.Setenv at the parent serializes the subtests' env view.
 func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
-	t.Parallel()
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
 	tests := []struct {
 		name      string
@@ -159,7 +166,7 @@ func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+
 			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 				v1beta1test.WithVMCPAuthServerConfig(tc.authCfg))
 			r := newTokenStoreTestReconciler(t)
@@ -188,8 +195,10 @@ func TestBuildUntrustedTokenStoreEnvVars(t *testing.T) {
 // seam: standalone Redis storage WITHOUT ACL password coordinates still
 // renders the address (the vMCP/broker fail loud downstream), but flags the
 // misconfiguration with a Warning event so it is never silently dropped.
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
 func TestBuildUntrustedTokenStoreEnvVars_PasswordMissing(t *testing.T) {
-	t.Parallel()
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
 	cfg := &mcpv1beta1.EmbeddedAuthServerConfig{
 		Storage: &mcpv1beta1.AuthServerStorageConfig{
@@ -227,15 +236,17 @@ func TestBuildUntrustedTokenStoreEnvVars_PasswordMissing(t *testing.T) {
 // read from the Secret) as plain literals — the vMCP turns them into one
 // SecretKeyRef env per key ID on every cloned sidecar, so the KEK values
 // themselves never appear in any pod spec.
+//
+//nolint:paralleltest // t.Setenv at the parent serializes the subtests' env view.
 func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
-	t.Parallel()
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
 	redisStorage := func(te *mcpv1beta1.TokenEncryptionConfig) *mcpv1beta1.EmbeddedAuthServerConfig {
 		return untrustedRedisStorage("redis.auth:6379", te)
 	}
 
 	t.Run("tokenEncryption set emits the KEK coordinate env vars (full key set)", func(t *testing.T) {
-		t.Parallel()
+
 		cfg := redisStorage(&mcpv1beta1.TokenEncryptionConfig{
 			ActiveKeyID:  "kek-2",
 			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
@@ -270,7 +281,7 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 	})
 
 	t.Run("tokenEncryption nil emits the address and password coordinate env vars", func(t *testing.T) {
-		t.Parallel()
+
 		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 			v1beta1test.WithVMCPAuthServerConfig(redisStorage(nil)))
 		r := newTokenStoreTestReconciler(t)
@@ -281,7 +292,7 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 	})
 
 	t.Run("memory storage with tokenEncryption emits nothing (CEL guards admission)", func(t *testing.T) {
-		t.Parallel()
+
 		// The CEL rule rejects this at admission; the builder must still not
 		// emit KEK coordinates for non-Redis storage (defense in depth).
 		cfg := &mcpv1beta1.EmbeddedAuthServerConfig{
@@ -302,7 +313,7 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 	})
 
 	t.Run("unresolvable KEK Secret is an error (fail closed, coordinates dropped)", func(t *testing.T) {
-		t.Parallel()
+
 		cfg := redisStorage(&mcpv1beta1.TokenEncryptionConfig{
 			ActiveKeyID:  "kek-1",
 			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
@@ -316,7 +327,7 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 	})
 
 	t.Run("sentinel storage with tokenEncryption emits a Warning event and no env", func(t *testing.T) {
-		t.Parallel()
+
 		cfg := untrustedRedisStorage("", &mcpv1beta1.TokenEncryptionConfig{
 			ActiveKeyID:  "kek-1",
 			KeySecretRef: corev1.LocalObjectReference{Name: "my-vmcp-kek"},
@@ -343,4 +354,23 @@ func TestBuildUntrustedTokenStoreEnvVars_KEK(t *testing.T) {
 			t.Fatal("expected a Warning event for Sentinel-backed storage with tokenEncryption")
 		}
 	})
+}
+
+// TestBuildUntrustedTokenStoreEnvVars_ModeDisabled pins the flag-off behavior:
+// with TOOLHIVE_ENABLE_UNTRUSTED_MODE off, no token-store coordinates reach
+// the vMCP Deployment even when the embedded auth server uses standalone
+// Redis storage — untrusted pods are never provisioned, so nothing consumes
+// them.
+//
+//nolint:paralleltest // t.Setenv modifies the process environment.
+func TestBuildUntrustedTokenStoreEnvVars_ModeDisabled(t *testing.T) {
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPAuthServerConfig(untrustedRedisStorage("redis.auth:6379", nil)))
+	r := newTokenStoreTestReconciler(t)
+
+	env, err := r.buildUntrustedTokenStoreEnvVars(context.Background(), vmcp)
+	require.NoError(t, err)
+	assert.Empty(t, env, "token-store coordinates must not render while untrusted mode is disabled")
 }

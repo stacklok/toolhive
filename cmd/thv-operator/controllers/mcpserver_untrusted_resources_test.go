@@ -22,9 +22,13 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/egressbroker"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 func withEgressPolicy() v1beta1test.MCPServerOption {
+	// The calling test must enable untrusted mode (t.Setenv on
+	// untrusted.EnvEnableUntrustedMode) or isUntrusted treats the server as
+	// trusted and ensureUntrustedResources deletes instead of creates.
 	return v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 		m.Spec.Untrusted = true
 		m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{
@@ -92,9 +96,12 @@ func listCASecrets(t *testing.T, r *MCPServerReconciler, m *mcpv1beta1.MCPServer
 	return secrets.Items
 }
 
-//nolint:tparallel // Subtests swap the package-level DNS lookup stub; they must run serially.
+//nolint:paralleltest // t.Setenv + package-level DNS stub: the test and its subtests run serially.
 func TestEnsureUntrustedResources(t *testing.T) {
-	t.Parallel()
+	// Untrusted mode must be ON for ensureUntrustedResources to create instead
+	// of delete; set it once for the whole test (parent-level t.Setenv is
+	// inherited by all serial subtests).
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
 	//nolint:paralleltest // Swaps the package-level DNS lookup stub (restored after each ensure).
 	t.Run("untrusted MCPServer gets generation-named CA Secret, bundle, policy ConfigMap, NetworkPolicy", func(t *testing.T) {
@@ -232,7 +239,8 @@ func TestEnsureUntrustedResources(t *testing.T) {
 
 	//nolint:paralleltest // Serial with sibling subtests that swap the DNS lookup stub.
 	t.Run("missing EgressPolicy on untrusted server is a terminal spec error", func(t *testing.T) {
-		m := v1beta1test.NewMCPServer("github-mcp", "default", withUntrustedSpec())
+		m := v1beta1test.NewMCPServer("github-mcp", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Untrusted = true }))
 		r, _ := setupUntrustedReconciler(t, m)
 
 		err := r.ensureUntrustedResources(t.Context(), m)
@@ -440,16 +448,25 @@ func errorAsSpecValidation(err error, target **SpecValidationError) bool {
 // flows to the backend StatefulSet (DeployWorkload applies ContainerLabels),
 // which is how the vMCP pod lifecycle resolves the clone template by selector
 // (LabelMCPServerUID + toolhive=true). A trusted MCPServer must NOT carry it.
+//
+//nolint:paralleltest // t.Setenv at the parent serializes the subtests' env view.
 func TestCreateRunConfig_UntrustedUIDLabel(t *testing.T) {
-	t.Parallel()
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 
 	newServer := func(opts ...v1beta1test.MCPServerOption) *mcpv1beta1.MCPServer {
 		return v1beta1test.NewMCPServer("github-mcp", "default", opts...)
 	}
 
 	t.Run("untrusted server stamps the mcpserver-uid container label", func(t *testing.T) {
-		t.Parallel()
-		m := newServer(withUntrustedCompliantPolicy())
+		m := newServer(v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.Untrusted = true
+			m.Spec.EgressPolicy = &mcpv1beta1.EgressPolicy{
+				Providers: []mcpv1beta1.ProviderEgress{{
+					Provider:     "github",
+					AllowedHosts: []string{"api.github.com"},
+				}},
+			}
+		}))
 		r, _ := setupUntrustedReconciler(t, m)
 		rc, err := r.createRunConfigFromMCPServer(m)
 		require.NoError(t, err)
@@ -458,7 +475,6 @@ func TestCreateRunConfig_UntrustedUIDLabel(t *testing.T) {
 	})
 
 	t.Run("trusted server does not stamp the label", func(t *testing.T) {
-		t.Parallel()
 		m := newServer()
 		r, _ := setupUntrustedReconciler(t, m)
 		rc, err := r.createRunConfigFromMCPServer(m)
@@ -513,8 +529,9 @@ func assertDNSRuleRestricted(t *testing.T, np *networkingv1.NetworkPolicy) {
 // operator-resolved dialAllowlist the broker's D7 guard enforces (the env
 // override THV_EGRESSBROKER_DIAL_ALLOWLIST is unset in the clone wiring).
 //
-//nolint:paralleltest // Swaps the package-level DNS lookup stub (restored after the ensure call).
+//nolint:paralleltest // t.Setenv + swaps the package-level DNS lookup stub (restored after the ensure call).
 func TestOperatorPolicyContractWithSidecar(t *testing.T) {
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
 	m := v1beta1test.NewMCPServer("github-mcp", "default", withEgressPolicy())
 	stubEgressDNS(t, githubDNS)
 	r, _ := setupUntrustedReconciler(t, m)
@@ -807,4 +824,64 @@ func TestRenderTrustedEgressNetworkPolicy(t *testing.T) {
 	// No ports → no port rule.
 	np = renderTrustedEgressNetworkPolicy(m, []string{"140.82.114.26/32"}, nil)
 	require.Len(t, np.Spec.Egress, 3)
+}
+
+// TestEnsureUntrustedResources_ModeDisabled pins the flag-off behavior of the
+// data-plane gate: with TOOLHIVE_ENABLE_UNTRUSTED_MODE off, a
+// spec.untrusted=true MCPServer gets NO untrusted resources (the ensure call
+// takes the delete path), while the trusted-mode egress NetworkPolicy keeps
+// working — it has no single-tenant cost and is independent of the flag.
+//
+//nolint:paralleltest // t.Setenv + DNS stub serialization.
+func TestEnsureUntrustedResources_ModeDisabled(t *testing.T) {
+	t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+
+	t.Run("no untrusted resources are created while the mode is disabled", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withEgressPolicy())
+		r, _ := setupUntrustedReconciler(t, m)
+
+		require.NoError(t, r.ensureUntrustedResources(t.Context(), m))
+
+		assert.Empty(t, listCASecrets(t, r, m), "no bump CA Secrets while the mode is disabled")
+		policyCM := &corev1.ConfigMap{}
+		err := r.Get(t.Context(), types.NamespacedName{Name: "github-mcp-egress-policy", Namespace: "default"}, policyCM)
+		assert.True(t, apierrors.IsNotFound(err), "no egress-policy ConfigMap while the mode is disabled")
+		np := &networkingv1.NetworkPolicy{}
+		err = r.Get(t.Context(), types.NamespacedName{Name: "github-mcp-egress", Namespace: "default"}, np)
+		assert.True(t, apierrors.IsNotFound(err), "no untrusted NetworkPolicy while the mode is disabled")
+	})
+
+	t.Run("disabling the mode deletes previously-created untrusted resources", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withEgressPolicy())
+		stubEgressDNS(t, githubDNS)
+		r, _ := setupUntrustedReconciler(t, m)
+
+		// Create the resources with the mode ON, then flip the flag off: the
+		// next ensure must converge to trusted and delete them.
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "true")
+		require.NoError(t, r.ensureUntrustedResources(t.Context(), m))
+		require.Len(t, listCASecrets(t, r, m), 1, "precondition: untrusted resources exist")
+
+		t.Setenv(untrusted.EnvEnableUntrustedMode, "false")
+		require.NoError(t, r.ensureUntrustedResources(t.Context(), m))
+		assert.Empty(t, listCASecrets(t, r, m), "flag-off ensure must delete the untrusted resources")
+		np := &networkingv1.NetworkPolicy{}
+		err := r.Get(t.Context(), types.NamespacedName{Name: "github-mcp-egress", Namespace: "default"}, np)
+		assert.True(t, apierrors.IsNotFound(err), "untrusted NetworkPolicy must be deleted on flag-off")
+	})
+
+	t.Run("trusted egress NetworkPolicy works with the mode disabled", func(t *testing.T) {
+		m := v1beta1test.NewMCPServer("github-mcp", "default", withTrustedConfigMapProfile())
+		stubEgressDNS(t, githubDNS)
+		r, _ := setupUntrustedReconciler(t, m, trustedProfileConfigMap())
+
+		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(t.Context(), m))
+
+		np := &networkingv1.NetworkPolicy{}
+		require.NoError(t, r.Get(t.Context(), types.NamespacedName{
+			Name: "github-mcp-egress", Namespace: "default"}, np),
+			"the trusted-mode egress NetworkPolicy is independent of the untrusted-mode flag")
+		assert.Equal(t, labelsForMCPServer(m.Name), np.Spec.PodSelector.MatchLabels)
+		assert.NotContains(t, np.Labels, "toolhive.stacklok.dev/untrusted-resource")
+	})
 }

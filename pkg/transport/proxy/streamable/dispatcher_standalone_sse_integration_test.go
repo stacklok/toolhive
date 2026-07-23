@@ -65,7 +65,7 @@ func openGETStream(ctx context.Context, t *testing.T, port int, sessID string) (
 }
 
 // readSSEData reads from r until it finds an SSE "data:" line (skipping
-// comments/keep-alives), and returns its payload. It fails the test if no
+// comment/keep-alive lines), and returns its payload. It fails the test if no
 // data line arrives within the timeout, per the "always bound blocking
 // receives" testing rule.
 func readSSEData(t *testing.T, r *bufio.Reader) string {

@@ -329,7 +329,7 @@ func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
-		WithStandaloneSSE(false), // keep GET's 405 response so this test terminates promptly
+		WithStandaloneSSE(false), // keep the 405 GET response so this test terminates promptly
 	)
 	ctx := t.Context()
 

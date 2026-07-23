@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -62,6 +63,11 @@ type RunConfig struct {
 	// TokenLifespans configures the duration that various tokens are valid.
 	// If nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
 	TokenLifespans *TokenLifespanRunConfig `json:"token_lifespans,omitempty" yaml:"token_lifespans,omitempty"`
+
+	// DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+	// via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
+	// If empty, defaults to 15 minutes.
+	DelegationTokenLifespan string `json:"delegation_token_lifespan,omitempty" yaml:"delegation_token_lifespan,omitempty"`
 
 	// Upstreams configures connections to upstream Identity Providers.
 	// At least one upstream is required - the server delegates authentication to these providers.
@@ -616,6 +622,11 @@ type Config struct {
 	// If zero, defaults to 10 minutes.
 	AuthCodeLifespan time.Duration
 
+	// DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+	// via RFC 8693 token exchange. The actual lifetime is the minimum of this value
+	// and the subject token's remaining lifetime. If zero, defaults to 15 minutes.
+	DelegationTokenLifespan time.Duration
+
 	// Upstreams contains configurations for connecting to upstream IDPs.
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
 	// Multiple upstreams form a sequential authorization chain.
@@ -730,17 +741,48 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.CIMDEnabled && c.CIMDCacheMaxSize < 1 {
-		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	if err := c.validateCIMDBounds(); err != nil {
+		return err
 	}
-	if c.CIMDEnabled && c.CIMDCacheFallbackTTL < 0 {
-		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
+
+	if err := c.validateDelegationTokenLifespan(); err != nil {
+		return err
 	}
 
 	slog.Debug("authserver config validation passed",
 		"issuer", c.Issuer,
 		"upstream_count", len(c.Upstreams),
 	)
+	return nil
+}
+
+// validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.
+// When CIMD is disabled the cache fields are ignored.
+func (c *Config) validateCIMDBounds() error {
+	if !c.CIMDEnabled {
+		return nil
+	}
+	if c.CIMDCacheMaxSize < 1 {
+		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	}
+	if c.CIMDCacheFallbackTTL < 0 {
+		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
+	}
+	return nil
+}
+
+// validateDelegationTokenLifespan rejects negative or excessively long delegation
+// token lifespans. Capped at oauthserver.MaxAccessTokenLifespan (the same ceiling
+// the token-exchange Factory enforces) so validation and construction agree on a
+// single source of truth — delegated tokens should be short-lived. Zero is
+// accepted; applyDefaults substitutes the default.
+func (c *Config) validateDelegationTokenLifespan() error {
+	if c.DelegationTokenLifespan < 0 {
+		return fmt.Errorf("delegation token lifespan must not be negative")
+	}
+	if c.DelegationTokenLifespan > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegation token lifespan must not exceed %v", oauthserver.MaxAccessTokenLifespan)
+	}
 	return nil
 }
 
@@ -960,6 +1002,10 @@ func (c *Config) applyDefaults() error {
 	if c.AuthCodeLifespan == 0 {
 		c.AuthCodeLifespan = 10 * time.Minute
 		slog.Debug("applied default auth code lifespan", "duration", c.AuthCodeLifespan)
+	}
+	if c.DelegationTokenLifespan == 0 {
+		c.DelegationTokenLifespan = 15 * time.Minute
+		slog.Debug("applied default delegation token lifespan", "duration", c.DelegationTokenLifespan)
 	}
 	if c.HMACSecrets == nil {
 		secret := make([]byte, servercrypto.MinSecretLength)

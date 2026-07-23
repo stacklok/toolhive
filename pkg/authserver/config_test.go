@@ -669,3 +669,79 @@ func TestConfigApplyDefaults_CIMD(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigValidate_DelegationTokenLifespan covers the RFC 8693 delegation
+// token lifespan bounds added to Config.Validate: zero is accepted (it is
+// defaulted later by applyDefaults), values in (0, 24h] are accepted, and
+// negative or over-24h values are rejected.
+func TestConfigValidate_DelegationTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	// base returns a minimally-valid Config so each case isolates the
+	// DelegationTokenLifespan check from unrelated validation failures.
+	base := func() Config {
+		return Config{
+			Issuer:      "https://example.com",
+			KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			Upstreams: []UpstreamConfig{{
+				Name: "default",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		lifespan time.Duration
+		wantErr  bool
+		errMsg   string
+	}{
+		{name: "zero accepted (defaulted later)", lifespan: 0},
+		{name: "valid 15m", lifespan: 15 * time.Minute},
+		{name: "valid 1h", lifespan: time.Hour},
+		{name: "valid 24h boundary", lifespan: 24 * time.Hour},
+		{name: "negative rejected", lifespan: -time.Second, wantErr: true, errMsg: "delegation token lifespan must not be negative"},
+		{name: "over 24h rejected", lifespan: 24*time.Hour + time.Second, wantErr: true, errMsg: "delegation token lifespan must not exceed 24h"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			cfg.DelegationTokenLifespan = tt.lifespan
+			assertError(t, cfg.Validate(), tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestConfigApplyDefaults_DelegationTokenLifespan verifies that applyDefaults
+// fills a zero DelegationTokenLifespan with the 15-minute default and preserves
+// a caller-supplied value.
+func TestConfigApplyDefaults_DelegationTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input time.Duration
+		want  time.Duration
+	}{
+		{name: "zero gets 15m default", input: 0, want: 15 * time.Minute},
+		{name: "custom value preserved", input: 5 * time.Minute, want: 5 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{Issuer: "https://example.com", DelegationTokenLifespan: tt.input}
+			require.NoError(t, cfg.applyDefaults())
+			require.Equal(t, tt.want, cfg.DelegationTokenLifespan)
+		})
+	}
+}

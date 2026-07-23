@@ -4,6 +4,8 @@
 package mcp
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +13,7 @@ import (
 )
 
 var _ CodedError = (*HeaderMismatchError)(nil)
+var _ CodedError = (*RequestHeaderMismatchError)(nil)
 var _ CodedError = (*UnsupportedVersionError)(nil)
 var _ CodedError = (*MissingClientCapabilityError)(nil)
 var _ CodedError = (*MissingModernMetadataError)(nil)
@@ -316,6 +319,302 @@ func TestClassifyRevision(t *testing.T) {
 
 			assert.Equal(t, tt.expectedRev, rev)
 			tt.checkErr(t, err)
+		})
+	}
+}
+
+func TestExtractMeta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		params json.RawMessage
+		want   map[string]any
+	}{
+		{
+			name:   "well-formed object _meta is returned",
+			params: json.RawMessage(`{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}`),
+			want:   map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+		},
+		{
+			name:   "empty object _meta is returned",
+			params: json.RawMessage(`{"_meta":{}}`),
+			want:   map[string]any{},
+		},
+		{
+			name:   "nil params yields nil",
+			params: nil,
+			want:   nil,
+		},
+		{
+			name:   "empty params yields nil",
+			params: json.RawMessage(``),
+			want:   nil,
+		},
+		{
+			name:   "params without _meta yields nil",
+			params: json.RawMessage(`{"other":"value"}`),
+			want:   nil,
+		},
+		{
+			name:   "params as JSON array yields nil",
+			params: json.RawMessage(`["_meta"]`),
+			want:   nil,
+		},
+		{
+			name:   "params as JSON scalar yields nil",
+			params: json.RawMessage(`42`),
+			want:   nil,
+		},
+		{
+			name:   "malformed params bytes yield nil",
+			params: json.RawMessage(`{not json`),
+			want:   nil,
+		},
+		{
+			name:   "_meta as string yields nil",
+			params: json.RawMessage(`{"_meta":"not-an-object"}`),
+			want:   nil,
+		},
+		{
+			name:   "_meta as number yields nil",
+			params: json.RawMessage(`{"_meta":42}`),
+			want:   nil,
+		},
+		{
+			name:   "_meta as array yields nil",
+			params: json.RawMessage(`{"_meta":[1,2,3]}`),
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, ExtractMeta(tt.params))
+		})
+	}
+}
+
+func sentinelEncode(name string) string {
+	return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(name)) + "?="
+}
+
+func TestValidateHeaderConsistency(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		parsed   *ParsedMCPRequest
+		checkErr func(t *testing.T, err error)
+	}{
+		{
+			name: "missing Mcp-Method header is rejected",
+			parsed: &ParsedMCPRequest{
+				Method:     "tools/call",
+				ResourceID: "my-tool",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, "Mcp-Method", mismatchErr.Header)
+			},
+		},
+		{
+			name: "method not in the name-required set needs no Mcp-Name",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/list",
+				MCPMethodHeader: "tools/list",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "method in the name-required set missing Mcp-Name is rejected",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, "Mcp-Name", mismatchErr.Header)
+			},
+		},
+		{
+			name: "Mcp-Method matches body method",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "my-tool",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "Mcp-Method mismatches body method",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "resources/read",
+				MCPNameHeader:   "my-tool",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, int64(-32020), mismatchErr.Code())
+				assert.Equal(t, "Mcp-Method", mismatchErr.Header)
+				assert.Equal(t, "resources/read", mismatchErr.HeaderValue)
+				assert.Equal(t, "tools/call", mismatchErr.BodyValue)
+			},
+		},
+		{
+			name: "Mcp-Name plain string matches ResourceID",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "my-tool",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "Mcp-Name plain string mismatches ResourceID",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "other-tool",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, "Mcp-Name", mismatchErr.Header)
+				assert.Equal(t, "other-tool", mismatchErr.HeaderValue)
+				assert.Equal(t, "my-tool", mismatchErr.BodyValue)
+			},
+		},
+		{
+			name: "Mcp-Name sentinel-encoded decodes to matching ResourceID",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   sentinelEncode("my-tool"),
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "Mcp-Name sentinel-encoded decodes to mismatching value",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   sentinelEncode("other-tool"),
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, "Mcp-Name", mismatchErr.Header)
+				assert.Equal(t, "other-tool", mismatchErr.HeaderValue)
+				assert.Equal(t, "my-tool", mismatchErr.BodyValue)
+			},
+		},
+		{
+			name: "Mcp-Name sentinel wrapper with invalid base64 payload",
+			parsed: &ParsedMCPRequest{
+				Method:          "tools/call",
+				ResourceID:      "my-tool",
+				MCPMethodHeader: "tools/call",
+				MCPNameHeader:   "=?base64?not-valid-base64!!?=",
+			},
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *RequestHeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, "Mcp-Name", mismatchErr.Header)
+				assert.Equal(t, "=?base64?not-valid-base64!!?=", mismatchErr.HeaderValue)
+				assert.Equal(t, "my-tool", mismatchErr.BodyValue)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateHeaderConsistency(tt.parsed)
+			tt.checkErr(t, err)
+		})
+	}
+}
+
+func TestDecodeSentinelName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "non-sentinel value passes through unchanged",
+			input: "my-tool",
+			want:  "my-tool",
+		},
+		{
+			name:  "empty value passes through unchanged",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "valid sentinel decodes the base64 payload",
+			input: sentinelEncode("my-tool"),
+			want:  "my-tool",
+		},
+		{
+			name:    "sentinel wrapper with invalid base64 payload errors",
+			input:   "=?base64?not-valid-base64!!?=",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := decodeSentinelName(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

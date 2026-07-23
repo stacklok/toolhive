@@ -71,6 +71,11 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 		slog.Error("failed to list core resources for session", "session_id", sessionID, "error", err)
 		return err
 	}
+	resourceTemplates, err := s.coreSessionResourceTemplates(ctx, sessionID, identity)
+	if err != nil {
+		slog.Error("failed to list core resource templates for session", "session_id", sessionID, "error", err)
+		return err
+	}
 	prompts, err := s.coreSessionPrompts(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core prompts for session", "session_id", sessionID, "error", err)
@@ -80,6 +85,12 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 	if len(resources) > 0 {
 		if err := setSessionResourcesDirect(session, resources); err != nil {
 			slog.Error("failed to add session resources", "session_id", sessionID, "error", err)
+			return err
+		}
+	}
+	if len(resourceTemplates) > 0 {
+		if err := setSessionResourceTemplatesDirect(session, resourceTemplates); err != nil {
+			slog.Error("failed to add session resource templates", "session_id", sessionID, "error", err)
 			return err
 		}
 	}
@@ -100,6 +111,7 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 		"session_id", sessionID,
 		"tool_count", len(tools),
 		"resource_count", len(resources),
+		"resource_template_count", len(resourceTemplates),
 		"prompt_count", len(prompts))
 	return nil
 }
@@ -177,6 +189,40 @@ func (s *Server) coreSessionResources(
 		})
 	}
 	return sdkResources, nil
+}
+
+// coreSessionResourceTemplates queries the core for the resource templates
+// advertised to identity and adapts them to SDK ServerResourceTemplates whose
+// handlers route through core.ReadResource. Mirrors coreSessionResources.
+//
+// The SDK serves resources/read for a URI matching a registered template through
+// the template's handler, so the handler receives the concrete (expanded) URI on
+// the request. It routes that URI through core.ReadResource, which resolves it via
+// the router's template-match fallback (session_router.go) — there is no dedicated
+// template read method. The backend display name is resolved here per template for
+// audit labelling (see coreResourceTemplateHandler).
+func (s *Server) coreSessionResourceTemplates(
+	ctx context.Context, sessionID string, identity *auth.Identity,
+) ([]server.ServerResourceTemplate, error) {
+	domainTemplates, err := s.core.ListResourceTemplates(ctx, identity)
+	if err != nil {
+		return nil, fmt.Errorf("core ListResourceTemplates: %w", err)
+	}
+
+	sdkTemplates := make([]server.ServerResourceTemplate, 0, len(domainTemplates))
+	for _, domainTemplate := range domainTemplates {
+		sdkTemplates = append(sdkTemplates, server.ServerResourceTemplate{
+			Template: mcp.ResourceTemplate{
+				Name:        domainTemplate.Name,
+				URITemplate: domainTemplate.URITemplate,
+				Description: domainTemplate.Description,
+				MIMEType:    domainTemplate.MimeType,
+			},
+			Handler: s.coreResourceTemplateHandler(
+				sessionID, s.backendDisplayName(ctx, domainTemplate.BackendID)),
+		})
+	}
+	return sdkTemplates, nil
 }
 
 // coreSessionPrompts queries the core for the prompts advertised to identity and
@@ -314,6 +360,38 @@ func (s *Server) coreResourceHandler(
 	}
 }
 
+// coreResourceTemplateHandler builds the SDK handler for a Serve-path resource
+// template. It mirrors coreResourceHandler but reads the concrete URI from the
+// request (req.Params.URI) rather than a fixed URI captured at registration,
+// because one template serves a whole family of URIs. It routes that URI through
+// core.ReadResource, which resolves it via the router's template-match fallback.
+func (s *Server) coreResourceTemplateHandler(
+	sessionID, backendName string,
+) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
+			bi.BackendName = backendName
+		}
+
+		uri := req.Params.URI
+
+		caller, _ := auth.IdentityFromContext(ctx)
+		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
+			s.terminateOnBindingFailure(sessionID, uri, err)
+			return nil, fmt.Errorf("unauthorized: %w", err)
+		}
+
+		result, err := s.core.ReadResource(ctx, caller, uri)
+		if err != nil {
+			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
+				return nil, errors.New(vmcp.DenyMessageResourceRead)
+			}
+			return nil, err
+		}
+		return conversion.ToMCPResourceContents(result.Contents), nil
+	}
+}
+
 // corePromptHandler builds the SDK handler for a Serve-path prompt. It mirrors
 // coreResourceHandler: audit label, binding check, then core.GetPrompt with explicit
 // identity. The request's string-typed prompt arguments are widened to map[string]any
@@ -350,6 +428,128 @@ func (s *Server) corePromptHandler(
 			Messages:    conversion.ToMCPPromptMessages(result.Messages),
 		}, nil
 	}
+}
+
+// coreCompletionHandler is the SDK completion/complete handler on the Serve path.
+// Unlike the per-session tool/resource/prompt handlers (whose closures capture a
+// sessionID at registration), completion is a single global handler installed on the
+// mcp-go server via server.WithCompletionHandler, so it resolves the session ID from
+// the SDK request context. It mirrors the other core handlers: audit label,
+// enforceSessionBinding, then routes through core.Complete with the caller's explicit
+// identity resolved at the transport boundary.
+//
+// It converts the mcp-go CompleteRequest ref (a PromptReference or ResourceReference,
+// typed as any) into the domain vmcp.CompletionRef, and the domain
+// *vmcp.CompletionResult back into *mcp.CompleteResult. An admission denial surfaces
+// as the standard deny message for the referenced capability kind.
+func (s *Server) coreCompletionHandler(
+	ctx context.Context, req mcp.CompleteRequest,
+) (*mcp.CompleteResult, error) {
+	ref, err := completionRefFromMCP(req.Params.Ref)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionID := ""
+	if sess := server.ClientSessionFromContext(ctx); sess != nil {
+		sessionID = sess.SessionID()
+	}
+
+	caller, _ := auth.IdentityFromContext(ctx)
+	if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
+		s.terminateOnBindingFailure(sessionID, "completion/complete", err)
+		return nil, fmt.Errorf("unauthorized: %w", err)
+	}
+
+	var contextArgs map[string]string
+	if req.Params.Context != nil {
+		contextArgs = req.Params.Context.Arguments
+	}
+
+	result, err := s.core.Complete(
+		ctx, caller, ref, req.Params.Argument.Name, req.Params.Argument.Value, contextArgs,
+	)
+	if err != nil {
+		if errors.Is(err, vmcp.ErrAuthorizationFailed) {
+			return nil, errors.New(completionDenyMessage(ref.Type))
+		}
+		return nil, err
+	}
+
+	return &mcp.CompleteResult{
+		Completion: mcp.CompletionResultDetails{
+			Values:  result.Values,
+			Total:   result.Total,
+			HasMore: result.HasMore,
+		},
+	}, nil
+}
+
+// coreSubscribeHandler answers resources/subscribe and resources/unsubscribe at
+// ack level. Like coreCompletionHandler it is a single global handler installed on
+// the mcp-go server (not a per-session closure), so it resolves the session ID from
+// the SDK request context. It mirrors the other core handlers: resolve the caller's
+// explicit identity at the transport boundary, enforce the session binding, then
+// validate that uri is an advertised resource the caller may read (core.LookupResource
+// applies the same admission decision ListResources/ReadResource enforce). An unknown
+// or admission-denied URI is rejected; on success it returns nil so go-sdk records the
+// subscription and answers the client with a success ack.
+//
+// Scope limitation (intentional): vMCP accepts the subscription but does NOT yet
+// forward backend resources/updated notifications to the client — doing so needs
+// persistent per-session backend connections, which is out of scope here. capability
+// is the method name used for binding-failure diagnostics.
+func (s *Server) coreSubscribeHandler(ctx context.Context, capability, uri string) error {
+	sessionID := ""
+	if sess := server.ClientSessionFromContext(ctx); sess != nil {
+		sessionID = sess.SessionID()
+	}
+
+	caller, _ := auth.IdentityFromContext(ctx)
+	if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
+		s.terminateOnBindingFailure(sessionID, capability, err)
+		return fmt.Errorf("unauthorized: %w", err)
+	}
+
+	// Validate the URI is an advertised resource the caller may read; an unknown or
+	// admission-denied URI is rejected rather than silently accepted.
+	if _, err := s.core.LookupResource(ctx, caller, uri); err != nil {
+		return fmt.Errorf("%s: %w", capability, err)
+	}
+	return nil
+}
+
+// completionRefFromMCP converts the mcp-go CompleteParams.Ref (typed as any, holding
+// a PromptReference or ResourceReference, possibly decoded as a map from JSON) into a
+// domain vmcp.CompletionRef. It accepts both the typed shim structs and the generic
+// map[string]any the SDK may hand back after a JSON round-trip.
+func completionRefFromMCP(raw any) (vmcp.CompletionRef, error) {
+	switch r := raw.(type) {
+	case mcp.PromptReference:
+		return vmcp.CompletionRef{Type: r.Type, Name: r.Name}, nil
+	case mcp.ResourceReference:
+		return vmcp.CompletionRef{Type: r.Type, URI: r.URI}, nil
+	case map[string]any:
+		refType, _ := r["type"].(string)
+		name, _ := r["name"].(string)
+		uri, _ := r["uri"].(string)
+		if refType == "" {
+			return vmcp.CompletionRef{}, fmt.Errorf("%w: completion ref missing type", vmcp.ErrInvalidInput)
+		}
+		return vmcp.CompletionRef{Type: refType, Name: name, URI: uri}, nil
+	default:
+		return vmcp.CompletionRef{}, fmt.Errorf("%w: unsupported completion ref shape %T", vmcp.ErrInvalidInput, raw)
+	}
+}
+
+// completionDenyMessage maps a completion ref type to the deny message of the
+// underlying capability decision (prompt-get or resource-read), so an admission
+// denial on completion reuses the same client-facing wording as a direct get/read.
+func completionDenyMessage(refType string) string {
+	if refType == vmcp.CompletionRefTypeResource {
+		return vmcp.DenyMessageResourceRead
+	}
+	return vmcp.DenyMessagePromptGet
 }
 
 // enforceSessionBinding validates caller against the session's stored identity

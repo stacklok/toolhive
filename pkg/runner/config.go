@@ -404,6 +404,14 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 
 // degradeNetworkIsolation drops network isolation from a loaded config when its
 // resolved network mode cannot enforce it, so status/list reflect reality.
+//
+// ReadJSON is reached from read-only paths (thv list, status, export, API GETs)
+// as well as deploy. The "none" case logs at DEBUG since it's merely redundant
+// (already maximally confined) and would otherwise fire on every read of a
+// static, already-known condition. The host/custom case stays at WARN even on
+// read paths: it means the user's --isolate-network request is being silently
+// ignored, which they should keep seeing until they either drop the flag or
+// switch network modes. See #5775.
 func degradeNetworkIsolation(config *RunConfig) {
 	if !config.IsolateNetwork {
 		return

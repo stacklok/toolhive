@@ -11,9 +11,13 @@ operator:
     # -- Enable the StorageVersionMigrator controller, which auto-cleans
     # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
     # future release can drop deprecated versions (e.g. v1alpha1) without
-    # orphaning etcd objects in the cluster. Sets
+    # orphaning etcd objects in the cluster. Enabled by default; set to
+    # false to opt out and handle storage-version cleanup yourself. Sets
     # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
-    storageVersionMigrator: false
+    # Requires `operator.rbac.scope=cluster` — the controller watches
+    # cluster-scoped CRDs and re-stores resources across all namespaces, so
+    # the chart rejects this being true when scope is namespace.
+    storageVersionMigrator: true
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 
@@ -59,15 +63,15 @@ operator:
     existingSecretKey: ""
 
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.40.0
+  image: ghcr.io/stacklok/toolhive/operator:v0.40.1
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.40.0
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.40.1
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.40.0
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.40.1
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

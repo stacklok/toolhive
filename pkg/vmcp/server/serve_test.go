@@ -45,6 +45,9 @@ func (*stubVMCP) CallTool(
 func (*stubVMCP) ListResources(context.Context, *auth.Identity) ([]vmcp.Resource, error) {
 	return nil, nil
 }
+func (*stubVMCP) ListResourceTemplates(context.Context, *auth.Identity) ([]vmcp.ResourceTemplate, error) {
+	return nil, nil
+}
 func (*stubVMCP) ReadResource(context.Context, *auth.Identity, string) (*vmcp.ResourceReadResult, error) {
 	return nil, nil
 }
@@ -52,6 +55,11 @@ func (*stubVMCP) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, er
 func (*stubVMCP) GetPrompt(
 	context.Context, *auth.Identity, string, map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	return nil, nil
+}
+func (*stubVMCP) Complete(
+	context.Context, *auth.Identity, vmcp.CompletionRef, string, string, map[string]string,
+) (*vmcp.CompletionResult, error) {
 	return nil, nil
 }
 func (*stubVMCP) LookupTool(context.Context, *auth.Identity, string) (*vmcp.Tool, error) {

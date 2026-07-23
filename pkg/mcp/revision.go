@@ -3,7 +3,12 @@
 
 package mcp
 
-import "fmt"
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // Revision identifies which MCP protocol era a request belongs to.
 type Revision int
@@ -59,6 +64,8 @@ var reservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo,
 const (
 	// CodeHeaderMismatch signals a mismatch between the MCP-Protocol-Version
 	// header and the _meta protocol version (schema.ts HeaderMismatchError).
+	// Also reused by RequestHeaderMismatchError for the Mcp-Method/Mcp-Name
+	// headers: keep both error types' Code() in sync with this constant.
 	CodeHeaderMismatch int64 = -32020
 	// CodeMissingClientCapability signals that _meta is missing a client
 	// capability required for the request (schema.ts MissingRequiredClientCapabilityError).
@@ -92,6 +99,63 @@ func (*HeaderMismatchError) Code() int64 { return CodeHeaderMismatch }
 // Data implements CodedError.
 func (e *HeaderMismatchError) Data() map[string]any {
 	return map[string]any{"header": e.Header, "body": e.Body}
+}
+
+// requestHeaderMismatchReason distinguishes why a Mcp-Method/Mcp-Name header
+// check failed, so Error() can describe the actual problem instead of always
+// reporting a value "mismatch" — the wire code (CodeHeaderMismatch, -32020)
+// is the same in every case; only the human-readable message differs.
+type requestHeaderMismatchReason int
+
+const (
+	// headerMismatchReasonValue is the default: the header and body both
+	// carry a value, but they disagree.
+	headerMismatchReasonValue requestHeaderMismatchReason = iota
+	// headerMismatchReasonMissing means the header was required but absent.
+	headerMismatchReasonMissing
+	// headerMismatchReasonMalformed means the header value itself could not
+	// be decoded (e.g. invalid base64 in a Mcp-Name sentinel).
+	headerMismatchReasonMalformed
+)
+
+// RequestHeaderMismatchError indicates a Modern (2026-07-28) request header
+// contradicted, was missing from, or was malformed relative to the value
+// carried in the request body. This is the generalized sibling of
+// HeaderMismatchError for the Mcp-Method/Mcp-Name headers: HeaderMismatchError
+// is specific to MCP-Protocol-Version, while this type covers any other
+// header/body consistency check and names which header failed.
+type RequestHeaderMismatchError struct {
+	// Header is the name of the header that failed the check (e.g. "Mcp-Method", "Mcp-Name").
+	Header string
+	// HeaderValue is the (decoded, where applicable) value carried by the header.
+	HeaderValue string
+	// BodyValue is the value the header was compared against in the request body.
+	BodyValue string
+
+	// reason is unexported: it only shapes Error()'s message, not Data()'s
+	// three-key shape or Code()'s wire value.
+	reason requestHeaderMismatchReason
+}
+
+func (e *RequestHeaderMismatchError) Error() string {
+	switch e.reason {
+	case headerMismatchReasonValue:
+		return fmt.Sprintf("%s header %q does not match request body value %q", e.Header, e.HeaderValue, e.BodyValue)
+	case headerMismatchReasonMissing:
+		return fmt.Sprintf("%s header is missing (required for this request)", e.Header)
+	case headerMismatchReasonMalformed:
+		return fmt.Sprintf("%s header value %q is malformed", e.Header, e.HeaderValue)
+	default:
+		return fmt.Sprintf("%s header %q does not match request body value %q", e.Header, e.HeaderValue, e.BodyValue)
+	}
+}
+
+// Code implements CodedError.
+func (*RequestHeaderMismatchError) Code() int64 { return CodeHeaderMismatch }
+
+// Data implements CodedError.
+func (e *RequestHeaderMismatchError) Data() map[string]any {
+	return map[string]any{"header": e.Header, "headerValue": e.HeaderValue, "bodyValue": e.BodyValue}
 }
 
 // UnsupportedVersionError indicates the _meta protocol version named a Modern
@@ -244,6 +308,97 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 	return RevisionModern, nil
 }
 
+// nameRequiredMethods are the Modern (2026-07-28) methods for which the draft
+// spec's "Server Validation" section requires a Mcp-Name header naming the
+// body's tool/resource/prompt identifier. Methods outside this set (e.g.
+// tools/list) have no per-request name to check, so Mcp-Name is never
+// required for them — though if a client sends one anyway, it is still
+// validated for consistency.
+var nameRequiredMethods = map[string]bool{
+	"tools/call":     true,
+	"resources/read": true,
+	"prompts/get":    true,
+}
+
+// ValidateHeaderConsistency enforces the Modern (2026-07-28) Mcp-Method and
+// Mcp-Name request headers against the corresponding parsed request body
+// fields (Method and ResourceID).
+//
+// Caller contract: only call this for a request ClassifyRevision has already
+// classified Modern. Mcp-Method/Mcp-Name are HTTP-only fields — populated
+// solely by ParsingMiddleware reading real HTTP headers (see parser.go) —
+// so there is no stdio/HTTP transport ambiguity here to excuse a Legacy
+// request from this check; the caller must simply not invoke this function
+// for Legacy traffic in the first place.
+//
+// Mcp-Method is required on every Modern request: a missing or empty header
+// is itself a rejection (*RequestHeaderMismatchError), not a silent no-op,
+// and a present-but-different value is a mismatch.
+//
+// Mcp-Name is required only for the methods in nameRequiredMethods
+// (tools/call, resources/read, prompts/get) — for any other method, an
+// absent Mcp-Name header is fine. When present, it is decoded via
+// decodeSentinelName before comparison against ResourceID, since the draft
+// spec allows it to be sentinel-encoded; a decode failure or mismatch is a
+// rejection.
+func ValidateHeaderConsistency(parsed *ParsedMCPRequest) error {
+	if parsed.MCPMethodHeader == "" {
+		return &RequestHeaderMismatchError{Header: "Mcp-Method", reason: headerMismatchReasonMissing}
+	}
+	if parsed.MCPMethodHeader != parsed.Method {
+		return &RequestHeaderMismatchError{Header: "Mcp-Method", HeaderValue: parsed.MCPMethodHeader, BodyValue: parsed.Method}
+	}
+
+	if parsed.MCPNameHeader == "" {
+		if nameRequiredMethods[parsed.Method] {
+			return &RequestHeaderMismatchError{Header: "Mcp-Name", reason: headerMismatchReasonMissing}
+		}
+		return nil
+	}
+
+	decoded, err := decodeSentinelName(parsed.MCPNameHeader)
+	if err != nil {
+		return &RequestHeaderMismatchError{
+			Header:      "Mcp-Name",
+			HeaderValue: parsed.MCPNameHeader,
+			BodyValue:   parsed.ResourceID,
+			reason:      headerMismatchReasonMalformed,
+		}
+	}
+	if decoded != parsed.ResourceID {
+		return &RequestHeaderMismatchError{Header: "Mcp-Name", HeaderValue: decoded, BodyValue: parsed.ResourceID}
+	}
+
+	return nil
+}
+
+// ExtractMeta pulls the "_meta" object out of raw JSON-RPC request params, for
+// use with ClassifyRevision. It is deliberately tolerant: absent params, params
+// that don't decode as a JSON object, or a "_meta" value that isn't itself an
+// object all yield a nil map rather than an error. Only a well-formed object
+// "_meta" is returned.
+func ExtractMeta(params json.RawMessage) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+	var paramsMap map[string]any
+	if err := json.Unmarshal(params, &paramsMap); err != nil {
+		return nil
+	}
+	return metaFromParamsMap(paramsMap)
+}
+
+// metaFromParamsMap reports the "_meta" value of an already-decoded JSON-RPC
+// params map, if it decodes as a JSON object. A missing key or a wrong-typed
+// value (e.g. a string or number) both yield nil.
+func metaFromParamsMap(paramsMap map[string]any) map[string]any {
+	meta, ok := paramsMap["_meta"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return meta
+}
+
 // hasModernSignal reports whether the request signals the Modern revision:
 // either the header exactly names MCPVersionModern, or _meta carries any of
 // the reserved Modern-only keys (regardless of whether their values are
@@ -294,4 +449,31 @@ func objectMetaValue(meta map[string]any, key string) (map[string]any, bool) {
 		return nil, false
 	}
 	return obj, true
+}
+
+// sentinelPrefix and sentinelSuffix wrap a base64-encoded Mcp-Name header
+// value per the draft MCP spec. This is NOT RFC 2047 encoded-word syntax
+// (there is no encoding-letter field); both markers are literal and
+// case-sensitive.
+const (
+	sentinelPrefix = "=?base64?"
+	sentinelSuffix = "?="
+)
+
+// decodeSentinelName decodes a Mcp-Name header value that may be wrapped in
+// the draft spec's base64 sentinel format (=?base64?<payload>?=). A value
+// that isn't wrapped in the sentinel markers is returned unchanged, since it
+// is already the plain name/uri. A wrapped value whose payload fails to
+// base64-decode is reported as an error.
+func decodeSentinelName(v string) (string, error) {
+	if !strings.HasPrefix(v, sentinelPrefix) || !strings.HasSuffix(v, sentinelSuffix) {
+		return v, nil
+	}
+
+	payload := strings.TrimSuffix(strings.TrimPrefix(v, sentinelPrefix), sentinelSuffix)
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", fmt.Errorf("decoding base64 sentinel Mcp-Name payload: %w", err)
+	}
+	return string(decoded), nil
 }

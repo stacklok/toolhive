@@ -55,6 +55,12 @@ type MCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// APIReader bypasses the informer cache for reads where freshness is
+	// load-bearing. Used for bump-CA Secrets: rotation decisions made on a
+	// stale cached read can mint a duplicate generation or fail to rotate on
+	// time (the cache lags a create/delete by tens of milliseconds, which is
+	// exactly the rotation window the tests and real rotations race).
+	APIReader client.Reader
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with the per-CR imagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -3322,6 +3328,8 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mcpv1beta1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).

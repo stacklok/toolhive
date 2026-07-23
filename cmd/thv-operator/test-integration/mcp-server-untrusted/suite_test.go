@@ -66,6 +66,7 @@ var _ = BeforeSuite(func() {
 		Client:           untrustedSuiteEnv.Manager.GetClient(),
 		Scheme:           untrustedSuiteEnv.Manager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		APIReader:        untrustedSuiteEnv.Manager.GetAPIReader(),
 	}).SetupWithManager(untrustedSuiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 

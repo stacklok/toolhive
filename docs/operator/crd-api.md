@@ -217,6 +217,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `providerName` _string_ | ProviderName is the name of the upstream provider configured in the<br />embedded authorization server. Must match an entry in AuthServer.Upstreams. |  |  |
+| `authorizeUrl` _string_ | AuthorizeURL is the ToolHive authorization server's authorize-endpoint<br />URL (\{issuer\}/oauth/authorize). When set, it is carried in the<br />ConsentRequiredError returned when the provider token is absent, so<br />clients can direct the user to consent. The URL cannot be a complete<br />one-click link: the client must merge its own client_id, redirect_uri,<br />and PKCE parameters. Optional; when empty the error carries no URL. |  | Optional: \{\} <br /> |
 
 
 #### auth.types.XAAConfig
@@ -3230,7 +3231,7 @@ _Appears in:_
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `untrusted` _boolean_ | Untrusted marks this MCP server as running untrusted code. When true, the operator<br />enforces the untrusted-mode invariants (ADR-0001): no Secret/ConfigMap-sourced env on<br />the backend container, single-tenant session-scoped backend pods, mandatory MCPGroup<br />membership behind a VirtualMCPServer, and egress only through the credential-broker<br />sidecar per EgressPolicy. K8s-only; ignored (and inert) in CLI/Docker mode. | false | Optional: \{\} <br /> |
-| `egressPolicy` _[api.v1beta1.EgressPolicy](#apiv1beta1egresspolicy)_ | EgressPolicy declares which upstream providers this server may call and where the<br />broker may inject each provider's credential. Required when Untrusted is true.<br />When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend<br />pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar<br />Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. |  | Optional: \{\} <br /> |
+| `egressPolicy` _[api.v1beta1.EgressPolicy](#apiv1beta1egresspolicy)_ | EgressPolicy declares which upstream providers this server may call and where the<br />broker may inject each provider's credential. Required when Untrusted is true.<br />When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend<br />pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar<br />Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the<br />NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the<br />trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction<br />only, never a credential boundary — the credential guarantee comes solely from this<br />field's broker + single-tenant pods in untrusted mode. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
@@ -4166,10 +4167,10 @@ _Appears in:_
 TokenEncryptionConfig configures AES-256-GCM envelope encryption of
 upstream OAuth token values stored in Redis. The Secret referenced by
 KeySecretRef holds one data entry per key ID (value = base64 32-byte KEK);
-the operator mounts the active key as a SecretKeyRef env entry on the vMCP
-container and clones the same reference into untrusted egress-broker
-sidecars. Key material never appears in the CRD, a ConfigMap, or a pod env
-literal.
+the operator mounts every data key (active + retired) as a SecretKeyRef env
+entry on the vMCP container and clones the same references into untrusted
+egress-broker sidecars. Key material never appears in the CRD, a ConfigMap,
+or a pod env literal.
 
 
 

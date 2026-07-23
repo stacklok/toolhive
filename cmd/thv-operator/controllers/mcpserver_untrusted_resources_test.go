@@ -658,7 +658,7 @@ func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
 
 		np := &networkingv1.NetworkPolicy{}
 		require.NoError(t, r.Get(ctx, types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, np))
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, np))
 		assertOwnerRef(t, np.OwnerReferences, m)
 		assert.Contains(t, np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
 
@@ -697,7 +697,7 @@ func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
 		after := &networkingv1.NetworkPolicy{}
 		require.NoError(t, r.Get(ctx, types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, after))
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, after))
 		assert.Equal(t, before, after.ResourceVersion, "no-op reconcile must not rewrite the NetworkPolicy")
 	})
 
@@ -713,7 +713,7 @@ func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(t.Context(), m))
 		np := &networkingv1.NetworkPolicy{}
 		err := r.Get(t.Context(), types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, np)
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, np)
 		assert.True(t, apierrors.IsNotFound(err), "InsecureAllowAll must never render a policy")
 	})
 
@@ -729,7 +729,7 @@ func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(t.Context(), m))
 		np := &networkingv1.NetworkPolicy{}
 		err := r.Get(t.Context(), types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, np)
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, np)
 		assert.True(t, apierrors.IsNotFound(err), "empty allowHost/allowPort must never render a policy")
 	})
 
@@ -743,14 +743,14 @@ func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
 		np := &networkingv1.NetworkPolicy{}
 		require.NoError(t, r.Get(ctx, types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, np))
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, np))
 
 		// Profile turns permissive → policy deleted.
 		cm := trustedProfileConfigMap()
 		cm.Data["profile.json"] = `{"name":"p","network":{"outbound":{"insecure_allow_all":true}}}`
 		require.NoError(t, r.Update(ctx, cm))
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
-		err := r.Get(ctx, types.NamespacedName{Name: "github-mcp-egress", Namespace: "default"}, np)
+		err := r.Get(ctx, types.NamespacedName{Name: "github-mcp-egress-trusted", Namespace: "default"}, np)
 		assert.True(t, apierrors.IsNotFound(err), "a permissive profile must delete the policy")
 
 		// Restrictive again, then the profile is removed → policy deleted.
@@ -758,10 +758,10 @@ func TestEnsureTrustedEgressNetworkPolicy(t *testing.T) {
 		require.NoError(t, r.Update(ctx, cm))
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
 		require.NoError(t, r.Get(ctx, types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, np))
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, np))
 		m.Spec.PermissionProfile = nil
 		require.NoError(t, r.ensureTrustedEgressNetworkPolicy(ctx, m))
-		err = r.Get(ctx, types.NamespacedName{Name: "github-mcp-egress", Namespace: "default"}, np)
+		err = r.Get(ctx, types.NamespacedName{Name: "github-mcp-egress-trusted", Namespace: "default"}, np)
 		assert.True(t, apierrors.IsNotFound(err), "removing the profile must delete the policy")
 	})
 
@@ -809,7 +809,7 @@ func TestRenderTrustedEgressNetworkPolicy(t *testing.T) {
 	m := v1beta1test.NewMCPServer("github-mcp", "default")
 	np := renderTrustedEgressNetworkPolicy(m, []string{"140.82.114.26/32"}, []int32{8443, 443})
 
-	assert.Equal(t, "github-mcp-egress", np.Name)
+	assert.Equal(t, "github-mcp-egress-trusted", np.Name)
 	assert.Equal(t, labelsForMCPServer(m.Name), np.Spec.PodSelector.MatchLabels)
 	assert.Equal(t, labelsForMCPServer(m.Name), np.Labels)
 
@@ -879,7 +879,7 @@ func TestEnsureUntrustedResources_ModeDisabled(t *testing.T) {
 
 		np := &networkingv1.NetworkPolicy{}
 		require.NoError(t, r.Get(t.Context(), types.NamespacedName{
-			Name: "github-mcp-egress", Namespace: "default"}, np),
+			Name: "github-mcp-egress-trusted", Namespace: "default"}, np),
 			"the trusted-mode egress NetworkPolicy is independent of the untrusted-mode flag")
 		assert.Equal(t, labelsForMCPServer(m.Name), np.Spec.PodSelector.MatchLabels)
 		assert.NotContains(t, np.Labels, "toolhive.stacklok.dev/untrusted-resource")

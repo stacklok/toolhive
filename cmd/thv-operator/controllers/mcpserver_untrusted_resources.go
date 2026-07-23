@@ -46,8 +46,14 @@ const (
 	// rename-safe UID selector. It mirrors
 	// pkg/vmcp/session/untrusted.LabelMCPServerUID across the module boundary.
 	untrustedMCPServerUIDLabel = "toolhive.stacklok.dev/mcpserver-uid"
-	// untrustedNetworkPolicySuffix names the egress-lockdown NetworkPolicy.
+	// untrustedNetworkPolicySuffix names the untrusted-mode egress-lockdown
+	// NetworkPolicy.
 	untrustedNetworkPolicySuffix = "-egress"
+	// trustedNetworkPolicySuffix names the trusted-mode (blast-radius
+	// reduction) egress NetworkPolicy. It MUST differ from the untrusted
+	// suffix: the two ensure paths run back-to-back on the same MCPServer and
+	// would otherwise delete each other's policy.
+	trustedNetworkPolicySuffix = "-egress-trusted"
 
 	// untrustedCAGenerationAnnotation is stamped on the backend StatefulSet's
 	// pod template with the current bump-CA generation. The vMCP pod lifecycle
@@ -284,8 +290,14 @@ func renderEgressPolicyYAML(policy *mcpv1beta1.EgressPolicy, dialAllowlist []str
 // in the Secret, mounted by the trusted sidecar container. Key material is
 // never logged.
 func (r *MCPServerReconciler) ensureUntrustedCA(ctx context.Context, m *mcpv1beta1.MCPServer) (string, error) {
+	// Read the CA set uncached (APIReader): this pass selects the current
+	// generation, mints one when the set is empty, and hands the SAME set to the
+	// GC below — it must observe its own writes. The informer cache is
+	// eventually consistent and can lag a Secret it does not own long enough to
+	// re-mint over an in-flight rotation. This is the documented APIReader
+	// exception (read-your-write), not a hot path (once per reconcile).
 	secrets := &corev1.SecretList{}
-	if err := r.List(ctx, secrets, client.InNamespace(m.Namespace),
+	if err := r.APIReader.List(ctx, secrets, client.InNamespace(m.Namespace),
 		client.MatchingLabels(untrustedResourceLabels(m))); err != nil {
 		return "", fmt.Errorf("failed to list bump CA Secrets: %w", err)
 	}
@@ -421,7 +433,7 @@ func (r *MCPServerReconciler) createCASecretIfAbsent(
 // otherwise accumulate forever).
 func (r *MCPServerReconciler) gcUntrustedCAGenerations(ctx context.Context, m *mcpv1beta1.MCPServer, currentGen string) error {
 	secrets := &corev1.SecretList{}
-	if err := r.List(ctx, secrets, client.InNamespace(m.Namespace),
+	if err := r.APIReader.List(ctx, secrets, client.InNamespace(m.Namespace),
 		client.MatchingLabels(untrustedResourceLabels(m))); err != nil {
 		return fmt.Errorf("failed to list bump CA Secrets for GC: %w", err)
 	}
@@ -442,7 +454,7 @@ func (r *MCPServerReconciler) gcUntrustedCAGenerations(ctx context.Context, m *m
 	}
 
 	bundles := &corev1.ConfigMapList{}
-	if err := r.List(ctx, bundles, client.InNamespace(m.Namespace),
+	if err := r.APIReader.List(ctx, bundles, client.InNamespace(m.Namespace),
 		client.MatchingLabels(untrustedResourceLabels(m))); err != nil {
 		return fmt.Errorf("failed to list bump CA bundles for GC: %w", err)
 	}
@@ -880,7 +892,7 @@ func renderTrustedEgressNetworkPolicy(
 		egressRules = append(egressRules, rule)
 	}
 	return renderEgressNetworkPolicy(
-		m.Name+untrustedNetworkPolicySuffix, m.Namespace, labelsForMCPServer(m.Name),
+		m.Name+trustedNetworkPolicySuffix, m.Namespace, labelsForMCPServer(m.Name),
 		metav1.LabelSelector{MatchLabels: labelsForMCPServer(m.Name)},
 		egressRules...,
 	)
@@ -958,7 +970,7 @@ func (r *MCPServerReconciler) applyTrustedEgressNetworkPolicy(
 // untrusted ensure renders its own policy under the same name).
 func (r *MCPServerReconciler) deleteTrustedEgressNetworkPolicy(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	return r.deleteIfExists(ctx, &networkingv1.NetworkPolicy{},
-		m.Name+untrustedNetworkPolicySuffix, m.Namespace, "NetworkPolicy")
+		m.Name+trustedNetworkPolicySuffix, m.Namespace, "NetworkPolicy")
 }
 
 // resolvePermissionProfile resolves spec.permissionProfile to a toolhive-core

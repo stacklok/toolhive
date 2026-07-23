@@ -60,6 +60,7 @@ var _ = BeforeSuite(func() {
 		Client:           suiteEnv.Manager.GetClient(),
 		Scheme:           suiteEnv.Manager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		APIReader:        suiteEnv.Manager.GetAPIReader(),
 	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 

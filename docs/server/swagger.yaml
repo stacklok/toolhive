@@ -1274,6 +1274,226 @@ components:
           description: TokenURL is the OAuth 2.0 token endpoint URL
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_plugins.BuildResult:
+      properties:
+        reference:
+          description: Reference is the OCI reference of the built skill artifact.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.ComponentInventory:
+      additionalProperties:
+        type: integer
+      description: |-
+        Components is the inventory of component types declared by the plugin
+        (e.g. {"commands": 3, "skills": 2}). Extracted from the OCI artifact.
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.ComponentType:
+      enum:
+      - commands
+      - agents
+      - skills
+      - hooks
+      - mcpServers
+      - lspServers
+      type: string
+      x-enum-varnames:
+      - ComponentCommands
+      - ComponentAgents
+      - ComponentSkills
+      - ComponentHooks
+      - ComponentMCP
+      - ComponentLSP
+    github_com_stacklok_toolhive_pkg_plugins.Dependency:
+      properties:
+        digest:
+          description: Digest is the OCI digest for upgrade detection.
+          type: string
+        name:
+          description: Name is the dependency name.
+          type: string
+        reference:
+          description: Reference is the OCI reference for the dependency.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.InstallStatus:
+      description: Status is the current installation status.
+      enum:
+      - installed
+      - pending
+      - failed
+      - installed
+      - pending
+      - failed
+      type: string
+      x-enum-varnames:
+      - InstallStatusInstalled
+      - InstallStatusPending
+      - InstallStatusFailed
+    github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin:
+      description: InstalledPlugin contains the full installation record.
+      properties:
+        clients:
+          description: Clients is the list of client identifiers the plugin is installed
+            for.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        components:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ComponentInventory'
+        dependencies:
+          description: Dependencies is the list of external plugin dependencies.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Dependency'
+          type: array
+          uniqueItems: false
+        digest:
+          description: Digest is the OCI digest (sha256:...) for upgrade detection.
+          type: string
+        installed_at:
+          description: InstalledAt is the timestamp when the plugin was installed.
+          type: string
+        metadata:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata'
+        project_root:
+          description: ProjectRoot is the project root path for project-scoped plugins.
+            Empty for user-scoped.
+          type: string
+        reference:
+          description: Reference is the full OCI reference (e.g. ghcr.io/org/plugin:v1).
+          type: string
+        scope:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope'
+        signature:
+          description: Signature is the optional signing signature for the plugin
+            artifact.
+          type: string
+        status:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstallStatus'
+        tag:
+          description: Tag is the OCI tag (e.g. v1.0.0).
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.PluginContent:
+      properties:
+        description:
+          description: Description is the plugin description from the OCI config labels.
+          type: string
+        files:
+          description: Files is the list of all files in the artifact with their sizes.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginFileEntry'
+          type: array
+          uniqueItems: false
+        license:
+          description: License is the SPDX license identifier from the OCI config
+            labels.
+          type: string
+        manifest:
+          description: Manifest is the raw .claude-plugin/plugin.json body.
+          type: string
+        name:
+          description: Name is the plugin name from the OCI config labels.
+          type: string
+        version:
+          description: Version is the plugin version from the OCI config labels.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.PluginFileEntry:
+      properties:
+        path:
+          description: Path is the file path within the artifact.
+          type: string
+        size:
+          description: Size is the uncompressed file size in bytes.
+          type: integer
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.PluginInfo:
+      properties:
+        installed_plugin:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin'
+        metadata:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata'
+        project_scope_degraded_clients:
+          description: |-
+            ProjectScopeDegradedClients lists the client types for which a
+            project-scoped install degraded (the adapter could only materialize at
+            user scope — e.g. Codex always writes to the user-scoped config.toml).
+            Populated by Info; empty for user-scoped installs. Recomputed at read
+            time from the stored scope + each adapter's capability, mirroring the
+            UnmaterializedComponents pattern (no persistence needed — the degradation
+            is deterministic from scope + client type).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        unmaterialized_components:
+          additionalProperties:
+            items:
+              $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ComponentType'
+            type: array
+          description: |-
+            UnmaterializedComponents lists, per client type, the component types the
+            plugin declares that the installed client adapter does NOT load. Populated
+            by Info by diffing InstalledPlugin.Components against each installed
+            client adapter's SupportedComponents.
+          type: object
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.PluginMetadata:
+      description: Metadata contains the plugin's metadata.
+      properties:
+        author:
+          description: Author is the plugin author or maintainer.
+          type: string
+        description:
+          description: Description is a human-readable description of the plugin.
+          type: string
+        keywords:
+          description: Keywords is a list of keywords for categorization/search.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        license:
+          description: License is the SPDX license identifier for the plugin.
+          type: string
+        name:
+          description: Name is the unique name of the plugin (kebab-case).
+          type: string
+        version:
+          description: Version is the semantic version of the plugin.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.Scope:
+      description: Scope for the installation
+      enum:
+      - user
+      - project
+      - user
+      - project
+      type: string
+      x-enum-varnames:
+      - ScopeUser
+      - ScopeProject
+    github_com_stacklok_toolhive_pkg_plugins.ValidationResult:
+      properties:
+        errors:
+          description: Errors is a list of validation errors, if any.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        valid:
+          description: Valid indicates whether the skill definition is valid.
+          type: boolean
+        warnings:
+          description: Warnings is a list of non-blocking validation warnings, if
+            any.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket:
       description: |-
         PerUser token bucket configuration for this tool.
@@ -1697,6 +1917,9 @@ components:
       - installed
       - pending
       - failed
+      - installed
+      - pending
+      - failed
       type: string
       x-enum-varnames:
       - InstallStatusInstalled
@@ -1766,6 +1989,8 @@ components:
     github_com_stacklok_toolhive_pkg_skills.Scope:
       description: Scope for the installation
       enum:
+      - user
+      - project
       - user
       - project
       type: string
@@ -2531,6 +2756,16 @@ components:
           type: array
           uniqueItems: false
       type: object
+    pkg_api_v1.buildPluginRequest:
+      description: Request to build a plugin from a local directory
+      properties:
+        path:
+          description: Path to the plugin definition directory
+          type: string
+        tag:
+          description: OCI tag for the built artifact
+          type: string
+      type: object
     pkg_api_v1.buildSkillRequest:
       description: Request to build a skill from a local directory
       properties:
@@ -2842,6 +3077,42 @@ components:
             Use AddHeadersFromSecret for sensitive data like API keys.
           type: object
       type: object
+    pkg_api_v1.installPluginRequest:
+      description: Request to install a plugin
+      properties:
+        clients:
+          description: |-
+            Clients lists target client identifiers (e.g., "claude-code"),
+            or ["all"] to target every plugin-supporting client.
+            Omitting this field installs to all available clients.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        force:
+          description: Force allows overwriting unmanaged plugin directories
+          type: boolean
+        group:
+          description: Group is the group name to add the plugin to after installation
+          type: string
+        name:
+          description: Name or OCI reference of the plugin to install
+          type: string
+        project_root:
+          description: ProjectRoot is the project root path for project-scoped installs
+          type: string
+        scope:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope'
+        version:
+          description: Version to install (empty means latest)
+          type: string
+      type: object
+    pkg_api_v1.installPluginResponse:
+      description: Response after successfully installing a plugin
+      properties:
+        plugin:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin'
+      type: object
     pkg_api_v1.installSkillRequest:
       description: Request to install a skill
       properties:
@@ -2945,6 +3216,16 @@ components:
           description: Total is the total number of items matching the query
           type: integer
       type: object
+    pkg_api_v1.pluginListResponse:
+      description: Response containing a list of installed plugins
+      properties:
+        plugins:
+          description: List of installed plugins
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin'
+          type: array
+          uniqueItems: false
+      type: object
     pkg_api_v1.providerCapabilitiesResponse:
       description: Capabilities of the secrets provider
       properties:
@@ -2963,6 +3244,13 @@ components:
         can_write:
           description: Whether the provider can write secrets
           type: boolean
+      type: object
+    pkg_api_v1.pushPluginRequest:
+      description: Request to push a built plugin artifact
+      properties:
+        reference:
+          description: OCI reference to push
+          type: string
       type: object
     pkg_api_v1.pushSkillRequest:
       description: Request to push a built skill artifact
@@ -3305,6 +3593,13 @@ components:
             type: string
           type: array
           uniqueItems: false
+      type: object
+    pkg_api_v1.validatePluginRequest:
+      description: Request to validate a plugin definition
+      properties:
+        path:
+          description: Path to the plugin definition directory
+          type: string
       type: object
     pkg_api_v1.validateSkillRequest:
       description: Request to validate a skill definition
@@ -4243,6 +4538,457 @@ paths:
       summary: Get group details
       tags:
       - groups
+  /api/v1beta/plugins:
+    get:
+      description: Get a list of all installed plugins
+      parameters:
+      - description: Filter by scope (user or project)
+        in: query
+        name: scope
+        schema:
+          enum:
+          - user
+          - project
+          type: string
+      - description: Filter by client app
+        in: query
+        name: client
+        schema:
+          type: string
+      - description: Filter by project root path
+        in: query
+        name: project_root
+        schema:
+          type: string
+      - description: Filter by group name
+        in: query
+        name: group
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.pluginListResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: List all installed plugins
+      tags:
+      - plugins
+    post:
+      description: Install a plugin from a remote source
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/pkg_api_v1.installPluginRequest'
+                description: Install request
+                summary: request
+        description: Install request
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.installPluginResponse'
+          description: Created
+          headers:
+            Location:
+              description: URI of the installed plugin resource
+              schema:
+                type: string
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unauthorized (registry refused credentials)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (artifact not present in registry)
+        "409":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Conflict
+        "429":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Too Many Requests (registry rate limit)
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Gateway (upstream registry failure)
+        "504":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Gateway Timeout (upstream pull timed out)
+      summary: Install a plugin
+      tags:
+      - plugins
+  /api/v1beta/plugins/{name}:
+    delete:
+      description: Remove an installed plugin
+      parameters:
+      - description: Plugin name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      - description: Scope to uninstall from (user or project)
+        in: query
+        name: scope
+        schema:
+          enum:
+          - user
+          - project
+          type: string
+      - description: Project root path for project-scoped plugins
+        in: query
+        name: project_root
+        schema:
+          type: string
+      responses:
+        "204":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Uninstall a plugin
+      tags:
+      - plugins
+    get:
+      description: Get detailed information about a specific plugin
+      parameters:
+      - description: Plugin name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      - description: Filter by scope (user or project)
+        in: query
+        name: scope
+        schema:
+          enum:
+          - user
+          - project
+          type: string
+      - description: Project root path for project-scoped plugins
+        in: query
+        name: project_root
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginInfo'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Get plugin details
+      tags:
+      - plugins
+  /api/v1beta/plugins/build:
+    post:
+      description: Build a plugin from a local directory
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/pkg_api_v1.buildPluginRequest'
+                description: Build request
+                summary: request
+        description: Build request
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.BuildResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Build a plugin
+      tags:
+      - plugins
+  /api/v1beta/plugins/builds:
+    get:
+      description: Get a list of all locally-built OCI plugin artifacts in the local
+        store
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.buildListResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: List locally-built plugin artifacts
+      tags:
+      - plugins
+  /api/v1beta/plugins/builds/{tag}:
+    delete:
+      description: Remove a locally-built OCI plugin artifact and its blobs from the
+        local store
+      parameters:
+      - description: Artifact tag
+        in: path
+        name: tag
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Delete a locally-built plugin artifact
+      tags:
+      - plugins
+  /api/v1beta/plugins/content:
+    get:
+      description: |-
+        Retrieve the plugin.json body and file listing from an artifact
+        without installing it. Accepts OCI refs, git refs, or local tags.
+      parameters:
+      - description: OCI reference or local build tag
+        in: query
+        name: ref
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginContent'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unauthorized (registry refused credentials)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (artifact not present in registry)
+        "429":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Too Many Requests (registry rate limit)
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Gateway (upstream registry or git resolver failure)
+        "504":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Gateway Timeout (upstream pull timed out)
+      summary: Get plugin content
+      tags:
+      - plugins
+  /api/v1beta/plugins/push:
+    post:
+      description: Push a built plugin artifact to a remote registry
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/pkg_api_v1.pushPluginRequest'
+                description: Push request
+                summary: request
+        description: Push request
+        required: true
+      responses:
+        "204":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Push a plugin
+      tags:
+      - plugins
+  /api/v1beta/plugins/validate:
+    post:
+      description: Validate a plugin definition
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/pkg_api_v1.validatePluginRequest'
+                description: Validate request
+                summary: request
+        description: Validate request
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ValidationResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Validate a plugin
+      tags:
+      - plugins
   /api/v1beta/registry:
     get:
       description: Get a list of the current registries

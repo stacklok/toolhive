@@ -490,6 +490,10 @@ func TestBuildIngressCluster_UpstreamAddress(t *testing.T) {
 
 	assert.Equal(t, ingressClusterName, cluster.Name)
 	assert.Equal(t, "STRICT_DNS", cluster.Type)
+	// V4_ONLY prevents slow AAAA lookup timeouts when IPv6 is unavailable.
+	// A regression dropping this would fail silently (extra latency only).
+	assert.Equal(t, "V4_ONLY", cluster.DnsLookupFamily,
+		"ingress STRICT_DNS cluster must use V4_ONLY to avoid IPv6 lookup timeouts")
 	require.NotNil(t, cluster.LoadAssignment)
 	require.NotEmpty(t, cluster.LoadAssignment.Endpoints)
 	require.NotEmpty(t, cluster.LoadAssignment.Endpoints[0].LBEndpoints)
@@ -748,9 +752,10 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 }
 
 // TestEnvoyProxy_SetupOrchestration covers the container-orchestration branch
-// logic of SetupEgress/SetupIngress without a live daemon: the egress container
-// is always created (named <name>-egress), a non-stdio workload reserves an
-// ingress port that SetupIngress returns, and a stdio workload reserves none.
+// logic of SetupEgress/SetupIngress without a live daemon. SetupEgress must NOT
+// create any container — it only returns env vars. SetupIngress creates the
+// Envoy container (named <name>-egress) and returns the ingress port (0 for
+// stdio).
 func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 	t.Parallel()
 

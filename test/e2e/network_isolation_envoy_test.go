@@ -77,7 +77,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 
 		envoyRun(config, runArgs...).ExpectSuccess()
 		Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).
-			To(Succeed(), "Envoy server should be running within 120 seconds")
+			To(Succeed(), "Envoy server should be running within 180 seconds")
 		return serverName
 	}
 

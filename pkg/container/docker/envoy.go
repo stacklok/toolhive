@@ -664,8 +664,11 @@ func buildEgressCluster() envoyCluster {
 // localhost-only restriction; the container-side address must be 0.0.0.0 or
 // Docker's bridge forwarding cannot deliver traffic to the listener.
 //
-// When spec.Permissions.Inbound.AllowHost is set the virtual host domain list
-// is restricted to those entries; otherwise a wildcard domain ("*") is used.
+// The virtual host domain is always "*". Inbound host filtering is enforced
+// by the egress RBAC `:authority` matcher (hostMatchRegex), not the ingress
+// virtual host list — the transparent proxy sends "127.0.0.1:<port>" as the
+// Host header (port included), which would not match bare hostnames in a
+// domain list.
 func buildIngressListener(spec proxySpec, hostPort int) envoyListener {
 	domains := ingressDomains(spec)
 

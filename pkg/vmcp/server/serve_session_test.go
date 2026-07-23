@@ -299,6 +299,10 @@ func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.B
 	return nil, vmcp.ErrNotFound
 }
 
+func (*fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
+	return core.DiscoverCapabilities{}, nil
+}
+
 func (*fakeCore) Close() error { return nil }
 
 func (*fakeCore) BackendHealth() health.Reporter { return nil }

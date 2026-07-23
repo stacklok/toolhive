@@ -248,8 +248,9 @@ type envoyPrincipal struct {
 // real address (via SO_ORIGINAL_DST), unlike the forward-proxy listener where
 // destination_ip resolves to Envoy's own socket and is inert.
 type envoyNetworkRBAC struct {
-	Type  string                `json:"@type"`
-	Rules envoyNetworkRBACRules `json:"rules"`
+	Type       string                `json:"@type"`
+	StatPrefix string                `json:"stat_prefix"`
+	Rules      envoyNetworkRBACRules `json:"rules"`
 }
 
 // envoyNetworkRBACRules holds the action and policy map for a network RBAC filter.
@@ -885,7 +886,8 @@ func buildTransparentGatewayDenyRBAC(gatewayIP string) *envoyNetworkRBAC {
 	}
 
 	return &envoyNetworkRBAC{
-		Type: typeNetworkRBAC,
+		Type:       typeNetworkRBAC,
+		StatPrefix: "transparent_gateway_deny",
 		Rules: envoyNetworkRBACRules{
 			Action:   "DENY",
 			Policies: gatewayPolicies,
@@ -903,7 +905,8 @@ func buildTransparentGatewayDenyRBAC(gatewayIP string) *envoyNetworkRBAC {
 func buildTransparentAllowRBAC(spec proxySpec) *envoyNetworkRBAC {
 	policies := buildTransparentAllowPolicies(spec)
 	return &envoyNetworkRBAC{
-		Type: typeNetworkRBAC,
+		Type:       typeNetworkRBAC,
+		StatPrefix: "transparent_allow",
 		Rules: envoyNetworkRBACRules{
 			Action:   "ALLOW",
 			Policies: policies,

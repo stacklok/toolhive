@@ -54,6 +54,14 @@ var errWrongEra = errors.New("backend response is not a Modern (2026-07-28) MCP 
 // blank success.
 var errModernInputRequired = errors.New("Modern response requires additional input (multi-round retrieval unsupported)")
 
+// errModernProtocolError wraps a well-formed JSON-RPC error whose code is one of
+// the Modern-specific codes (-32020/-32021/-32022): the peer validated our
+// Modern headers/_meta and rejected them, so it IS Modern even though the call
+// failed. It is a positive Modern signal, distinct from errWrongEra and from a
+// generic JSON-RPC error (-32600/-32603, which do not prove Modern). probeRevision
+// classifies it as Modern.
+var errModernProtocolError = errors.New("modern backend rejected the request with a Modern protocol error")
+
 // modernRequestID supplies monotonically increasing JSON-RPC request ids. Each
 // modernCall is a single request/response, so the id only has to be unique
 // enough to match a response within one SSE stream.
@@ -125,8 +133,10 @@ func modernCall(
 	}
 	defer func() {
 		// Drain so the connection can be reused (go-style rule); the readers below
-		// may stop early (SSE match) or the body may be a bare error page.
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// may stop early (SSE match) or the body may be a bare error page. Bounded
+		// by maxResponseSize so a hostile backend can't stall us on an unbounded
+		// drain now that this path is live in production (probeRevision).
+		_, _ = io.CopyN(io.Discard, resp.Body, maxResponseSize)
 		_ = resp.Body.Close()
 	}()
 
@@ -137,6 +147,9 @@ func modernCall(
 	if rpcErr != nil {
 		if rpcErr.Code == jsonRPCCodeMethodNotFound {
 			return fmt.Errorf("%w: %s", mcp.ErrMethodNotFound, rpcErr.Message)
+		}
+		if isModernProtocolCode(rpcErr.Code) {
+			return fmt.Errorf("%w: %s (rpc code %d)", errModernProtocolError, rpcErr.Message, rpcErr.Code)
 		}
 		return fmt.Errorf("modern %s: rpc error %d: %s", method, rpcErr.Code, rpcErr.Message)
 	}
@@ -268,4 +281,19 @@ func modernIDMatches(raw json.RawMessage, wantID int64) bool {
 	}
 	var n int64
 	return json.Unmarshal(raw, &n) == nil && n == wantID
+}
+
+// isModernProtocolCode reports whether code is one of the Modern-specific
+// JSON-RPC error codes (header/meta validation, -3202x). Only these prove the
+// peer is Modern; generic JSON-RPC codes (-32600/-32601/-32603) do not, since a
+// Legacy backend also returns them.
+func isModernProtocolCode(code int) bool {
+	switch int64(code) {
+	case mcpparser.CodeHeaderMismatch,
+		mcpparser.CodeMissingClientCapability,
+		mcpparser.CodeUnsupportedProtocolVersion:
+		return true
+	default:
+		return false
+	}
 }

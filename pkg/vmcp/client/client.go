@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -139,6 +141,18 @@ type httpBackendClient struct {
 	// delivered. Nil (unbound) reproduces the pre-forwarding behavior exactly, so
 	// direct embedders and unit tests without a bound server are unaffected.
 	forwarders atomic.Pointer[boundForwarders]
+
+	// revisions caches each backend's resolved MCP revision, keyed by
+	// target.WorkloadID. An ABSENT key means unprobed — distinct from
+	// RevisionLegacy (0), a resolved result. Populated by probeRevision on the
+	// first ListCapabilities for a backend and read on subsequent calls to skip
+	// the Modern-first discover probe.
+	//
+	// ponytail: never evicted — a transient failure on the FIRST probe pins a
+	// backend to RevisionLegacy for the process lifetime. Recovery comes from
+	// Step 4's re-classification-on-error (re-probe + flip); add a TTL/re-probe
+	// only if flapping backends surface.
+	revisions sync.Map // map[string]mcpparser.Revision
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -907,11 +921,151 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
 }
 
+// cachedRevision returns the cached MCP revision for a backend. The second
+// return is false when the backend has never been probed (distinct from a
+// resolved RevisionLegacy).
+func (h *httpBackendClient) cachedRevision(workloadID string) (mcpparser.Revision, bool) {
+	v, ok := h.revisions.Load(workloadID)
+	if !ok {
+		return 0, false
+	}
+	return v.(mcpparser.Revision), true
+}
+
+// setRevision records a backend's resolved MCP revision.
+func (h *httpBackendClient) setRevision(workloadID string, rev mcpparser.Revision) {
+	h.revisions.Store(workloadID, rev)
+}
+
+// buildModernHTTPClient wraps the shared backend RoundTripper chain (auth,
+// identity, header-forward, trace, TLS/SSRF — see buildBackendRoundTripper) in an
+// *http.Client for the raw Modern shim. This is a LIVE production path: the
+// discover probe must carry the same security controls as every other backend
+// call, so it must NOT use a bare http.Client. A 30s timeout matches the
+// streamable-HTTP client; the response body is bounded inside modernCall
+// (io.LimitReader), so no size-limit transport wrapper is needed here.
+func (h *httpBackendClient) buildModernHTTPClient(ctx context.Context, target *vmcp.BackendTarget) (*http.Client, error) {
+	rt, err := h.buildBackendRoundTripper(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: rt, Timeout: 30 * time.Second}, nil
+}
+
+// modernDiscover issues a Modern server/discover and returns the backend's
+// capability flags. Used both by probeRevision and, on a Modern cache hit, by
+// ListCapabilities to re-fetch the flags without re-running the fallback ladder.
+func (h *httpBackendClient) modernDiscover(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (*mcp.ServerCapabilities, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	var discover struct {
+		Capabilities mcp.ServerCapabilities `json:"capabilities"`
+	}
+	if err := modernCall(ctx, hc, target.BaseURL, "server/discover", nil, "", &discover); err != nil {
+		return nil, err
+	}
+	return &discover.Capabilities, nil
+}
+
+// probeRevision resolves and caches a backend's MCP revision, Modern-first.
+//
+// It attempts a Modern server/discover and classifies MODERN only on (a) a clean
+// discover result, or (b) a Modern-specific protocol error (-3202x), which proves
+// the peer validated our Modern headers/_meta. EVERY other outcome —
+// errWrongEra, a -32601 (discover is mandatory for Modern, so its absence means
+// not Modern), a generic JSON-RPC error (-32600/-32603), a bare 404/400/405, an
+// empty/non-JSON body, a 200-with-Legacy-result, an input_required envelope, or a
+// timeout — falls back to LEGACY. This never strands a Legacy backend on a probe
+// hiccup.
+//
+// A hard error is returned only when the backend transport cannot be built at all
+// (e.g. invalid auth/CA config); that is a genuine misconfiguration, not a
+// revision signal.
+func (h *httpBackendClient) probeRevision(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (mcpparser.Revision, *mcp.ServerCapabilities, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to build transport for backend %s: %w", target.WorkloadID, err)
+	}
+
+	var discover struct {
+		Capabilities mcp.ServerCapabilities `json:"capabilities"`
+	}
+	err = modernCall(ctx, hc, target.BaseURL, "server/discover", nil, "", &discover)
+	switch {
+	case err == nil:
+		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
+		return mcpparser.RevisionModern, &discover.Capabilities, nil
+	case errors.Is(err, errModernProtocolError):
+		// The peer validated our Modern protocol metadata and rejected it: it IS
+		// Modern, discover just failed application-side. No usable caps.
+		// ponytail: first probe yields an empty-but-successful capability list
+		// here (nil caps); later cache-hit modernDiscover re-surfaces this error.
+		// Reconciled in Step 2b when enumeration replaces the discover-only list.
+		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
+		return mcpparser.RevisionModern, nil, nil
+	default:
+		slog.Debug("backend is not Modern; falling back to Legacy",
+			"backend", target.WorkloadID, "probe_error", err)
+		h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+		return mcpparser.RevisionLegacy, nil, nil
+	}
+}
+
+// modernCapabilityList builds the discover-level CapabilityList for a Modern
+// backend from its server/discover capability flags.
+func (*httpBackendClient) modernCapabilityList(
+	target *vmcp.BackendTarget, caps *mcp.ServerCapabilities,
+) *vmcp.CapabilityList {
+	slog.Debug("backend speaks Modern; discover capability flags",
+		"backend", target.WorkloadID,
+		"tools", caps != nil && caps.Tools != nil,
+		"resources", caps != nil && caps.Resources != nil,
+		"prompts", caps != nil && caps.Prompts != nil)
+	// ponytail: Modern tools/resources/prompts enumeration lands in Step 2b (#5911).
+	// For now discover only reports presence; the enumerations stay empty.
+	return &vmcp.CapabilityList{
+		Tools:             []vmcp.Tool{},
+		Resources:         []vmcp.Resource{},
+		ResourceTemplates: []vmcp.ResourceTemplate{},
+		Prompts:           []vmcp.Prompt{},
+	}
+}
+
 // ListCapabilities queries a backend for its MCP capabilities.
 // Returns tools, resources, and prompts exposed by the backend.
-// Only queries capabilities that the server advertises during initialization.
+//
+// On the first call for a backend it probes the MCP revision Modern-first
+// (probeRevision) and caches it. A Modern backend returns the discover-level
+// capability list; a Legacy backend takes the unchanged initialize+enumerate
+// path below. Subsequent calls read the cached revision and skip the probe.
 func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
 	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
+
+	rev, cached := h.cachedRevision(target.WorkloadID)
+	switch {
+	case !cached:
+		probed, modernCaps, err := h.probeRevision(ctx, target)
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "probe revision")
+		}
+		if probed == mcpparser.RevisionModern {
+			return h.modernCapabilityList(target, modernCaps), nil
+		}
+		// Legacy: fall through to the initialize+enumerate path below.
+	case rev == mcpparser.RevisionModern:
+		// Known Modern: one discover round-trip, no Legacy fallback.
+		modernCaps, err := h.modernDiscover(ctx, target)
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "modern discover")
+		}
+		return h.modernCapabilityList(target, modernCaps), nil
+	}
 
 	// Create a client for this backend (not yet initialized)
 	c, err := h.clientFactory(ctx, target, false)

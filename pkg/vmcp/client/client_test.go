@@ -43,6 +43,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
@@ -72,6 +73,11 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 			BaseURL:       "http://localhost:8080",
 			TransportType: "streamable-http",
 		}
+
+		// Pre-seed the revision cache to Legacy so ListCapabilities skips the
+		// Modern discover probe (which would need a real transport/registry) and
+		// goes straight to the injected clientFactory under test.
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 		capabilities, err := backendClient.ListCapabilities(context.Background(), target)
 

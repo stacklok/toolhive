@@ -20,6 +20,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/client"
 	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -81,6 +82,10 @@ func TestRegression_401_MapsToErrAuthenticationFailed(t *testing.T) {
 		TransportType: "streamable-http",
 	}
 
+	// Pre-seed Legacy so ListCapabilities skips the Modern discover probe (which
+	// needs a real registry) and exercises the Legacy error-mapping path here.
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
 	_, err := h.ListCapabilities(context.Background(), target)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, vmcp.ErrAuthenticationFailed),
@@ -132,6 +137,8 @@ func TestRegression_403OnInitialize_LegacySSEFallback(t *testing.T) {
 		TransportType: "streamable-http",
 	}
 
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
 	_, err := h.ListCapabilities(context.Background(), target)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, vmcp.ErrBackendUnavailable),
@@ -182,6 +189,8 @@ func TestRegression_403OnInitialize_MatchesSentinel(t *testing.T) {
 		BaseURL:       srv.URL,
 		TransportType: "streamable-http",
 	}
+
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 	_, err := h.ListCapabilities(context.Background(), target)
 	require.Error(t, err)

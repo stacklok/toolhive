@@ -68,6 +68,8 @@ spec:
             value: "true"
           - name: ENABLE_EXPERIMENTAL_FEATURES
             value: {{ .Values.operator.features.experimental | quote }}
+          - name: TOOLHIVE_ENABLE_UNTRUSTED_MODE
+            value: {{ .Values.operator.features.untrustedMode | quote }}
           - name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR
             value: {{ .Values.operator.features.storageVersionMigrator | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}

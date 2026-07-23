@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/k8s"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -22,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 const (
@@ -112,6 +114,7 @@ type backendConnector func(
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
 type defaultMultiSessionFactory struct {
 	connector          backendConnector
+	resolver           untrusted.BackendAddressResolver // nil = untrusted mode off
 	maxConcurrency     int
 	backendInitTimeout time.Duration
 }
@@ -136,6 +139,15 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 		if d > 0 {
 			f.backendInitTimeout = d
 		}
+	}
+}
+
+// WithUntrustedResolver installs the per-session backend address resolver for
+// untrusted backends. A nil resolver (the default) leaves the trusted-mode
+// session path bit-for-bit unchanged.
+func WithUntrustedResolver(r untrusted.BackendAddressResolver) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.resolver = r
 	}
 }
 
@@ -296,10 +308,23 @@ func populateBackendMetadata(transportSess transportsession.Session, results []i
 // WITHOUT applying the session-binding security wrapper.
 // Callers are responsible for wrapping the result with the appropriate decorator
 // (BindSession for new sessions, RestoreSessionBinding for restored ones).
+//
+// identityIssuer/identitySubject carry the (iss, sub) tuple the untrusted
+// resolver binds pods to: from the live identity on the create path, from the
+// stored binding on the restore path. Both empty = anonymous (untrusted
+// backends soft-fail).
+//
+// When untrusted mode provisions a FRESH pod for a backend (EnsurePod create,
+// not adopt), that backend's stored Mcp-Session-Id hint is dropped before the
+// connector runs: the hint names a backend-side session on the pod that was
+// just deleted — a backend that trusts it would resume state from the pod's
+// previous incarnation. A stale hint is never sent to a fresh pod.
 func (f *defaultMultiSessionFactory) makeBaseSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
+	identityIssuer string,
+	identitySubject string,
 	backends []*vmcp.Backend,
 	sessionHints map[string]string,
 ) *defaultMultiSession {
@@ -312,6 +337,28 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		filtered = append(filtered, b)
 	}
 	backends = filtered
+
+	// Untrusted seam: rewrite per-session backend targets to their
+	// single-tenant pods before any connection is opened. The resolver
+	// soft-fails individual backends; trusted backends pass through
+	// unmodified. Nil resolver = untrusted mode off (behavior unchanged).
+	if f.resolver != nil {
+		sessRef := untrusted.SessionRef{
+			SessionID: sessID,
+			Issuer:    identityIssuer,
+			Subject:   identitySubject,
+			Namespace: currentNamespace(),
+		}
+		// Hint-drop seam: when the lifecycle CREATES a pod (rather than
+		// adopting the session's existing one), the backend's stored hint is
+		// stale — it names a backend-side session on the pod that was just
+		// deleted. The callback is wired through the resolver and fires only
+		// on fresh creates; makeBaseSession runs single-threaded here, so the
+		// plain-map write needs no synchronization.
+		backends = f.resolver.ResolveTargets(ctx, sessRef, backends, func(backendID string) {
+			delete(sessionHints, backendID)
+		})
+	}
 
 	rawResults := make([]*initResult, len(backends))
 	sem := make(chan struct{}, f.maxConcurrency)
@@ -378,7 +425,11 @@ func (f *defaultMultiSessionFactory) makeSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	baseSession := f.makeBaseSession(ctx, sessID, identity, backends, nil)
+	// Extract (iss, sub) for the untrusted resolver — the same tuple
+	// BindSession extracts (security.go extractBindingID). Anonymous sessions
+	// carry empty halves; the resolver soft-fails their untrusted backends.
+	iss, sub := identityClaims(identity)
+	baseSession := f.makeBaseSession(ctx, sessID, identity, iss, sub, backends, nil)
 
 	// Apply session binding: extracts the (iss, sub) identity tuple, stores it in
 	// session metadata under MetadataKeyIdentityBinding, and wraps the session with
@@ -418,6 +469,10 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 
 	// Filter allBackends to the subset originally connected in this session.
+	// sessionHints is non-nil even when empty so the hint-drop callback in
+	// makeBaseSession (untrusted mode) can always delete from it.
+	sessionHints := make(map[string]string, len(allBackends))
+
 	filteredBackends := filterBackendsByStoredIDs(allBackends, storedBackendIDs)
 
 	// Validate and read the stored identity binding. This key is written by
@@ -444,15 +499,19 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	// a non-nil *auth.Identity is always fully populated (see pkg/auth/identity.go).
 	// Backend connectors receive nil identity; live tool calls already carry a
 	// complete identity on req.Context() from TokenValidator.Middleware. See #5336.
+	var restoredIss, restoredSub string
 	if !binding.IsUnauthenticated(storedBinding) {
-		if _, _, ok := binding.Parse(storedBinding); !ok {
+		iss, sub, ok := binding.Parse(storedBinding)
+		if !ok {
 			return nil, fmt.Errorf("RestoreSession: stored identity binding is malformed: %q", storedBinding)
 		}
+		restoredIss, restoredSub = iss, sub
 	}
 
 	// Extract stored per-backend session IDs as hints so each backend can
 	// resume its session (via Mcp-Session-Id) rather than starting a new one.
-	sessionHints := make(map[string]string, len(filteredBackends))
+	// A hint for an untrusted backend whose pod must be recreated is dropped
+	// by the resolver's fresh-pod callback before the connector runs.
 	for _, b := range filteredBackends {
 		if hint := storedMetadata[MetadataKeyBackendSessionPrefix+b.ID]; hint != "" {
 			sessionHints[b.ID] = hint
@@ -460,8 +519,10 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 
 	// Build the base session (backend connections + routing table) without the
-	// security wrapper. Pass nil identity — see comment above.
-	baseSession := f.makeBaseSession(ctx, id, nil, filteredBackends, sessionHints)
+	// security wrapper. Pass nil identity — see comment above. The restored
+	// (iss, sub) from the parsed binding feeds the untrusted resolver, which
+	// finds the session's existing pods by deterministic name.
+	baseSession := f.makeBaseSession(ctx, id, nil, restoredIss, restoredSub, filteredBackends, sessionHints)
 
 	// Restore only the identity-binding key from stored metadata. The other
 	// keys (MetadataKeyBackendIDs, MetadataKeyBackendSessionPrefix.*) are
@@ -477,6 +538,25 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 	return restored, nil
 }
+
+// identityClaims extracts (iss, sub) from an identity the same way
+// security.extractBindingID does. Missing/non-string claims yield empty
+// strings — the untrusted resolver treats that as anonymous and soft-fails
+// untrusted backends, matching BindSession's own fail-closed posture (a
+// malformed identity never binds a pod).
+func identityClaims(identity *auth.Identity) (iss, sub string) {
+	if identity == nil {
+		return "", ""
+	}
+	iss, _ = identity.Claims["iss"].(string)
+	sub, _ = identity.Claims["sub"].(string)
+	return iss, sub
+}
+
+// currentNamespace resolves the vMCP's own namespace for untrusted pod
+// provisioning. Var indirection keeps the session package testable without an
+// in-cluster environment.
+var currentNamespace = k8s.GetCurrentNamespace
 
 // filterBackendsByStoredIDs returns the subset of allBackends whose ID appears in
 // the comma-separated storedIDs string. If storedIDs is empty, nil is returned (no backends).

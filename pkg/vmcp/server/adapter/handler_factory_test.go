@@ -5,7 +5,9 @@ package adapter_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -249,6 +252,87 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 				t.Helper()
 				assert.True(t, result.IsError)
 				assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "Tool call failed")
+			},
+		},
+		{
+			name:     "consent required returns marker tool result",
+			toolName: "test_tool",
+			setupMocks: func(mockRouter *routermocks.MockRouter, mockClient *vmcpmocks.MockBackendClient) {
+				target := &vmcp.BackendTarget{
+					WorkloadID: "backend1",
+				}
+
+				mockRouter.EXPECT().
+					RouteTool(gomock.Any(), "test_tool").
+					Return(target, nil)
+
+				// Production shape: wrapBackendError joins ErrAuthenticationFailed
+				// with the wrapped ConsentRequiredError chain.
+				consentErr := &authtypes.ConsentRequiredError{
+					Provider:     "github",
+					AuthorizeURL: "https://thv.example.com/oauth/authorize",
+				}
+				mockClient.EXPECT().
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					Return(nil, errors.Join(vmcp.ErrAuthenticationFailed, consentErr))
+			},
+			request: mcp.CallToolRequest{
+				Params: mcp.CallToolParams{
+					Name:      "test_tool",
+					Arguments: map[string]any{"input": "test"},
+				},
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				require.True(t, result.IsError)
+				require.NotEmpty(t, result.Content)
+				text := result.Content[0].(mcp.TextContent).Text
+				require.True(t, strings.HasPrefix(text, authtypes.ConsentRequiredMarker+" "),
+					"text must start with the consent marker, got: %q", text)
+
+				var payload map[string]any
+				require.NoError(t, json.Unmarshal(
+					[]byte(strings.TrimPrefix(text, authtypes.ConsentRequiredMarker+" ")), &payload))
+				assert.Equal(t, "github", payload["provider"])
+				assert.Equal(t, "https://thv.example.com/oauth/authorize", payload["authorize_url"])
+			},
+		},
+		{
+			name:     "consent required without authorize URL omits the key",
+			toolName: "test_tool",
+			setupMocks: func(mockRouter *routermocks.MockRouter, mockClient *vmcpmocks.MockBackendClient) {
+				target := &vmcp.BackendTarget{
+					WorkloadID: "backend1",
+				}
+
+				mockRouter.EXPECT().
+					RouteTool(gomock.Any(), "test_tool").
+					Return(target, nil)
+
+				mockClient.EXPECT().
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					Return(nil, errors.Join(vmcp.ErrAuthenticationFailed,
+						&authtypes.ConsentRequiredError{Provider: "github"}))
+			},
+			request: mcp.CallToolRequest{
+				Params: mcp.CallToolParams{
+					Name:      "test_tool",
+					Arguments: map[string]any{"input": "test"},
+				},
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				require.True(t, result.IsError)
+				text := result.Content[0].(mcp.TextContent).Text
+				require.True(t, strings.HasPrefix(text, authtypes.ConsentRequiredMarker+" "))
+				var payload map[string]any
+				require.NoError(t, json.Unmarshal(
+					[]byte(strings.TrimPrefix(text, authtypes.ConsentRequiredMarker+" ")), &payload))
+				assert.Equal(t, "github", payload["provider"])
+				_, hasURL := payload["authorize_url"]
+				assert.False(t, hasURL, "authorize_url key must be absent when not configured")
 			},
 		},
 		{

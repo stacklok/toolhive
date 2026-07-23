@@ -26,6 +26,7 @@ import (
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
+	vmcpsessionuntrusted "github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
@@ -81,6 +82,27 @@ type FactoryConfig struct {
 	// effect when the optimizer is disabled. The legacy server.New path leaves this
 	// false, so its optimizer decorator is unchanged.
 	AdvertiseFromCore bool
+
+	// Untrusted, when non-nil, enables untrusted-mode behavior in the session
+	// manager: untrusted-aware restore budget selection and DeletePod on
+	// Terminate. The Resolver itself is installed on cfg.Base by the caller
+	// (WithUntrustedResolver); the reaper returned alongside the stack is
+	// started by the composition root that owns the process context.
+	Untrusted *UntrustedConfig
+}
+
+// UntrustedConfig carries the untrusted-mode wiring for the session manager.
+type UntrustedConfig struct {
+	// Resolver, when non-nil, marks untrusted backends present in restored
+	// backend sets for restore-budget selection. It is the same instance the
+	// base session factory was built with (informational here; the factory
+	// performs the actual rewrite).
+	Resolver vmcpsessionuntrusted.BackendAddressResolver
+	// Lifecycle deletes session pods on Terminate.
+	Lifecycle vmcpsessionuntrusted.PodLifecycle
+	// CacheCapacity mirrors FactoryConfig.CacheCapacity (0 = default) so the
+	// untrusted-aware budget selection has the resolved value.
+	CacheCapacity int
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry

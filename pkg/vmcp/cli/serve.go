@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/yaml.v3"
 	"k8s.io/client-go/rest"
@@ -46,6 +47,7 @@ import (
 	ratelimitfactory "github.com/stacklok/toolhive/pkg/vmcp/ratelimit/factory"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -348,9 +350,27 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Debug("VMCP_SESSION_HMAC_SECRET is set but no longer used after #5306; ignoring",
 			"env_var", "VMCP_SESSION_HMAC_SECRET")
 	}
+
+	// Untrusted backend mode (ADR-0001): when the group contains an untrusted
+	// MCPServer, wire the per-session pod lifecycle (resolver) and GC reaper.
+	// Gated on actual untrusted backends, so trusted-only deployments are
+	// unaffected. The reaper is started after the server is built (below).
+	var untrustedMeterProvider metric.MeterProvider
+	if telemetryProvider != nil {
+		untrustedMeterProvider = telemetryProvider.MeterProvider()
+	}
+	untrustedStk, err := buildUntrustedStack(ctx, vmcpCfg, backends, vmcpNamespace(), vmcpCfg.Name, untrustedMeterProvider)
+	if err != nil {
+		return fmt.Errorf("failed to initialize untrusted backend mode: %w", err)
+	}
+
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
+	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
+	if untrustedStk != nil {
+		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithUntrustedResolver(untrustedStk.resolver))
+	}
+	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -443,6 +463,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Authz:      authzConfig,
 	})
 
+	// Untrusted mode: forward the resolver + lifecycle to the session manager so
+	// Terminate deletes per-session pods and restores use the cold-start budget.
+	if untrustedStk != nil {
+		serverCfg.Untrusted = &sessionmanager.UntrustedConfig{
+			Resolver:      untrustedStk.resolver,
+			Lifecycle:     untrustedStk.lifecycle,
+			CacheCapacity: untrustedCacheCapacity(),
+		}
+	}
+
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
 	// *k8s.BackendWatcher assigned to the Watcher interface produces a
 	// non-nil interface value, which panics on the first /readyz probe.
@@ -463,6 +493,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, backendRegistry, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
+	}
+
+	// Start the untrusted-mode reaper with the server's lifecycle: it runs until
+	// ctx is cancelled (srv.Start returns), then the shared Redis client is
+	// closed. Started only when the group has untrusted backends. The reaper's
+	// session-liveness probe comes from the session manager (the owner of
+	// session storage) — never a re-derived storage key.
+	if untrustedStk != nil {
+		shutdown := runUntrustedReaper(ctx, untrustedStk, srv.VMCPSessionManager().SessionExists)
+		defer shutdown()
 	}
 
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))

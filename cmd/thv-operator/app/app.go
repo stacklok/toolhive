@@ -288,6 +288,7 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 		Recorder:                 mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		APIReader:                mgr.GetAPIReader(),
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)

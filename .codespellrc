@@ -1,3 +1,3 @@
 [codespell]
-ignore-words-list = NotIn,notin,AfterAll,ND,aks,deriver,te,clientA,AtMost,atmost,convertIn
+ignore-words-list = NotIn,notin,AfterAll,ND,aks,deriver,te,clientA,AtMost,atmost,convertIn,userA
 skip = *.svg,*.mod,*.sum

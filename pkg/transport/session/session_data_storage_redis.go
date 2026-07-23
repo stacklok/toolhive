@@ -62,6 +62,23 @@ func (s *RedisSessionDataStorage) key(id string) string {
 	return s.keyPrefix + id
 }
 
+// RedisAccess exposes the underlying Redis client and per-tenant key prefix so
+// the untrusted-mode wiring (pkg/vmcp/session/untrusted) can back its admission
+// counters and pod leases from the same connection and ':'-terminated prefix as
+// the session store, rather than a second connection that could drift from the
+// session store's coordinates. The returned client is the same instance owned
+// by this storage — callers must NOT close it (Close remains the storage's
+// responsibility).
+//
+// A composition root that constructs the RedisSessionDataStorage itself (e.g.
+// an enterprise build wiring the untrusted stack before the server exists) uses
+// this to hand NewStack the shared client. The OSS vMCP CLI builds its own
+// connection from cfg.SessionStorage instead because the storage is created
+// inside Serve, after the session factory (which carries the resolver) exists.
+func (s *RedisSessionDataStorage) RedisAccess() (redis.UniversalClient, string) {
+	return s.client, s.keyPrefix
+}
+
 // Load retrieves metadata from Redis and refreshes the key's TTL via GETEX.
 // Returns ErrSessionNotFound if the key does not exist.
 func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[string]string, error) {

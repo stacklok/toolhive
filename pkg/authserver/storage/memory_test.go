@@ -450,7 +450,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			}
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", "provider-a", tokens))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-123", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-123", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, tokens.AccessToken, retrieved.AccessToken)
 			assert.Equal(t, tokens.RefreshToken, retrieved.RefreshToken)
@@ -461,7 +461,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("get non-existent", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			_, err := s.GetUpstreamTokens(ctx, "non-existent", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "non-existent", "provider-a", nil)
 			requireNotFoundError(t, err)
 		})
 	})
@@ -470,7 +470,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "to-delete", "provider-a", &UpstreamTokens{AccessToken: "test"}))
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "to-delete"))
-			_, err := s.GetUpstreamTokens(ctx, "to-delete", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "to-delete", "provider-a", nil)
 			requireNotFoundError(t, err)
 		})
 	})
@@ -480,7 +480,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-1", UserID: "user1"}))
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-2", UserID: "user2"}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "token-2", retrieved.AccessToken)
 			assert.Equal(t, "user2", retrieved.UserID)
@@ -496,7 +496,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			}))
 			assert.Equal(t, 1, s.Stats().UpstreamTokens)
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "expired", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "expired", "provider-a", nil)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
 			// Tokens should be returned alongside ErrExpired for refresh purposes
@@ -514,11 +514,11 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", tokensA))
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", tokensB))
 
-			retrievedA, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			retrievedA, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "access-a", retrievedA.AccessToken)
 
-			retrievedB, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			retrievedB, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "access-b", retrievedB.AccessToken)
 		})
@@ -530,14 +530,14 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", tokensA))
 
 			// Provider B should not be affected by provider A's data
-			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b", nil)
 			requireNotFoundError(t, err)
 
 			// Store provider B and verify provider A is unchanged
 			tokensB := &UpstreamTokens{AccessToken: "access-b", ExpiresAt: time.Now().Add(time.Hour)}
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", tokensB))
 
-			retrievedA, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			retrievedA, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "access-a", retrievedA.AccessToken)
 		})
@@ -551,7 +551,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", tokensA))
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", tokensB))
 
-			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1", nil)
 			require.NoError(t, err)
 			assert.Len(t, all, 2)
 			assert.Equal(t, "access-a", all["provider-a"].AccessToken)
@@ -561,7 +561,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("GetAllUpstreamTokens unknown session", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			all, err := s.GetAllUpstreamTokens(ctx, "unknown-session")
+			all, err := s.GetAllUpstreamTokens(ctx, "unknown-session", nil)
 			require.NoError(t, err)
 			assert.Empty(t, all)
 		})
@@ -575,7 +575,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 
-			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1", nil)
 			require.NoError(t, err)
 			require.Len(t, all, 1)
 			assert.Equal(t, "expired-access", all["provider-a"].AccessToken)
@@ -591,9 +591,9 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "session-1"))
 
-			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a", nil)
 			requireNotFoundError(t, err)
-			_, err = s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			_, err = s.GetUpstreamTokens(ctx, "session-1", "provider-b", nil)
 			requireNotFoundError(t, err)
 			assert.Equal(t, 0, s.Stats().UpstreamTokens)
 		})
@@ -609,7 +609,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("empty providerName returns error for Get", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			_, err := s.GetUpstreamTokens(ctx, "session-1", "")
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "", nil)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
 		})
@@ -841,14 +841,14 @@ func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 
 			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
 
-			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a", nil)
 			requireNotFoundError(t, err)
 
-			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "b", got.AccessToken)
 
-			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1", nil)
 			require.NoError(t, err)
 			assert.Len(t, all, 1)
 		})
@@ -1020,11 +1020,11 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 			},
 			getStats: func(st Stats) int { return st.UpstreamTokens },
 			verifyGone: func(ctx context.Context, s *MemoryStorage) error {
-				_, err := s.GetUpstreamTokens(ctx, "expired", "provider-a")
+				_, err := s.GetUpstreamTokens(ctx, "expired", "provider-a", nil)
 				return err
 			},
 			verifyKeep: func(ctx context.Context, s *MemoryStorage) error {
-				_, err := s.GetUpstreamTokens(ctx, "valid", "provider-a")
+				_, err := s.GetUpstreamTokens(ctx, "valid", "provider-a", nil)
 				return err
 			},
 		},
@@ -1082,7 +1082,7 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 
 			assert.Equal(t, 1, s.Stats().UpstreamTokens, "only the expiring token should be removed")
 
-			tokens, err := s.GetUpstreamTokens(ctx, "never-expiring", "provider-a")
+			tokens, err := s.GetUpstreamTokens(ctx, "never-expiring", "provider-a", nil)
 			require.NoError(t, err)
 			require.NotNil(t, tokens)
 			assert.Equal(t, "non-expiring-token", tokens.AccessToken)
@@ -1102,7 +1102,7 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 			s.cleanupExpired()
 
 			assert.Equal(t, 0, s.Stats().UpstreamTokens)
-			_, getErr := s.GetUpstreamTokens(ctx, "sess-1", "github")
+			_, getErr := s.GetUpstreamTokens(ctx, "sess-1", "github", nil)
 			requireNotFoundError(t, getErr)
 		})
 	})
@@ -1322,7 +1322,7 @@ func TestMemoryStorage_InputValidation(t *testing.T) {
 	t.Run("StoreUpstreamTokens nil tokens is valid", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", "provider-a", nil))
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-id", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-id", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Nil(t, retrieved)
 		})
@@ -1620,7 +1620,7 @@ func TestMemoryStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the user's upstream tokens are gone
-		_, err = s.GetUpstreamTokens(ctx, "session-user", "google")
+		_, err = s.GetUpstreamTokens(ctx, "session-user", "google", nil)
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the other user's identity is still there
@@ -1629,7 +1629,7 @@ func TestMemoryStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.Equal(t, "other-user", retrieved.UserID)
 
 		// Verify the other user's upstream tokens are still there
-		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other", "google")
+		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other", "google", nil)
 		require.NoError(t, err)
 		assert.Equal(t, "other-token", otherRetrieved.AccessToken)
 	})
@@ -2189,4 +2189,311 @@ func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
 	assert.NotEqual(t, b, c)
 	assert.NotEqual(t, a, d)
 	assert.Equal(t, d, e)
+}
+
+// seedBoundRow stores a live, fully-bound upstream token row for
+// (sessionID, provider).
+func seedBoundRow(ctx context.Context, t *testing.T, s *MemoryStorage, sessionID, provider string) {
+	t.Helper()
+	row := &UpstreamTokens{
+		ProviderID:      provider,
+		AccessToken:     "access-" + provider,
+		RefreshToken:    "refresh-" + provider,
+		ExpiresAt:       time.Now().Add(time.Hour),
+		UserID:          "user-A",
+		ClientID:        "client-A",
+		UpstreamSubject: "subject-A",
+	}
+	require.NoError(t, s.StoreUpstreamTokens(ctx, sessionID, provider, row))
+}
+
+// TestMemoryStorage_UpstreamBinding covers the read-side binding matrix
+// (scenarios 1-12) for the in-memory backend. Log-capturing cases live in
+// TestMemoryStorage_UpstreamBinding_WarnLogs because slog.SetDefault is
+// process-global.
+func TestMemoryStorage_UpstreamBinding(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scenario 1: matching ctx user, nil expected, row returned", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-1", "github")
+
+			readCtx := ContextWithBindingUser(ctx, "user-A")
+			got, err := s.GetUpstreamTokens(readCtx, "sess-1", "github", nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "user-A", got.UserID)
+		})
+	})
+
+	t.Run("scenario 2: mismatched ctx user, nil expected, ErrInvalidBinding with nil tokens", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-2", "github")
+
+			readCtx := ContextWithBindingUser(ctx, "user-B")
+			got, err := s.GetUpstreamTokens(readCtx, "sess-2", "github", nil)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got, "mismatched row must not be released, even for refresh")
+		})
+	})
+
+	t.Run("scenario 3: no identity in ctx, nil expected, row returned", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-3", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-3", "github", nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+		})
+	})
+
+	t.Run("scenario 4: expected UserID match and mismatch", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-4", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-4", "github", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			got, err = s.GetUpstreamTokens(ctx, "sess-4", "github", &ExpectedBinding{UserID: "user-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got)
+		})
+	})
+
+	t.Run("scenario 5: client ID binding variants", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-5", "github")
+
+			// match
+			got, err := s.GetUpstreamTokens(ctx, "sess-5", "github", &ExpectedBinding{ClientID: "client-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			// mismatch
+			got, err = s.GetUpstreamTokens(ctx, "sess-5", "github", &ExpectedBinding{ClientID: "client-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got)
+
+			// expected-empty skips the dimension
+			got, err = s.GetUpstreamTokens(ctx, "sess-5", "github", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			// stored-empty legacy row passes with an asserted client
+			legacy := &UpstreamTokens{
+				ProviderID: "github", AccessToken: "legacy-access",
+				ExpiresAt: time.Now().Add(time.Hour), UserID: "user-A",
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-5b", "github", legacy))
+			got, err = s.GetUpstreamTokens(ctx, "sess-5b", "github",
+				&ExpectedBinding{UserID: "user-A", ClientID: "client-B"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+		})
+	})
+
+	t.Run("scenario 6: upstream subject mismatch", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-6", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-6", "github", &ExpectedBinding{UpstreamSubject: "subject-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got)
+		})
+	})
+
+	t.Run("scenario 7: expired + mismatched row yields ErrInvalidBinding, not ErrExpired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			row := &UpstreamTokens{
+				ProviderID: "github", AccessToken: "stale-access", RefreshToken: "stale-refresh",
+				ExpiresAt: time.Now().Add(-time.Hour), UserID: "user-A",
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-7", "github", row))
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-7", "github", &ExpectedBinding{UserID: "user-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.NotErrorIs(t, err, ErrExpired, "binding must win over expiry")
+			assert.Nil(t, got, "no refresh material released for a mismatched row")
+		})
+	})
+
+	t.Run("scenario 8: bulk read excludes only the mismatched provider", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-8", "github")
+			other := &UpstreamTokens{
+				ProviderID: "gitlab", AccessToken: "other-access",
+				ExpiresAt: time.Now().Add(time.Hour), UserID: "user-B",
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-8", "gitlab", other))
+
+			all, err := s.GetAllUpstreamTokens(ctx, "sess-8", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.Len(t, all, 1)
+			assert.Contains(t, all, "github")
+			assert.NotContains(t, all, "gitlab")
+		})
+	})
+
+	t.Run("scenario 9: bulk read with all rows mismatched returns empty map, nil error", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-9", "github")
+			seedBoundRow(ctx, t, s, "sess-9", "gitlab")
+
+			all, err := s.GetAllUpstreamTokens(ctx, "sess-9", &ExpectedBinding{UserID: "user-B"})
+			require.NoError(t, err)
+			require.NotNil(t, all, "unknown-session semantics preserved: empty map, not nil")
+			assert.Empty(t, all)
+		})
+	})
+
+	t.Run("scenario 12: tombstone passes through the binding path", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Store nil tokens: the write path persists a deletion tombstone.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-12", "github", nil))
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-12", "github", &ExpectedBinding{UserID: "user-B"})
+			require.NoError(t, err)
+			assert.Nil(t, got, "tombstone semantics unchanged: (nil, nil), no panic")
+
+			// Strict mode must not reject a tombstone either — there is no row
+			// to bind, so the caller's tombstone handling applies.
+			got, err = s.GetUpstreamTokens(ctx, "sess-12", "github", &ExpectedBinding{UserID: "user-B", Strict: true})
+			require.NoError(t, err)
+			assert.Nil(t, got)
+		})
+	})
+
+	t.Run("strict mode: legacy row (empty stored UserID) fails closed, owned row passes", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			legacy := &UpstreamTokens{
+				ProviderID: "github", AccessToken: "legacy-access", RefreshToken: "legacy-refresh",
+				ExpiresAt: time.Now().Add(time.Hour),
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-strict", "github", legacy))
+
+			// Permissive default: the legacy row is released (pre-Strict behavior).
+			got, err := s.GetUpstreamTokens(ctx, "sess-strict", "github", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			// Strict: the same row fails closed — no token material released.
+			got, err = s.GetUpstreamTokens(ctx, "sess-strict", "github", &ExpectedBinding{UserID: "user-A", Strict: true})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got, "strict mode must not release a row that cannot prove its owner")
+
+			// Strict bulk read excludes the legacy row.
+			all, err := s.GetAllUpstreamTokens(ctx, "sess-strict", &ExpectedBinding{UserID: "user-A", Strict: true})
+			require.NoError(t, err)
+			assert.NotContains(t, all, "github")
+
+			// Strict with an owned row passes normally.
+			seedBoundRow(ctx, t, s, "sess-strict-owned", "github")
+			got, err = s.GetUpstreamTokens(ctx, "sess-strict-owned", "github",
+				&ExpectedBinding{UserID: "user-A", Strict: true})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+		})
+	})
+
+	t.Run("scenario 11: equal-length and differing-length mismatches both fail", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			seedBoundRow(ctx, t, s, "sess-11", "github")
+
+			_, err := s.GetUpstreamTokens(ctx, "sess-11", "github", &ExpectedBinding{UserID: "user-B"})
+			assert.ErrorIs(t, err, ErrInvalidBinding, "equal-length mismatch")
+
+			_, err = s.GetUpstreamTokens(ctx, "sess-11", "github", &ExpectedBinding{UserID: "user-A-plus-extra"})
+			assert.ErrorIs(t, err, ErrInvalidBinding, "differing-length mismatch")
+		})
+	})
+}
+
+// TestMemoryStorage_UpstreamBinding_WarnLogs covers the log-asserting binding
+// scenarios. It uses slog.SetDefault (process-global) and therefore does not
+// run in parallel.
+//
+//nolint:paralleltest // captures slog default
+func TestMemoryStorage_UpstreamBinding_WarnLogs(t *testing.T) {
+	//nolint:paralleltest // captures slog default
+	t.Run("scenario 8: bulk exclusion emits WARN with session, provider, dimension", func(t *testing.T) {
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		ctx := context.Background()
+		seedBoundRow(ctx, t, s, "sess-w8", "github")
+		other := &UpstreamTokens{
+			ProviderID: "gitlab", AccessToken: "other-access",
+			ExpiresAt: time.Now().Add(time.Hour), UserID: "user-B",
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-w8", "gitlab", other))
+
+		out := captureWarnLogs(t)
+		all, err := s.GetAllUpstreamTokens(ctx, "sess-w8", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		require.Len(t, all, 1)
+		assertBindingExclusionWarn(t, out.String(), "sess-w8", "gitlab", "user_id")
+	})
+
+	//nolint:paralleltest // captures slog default
+	t.Run("scenario 10: legacy row returned with asserted user logs the unverified-owner WARN", func(t *testing.T) {
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		ctx := context.Background()
+		legacy := &UpstreamTokens{
+			ProviderID: "github", AccessToken: "legacy-access",
+			ExpiresAt: time.Now().Add(time.Hour),
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-w10", "github", legacy))
+
+		out := captureWarnLogs(t)
+		got, err := s.GetUpstreamTokens(ctx, "sess-w10", "github", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		require.NotNil(t, got, "legacy rows are released per the empty-field rule")
+		// The caller asserted an owner the row cannot prove: exactly one WARN,
+		// naming session and provider — never the exclusion WARN (nothing was
+		// excluded) and never token material.
+		assert.Contains(t, out.String(), "no recorded owner")
+		assert.Contains(t, out.String(), "sess-w10")
+		assert.Contains(t, out.String(), "github")
+		assert.NotContains(t, out.String(), "binding validation failed")
+
+		out.Reset()
+		all, err := s.GetAllUpstreamTokens(ctx, "sess-w10", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		assert.Contains(t, all, "github")
+		assert.Contains(t, out.String(), "no recorded owner")
+		assert.NotContains(t, out.String(), "binding validation failed")
+	})
+
+	//nolint:paralleltest // captures slog default
+	t.Run("scenario 10b: plain legacy passthrough (nil expected, no ctx user) logs nothing", func(t *testing.T) {
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		ctx := context.Background()
+		legacy := &UpstreamTokens{
+			ProviderID: "github", AccessToken: "legacy-access",
+			ExpiresAt: time.Now().Add(time.Hour),
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-w10b", "github", legacy))
+
+		out := captureWarnLogs(t)
+		got, err := s.GetUpstreamTokens(ctx, "sess-w10b", "github", nil)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Empty(t, out.String(), "legacy passthrough without an asserted user must not log (hot-path spam)")
+
+		// An owned row with an asserted user is fully verified — no WARN either.
+		seedBoundRow(ctx, t, s, "sess-w10c", "github")
+		out.Reset()
+		got, err = s.GetUpstreamTokens(ctx, "sess-w10c", "github", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Empty(t, out.String(), "a fully-owned row matching the asserted user must not log")
+	})
 }

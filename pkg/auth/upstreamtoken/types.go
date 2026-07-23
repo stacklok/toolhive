@@ -7,7 +7,11 @@ package upstreamtoken
 
 //go:generate go run go.uber.org/mock/mockgen -destination=mocks/mock_token_reader.go -package=mocks github.com/stacklok/toolhive/pkg/auth/upstreamtoken TokenReader
 
-import "context"
+import (
+	"context"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+)
 
 // TokenSessionIDClaimKey is the JWT claim key for the token session ID.
 // This links JWT access tokens to stored upstream IDP tokens.
@@ -62,7 +66,12 @@ type TokenReader interface {
 	// be expired.
 	//
 	// Returns an empty map and nil failed slice (not error) for unknown sessions.
-	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
+	//
+	// The expected binding is forwarded to storage, which excludes any row whose
+	// stored binding (user / OAuth client / upstream subject) does not match;
+	// excluded providers are simply absent from the creds map. A nil expected
+	// still enforces the user binding whenever the ctx carries a platform user.
+	GetAllUpstreamCredentials(ctx context.Context, sessionID string, expected *storage.ExpectedBinding) (
 		creds map[string]UpstreamCredential, failed []string, err error)
 }
 
@@ -81,5 +90,12 @@ type Service interface {
 	// The returned UpstreamCredential.IDToken may be empty or expired; callers
 	// MUST check its `exp` claim before using it (e.g. as the subject_token of
 	// an RFC 8693 token exchange). See UpstreamCredential for details.
-	GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error)
+	//
+	// The expected binding is forwarded to storage; a row whose stored binding
+	// does not match yields ErrInvalidBinding and is never refreshed. A nil
+	// expected still enforces the user binding whenever the ctx carries a
+	// platform user.
+	GetValidTokens(
+		ctx context.Context, sessionID, providerName string, expected *storage.ExpectedBinding,
+	) (*UpstreamCredential, error)
 }

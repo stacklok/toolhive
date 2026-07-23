@@ -84,6 +84,48 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: true,
 			errMsg:  "custom_header_name must be specified",
 		},
+		{
+			name: "valid https authorize URL",
+			cfg: &Config{
+				ProviderName: "default",
+				AuthorizeURL: "https://thv.example.com/oauth/authorize",
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty authorize URL allowed",
+			cfg: &Config{
+				ProviderName: "default",
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-https authorize URL rejected",
+			cfg: &Config{
+				ProviderName: "default",
+				AuthorizeURL: "http://thv.example.com/oauth/authorize",
+			},
+			wantErr: true,
+			errMsg:  "authorize_url must be an absolute https:// URL",
+		},
+		{
+			name: "relative authorize URL rejected",
+			cfg: &Config{
+				ProviderName: "default",
+				AuthorizeURL: "/oauth/authorize",
+			},
+			wantErr: true,
+			errMsg:  "authorize_url must be an absolute https:// URL",
+		},
+		{
+			name: "malformed authorize URL rejected",
+			cfg: &Config{
+				ProviderName: "default",
+				AuthorizeURL: "://not-a-url",
+			},
+			wantErr: true,
+			errMsg:  "authorize_url must be an absolute https:// URL",
+		},
 	}
 
 	for _, tt := range tests {
@@ -122,6 +164,11 @@ func TestMiddleware_NoIdentity(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
+// expectedBearerChallenge is the RFC 6750 Section 3.1 challenge the 401
+// consent response must carry unchanged (mcp-go's authorization-required
+// detection depends on it).
+const expectedBearerChallenge = `Bearer error="invalid_token", error_description="upstream token is no longer valid; re-authentication required"`
+
 func TestMiddleware_NilUpstreamTokens(t *testing.T) {
 	t.Parallel()
 
@@ -146,26 +193,76 @@ func TestMiddleware_NilUpstreamTokens(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
-	assert.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+	assert.Equal(t, expectedBearerChallenge, rr.Header().Get("WWW-Authenticate"))
 }
 
+// TestMiddleware_ProviderMissing_Returns401 covers the structured consent
+// body emitted when the provider token is absent, with and without a
+// configured authorize URL.
 func TestMiddleware_ProviderMissing_Returns401(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{ProviderName: "atlassian"}
-	middleware := createMiddlewareFunc(cfg)
+	tests := []struct {
+		name         string
+		cfg          *Config
+		wantAuthURL  string
+		wantHasURL   bool
+		wantProvider string
+	}{
+		{
+			name: "authorize URL configured",
+			cfg: &Config{
+				ProviderName: "atlassian",
+				AuthorizeURL: "https://thv.example.com/oauth/authorize",
+			},
+			wantAuthURL:  "https://thv.example.com/oauth/authorize",
+			wantHasURL:   true,
+			wantProvider: "atlassian",
+		},
+		{
+			name:         "authorize URL empty omits the key",
+			cfg:          &Config{ProviderName: "atlassian"},
+			wantHasURL:   false,
+			wantProvider: "atlassian",
+		},
+	}
 
-	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("next handler should NOT be called when provider is missing")
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	handler := middleware(nextHandler)
-	req := requestWithIdentity("gh-token") // has github but not atlassian
+			middleware := createMiddlewareFunc(tt.cfg)
 
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+			nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Error("next handler should NOT be called when provider is missing")
+			})
 
-	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+			handler := middleware(nextHandler)
+			req := requestWithIdentity("gh-token") // has github but not atlassian
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			assert.Equal(t, http.StatusUnauthorized, rr.Code)
+			assert.Equal(t, expectedBearerChallenge, rr.Header().Get("WWW-Authenticate"))
+			assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body),
+				"401 body must be JSON, got: %q", rr.Body.String())
+			assert.Equal(t, "upstream_consent_required", body["error"])
+			assert.Equal(t, tt.wantProvider, body["provider"])
+			if tt.wantHasURL {
+				assert.Equal(t, tt.wantAuthURL, body["authorize_url"])
+			} else {
+				_, hasURL := body["authorize_url"]
+				assert.False(t, hasURL, "authorize_url key must be absent when not configured")
+			}
+
+			// The body must never contain token material.
+			assert.NotContains(t, rr.Body.String(), "gh-token")
+		})
+	}
 }
 
 func TestMiddleware_EmptyToken_Returns401(t *testing.T) {
@@ -185,6 +282,11 @@ func TestMiddleware_EmptyToken_Returns401(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	assert.Equal(t, "upstream_consent_required", body["error"])
+	assert.Equal(t, "github", body["provider"])
 }
 
 func TestMiddleware_SuccessfulSwap_ReplaceStrategy(t *testing.T) {

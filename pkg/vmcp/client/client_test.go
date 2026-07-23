@@ -986,6 +986,8 @@ func TestWrapBackendError(t *testing.T) {
 		err             error
 		wantSentinel    error
 		wantMsgContains string
+		wantConsent     *authtypes.ConsentRequiredError
+		wantNoConsent   bool
 	}{
 		{
 			name:         "nil error returns nil",
@@ -1069,6 +1071,34 @@ func TestWrapBackendError(t *testing.T) {
 			wantSentinel:    vmcp.ErrAuthenticationFailed,
 			wantMsgContains: "upstream token missing",
 		},
+		{
+			// ConsentRequiredError (upstream_inject with consent context) must
+			// still classify as ErrAuthenticationFailed for the health-monitor
+			// contract, AND the typed payload must survive wrapBackendError via
+			// errors.As so the tool-call layer can render the consent marker.
+			name: "ConsentRequiredError maps to ErrAuthenticationFailed and stays extractable",
+			err: fmt.Errorf("authentication failed for backend foo: provider %q: %w",
+				"github", &authtypes.ConsentRequiredError{
+					Provider:     "github",
+					AuthorizeURL: "https://thv.example.com/oauth/authorize",
+				}),
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream consent required",
+			wantConsent: &authtypes.ConsentRequiredError{
+				Provider:     "github",
+				AuthorizeURL: "https://thv.example.com/oauth/authorize",
+			},
+		},
+		{
+			// Bare ErrUpstreamTokenNotFound (no ConsentRequiredError — the shape
+			// returned by tokenexchange/aws_sts/xaa) must keep the existing
+			// mapping and must NOT extract as a ConsentRequiredError.
+			name:            "bare ErrUpstreamTokenNotFound does not extract as ConsentRequiredError",
+			err:             authtypes.ErrUpstreamTokenNotFound,
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+			wantNoConsent:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1086,6 +1116,18 @@ func TestWrapBackendError(t *testing.T) {
 			assert.ErrorIs(t, result, tt.wantSentinel)
 			if tt.wantMsgContains != "" {
 				assert.Contains(t, result.Error(), tt.wantMsgContains)
+			}
+			if tt.wantConsent != nil {
+				var consentErr *authtypes.ConsentRequiredError
+				require.ErrorAs(t, result, &consentErr,
+					"ConsentRequiredError must survive wrapBackendError")
+				assert.Equal(t, tt.wantConsent.Provider, consentErr.Provider)
+				assert.Equal(t, tt.wantConsent.AuthorizeURL, consentErr.AuthorizeURL)
+			}
+			if tt.wantNoConsent {
+				var consentErr *authtypes.ConsentRequiredError
+				assert.False(t, errors.As(result, &consentErr),
+					"bare sentinel must not extract as ConsentRequiredError")
 			}
 		})
 	}

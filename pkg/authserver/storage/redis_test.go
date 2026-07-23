@@ -8,10 +8,8 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -692,7 +690,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			}
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", "provider-a", tokens))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-123", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-123", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, tokens.AccessToken, retrieved.AccessToken)
 			assert.Equal(t, tokens.RefreshToken, retrieved.RefreshToken)
@@ -703,7 +701,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("get non-existent", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			_, err := s.GetUpstreamTokens(ctx, "non-existent", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "non-existent", "provider-a", nil)
 			requireRedisNotFoundError(t, err)
 		})
 	})
@@ -712,7 +710,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "to-delete", "provider-a", &UpstreamTokens{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour)}))
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "to-delete"))
-			_, err := s.GetUpstreamTokens(ctx, "to-delete", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "to-delete", "provider-a", nil)
 			requireRedisNotFoundError(t, err)
 		})
 	})
@@ -722,7 +720,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-1", UserID: "user1", ExpiresAt: time.Now().Add(time.Hour)}))
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", "provider-a", &UpstreamTokens{AccessToken: "token-2", UserID: "user2", ExpiresAt: time.Now().Add(time.Hour)}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "token-2", retrieved.AccessToken)
 			assert.Equal(t, "user2", retrieved.UserID)
@@ -740,7 +738,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "expired", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "expired", "provider-a", nil)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
 			// Tokens should be returned alongside ErrExpired for refresh purposes
@@ -759,7 +757,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 				ProviderID:  "test-provider",
 			}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "no-expiry", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "no-expiry", "provider-a", nil)
 			require.NoError(t, err)
 			require.NotNil(t, retrieved)
 			assert.Equal(t, "no-expiry-token", retrieved.AccessToken)
@@ -827,7 +825,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			// key evicts; the non-expiring one remains; the index stays intact.
 			mr.FastForward(time.Hour + DefaultRefreshTokenTTL + time.Second)
 
-			all, err := s.GetAllUpstreamTokens(ctx, "inverse-session")
+			all, err := s.GetAllUpstreamTokens(ctx, "inverse-session", nil)
 			require.NoError(t, err)
 			require.Contains(t, all, "provider-nonexpiring",
 				"non-expiring token must remain reachable through the index")
@@ -935,7 +933,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 				"index TTL is left alone on same-provider rewrite (acceptable limitation)")
 
 			// The new value is reachable.
-			retrieved, err := s.GetUpstreamTokens(ctx, "rewrite-session", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "rewrite-session", "provider-a", nil)
 			require.NoError(t, err)
 			require.NotNil(t, retrieved)
 			assert.Equal(t, "now-expiring", retrieved.AccessToken)
@@ -951,7 +949,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 				SessionExpiresAt: sessionExpiry,
 			}))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-bound", "github")
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-bound", "github", nil)
 			require.NoError(t, err)
 			require.NotNil(t, retrieved)
 			assert.Equal(t, "pat-token", retrieved.AccessToken)
@@ -965,7 +963,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			// Fast-forward past SessionExpiresAt + DefaultRefreshTokenTTL
 			mr.FastForward(time.Hour + DefaultRefreshTokenTTL + time.Second)
 
-			_, err = s.GetUpstreamTokens(ctx, "sess-bound", "github")
+			_, err = s.GetUpstreamTokens(ctx, "sess-bound", "github", nil)
 			requireRedisNotFoundError(t, err)
 		})
 	})
@@ -1017,7 +1015,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 	t.Run("nil tokens is valid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", "provider-a", nil))
-			retrieved, err := s.GetUpstreamTokens(ctx, "session-id", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "session-id", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Nil(t, retrieved)
 		})
@@ -1040,11 +1038,11 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-multi", "github", tokensA))
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-multi", "google", tokensB))
 
-			retrievedA, err := s.GetUpstreamTokens(ctx, "session-multi", "github")
+			retrievedA, err := s.GetUpstreamTokens(ctx, "session-multi", "github", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "github-access", retrievedA.AccessToken)
 
-			retrievedB, err := s.GetUpstreamTokens(ctx, "session-multi", "google")
+			retrievedB, err := s.GetUpstreamTokens(ctx, "session-multi", "google", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "google-access", retrievedB.AccessToken)
 		})
@@ -1067,7 +1065,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-all", "github", tokensA))
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-all", "google", tokensB))
 
-			allTokens, err := s.GetAllUpstreamTokens(ctx, "session-all")
+			allTokens, err := s.GetAllUpstreamTokens(ctx, "session-all", nil)
 			require.NoError(t, err)
 			require.Len(t, allTokens, 2)
 
@@ -1078,7 +1076,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("GetAllUpstreamTokens unknown session", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			allTokens, err := s.GetAllUpstreamTokens(ctx, "unknown-session")
+			allTokens, err := s.GetAllUpstreamTokens(ctx, "unknown-session", nil)
 			require.NoError(t, err)
 			assert.Empty(t, allTokens)
 		})
@@ -1095,13 +1093,13 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "session-wipe"))
 
-			_, err := s.GetUpstreamTokens(ctx, "session-wipe", "github")
+			_, err := s.GetUpstreamTokens(ctx, "session-wipe", "github", nil)
 			requireRedisNotFoundError(t, err)
 
-			_, err = s.GetUpstreamTokens(ctx, "session-wipe", "google")
+			_, err = s.GetUpstreamTokens(ctx, "session-wipe", "google", nil)
 			requireRedisNotFoundError(t, err)
 
-			allTokens, err := s.GetAllUpstreamTokens(ctx, "session-wipe")
+			allTokens, err := s.GetAllUpstreamTokens(ctx, "session-wipe", nil)
 			require.NoError(t, err)
 			assert.Empty(t, allTokens)
 		})
@@ -1113,7 +1111,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			require.Error(t, err)
 			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
 
-			_, err = s.GetUpstreamTokens(ctx, "session-ep", "")
+			_, err = s.GetUpstreamTokens(ctx, "session-ep", "", nil)
 			require.Error(t, err)
 			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
 		})
@@ -1142,7 +1140,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			key := redisUpstreamKey(s.keyPrefix, "legacy-session", "github")
 			require.NoError(t, mr.Set(key, legacyJSON))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "legacy-session", "github")
+			retrieved, err := s.GetUpstreamTokens(ctx, "legacy-session", "github", nil)
 			require.NoError(t, err)
 			require.NotNil(t, retrieved)
 
@@ -1170,14 +1168,14 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 
 			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
 
-			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a", nil)
 			requireRedisNotFoundError(t, err)
 
-			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "b", got.AccessToken)
 
-			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1", nil)
 			require.NoError(t, err)
 			assert.Len(t, all, 1)
 		})
@@ -1211,7 +1209,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 			assert.Equal(t, int64(0), exists, "legacy key should be deleted after migration")
 
 			// New key should be readable
-			tokens, err := s.GetUpstreamTokens(ctx, "legacy-session", "default")
+			tokens, err := s.GetUpstreamTokens(ctx, "legacy-session", "default", nil)
 			require.NoError(t, err)
 			require.NotNil(t, tokens)
 			assert.Equal(t, "legacy-at", tokens.AccessToken)
@@ -1236,7 +1234,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 			assert.Equal(t, int64(1), exists, "legacy key should not be deleted for non-legacy provider ID")
 
 			// New key should not exist
-			_, err = s.GetUpstreamTokens(ctx, "logical-session", "default")
+			_, err = s.GetUpstreamTokens(ctx, "logical-session", "default", nil)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrNotFound)
 		})
@@ -1256,7 +1254,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
 
 			// New key should have the original new-format data, not the legacy data
-			tokens, err := s.GetUpstreamTokens(ctx, "both-keys", "default")
+			tokens, err := s.GetUpstreamTokens(ctx, "both-keys", "default", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "new-token", tokens.AccessToken)
 		})
@@ -1331,7 +1329,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 
 			// All should be readable under new format
 			for i := 0; i < 3; i++ {
-				tokens, err := s.GetUpstreamTokens(ctx, fmt.Sprintf("session-%d", i), "default")
+				tokens, err := s.GetUpstreamTokens(ctx, fmt.Sprintf("session-%d", i), "default", nil)
 				require.NoError(t, err)
 				assert.Equal(t, fmt.Sprintf("at-%d", i), tokens.AccessToken)
 				assert.Equal(t, "default", tokens.ProviderID)
@@ -1350,7 +1348,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
 
 			// New key should be unchanged
-			tokens, err := s.GetUpstreamTokens(ctx, "new-session", "default")
+			tokens, err := s.GetUpstreamTokens(ctx, "new-session", "default", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "new-at", tokens.AccessToken)
 		})
@@ -1376,7 +1374,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
 
 			// Sanity: token is reachable under the new key.
-			tokens, err := s.GetUpstreamTokens(ctx, "del-session", "default")
+			tokens, err := s.GetUpstreamTokens(ctx, "del-session", "default", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "del-at", tokens.AccessToken)
 
@@ -1384,7 +1382,7 @@ func TestRedisStorage_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.DeleteUser(ctx, userID))
 
 			// The upstream token must be gone.
-			_, err = s.GetUpstreamTokens(ctx, "del-session", "default")
+			_, err = s.GetUpstreamTokens(ctx, "del-session", "default", nil)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrNotFound, "migrated token should be removed by DeleteUser cascade")
 		})
@@ -1587,7 +1585,7 @@ func TestRedisStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the user's upstream tokens are gone
-		_, err = s.GetUpstreamTokens(ctx, "session-user", "provider-a")
+		_, err = s.GetUpstreamTokens(ctx, "session-user", "provider-a", nil)
 		assert.ErrorIs(t, err, ErrNotFound)
 
 		// Verify the other user still exists
@@ -1601,7 +1599,7 @@ func TestRedisStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
 		assert.Equal(t, "other-user", retrieved.UserID)
 
 		// Verify the other user's upstream tokens are still there
-		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other", "provider-a")
+		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other", "provider-a", nil)
 		require.NoError(t, err)
 		assert.Equal(t, "other-token", otherRetrieved.AccessToken)
 	})
@@ -2845,19 +2843,6 @@ func runDCRConcurrentAccess(
 	assert.Zero(t, atomic.LoadInt32(&getErrCount), "no concurrent Get should have errored")
 }
 
-// captureWarnLogs swaps in a buffered slog handler at warn level for the
-// duration of the test and returns the captured output. Process-global, not
-// safe for t.Parallel().
-func captureWarnLogs(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
-	orig := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	return &buf
-}
-
 // assertForeignDropWarn checks that the warn log emitted for a filtered
 // CROSSSLOT-defending op names the operation, the dropped member, and the
 // expected key prefix.
@@ -2904,7 +2889,7 @@ func TestForeignMembersFilteredFromIndexOps(t *testing.T) { //nolint:paralleltes
 
 	t.Run("GetAllUpstreamTokens", func(t *testing.T) {
 		buf := captureWarnLogs(t)
-		got, err := storage.GetAllUpstreamTokens(ctx, "session-X")
+		got, err := storage.GetAllUpstreamTokens(ctx, "session-X", nil)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		require.Contains(t, got, "github")
@@ -2984,4 +2969,296 @@ func TestFilterIndexMembersByPrefix(t *testing.T) {
 			assert.Equal(t, tc.wantDropped, dropped, "dropped slice mismatch")
 		})
 	}
+}
+
+// seedRedisBoundRow stores a live, fully-bound upstream token row for
+// (sessionID, provider).
+func seedRedisBoundRow(ctx context.Context, t *testing.T, s *RedisStorage, sessionID, provider string) {
+	t.Helper()
+	row := &UpstreamTokens{
+		ProviderID:      provider,
+		AccessToken:     "access-" + provider,
+		RefreshToken:    "refresh-" + provider,
+		ExpiresAt:       time.Now().Add(time.Hour),
+		UserID:          "user-A",
+		ClientID:        "client-A",
+		UpstreamSubject: "subject-A",
+	}
+	require.NoError(t, s.StoreUpstreamTokens(ctx, sessionID, provider, row))
+}
+
+// TestRedisStorage_UpstreamBinding covers the read-side binding matrix
+// (scenarios 1-12) for the Redis backend. Log-capturing cases live in
+// TestRedisStorage_UpstreamBinding_WarnLogs because slog.SetDefault is
+// process-global.
+func TestRedisStorage_UpstreamBinding(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scenario 1: matching ctx user, nil expected, row returned", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-1", "github")
+
+			readCtx := ContextWithBindingUser(ctx, "user-A")
+			got, err := s.GetUpstreamTokens(readCtx, "sess-1", "github", nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "user-A", got.UserID)
+		})
+	})
+
+	t.Run("scenario 2: mismatched ctx user, nil expected, ErrInvalidBinding with nil tokens", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-2", "github")
+
+			readCtx := ContextWithBindingUser(ctx, "user-B")
+			got, err := s.GetUpstreamTokens(readCtx, "sess-2", "github", nil)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got, "mismatched row must not be released, even for refresh")
+		})
+	})
+
+	t.Run("scenario 3: no identity in ctx, nil expected, row returned", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-3", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-3", "github", nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+		})
+	})
+
+	t.Run("scenario 4: expected UserID match and mismatch", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-4", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-4", "github", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			got, err = s.GetUpstreamTokens(ctx, "sess-4", "github", &ExpectedBinding{UserID: "user-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got)
+		})
+	})
+
+	t.Run("scenario 5: client ID binding variants", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-5", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-5", "github", &ExpectedBinding{ClientID: "client-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			got, err = s.GetUpstreamTokens(ctx, "sess-5", "github", &ExpectedBinding{ClientID: "client-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got)
+
+			got, err = s.GetUpstreamTokens(ctx, "sess-5", "github", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			legacy := &UpstreamTokens{
+				ProviderID: "github", AccessToken: "legacy-access",
+				ExpiresAt: time.Now().Add(time.Hour), UserID: "user-A",
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-5b", "github", legacy))
+			got, err = s.GetUpstreamTokens(ctx, "sess-5b", "github",
+				&ExpectedBinding{UserID: "user-A", ClientID: "client-B"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+		})
+	})
+
+	t.Run("scenario 6: upstream subject mismatch", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-6", "github")
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-6", "github", &ExpectedBinding{UpstreamSubject: "subject-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got)
+		})
+	})
+
+	t.Run("scenario 7: expired + mismatched row yields ErrInvalidBinding, not ErrExpired", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			row := &UpstreamTokens{
+				ProviderID: "github", AccessToken: "stale-access", RefreshToken: "stale-refresh",
+				ExpiresAt: time.Now().Add(-time.Hour), UserID: "user-A",
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-7", "github", row))
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-7", "github", &ExpectedBinding{UserID: "user-B"})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.NotErrorIs(t, err, ErrExpired, "binding must win over expiry")
+			assert.Nil(t, got, "no refresh material released for a mismatched row")
+		})
+	})
+
+	t.Run("scenario 8: bulk read excludes only the mismatched provider", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-8", "github")
+			other := &UpstreamTokens{
+				ProviderID: "gitlab", AccessToken: "other-access",
+				ExpiresAt: time.Now().Add(time.Hour), UserID: "user-B",
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-8", "gitlab", other))
+
+			all, err := s.GetAllUpstreamTokens(ctx, "sess-8", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.Len(t, all, 1)
+			assert.Contains(t, all, "github")
+			assert.NotContains(t, all, "gitlab")
+		})
+	})
+
+	t.Run("scenario 9: bulk read with all rows mismatched returns empty map, nil error", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-9", "github")
+			seedRedisBoundRow(ctx, t, s, "sess-9", "gitlab")
+
+			all, err := s.GetAllUpstreamTokens(ctx, "sess-9", &ExpectedBinding{UserID: "user-B"})
+			require.NoError(t, err)
+			require.NotNil(t, all, "unknown-session semantics preserved: empty map, not nil")
+			assert.Empty(t, all)
+		})
+	})
+
+	t.Run("strict mode: legacy row (empty stored UserID) fails closed, owned row passes", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			legacy := &UpstreamTokens{
+				ProviderID: "github", AccessToken: "legacy-access", RefreshToken: "legacy-refresh",
+				ExpiresAt: time.Now().Add(time.Hour),
+			}
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-strict", "github", legacy))
+
+			// Permissive default: the legacy row is released (pre-Strict behavior).
+			got, err := s.GetUpstreamTokens(ctx, "sess-strict", "github", &ExpectedBinding{UserID: "user-A"})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			// Strict: the same row fails closed — no token material released.
+			got, err = s.GetUpstreamTokens(ctx, "sess-strict", "github", &ExpectedBinding{UserID: "user-A", Strict: true})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidBinding)
+			assert.Nil(t, got, "strict mode must not release a row that cannot prove its owner")
+
+			// Strict bulk read excludes the legacy row.
+			all, err := s.GetAllUpstreamTokens(ctx, "sess-strict", &ExpectedBinding{UserID: "user-A", Strict: true})
+			require.NoError(t, err)
+			assert.NotContains(t, all, "github")
+
+			// Strict with an owned row passes normally.
+			seedRedisBoundRow(ctx, t, s, "sess-strict-owned", "github")
+			got, err = s.GetUpstreamTokens(ctx, "sess-strict-owned", "github",
+				&ExpectedBinding{UserID: "user-A", Strict: true})
+			require.NoError(t, err)
+			require.NotNil(t, got)
+		})
+	})
+
+	t.Run("scenario 11: equal-length and differing-length mismatches both fail", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			seedRedisBoundRow(ctx, t, s, "sess-11", "github")
+
+			_, err := s.GetUpstreamTokens(ctx, "sess-11", "github", &ExpectedBinding{UserID: "user-B"})
+			assert.ErrorIs(t, err, ErrInvalidBinding, "equal-length mismatch")
+
+			_, err = s.GetUpstreamTokens(ctx, "sess-11", "github", &ExpectedBinding{UserID: "user-A-plus-extra"})
+			assert.ErrorIs(t, err, ErrInvalidBinding, "differing-length mismatch")
+		})
+	})
+
+	t.Run("scenario 12: nullMarker tombstone passes through binding path", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Store nil tokens: the write path persists a deletion tombstone.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-12", "github", nil))
+
+			got, err := s.GetUpstreamTokens(ctx, "sess-12", "github", &ExpectedBinding{UserID: "user-B"})
+			require.NoError(t, err)
+			assert.Nil(t, got, "tombstone semantics unchanged: (nil, nil), no panic")
+		})
+	})
+}
+
+// TestRedisStorage_UpstreamBinding_WarnLogs covers the log-asserting binding
+// scenarios. It uses slog.SetDefault (process-global) and therefore does not
+// run in parallel.
+func TestRedisStorage_UpstreamBinding_WarnLogs(t *testing.T) { //nolint:paralleltest // captures slog default
+	t.Run("scenario 8: bulk exclusion emits WARN with session, provider, dimension", func(t *testing.T) { //nolint:paralleltest // captures slog default
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() {
+			_ = s.Close()
+			mr.Close()
+		})
+		ctx := context.Background()
+		seedRedisBoundRow(ctx, t, s, "sess-w8", "github")
+		other := &UpstreamTokens{
+			ProviderID: "gitlab", AccessToken: "other-access",
+			ExpiresAt: time.Now().Add(time.Hour), UserID: "user-B",
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-w8", "gitlab", other))
+
+		out := captureWarnLogs(t)
+		all, err := s.GetAllUpstreamTokens(ctx, "sess-w8", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		require.Len(t, all, 1)
+		assertBindingExclusionWarn(t, out.String(), "sess-w8", "gitlab", "user_id")
+	})
+
+	t.Run("scenario 10: legacy row returned with asserted user logs the unverified-owner WARN", func(t *testing.T) { //nolint:paralleltest // captures slog default
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() {
+			_ = s.Close()
+			mr.Close()
+		})
+		ctx := context.Background()
+		legacy := &UpstreamTokens{
+			ProviderID: "github", AccessToken: "legacy-access",
+			ExpiresAt: time.Now().Add(time.Hour),
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-w10", "github", legacy))
+
+		out := captureWarnLogs(t)
+		got, err := s.GetUpstreamTokens(ctx, "sess-w10", "github", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		require.NotNil(t, got, "legacy rows are released per the empty-field rule")
+		// The caller asserted an owner the row cannot prove: the WARN names
+		// session and provider; it is NOT the exclusion WARN (nothing excluded).
+		assert.Contains(t, out.String(), "no recorded owner")
+		assert.Contains(t, out.String(), "sess-w10")
+		assert.Contains(t, out.String(), "github")
+		assert.NotContains(t, out.String(), "binding validation failed")
+
+		out.Reset()
+		all, err := s.GetAllUpstreamTokens(ctx, "sess-w10", &ExpectedBinding{UserID: "user-A"})
+		require.NoError(t, err)
+		assert.Contains(t, all, "github")
+		assert.Contains(t, out.String(), "no recorded owner")
+		assert.NotContains(t, out.String(), "binding validation failed")
+	})
+
+	t.Run("scenario 10b: plain legacy passthrough (nil expected, no ctx user) logs nothing", func(t *testing.T) { //nolint:paralleltest // captures slog default
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() {
+			_ = s.Close()
+			mr.Close()
+		})
+		ctx := context.Background()
+		legacy := &UpstreamTokens{
+			ProviderID: "github", AccessToken: "legacy-access",
+			ExpiresAt: time.Now().Add(time.Hour),
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-w10b", "github", legacy))
+
+		out := captureWarnLogs(t)
+		got, err := s.GetUpstreamTokens(ctx, "sess-w10b", "github", nil)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Empty(t, out.String(), "legacy passthrough without an asserted user must not log (hot-path spam)")
+	})
 }

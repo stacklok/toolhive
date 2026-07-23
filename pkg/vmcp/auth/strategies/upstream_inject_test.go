@@ -34,6 +34,7 @@ func TestUpstreamInjectStrategy_Authenticate(t *testing.T) {
 		expectError   bool
 		errorContains string
 		checkSentinel bool
+		checkConsent  *authtypes.ConsentRequiredError
 		checkHeader   func(t *testing.T, req *http.Request)
 	}{
 		{
@@ -117,6 +118,47 @@ func TestUpstreamInjectStrategy_Authenticate(t *testing.T) {
 			checkSentinel: true,
 		},
 		{
+			name: "missing token carries ConsentRequiredError with authorize URL",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamTokens("user1", "incoming-token", map[string]string{
+					"other": "tok",
+				})
+			},
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeUpstreamInject,
+				UpstreamInject: &authtypes.UpstreamInjectConfig{
+					ProviderName: "github",
+					AuthorizeURL: "https://thv.example.com/oauth/authorize",
+				},
+			},
+			expectError:   true,
+			errorContains: "github",
+			checkSentinel: true,
+			checkConsent: &authtypes.ConsentRequiredError{
+				Provider:     "github",
+				AuthorizeURL: "https://thv.example.com/oauth/authorize",
+			},
+		},
+		{
+			name: "missing token without authorize URL carries provider only",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamTokens("user1", "incoming-token", nil)
+			},
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeUpstreamInject,
+				UpstreamInject: &authtypes.UpstreamInjectConfig{
+					ProviderName: "github",
+				},
+			},
+			expectError:   true,
+			errorContains: "github",
+			checkSentinel: true,
+			checkConsent: &authtypes.ConsentRequiredError{
+				Provider:     "github",
+				AuthorizeURL: "",
+			},
+		},
+		{
 			name:     "health check bypass",
 			setupCtx: func() context.Context { return healthcontext.WithHealthCheckMarker(context.Background()) },
 			strategy: &authtypes.BackendAuthStrategy{
@@ -192,6 +234,13 @@ func TestUpstreamInjectStrategy_Authenticate(t *testing.T) {
 				if tt.checkSentinel {
 					assert.True(t, errors.Is(err, authtypes.ErrUpstreamTokenNotFound),
 						"expected error to wrap ErrUpstreamTokenNotFound, got: %v", err)
+				}
+				if tt.checkConsent != nil {
+					var consentErr *authtypes.ConsentRequiredError
+					require.ErrorAs(t, err, &consentErr,
+						"expected error to carry a ConsentRequiredError, got: %v", err)
+					assert.Equal(t, tt.checkConsent.Provider, consentErr.Provider)
+					assert.Equal(t, tt.checkConsent.AuthorizeURL, consentErr.AuthorizeURL)
 				}
 				return
 			}

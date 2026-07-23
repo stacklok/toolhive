@@ -52,6 +52,29 @@ var (
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
 const DefaultPendingAuthorizationTTL = 10 * time.Minute
 
+// ExpectedBinding carries the caller-asserted identity a stored upstream-token
+// row must match before it is released. A nil *ExpectedBinding means "resolve
+// the user from ctx only" (see checkUpstreamBinding); nil/empty fields skip
+// that dimension for backward compatibility with rows written before binding
+// fields existed.
+type ExpectedBinding struct {
+	// UserID is the internal ToolHive user the row must belong to. When empty,
+	// the canonical platform user resolved from ctx is used instead (if any).
+	UserID string
+	// ClientID is the OAuth client that must have consented the row.
+	ClientID string
+	// UpstreamSubject is the upstream IdP subject the row must carry. Asserted
+	// only where the caller knows the expected subject (e.g. the chain-consistency
+	// read of the first leg).
+	UpstreamSubject string
+	// Strict fails closed on legacy rows: when true, a stored row with an empty
+	// UserID fails with ErrInvalidBinding instead of being released under the
+	// permissive empty-field rule. Wave 1 sets this for untrusted workloads,
+	// where a row that cannot prove its owner must never be released.
+	// Default false preserves the legacy permissive behavior.
+	Strict bool
+}
+
 // UpstreamTokens represents tokens obtained from an upstream Identity Provider.
 // These tokens are stored with binding fields for security validation and
 // ProviderID for multi-IDP support.
@@ -559,16 +582,26 @@ type UpstreamTokenStorage interface {
 
 	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 	// Returns ErrNotFound if the session/provider combination does not exist.
+	// Returns ErrInvalidBinding (with nil tokens) if the stored row's binding does
+	// not match the expected binding — see ExpectedBinding for the per-dimension
+	// empty-field rule and the ctx fallback. Binding is checked before expiry, so
+	// a mismatched row never surfaces ErrExpired: the refresh path must not be
+	// entered for a row that isn't the caller's.
 	// Returns ErrExpired if the tokens have expired. When ErrExpired is returned,
 	// the token data (including refresh token) is also returned to allow callers
 	// to attempt a token refresh.
-	// Returns ErrInvalidBinding if binding validation fails.
-	GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*UpstreamTokens, error)
+	GetUpstreamTokens(
+		ctx context.Context, sessionID, providerName string, expected *ExpectedBinding,
+	) (*UpstreamTokens, error)
 
 	// GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.
 	// Returns a map of providerName -> tokens. Returns an empty map (not error) for unknown sessions.
 	// Includes expired tokens (no expiry filtering at bulk-read level).
-	GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*UpstreamTokens, error)
+	// Binding validation (see ExpectedBinding) applies per row: a row whose binding
+	// fails is excluded from the result map (a WARN is logged) rather than failing
+	// the whole read — callers treat a missing provider as "needs consent", which
+	// is the safe degradation.
+	GetAllUpstreamTokens(ctx context.Context, sessionID string, expected *ExpectedBinding) (map[string]*UpstreamTokens, error)
 
 	// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
 	// Returns ErrNotFound if the session does not exist.

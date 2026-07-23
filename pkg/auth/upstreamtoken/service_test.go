@@ -76,7 +76,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "valid tokens returned directly",
 			sessionID: "session-1",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-1", "default", gomock.Any()).
 					Return(validTokens, nil)
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -89,7 +89,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "expired tokens refreshed via storage ErrExpired",
 			sessionID: "session-2",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-2", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-2", "default", gomock.Any()).
 					Return(expiredTokens, storage.ErrExpired)
 			},
 			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
@@ -104,7 +104,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			sessionID: "session-3",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
 				// Storage returns expired tokens without error (defense in depth path)
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-3", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-3", "default", gomock.Any()).
 					Return(expiredTokens, nil)
 			},
 			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
@@ -118,7 +118,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "session not found",
 			sessionID: "session-4",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-4", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-4", "default", gomock.Any()).
 					Return(nil, storage.ErrNotFound)
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -128,7 +128,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "expired with no refresh token",
 			sessionID: "session-5",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-5", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-5", "default", gomock.Any()).
 					Return(expiredNoRefresh, storage.ErrExpired)
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -138,7 +138,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "refresh fails",
 			sessionID: "session-6",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-6", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-6", "default", gomock.Any()).
 					Return(expiredTokens, storage.ErrExpired)
 			},
 			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
@@ -151,7 +151,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "storage error propagated",
 			sessionID: "session-7",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-7", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-7", "default", gomock.Any()).
 					Return(nil, errors.New("redis connection lost"))
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -161,7 +161,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "ErrExpired with nil tokens returns ErrNoRefreshToken",
 			sessionID: "session-8",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-8", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-8", "default", gomock.Any()).
 					Return(nil, storage.ErrExpired)
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -171,7 +171,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 			name:      "invalid binding returns ErrInvalidBinding",
 			sessionID: "session-9",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-9", "default").
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session-9", "default", gomock.Any()).
 					Return(nil, storage.ErrInvalidBinding)
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -193,7 +193,7 @@ func TestInProcessService_GetValidTokens(t *testing.T) {
 
 			svc := NewInProcessService(mockStorage, mockRefresher)
 
-			cred, err := svc.GetValidTokens(context.Background(), tt.sessionID, "default")
+			cred, err := svc.GetValidTokens(context.Background(), tt.sessionID, "default", nil)
 
 			if tt.wantErr != nil {
 				require.Error(t, err)
@@ -231,12 +231,12 @@ func TestInProcessService_NilRefresher(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-1", "default").
+		GetUpstreamTokens(gomock.Any(), "session-1", "default", gomock.Any()).
 		Return(expiredTokens, storage.ErrExpired)
 
 	svc := NewInProcessService(mockStorage, nil)
 
-	cred, err := svc.GetValidTokens(context.Background(), "session-1", "default")
+	cred, err := svc.GetValidTokens(context.Background(), "session-1", "default", nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNoRefreshToken)
@@ -296,7 +296,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "all fresh tokens returned directly with IDs",
 			sessionID: "session-1",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github":    freshTokens,
 						"atlassian": freshTokens2,
@@ -312,7 +312,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "mixed fresh and expired with successful refresh carries ID token through",
 			sessionID: "session-2",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-2").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-2", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"atlassian": freshTokens2,
 						"github":    expiredTokens,
@@ -333,7 +333,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "expired refresh that rotates id_token prefers refreshed ID token",
 			sessionID: "session-11",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-11").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-11", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github": expiredTokens,
 					}, nil)
@@ -347,10 +347,30 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			},
 		},
 		{
+			// Scenario 14: a row storage excluded by binding validation is simply
+			// absent from the bulk map. It must NOT appear in failed — no refresh
+			// is ever attempted for a row that isn't the caller's.
+			name:      "binding-excluded provider absent from result and failed",
+			sessionID: "session-binding",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				// Storage excluded the "gitlab" row (its stored user/client did
+				// not match the expected binding); only github comes back.
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-binding", gomock.Any()).
+					Return(map[string]*storage.UpstreamTokens{
+						"github": freshTokens,
+					}, nil)
+			},
+			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
+			wantResult: map[string]UpstreamCredential{
+				"github": {AccessToken: "github-access-token", IDToken: "github-id-token"},
+			},
+			wantFailed: nil,
+		},
+		{
 			name:      "expired refresh fails reports provider in failed slice",
 			sessionID: "session-3",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github": expiredTokens,
 					}, nil)
@@ -366,7 +386,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "multiple providers both fail refresh — all reported in failed slice",
 			sessionID: "session-3b",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3b").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3b", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github":    expiredTokens,
 						"atlassian": expiredTokensAtlassian,
@@ -385,7 +405,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "empty session returns empty map",
 			sessionID: "session-4",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-4").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-4", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{}, nil)
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -395,7 +415,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "storage error propagated",
 			sessionID: "session-5",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-5").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-5", gomock.Any()).
 					Return(nil, errors.New("redis connection lost"))
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
@@ -405,7 +425,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "nil tokens entry skipped",
 			sessionID: "session-6",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-6").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-6", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github":    freshTokens,
 						"atlassian": nil,
@@ -420,7 +440,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "expired with no refresh token reports provider in failed slice",
 			sessionID: "session-7",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-7").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-7", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github": {
 							ProviderID:   "github",
@@ -439,7 +459,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "zero ExpiresAt treated as non-expiring",
 			sessionID: "session-8",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-8").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-8", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github": {
 							ProviderID:  "github",
@@ -458,7 +478,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "missing ID token carried through as empty string",
 			sessionID: "session-9",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-9").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-9", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github": {
 							ProviderID:  "github",
@@ -482,7 +502,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 			name:      "all access tokens present with all empty ID tokens returns every provider",
 			sessionID: "session-10",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-10").
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-10", gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{
 						"github": {
 							ProviderID:  "github",
@@ -520,7 +540,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 
 			svc := NewInProcessService(mockStorage, mockRefresher)
 
-			result, failed, err := svc.GetAllUpstreamCredentials(context.Background(), tt.sessionID)
+			result, failed, err := svc.GetAllUpstreamCredentials(context.Background(), tt.sessionID, nil)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -545,7 +565,7 @@ func TestInProcessService_GetAllUpstreamCredentials_NilRefresher(t *testing.T) {
 
 	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 	mockStorage.EXPECT().
-		GetAllUpstreamTokens(gomock.Any(), "session-1").
+		GetAllUpstreamTokens(gomock.Any(), "session-1", gomock.Any()).
 		Return(map[string]*storage.UpstreamTokens{
 			"github": {
 				ProviderID:   "github",
@@ -558,7 +578,7 @@ func TestInProcessService_GetAllUpstreamCredentials_NilRefresher(t *testing.T) {
 
 	svc := NewInProcessService(mockStorage, nil)
 
-	result, failed, err := svc.GetAllUpstreamCredentials(context.Background(), "session-1")
+	result, failed, err := svc.GetAllUpstreamCredentials(context.Background(), "session-1", nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, map[string]UpstreamCredential{}, result)

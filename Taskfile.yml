@@ -326,6 +326,13 @@ tasks:
     cmds:
       - docker build --load -t ghcr.io/stacklok/toolhive/egress-proxy:local containers/egress-proxy/
 
+  build-egressbroker-image:
+    desc: Build the egress broker sidecar image with ko
+    env:
+      KO_DOCKER_REPO: ghcr.io/stacklok/toolhive/egressbroker
+    cmds:
+      - ko build --local --bare ./cmd/thv-egressbroker
+
   build-all-images:
-    desc: Build all container images (main app, vmcp, and egress proxy)
-    deps: [build-image, build-vmcp-image, build-egress-proxy]
+    desc: Build all container images (main app, vmcp, egress proxy, and egress broker)
+    deps: [build-image, build-vmcp-image, build-egress-proxy, build-egressbroker-image]

@@ -108,6 +108,8 @@ _Appears in:_
 | `xaa` _[auth.types.XAAConfig](#authtypesxaaconfig)_ | XAA contains configuration for XAA (Cross-Application Access) auth strategy.<br />Used when Type = "xaa". |  |  |
 
 
+
+
 #### auth.types.HeaderInjectionConfig
 
 
@@ -215,6 +217,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `providerName` _string_ | ProviderName is the name of the upstream provider configured in the<br />embedded authorization server. Must match an entry in AuthServer.Upstreams. |  |  |
+| `authorizeUrl` _string_ | AuthorizeURL is the ToolHive authorization server's authorize-endpoint<br />URL (\{issuer\}/oauth/authorize). When set, it is carried in the<br />ConsentRequiredError returned when the provider token is absent, so<br />clients can direct the user to consent. The URL cannot be a complete<br />one-click link: the client must merge its own client_id, redirect_uri,<br />and PKCE parameters. Optional; when empty the error carries no URL. |  | Optional: \{\} <br /> |
 
 
 #### auth.types.XAAConfig
@@ -1715,6 +1718,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `type` _[api.v1beta1.AuthServerStorageType](#apiv1beta1authserverstoragetype)_ | Type specifies the storage backend type.<br />Valid values: "memory" (default), "redis". | memory | Enum: [memory redis] <br /> |
 | `redis` _[api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)_ | Redis configures the Redis storage backend.<br />Required when type is "redis". |  | Optional: \{\} <br /> |
+| `tokenEncryption` _[api.v1beta1.TokenEncryptionConfig](#apiv1beta1tokenencryptionconfig)_ | TokenEncryption enables envelope encryption of upstream tokens at rest.<br />Requires redis storage: the RunConfig shape only supports token<br />encryption on the Redis backend, and untrusted-mode egress (the primary<br />consumer) requires Redis-backed token storage. ActiveKeyID names the<br />key used for new writes; KeySecretRef references a Secret whose data<br />keys are key IDs and values are base64 32-byte KEKs. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.AuthServerStorageType
@@ -1872,6 +1876,24 @@ This provides a local name for use in the CRD status.
 
 
 
+
+
+#### api.v1beta1.EgressPolicy
+
+
+
+EgressPolicy binds upstream providers to the exact destinations their credentials
+may be injected for. The broker emits provider P's credential ONLY to hosts in
+P's AllowedHosts, with method/path further constrained by the entry (ADR-0001 D5).
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `providers` _[api.v1beta1.ProviderEgress](#apiv1beta1provideregress) array_ | Providers maps an upstream provider name (as configured in the embedded auth<br />server's upstream chain / upstream_inject strategy) to its egress constraints. |  | MinItems: 1 <br /> |
 
 
 #### api.v1beta1.EmbeddedAuthServerCIMDConfig
@@ -3208,6 +3230,8 @@ _Appears in:_
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
+| `untrusted` _boolean_ | Untrusted marks this MCP server as running untrusted code. When true, the operator<br />enforces the untrusted-mode invariants (ADR-0001): no Secret/ConfigMap-sourced env on<br />the backend container, single-tenant session-scoped backend pods, mandatory MCPGroup<br />membership behind a VirtualMCPServer, and egress only through the credential-broker<br />sidecar per EgressPolicy. K8s-only; ignored (and inert) in CLI/Docker mode. | false | Optional: \{\} <br /> |
+| `egressPolicy` _[api.v1beta1.EgressPolicy](#apiv1beta1egresspolicy)_ | EgressPolicy declares which upstream providers this server may call and where the<br />broker may inject each provider's credential. Required when Untrusted is true.<br />When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend<br />pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar<br />Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the<br />NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the<br />trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction<br />only, never a credential boundary — the credential guarantee comes solely from this<br />field's broker + single-tenant pods in untrusted mode. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
@@ -3780,6 +3804,28 @@ _Appears in:_
 | `enabled` _boolean_ | Enabled controls whether Prometheus metrics endpoint is exposed | false | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.ProviderEgress
+
+
+
+ProviderEgress is the per-provider egress constraint. Credential-to-destination
+binding (ADR-0001 D5): the broker injects this provider's credential only to
+AllowedHosts, only on AllowedMethods, only under AllowedPathPrefixes.
+
+
+
+_Appears in:_
+- [api.v1beta1.EgressPolicy](#apiv1beta1egresspolicy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `provider` _string_ | Provider is the logical upstream provider name (e.g. "github", "google").<br />Must match the provider name used by the auth server and the vMCP<br />upstream_inject strategy config for this workload. |  | MinLength: 1 <br /> |
+| `allowedHosts` _string array_ | AllowedHosts is the exact set of destination hosts the credential may be<br />injected for. Exact hostnames or one-label wildcards ("*.githubusercontent.com");<br />no ports, no schemes. |  | MinItems: 1 <br />items:Pattern: `^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$` <br /> |
+| `allowedMethods` _string array_ | AllowedMethods constrains HTTP methods the broker will inject on.<br />Empty means GET/HEAD/OPTIONS only (safe default — read-only). |  | items:Enum: [GET HEAD OPTIONS POST PUT PATCH DELETE] <br />Optional: \{\} <br /> |
+| `allowedPathPrefixes` _string array_ | AllowedPathPrefixes constrains URL paths the broker will inject on<br />(prefix match, e.g. "/repos/"). Empty means "/" (all paths on the allowed hosts). |  | Optional: \{\} <br /> |
+| `credentialEnvName` _string_ | CredentialEnvName names the backend env var that would normally carry this<br />provider's token (e.g. "GITHUB_TOKEN"). The operator injects a SENTINEL literal<br />here so servers that refuse to start tokenless still boot; the broker ignores<br />the sentinel value. Sentinel literal format: "thv-untrusted-sentinel:<provider>". |  | Optional: \{\} <br /> |
+
+
 #### api.v1beta1.ProxyDeploymentOverrides
 
 
@@ -4112,6 +4158,29 @@ _Appears in:_
 | `db` _integer_ | DB is the Redis database number | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.TokenEncryptionConfig
+
+
+
+TokenEncryptionConfig configures AES-256-GCM envelope encryption of
+upstream OAuth token values stored in Redis. The Secret referenced by
+KeySecretRef holds one data entry per key ID (value = base64 32-byte KEK);
+the operator mounts every data key (active + retired) as a SecretKeyRef env
+entry on the vMCP container and clones the same references into untrusted
+egress-broker sidecars. Key material never appears in the CRD, a ConfigMap,
+or a pod env literal.
+
+
+
+_Appears in:_
+- [api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `activeKeyId` _string_ | ActiveKeyID identifies the KEK used to encrypt new writes. Must match a<br />data key of the Secret referenced by KeySecretRef. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `keySecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | KeySecretRef references the Secret holding the key-encryption keys.<br />Its data keys are key IDs; values are base64 32-byte KEKs. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.TokenExchangeConfig

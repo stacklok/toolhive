@@ -262,6 +262,14 @@ type Config struct {
 	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
 	// entity name).
 	Authz *authz.Config
+
+	// Untrusted, when non-nil, enables untrusted-mode behavior in the vMCP session
+	// manager: untrusted-aware restore-budget selection and DeletePod on session
+	// Terminate. It is forwarded to sessionmanager.FactoryConfig.Untrusted. Nil
+	// (the default) leaves untrusted-mode session-manager behavior off; the
+	// per-session address resolver is installed on Config.SessionFactory separately
+	// (session.WithUntrustedResolver) by the composition root.
+	Untrusted *sessionmanager.UntrustedConfig
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -498,6 +506,7 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 		AdvertiseFromCore: true,
+		Untrusted:         cfg.Untrusted,
 	}
 
 	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, backendRegistry, sessMgrCfg))
@@ -971,10 +980,18 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SessionManager returns the session manager instance.
-// This is useful for testing and monitoring.
+// SessionManager returns the session manager instance.// This is useful for testing and monitoring.
 func (s *Server) SessionManager() *transportsession.Manager {
 	return s.sessionManager
+}
+
+// VMCPSessionManager returns the vMCP session manager (live MultiSessions,
+// backend connections, session-storage ownership). Composition roots use it
+// to wire storage-derived probes — e.g. the untrusted reaper's SessionExists
+// liveness check — through the storage's own API rather than re-deriving its
+// key shape.
+func (s *Server) VMCPSessionManager() SessionManager {
+	return s.vmcpSessionMgr
 }
 
 // MCPServer returns the underlying mcpcompat *server.MCPServer instance

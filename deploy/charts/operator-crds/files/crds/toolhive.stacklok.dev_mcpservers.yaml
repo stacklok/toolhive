@@ -238,6 +238,89 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              egressPolicy:
+                description: |-
+                  EgressPolicy declares which upstream providers this server may call and where the
+                  broker may inject each provider's credential. Required when Untrusted is true.
+                  When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend
+                  pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar
+                  Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the
+                  NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the
+                  trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction
+                  only, never a credential boundary — the credential guarantee comes solely from this
+                  field's broker + single-tenant pods in untrusted mode.
+                properties:
+                  providers:
+                    description: |-
+                      Providers maps an upstream provider name (as configured in the embedded auth
+                      server's upstream chain / upstream_inject strategy) to its egress constraints.
+                    items:
+                      description: |-
+                        ProviderEgress is the per-provider egress constraint. Credential-to-destination
+                        binding (ADR-0001 D5): the broker injects this provider's credential only to
+                        AllowedHosts, only on AllowedMethods, only under AllowedPathPrefixes.
+                      properties:
+                        allowedHosts:
+                          description: |-
+                            AllowedHosts is the exact set of destination hosts the credential may be
+                            injected for. Exact hostnames or one-label wildcards ("*.githubusercontent.com");
+                            no ports, no schemes.
+                          items:
+                            pattern: ^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+                            type: string
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        allowedMethods:
+                          description: |-
+                            AllowedMethods constrains HTTP methods the broker will inject on.
+                            Empty means GET/HEAD/OPTIONS only (safe default — read-only).
+                          items:
+                            enum:
+                            - GET
+                            - HEAD
+                            - OPTIONS
+                            - POST
+                            - PUT
+                            - PATCH
+                            - DELETE
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        allowedPathPrefixes:
+                          description: |-
+                            AllowedPathPrefixes constrains URL paths the broker will inject on
+                            (prefix match, e.g. "/repos/"). Empty means "/" (all paths on the allowed hosts).
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        credentialEnvName:
+                          description: |-
+                            CredentialEnvName names the backend env var that would normally carry this
+                            provider's token (e.g. "GITHUB_TOKEN"). The operator injects a SENTINEL literal
+                            here so servers that refuse to start tokenless still boot; the broker ignores
+                            the sentinel value. Sentinel literal format: "thv-untrusted-sentinel:<provider>".
+                          type: string
+                        provider:
+                          description: |-
+                            Provider is the logical upstream provider name (e.g. "github", "google").
+                            Must match the provider name used by the auth server and the vMCP
+                            upstream_inject strategy config for this workload.
+                          minLength: 1
+                          type: string
+                      required:
+                      - allowedHosts
+                      - provider
+                      type: object
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - provider
+                    x-kubernetes-list-type: map
+                required:
+                - providers
+                type: object
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -786,6 +869,15 @@ spec:
                   When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
+              untrusted:
+                default: false
+                description: |-
+                  Untrusted marks this MCP server as running untrusted code. When true, the operator
+                  enforces the untrusted-mode invariants (ADR-0001): no Secret/ConfigMap-sourced env on
+                  the backend container, single-tenant session-scoped backend pods, mandatory MCPGroup
+                  membership behind a VirtualMCPServer, and egress only through the credential-broker
+                  sidecar per EgressPolicy. K8s-only; ignored (and inert) in CLI/Docker mode.
+                type: boolean
               volumes:
                 description: Volumes are volumes to mount in the MCP server container
                 items:
@@ -844,6 +936,24 @@ spec:
                 or externalAuthConfigRef)
               rule: '!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t,
                 !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)'
+            - message: egressPolicy with at least one provider is required when untrusted
+                is true
+              rule: '!self.untrusted || (has(self.egressPolicy) && size(self.egressPolicy.providers)
+                > 0)'
+            - message: untrusted workloads must belong to an MCPGroup fronted by a
+                VirtualMCPServer
+              rule: '!self.untrusted || has(self.groupRef)'
+            - message: spec.secrets is forbidden when untrusted is true; declare providers
+                in egressPolicy and use sentinel env
+              rule: '!self.untrusted || !has(self.secrets) || size(self.secrets) ==
+                0'
+            - message: podTemplateSpec is forbidden when untrusted is true
+              rule: '!self.untrusted || !has(self.podTemplateSpec)'
+            - message: untrusted workloads require sessionAffinity ClientIP
+              rule: '!self.untrusted || self.sessionAffinity == ''ClientIP'''
+            - message: backendReplicas is managed by the untrusted-mode session lifecycle
+                and must not be set
+              rule: '!self.untrusted || !has(self.backendReplicas)'
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:
@@ -1182,6 +1292,89 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              egressPolicy:
+                description: |-
+                  EgressPolicy declares which upstream providers this server may call and where the
+                  broker may inject each provider's credential. Required when Untrusted is true.
+                  When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend
+                  pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar
+                  Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the
+                  NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the
+                  trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction
+                  only, never a credential boundary — the credential guarantee comes solely from this
+                  field's broker + single-tenant pods in untrusted mode.
+                properties:
+                  providers:
+                    description: |-
+                      Providers maps an upstream provider name (as configured in the embedded auth
+                      server's upstream chain / upstream_inject strategy) to its egress constraints.
+                    items:
+                      description: |-
+                        ProviderEgress is the per-provider egress constraint. Credential-to-destination
+                        binding (ADR-0001 D5): the broker injects this provider's credential only to
+                        AllowedHosts, only on AllowedMethods, only under AllowedPathPrefixes.
+                      properties:
+                        allowedHosts:
+                          description: |-
+                            AllowedHosts is the exact set of destination hosts the credential may be
+                            injected for. Exact hostnames or one-label wildcards ("*.githubusercontent.com");
+                            no ports, no schemes.
+                          items:
+                            pattern: ^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+                            type: string
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        allowedMethods:
+                          description: |-
+                            AllowedMethods constrains HTTP methods the broker will inject on.
+                            Empty means GET/HEAD/OPTIONS only (safe default — read-only).
+                          items:
+                            enum:
+                            - GET
+                            - HEAD
+                            - OPTIONS
+                            - POST
+                            - PUT
+                            - PATCH
+                            - DELETE
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        allowedPathPrefixes:
+                          description: |-
+                            AllowedPathPrefixes constrains URL paths the broker will inject on
+                            (prefix match, e.g. "/repos/"). Empty means "/" (all paths on the allowed hosts).
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        credentialEnvName:
+                          description: |-
+                            CredentialEnvName names the backend env var that would normally carry this
+                            provider's token (e.g. "GITHUB_TOKEN"). The operator injects a SENTINEL literal
+                            here so servers that refuse to start tokenless still boot; the broker ignores
+                            the sentinel value. Sentinel literal format: "thv-untrusted-sentinel:<provider>".
+                          type: string
+                        provider:
+                          description: |-
+                            Provider is the logical upstream provider name (e.g. "github", "google").
+                            Must match the provider name used by the auth server and the vMCP
+                            upstream_inject strategy config for this workload.
+                          minLength: 1
+                          type: string
+                      required:
+                      - allowedHosts
+                      - provider
+                      type: object
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - provider
+                    x-kubernetes-list-type: map
+                required:
+                - providers
+                type: object
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -1730,6 +1923,15 @@ spec:
                   When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
+              untrusted:
+                default: false
+                description: |-
+                  Untrusted marks this MCP server as running untrusted code. When true, the operator
+                  enforces the untrusted-mode invariants (ADR-0001): no Secret/ConfigMap-sourced env on
+                  the backend container, single-tenant session-scoped backend pods, mandatory MCPGroup
+                  membership behind a VirtualMCPServer, and egress only through the credential-broker
+                  sidecar per EgressPolicy. K8s-only; ignored (and inert) in CLI/Docker mode.
+                type: boolean
               volumes:
                 description: Volumes are volumes to mount in the MCP server container
                 items:
@@ -1788,6 +1990,24 @@ spec:
                 or externalAuthConfigRef)
               rule: '!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t,
                 !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)'
+            - message: egressPolicy with at least one provider is required when untrusted
+                is true
+              rule: '!self.untrusted || (has(self.egressPolicy) && size(self.egressPolicy.providers)
+                > 0)'
+            - message: untrusted workloads must belong to an MCPGroup fronted by a
+                VirtualMCPServer
+              rule: '!self.untrusted || has(self.groupRef)'
+            - message: spec.secrets is forbidden when untrusted is true; declare providers
+                in egressPolicy and use sentinel env
+              rule: '!self.untrusted || !has(self.secrets) || size(self.secrets) ==
+                0'
+            - message: podTemplateSpec is forbidden when untrusted is true
+              rule: '!self.untrusted || !has(self.podTemplateSpec)'
+            - message: untrusted workloads require sessionAffinity ClientIP
+              rule: '!self.untrusted || self.sessionAffinity == ''ClientIP'''
+            - message: backendReplicas is managed by the untrusted-mode session lifecycle
+                and must not be set
+              rule: '!self.untrusted || !has(self.backendReplicas)'
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:

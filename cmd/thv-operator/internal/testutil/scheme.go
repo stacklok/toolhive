@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
@@ -35,6 +36,7 @@ func NewScheme(t *testing.T, extra ...func(*runtime.Scheme) error) *runtime.Sche
 	scheme := runtime.NewScheme()
 	adders := append([]func(*runtime.Scheme) error{
 		clientgoscheme.AddToScheme,
+		discoveryv1.AddToScheme,
 		mcpv1beta1.AddToScheme,
 		mcpv1alpha1.AddToScheme,
 	}, extra...)

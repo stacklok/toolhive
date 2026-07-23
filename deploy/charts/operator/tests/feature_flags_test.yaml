@@ -8,11 +8,12 @@ suite: opt-in feature flags
 templates:
   - deployment.yaml
 tests:
-  - it: flips both feature-flag env vars to the quoted string "true"
+  - it: flips all feature-flag env vars to the quoted string "true"
     template: deployment.yaml
     set:
       operator.features.experimental: true
       operator.features.storageVersionMigrator: true
+      operator.features.untrustedMode: true
     asserts:
       - contains:
           path: 'spec.template.spec.containers[0].env'
@@ -20,6 +21,16 @@ tests:
       - contains:
           path: 'spec.template.spec.containers[0].env'
           content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "true" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_ENABLE_UNTRUSTED_MODE, value: "true" }
+
+  - it: defaults untrusted mode to the quoted string "false" (opt-in only)
+    template: deployment.yaml
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_ENABLE_UNTRUSTED_MODE, value: "false" }
 
   - it: opts out of the storage version migrator when set to false
     template: deployment.yaml

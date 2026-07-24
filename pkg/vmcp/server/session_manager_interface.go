@@ -25,13 +25,11 @@ type SessionManager interface {
 	// Called from OnRegisterSession hook once context is available; creates backend
 	// connections and replaces the placeholder with a fully-formed MultiSession.
 	//
-	// sink is a trailing variadic parameter (at most the first value is used) so
-	// the many pre-existing 2-argument call sites in the session-manager test
-	// suite continue to compile unchanged. When supplied, it is threaded to
-	// MultiSessionFactory.MakeSessionWithID and reaches every backend connector
-	// opened for this session (#5748).
+	// sink, when non-nil, is threaded to MultiSessionFactory.MakeSessionWithID and
+	// reaches every backend connector opened for this session (#5748). Pass nil to
+	// disable asynchronous list_changed consumption for this session.
 	CreateSession(
-		ctx context.Context, sessionID string, sink ...vmcpsession.ListChangedSink,
+		ctx context.Context, sessionID string, sink vmcpsession.ListChangedSink,
 	) (vmcpsession.MultiSession, error)
 
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.

@@ -6,18 +6,23 @@ package server
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // fakeToolsSession is a minimal server.ClientSession + server.SessionWithTools
-// fake used to test resyncSessionTools/buildListChangedSink without a live SDK
+// fake used to test resyncSessionTools/runListChangedResync without a live SDK
 // session. It records every SetSessionTools call so tests can assert
 // replacement semantics.
 type fakeToolsSession struct {
@@ -52,6 +57,34 @@ func (f *fakeToolsSession) SetSessionTools(tools map[string]server.ServerTool) {
 
 var _ server.ClientSession = (*fakeToolsSession)(nil)
 var _ server.SessionWithTools = (*fakeToolsSession)(nil)
+
+// stubSessionManager is a minimal SessionManager for the #5748 resync tests.
+// Only GetMultiSession is meaningful (its returned liveness bool drives the
+// resync liveness guard); the rest satisfy the interface and fail loudly if a
+// test reaches them unexpectedly.
+type stubSessionManager struct {
+	alive bool
+}
+
+func (m *stubSessionManager) GetMultiSession(context.Context, string) (vmcpsession.MultiSession, bool) {
+	return nil, m.alive
+}
+func (*stubSessionManager) Generate() string { panic("stubSessionManager: Generate unexpected") }
+func (*stubSessionManager) Validate(string) (bool, error) {
+	panic("stubSessionManager: Validate unexpected")
+}
+func (*stubSessionManager) Terminate(string) (bool, error) { return false, nil }
+func (*stubSessionManager) CreateSession(
+	context.Context, string, vmcpsession.ListChangedSink,
+) (vmcpsession.MultiSession, error) {
+	panic("stubSessionManager: CreateSession unexpected")
+}
+func (*stubSessionManager) DecorateSession(string, func(vmcpsession.MultiSession) vmcpsession.MultiSession) error {
+	panic("stubSessionManager: DecorateSession unexpected")
+}
+func (*stubSessionManager) NotifyBackendExpired(string, string, map[string]string) {}
+
+var _ SessionManager = (*stubSessionManager)(nil)
 
 // TestResyncSessionTools_ReplacesRatherThanMerges verifies (#5748) that
 // resyncSessionTools REPLACES the session's tool store with the freshly
@@ -98,52 +131,143 @@ func TestResyncSessionTools_SessionWithoutToolSupport(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not support per-session tools")
 }
 
-// TestBuildListChangedSink_TableDriven exercises buildListChangedSink's
-// behavior (#5748): it is a no-op for anything other than kind=="tools", and
-// for kind=="tools" it invalidates the shared capability cache BEFORE
-// re-deriving and replacing the session's tool set.
-func TestBuildListChangedSink_TableDriven(t *testing.T) {
+// TestListChangedResyncWorker_CoalescesAndNonBlocking verifies the B-HIGH-2
+// hand-off: trigger() returns immediately, never spawns a goroutine per call,
+// runs at most one resync at a time, and coalesces concurrent triggers into a
+// single follow-up run (dirty flag).
+func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name                 string
-		kind                 string
-		wantInvalidateCalls  int32
-		wantSetSessionToolsN int
-		wantFinalToolCount   int
-	}{
-		{
-			name:                 "kind=resources is ignored (out of scope)",
-			kind:                 "resources",
-			wantInvalidateCalls:  0,
-			wantSetSessionToolsN: 0,
-			wantFinalToolCount:   1, // unchanged: only "stale" remains
-		},
-		{
-			name:                 "kind=tools invalidates cache and resyncs",
-			kind:                 "tools",
-			wantInvalidateCalls:  1,
-			wantSetSessionToolsN: 1,
-			wantFinalToolCount:   1, // replaced: only "fresh" remains
+	var (
+		runs     atomic.Int32
+		inFlight atomic.Int32
+		maxSeen  atomic.Int32
+		release  = make(chan struct{})
+	)
+	firstStarted := make(chan struct{}, 1)
+
+	w := &listChangedResyncWorker{
+		baseCtx: context.Background(),
+		run: func(context.Context) {
+			n := inFlight.Add(1)
+			for {
+				m := maxSeen.Load()
+				if n <= m || maxSeen.CompareAndSwap(m, n) {
+					break
+				}
+			}
+			if runs.Add(1) == 1 {
+				firstStarted <- struct{}{}
+				<-release // hold the first run so subsequent triggers coalesce
+			}
+			inFlight.Add(-1)
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
-			srv := &Server{core: fc}
-			sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
-				"stale": {Tool: mcp.Tool{Name: "stale"}},
-			}}
-
-			sink := srv.buildListChangedSink("sess-1", sess, nil)
-			sink(context.Background(), "backend-1", tc.kind)
-
-			assert.Equal(t, tc.wantInvalidateCalls, fc.invalidateCacheCalls.Load())
-			assert.Equal(t, tc.wantSetSessionToolsN, sess.setSessionToolsCalls)
-			assert.Len(t, sess.GetSessionTools(), tc.wantFinalToolCount)
-		})
+	// First trigger starts the (blocked) worker goroutine.
+	w.trigger()
+	select {
+	case <-firstStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not start")
 	}
+
+	// While the first run is blocked, fire many more triggers. Each must return
+	// immediately (non-blocking) and collapse into a single dirty re-run.
+	for range 50 {
+		w.trigger()
+	}
+
+	close(release) // let the first run finish; one coalesced re-run should follow
+
+	require.Eventually(t, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return !w.running
+	}, 5*time.Second, 5*time.Millisecond, "worker should become idle")
+
+	assert.Equal(t, int32(1), maxSeen.Load(), "at most one resync may run at a time")
+	assert.Equal(t, int32(2), runs.Load(),
+		"50 triggers during one in-flight run must coalesce into exactly one follow-up run")
+}
+
+// TestRunListChangedResync verifies (#5748) the resync body run off the receive
+// loop: it skips terminated sessions (liveness guard), and for a live session
+// it invalidates the cache and reconstructs a context carrying the captured
+// identity + forwarded headers (B-HIGH-1) before re-deriving/replacing the
+// session's tools.
+func TestRunListChangedResync(t *testing.T) {
+	t.Parallel()
+
+	const fwdKey = "X-Tenant"
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}}
+	fwd := map[string]string{fwdKey: "acme"}
+
+	t.Run("terminated session: skipped entirely", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
+		srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: false}}
+		sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
+			"stale": {Tool: mcp.Tool{Name: "stale"}},
+		}}
+
+		srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd)
+
+		assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "terminated session must not invalidate the cache")
+		assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "terminated session must not re-aggregate")
+		assert.Equal(t, 0, sess.setSessionToolsCalls)
+	})
+
+	t.Run("live session: invalidates, reconstructs ctx, replaces tools", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
+		srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: true}}
+		sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
+			"stale": {Tool: mcp.Tool{Name: "stale"}},
+		}}
+
+		srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd)
+
+		assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(), "live session must invalidate the cache once")
+		assert.Equal(t, 1, sess.setSessionToolsCalls)
+		got := sess.GetSessionTools()
+		require.Len(t, got, 1)
+		assert.Contains(t, got, "fresh")
+		assert.NotContains(t, got, "stale", "resync must replace the stale set")
+
+		// B-HIGH-1: the resync must call the core with a context carrying the
+		// captured identity AND forwarded headers, so the cache key and outbound
+		// backend auth match a real request from this principal.
+		box := fc.lastListToolsCtx.Load()
+		require.NotNil(t, box, "ListTools must have been called")
+		resyncCtx := box.ctx
+		gotID, ok := auth.IdentityFromContext(resyncCtx)
+		require.True(t, ok, "resync context must carry the captured identity")
+		assert.Equal(t, "alice", gotID.Subject)
+		assert.Equal(t, "acme", headerforward.ForwardedHeadersFromContext(resyncCtx)[fwdKey],
+			"resync context must carry the captured forwarded headers")
+	})
+}
+
+// TestBuildListChangedSink_IgnoresNonToolsKind verifies the sink's kind gate:
+// a non-tools ChangeKind is dropped synchronously on the receive loop (no
+// worker goroutine, no cache invalidation, no resync). The gate returns before
+// worker.trigger, so the assertion is deterministic without waiting.
+func TestBuildListChangedSink_IgnoresNonToolsKind(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
+	srv := &Server{
+		core:           fc,
+		vmcpSessionMgr: &stubSessionManager{alive: true},
+		resyncBaseCtx:  context.Background(),
+	}
+	sess := &fakeToolsSession{id: "sess-1"}
+
+	sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+	// A resources list_changed (out of scope) must be ignored synchronously.
+	sink(context.Background(), "backend-1", vmcpsession.ChangeKind("resources"))
+
+	assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "non-tools kind must not invalidate the cache")
+	assert.Equal(t, 0, sess.setSessionToolsCalls, "non-tools kind must not resync tools")
 }

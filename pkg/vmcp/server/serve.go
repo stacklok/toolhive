@@ -325,6 +325,18 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		statusReporter:   cfg.StatusReporter,
 	}
 
+	// Server-lifetime parent context for asynchronous tools/list_changed resync
+	// work (#5748). Cancelling it on Stop aborts any in-flight backend
+	// re-aggregation a late notification kicked off, so nothing outlives the
+	// server. context.Background() is the parent (not the Serve ctx, which may be
+	// request-scoped) so the resync lifetime is bounded solely by Stop.
+	resyncCtx, resyncCancel := context.WithCancel(context.Background())
+	srv.resyncBaseCtx = resyncCtx
+	srv.shutdownFuncs = append(srv.shutdownFuncs, func(context.Context) error {
+		resyncCancel()
+		return nil
+	})
+
 	if optimizerCleanup != nil {
 		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
 	}

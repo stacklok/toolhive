@@ -549,7 +549,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(successConnector)
-		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -567,9 +567,9 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(successConnector)
-		s1, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+		s1, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 		require.NoError(t, err)
-		s2, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+		s2, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 		require.NoError(t, err)
 
 		assert.NotEqual(t, s1.ID(), s2.ID())
@@ -582,7 +582,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(successConnector)
-		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, nil)
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -598,7 +598,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		factory := newSessionFactoryWithConnector(successConnector)
 		// Mix of valid and nil entries; nil must not cause a panic.
 		backends := []*vmcp.Backend{nil, backend, nil}
-		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -626,7 +626,7 @@ func TestNewSessionFactory_PartialInitialisation(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err, "partial init must not return an error")
 	require.NotNil(t, sess)
 
@@ -685,7 +685,7 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 			}
 
 			factory := newSessionFactoryWithConnector(wrappedConnector)
-			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 			require.NoError(t, err)
 			require.NotNil(t, sess)
 			assert.Empty(t, sess.Tools())
@@ -712,7 +712,7 @@ func TestNewSessionFactory_ConnectorReturnsConnWithError(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err, "partial failure must not abort the session")
 	require.NotNil(t, sess)
 	assert.Empty(t, sess.Tools())
@@ -741,7 +741,7 @@ func TestNewSessionFactory_CapabilityNameConflictIsResolvedDeterministically(t *
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err)
 	require.NotNil(t, sess)
 	defer func() { require.NoError(t, sess.Close()) }()
@@ -771,7 +771,7 @@ func TestNewSessionFactory_AllBackendsFail(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err, "all-fail must still return a valid (empty) session")
 	require.NotNil(t, sess)
 
@@ -795,7 +795,7 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector, WithBackendInitTimeout(50*time.Millisecond))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err, "timeout is a partial failure, not a hard error")
 	require.NotNil(t, sess)
 
@@ -844,7 +844,7 @@ func TestNewSessionFactory_ParallelInit(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector, WithMaxBackendInitConcurrency(3))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err)
 
 	// All backends must have been initialised.
@@ -928,7 +928,7 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 			t.Parallel()
 
 			factory := newSessionFactoryWithConnector(tt.connector)
-			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), tt.identity, tt.backends)
+			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), tt.identity, tt.backends, nil)
 			require.NoError(t, err)
 			require.NotNil(t, sess)
 			defer func() { require.NoError(t, sess.Close()) }()
@@ -1142,11 +1142,11 @@ func TestMakeSessionWithID_InvalidIDReturnsError(t *testing.T) {
 		return nil, nil, nil
 	})
 
-	_, err := f.MakeSessionWithID(context.Background(), "", nil, nil)
+	_, err := f.MakeSessionWithID(context.Background(), "", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not be empty")
 
-	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, nil)
+	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid character")
 }

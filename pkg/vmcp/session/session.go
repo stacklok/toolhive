@@ -20,6 +20,14 @@ type MultiSession = sessiontypes.MultiSession
 // without importing the internal package directly.
 type ListChangedSink = backend.ListChangedSink
 
+// ChangeKind is an alias for backend.ChangeKind, re-exported for the same
+// reason as ListChangedSink.
+type ChangeKind = backend.ChangeKind
+
+// KindTools re-exports backend.KindTools so out-of-tree callers can match on it
+// without importing the internal package.
+const KindTools = backend.KindTools
+
 // ValidateCaller checks caller against a stored identity-binding string (the
 // value persisted under MetadataKeyIdentityBinding) and returns nil when the
 // caller is permitted, or ErrNilCaller / ErrUnauthorizedCaller / ErrSessionOwnerUnknown

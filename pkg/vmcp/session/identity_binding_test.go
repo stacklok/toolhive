@@ -79,7 +79,7 @@ func TestMakeSession_StoresIdentityBinding(t *testing.T) {
 
 			factory := newSessionFactoryWithConnector(nilBackendConnector())
 			sess, err := factory.MakeSessionWithID(
-				t.Context(), uuid.New().String(), tt.identity, nil,
+				t.Context(), uuid.New().String(), tt.identity, nil, nil,
 			)
 			require.NoError(t, err)
 			require.NotNil(t, sess)
@@ -104,7 +104,7 @@ func TestMakeSession_RejectsBoundSessionWithoutIdentifyingClaims(t *testing.T) {
 	// Token is present but Claims are empty, so BindSession's extractBindingID fails.
 	identity := identityWithClaims("x", map[string]any{})
 
-	_, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, nil)
+	_, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, nil, nil)
 	require.Error(t, err, "session creation must fail when bound identity lacks identifying claims")
 }
 
@@ -240,7 +240,7 @@ func TestRestoreSession_PassesNilIdentityToConnector(t *testing.T) {
 	})
 
 	factory := newSessionFactoryWithConnector(capturingConnector)
-	multiSess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), originalIdentity, nil)
+	multiSess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), originalIdentity, nil, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = multiSess.Close() })
 

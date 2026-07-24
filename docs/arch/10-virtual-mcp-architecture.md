@@ -203,26 +203,59 @@ non-nil `ListChangedSink` is supplied at connection time, the connector:
   backends hang when this stream is opened against them. SSE backends need no
   extra option: their whole session is already one continuous stream.
 - Registers an `OnNotification` handler that dispatches
-  `notifications/tools/list_changed` to the sink (`kind="tools"`) and
-  logs `notifications/message` received out-of-call (log-only; no relay).
+  `notifications/tools/list_changed` to the sink (`kind=KindTools`, a typed
+  `ChangeKind` constant rather than a bare string so a typo is a compile
+  error) and logs `notifications/message` received out-of-call (log-only; no
+  relay).
 
 The sink is built once per session, at registration (`pkg/vmcp/server`'s
 `buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,
-and the caller's identity **captured at registration time** (a deliberate
-snapshot, not re-resolved per firing — see the token-staleness note below).
-It is threaded through `MultiSessionFactory.MakeSessionWithID` (a trailing
-variadic parameter so the many pre-existing call sites are unaffected) down
-to every backend connector opened for that session.
+and the caller's identity **and per-request forwarded headers** captured **at
+registration time** (a deliberate snapshot, not re-resolved per firing — see
+the token-staleness note below). It is threaded through
+`MultiSessionFactory.MakeSessionWithID` / `SessionManager.CreateSession` (a
+single nilable `ListChangedSink` parameter) down to every backend connector
+opened for that session.
 
-When the sink fires for `kind="tools"`, it:
+**The sink is non-blocking (runs on the backend receive-loop goroutine).** It
+must not do real work inline: the mcpcompat client dispatches notifications
+synchronously on its receive loop, so a blocking sink would stall that
+backend's notification delivery and let a misbehaving backend amplify one
+notification into unbounded work. The sink therefore only hands off to a
+**per-session coalescing worker** (`listChangedResyncWorker`): `trigger()`
+sets a dirty flag and, at most, starts **one** worker goroutine — never one
+goroutine per notification. At most one resync runs at a time per session;
+notifications that arrive while a resync is in flight collapse into a single
+follow-up run, so a notification storm is bounded to O(1) concurrent work per
+session. The worker goroutine exits when idle, so an idle session holds no
+goroutine.
 
-1. Calls `core.InvalidateCapabilityCache()`, which purges the **entire**
-   per-identity capability cache (`aggregator.CacheInvalidator`) — coarse
-   (not scoped to the one backend that changed) but simple, and briefly
-   de-optimizes other identities' caches rather than risking a stale read for
-   the one that matters. An aggregator that does not implement
-   `CacheInvalidator` WARN-logs instead of silently no-opping.
-2. Re-derives the session's advertised tool set from the (now cold) cache via
+The worker's resync body (`runListChangedResync`), off the receive loop:
+
+1. **Liveness guard** — looks the session up via `GetMultiSession` and returns
+   immediately if it was terminated/expired, so a storm of notifications for a
+   dead session drives no work.
+2. **Reconstructs the request context** — starts from a server-lifetime base
+   context (`Server.resyncBaseCtx`, cancelled on `Stop` so in-flight backend
+   sweeps never outlive the server) and layers on the captured identity
+   (`auth.WithIdentity`) and forwarded headers
+   (`headerforward.WithForwardedHeaders`). This is **security-critical**: the
+   capability cache key and the outbound backend authentication are derived
+   from the **context** (not from an explicit identity argument), so without
+   this the resync would enumerate backends *unauthenticated* — advertising
+   tool metadata the principal's own credentials would not surface, or wrongly
+   dropping credential-gated tools, while replacing the correctly-scoped
+   registration-time set.
+3. Calls `core.InvalidateCapabilityCache()`, which purges the **entire**
+   per-identity capability cache (`aggregator.CacheInvalidator`). This is
+   coarse (not scoped to the one backend that changed): the LRU key is a hash
+   of identity + forwarded headers + backend-set, so per-backend invalidation
+   would need a reverse index that is disproportionate here. The coalescing
+   above already bounds the purge to at most once per resync burst, and a
+   purge only forces the next call per identity to re-sweep — an accepted
+   de-opt / follow-up. An aggregator that does not implement `CacheInvalidator`
+   WARN-logs instead of silently no-opping.
+4. Re-derives the session's advertised tool set from the (now cold) cache via
    the same `serveSessionTools` helper session registration uses, and
    **replaces** — not merges — the SDK session's tool store
    (`SessionWithTools.SetSessionTools`), so a tool the backend removed
@@ -264,10 +297,13 @@ notification methods to the sink yet, and cross-pod session restore
 resync there).
 
 **Implementation**: `pkg/vmcp/session/internal/backend/mcp_session.go`
-(`ListChangedSink`, connector wiring), `pkg/vmcp/aggregator/aggregator.go`
-and `caching_aggregator.go` (`CacheInvalidator`), `pkg/vmcp/core/core_vmcp.go`
+(`ChangeKind`/`KindTools`, `ListChangedSink`, connector wiring),
+`pkg/vmcp/aggregator/aggregator.go` and `caching_aggregator.go`
+(`CacheInvalidator`), `pkg/vmcp/core/core_vmcp.go`
 (`InvalidateCapabilityCache`), `pkg/vmcp/server/serve_list_changed.go`
-(`buildListChangedSink`, `resyncSessionTools`).
+(`listChangedResyncWorker` coalescing, `buildListChangedSink`,
+`runListChangedResync`, `resyncSessionTools`) with `Server.resyncBaseCtx`
+cancelled on `Stop`.
 
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 

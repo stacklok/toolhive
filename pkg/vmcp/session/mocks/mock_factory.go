@@ -44,23 +44,18 @@ func (m *MockMultiSessionFactory) EXPECT() *MockMultiSessionFactoryMockRecorder 
 }
 
 // MakeSessionWithID mocks base method.
-func (m *MockMultiSessionFactory) MakeSessionWithID(ctx context.Context, id string, identity *auth.Identity, backends []*vmcp.Backend, sink ...session.ListChangedSink) (session.MultiSession, error) {
+func (m *MockMultiSessionFactory) MakeSessionWithID(ctx context.Context, id string, identity *auth.Identity, backends []*vmcp.Backend, sink session.ListChangedSink) (session.MultiSession, error) {
 	m.ctrl.T.Helper()
-	varargs := []any{ctx, id, identity, backends}
-	for _, a := range sink {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "MakeSessionWithID", varargs...)
+	ret := m.ctrl.Call(m, "MakeSessionWithID", ctx, id, identity, backends, sink)
 	ret0, _ := ret[0].(session.MultiSession)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // MakeSessionWithID indicates an expected call of MakeSessionWithID.
-func (mr *MockMultiSessionFactoryMockRecorder) MakeSessionWithID(ctx, id, identity, backends any, sink ...any) *gomock.Call {
+func (mr *MockMultiSessionFactoryMockRecorder) MakeSessionWithID(ctx, id, identity, backends, sink any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{ctx, id, identity, backends}, sink...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MakeSessionWithID", reflect.TypeOf((*MockMultiSessionFactory)(nil).MakeSessionWithID), varargs...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MakeSessionWithID", reflect.TypeOf((*MockMultiSessionFactory)(nil).MakeSessionWithID), ctx, id, identity, backends, sink)
 }
 
 // RestoreSession mocks base method.

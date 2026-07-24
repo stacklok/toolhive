@@ -336,6 +336,13 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+
+	// resyncBaseCtx is the server-lifetime parent context for asynchronous
+	// tools/list_changed resync work (#5748). It is cancelled by a shutdownFunc
+	// on Stop, so an in-flight backend re-aggregation triggered by a late
+	// notification cannot outlive the server. Set by Serve; nil for direct-Serve
+	// callers that never register a list_changed sink.
+	resyncBaseCtx context.Context
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -1214,8 +1221,15 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	//
 	// The list_changed sink is built here, before CreateSession, so it can be
 	// threaded through to every backend connector this session opens (#5748).
+	// Capture BOTH the caller identity AND the per-request forwarded headers from
+	// the registration context: the asynchronous resync re-enumerates backends
+	// through the same identity+header-keyed path a live request uses (cache key
+	// and outbound backend auth are derived from the context, not passed
+	// explicitly), so it must reconstruct a faithful context or it would
+	// enumerate unauthenticated. See buildListChangedSink.
 	identity, _ := auth.IdentityFromContext(ctx)
-	sink := s.buildListChangedSink(sessionID, session, identity)
+	forwardedHeaders := headerforward.ForwardedHeadersFromContext(ctx)
+	sink := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
 	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID, sink); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,

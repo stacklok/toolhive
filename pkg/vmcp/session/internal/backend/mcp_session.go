@@ -39,23 +39,35 @@ const (
 	defaultBackendRequestTimeout = 30 * time.Second
 )
 
+// ChangeKind identifies which capability class a backend reported changed via
+// ListChangedSink. Using a typed constant (rather than a bare string) means a
+// typo is a compile error at the producer and consumer instead of a silent
+// no-op, and gives the resources/prompts follow-up (#5748) an obvious extension
+// point (KindResources/KindPrompts).
+type ChangeKind string
+
+// KindTools is reported when a backend emits notifications/tools/list_changed.
+const KindTools ChangeKind = "tools"
+
 // ListChangedSink is invoked when a persistent backend connection observes a
 // notification this package consumes asynchronously (outside any in-flight
 // call) — currently only notifications/tools/list_changed, reported with
-// kind="tools". Resources/prompts list_changed are out of scope for #5748 (a
+// kind=KindTools. Resources/prompts list_changed are out of scope for #5748 (a
 // tracked follow-up); this package does not dispatch them to sink.
 //
-// Implementations must be best-effort and non-blocking: the handler that
-// invokes sink runs on the mcpcompat client's receive-loop goroutine (see
-// Client.dispatch in toolhive-core), so a slow or blocking sink stalls that
-// backend's notification delivery. ctx carries no request-scoped values (the
-// notification can arrive long after any particular client request
-// completed) — see createMCPClient.
-type ListChangedSink func(ctx context.Context, backendWorkloadID, kind string)
+// The sink is invoked on the mcpcompat client's receive-loop goroutine (see
+// Client.dispatch in toolhive-core), so implementations MUST be non-blocking:
+// they must hand the work off (e.g. set a dirty flag / signal a worker) and
+// return immediately. A sink that does real work (network I/O, cache purges)
+// inline stalls that backend's entire notification delivery and lets a
+// misbehaving backend amplify one notification into unbounded work. The ctx
+// passed here is only for the hand-off; long-lived resync work must run under
+// a caller-owned, cancellable context, not this one.
+type ListChangedSink func(ctx context.Context, backendWorkloadID string, kind ChangeKind)
 
 // newListChangedNotificationHandler builds the OnNotification handler
 // registered by createMCPClient when sink is non-nil. It dispatches
-// notifications/tools/list_changed to sink (kind="tools") and log-only handles
+// notifications/tools/list_changed to sink (kind=KindTools) and log-only handles
 // notifications/message; every other notification method is ignored — this
 // handler is not the mid-call server->client relay (that is
 // pkg/vmcp/client's per-call notification forwarder), it only feeds the
@@ -64,7 +76,7 @@ func newListChangedNotificationHandler(workloadID string, sink ListChangedSink) 
 	return func(n mcp.JSONRPCNotification) {
 		switch n.Method {
 		case vmcp.MethodToolsListChangedNotification:
-			sink(context.Background(), workloadID, "tools")
+			sink(context.Background(), workloadID, KindTools)
 		case vmcp.MethodLogNotification:
 			// Out-of-call backend log messages are not relayed to the downstream
 			// client on this path; log so the signal is visible rather than

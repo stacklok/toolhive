@@ -41,7 +41,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 			{ID: "backend-a"},
 			{ID: "backend-b"},
 		}
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends, nil)
 		require.NoError(t, err)
 
 		meta := sess.GetMetadata()
@@ -56,7 +56,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, nil)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, nil, nil)
 		require.NoError(t, err)
 
 		meta := sess.GetMetadata()
@@ -85,7 +85,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 			{ID: "backend-ok"},
 			{ID: "backend-fail"},
 		}
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends, nil)
 		require.NoError(t, err)
 
 		meta := sess.GetMetadata()
@@ -123,7 +123,7 @@ func TestRestoreSession_FreshlyPopulatesMetadataKeyBackendIDs(t *testing.T) {
 	sessionID := "restore-test-session"
 
 	// Create the initial session so we have a real token hash in metadata.
-	original, err := factory.MakeSessionWithID(t.Context(), sessionID, nil, backends)
+	original, err := factory.MakeSessionWithID(t.Context(), sessionID, nil, backends, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = original.Close() })
 
@@ -195,7 +195,7 @@ func TestRestoreSession_PassesStoredSessionHintToConnector(t *testing.T) {
 	}
 
 	// Create the original session — connector receives empty hints.
-	original, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends)
+	original, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = original.Close() })
 
@@ -251,7 +251,7 @@ func TestMakeSession_ThreadsListChangedSinkToConnector(t *testing.T) {
 		backends := []*vmcp.Backend{{ID: "backend-a"}, {ID: "backend-b"}}
 
 		var sinkCalls int
-		sink := internalbk.ListChangedSink(func(context.Context, string, string) { sinkCalls++ })
+		sink := internalbk.ListChangedSink(func(context.Context, string, internalbk.ChangeKind) { sinkCalls++ })
 
 		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends, sink)
 		require.NoError(t, err)
@@ -262,7 +262,7 @@ func TestMakeSession_ThreadsListChangedSinkToConnector(t *testing.T) {
 		require.Len(t, received, 2)
 		for _, id := range []string{"backend-a", "backend-b"} {
 			require.NotNil(t, received[id], "connector for %s must receive a non-nil sink", id)
-			received[id](context.Background(), id, "tools")
+			received[id](context.Background(), id, internalbk.KindTools)
 		}
 		assert.Equal(t, 2, sinkCalls, "the same sink function must reach every backend's connector call")
 	})
@@ -281,7 +281,7 @@ func TestMakeSession_ThreadsListChangedSinkToConnector(t *testing.T) {
 		}
 
 		factory := newSessionFactoryWithConnector(connector)
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, []*vmcp.Backend{{ID: "backend-a"}})
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, []*vmcp.Backend{{ID: "backend-a"}}, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = sess.Close() })
 
@@ -307,7 +307,7 @@ func TestMakeSession_PassesEmptySessionHintToConnector(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, []*vmcp.Backend{{ID: "backend-a"}})
+	sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, []*vmcp.Backend{{ID: "backend-a"}}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 

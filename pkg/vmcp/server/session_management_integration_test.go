@@ -48,7 +48,7 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 	ctrl := gomock.NewController(t)
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ ...vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -90,7 +90,7 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 	state := &mockFactoryState{}
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ ...vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
 			state.makeWithIDCalled.Store(true)
 			// All sessions carry MetadataKeyIdentityBinding so Terminate takes the
 			// Phase 2 (storage.Delete) path. The sentinel value is sufficient for

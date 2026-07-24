@@ -83,7 +83,7 @@ func newBackendAwareTestFactory(tools []vmcp.Tool, rt *vmcp.RoutingTable) *backe
 }
 
 func (f *backendAwareTestFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ ...vmcpsession.ListChangedSink,
+	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink,
 ) (vmcpsession.MultiSession, error) {
 	return f.newSession(id), nil
 }

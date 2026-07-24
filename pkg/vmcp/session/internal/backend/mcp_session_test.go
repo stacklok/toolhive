@@ -190,7 +190,7 @@ func TestCreateMCPClient_ContinuousListeningGatedOnSink(t *testing.T) {
 		{name: "nil sink disables continuous listening", sink: nil, wantContinuous: false},
 		{
 			name:           "non-nil sink enables continuous listening",
-			sink:           func(context.Context, string, string) {},
+			sink:           func(context.Context, string, ChangeKind) {},
 			wantContinuous: true,
 		},
 	}
@@ -229,10 +229,11 @@ func TestCreateMCPClient_ListChangedSink_FiresOnBackendNotification(t *testing.T
 	}
 
 	type firedCall struct {
-		backendWorkloadID, kind string
+		backendWorkloadID string
+		kind              ChangeKind
 	}
 	fired := make(chan firedCall, 4)
-	sink := func(_ context.Context, backendWorkloadID, kind string) {
+	sink := func(_ context.Context, backendWorkloadID string, kind ChangeKind) {
 		fired <- firedCall{backendWorkloadID: backendWorkloadID, kind: kind}
 	}
 
@@ -258,8 +259,86 @@ func TestCreateMCPClient_ListChangedSink_FiresOnBackendNotification(t *testing.T
 	select {
 	case got := <-fired:
 		assert.Equal(t, "list-changed-backend", got.backendWorkloadID)
-		assert.Equal(t, "tools", got.kind)
+		assert.Equal(t, KindTools, got.kind)
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for the list_changed sink to fire")
 	}
+}
+
+// TestCreateMCPClient_ListChangedSink_DoesNotStallInFlightCall is the F9
+// corroborated-concern regression: firing a real backend tools/list_changed —
+// whose sink is (deliberately, for the test) slow — must NOT stall an in-flight
+// call on the same backend session. The sink runs on the client's
+// notification-dispatch goroutine, which is independent of the request path, so
+// a CallTool issued while the sink is still working completes promptly. This
+// validates the no-deadlock conclusion behind moving the real resync off the
+// receive loop (#5748 B-HIGH-2).
+func TestCreateMCPClient_ListChangedSink_DoesNotStallInFlightCall(t *testing.T) {
+	t.Parallel()
+
+	b := newListChangedTestBackend(t)
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "list-changed-backend",
+		WorkloadName:  "list-changed-backend",
+		BaseURL:       b.url,
+		TransportType: "streamable-http",
+	}
+
+	sinkEntered := make(chan struct{}, 1)
+	releaseSink := make(chan struct{})
+	sink := func(_ context.Context, _ string, kind ChangeKind) {
+		if kind != KindTools {
+			return
+		}
+		select {
+		case sinkEntered <- struct{}{}:
+		default:
+		}
+		// Simulate a slow resync body running on the dispatch goroutine to prove
+		// it does not hold anything the request path needs.
+		<-releaseSink
+	}
+
+	c, err := createMCPClient(
+		context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = c.Initialize(context.Background(), mcpmcp.InitializeRequest{
+		Params: mcpmcp.InitializeParams{
+			ProtocolVersion: mcpmcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcpmcp.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Trigger a real tools/list_changed and wait until the (slow) sink is running.
+	b.addTool(t, "added_tool")
+	select {
+	case <-sinkEntered:
+	case <-time.After(10 * time.Second):
+		close(releaseSink)
+		t.Fatal("sink never fired")
+	}
+
+	// With the sink still blocked, an in-flight call on the same session must
+	// complete promptly (independent dispatch vs request paths).
+	callDone := make(chan error, 1)
+	go func() {
+		_, callErr := c.CallTool(context.Background(), mcpmcp.CallToolRequest{
+			Params: mcpmcp.CallToolParams{Name: "initial_tool"},
+		})
+		callDone <- callErr
+	}()
+
+	select {
+	case callErr := <-callDone:
+		require.NoError(t, callErr, "in-flight call must succeed while a resync sink is running")
+	case <-time.After(10 * time.Second):
+		close(releaseSink)
+		t.Fatal("in-flight call stalled while the list_changed sink was running")
+	}
+
+	close(releaseSink)
 }

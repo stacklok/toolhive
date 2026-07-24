@@ -56,7 +56,7 @@ func newPerToolSessionFactory(
 	t.Helper()
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ ...vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()

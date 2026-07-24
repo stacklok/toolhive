@@ -56,19 +56,17 @@ type MultiSessionFactory interface {
 	// All other behaviour (partial initialisation, bounded concurrency, etc.)
 	// is identical to MakeSession.
 	//
-	// sink is a trailing variadic parameter (at most the first value is used) so
-	// the many pre-existing 4-argument call sites across the session/server test
-	// suites continue to compile unchanged. When a value is supplied, it is
-	// threaded to every backend connector for this session and invoked
-	// (best-effort) when a backend emits a notification consumed asynchronously
-	// — currently only notifications/tools/list_changed (#5748). Pass no value,
-	// or nil, to leave that consumption disabled for this session.
+	// sink, when non-nil, is threaded to every backend connector for this
+	// session and invoked (best-effort, on the backend receive-loop goroutine)
+	// when a backend emits a notification consumed asynchronously — currently
+	// only notifications/tools/list_changed (#5748). Pass nil to leave that
+	// consumption disabled for this session.
 	MakeSessionWithID(
 		ctx context.Context,
 		id string,
 		identity *auth.Identity,
 		backends []*vmcp.Backend,
-		sink ...ListChangedSink,
+		sink ListChangedSink,
 	) (MultiSession, error)
 
 	// RestoreSession reconstructs a live MultiSession from persisted metadata.
@@ -266,21 +264,12 @@ func (f *defaultMultiSessionFactory) MakeSessionWithID(
 	id string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
-	sink ...ListChangedSink,
+	sink ListChangedSink,
 ) (MultiSession, error) {
 	if err := validateSessionID(id); err != nil {
 		return nil, err
 	}
-	return f.makeSession(ctx, id, identity, backends, firstSink(sink))
-}
-
-// firstSink returns the first sink in a variadic slice, or nil. See
-// MultiSessionFactory.MakeSessionWithID's doc comment for why sink is variadic.
-func firstSink(sink []ListChangedSink) ListChangedSink {
-	if len(sink) == 0 {
-		return nil
-	}
-	return sink[0]
+	return f.makeSession(ctx, id, identity, backends, sink)
 }
 
 // validateSessionID checks that id is non-empty and contains only visible

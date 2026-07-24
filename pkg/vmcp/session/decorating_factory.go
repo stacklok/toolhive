@@ -52,9 +52,9 @@ func (f *decoratingMultiSessionFactory) MakeSessionWithID(
 	id string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
-	sink ...ListChangedSink,
+	sink ListChangedSink,
 ) (MultiSession, error) {
-	sess, err := f.base.MakeSessionWithID(ctx, id, identity, backends, sink...)
+	sess, err := f.base.MakeSessionWithID(ctx, id, identity, backends, sink)
 	if err != nil {
 		return nil, err
 	}

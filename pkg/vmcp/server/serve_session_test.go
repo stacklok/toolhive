@@ -77,12 +77,12 @@ func newToolSessionFactory(
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(func(
-			_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, sink ...vmcpsession.ListChangedSink,
+			_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, sink vmcpsession.ListChangedSink,
 		) (vmcpsession.MultiSession, error) {
 			state.makeWithIDCalled.Store(true)
-			if len(sink) > 0 {
+			if sink != nil {
 				state.sinkMu.Lock()
-				state.capturedSink = sink[0]
+				state.capturedSink = sink
 				state.sinkMu.Unlock()
 			}
 			mock := sessionmocks.NewMockMultiSession(ctrl)
@@ -161,12 +161,23 @@ type fakeCore struct {
 	// invalidateCacheCalls counts InvalidateCapabilityCache invocations, so tests
 	// covering the list_changed sink can assert the cache was re-swept (#5748).
 	invalidateCacheCalls atomic.Int32
+
+	// lastListToolsCtx records the context ListTools last received, so #5748
+	// tests can assert the async resync reconstructed a context carrying the
+	// registration-time identity + forwarded headers (B-HIGH-1). Wrapped in a
+	// fixed struct type because atomic.Value panics when Store sees differing
+	// concrete context types across calls (HTTP request ctx vs Background).
+	lastListToolsCtx atomic.Pointer[ctxBox]
 }
+
+// ctxBox wraps a context.Context for atomic.Pointer storage on fakeCore.
+type ctxBox struct{ ctx context.Context }
 
 var _ core.VMCP = (*fakeCore)(nil)
 
-func (f *fakeCore) ListTools(context.Context, *auth.Identity) ([]vmcp.Tool, error) {
+func (f *fakeCore) ListTools(ctx context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
 	f.listToolsCalls.Add(1)
+	f.lastListToolsCtx.Store(&ctxBox{ctx: ctx})
 	return f.tools, nil
 }
 

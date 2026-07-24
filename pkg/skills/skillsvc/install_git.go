@@ -124,7 +124,11 @@ func (s *service) applyGitInstallExisting(
 	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
 ) (*skills.InstallResult, error) {
-	if existing.Digest != opts.Digest {
+	// SyncRestore forces the same full re-extraction path as a digest
+	// change: sync repairs on-disk drift that happened without the pinned
+	// digest changing, so the "same digest means content is already
+	// correct" no-op/skip branches below must not apply.
+	if existing.Digest != opts.Digest || opts.SyncRestore {
 		allClients, allDirs, err := s.expandToExistingClients(
 			existing.Clients, clientTypes, clientDirs, opts.Name, scope, opts.ProjectRoot)
 		if err != nil {

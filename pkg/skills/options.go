@@ -43,6 +43,15 @@ type InstallOptions struct {
 	// Name that must not overwrite the entry's original Source. Internal use
 	// only — NOT exposed via HTTP API.
 	LockSource string `json:"-"`
+	// LockResolvedReference overrides the value recorded as the lock entry's
+	// ResolvedReference. When empty, the entry's ResolvedReference is
+	// whatever this install actually resolved to. Set by Sync when
+	// reinstalling at a pinned reference: without this override, a drift
+	// repair would overwrite ResolvedReference with the internal pinned
+	// form (e.g. a digest or commit hash spliced into the reference)
+	// instead of preserving what Source originally resolved to. Internal
+	// use only — NOT exposed via HTTP API.
+	LockResolvedReference string `json:"-"`
 	// RequiredByParent is set when this install is a transitively materialized
 	// dependency (toolhive.requires) of another skill, naming that parent.
 	// Empty means the user explicitly requested this install. Internal use
@@ -54,6 +63,13 @@ type InstallOptions struct {
 	// through recursive dependency installs. Internal use only — NOT exposed
 	// via HTTP API.
 	Visited map[string]struct{} `json:"-"`
+	// SyncRestore forces re-extraction to every existing client even when
+	// Digest matches the currently-installed digest. Set by Sync when
+	// reinstalling at a pinned reference: the whole point is repairing
+	// on-disk drift that happened without the pinned digest changing, so the
+	// normal "same digest means content is already correct" fast path must
+	// not apply. Internal use only — NOT exposed via HTTP API.
+	SyncRestore bool `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -215,6 +231,11 @@ type SyncResult struct {
 	// file. Normally these are reinstalled to match it; when Check is set,
 	// nothing is written and this field reports the drift only.
 	Drifted []string `json:"drifted,omitempty"`
+	// Missing lists lock entries with no corresponding install record at all
+	// — the fresh-clone state. Normally these are installed at their pinned
+	// reference; when Check is set, nothing is written and this field
+	// reports the gap only.
+	Missing []string `json:"missing,omitempty"`
 	// AlreadyCurrent lists skills that already matched the lock file.
 	AlreadyCurrent []string `json:"already_current,omitempty"`
 	// NeverManaged lists project-scoped skills never recorded as lock-managed.

@@ -5,12 +5,18 @@ package skillsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// errLockWrite marks failures to write the project lock file, so
+// classifySyncFailure can map exactly these — and not every HTTP 500 — to
+// the lock-write-failed reason automation keys on.
+var errLockWrite = errors.New("lock file write failed")
 
 // recordLockState updates opts.ProjectRoot's lock file to reflect a
 // just-completed project-scope install: an entry for sk, plus recursively
@@ -34,16 +40,21 @@ func (s *service) recordLockState(
 	if source == "" {
 		source = originalName
 	}
+	resolvedReference := opts.LockResolvedReference
+	if resolvedReference == "" {
+		resolvedReference = sk.Reference
+	}
 	if err := recordLockEntry(sk.ProjectRoot, lockEntryInput{
 		Name:              sk.Metadata.Name,
 		Version:           sk.Metadata.Version,
 		Source:            source,
-		ResolvedReference: sk.Reference,
+		ResolvedReference: resolvedReference,
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
 		RequiredByParent:  opts.RequiredByParent,
+		PreserveExplicit:  opts.SyncRestore,
 	}); err != nil {
-		return sk, fmt.Errorf("writing lock entry: %w", err)
+		return sk, fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
 
 	if !sk.Managed {
@@ -53,8 +64,15 @@ func (s *service) recordLockState(
 		}
 	}
 
-	if err := s.materializeDependencies(ctx, opts, source, sk); err != nil {
-		return sk, fmt.Errorf("materializing dependencies: %w", err)
+	// A sync restore reinstalls exactly what the lock file already pins:
+	// every dependency has its own entry that the sync loop restores
+	// directly, so re-materializing toolhive.requires here would re-resolve
+	// each dependency from its mutable source string — silently upgrading
+	// and re-pinning it, the opposite of a deterministic restore.
+	if !opts.SyncRestore {
+		if err := s.materializeDependencies(ctx, opts, source, sk); err != nil {
+			return sk, fmt.Errorf("materializing dependencies: %w", err)
+		}
 	}
 	return sk, nil
 }
@@ -132,6 +150,12 @@ type lockEntryInput struct {
 	// transitively materialized dependency. Empty means the entry is
 	// explicit (a direct, user-requested install).
 	RequiredByParent string
+	// PreserveExplicit keeps the existing entry's Explicit flag verbatim
+	// instead of deriving it from RequiredByParent. Set by sync restores: a
+	// restore is not a user install, so it must not promote a non-explicit
+	// dependency to explicit — that would permanently exempt it from
+	// cascade removal.
+	PreserveExplicit bool
 }
 
 // recordLockEntry upserts a single entry into projectRoot's lock file. When
@@ -153,9 +177,13 @@ func recordLockEntry(projectRoot string, in lockEntryInput) error {
 			ContentDigest:     in.ContentDigest,
 			Explicit:          in.RequiredByParent == "",
 		}
-		if existing, ok := lf.Get(in.Name); ok {
+		existing, exists := lf.Get(in.Name)
+		if exists {
 			entry.RequiredBy = existing.RequiredBy
 			entry.Explicit = entry.Explicit || existing.Explicit
+		}
+		if in.PreserveExplicit {
+			entry.Explicit = exists && existing.Explicit
 		}
 		if in.RequiredByParent != "" {
 			entry.RequiredBy = appendUnique(entry.RequiredBy, in.RequiredByParent)

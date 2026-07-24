@@ -54,12 +54,12 @@ func (s *service) dispatchExtraction(
 	clientTypes []string,
 	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
-	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
+	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest
-	if digestMatches && storeErr == nil {
+	if digestMatches && storeErr == nil && !opts.SyncRestore {
 		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes, clientDirs)
 	}
 

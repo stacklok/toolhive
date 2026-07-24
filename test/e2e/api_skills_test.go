@@ -1173,4 +1173,83 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 		_, ok = lf.Get(skillName)
 		Expect(ok).To(BeFalse(), "expected the lock entry to be removed after uninstall")
 	})
+
+	It("restores a deleted skill's files via sync", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-sync-skill"
+
+		By("Starting an in-process OCI registry and pushing a test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for sync E2E testing")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+		By("Deleting the installed files without touching the lock file or DB record")
+		skillDir := filepath.Join(projectRoot, ".claude", "skills", skillName)
+		Expect(os.RemoveAll(skillDir)).To(Succeed())
+		_, statErr := os.Stat(filepath.Join(skillDir, "SKILL.md"))
+		Expect(os.IsNotExist(statErr)).To(BeTrue())
+
+		By("Running sync --check — it must report drift without restoring anything")
+		checkResp := syncSkills(apiServer, syncSkillsRequest{ProjectRoot: projectRoot, Check: true})
+		defer checkResp.Body.Close()
+		Expect(checkResp.StatusCode).To(Equal(http.StatusOK))
+		var checkResult syncResultResponse
+		Expect(json.NewDecoder(checkResp.Body).Decode(&checkResult)).To(Succeed())
+		Expect(checkResult.Drifted).To(ContainElement(skillName))
+		_, statErr = os.Stat(filepath.Join(skillDir, "SKILL.md"))
+		Expect(os.IsNotExist(statErr)).To(BeTrue(), "--check must not restore files")
+
+		By("Running sync — it must restore the missing files")
+		syncResp := syncSkills(apiServer, syncSkillsRequest{ProjectRoot: projectRoot})
+		defer syncResp.Body.Close()
+		Expect(syncResp.StatusCode).To(Equal(http.StatusOK))
+		var syncResult syncResultResponse
+		Expect(json.NewDecoder(syncResp.Body).Decode(&syncResult)).To(Succeed())
+		Expect(syncResult.Installed).To(ContainElement(skillName))
+
+		content, readErr := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+		Expect(readErr).ToNot(HaveOccurred())
+		Expect(string(content)).To(ContainSubstring(skillName))
+
+		By("Cleaning up")
+		cleanupResp := uninstallScopedSkill(apiServer, skillName, "project", projectRoot)
+		defer cleanupResp.Body.Close()
+	})
 })
+
+type syncSkillsRequest struct {
+	ProjectRoot string   `json:"project_root"`
+	Clients     []string `json:"clients,omitempty"`
+	Prune       bool     `json:"prune,omitempty"`
+	Check       bool     `json:"check,omitempty"`
+	Adopt       bool     `json:"adopt,omitempty"`
+}
+
+type syncResultResponse struct {
+	Installed       []string `json:"installed,omitempty"`
+	Drifted         []string `json:"drifted,omitempty"`
+	AlreadyCurrent  []string `json:"already_current,omitempty"`
+	NeverManaged    []string `json:"never_managed,omitempty"`
+	RemovedFromLock []string `json:"removed_from_lock,omitempty"`
+	Pruned          []string `json:"pruned,omitempty"`
+}
+
+func syncSkills(server *e2e.Server, req syncSkillsRequest) *http.Response {
+	jsonData, err := json.Marshal(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/sync",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}

@@ -1650,6 +1650,24 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.FailureReason": {
+                "description": "Reason is a typed failure reason for CI and automation.",
+                "enum": [
+                    "registry-unreachable",
+                    "digest-missing",
+                    "validation-rejected",
+                    "lock-write-failed",
+                    "unknown"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FailureReasonRegistryUnreachable",
+                    "FailureReasonDigestMissing",
+                    "FailureReasonValidationRejected",
+                    "FailureReasonLockWriteFailed",
+                    "FailureReasonUnknown"
+                ]
+            },
             "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
                 "description": "Status is the current installation status.",
                 "enum": [
@@ -1839,6 +1857,91 @@ const docTemplate = `{
                     "version": {
                         "description": "Version is the semantic version of the skill.",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SyncFailure": {
+                "properties": {
+                    "error": {
+                        "description": "Error is a human-readable description of the failure.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name that failed.",
+                        "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SyncResult": {
+                "properties": {
+                    "already_current": {
+                        "description": "AlreadyCurrent lists skills that already matched the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "drifted": {
+                        "description": "Drifted lists skills whose on-disk contentDigest differed from the lock\nfile. Normally these are reinstalled to match it; when Check is set,\nnothing is written and this field reports the drift only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "failed": {
+                        "description": "Failed lists skills that could not be synced, with the reason for each.\nDrift alone is never reported here — see Drifted.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncFailure"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "installed": {
+                        "description": "Installed lists skills that were installed or reinstalled to match the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "missing": {
+                        "description": "Missing lists lock entries with no corresponding install record at all\n— the fresh-clone state. Normally these are installed at their pinned\nreference; when Check is set, nothing is written and this field\nreports the gap only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "never_managed": {
+                        "description": "NeverManaged lists project-scoped skills never recorded as lock-managed.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "pruned": {
+                        "description": "Pruned lists removed-from-lock skills that were uninstalled because Prune was set.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "removed_from_lock": {
+                        "description": "RemovedFromLock lists previously managed skills absent from the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -3436,6 +3539,36 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.syncSkillsRequest": {
+                "description": "Request to restore a project's installed skills to match its lock file",
+                "properties": {
+                    "adopt": {
+                        "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
+                        "type": "boolean"
+                    },
+                    "check": {
+                        "description": "Check verifies on-disk content against the lock file without installing or writing anything",
+                        "type": "boolean"
+                    },
+                    "clients": {
+                        "description": "Clients lists target client identifiers. Empty means every\nskill-supporting client detected on this host.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be synced",
+                        "type": "string"
+                    },
+                    "prune": {
+                        "description": "Prune removes project-scoped skills installed but not present in the lock file",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -6243,6 +6376,87 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Push a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/sync": {
+            "post": {
+                "description": "Restore a project's installed skills to match toolhive.lock.yaml",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.syncSkillsRequest",
+                                        "summary": "request",
+                                        "description": "Sync request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Sync request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (feature not enabled)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Sync project skills from the lock file",
                 "tags": [
                     "skills"
                 ]

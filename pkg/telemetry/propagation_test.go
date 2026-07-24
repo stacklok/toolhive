@@ -7,7 +7,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -151,4 +154,71 @@ func TestInjectMetaTraceContext_NilMeta(t *testing.T) {
 
 	// Should not panic
 	InjectMetaTraceContext(context.Background(), nil)
+}
+
+//nolint:paralleltest // Mutates global OTEL propagator
+func TestMetaWithTraceContext(t *testing.T) {
+	oldPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	defer otel.SetTextMapPropagator(oldPropagator)
+
+	tp := sdktrace.NewTracerProvider()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	tracer := tp.Tracer("test")
+
+	spanCtx, span := tracer.Start(context.Background(), "test-span")
+	defer span.End()
+
+	t.Run("active span with nil meta returns traceparent", func(t *testing.T) {
+		got := MetaWithTraceContext(spanCtx, nil)
+		require.NotNil(t, got)
+		tp, ok := got["traceparent"].(string)
+		require.True(t, ok, "expected traceparent to be present")
+		assert.NotEmpty(t, tp)
+	})
+
+	t.Run("active span with caller meta preserves caller fields without mutating input", func(t *testing.T) {
+		input := map[string]any{"progressToken": "tok-123"}
+		got := MetaWithTraceContext(spanCtx, input)
+
+		require.NotNil(t, got)
+		assert.Equal(t, "tok-123", got["progressToken"])
+		tp, ok := got["traceparent"].(string)
+		require.True(t, ok, "expected traceparent to be present")
+		assert.NotEmpty(t, tp)
+
+		// Copy-before-mutate: the caller's original map must be untouched.
+		assert.Equal(t, map[string]any{"progressToken": "tok-123"}, input)
+		_, present := input["traceparent"]
+		assert.False(t, present, "input map must not be mutated with traceparent")
+	})
+
+	t.Run("no active span with nil meta returns nil", func(t *testing.T) {
+		got := MetaWithTraceContext(context.Background(), nil)
+		assert.Nil(t, got)
+	})
+
+	t.Run("no active span with caller meta returns unmutated clone", func(t *testing.T) {
+		input := map[string]any{"progressToken": "tok-456"}
+		got := MetaWithTraceContext(context.Background(), input)
+
+		require.NotNil(t, got)
+		assert.Equal(t, input, got)
+		_, present := got["traceparent"]
+		assert.False(t, present, "no traceparent expected without an active trace context")
+	})
+
+	t.Run("baggage present in ctx is propagated", func(t *testing.T) {
+		member, err := baggage.NewMember("user.id", "42")
+		require.NoError(t, err)
+		bag, err := baggage.New(member)
+		require.NoError(t, err)
+		ctx := baggage.ContextWithBaggage(spanCtx, bag)
+
+		got := MetaWithTraceContext(ctx, nil)
+		require.NotNil(t, got)
+		bgKey, ok := got["baggage"].(string)
+		require.True(t, ok, "expected baggage key to be present")
+		assert.Contains(t, bgKey, "user.id=42")
+	})
 }

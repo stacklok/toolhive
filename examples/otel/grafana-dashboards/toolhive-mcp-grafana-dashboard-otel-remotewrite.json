@@ -255,7 +255,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(mcp_server_operation_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\",error_type!=\"\"}[5m])) / sum(rate(mcp_server_operation_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\"}[5m]))",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\",http_response_status_code=~\"[45]..\"}[5m])) / sum(rate(http_server_request_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\"}[5m]))",
           "legendFormat": "Error Rate",
           "range": true,
           "refId": "A"

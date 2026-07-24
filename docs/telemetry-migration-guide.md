@@ -277,7 +277,7 @@ only the semconv metric that already covered the same signal:
 
 | Deleted Metric | Semconv Replacement |
 |-----------------|----------------------|
-| `toolhive_mcp_requests` | `mcp.server.operation.duration` (request count is derivable via `_count`) |
+| `toolhive_mcp_requests` | `http.server.request.duration` (total request count is derivable via `_count`; see note below) |
 | `toolhive_mcp_request_duration` | `mcp.server.operation.duration` |
 | `toolhive_mcp_tool_calls` | `mcp.server.operation.duration` filtered to `mcp.method.name="tools/call"` |
 | `toolhive_vmcp_backend_requests` | `mcp.client.operation.duration` |
@@ -287,11 +287,13 @@ only the semconv metric that already covered the same signal:
 A dashboard or alert built on any of these six metrics has no direct
 successor query — it must be rebuilt against the semconv histogram.
 
-Full request-volume parity for `toolhive_mcp_requests` requires summing both
-`mcp_server_operation_duration_seconds_count` and
-`http_server_request_duration_seconds_count`: GET (SSE-open) and DELETE
-(session-terminate) requests carry no MCP method and so only appear in the
-latter.
+For total HTTP request volume, use `http_server_request_duration_seconds_count`
+alone — it is recorded for every request the middleware handles, including
+GET (SSE-open) and DELETE (session-terminate) requests that carry no MCP
+method. Do not also sum `mcp_server_operation_duration_seconds_count`: every
+MCP-method-bearing request increments both metrics, so summing them
+double-counts those requests. Use `mcp_server_operation_duration_seconds_count`
+only for a per-`mcp_method_name` breakdown of the MCP-bearing subset.
 
 ---
 

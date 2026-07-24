@@ -64,6 +64,15 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 	return h.base.RoundTrip(reqCopy)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so http.Client's
+// CloseIdleConnections reaches the concrete *http.Transport at the bottom of the
+// chain (this wrapper would otherwise silently swallow the call).
+func (h *headerForwardRoundTripper) CloseIdleConnections() {
+	if c, ok := h.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
 // BuildHeaderForwardTripper constructs a headerForwardRoundTripper for the
 // backend's pre-resolved HeaderForwardConfig. Returns base unchanged when no
 // header injection is configured or the effective header set is empty.

@@ -398,3 +398,22 @@ func TestMergeForwardedHeaders_RestrictedHeadersList(t *testing.T) {
 		}
 	}
 }
+
+// closeIdleSpy is a RoundTripper that records CloseIdleConnections calls.
+type closeIdleSpy struct{ closed int }
+
+func (*closeIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *closeIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestHeaderForwardRoundTripper_CloseIdleConnections verifies the wrapper forwards
+// CloseIdleConnections to its base rather than swallowing it.
+func TestHeaderForwardRoundTripper_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	spy := &closeIdleSpy{}
+	rt := &headerForwardRoundTripper{base: spy}
+	rt.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed)
+}

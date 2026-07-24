@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
@@ -1255,4 +1256,69 @@ func TestMonitor_CircuitBreakerStatusReporting(t *testing.T) {
 	// Clean up
 	err = monitor.Stop()
 	require.NoError(t, err)
+}
+
+// TestConvertToDiscoveredBackends_MCPRevision verifies the negotiated revision is
+// surfaced in DiscoveredBackend: Modern, Legacy, and empty-when-unprobed, across
+// both the in-list and fallback (not-in-list) construction branches.
+func TestConvertToDiscoveredBackends_MCPRevision(t *testing.T) {
+	t.Parallel()
+
+	m := &Monitor{backends: []vmcp.Backend{{ID: "modern", Name: "modern-b", BaseURL: "u"}}}
+	states := map[string]*State{
+		"modern":   {Status: vmcp.BackendHealthy, MCPRevision: "2026-07-28"},
+		"legacy":   {Status: vmcp.BackendHealthy, MCPRevision: "2025-11-25"}, // not in backends -> fallback branch
+		"unprobed": {Status: vmcp.BackendHealthy},
+	}
+
+	byName := make(map[string]string)
+	for _, b := range m.convertToDiscoveredBackends(states) {
+		byName[b.Name] = b.MCPRevision
+	}
+
+	assert.Equal(t, "2026-07-28", byName["modern-b"], "in-list backend surfaces Modern")
+	assert.Equal(t, "2025-11-25", byName["legacy"], "fallback backend surfaces Legacy")
+	assert.Equal(t, "", byName["unprobed"], "unprobed backend has empty revision")
+}
+
+// revClientStub wraps a MockBackendClient (for the health-check ListCapabilities
+// calls) and adds the optional CachedRevision accessor the monitor reads.
+type revClientStub struct {
+	*mocks.MockBackendClient
+	rev mcpparser.Revision
+}
+
+func (s revClientStub) CachedRevision(string) (mcpparser.Revision, bool) { return s.rev, true }
+
+// TestMonitor_SurfacesMCPRevision verifies the performHealthCheck wiring: the
+// NewMonitor revisionReporter type-assertion plus the read-and-RecordRevision
+// after a check surface the client's revision in GetState.
+func TestMonitor_SurfacesMCPRevision(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(&vmcp.CapabilityList{}, nil).
+		AnyTimes()
+	client := revClientStub{MockBackendClient: mockClient, rev: mcpparser.RevisionModern}
+
+	backends := []vmcp.Backend{{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"}}
+	monitor, err := NewMonitor(client, backends, MonitorConfig{
+		CheckInterval:      100 * time.Millisecond,
+		UnhealthyThreshold: 3,
+		Timeout:            50 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, monitor.Start(context.Background()))
+	t.Cleanup(func() { _ = monitor.Stop() })
+
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		return err == nil && state != nil && state.MCPRevision == "2026-07-28"
+	}, 500*time.Millisecond, 10*time.Millisecond, "the client's negotiated revision must surface in health state")
 }

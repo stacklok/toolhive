@@ -16,6 +16,7 @@ import (
 	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -459,9 +460,13 @@ func createMCPClient(
 			}
 			return resp, nil
 		})
+		// CheckRedirect: keep in sync with pkg/vmcp/client.newBackendHTTPClient — a
+		// cross-host 30x would otherwise re-inject (via the RoundTripper chain) the
+		// auth/identity/header-forward credentials at the attacker host.
 		httpClient := &http.Client{
-			Transport: sizeLimited,
-			Timeout:   defaultBackendRequestTimeout,
+			Transport:     sizeLimited,
+			Timeout:       defaultBackendRequestTimeout,
+			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 		streamableOpts := []mcptransport.StreamableHTTPCOption{
 			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
@@ -488,7 +493,9 @@ func createMCPClient(
 		//
 		// http.Client.Timeout is also omitted: it caps the full round-trip
 		// including body reads, which would kill the stream after the timeout.
-		httpClient := &http.Client{Transport: base}
+		// CheckRedirect: keep in sync with pkg/vmcp/client.newBackendHTTPClient (see
+		// the streamable case above). No Timeout: long-lived SSE stream.
+		httpClient := &http.Client{Transport: base, CheckRedirect: networking.SameHostRedirectPolicy()}
 		c, err = mcpclient.NewSSEMCPClient(
 			target.BaseURL,
 			mcptransport.WithHTTPClient(httpClient),

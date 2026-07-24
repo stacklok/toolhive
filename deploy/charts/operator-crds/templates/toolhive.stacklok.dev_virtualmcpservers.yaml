@@ -3408,6 +3408,11 @@ spec:
                         check
                       format: date-time
                       type: string
+                    mcpRevision:
+                      description: |-
+                        MCPRevision is the backend's negotiated MCP protocol revision
+                        ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+                      type: string
                     message:
                       description: Message provides additional information about the
                         backend status
@@ -6849,6 +6854,11 @@ spec:
                       description: LastHealthCheck is the timestamp of the last health
                         check
                       format: date-time
+                      type: string
+                    mcpRevision:
+                      description: |-
+                        MCPRevision is the backend's negotiated MCP protocol revision
+                        ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
                       type: string
                     message:
                       description: Message provides additional information about the

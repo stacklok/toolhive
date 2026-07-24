@@ -4,8 +4,59 @@
 package backendtelemetry
 
 import (
+	"context"
 	"testing"
+
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// fakeRevClient embeds vmcp.BackendClient (nil — its methods are never called
+// here) and adds the optional CachedRevision accessor.
+type fakeRevClient struct {
+	vmcp.BackendClient
+	rev mcpparser.Revision
+	ok  bool
+}
+
+func (f fakeRevClient) CachedRevision(string) (mcpparser.Revision, bool) { return f.rev, f.ok }
+
+// fakeNoRevClient embeds vmcp.BackendClient but does NOT implement revisionReporter.
+type fakeNoRevClient struct{ vmcp.BackendClient }
+
+// TestTelemetryBackendClient_CachedRevisionForwarding verifies the decorator
+// forwards CachedRevision to a client that reports it, and reports nothing for a
+// client that doesn't.
+func TestTelemetryBackendClient_CachedRevisionForwarding(t *testing.T) {
+	t.Parallel()
+
+	d := telemetryBackendClient{backendClient: fakeRevClient{rev: mcpparser.RevisionModern, ok: true}}
+	rev, ok := d.CachedRevision("b")
+	if !ok || rev != mcpparser.RevisionModern {
+		t.Fatalf("CachedRevision = (%v, %v), want (Modern, true)", rev, ok)
+	}
+	if got := d.revisionLabel("b"); got != "2026-07-28" {
+		t.Errorf("revisionLabel = %q, want 2026-07-28", got)
+	}
+
+	dn := telemetryBackendClient{backendClient: fakeNoRevClient{}}
+	if _, ok := dn.CachedRevision("b"); ok {
+		t.Error("CachedRevision should report false for a client without the accessor")
+	}
+	if got := dn.revisionLabel("b"); got != "" {
+		t.Errorf("revisionLabel = %q, want empty for unprobed/unsupported", got)
+	}
+}
+
+// TestRecordRevisionReclassification is a smoke test: the counter lazily binds to
+// the global meter provider and increments without panicking (the noop provider
+// makes the value unobservable here — the WARN in the same reclassify branch is
+// asserted in the client package's reclassify test).
+func TestRecordRevisionReclassification(t *testing.T) {
+	t.Parallel()
+	RecordRevisionReclassification(context.Background())
+	RecordRevisionReclassification(context.Background())
+}
 
 func TestMapActionToMCPMethod(t *testing.T) {
 	t.Parallel()

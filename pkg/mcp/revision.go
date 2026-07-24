@@ -26,6 +26,20 @@ const (
 // build understands.
 const MCPVersionModern = "2026-07-28"
 
+// MCPVersionLegacy is the single Legacy (session-based) protocol version this
+// build understands. It is what RevisionLegacy names on the wire and the one
+// version mcpcompat's initialize handshake negotiates.
+const MCPVersionLegacy = "2025-11-25"
+
+// String returns the wire protocol-version string for the revision:
+// MCPVersionModern for RevisionModern, MCPVersionLegacy otherwise.
+func (r Revision) String() string {
+	if r == RevisionModern {
+		return MCPVersionModern
+	}
+	return MCPVersionLegacy
+}
+
 // metaKeyProtocolVersion is the reserved _meta key that carries the per-request
 // protocol version on Modern (stateless) MCP requests, per the draft MCP schema's
 // RequestMetaObject.
@@ -41,12 +55,30 @@ const metaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 // schema's RequestMetaObject.
 const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 
-// reservedModernMetaKeys are the _meta keys a Legacy client never sets. The
+// ReservedModernMetaKeys are the _meta keys a Legacy client never sets. The
 // presence of any one of them — independent of whether its value is
 // well-formed — is itself a claim of the Modern revision, and must not be
 // silently downgraded to Legacy. Only a malformed/absent protocolVersion
 // alongside one of these keys turns into a rejection, never a downgrade.
-var reservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities}
+//
+// Exported so a Modern client (which sets these keys, the mirror of the
+// classifier that reads them) can strip a caller's copies before overlaying
+// its own authoritative values — see ModernRequestMeta.
+var ReservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities}
+
+// ModernRequestMeta builds the reserved _meta object every Modern (2026-07-28)
+// request must carry: protocolVersion, clientInfo, and (empty) clientCapabilities.
+// It is the single source of truth for the client side of the reserved
+// io.modelcontextprotocol/* keys, kept consistent with what ClassifyRevision and
+// ValidateHeaderConsistency require of the server side — protocolVersion equal to
+// MCPVersionModern and clientCapabilities present as a JSON object.
+func ModernRequestMeta(clientName, clientVersion string) map[string]any {
+	return map[string]any{
+		metaKeyProtocolVersion:    MCPVersionModern,
+		metaKeyClientInfo:         map[string]any{"name": clientName, "version": clientVersion},
+		metaKeyClientCapabilities: map[string]any{},
+	}
+}
 
 // The following JSON-RPC error codes are defined by the draft MCP spec
 // (schema/draft/schema.ts) for the stateless "Modern" revision. They are
@@ -325,6 +357,14 @@ var nameRequiredMethods = map[string]bool{
 	"prompts/get":    true,
 }
 
+// IsNameRequiredMethod reports whether the Modern (2026-07-28) method requires
+// an Mcp-Name request header naming the target tool/resource/prompt. It shares
+// nameRequiredMethods with ValidateHeaderConsistency so a Modern client sets the
+// header for exactly the methods the server validates it on.
+func IsNameRequiredMethod(method string) bool {
+	return nameRequiredMethods[method]
+}
+
 // ValidateHeaderConsistency enforces the Modern (2026-07-28) Mcp-Method and
 // Mcp-Name request headers against the corresponding parsed request body
 // fields (Method and ResourceID).
@@ -412,7 +452,7 @@ func hasModernSignal(meta map[string]any, protoHeader string) bool {
 	if protoHeader == MCPVersionModern {
 		return true
 	}
-	for _, key := range reservedModernMetaKeys {
+	for _, key := range ReservedModernMetaKeys {
 		if _, ok := meta[key]; ok {
 			return true
 		}

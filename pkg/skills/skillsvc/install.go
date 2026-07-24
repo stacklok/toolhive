@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 
+	nameref "github.com/google/go-containerregistry/pkg/name"
+
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
@@ -39,63 +41,45 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
-	// Git references (git://host/owner/repo[@ref][#path]) are dispatched first;
-	// the prefix is unambiguous and cannot collide with OCI references.
-	if gitresolver.IsGitReference(opts.Name) {
-		result, err := s.installFromGit(ctx, opts, scope)
-		if err != nil {
-			return nil, err
-		}
-		return s.installAndRegister(ctx, opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope)
-	}
-
 	// When the caller supplies `version` separately and the name is a tag-less
 	// OCI-like reference (contains '/' but no ':' or '@'), splice the version
 	// in as the tag. Without this, parseOCIReference + qualifiedOCIRef would
 	// default the pull to ":latest" and silently drop opts.Version. An
 	// explicit tag in the name still wins (we only splice when none is set).
+	// Git references are unaffected: the git:// prefix contains "://".
 	if opts.Version != "" &&
+		!gitresolver.IsGitReference(opts.Name) &&
 		strings.ContainsRune(opts.Name, '/') &&
 		!strings.ContainsAny(opts.Name, ":@") {
 		opts.Name = opts.Name + ":" + opts.Version
 	}
 
-	ref, isOCI, err := parseOCIReference(opts.Name)
-	if err != nil {
-		return nil, httperr.WithCode(
-			fmt.Errorf("invalid OCI reference %q: %w", opts.Name, err),
-			http.StatusBadRequest,
-		)
-	}
-	if isOCI {
-		result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-		if ociErr == nil {
+	// Route through the shared source-dispatch skeleton (git, direct OCI
+	// with registry fallback, plain name) — the same sequence upgrade's
+	// re-resolution uses, so the two cannot drift.
+	return dispatchSource(ctx, s, opts.Name, sourceOps[*skills.InstallResult]{
+		git: func(ctx context.Context, _ string) (*skills.InstallResult, error) {
+			result, err := s.installFromGit(ctx, opts, scope)
+			if err != nil {
+				return nil, err
+			}
+			return s.installAndRegister(ctx, opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope)
+		},
+		oci: func(ctx context.Context, ref nameref.Reference) (*skills.InstallResult, error) {
+			result, err := s.installFromOCI(ctx, opts, scope, ref)
+			if err != nil {
+				slog.Debug("OCI pull failed, registry fallback may apply", "name", opts.Name, "error", err)
+				return nil, err
+			}
 			return s.installAndRegister(ctx, opts, originalName, result, opts.Group, opts.Name, scope)
-		}
-		// OCI pull failed — fall back to registry lookup for names that look
-		// like a qualified "namespace/name". Names that are unambiguously OCI
-		// (digest, explicit tag, or multi-segment path) must not trigger a
-		// registry search. See isUnambiguousOCIRef for the full rule set.
-		if isUnambiguousOCIRef(opts.Name, ref) {
-			return nil, ociErr
-		}
-		slog.Debug("OCI pull failed, attempting registry fallback", "name", opts.Name, "error", ociErr)
-		resolved, regErr := s.resolveFromRegistry(opts.Name)
-		if regErr != nil {
-			return nil, regErr
-		}
-		if resolved != nil {
+		},
+		registry: func(ctx context.Context, resolved *registryResolveResult) (*skills.InstallResult, error) {
 			return s.installFromResolvedRegistry(ctx, opts, originalName, scope, resolved)
-		}
-		return nil, ociErr
-	}
-
-	// Plain skill name — validate and proceed with existing flow.
-	if err := skills.ValidateSkillName(opts.Name); err != nil {
-		return nil, httperr.WithCode(err, http.StatusBadRequest)
-	}
-
-	return s.installByName(ctx, opts, originalName, scope)
+		},
+		plainName: func(ctx context.Context, _ string) (*skills.InstallResult, error) {
+			return s.installByName(ctx, opts, originalName, scope)
+		},
+	})
 }
 
 // installByName handles installation for a validated plain skill name. It

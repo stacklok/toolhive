@@ -37,12 +37,34 @@ type InstallOptions struct {
 	Reference string `json:"-"`
 	// Digest is the OCI digest for upgrade detection.
 	Digest string `json:"-"`
+	// LockSource overrides the value recorded as the lock entry's Source. When
+	// empty, the entry's Source is Name as given by the caller before any
+	// internal resolution. Set by Sync/Upgrade, which pass an already-resolved
+	// Name that must not overwrite the entry's original Source. Internal use
+	// only — NOT exposed via HTTP API.
+	LockSource string `json:"-"`
+	// RequiredByParent is set when this install is a transitively materialized
+	// dependency (toolhive.requires) of another skill, naming that parent.
+	// Empty means the user explicitly requested this install. Internal use
+	// only — NOT exposed via HTTP API.
+	RequiredByParent string `json:"-"`
+	// Visited tracks skill names already materialized in this dependency
+	// tree, preventing infinite recursion on a requires cycle. Left nil by
+	// external callers; Install initializes it on first entry and threads it
+	// through recursive dependency installs. Internal use only — NOT exposed
+	// via HTTP API.
+	Visited map[string]struct{} `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
 	// Skill is the installed skill.
 	Skill InstalledSkill `json:"skill"`
+	// PreExisting is the store record as it was before this install, or nil
+	// when this install created the record. Rollback uses it to restore the
+	// previous state instead of destructively deleting a record this call
+	// did not create. Internal use only — NOT exposed via HTTP API.
+	PreExisting *InstalledSkill `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -53,6 +75,12 @@ type UninstallOptions struct {
 	Scope Scope `json:"scope,omitempty"`
 	// ProjectRoot is the project root path for project-scoped skills.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// Visited tracks skill names already removed in this cascade-uninstall
+	// tree, preventing infinite recursion on a requiredBy cycle. Left nil by
+	// external callers; Uninstall initializes it on first entry and threads
+	// it through recursive cascade removals. Internal use only — NOT exposed
+	// via HTTP API.
+	Visited map[string]struct{} `json:"-"`
 }
 
 // InfoOptions configures the behavior of the Info operation.

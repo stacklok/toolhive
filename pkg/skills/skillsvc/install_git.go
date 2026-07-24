@@ -102,7 +102,15 @@ func (s *service) applyGitInstall(
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
 	}
 	if !isNotFound {
-		return s.applyGitInstallExisting(ctx, opts, scope, existing, clientTypes, clientDirs, files)
+		result, err := s.applyGitInstallExisting(ctx, opts, scope, existing, clientTypes, clientDirs, files)
+		if err == nil {
+			// Preserve the pre-install record so a later rollback (e.g. a
+			// failed dependency materialization) can restore it rather than
+			// delete it.
+			pre := existing
+			result.PreExisting = &pre
+		}
+		return result, err
 	}
 	return s.applyGitInstallFresh(ctx, opts, scope, clientTypes, clientDirs, files)
 }

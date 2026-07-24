@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,6 +18,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -1046,5 +1048,129 @@ var _ = Describe("Skills API", Label("api", "api-registry", "skills", "e2e"), fu
 			cleanupResp := uninstallSkill(apiServer, skillName)
 			defer cleanupResp.Body.Close()
 		})
+	})
+})
+
+// makeE2EProjectRoot creates a resolved temp dir with a .git directory,
+// satisfying the project-root validation the lock file requires.
+func makeE2EProjectRoot() string {
+	dir := GinkgoT().TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	ExpectWithOffset(1, os.MkdirAll(filepath.Join(resolved, ".git"), 0o755)).To(Succeed())
+	return resolved
+}
+
+func uninstallScopedSkill(server *e2e.Server, name, scope, projectRoot string) *http.Response {
+	u := fmt.Sprintf("%s/api/v1beta/skills/%s?scope=%s&project_root=%s",
+		server.BaseURL(), name, scope, url.QueryEscape(projectRoot))
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+// buildAndPushSkill creates a skill directory, builds it, and pushes it to
+// ociRegistry, returning the OCI reference.
+func buildAndPushSkill(server *e2e.Server, ociRegistry *httptest.Server, skillName, description string) string {
+	ociRef := fmt.Sprintf("%s/e2e-test/%s:v0.1.0", ociRegistry.Listener.Addr().String(), skillName)
+
+	skillDir := createTestSkillDir(skillName, description)
+	buildResp := buildSkill(server, skillDir, ociRef)
+	defer buildResp.Body.Close()
+	ExpectWithOffset(1, buildResp.StatusCode).To(Equal(http.StatusOK))
+
+	pushResp := pushSkill(server, ociRef)
+	defer pushResp.Body.Close()
+	ExpectWithOffset(1, pushResp.StatusCode).To(Equal(http.StatusNoContent))
+
+	return ociRef
+}
+
+// This RFC THV-0080 feature is gated behind TOOLHIVE_SKILLS_LOCK_ENABLED
+// while it lands across a stack of PRs (see skills.LockFileFeatureEnabled),
+// so this Describe block runs its own server with the gate turned on rather
+// than sharing the "Skills API" block's default-off server above.
+var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "api-registry", "skills", "skills-lock", "e2e"), func() {
+	var (
+		config    *e2e.ServerConfig
+		apiServer *e2e.Server
+	)
+
+	BeforeEach(func() {
+		config = e2e.NewServerConfig()
+		config.ExtraEnv = []string{"TOOLHIVE_SKILLS_LOCK_ENABLED=true"}
+		apiServer = e2e.StartServer(config)
+	})
+
+	It("records an installed skill in the project's toolhive.lock.yaml", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-skill"
+
+		By("Starting an in-process OCI registry and pushing a test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for lock file E2E testing")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+		var installResult installSkillResponse
+		Expect(json.NewDecoder(installResp.Body).Decode(&installResult)).To(Succeed())
+
+		By("Verifying the lock file was written with the expected entry")
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		entry, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue(), "expected a lock entry for %q", skillName)
+		Expect(entry.Source).To(Equal(ociRef))
+		Expect(entry.Digest).ToNot(BeEmpty())
+		Expect(entry.ContentDigest).ToNot(BeEmpty())
+		Expect(entry.Explicit).To(BeTrue())
+
+		By("Cleaning up")
+		cleanupResp := uninstallScopedSkill(apiServer, skillName, "project", projectRoot)
+		defer cleanupResp.Body.Close()
+	})
+
+	It("removes the lock entry when the skill is uninstalled", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-uninstall-skill"
+
+		By("Starting an in-process OCI registry and pushing a test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for lock file uninstall E2E testing")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue(), "expected a lock entry before uninstall")
+
+		By("Uninstalling the skill")
+		uninstallResp := uninstallScopedSkill(apiServer, skillName, "project", projectRoot)
+		defer uninstallResp.Body.Close()
+		Expect(uninstallResp.StatusCode).To(Equal(http.StatusNoContent))
+
+		By("Verifying the lock entry was removed")
+		lf, err = lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok = lf.Get(skillName)
+		Expect(ok).To(BeFalse(), "expected the lock entry to be removed after uninstall")
 	})
 })

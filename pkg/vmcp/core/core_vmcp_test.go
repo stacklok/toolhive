@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
@@ -155,6 +158,51 @@ func TestNew_ValidatesWorkflows(t *testing.T) {
 			require.NoError(t, c.Close())
 		})
 	}
+}
+
+// TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure guards
+// against a regression where a construction failure occurring AFTER
+// MonitorBackends registers the backend-health gauge callback (workflow
+// validation, in this case) left that callback attached to the shared meter
+// provider forever, since the coreVMCP it was built for is never returned to
+// a caller and so never has Close called on it. Scrapes the same meter
+// provider's Prometheus handler after the failed New call and asserts the
+// gauge produced no series — proving the callback was unregistered, not
+// merely that New returned an error.
+func TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+		ServiceName:                 "core-new-test",
+		ServiceVersion:              "0.0.0",
+		EnablePrometheusMetricsPath: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+
+	cfg, _ := baseConfig(t)
+	cfg.TelemetryProvider = provider
+	cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+		"wf": {
+			Name: "wf",
+			Steps: []composer.WorkflowStep{
+				{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s2"}},
+				{ID: "s2", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s1"}},
+			},
+		},
+	}
+
+	c, err := New(cfg)
+	require.Error(t, err, "circular workflow must fail validation after the health callback is registered")
+	assert.Nil(t, c)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	provider.PrometheusHandler().ServeHTTP(rec, req)
+
+	assert.NotContains(t, rec.Body.String(), "stacklok_vmcp_mcp_server_health",
+		"health gauge callback must be unregistered when New fails after MonitorBackends succeeds")
 }
 
 func TestNew_ElicitationRequiredWhenWorkflowElicits(t *testing.T) {

@@ -2586,3 +2586,45 @@ func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
 		})
 	}
 }
+
+// TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch exercises the SSE
+// branch of Handler specifically (path suffix "/sse"), which records
+// http.server.request.duration in its own deferred call on connection close
+// rather than through recordMetrics. TestHTTPMiddleware_HTTPServerRequestDuration
+// above only covers the non-SSE branch (its "/mcp" paths never take the "/sse"
+// suffix check), so this must be a separate test rather than another table case.
+func TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	middleware := NewHTTPMiddleware(Config{}, tracenoop.NewTracerProvider(), meterProvider, "github", "sse")
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: test event\n\n"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	hist := findHTTPServerDuration(rm)
+	require.NotNil(t, hist, "http.server.request.duration must be emitted for the SSE branch")
+	require.Len(t, hist.DataPoints, 1)
+	dp := hist.DataPoints[0]
+
+	mv, ok := dp.Attributes.Value(attribute.Key("http.request.method"))
+	require.True(t, ok, "http.request.method must be present")
+	assert.Equal(t, http.MethodGet, mv.AsString())
+
+	sv, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
+	require.True(t, ok, "http.response.status_code must be present")
+	assert.Equal(t, int64(http.StatusOK), sv.AsInt64())
+
+	_, hasErr := dp.Attributes.Value(attribute.Key("error.type"))
+	assert.False(t, hasErr, "error.type must be absent on a 2xx SSE close")
+}

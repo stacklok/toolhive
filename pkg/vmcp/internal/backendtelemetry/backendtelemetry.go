@@ -13,6 +13,7 @@ package backendtelemetry
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -27,36 +28,52 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-const (
-	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
+const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 
-	// healthStateLabel is the label key distinguishing the health state a gauge
-	// point represents. The gauge emits one point per (mcp_server, state) pair.
-	healthStateLabel = "state"
+// healthStateLabel is the label key distinguishing the health state a gauge
+// point represents. The gauge emits one point per (mcp_server, state) pair,
+// covering every possible vmcp.BackendHealthStatus value, for every backend.
+const healthStateLabel = "state"
 
-	healthStateHealthy   = "healthy"
-	healthStateUnhealthy = "unhealthy"
-)
+// healthStates lists every vmcp.BackendHealthStatus value the gauge reports a
+// point for, so a dashboard can rely on the series existing (at 0) even for
+// states a backend has never been in.
+var healthStates = []vmcp.BackendHealthStatus{
+	vmcp.BackendHealthy,
+	vmcp.BackendDegraded,
+	vmcp.BackendUnhealthy,
+	vmcp.BackendUnknown,
+	vmcp.BackendUnauthenticated,
+}
 
 // MonitorBackends decorates the backend client so it records telemetry on each method call.
 // It also registers a live per-backend health gauge (stacklok.vmcp.mcp_server.health)
 // whose observable callback reports each backend's current health at every collection.
+//
+// The gauge callback re-reads registry on every collection rather than tracking backend
+// membership in backendHealth itself, so a backend removed from the registry (e.g. via
+// list_changed) stops being reported instead of leaving an orphaned series behind.
+//
+// The returned unregister func releases the gauge callback and must be called when the
+// decorated client is no longer in use (e.g. from the owning VMCP's Close), so a future
+// rebuild of the backend client does not accumulate callbacks against stale health state.
 func MonitorBackends(
 	_ context.Context,
 	meterProvider metric.MeterProvider,
 	tracerProvider trace.TracerProvider,
-	backends []vmcp.Backend,
+	registry vmcp.BackendRegistry,
 	backendClient vmcp.BackendClient,
-) (vmcp.BackendClient, error) {
+) (vmcp.BackendClient, func() error, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
-	// Seed the health-state map from each backend's discovery-time HealthStatus.
-	// The map is subsequently mutated on request success/failure so the observable
-	// gauge reflects live health within one collection interval.
-	health := &backendHealth{states: make(map[string]bool, len(backends))}
-	for i := range backends {
-		health.set(backends[i].Name, backends[i].HealthStatus == vmcp.BackendHealthy)
-	}
+	// health is mutated on request success/failure so the gauge reflects live
+	// health within one collection interval. It is never seeded or pruned here;
+	// membership at collection time comes from registry.List, below. record()
+	// only distinguishes success/failure, so it can only ever set BackendHealthy
+	// or BackendUnhealthy; the richer states (degraded, unknown, unauthenticated)
+	// can only come from the registry's own HealthStatus (the health monitor's
+	// assessment), used as the fallback below until the first request completes.
+	health := &backendHealth{states: make(map[string]vmcp.BackendHealthStatus)}
 
 	clientOperationDuration, err := meter.Float64Histogram(
 		"mcp.client.operation.duration",
@@ -65,7 +82,7 @@ func MonitorBackends(
 		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
+		return nil, nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
 	}
 
 	healthGauge, err := meter.Int64ObservableGauge(
@@ -73,29 +90,33 @@ func MonitorBackends(
 		metric.WithDescription("Per-backend health: 1 for the observed state, 0 otherwise, per (mcp_server, state)"),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create backend health gauge: %w", err)
+		return nil, nil, fmt.Errorf("failed to create backend health gauge: %w", err)
 	}
-	if _, err = meter.RegisterCallback(
-		func(_ context.Context, o metric.Observer) error {
-			for name, healthy := range health.snapshot() {
-				healthyVal, unhealthyVal := int64(0), int64(1)
-				if healthy {
-					healthyVal, unhealthyVal = 1, 0
+	registration, err := meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			states := health.snapshot()
+			for _, backend := range registry.List(ctx) {
+				current, recorded := states[backend.Name]
+				if !recorded {
+					current = backend.HealthStatus
 				}
-				o.ObserveInt64(healthGauge, healthyVal, metric.WithAttributes(
-					attribute.String(coremetrics.LabelMCPServer, name),
-					attribute.String(healthStateLabel, healthStateHealthy),
-				))
-				o.ObserveInt64(healthGauge, unhealthyVal, metric.WithAttributes(
-					attribute.String(coremetrics.LabelMCPServer, name),
-					attribute.String(healthStateLabel, healthStateUnhealthy),
-				))
+				for _, state := range healthStates {
+					value := int64(0)
+					if state == current {
+						value = 1
+					}
+					o.ObserveInt64(healthGauge, value, metric.WithAttributes(
+						attribute.String(coremetrics.LabelMCPServer, backend.Name),
+						attribute.String(healthStateLabel, string(state)),
+					))
+				}
 			}
 			return nil
 		},
 		healthGauge,
-	); err != nil {
-		return nil, fmt.Errorf("failed to register backend health callback: %w", err)
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to register backend health callback: %w", err)
 	}
 
 	return &telemetryBackendClient{
@@ -103,30 +124,31 @@ func MonitorBackends(
 		tracer:                  tracerProvider.Tracer(instrumentationName),
 		health:                  health,
 		clientOperationDuration: clientOperationDuration,
-	}, nil
+	}, registration.Unregister, nil
 }
 
 // backendHealth tracks the latest observed health of each backend, keyed by
 // workload name. It is read by the observable-gauge callback and written on each
-// request's success/failure, so the gauge reflects live health.
+// request's success/failure, so the gauge reflects live health. set() only ever
+// receives BackendHealthy/BackendUnhealthy (record() has no visibility into the
+// finer-grained states); those come from the registry instead, as a fallback for
+// backends the map has no entry for yet (see MonitorBackends).
 type backendHealth struct {
 	mu     sync.RWMutex
-	states map[string]bool
+	states map[string]vmcp.BackendHealthStatus
 }
 
-func (b *backendHealth) set(name string, healthy bool) {
+func (b *backendHealth) set(name string, status vmcp.BackendHealthStatus) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.states[name] = healthy
+	b.states[name] = status
 }
 
-func (b *backendHealth) snapshot() map[string]bool {
+func (b *backendHealth) snapshot() map[string]vmcp.BackendHealthStatus {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	out := make(map[string]bool, len(b.states))
-	for k, v := range b.states {
-		out[k] = v
-	}
+	out := make(map[string]vmcp.BackendHealthStatus, len(b.states))
+	maps.Copy(out, b.states)
 	return out
 }
 
@@ -221,12 +243,12 @@ func (t *telemetryBackendClient) record(
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)
 
-			t.health.set(target.WorkloadName, false)
+			t.health.set(target.WorkloadName, vmcp.BackendUnhealthy)
 			span.RecordError(*err)
 			span.SetStatus(codes.Error, (*err).Error())
 		} else {
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrs)
-			t.health.set(target.WorkloadName, true)
+			t.health.set(target.WorkloadName, vmcp.BackendHealthy)
 		}
 		span.End()
 	}
@@ -286,7 +308,7 @@ func (t *telemetryBackendClient) GetPrompt(
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }
 
-func (t telemetryBackendClient) Complete(
+func (t *telemetryBackendClient) Complete(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	ref vmcp.CompletionRef,
@@ -306,7 +328,7 @@ func (t telemetryBackendClient) Complete(
 	return t.backendClient.Complete(ctx, target, ref, argName, argValue, contextArgs)
 }
 
-func (t telemetryBackendClient) ListCapabilities(
+func (t *telemetryBackendClient) ListCapabilities(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (_ *vmcp.CapabilityList, retErr error) {
 	ctx, done := t.record(ctx, target, "list_capabilities", "", &retErr)

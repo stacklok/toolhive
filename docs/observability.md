@@ -188,37 +188,31 @@ For VirtualMCPServer telemetry, see the
 ### MCP Proxy Metrics
 
 These metrics are emitted by the telemetry middleware (`pkg/telemetry/middleware.go`)
-for each MCP server proxy.
+for each MCP server proxy. Metric and label names follow the shared
+`stacklok.*`/OTel semantic-convention vocabulary (Metrics Standardization RFC);
+see the [Telemetry Migration Guide](./telemetry-migration-guide.md) for the
+mapping from the legacy `toolhive_mcp_*` names these replace.
 
-#### `toolhive_mcp_requests` (Counter)
+#### `stacklok.toolhive.proxy.active_connections` (UpDownCounter)
 
-Total number of MCP requests processed.
+Number of currently active MCP connections. Prometheus exposes this as
+`stacklok_toolhive_proxy_active_connections`.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `method` | string | HTTP method (`POST`, `GET`) |
-| `status_code` | string | HTTP status code (`200`, `500`) |
-| `status` | string | `"success"` or `"error"` (error if status >= 400) |
-| `mcp_method` | string | MCP method name (`tools/call`, `resources/read`, etc.) |
-| `mcp_resource_id` | string | Tool name, resource URI, or prompt name |
-| `server` | string | MCP server name |
-| `transport` | string | Backend transport type (`stdio`, `sse`, `streamable-http`) |
-
-> **Note**: SSE connection establishment events also increment this counter
-> with `mcp_method="sse_connection"` and do not include `mcp_resource_id`.
-
-#### `toolhive_mcp_request_duration` (Histogram, seconds)
-
-Duration of MCP requests. Uses default histogram bucket boundaries.
-
-**Attributes**: Same as `toolhive_mcp_requests`.
+| `mcp_server` | string | MCP server name |
+| `transport` | string | Backend transport type |
+| `connection_type` | string | `"sse"` (only present for SSE connections) |
 
 #### `mcp.server.operation.duration` (Histogram, seconds)
 
 Duration of MCP server operations per the
 [OTEL MCP semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/mcp.md).
+Recorded only for requests with a resolvable MCP method (`tools/call`,
+`resources/read`, etc.) — GET (SSE stream open) and DELETE (session
+termination) requests carry no MCP method and are not recorded here.
 
-**Bucket boundaries**: `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
 
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|
@@ -232,25 +226,49 @@ Duration of MCP server operations per the
 | `gen_ai.tool.name` | string | For `tools/call` | Tool name |
 | `gen_ai.prompt.name` | string | For `prompts/get` | Prompt name |
 
-#### `toolhive_mcp_tool_calls` (Counter)
+> **Note**: `mcp_resource_id` (tool name, resource URI, or prompt name) is
+> deliberately omitted from this metric's attributes to bound cardinality; it
+> feeds `gen_ai.tool.name`/`gen_ai.prompt.name` instead, which are themselves
+> only present for the method kinds that have a name to report.
 
-Total number of MCP tool invocations (only recorded for `tools/call` requests).
+#### `http.server.request.duration` (Histogram, seconds)
+
+Duration of every HTTP request the middleware handles, per the
+[OTEL HTTP semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/).
+Recorded for every request — including SSE-open GETs and session-delete
+DELETEs that carry no MCP method — so transport-level coverage doesn't depend
+on a resolvable MCP method the way `mcp.server.operation.duration` does. For
+SSE connections, recorded once the connection closes (not per-chunk).
+
+**Bucket boundaries** (`coremetrics.BucketsFastHTTP()`): `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
+
+| Attribute | Type | Condition | Description |
+|-----------|------|-----------|-------------|
+| `http.request.method` | string | Always | HTTP method (`GET`, `POST`, `DELETE`) |
+| `http.response.status_code` | int | Always | HTTP status code |
+| `error.type` | string | On HTTP 5xx | HTTP status code as string |
+
+#### `stacklok.build_info` (Gauge)
+
+Registered once per process via the shared `coremetrics.RegisterBuildInfo`
+helper (`pkg/telemetry/middleware.go`). Always reports `1`, carrying version
+metadata as attributes.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `server` | string | MCP server name |
-| `tool` | string | Tool name |
-| `status` | string | `"success"` or `"error"` |
+| `stacklok_component` | string | Always `"toolhive"` |
+| `stacklok_product` | string | Always `"stacklok-platform"` |
+| `version` | string | ToolHive version |
+| `commit` | string | Build commit SHA |
 
-#### `toolhive_mcp_active_connections` (UpDownCounter)
+### D8 Ownership Labels
 
-Number of currently active MCP connections.
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `server` | string | MCP server name |
-| `transport` | string | Backend transport type |
-| `connection_type` | string | `"sse"` (only present for SSE connections) |
+Every metric emitted by ToolHive carries `stacklok_component="toolhive"` and
+`stacklok_product="stacklok-platform"` as OTel resource attributes (not
+per-series labels), applied as the last OTel resource detector so they cannot
+be overridden by `--otel-custom-attributes` or `OTEL_RESOURCE_ATTRIBUTES`
+(OTel resource merge is last-detector-wins). See
+`pkg/telemetry/providers/providers.go`.
 
 ### Rate Limit Metrics
 
@@ -269,7 +287,7 @@ do not increment this counter.
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `namespace` | string | Kubernetes namespace associated with the server |
-| `server` | string | MCPServer or VirtualMCPServer name |
+| `mcp_server` | string | MCPServer or VirtualMCPServer name |
 | `decision` | string | `"allowed"` or `"rejected"` |
 | `scope` | string | `"shared"` or `"per_user"` |
 | `operation_type` | string | `"server"` or `"tool"` |
@@ -281,7 +299,7 @@ Total number of Redis errors encountered while checking rate limits.
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `namespace` | string | Kubernetes namespace associated with the server |
-| `server` | string | MCPServer or VirtualMCPServer name |
+| `mcp_server` | string | MCPServer or VirtualMCPServer name |
 | `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
 
 #### `toolhive_rate_limit_check_latency` (Histogram, seconds)
@@ -292,7 +310,7 @@ checks.
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `namespace` | string | Kubernetes namespace associated with the server |
-| `server` | string | MCPServer or VirtualMCPServer name |
+| `mcp_server` | string | MCPServer or VirtualMCPServer name |
 
 ## Span Attributes
 

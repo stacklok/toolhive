@@ -80,10 +80,27 @@ type coreVMCP struct {
 	// Close is not a silent capability assertion. Guarded by closeOnce.
 	stopStore func()
 
+	// unregisterBackendHealth releases the backend-health gauge callback
+	// registered by backendtelemetry.MonitorBackends. A no-op when telemetry is
+	// disabled. Guarded by closeOnce.
+	unregisterBackendHealth func() error
+
 	closeOnce sync.Once
 }
 
 var _ VMCP = (*coreVMCP)(nil)
+
+// unregisterHealthOnError calls unregister and logs (rather than swallows) a
+// failure. Used on New's error paths after the backend-health gauge callback
+// has been registered but construction later fails: without this, the
+// callback stays attached to the shared meter provider — polling a registry
+// for a coreVMCP that was never returned to the caller and so never has
+// Close called on it — for every failed New attempt.
+func unregisterHealthOnError(unregister func() error) {
+	if err := unregister(); err != nil {
+		slog.Warn("failed to unregister backend health gauge callback", "error", err)
+	}
+}
 
 // New constructs the core [VMCP] by relocating the domain wiring that lives in
 // server.New today (server.go:330-405): telemetry backend-client decoration, the
@@ -109,31 +126,39 @@ func New(cfg *Config) (VMCP, error) {
 
 	backendClient := cfg.BackendClient
 
+	// unregisterBackendHealth releases the health-gauge callback registered by
+	// MonitorBackends; a no-op unless telemetry is enabled below. Captured before
+	// any later error path so Close always has a valid (possibly no-op) func to call.
+	unregisterBackendHealth := func() error { return nil }
+
 	// Telemetry backend-client decoration must happen BEFORE building the workflow
 	// engine so that workflow backend calls are instrumented (server.go:350-367).
 	if cfg.TelemetryProvider != nil {
-		decorated, err := backendtelemetry.MonitorBackends(
+		decorated, unregister, err := backendtelemetry.MonitorBackends(
 			context.Background(),
 			cfg.TelemetryProvider.MeterProvider(),
 			cfg.TelemetryProvider.TracerProvider(),
-			cfg.BackendRegistry.List(context.Background()),
+			cfg.BackendRegistry,
 			backendClient,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to monitor backends: %w", err)
 		}
 		backendClient = decorated
+		unregisterBackendHealth = unregister
 	}
 
 	// Workflow auditor (server.go:370-381).
 	var workflowAuditor *audit.WorkflowAuditor
 	if cfg.AuditConfig != nil {
 		if err := cfg.AuditConfig.Validate(); err != nil {
+			unregisterHealthOnError(unregisterBackendHealth)
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		var err error
 		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
 		if err != nil {
+			unregisterHealthOnError(unregisterBackendHealth)
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}
 		slog.Info("workflow audit logging enabled")
@@ -168,6 +193,7 @@ func New(cfg *Config) (VMCP, error) {
 	instruments, err := newWorkflowInstruments(cfg.TelemetryProvider)
 	if err != nil {
 		stopStore()
+		unregisterHealthOnError(unregisterBackendHealth)
 		return nil, fmt.Errorf("failed to create workflow telemetry instruments: %w", err)
 	}
 
@@ -195,6 +221,7 @@ func New(cfg *Config) (VMCP, error) {
 	workflowDefs, err := validateWorkflowDefs(validationEngine, cfg.WorkflowDefs)
 	if err != nil {
 		stopStore()
+		unregisterHealthOnError(unregisterBackendHealth)
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
@@ -206,19 +233,21 @@ func New(cfg *Config) (VMCP, error) {
 	healthMonitor, healthProvider, err := buildHealthMonitor(cfg)
 	if err != nil {
 		stopStore()
+		unregisterHealthOnError(unregisterBackendHealth)
 		return nil, err
 	}
 
 	return &coreVMCP{
-		aggregator:      cfg.Aggregator,
-		backendRegistry: cfg.BackendRegistry,
-		backendClient:   backendClient,
-		health:          healthProvider,
-		healthMonitor:   healthMonitor,
-		admission:       admission,
-		workflowDefs:    workflowDefs,
-		composerFactory: composerFactory,
-		stopStore:       stopStore,
+		aggregator:              cfg.Aggregator,
+		backendRegistry:         cfg.BackendRegistry,
+		backendClient:           backendClient,
+		health:                  healthProvider,
+		healthMonitor:           healthMonitor,
+		admission:               admission,
+		workflowDefs:            workflowDefs,
+		composerFactory:         composerFactory,
+		stopStore:               stopStore,
+		unregisterBackendHealth: unregisterBackendHealth,
 	}, nil
 }
 
@@ -509,6 +538,7 @@ func (c *coreVMCP) Close() error {
 				slog.Warn("failed to stop health monitor", "error", err)
 			}
 		}
+		unregisterHealthOnError(c.unregisterBackendHealth)
 	})
 	return nil
 }

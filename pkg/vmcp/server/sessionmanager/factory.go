@@ -36,6 +36,11 @@ const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 // CacheCapacity from a config does not silently enable unbounded growth.
 const defaultCacheCapacity = 1000
 
+// outcomeNotFound extends the standard coremetrics.OutcomeSuccess/OutcomeError
+// pair with a third CallTool-specific terminal state: the tool ran without
+// error but reported IsError, meaning the optimizer couldn't resolve it.
+const outcomeNotFound = "not_found"
+
 // FactoryConfig holds the session factory construction parameters that the
 // session manager needs to build its decorating factory. It is separate from
 // server.Config to avoid a circular import between the server and sessionmanager
@@ -402,7 +407,7 @@ func (t *telemetryOptimizer) CallTool(ctx context.Context, input optimizer.CallT
 	if err != nil {
 		outcome = coremetrics.OutcomeError
 	} else if result != nil && result.IsError {
-		outcome = "not_found"
+		outcome = outcomeNotFound
 	}
 	t.callToolRequests.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(coremetrics.LabelToolName, input.ToolName),

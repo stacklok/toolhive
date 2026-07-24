@@ -26,6 +26,7 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/mock/gomock"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
@@ -781,23 +782,25 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 	// Verify metrics were recorded
 	assert.NotEmpty(t, rm.ScopeMetrics)
 
-	// Find our metrics
-	var foundCounter, foundHistogram, foundGauge bool
+	// This POST carries no parsed MCP method, so mcp.server.operation.duration is
+	// not recorded; the transport-level http.server.request.duration is, alongside
+	// the renamed active-connections gauge. The deleted twins must be absent.
+	var foundHTTPDuration, foundGauge bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
+			assert.NotEqual(t, "toolhive_mcp_requests", metric.Name)
+			assert.NotEqual(t, "toolhive_mcp_request_duration", metric.Name)
+			assert.NotEqual(t, "toolhive_mcp_tool_calls", metric.Name)
 			switch metric.Name {
-			case metricRequestCounter:
-				foundCounter = true
-			case "toolhive_mcp_request_duration":
-				foundHistogram = true
-			case "toolhive_mcp_active_connections":
+			case "http.server.request.duration":
+				foundHTTPDuration = true
+			case "stacklok.toolhive.proxy.active_connections":
 				foundGauge = true
 			}
 		}
 	}
 
-	assert.True(t, foundCounter, "Request counter metric should be recorded")
-	assert.True(t, foundHistogram, "Request duration histogram should be recorded")
+	assert.True(t, foundHTTPDuration, "http server request duration should be recorded")
 	assert.True(t, foundGauge, "Active connections gauge should be recorded")
 }
 
@@ -2425,16 +2428,12 @@ func TestRecordSSEConnection_DualEmission(t *testing.T) {
 			t.Parallel()
 
 			mt := &mockTracer{}
-			meterProvider := noop.NewMeterProvider()
-			meter := meterProvider.Meter(instrumentationName)
-			requestCounter, _ := meter.Int64Counter("toolhive_mcp_requests")
 
 			middleware := &HTTPMiddleware{
-				config:         Config{UseLegacyAttributes: tt.useLegacy},
-				tracer:         mt,
-				serverName:     "github",
-				transport:      tt.transport,
-				requestCounter: requestCounter,
+				config:     Config{UseLegacyAttributes: tt.useLegacy},
+				tracer:     mt,
+				serverName: "github",
+				transport:  tt.transport,
 			}
 
 			req := httptest.NewRequest("GET", "/sse", nil)
@@ -2460,4 +2459,172 @@ func TestRecordSSEConnection_DualEmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+// findHTTPServerDuration returns the http.server.request.duration histogram from
+// collected metrics, or nil if absent.
+func findHTTPServerDuration(rm metricdata.ResourceMetrics) *metricdata.Histogram[float64] {
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "http.server.request.duration" {
+				if h, ok := m.Data.(metricdata.Histogram[float64]); ok {
+					return &h
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		parsedMCP      *mcpparser.ParsedMCPRequest // nil => no MCP method (SSE-open GET / non-MCP)
+		handlerStatus  int
+		wantMethod     string
+		wantStatusCode int64
+		wantErrorType  string // "" => error.type must be absent
+	}{
+		{
+			// RFC §7 AT: a GET SSE-open request carrying no MCP method still
+			// produces an http.server.request.duration observation.
+			name:           "GET SSE-open with no MCP method",
+			method:         http.MethodGet,
+			path:           "/mcp",
+			parsedMCP:      nil,
+			handlerStatus:  http.StatusOK,
+			wantMethod:     http.MethodGet,
+			wantStatusCode: 200,
+			wantErrorType:  "",
+		},
+		{
+			name:           "normal POST with MCP method",
+			method:         http.MethodPost,
+			path:           "/mcp",
+			parsedMCP:      &mcpparser.ParsedMCPRequest{Method: "tools/list"},
+			handlerStatus:  http.StatusOK,
+			wantMethod:     http.MethodPost,
+			wantStatusCode: 200,
+			wantErrorType:  "",
+		},
+		{
+			name:           "DELETE session terminate with no MCP method",
+			method:         http.MethodDelete,
+			path:           "/mcp",
+			parsedMCP:      nil,
+			handlerStatus:  http.StatusOK,
+			wantMethod:     http.MethodDelete,
+			wantStatusCode: 200,
+			wantErrorType:  "",
+		},
+		{
+			name:           "5xx sets error.type to status code",
+			method:         http.MethodPost,
+			path:           "/mcp",
+			parsedMCP:      &mcpparser.ParsedMCPRequest{Method: "tools/call"},
+			handlerStatus:  http.StatusBadGateway,
+			wantMethod:     http.MethodPost,
+			wantStatusCode: 502,
+			wantErrorType:  "502",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := sdkmetric.NewManualReader()
+			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			middleware := NewHTTPMiddleware(Config{}, tracenoop.NewTracerProvider(), meterProvider, "github", "streamable-http")
+
+			handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.handlerStatus)
+			}))
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if tt.parsedMCP != nil {
+				req = req.WithContext(context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, tt.parsedMCP))
+			}
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			var rm metricdata.ResourceMetrics
+			require.NoError(t, reader.Collect(context.Background(), &rm))
+
+			hist := findHTTPServerDuration(rm)
+			require.NotNil(t, hist, "http.server.request.duration must be emitted")
+			require.Len(t, hist.DataPoints, 1)
+			dp := hist.DataPoints[0]
+
+			// Buckets: fast-HTTP preset.
+			assert.Equal(t, coremetrics.BucketsFastHTTP(), dp.Bounds,
+				"must use the fast-HTTP bucket preset")
+
+			// semconv attributes only.
+			mv, ok := dp.Attributes.Value(attribute.Key("http.request.method"))
+			require.True(t, ok, "http.request.method must be present")
+			assert.Equal(t, tt.wantMethod, mv.AsString())
+
+			sv, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
+			require.True(t, ok, "http.response.status_code must be present")
+			assert.Equal(t, tt.wantStatusCode, sv.AsInt64())
+
+			ev, hasErr := dp.Attributes.Value(attribute.Key("error.type"))
+			if tt.wantErrorType == "" {
+				assert.False(t, hasErr, "error.type must be absent on non-5xx")
+			} else {
+				require.True(t, hasErr, "error.type must be present on 5xx")
+				assert.Equal(t, tt.wantErrorType, ev.AsString())
+			}
+
+			// The semconv metric must not carry the Stacklok mcp_method label.
+			_, hasMCPMethod := dp.Attributes.Value(attribute.Key(coremetrics.LabelMCPMethod))
+			assert.False(t, hasMCPMethod, "semconv metric must not carry the mcp_method label")
+		})
+	}
+}
+
+// TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch exercises the SSE
+// branch of Handler specifically (path suffix "/sse"), which records
+// http.server.request.duration in its own deferred call on connection close
+// rather than through recordMetrics. TestHTTPMiddleware_HTTPServerRequestDuration
+// above only covers the non-SSE branch (its "/mcp" paths never take the "/sse"
+// suffix check), so this must be a separate test rather than another table case.
+func TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	middleware := NewHTTPMiddleware(Config{}, tracenoop.NewTracerProvider(), meterProvider, "github", "sse")
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: test event\n\n"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	hist := findHTTPServerDuration(rm)
+	require.NotNil(t, hist, "http.server.request.duration must be emitted for the SSE branch")
+	require.Len(t, hist.DataPoints, 1)
+	dp := hist.DataPoints[0]
+
+	mv, ok := dp.Attributes.Value(attribute.Key("http.request.method"))
+	require.True(t, ok, "http.request.method must be present")
+	assert.Equal(t, http.MethodGet, mv.AsString())
+
+	sv, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
+	require.True(t, ok, "http.response.status_code must be present")
+	assert.Equal(t, int64(http.StatusOK), sv.AsInt64())
+
+	_, hasErr := dp.Attributes.Value(attribute.Key("error.type"))
+	assert.False(t, hasErr, "error.type must be absent on a 2xx SSE close")
 }

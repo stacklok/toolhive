@@ -8,6 +8,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -15,7 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
@@ -153,6 +159,89 @@ func TestNew_ValidatesWorkflows(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NoError(t, c.Close())
+		})
+	}
+}
+
+// TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure guards
+// against a regression where a construction failure occurring AFTER
+// MonitorBackends registers the backend-health gauge callback left that
+// callback attached to the shared meter provider forever, since the coreVMCP
+// it was built for is never returned to a caller and so never has Close
+// called on it. Table-driven over every error branch in New that runs after
+// MonitorBackends succeeds (invalid AuditConfig, workflow-auditor construction
+// failure, workflow-instrument creation failure, workflow validation failure,
+// health-monitor build failure) — each scrapes the same meter provider's
+// Prometheus handler after the failed New call and asserts the gauge produced
+// no series, proving the callback was unregistered, not merely that New
+// returned an error.
+func TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*Config, *coreMocks)
+	}{
+		{
+			name:   "invalid audit configuration",
+			mutate: func(c *Config, _ *coreMocks) { c.AuditConfig = &audit.Config{MaxDataSize: -1} },
+		},
+		{
+			name: "workflow auditor construction fails",
+			mutate: func(c *Config, _ *coreMocks) {
+				c.AuditConfig = &audit.Config{LogFile: filepath.Join(t.TempDir(), "no-such-dir", "audit.log")}
+			},
+		},
+		{
+			name: "workflow validation fails",
+			mutate: func(c *Config, _ *coreMocks) {
+				c.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+					"wf": {
+						Name: "wf",
+						Steps: []composer.WorkflowStep{
+							{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s2"}},
+							{ID: "s2", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s1"}},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "health monitor build fails",
+			mutate: func(c *Config, m *coreMocks) {
+				m.reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+				c.HealthMonitorConfig = &health.MonitorConfig{CheckInterval: 0, UnhealthyThreshold: 1}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+				ServiceName:                 "core-new-test-" + t.Name(),
+				ServiceVersion:              "0.0.0",
+				EnablePrometheusMetricsPath: true,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+
+			cfg, m := baseConfig(t)
+			cfg.TelemetryProvider = provider
+			tt.mutate(cfg, m)
+
+			c, err := New(cfg)
+			require.Error(t, err, "construction must fail after the health callback is registered")
+			assert.Nil(t, c)
+
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			rec := httptest.NewRecorder()
+			provider.PrometheusHandler().ServeHTTP(rec, req)
+
+			assert.NotContains(t, rec.Body.String(), "stacklok_vmcp_mcp_server_health",
+				"health gauge callback must be unregistered when New fails after MonitorBackends succeeds")
 		})
 	}
 }
@@ -766,6 +855,56 @@ func TestNew_HealthMonitorOwnedByCore(t *testing.T) {
 	require.NoError(t, c.Close())
 	require.NoError(t, c.Close())
 	assert.NotNil(t, c.BackendHealth())
+}
+
+// TestNew_BackendHealthGaugeReflectsLiveMonitorNotRegistrySnapshot guards
+// against the backend-health gauge disagreeing with capability filtering: both
+// must consult the same live health.Monitor once one is built and started,
+// not the registry's static discovery-time HealthStatus. The registry here
+// reports the backend with no HealthStatus set (the zero value, "" — treated
+// as healthy for capability filtering); the monitor's health checks fail, so
+// once it starts, the gauge must flip to unhealthy rather than keep reporting
+// the registry's stale/absent status.
+func TestNew_BackendHealthGaugeReflectsLiveMonitorNotRegistrySnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+		ServiceName:                 "core-new-health-gauge-test",
+		ServiceVersion:              "0.0.0",
+		EnablePrometheusMetricsPath: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+
+	cfg, m := baseConfig(t)
+	cfg.TelemetryProvider = provider
+	backends := []vmcp.Backend{{ID: testBackendID, Name: "be1", BaseURL: "http://be1:8080", TransportType: "sse"}}
+	m.reg.EXPECT().List(gomock.Any()).Return(backends).AnyTimes()
+	m.client.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("backend unreachable")).AnyTimes()
+	cfg.HealthMonitorConfig = &health.MonitorConfig{
+		CheckInterval:      20 * time.Millisecond,
+		UnhealthyThreshold: 1,
+		Timeout:            time.Second,
+	}
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// The Prometheus exporter interleaves scope/resource labels alphabetically
+	// between mcp_server and state, so match on the two labels this test cares
+	// about plus the trailing value rather than a fully-pinned label set.
+	unhealthyPoint := regexp.MustCompile(
+		`stacklok_vmcp_mcp_server_health\{mcp_server="be1",[^}]*state="unhealthy"\} 1`)
+	require.Eventually(t, func() bool {
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		rec := httptest.NewRecorder()
+		provider.PrometheusHandler().ServeHTTP(rec, req)
+		return unhealthyPoint.MatchString(rec.Body.String())
+	}, 2*time.Second, 10*time.Millisecond,
+		"the health gauge must reflect the live monitor's unhealthy assessment, not the registry's healthy-by-default snapshot")
 }
 
 // TestNew_HealthMonitorDisabledWhenNil verifies a nil HealthMonitorConfig leaves health

@@ -19,7 +19,14 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 )
+
+// ComponentName is toolhive's stacklok.component value (D8). toolhive-core
+// defines the AttrStacklokComponent key but leaves the value to each component.
+// Exported so pkg/telemetry's build-info registration uses the same value.
+const ComponentName = "toolhive"
 
 // Config holds the telemetry configuration for all providers.
 // It contains service information, OTLP settings, and Prometheus configuration.
@@ -177,8 +184,7 @@ func NewCompositeProvider(
 		}
 	}
 
-	// Create resource for all providers
-	// Start with base attributes
+	// Create resource for all providers.
 	baseAttrs := []attribute.KeyValue{
 		semconv.ServiceName(config.ServiceName),
 		semconv.ServiceVersion(config.ServiceVersion),
@@ -196,11 +202,21 @@ func NewCompositeProvider(
 		}
 	}
 
+	// stacklok.component/stacklok.product identify the emitter across the platform
+	// (D8); the product value is frozen as "stacklok-platform". These are applied
+	// as the last detector so they win over any collision from CustomAttributes or
+	// OTEL_RESOURCE_ATTRIBUTES — the ownership labels must not be user-overridable.
+	ownershipAttrs := []attribute.KeyValue{
+		attribute.String(coremetrics.AttrStacklokComponent, ComponentName),
+		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
+	}
+
 	// Create resource with base attributes and support for OTEL_RESOURCE_ATTRIBUTES env var
 	res, err := resource.New(ctx,
 		resource.WithAttributes(baseAttrs...),
-		resource.WithFromEnv(), // This reads OTEL_RESOURCE_ATTRIBUTES automatically
-		resource.WithHost(),    // Add host information
+		resource.WithFromEnv(),                     // This reads OTEL_RESOURCE_ATTRIBUTES automatically
+		resource.WithHost(),                        // Add host information
+		resource.WithAttributes(ownershipAttrs...), // Reserved D8 labels; last so they cannot be overridden
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource with service name '%s' and version '%s': %w",

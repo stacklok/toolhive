@@ -54,21 +54,21 @@ func TestRateLimitMetrics_SharedDecisionsAndLatency(t *testing.T) {
 	decisions := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
-		"server":         "test-server",
+		"mcp_server":     "test-server",
 		"decision":       rateLimitDecisionAllowed,
 		"scope":          rateLimitScopeShared,
 		"operation_type": rateLimitOperationServer,
 	}))
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
-		"server":         "test-server",
+		"mcp_server":     "test-server",
 		"decision":       rateLimitDecisionAllowed,
 		"scope":          rateLimitScopeShared,
 		"operation_type": rateLimitOperationTool,
 	}))
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
-		"server":         "test-server",
+		"mcp_server":     "test-server",
 		"decision":       rateLimitDecisionRejected,
 		"scope":          rateLimitScopeShared,
 		"operation_type": rateLimitOperationTool,
@@ -76,8 +76,8 @@ func TestRateLimitMetrics_SharedDecisionsAndLatency(t *testing.T) {
 
 	latency := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_check_latency")
 	assert.Equal(t, uint64(2), histogramCountWithAttributes(t, latency, map[string]string{
-		"namespace": "test-ns",
-		"server":    "test-server",
+		"namespace":  "test-ns",
+		"mcp_server": "test-server",
 	}))
 }
 
@@ -115,21 +115,21 @@ func TestRateLimitMetrics_PerUserDecisions(t *testing.T) {
 	decisions := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
-		"server":         "test-server",
+		"mcp_server":     "test-server",
 		"decision":       rateLimitDecisionAllowed,
 		"scope":          rateLimitScopePerUser,
 		"operation_type": rateLimitOperationServer,
 	}))
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
-		"server":         "test-server",
+		"mcp_server":     "test-server",
 		"decision":       rateLimitDecisionAllowed,
 		"scope":          rateLimitScopePerUser,
 		"operation_type": rateLimitOperationTool,
 	}))
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
-		"server":         "test-server",
+		"mcp_server":     "test-server",
 		"decision":       rateLimitDecisionRejected,
 		"scope":          rateLimitScopePerUser,
 		"operation_type": rateLimitOperationTool,
@@ -157,14 +157,14 @@ func TestRateLimitMetrics_RedisErrorAndFailedLatency(t *testing.T) {
 	redisErrors := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_redis_errors")
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, redisErrors, map[string]string{
 		"namespace":  "test-ns",
-		"server":     "test-server",
+		"mcp_server": "test-server",
 		"error_type": redisErrorTypeConnection,
 	}))
 
 	latency := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_check_latency")
 	assert.Equal(t, uint64(1), histogramCountWithAttributes(t, latency, map[string]string{
-		"namespace": "test-ns",
-		"server":    "test-server",
+		"namespace":  "test-ns",
+		"mcp_server": "test-server",
 	}))
 	assert.Nil(t, findRateLimitMetric(metrics, "toolhive_rate_limit_decisions"))
 }

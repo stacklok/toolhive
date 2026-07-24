@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/stacklok/toolhive/pkg/telemetry"
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 )
 
 const (
@@ -77,7 +77,7 @@ func newRateLimitTelemetry(
 		"toolhive_rate_limit_check_latency",
 		metric.WithDescription("Duration of Redis Lua rate limit checks in seconds"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create check latency histogram: %w", err)
@@ -111,7 +111,7 @@ func (t *rateLimitTelemetry) recordRejected(ctx context.Context, check limitChec
 func (t *rateLimitTelemetry) recordDecision(ctx context.Context, decision string, check limitCheck) {
 	t.decisions.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("namespace", t.namespace),
-		attribute.String("server", t.serverName),
+		attribute.String(coremetrics.LabelMCPServer, t.serverName),
 		attribute.String("decision", decision),
 		attribute.String("scope", check.scope),
 		attribute.String("operation_type", check.operationType),
@@ -124,8 +124,8 @@ func (t *rateLimitTelemetry) recordRedisError(ctx context.Context, err error) {
 	}
 	t.redisErrors.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("namespace", t.namespace),
-		attribute.String("server", t.serverName),
-		attribute.String("error_type", classifyRedisError(err)),
+		attribute.String(coremetrics.LabelMCPServer, t.serverName),
+		attribute.String(coremetrics.LabelErrorType, classifyRedisError(err)),
 	))
 }
 
@@ -135,7 +135,7 @@ func (t *rateLimitTelemetry) recordCheckLatency(ctx context.Context, duration ti
 	}
 	t.checkLatency.Record(ctx, duration.Seconds(), metric.WithAttributes(
 		attribute.String("namespace", t.namespace),
-		attribute.String("server", t.serverName),
+		attribute.String(coremetrics.LabelMCPServer, t.serverName),
 	))
 }
 

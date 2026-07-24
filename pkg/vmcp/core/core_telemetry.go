@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 )
@@ -28,7 +29,6 @@ const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 type workflowInstruments struct {
 	tracer            trace.Tracer
 	executionsTotal   metric.Int64Counter
-	errorsTotal       metric.Int64Counter
 	executionDuration metric.Float64Histogram
 }
 
@@ -45,26 +45,18 @@ func newWorkflowInstruments(provider *telemetry.Provider) (*workflowInstruments,
 	meter := provider.MeterProvider().Meter(instrumentationName)
 
 	executions, err := meter.Int64Counter(
-		"toolhive_vmcp_workflow_executions",
-		metric.WithDescription("Total number of workflow executions"),
+		"stacklok.vmcp.composite_tool.executions",
+		metric.WithDescription("Total number of workflow executions, split by outcome"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workflow executions counter: %w", err)
 	}
 
-	errors, err := meter.Int64Counter(
-		"toolhive_vmcp_workflow_errors",
-		metric.WithDescription("Total number of workflow execution errors"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create workflow errors counter: %w", err)
-	}
-
 	duration, err := meter.Float64Histogram(
-		"toolhive_vmcp_workflow_duration",
+		"stacklok.vmcp.composite_tool.duration",
 		metric.WithDescription("Duration of workflow executions in seconds"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)
@@ -73,7 +65,6 @@ func newWorkflowInstruments(provider *telemetry.Provider) (*workflowInstruments,
 	return &workflowInstruments{
 		tracer:            provider.TracerProvider().Tracer(instrumentationName),
 		executionsTotal:   executions,
-		errorsTotal:       errors,
 		executionDuration: duration,
 	}, nil
 }
@@ -88,32 +79,34 @@ type telemetryComposer struct {
 
 var _ composer.Composer = (*telemetryComposer)(nil)
 
-// ExecuteWorkflow records execution count, duration, and errors before delegating
-// to the wrapped composer. Uses def.Name as the workflow_name metric attribute to
-// match the label emitted by the session-factory path in sessionmanager.
+// ExecuteWorkflow records execution count (split by outcome) and duration around
+// the wrapped composer call. Uses def.Name as the composite_tool metric attribute
+// to match the label emitted by the session-factory path in sessionmanager.
 func (c *telemetryComposer) ExecuteWorkflow(
 	ctx context.Context, def *composer.WorkflowDefinition, params map[string]any,
 ) (*composer.WorkflowResult, error) {
-	commonAttrs := []attribute.KeyValue{attribute.String("workflow.name", def.Name)}
-
 	ctx, span := c.instruments.tracer.Start(ctx, "core.ExecuteWorkflow",
-		trace.WithAttributes(commonAttrs...),
+		trace.WithAttributes(attribute.String("workflow.name", def.Name)),
 	)
 	defer span.End()
 
-	metricAttrs := metric.WithAttributes(commonAttrs...)
+	durationAttrs := metric.WithAttributes(attribute.String(coremetrics.LabelCompositeTool, def.Name))
 	start := time.Now()
-	c.instruments.executionsTotal.Add(ctx, 1, metricAttrs)
 
 	result, err := c.base.ExecuteWorkflow(ctx, def, params)
 
-	c.instruments.executionDuration.Record(ctx, time.Since(start).Seconds(), metricAttrs)
+	c.instruments.executionDuration.Record(ctx, time.Since(start).Seconds(), durationAttrs)
 
+	outcome := coremetrics.OutcomeSuccess
 	if err != nil {
-		c.instruments.errorsTotal.Add(ctx, 1, metricAttrs)
+		outcome = coremetrics.OutcomeError
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
+	c.instruments.executionsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(coremetrics.LabelCompositeTool, def.Name),
+		attribute.String(coremetrics.LabelOutcome, outcome),
+	))
 
 	return result, err
 }

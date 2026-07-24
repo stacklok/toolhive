@@ -27,8 +27,18 @@ import (
 )
 
 const (
-	testToolName         = "github_search"
-	metricRequestCounter = "toolhive_mcp_requests"
+	testToolName = "github_search"
+
+	// metricHTTPServerDuration is the semconv HTTP server request-duration metric
+	// as rendered by the Prometheus exporter (dots to underscores, _seconds unit).
+	// It is recorded for every request the middleware handles regardless of MCP
+	// method and, with mcp.server.operation.duration, replaces the deleted
+	// toolhive_mcp_* request twins.
+	metricHTTPServerDuration = "http_server_request_duration_seconds"
+
+	// metricActiveConnections is the renamed Stacklok-authored active-connections
+	// gauge as rendered by the Prometheus exporter.
+	metricActiveConnections = "stacklok_toolhive_proxy_active_connections"
 )
 
 func TestTelemetryIntegration_EndToEnd(t *testing.T) {
@@ -160,11 +170,16 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 		// At minimum, we should have some metrics
 		assert.True(t, len(metricsBody) > 0, "Metrics should not be empty")
 
-		// If we have custom metrics, verify them
-		if strings.Contains(metricsBody, "toolhive_mcp") {
-			assert.Contains(t, metricsBody, "toolhive_mcp_requests")
-			assert.Contains(t, metricsBody, "toolhive_mcp_request_duration")
-			assert.Contains(t, metricsBody, "toolhive_mcp_active_connections")
+		// The deleted legacy twins must never reappear.
+		assert.NotContains(t, metricsBody, "toolhive_mcp_requests")
+		assert.NotContains(t, metricsBody, "toolhive_mcp_request_duration")
+		assert.NotContains(t, metricsBody, "toolhive_mcp_tool_calls")
+
+		// The renamed active-connections gauge and the semconv HTTP duration must
+		// be present (both are recorded for every handled request).
+		if strings.Contains(metricsBody, "stacklok_toolhive_proxy") {
+			assert.Contains(t, metricsBody, metricActiveConnections)
+			assert.Contains(t, metricsBody, metricHTTPServerDuration)
 		}
 	} else {
 		// If metrics endpoint fails, just log it but don't fail the test
@@ -275,48 +290,53 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	// Check that metrics were recorded
 	assert.NotEmpty(t, rm.ScopeMetrics)
 
-	var foundRequestCounter, foundDurationHistogram, foundActiveConnections bool
+	var foundOperationDuration, foundHTTPDuration, foundActiveConnections bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
+			// The deleted legacy twins must never be recorded.
+			assert.NotEqual(t, "toolhive_mcp_requests", metric.Name)
+			assert.NotEqual(t, "toolhive_mcp_request_duration", metric.Name)
+			assert.NotEqual(t, "toolhive_mcp_tool_calls", metric.Name)
+
 			switch metric.Name {
-			case metricRequestCounter:
-				foundRequestCounter = true
-				// Verify metric has expected attributes
-				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
-					assert.NotEmpty(t, sum.DataPoints)
-					for _, dp := range sum.DataPoints {
-						// Check for expected attributes
-						attrSet := dp.Attributes
-						hasServer := false
+			case "mcp.server.operation.duration":
+				foundOperationDuration = true
+				// The semconv operation-duration metric carries the spec method
+				// and gen_ai tool-name keys for a tools/call, and never the
+				// unbounded mcp_resource_id.
+				if hist, ok := metric.Data.(metricdata.Histogram[float64]); ok {
+					assert.NotEmpty(t, hist.DataPoints)
+					for _, dp := range hist.DataPoints {
 						hasMethod := false
+						hasToolName := false
 						hasResourceID := false
-						for _, attr := range attrSet.ToSlice() {
-							if attr.Key == "server" && attr.Value.AsString() == "github" {
-								hasServer = true
-							}
-							if attr.Key == "mcp_method" && attr.Value.AsString() == "tools/call" {
+						for _, attr := range dp.Attributes.ToSlice() {
+							if attr.Key == "mcp.method.name" && attr.Value.AsString() == "tools/call" {
 								hasMethod = true
 							}
-							if attr.Key == "mcp_resource_id" && attr.Value.AsString() == testToolName {
+							if attr.Key == "gen_ai.tool.name" && attr.Value.AsString() == testToolName {
+								hasToolName = true
+							}
+							if attr.Key == "mcp_resource_id" {
 								hasResourceID = true
 							}
 						}
-						assert.True(t, hasServer, "Request counter should have server attribute")
-						assert.True(t, hasMethod, "Request counter should have mcp_method attribute")
-						assert.True(t, hasResourceID, "Request counter should have mcp_resource_id attribute with tool name")
+						assert.True(t, hasMethod, "operation duration should carry mcp.method.name")
+						assert.True(t, hasToolName, "operation duration should carry gen_ai.tool.name for tools/call")
+						assert.False(t, hasResourceID, "operation duration must not carry mcp_resource_id (cardinality)")
 					}
 				}
-			case "toolhive_mcp_request_duration":
-				foundDurationHistogram = true
-			case "toolhive_mcp_active_connections":
+			case "http.server.request.duration":
+				foundHTTPDuration = true
+			case "stacklok.toolhive.proxy.active_connections":
 				foundActiveConnections = true
 			}
 		}
 	}
 
-	assert.True(t, foundRequestCounter, "Request counter metric should be present")
-	assert.True(t, foundDurationHistogram, "Duration histogram metric should be present")
-	assert.True(t, foundActiveConnections, "Active connections metric should be present")
+	assert.True(t, foundOperationDuration, "semconv operation-duration metric should be present")
+	assert.True(t, foundHTTPDuration, "semconv http server request-duration metric should be present")
+	assert.True(t, foundActiveConnections, "renamed active connections metric should be present")
 
 	// Clean up
 	err = tracerProvider.Shutdown(ctx)
@@ -365,16 +385,12 @@ func TestTelemetryIntegration_ErrorHandling(t *testing.T) {
 	prometheusHandler.ServeHTTP(metricsRec, metricsReq)
 
 	metricsBody := metricsRec.Body.String()
-	// Check if metrics contain error indicators - the exact format may vary
-	hasErrorMetrics := strings.Contains(metricsBody, `status="error"`) ||
-		strings.Contains(metricsBody, `status_code="500"`) ||
-		strings.Contains(metricsBody, "500") ||
-		strings.Contains(metricsBody, "error")
 
-	// If we have custom metrics, they should include error status
-	if strings.Contains(metricsBody, "toolhive_mcp") {
-		assert.True(t, hasErrorMetrics, "Expected error metrics to be present")
-	}
+	// The 500 is captured on the semconv HTTP duration metric via the
+	// http_response_status_code and error_type labels (error.type set on 5xx).
+	assert.Contains(t, metricsBody, metricHTTPServerDuration)
+	assert.Contains(t, metricsBody, `http_response_status_code="500"`)
+	assert.Contains(t, metricsBody, `error_type="500"`)
 }
 
 func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
@@ -425,53 +441,41 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	err := metricsReader.Collect(context.Background(), &rm)
 	require.NoError(t, err)
 
-	// Look for tool-specific counter and general request counter
-	var foundToolCounter, foundRequestCounter bool
+	// The deleted toolhive_mcp_tool_calls twin is replaced by the semconv
+	// operation-duration metric scoped to mcp.method.name="tools/call", which
+	// carries the tool identity as gen_ai.tool.name.
+	var foundOperationDuration bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
-			switch metric.Name {
-			case "toolhive_mcp_tool_calls":
-				foundToolCounter = true
-				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
-					assert.NotEmpty(t, sum.DataPoints)
-					for _, dp := range sum.DataPoints {
-						// Verify tool-specific attributes
-						attrSet := dp.Attributes
-						hasServer := false
-						hasTool := false
-						for _, attr := range attrSet.ToSlice() {
-							if attr.Key == "server" && attr.Value.AsString() == "github" {
-								hasServer = true
-							}
-							if attr.Key == "tool" && attr.Value.AsString() == testToolName {
-								hasTool = true
-							}
+			assert.NotEqual(t, "toolhive_mcp_tool_calls", metric.Name,
+				"the deleted tool-calls twin must not be recorded")
+			assert.NotEqual(t, "toolhive_mcp_requests", metric.Name)
+
+			if metric.Name != "mcp.server.operation.duration" {
+				continue
+			}
+			foundOperationDuration = true
+			if hist, ok := metric.Data.(metricdata.Histogram[float64]); ok {
+				assert.NotEmpty(t, hist.DataPoints)
+				for _, dp := range hist.DataPoints {
+					hasMethod := false
+					hasToolName := false
+					for _, attr := range dp.Attributes.ToSlice() {
+						if attr.Key == "mcp.method.name" && attr.Value.AsString() == "tools/call" {
+							hasMethod = true
 						}
-						assert.True(t, hasServer, "Tool counter should have server attribute")
-						assert.True(t, hasTool, "Tool counter should have tool attribute")
-					}
-				}
-			case metricRequestCounter:
-				foundRequestCounter = true
-				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
-					assert.NotEmpty(t, sum.DataPoints)
-					for _, dp := range sum.DataPoints {
-						attrSet := dp.Attributes
-						hasResourceID := false
-						for _, attr := range attrSet.ToSlice() {
-							if attr.Key == "mcp_resource_id" && attr.Value.AsString() == testToolName {
-								hasResourceID = true
-							}
+						if attr.Key == "gen_ai.tool.name" && attr.Value.AsString() == testToolName {
+							hasToolName = true
 						}
-						assert.True(t, hasResourceID, "Request counter should have mcp_resource_id attribute with tool name")
 					}
+					assert.True(t, hasMethod, "operation duration should carry mcp.method.name=tools/call")
+					assert.True(t, hasToolName, "operation duration should carry gen_ai.tool.name")
 				}
 			}
 		}
 	}
 
-	assert.True(t, foundToolCounter, "Tool-specific counter should be recorded for tools/call")
-	assert.True(t, foundRequestCounter, "General request counter should be recorded")
+	assert.True(t, foundOperationDuration, "operation-duration metric should be recorded for tools/call")
 
 	// Clean up
 	err = meterProvider.Shutdown(ctx)
@@ -520,10 +524,13 @@ func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 
 	metricsBody := metricsRec.Body.String()
 
-	// The exact count format depends on Prometheus exposition format
-	// We just verify the metrics are present and contain our server name
-	assert.Contains(t, metricsBody, "toolhive_mcp_requests")
-	assert.Contains(t, metricsBody, `server="multi-test"`)
+	// These POSTs carry no parsed MCP request, so no mcp.server.operation.duration
+	// is recorded; the transport-level http.server.request.duration is, and the
+	// renamed active-connections gauge carries the server identity.
+	assert.NotContains(t, metricsBody, "toolhive_mcp_requests")
+	assert.Contains(t, metricsBody, metricHTTPServerDuration)
+	assert.Contains(t, metricsBody, metricActiveConnections)
+	assert.Contains(t, metricsBody, `mcp_server="multi-test"`)
 }
 
 func TestTelemetryIntegration_MetaTraceContextExtraction(t *testing.T) { //nolint:paralleltest // Mutates global OTEL propagator

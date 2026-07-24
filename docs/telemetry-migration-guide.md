@@ -14,17 +14,20 @@ documentation.
 
 ## What Changed
 
-ToolHive's telemetry has been updated across two areas:
+ToolHive's telemetry has been updated across three areas:
 
 1. **Span attribute names** — Renamed to follow OTEL semantic conventions
    (HTTP, RPC, MCP/gen_ai namespaces).
 2. **New metrics** — Two new histogram metrics following the OTEL MCP spec:
    `mcp.server.operation.duration` and `mcp.client.operation.duration`.
-
-Existing metrics (`toolhive_mcp_requests`, `toolhive_mcp_request_duration`,
-`toolhive_mcp_tool_calls`, `toolhive_mcp_active_connections`, and all
-`toolhive_vmcp_*` metrics) are **unchanged** — their names and label names
-remain the same.
+3. **Metric name and label standardization** — The legacy `toolhive_mcp_*` and
+   `toolhive_vmcp_*` metric names and their label vocabulary (`server`,
+   `mcp_method`, `tool`, `workflow.name`, …) have been replaced by the shared
+   `stacklok.*`/OTel-semconv vocabulary (`mcp_server`, `mcp_method_name`,
+   `tool_name`, `composite_tool`, …), and six legacy metric twins that
+   duplicated an OTel-semconv equivalent have been deleted outright (see
+   [Deleted Legacy Metrics](#deleted-legacy-metrics) below). This is a breaking
+   change for any dashboard or alert querying the old metric/label names.
 
 ### What Is New
 
@@ -38,6 +41,7 @@ remain the same.
 | `--otel-env-vars` flag | Include host environment variables in spans |
 | `--otel-use-legacy-attributes` flag | Control legacy attribute dual emission |
 | OTLP header credential redaction | `Config.String()` / `Config.GoString()` redact header values |
+| `stacklok.vmcp.token_cache.requests` metric | Hit/miss counter for the vMCP token cache; not yet emitted (no production `TokenCache` implementation wired in) |
 
 ---
 
@@ -178,15 +182,17 @@ When upgrading to this release, dual emission is enabled by default. Both old
 and new attribute names appear on spans. Your existing dashboards and alerts
 continue to work without changes.
 
-### Step 2: Adopt New Metrics (Optional)
+### Step 2: Update Dashboards and Alerts for Renamed/Deleted Metrics
 
-Consider adopting the new spec-compliant metrics alongside your existing ones:
+Update any PromQL, alert rule, or dashboard panel that references a legacy
+metric or label name (see [Metric Name and Label Mapping](#metric-name-and-label-mapping)
+and [Deleted Legacy Metrics](#deleted-legacy-metrics) below):
 
 ```promql
-# Existing metric (unchanged)
+# Before (deleted)
 rate(toolhive_mcp_requests_total{mcp_method="tools/call"}[5m])
 
-# New spec-compliant metric for operation duration
+# After: OTEL MCP spec-compliant metric for operation duration
 histogram_quantile(0.95,
   rate(mcp_server_operation_duration_seconds_bucket{
     mcp_method_name="tools/call"
@@ -233,21 +239,67 @@ attributes.
 
 ---
 
-## Metric Label Changes
+## Metric Name and Label Mapping
 
-**Important**: The metric *label names* on existing `toolhive_mcp_*` and
-`toolhive_vmcp_*` metrics have **not** changed. The `useLegacyAttributes` flag
-only affects **span attributes** (trace data), not metric labels.
+**Important**: Unlike span attributes, metric name and label changes are
+**not** gated by `useLegacyAttributes` — the rename is unconditional. A
+dashboard or alert querying an old metric or label name must be updated
+regardless of that flag's setting.
+
+| Legacy Metric/Label | New Metric/Label | Notes |
+|----------------------|-------------------|-------|
+| `server` (label, proxy + rate limit metrics) | `mcp_server` | |
+| `mcp_method` (label) | `mcp_method_name` | |
+| `tool` (label, `toolhive_mcp_tool_calls`) | `tool_name` | |
+| `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | |
+| `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | Renamed, not deleted |
+| `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | Now split by `outcome` label instead of a separate errors counter |
+| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | Merged into the executions counter above, not a standalone metric |
+| `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | |
+| `toolhive_vmcp_backend_requests_duration` | `mcp.client.operation.duration` | OTEL MCP semconv histogram |
+| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count |
+| `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | Merged into one counter split by `outcome` label |
+| `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | |
+| `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | |
+| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | |
+| `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
+| `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | |
 
 The new `mcp.server.operation.duration` and `mcp.client.operation.duration`
 metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,
 `mcp.method.name` instead of `mcp_method`).
 
+### Deleted Legacy Metrics
+
+The following metrics duplicated an OTel-semconv equivalent and have been
+deleted outright — there is no renamed successor to redirect a query to,
+only the semconv metric that already covered the same signal:
+
+| Deleted Metric | Semconv Replacement |
+|-----------------|----------------------|
+| `toolhive_mcp_requests` | `http.server.request.duration` (total request count is derivable via `_count`; see note below) |
+| `toolhive_mcp_request_duration` | `mcp.server.operation.duration` |
+| `toolhive_mcp_tool_calls` | `mcp.server.operation.duration` filtered to `mcp.method.name="tools/call"` |
+| `toolhive_vmcp_backend_requests` | `mcp.client.operation.duration` |
+| `toolhive_vmcp_backend_errors` | `mcp.client.operation.duration` filtered to `error.type != ""` |
+| `toolhive_vmcp_backend_requests_duration` | `mcp.client.operation.duration` |
+
+A dashboard or alert built on any of these six metrics has no direct
+successor query — it must be rebuilt against the semconv histogram.
+
+For total HTTP request volume, use `http_server_request_duration_seconds_count`
+alone — it is recorded for every request the middleware handles, including
+GET (SSE-open) and DELETE (session-terminate) requests that carry no MCP
+method. Do not also sum `mcp_server_operation_duration_seconds_count`: every
+MCP-method-bearing request increments both metrics, so summing them
+double-counts those requests. Use `mcp_server_operation_duration_seconds_count`
+only for a per-`mcp_method_name` breakdown of the MCP-bearing subset.
+
 ---
 
 ## vMCP Backend Client Attributes
 
-The vMCP backend client (`pkg/vmcp/server/telemetry.go`) emits both
+The vMCP backend client (`pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`) emits both
 ToolHive-specific and OTEL spec attributes on spans. These are always emitted
 regardless of `useLegacyAttributes` since they serve different purposes:
 

@@ -112,8 +112,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m])",
-          "legendFormat": "{{mcp_method}} - {{status}} ({{status_code}})",
+          "expr": "rate(mcp_server_operation_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m])",
+          "legendFormat": "{{mcp_method_name}}",
           "range": true,
           "refId": "A"
         }
@@ -212,8 +212,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, rate(toolhive_mcp_request_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
-          "legendFormat": "95th percentile - {{mcp_method}} - {{status}}",
+          "expr": "histogram_quantile(0.95, rate(mcp_server_operation_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
+          "legendFormat": "95th percentile - {{mcp_method_name}}",
           "range": true,
           "refId": "A"
         },
@@ -223,8 +223,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, rate(toolhive_mcp_request_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
-          "legendFormat": "50th percentile - {{mcp_method}} - {{status}}",
+          "expr": "histogram_quantile(0.50, rate(mcp_server_operation_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
+          "legendFormat": "50th percentile - {{mcp_method_name}}",
           "range": true,
           "refId": "B"
         }
@@ -293,7 +293,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
+          "expr": "sum(rate(mcp_server_operation_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
           "legendFormat": "Total RPS",
           "range": true,
           "refId": "A"
@@ -367,7 +367,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\",status!=\"success\"}[5m])) / sum(rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{exported_job=\"mcp-fetch-server\",http_response_status_code=~\"[45]..\"}[5m])) / sum(rate(http_server_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
           "legendFormat": "Error Rate",
           "range": true,
           "refId": "A"
@@ -467,8 +467,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "toolhive_mcp_active_connections{exported_job=\"mcp-fetch-server\"}",
-          "legendFormat": "{{server}} ({{transport}})",
+          "expr": "stacklok_toolhive_proxy_active_connections{exported_job=\"mcp-fetch-server\"}",
+          "legendFormat": "{{mcp_server}} ({{transport}})",
           "range": true,
           "refId": "A"
         }

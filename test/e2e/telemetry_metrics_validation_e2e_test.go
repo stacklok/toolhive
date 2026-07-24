@@ -135,10 +135,12 @@ var _ = Describe("Telemetry Metrics Validation E2E", Label("middleware", "teleme
 			metricsContent := fetchMetricsContent(metricsURL)
 
 			By("Validating all core ToolHive metrics exist")
+			// The legacy toolhive_mcp_* twins are deleted (RFC §3.5); assert the
+			// semconv replacements and the renamed active-connections gauge.
 			expectedMetrics := []string{
-				"toolhive_mcp_requests_total",
-				"toolhive_mcp_request_duration_seconds",
-				"toolhive_mcp_active_connections",
+				"mcp_server_operation_duration_seconds",
+				"http_server_request_duration_seconds",
+				"stacklok_toolhive_proxy_active_connections",
 			}
 
 			for _, metric := range expectedMetrics {
@@ -146,17 +148,19 @@ var _ = Describe("Telemetry Metrics Validation E2E", Label("middleware", "teleme
 					fmt.Sprintf("Should contain metric: %s", metric))
 			}
 
-			By("Validating no metrics have empty server or transport labels")
+			By("Validating the active-connections gauge has non-empty server and transport labels")
 			validateNoEmptyLabels(metricsContent, workloadName, "sse")
 
 			By("Validating metrics contain expected MCP methods")
+			// mcp.method.name replaces the old mcp_method label, carried on the
+			// semconv server operation-duration metric.
 			expectedMethods := []string{
 				"initialize",
 				"tools/list",
 			}
 
 			for _, method := range expectedMethods {
-				methodPattern := fmt.Sprintf(`mcp_method="%s"`, method)
+				methodPattern := fmt.Sprintf(`mcp_method_name="%s"`, method)
 				Expect(metricsContent).To(ContainSubstring(methodPattern),
 					fmt.Sprintf("Should contain MCP method: %s", method))
 			}
@@ -299,8 +303,8 @@ func validateTelemetryMetrics(config *e2e.TestConfig, workloadName, expectedServ
 		return fetchMetricsContent(metricsURL)
 	}, 15*time.Second, 2*time.Second).Should(
 		And(
-			ContainSubstring("toolhive_mcp"),
-			ContainSubstring(fmt.Sprintf(`server="%s"`, expectedServerName)),
+			ContainSubstring("stacklok_toolhive_proxy_active_connections"),
+			ContainSubstring(fmt.Sprintf(`mcp_server="%s"`, expectedServerName)),
 			ContainSubstring(fmt.Sprintf(`transport="%s"`, expectedTransport)),
 		),
 		fmt.Sprintf("Should contain correct server name '%s' and transport '%s'", expectedServerName, expectedTransport),
@@ -309,9 +313,11 @@ func validateTelemetryMetrics(config *e2e.TestConfig, workloadName, expectedServ
 	metricsContent := fetchMetricsContent(metricsURL)
 
 	By("Ensuring no metrics have empty server names")
-	Expect(metricsContent).ToNot(ContainSubstring(`server=""`), "No metrics should have empty server name")
-	Expect(metricsContent).ToNot(ContainSubstring(`server="message"`), "No metrics should have 'message' as server name")
-	Expect(metricsContent).ToNot(ContainSubstring(`server="health"`), "No metrics should have 'health' as server name")
+	// The MCP server name is carried on the mcp_server label (renamed from the
+	// legacy server label) on the active-connections gauge and semconv metrics.
+	Expect(metricsContent).ToNot(ContainSubstring(`mcp_server=""`), "No metrics should have empty server name")
+	Expect(metricsContent).ToNot(ContainSubstring(`mcp_server="message"`), "No metrics should have 'message' as server name")
+	Expect(metricsContent).ToNot(ContainSubstring(`mcp_server="health"`), "No metrics should have 'health' as server name")
 
 	By("Ensuring no metrics have empty transport")
 	Expect(metricsContent).ToNot(ContainSubstring(`transport=""`), "No metrics should have empty transport")
@@ -325,18 +331,20 @@ func validateNoEmptyLabels(metricsContent, expectedServerName, expectedTransport
 	lines := strings.Split(metricsContent, "\n")
 
 	for _, line := range lines {
-		if strings.Contains(line, "toolhive_mcp") && !strings.HasPrefix(line, "#") {
+		// The active-connections gauge is the series that carries both mcp_server
+		// and transport labels, so validate label correctness there.
+		if strings.Contains(line, "stacklok_toolhive_proxy_active_connections") && !strings.HasPrefix(line, "#") {
 			// Skip comment lines and only check actual metric lines
 			if strings.Contains(line, "{") {
 				// This is a metric with labels
-				Expect(line).ToNot(ContainSubstring(`server=""`),
+				Expect(line).ToNot(ContainSubstring(`mcp_server=""`),
 					fmt.Sprintf("Metric line should not have empty server: %s", line))
 				Expect(line).ToNot(ContainSubstring(`transport=""`),
 					fmt.Sprintf("Metric line should not have empty transport: %s", line))
 
 				// Ensure it has the expected labels
-				if strings.Contains(line, "server=") {
-					Expect(line).To(ContainSubstring(fmt.Sprintf(`server="%s"`, expectedServerName)),
+				if strings.Contains(line, "mcp_server=") {
+					Expect(line).To(ContainSubstring(fmt.Sprintf(`mcp_server="%s"`, expectedServerName)),
 						fmt.Sprintf("Metric should have correct server name: %s", line))
 				}
 				if strings.Contains(line, "transport=") {
@@ -350,12 +358,13 @@ func validateNoEmptyLabels(metricsContent, expectedServerName, expectedTransport
 
 // validateMetricValues validates that metric values are reasonable
 func validateMetricValues(metricsContent, expectedServerName, expectedTransport string) {
-	// Look for request count metrics
-	requestPattern := regexp.MustCompile(fmt.Sprintf(
-		`toolhive_mcp_requests_total\{.*server="%s".*transport="%s".*\} (\d+)`,
-		regexp.QuoteMeta(expectedServerName),
-		regexp.QuoteMeta(expectedTransport),
-	))
+	// Request counts come from the semconv server operation-duration histogram's
+	// _count series (the toolhive_mcp_requests_total twin is deleted). This metric
+	// carries mcp_method_name but not the server/transport labels, which now live
+	// on the active-connections gauge.
+	requestPattern := regexp.MustCompile(
+		`mcp_server_operation_duration_seconds_count\{[^}]*\} (\d+)`,
+	)
 
 	matches := requestPattern.FindAllStringSubmatch(metricsContent, -1)
 
@@ -532,26 +541,34 @@ func parseToolCallMetrics(metricsContent, expectedServerName string) *ToolCallMe
 			continue // Skip comments and empty lines
 		}
 
-		// Count different types of requests
-		if strings.Contains(line, "toolhive_mcp_requests_total") && strings.Contains(line, fmt.Sprintf(`server="%s"`, expectedServerName)) {
-			if strings.Contains(line, `mcp_method="initialize"`) {
+		// Count different types of requests. Method counts come from the semconv
+		// server operation-duration histogram's _count series, keyed by
+		// mcp_method_name (the toolhive_mcp_requests_total twin is deleted). This
+		// metric does not carry the server label, so we don't filter on it here.
+		if strings.Contains(line, "mcp_server_operation_duration_seconds_count") {
+			if strings.Contains(line, `mcp_method_name="initialize"`) {
 				metrics.InitializeCallCount += extractMetricCount(line)
-			} else if strings.Contains(line, `mcp_method="tools/list"`) {
+			} else if strings.Contains(line, `mcp_method_name="tools/list"`) {
 				metrics.ToolsListCallCount += extractMetricCount(line)
-			} else if strings.Contains(line, `mcp_method="tools/call"`) {
+			} else if strings.Contains(line, `mcp_method_name="tools/call"`) {
 				metrics.ToolCallCount += extractMetricCount(line)
 			}
+		}
 
-			// Count successful vs error calls
-			if strings.Contains(line, `status="success"`) {
+		// Success vs error is reflected in the HTTP response status code on the
+		// transport-level semconv metric: 2xx is success, >=400 is an error.
+		if strings.Contains(line, "http_server_request_duration_seconds_count") {
+			if strings.Contains(line, `http_response_status_code="200"`) {
 				metrics.SuccessfulCalls += extractMetricCount(line)
-			} else if strings.Contains(line, `status="error"`) {
+			} else if strings.Contains(line, `http_response_status_code="4`) ||
+				strings.Contains(line, `http_response_status_code="5`) {
 				metrics.ErrorCalls += extractMetricCount(line)
 			}
 		}
 
-		// Collect response time information
-		if strings.Contains(line, "toolhive_mcp_request_duration_seconds_sum") && strings.Contains(line, fmt.Sprintf(`server="%s"`, expectedServerName)) {
+		// Collect response time information from the semconv server
+		// operation-duration histogram's _sum series.
+		if strings.Contains(line, "mcp_server_operation_duration_seconds_sum") {
 			responseTimeSum += extractMetricFloatValue(line)
 			responseTimeCount++
 		}
@@ -686,18 +703,19 @@ func analyzeTraceAttributes(metricsContent, expectedServerName, expectedTranspor
 			continue
 		}
 
-		// Count request metrics as indicators of trace generation
-		if strings.Contains(line, "toolhive_mcp_requests_total") {
+		// The active-connections gauge carries the mcp_server and transport labels,
+		// so it is the series that reflects server-name/transport correctness.
+		if strings.Contains(line, "stacklok_toolhive_proxy_active_connections") {
 			validation.TracesGenerated++
 
 			// Check server name attributes
-			if strings.Contains(line, fmt.Sprintf(`server="%s"`, expectedServerName)) {
+			if strings.Contains(line, fmt.Sprintf(`mcp_server="%s"`, expectedServerName)) {
 				correctServerNameSpans++
-			} else if strings.Contains(line, `server=""`) {
+			} else if strings.Contains(line, `mcp_server=""`) {
 				emptyServerNameSpans++
-			} else if strings.Contains(line, `server="message"`) {
+			} else if strings.Contains(line, `mcp_server="message"`) {
 				messageServerNameSpans++
-			} else if strings.Contains(line, `server="health"`) {
+			} else if strings.Contains(line, `mcp_server="health"`) {
 				healthServerNameSpans++
 			}
 
@@ -707,10 +725,13 @@ func analyzeTraceAttributes(metricsContent, expectedServerName, expectedTranspor
 			} else if strings.Contains(line, `transport=""`) {
 				emptyTransportSpans++
 			}
+		}
 
-			// Extract method names to count different request types
+		// Method names are carried on the semconv server operation-duration metric
+		// via mcp_method_name (renamed from mcp_method).
+		if strings.Contains(line, "mcp_server_operation_duration_seconds_count") {
 			for _, method := range []string{"initialize", "tools/list", "resources/list"} {
-				if strings.Contains(line, fmt.Sprintf(`mcp_method="%s"`, method)) {
+				if strings.Contains(line, fmt.Sprintf(`mcp_method_name="%s"`, method)) {
 					requestMetrics[method] = extractMetricCount(line)
 				}
 			}

@@ -96,6 +96,19 @@ func TestClassifyingHandler(t *testing.T) {
 			wantDispatched: true,
 		},
 		{
+			// A body that is otherwise a well-formed Modern request (valid _meta
+			// protocolVersion + clientCapabilities) but omits the mandatory
+			// MCP-Protocol-Version header MUST be rejected with -32020, not
+			// dispatched: the draft Streamable HTTP spec requires the header on
+			// every Modern POST. Without the header-presence check in
+			// classifyingHandler this would classify Modern with a nil error and
+			// return 200.
+			name:           "well-formed modern body missing the protocol version header is rejected",
+			parsed:         wellFormedModernToolsList(),
+			protocolHeader: "",
+			wantCode:       mcpparser.CodeHeaderMismatch,
+		},
+		{
 			// initialize is forced Legacy unconditionally (ClassifyRevision), even
 			// with a full spoofed Modern signal on both header and _meta -- mirrors
 			// revision_test.go's "legacy: initialize wins over spoofed modern meta

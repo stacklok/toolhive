@@ -47,6 +47,19 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 			return
 		}
 
+		// A Modern (2026-07-28) request over HTTP MUST carry the
+		// MCP-Protocol-Version header (draft Streamable HTTP "Server Validation").
+		// ClassifyRevision is transport-agnostic -- it also serves header-less
+		// stdio -- so it admits a Modern request signaled only by the reserved
+		// io.modelcontextprotocol/* _meta keys and defers the header-presence rule
+		// to the HTTP layer (see the TODO in pkg/mcp/revision.go). Without this
+		// check a well-formed Modern _meta with no header would dispatch and return
+		// 200 instead of the mandated -32020 rejection.
+		if protoHeader == "" {
+			mcpparser.WriteClassificationError(w, parsed.ID, errMissingProtocolVersionHeader)
+			return
+		}
+
 		if err := mcpparser.ValidateHeaderConsistency(parsed); err != nil {
 			mcpparser.WriteClassificationError(w, parsed.ID, err)
 			return
@@ -55,3 +68,32 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		s.dispatchModern(w, r, parsed)
 	})
 }
+
+// missingProtocolVersionHeaderError is returned when a request classifies Modern
+// (2026-07-28) over HTTP but omits the mandatory MCP-Protocol-Version header. The
+// draft Streamable HTTP "Server Validation" rules make a missing required standard
+// header a -32020 (HeaderMismatch) condition, so this maps to the same wire code
+// and HTTP 400 as the header/body mismatch mcp.ClassifyRevision already produces
+// when the header is present but wrong.
+//
+// The enforcement lives here, at the HTTP layer, rather than in the
+// transport-agnostic mcp.ClassifyRevision (which also serves header-less stdio and
+// cannot know the header was required); see the TODO in pkg/mcp/revision.go. It
+// implements mcp.CodedError so mcp.WriteClassificationError renders it correctly.
+type missingProtocolVersionHeaderError struct{}
+
+func (missingProtocolVersionHeaderError) Error() string {
+	return "MCP-Protocol-Version header is required for Modern (2026-07-28) requests"
+}
+
+// Code implements mcp.CodedError.
+func (missingProtocolVersionHeaderError) Code() int64 { return mcpparser.CodeHeaderMismatch }
+
+// Data implements mcp.CodedError.
+func (missingProtocolVersionHeaderError) Data() map[string]any {
+	return map[string]any{"header": "MCP-Protocol-Version"}
+}
+
+// errMissingProtocolVersionHeader is the singleton rejection for a Modern HTTP
+// request that omits the mandatory MCP-Protocol-Version header.
+var errMissingProtocolVersionHeader = missingProtocolVersionHeaderError{}

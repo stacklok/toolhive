@@ -1779,3 +1779,29 @@ type stubSamplingRequester struct{}
 func (*stubSamplingRequester) RequestSampling(context.Context, vmcp.SamplingRequest) (*vmcp.SamplingResult, error) {
 	return nil, errors.New("stub: no downstream session")
 }
+
+// idleSpy is a RoundTripper that records CloseIdleConnections calls.
+type idleSpy struct{ closed int }
+
+func (*idleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *idleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestModernChain_CloseIdleConnectionsForwards verifies the trace/identity/auth
+// wrapper chain forwards CloseIdleConnections down to the concrete transport at
+// the bottom (a plain hc.CloseIdleConnections would otherwise be a silent no-op).
+func TestModernChain_CloseIdleConnectionsForwards(t *testing.T) {
+	t.Parallel()
+
+	spy := &idleSpy{}
+	chain := &tracePropagatingRoundTripper{
+		base: &identityPropagatingRoundTripper{
+			base: &authRoundTripper{base: spy},
+		},
+	}
+
+	// Reached the way http.Client.CloseIdleConnections reaches its transport.
+	chain.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed, "CloseIdleConnections must reach the bottom transport")
+}

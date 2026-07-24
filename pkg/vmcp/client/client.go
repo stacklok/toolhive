@@ -371,6 +371,14 @@ func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 	return i.base.RoundTrip(req)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
+// concrete *http.Transport at the bottom of the chain.
+func (i *identityPropagatingRoundTripper) CloseIdleConnections() {
+	if c, ok := i.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
 // tracePropagatingRoundTripper injects W3C Trace Context (traceparent/tracestate) and
 // Baggage headers into outgoing HTTP requests. This links vMCP client spans with backend
 // server spans in distributed traces without creating duplicate spans (unlike
@@ -385,6 +393,14 @@ func (t *tracePropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 	clonedReq := req.Clone(req.Context())
 	t.propagator.Inject(clonedReq.Context(), propagation.HeaderCarrier(clonedReq.Header))
 	return t.base.RoundTrip(clonedReq)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
+// concrete *http.Transport at the bottom of the chain.
+func (t *tracePropagatingRoundTripper) CloseIdleConnections() {
+	if c, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
@@ -410,6 +426,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	return a.base.RoundTrip(reqClone)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
+// concrete *http.Transport at the bottom of the chain.
+func (a *authRoundTripper) CloseIdleConnections() {
+	if c, ok := a.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
 }
 
 // resolveAuthStrategy resolves the authentication strategy for a backend target.
@@ -979,6 +1003,7 @@ func (h *httpBackendClient) modernDiscover(
 	if err != nil {
 		return nil, err
 	}
+	defer hc.CloseIdleConnections()
 	var discover struct {
 		Capabilities mcp.ServerCapabilities `json:"capabilities"`
 	}
@@ -988,20 +1013,24 @@ func (h *httpBackendClient) modernDiscover(
 	return &discover.Capabilities, nil
 }
 
-// probeRevision resolves and caches a backend's MCP revision, Modern-first.
+// probeRevision resolves a backend's MCP revision, Modern-first.
 //
-// It attempts a Modern server/discover and classifies MODERN only on (a) a clean
-// discover result, or (b) a Modern-specific protocol error (-3202x), which proves
-// the peer validated our Modern headers/_meta. EVERY other outcome —
-// errWrongEra, a -32601 (discover is mandatory for Modern, so its absence means
-// not Modern), a generic JSON-RPC error (-32600/-32603), a bare 404/400/405, an
-// empty/non-JSON body, a 200-with-Legacy-result, an input_required envelope, or a
-// timeout — falls back to LEGACY. This never strands a Legacy backend on a probe
-// hiccup.
+// It attempts a Modern server/discover and:
+//   - classifies MODERN (and caches it) on a clean discover result, or on a
+//     Modern-specific protocol error (-3202x) which proves the peer validated our
+//     Modern headers/_meta;
+//   - classifies LEGACY (and caches it) on a GENUINE not-Modern signal —
+//     errWrongEra, a -32601 (discover is mandatory for Modern), a generic
+//     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, a
+//     200-with-Legacy-result, or an input_required envelope;
+//   - returns the error UNCACHED (leaving the backend unprobed) on an
+//     INCONCLUSIVE outcome — an auth blip (errModernAuth, 401/403) or a transient
+//     failure (errModernTransient: 408/429/5xx, mid-read, or transport/timeout).
+//     Caching on these would flip a Modern backend to Legacy on a brief outage;
+//     leaving it unprobed lets the next call re-probe once the outage clears.
 //
-// A hard error is returned only when the backend transport cannot be built at all
-// (e.g. invalid auth/CA config); that is a genuine misconfiguration, not a
-// revision signal.
+// A hard error is also returned when the backend transport cannot be built at all
+// (e.g. invalid auth/CA config); that is a genuine misconfiguration.
 func (h *httpBackendClient) probeRevision(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (mcpparser.Revision, *mcp.ServerCapabilities, error) {
@@ -1009,6 +1038,7 @@ func (h *httpBackendClient) probeRevision(
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to build transport for backend %s: %w", target.WorkloadID, err)
 	}
+	defer hc.CloseIdleConnections()
 
 	var discover struct {
 		Capabilities mcp.ServerCapabilities `json:"capabilities"`
@@ -1027,6 +1057,10 @@ func (h *httpBackendClient) probeRevision(
 		// no enumerable capabilities).
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
 		return mcpparser.RevisionModern, nil, nil
+	case errors.Is(err, errModernAuth), errors.Is(err, errModernTransient):
+		// Inconclusive: an auth blip or a transient outage tells us nothing about
+		// the revision. Leave the backend unprobed so the next call re-probes.
+		return 0, nil, err
 	default:
 		slog.Debug("backend is not Modern; falling back to Legacy",
 			"backend", target.WorkloadID, "probe_error", err)
@@ -1051,6 +1085,7 @@ func (h *httpBackendClient) modernEnumerate(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
+	defer hc.CloseIdleConnections()
 	endpoint := target.BaseURL
 
 	var tools []mcp.Tool
@@ -1477,6 +1512,7 @@ func (h *httpBackendClient) modernCallTool(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
+	defer hc.CloseIdleConnections()
 	params := map[string]any{"name": backendToolName, "arguments": arguments}
 	if len(meta) > 0 {
 		params["_meta"] = meta
@@ -1644,6 +1680,7 @@ func (h *httpBackendClient) modernReadResource(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
+	defer hc.CloseIdleConnections()
 	// mcp.ResourceContents is an interface with no JSON unmarshaler, so it cannot
 	// decode directly. Decode the wire shape, rebuild the discriminated mcp types
 	// (blob takes precedence, symmetric with conversion.ToMCPResourceContents),
@@ -1763,6 +1800,7 @@ func (h *httpBackendClient) modernGetPrompt(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
+	defer hc.CloseIdleConnections()
 	params := map[string]any{
 		"name":      backendPromptName,
 		"arguments": conversion.ConvertPromptArguments(arguments),
@@ -1878,6 +1916,7 @@ func (h *httpBackendClient) modernComplete(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
+	defer hc.CloseIdleConnections()
 	refMap, err := modernCompletionRef(target, ref)
 	if err != nil {
 		return nil, err

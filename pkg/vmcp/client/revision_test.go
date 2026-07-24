@@ -147,9 +147,11 @@ func TestProbeRevision_TruthTable(t *testing.T) {
 	}
 }
 
-// TestProbeRevision_TimeoutFallsBackToLegacy verifies a dead backend (connection
-// refused) classifies Legacy rather than erroring.
-func TestProbeRevision_TimeoutFallsBackToLegacy(t *testing.T) {
+// TestProbeRevision_TransientLeavesUnprobed verifies a dead backend (connection
+// refused) is INCONCLUSIVE: probeRevision returns the error uncached rather than
+// caching Legacy, so a transient outage cannot poison the revision cache and the
+// next call re-probes.
+func TestProbeRevision_TransientLeavesUnprobed(t *testing.T) {
 	t.Parallel()
 
 	// A server we immediately close: connections are refused.
@@ -160,10 +162,11 @@ func TestProbeRevision_TimeoutFallsBackToLegacy(t *testing.T) {
 	h := newProbeClient(t)
 	target := &vmcp.BackendTarget{WorkloadID: "dead", BaseURL: url, TransportType: "streamable-http"}
 
-	rev, caps, err := h.probeRevision(context.Background(), target)
-	require.NoError(t, err)
-	assert.Equal(t, mcpparser.RevisionLegacy, rev)
-	assert.Nil(t, caps)
+	_, _, err := h.probeRevision(context.Background(), target)
+	require.Error(t, err)
+
+	_, ok := h.cachedRevision("dead")
+	assert.False(t, ok, "a transient probe failure must leave the backend unprobed")
 }
 
 // TestListCapabilities_ModernServedFromCache verifies the cache: a Modern

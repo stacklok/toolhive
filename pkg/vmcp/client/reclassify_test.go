@@ -225,6 +225,38 @@ func TestDispatch_NoReprobeOnLegacyDataPlaneMethodNotFound(t *testing.T) {
 	assert.Equal(t, mcpparser.RevisionLegacy, rev, "data-plane -32601 must not re-probe/reclassify")
 }
 
+// TestDispatch_TransientDoesNotReclassify verifies an auth blip or transient
+// outage on a cached-Modern backend neither retries nor flips the cache to Legacy
+// (F1: status-blind errWrongEra used to poison the cache here).
+func TestDispatch_TransientDoesNotReclassify(t *testing.T) {
+	t.Parallel()
+
+	for _, blip := range []error{errModernAuth, errModernTransient} {
+		blip := blip
+		t.Run(blip.Error(), func(t *testing.T) {
+			t.Parallel()
+
+			// This server WOULD classify Modern if re-probed — proving no re-probe fired.
+			srv := modernDiscoverServer(t)
+			h := newProbeClient(t)
+			target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+			h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
+
+			attempts := 0
+			err := h.dispatch(context.Background(), target, func(_ context.Context, _ mcpparser.Revision) error {
+				attempts++
+				return fmt.Errorf("%w: HTTP blip", blip)
+			})
+			require.Error(t, err)
+			assert.Equal(t, 1, attempts, "a transient/auth blip must not retry")
+
+			rev, ok := h.cachedRevision(target.WorkloadID)
+			require.True(t, ok)
+			assert.Equal(t, mcpparser.RevisionModern, rev, "a blip must not flip a Modern backend to Legacy")
+		})
+	}
+}
+
 // TestReclassify_WarnsOnlyOnActualChange captures slog to confirm the WARN (which
 // gates the reclassification counter in the same branch) fires only when the
 // revision actually changes.

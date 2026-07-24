@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -250,6 +251,48 @@ func TestModernCall_ErrorMapping(t *testing.T) {
 			body:        `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"boom"}}`,
 			wantMsg:     "boom",
 		},
+		{
+			name:        "401 is auth, not wrong-era",
+			status:      http.StatusUnauthorized,
+			contentType: "text/plain",
+			body:        "",
+			wantErr:     errModernAuth,
+		},
+		{
+			name:        "403 is auth, not wrong-era",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        "",
+			wantErr:     errModernAuth,
+		},
+		{
+			name:        "407 proxy-auth is auth, not wrong-era",
+			status:      http.StatusProxyAuthRequired,
+			contentType: "text/plain",
+			body:        "",
+			wantErr:     errModernAuth,
+		},
+		{
+			name:        "503 is transient, not wrong-era",
+			status:      http.StatusServiceUnavailable,
+			contentType: "text/plain",
+			body:        "",
+			wantErr:     errModernTransient,
+		},
+		{
+			name:        "429 is transient, not wrong-era",
+			status:      http.StatusTooManyRequests,
+			contentType: "application/json",
+			body:        "",
+			wantErr:     errModernTransient,
+		},
+		{
+			name:        "401 tagged text/event-stream is still auth, not wrong-era",
+			status:      http.StatusUnauthorized,
+			contentType: "text/event-stream",
+			body:        "",
+			wantErr:     errModernAuth,
+		},
 	}
 
 	for _, tt := range tests {
@@ -268,6 +311,12 @@ func TestModernCall_ErrorMapping(t *testing.T) {
 			require.Error(t, err)
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
+				// Auth/transient statuses must never masquerade as the not-Modern
+				// signal (that is what would poison a cached-Modern backend).
+				if tt.wantErr == errModernAuth || tt.wantErr == errModernTransient {
+					assert.NotErrorIs(t, err, errWrongEra)
+					assert.NotErrorIs(t, err, errLegacyResponseBody)
+				}
 				return
 			}
 			// A valid JSON-RPC error body means the backend IS Modern: the error
@@ -277,6 +326,29 @@ func TestModernCall_ErrorMapping(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantMsg)
 		})
 	}
+}
+
+// TestModernCall_LargeSSEEvent verifies a single SSE data: event larger than the
+// old 4 MiB scanner cap (but under maxResponseSize) decodes successfully.
+func TestModernCall_LargeSSEEvent(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("x", 5*1024*1024) // 5 MiB > old 4 MiB token cap
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := modernReq(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		out, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id,
+			"result": map[string]any{"resultType": "complete", "blob": big}})
+		require.NoError(t, err)
+		_, _ = w.Write([]byte("data: " + string(out) + "\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	var got struct {
+		Blob string `json:"blob"`
+	}
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", &got))
+	assert.Len(t, got.Blob, len(big))
 }
 
 // readAll returns the request body bytes for assertions.

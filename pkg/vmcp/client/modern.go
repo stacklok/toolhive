@@ -70,6 +70,19 @@ var errModernInputRequired = errors.New("Modern response requires additional inp
 // classifies it as Modern.
 var errModernProtocolError = errors.New("modern backend rejected the request with a Modern protocol error")
 
+// errModernAuth is returned for an HTTP 401/403 to a Modern request (auth
+// rejection, often from a proxy). It is deliberately NOT errWrongEra: a transient
+// auth blip must not look like a not-Modern signal, or a cached-Modern backend
+// would be flipped to Legacy. The status is in the message so vmcp's string-based
+// auth classification (IsAuthenticationError) still recognizes it for step-up.
+var errModernAuth = errors.New("modern backend returned an auth status")
+
+// errModernTransient is returned for an HTTP 408/429/5xx, a mid-stream read
+// failure, or a transport/network failure (connection refused, timeout, ctx
+// cancel) on a Modern request. Like errModernAuth it is NOT errWrongEra: a brief
+// outage must not be mistaken for a not-Modern signal.
+var errModernTransient = errors.New("modern backend returned a transient error")
+
 // modernRequestID supplies monotonically increasing JSON-RPC request ids. Each
 // modernCall is a single request/response, so the id only has to be unique
 // enough to match a response within one SSE stream.
@@ -92,9 +105,18 @@ var modernRequestID atomic.Int64
 // header-forward/trace chain (see buildBackendRoundTripper); modernCall adds no
 // transport concerns of its own.
 //
-// Errors: errWrongEra when the peer is not Modern, mcp.ErrMethodNotFound for a
-// valid -32601 error body, errModernInputRequired for a non-"complete" envelope,
-// and a wrapped call error for any other JSON-RPC error.
+// Errors:
+//   - errWrongEra: the peer is not Modern (bare 4xx/5xx-free rejection, empty or
+//     non-JSON body, or neither result nor error).
+//   - errLegacyResponseBody: a 200 JSON-RPC success with no resultType — a lenient
+//     Legacy backend that MAY have executed the request (caller must not retry).
+//   - errModernAuth: an HTTP 401/403/407 auth rejection (NOT a not-Modern signal).
+//   - errModernTransient: an HTTP 408/429/5xx, a mid-stream read failure, or a
+//     transport/network/timeout failure (NOT a not-Modern signal).
+//   - mcp.ErrMethodNotFound: a valid -32601 error body.
+//   - errModernInputRequired: a non-"complete" envelope.
+//   - errModernProtocolError: a Modern-specific -3202x error body.
+//   - a wrapped call error: any other JSON-RPC error.
 func modernCall(
 	ctx context.Context,
 	hc *http.Client,
@@ -137,7 +159,9 @@ func modernCall(
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("sending %s request: %w", method, err)
+		// A transport/network failure (connection refused, timeout, ctx cancel) is
+		// transient — not a not-Modern signal — so it must not poison the revision cache.
+		return fmt.Errorf("%w: sending %s request: %w", errModernTransient, method, err)
 	}
 	defer func() {
 		// Drain so the connection can be reused (go-style rule); the readers below
@@ -229,7 +253,23 @@ type modernRPCEnvelope struct {
 // branches — the 100MB cap otherwise lives only inside the mcp-go client and is
 // lost on this raw path. A body that is not a recognized Modern JSON-RPC response
 // (empty, non-JSON, or neither result nor error) yields errWrongEra.
+//
+// Auth (401/403) and transient (408/429/5xx) statuses are classified BEFORE any
+// body or SSE handling — even one a proxy tags as text/event-stream — so a
+// transient blip is never mistaken for a not-Modern signal (which would poison
+// the revision cache). A genuine Modern -32601/-32602 rides HTTP 404/400 WITH a
+// JSON-RPC body and is handled by the body logic below, so those statuses are
+// deliberately NOT short-circuited here.
 func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *modernRPCError, error) {
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden,
+		resp.StatusCode == http.StatusProxyAuthRequired:
+		return nil, nil, fmt.Errorf("%w: HTTP %d", errModernAuth, resp.StatusCode)
+	case resp.StatusCode == http.StatusRequestTimeout, resp.StatusCode == http.StatusTooManyRequests,
+		resp.StatusCode >= 500:
+		return nil, nil, fmt.Errorf("%w: HTTP %d", errModernTransient, resp.StatusCode)
+	}
+
 	body := io.LimitReader(resp.Body, maxResponseSize)
 
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -238,7 +278,7 @@ func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *mo
 
 	data, err := io.ReadAll(body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading response body: %w", err)
+		return nil, nil, fmt.Errorf("%w: reading response body: %w", errModernTransient, err)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, nil, errWrongEra
@@ -258,7 +298,10 @@ func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *mo
 // the stream. A stream that ends without a matching response yields errWrongEra.
 func readModernSSE(body io.Reader, wantID int64) (json.RawMessage, *modernRPCError, error) {
 	sc := bufio.NewScanner(body)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	// Cap the token at maxResponseSize (the doc-promised bound) so a valid single
+	// data: event up to that size decodes; the outer io.LimitReader already bounds
+	// the total, so this cannot over-allocate.
+	sc.Buffer(make([]byte, 0, 64*1024), maxResponseSize)
 	for sc.Scan() {
 		data, ok := strings.CutPrefix(sc.Text(), "data:")
 		if !ok {
@@ -280,7 +323,7 @@ func readModernSSE(body io.Reader, wantID int64) (json.RawMessage, *modernRPCErr
 		return env.Result, env.Error, nil
 	}
 	if err := sc.Err(); err != nil {
-		return nil, nil, fmt.Errorf("reading SSE stream: %w", err)
+		return nil, nil, fmt.Errorf("%w: reading SSE stream: %w", errModernTransient, err)
 	}
 	return nil, nil, errWrongEra
 }

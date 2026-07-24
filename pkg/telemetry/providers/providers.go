@@ -183,15 +183,10 @@ func NewCompositeProvider(
 		}
 	}
 
-	// Create resource for all providers
-	// Start with base attributes. stacklok.component/stacklok.product identify
-	// the emitter across the platform (D8); the product value is frozen as
-	// "stacklok-platform".
+	// Create resource for all providers.
 	baseAttrs := []attribute.KeyValue{
 		semconv.ServiceName(config.ServiceName),
 		semconv.ServiceVersion(config.ServiceVersion),
-		attribute.String(coremetrics.AttrStacklokComponent, componentName),
-		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
 	}
 
 	// Add custom attributes from CLI flags
@@ -206,11 +201,21 @@ func NewCompositeProvider(
 		}
 	}
 
+	// stacklok.component/stacklok.product identify the emitter across the platform
+	// (D8); the product value is frozen as "stacklok-platform". These are applied
+	// as the last detector so they win over any collision from CustomAttributes or
+	// OTEL_RESOURCE_ATTRIBUTES — the ownership labels must not be user-overridable.
+	ownershipAttrs := []attribute.KeyValue{
+		attribute.String(coremetrics.AttrStacklokComponent, componentName),
+		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
+	}
+
 	// Create resource with base attributes and support for OTEL_RESOURCE_ATTRIBUTES env var
 	res, err := resource.New(ctx,
 		resource.WithAttributes(baseAttrs...),
-		resource.WithFromEnv(), // This reads OTEL_RESOURCE_ATTRIBUTES automatically
-		resource.WithHost(),    // Add host information
+		resource.WithFromEnv(),                     // This reads OTEL_RESOURCE_ATTRIBUTES automatically
+		resource.WithHost(),                        // Add host information
+		resource.WithAttributes(ownershipAttrs...), // Reserved D8 labels; last so they cannot be overridden
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource with service name '%s' and version '%s': %w",

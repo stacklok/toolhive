@@ -89,7 +89,7 @@ func createSession(t *testing.T, sm *Manager, identity *auth.Identity) string {
 	if identity != nil {
 		ctx = auth.WithIdentity(ctx, identity)
 	}
-	_, err := sm.CreateSession(ctx, sessionID)
+	_, err := sm.CreateSession(ctx, sessionID, nil)
 	require.NoError(t, err)
 	return sessionID
 }

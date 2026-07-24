@@ -8,37 +8,145 @@ const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
     "components": {
         "schemas": {
-            "github_com_stacklok_toolhive-core_registry_types.Registry": {
-                "description": "Full registry data",
+            "auth.TokenValidatorConfig": {
+                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
-                    "groups": {
-                        "description": "Groups is a slice of group definitions containing related MCP servers",
+                    "allowPrivateIP": {
+                        "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
+                        "type": "boolean"
+                    },
+                    "audience": {
+                        "description": "Audience is the expected audience for the token",
+                        "type": "string"
+                    },
+                    "authTokenFile": {
+                        "description": "AuthTokenFile is the path to file containing bearer token for authentication",
+                        "type": "string"
+                    },
+                    "cacertPath": {
+                        "description": "CACertPath is the path to the CA certificate bundle for HTTPS requests",
+                        "type": "string"
+                    },
+                    "clientID": {
+                        "description": "ClientID is the OIDC client ID",
+                        "type": "string"
+                    },
+                    "clientSecret": {
+                        "description": "ClientSecret is the optional OIDC client secret for introspection",
+                        "type": "string"
+                    },
+                    "insecureAllowHTTP": {
+                        "description": "InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing\nWARNING: This is insecure and should NEVER be used in production",
+                        "type": "boolean"
+                    },
+                    "introspectionURL": {
+                        "description": "IntrospectionURL is the optional introspection endpoint for validating tokens",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)",
+                        "type": "string"
+                    },
+                    "jwksurl": {
+                        "description": "JWKSURL is the URL to fetch the JWKS from",
+                        "type": "string"
+                    },
+                    "resourceURL": {
+                        "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)\nIf empty, defaults to [\"openid\"]",
                         "items": {
-                            "$ref": "#/components/schemas/registry.Group"
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                },
+                "type": "object"
+            },
+            "core.Workload": {
+                "properties": {
+                    "created_at": {
+                        "description": "CreatedAt is the timestamp when the workload was created.",
+                        "type": "string"
+                    },
+                    "group": {
+                        "description": "Group is the name of the group this workload belongs to, if any.",
+                        "type": "string"
+                    },
+                    "labels": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Labels are the container labels (excluding standard ToolHive labels)",
+                        "type": "object"
+                    },
+                    "name": {
+                        "description": "Name is the name of the workload.\nIt is used as a unique identifier.",
+                        "type": "string"
+                    },
+                    "package": {
+                        "description": "Package specifies the Workload Package used to create this Workload.",
+                        "type": "string"
+                    },
+                    "port": {
+                        "description": "Port is the port on which the workload is exposed.\nThis is embedded in the URL.",
+                        "type": "integer"
+                    },
+                    "proxy_mode": {
+                        "description": "ProxyMode is the proxy mode that clients should use to connect.\nFor stdio transports, this will be the proxy mode (sse or streamable-http).\nFor direct transports (sse/streamable-http), this will be the same as TransportType.",
+                        "type": "string"
+                    },
+                    "remote": {
+                        "description": "Remote indicates whether this is a remote workload (true) or a container workload (false).",
+                        "type": "boolean"
+                    },
+                    "started_at": {
+                        "description": "StartedAt is when the container was last started (changes on restart)",
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "Status is the current status of the workload.",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated",
+                            "auth_retrying",
+                            "policy_stopped"
+                        ],
+                        "type": "string"
+                    },
+                    "status_context": {
+                        "description": "StatusContext provides additional context about the workload's status.\nThe exact meaning is determined by the status and the underlying runtime.",
+                        "type": "string"
+                    },
+                    "tools": {
+                        "description": "ToolsFilter is the filter on tools applied to the workload.",
+                        "items": {
+                            "type": "string"
                         },
                         "type": "array",
                         "uniqueItems": false
                     },
-                    "last_updated": {
-                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
+                    "transport_type": {
+                        "description": "TransportType is the type of transport used for this workload.",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
                         "type": "string"
                     },
-                    "remote_servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
-                        "type": "object"
-                    },
-                    "servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "description": "Servers is a map of server names to their corresponding server definitions",
-                        "type": "object"
-                    },
-                    "version": {
-                        "description": "Version is the schema version of the registry",
+                    "url": {
+                        "description": "URL is the URL of the workload exposed by the ToolHive proxy.",
                         "type": "string"
                     }
                 },
@@ -114,63 +222,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig": {
-                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
-                "properties": {
-                    "allowPrivateIP": {
-                        "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
-                        "type": "boolean"
-                    },
-                    "audience": {
-                        "description": "Audience is the expected audience for the token",
-                        "type": "string"
-                    },
-                    "authTokenFile": {
-                        "description": "AuthTokenFile is the path to file containing bearer token for authentication",
-                        "type": "string"
-                    },
-                    "cacertPath": {
-                        "description": "CACertPath is the path to the CA certificate bundle for HTTPS requests",
-                        "type": "string"
-                    },
-                    "clientID": {
-                        "description": "ClientID is the OIDC client ID",
-                        "type": "string"
-                    },
-                    "clientSecret": {
-                        "description": "ClientSecret is the optional OIDC client secret for introspection",
-                        "type": "string"
-                    },
-                    "insecureAllowHTTP": {
-                        "description": "InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing\nWARNING: This is insecure and should NEVER be used in production",
-                        "type": "boolean"
-                    },
-                    "introspectionURL": {
-                        "description": "IntrospectionURL is the optional introspection endpoint for validating tokens",
-                        "type": "string"
-                    },
-                    "issuer": {
-                        "description": "Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)",
-                        "type": "string"
-                    },
-                    "jwksurl": {
-                        "description": "JWKSURL is the URL to fetch the JWKS from",
-                        "type": "string"
-                    },
-                    "resourceURL": {
-                        "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)\nIf empty, defaults to [\"openid\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_auth_awssts.Config": {
                 "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
                 "properties": {
@@ -230,111 +281,6 @@ const docTemplate = `{
                     "role_arn": {
                         "description": "RoleArn is the IAM role ARN to assume when this mapping matches.",
                         "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_auth_remote.Config": {
-                "description": "RemoteAuthConfig contains OAuth configuration for remote MCP servers",
-                "properties": {
-                    "authorize_url": {
-                        "type": "string"
-                    },
-                    "bearer_token": {
-                        "description": "Bearer token configuration (alternative to OAuth)",
-                        "type": "string"
-                    },
-                    "bearer_token_file": {
-                        "type": "string"
-                    },
-                    "cached_cimd_client_id": {
-                        "description": "CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD\nauthentication was used. Kept separate from CachedClientID (which holds\nDCR-issued IDs) so the two can have independent lifecycles — DCR credential\nrotation clears CachedClientID without touching the stable CIMD URL.\nRead by resolveClientCredentials to send the correct client_id on token refresh.",
-                        "type": "string"
-                    },
-                    "cached_client_id": {
-                        "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.\nClientID is stored as plain text since it's public information.",
-                        "type": "string"
-                    },
-                    "cached_client_secret_ref": {
-                        "type": "string"
-                    },
-                    "cached_dcr_callback_port": {
-                        "description": "CachedDCRCallbackPort is the callback port that was actually registered\nduring DCR. It may differ from CallbackPort when the requested port was\nunavailable and a fallback port was selected.",
-                        "type": "integer"
-                    },
-                    "cached_refresh_token_ref": {
-                        "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
-                        "type": "string"
-                    },
-                    "cached_reg_client_uri": {
-                        "description": "CachedRegClientURI is the registration_client_uri from the DCR response.\nThis is the endpoint used for RFC 7592 client read/update/delete operations.\nStored as plain text since it is not sensitive.",
-                        "type": "string"
-                    },
-                    "cached_reg_token_ref": {
-                        "description": "CachedRegTokenRef is a secret manager reference to the registration_access_token\nreturned in the DCR response. Used for RFC 7592 client update operations.\nStored as a secret reference since it's sensitive.",
-                        "type": "string"
-                    },
-                    "cached_secret_expiry": {
-                        "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
-                        "type": "string"
-                    },
-                    "cached_token_auth_method": {
-                        "description": "CachedTokenEndpointAuthMethod is the auth method used for the token endpoint\n(e.g., \"client_secret_basic\", \"none\"). Persisted for RFC 7592 updates.",
-                        "type": "string"
-                    },
-                    "cached_token_expiry": {
-                        "type": "string"
-                    },
-                    "callback_port": {
-                        "type": "integer"
-                    },
-                    "client_id": {
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "type": "string"
-                    },
-                    "client_secret_file": {
-                        "type": "string"
-                    },
-                    "issuer": {
-                        "description": "OAuth endpoint configuration (from registry)",
-                        "type": "string"
-                    },
-                    "oauth_params": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "OAuth parameters for server-specific customization",
-                        "type": "object"
-                    },
-                    "resource": {
-                        "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707).",
-                        "type": "string"
-                    },
-                    "scope_param_name": {
-                        "description": "ScopeParamName overrides the query parameter name used to send scopes in the\nauthorization URL. When empty, the standard \"scope\" parameter is used.\nSome providers require a non-standard name (e.g., Slack uses \"user_scope\").",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "skip_browser": {
-                        "type": "boolean"
-                    },
-                    "timeout": {
-                        "example": "5m",
-                        "type": "string"
-                    },
-                    "token_url": {
-                        "type": "string"
-                    },
-                    "use_pkce": {
-                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -611,7 +557,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
                     },
                     "storage": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig"
+                        "$ref": "#/components/schemas/storage.RunConfig"
                     },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
@@ -773,115 +719,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
-                "properties": {
-                    "password_env_var": {
-                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
-                        "type": "string"
-                    },
-                    "username_env_var": {
-                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig": {
-                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
-                "properties": {
-                    "acl_user_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
-                    },
-                    "addr": {
-                        "description": "Addr is the Redis server address (host:port). Required for standalone and cluster modes.\nMutually exclusive with SentinelConfig.",
-                        "type": "string"
-                    },
-                    "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
-                        "type": "string"
-                    },
-                    "cluster_mode": {
-                        "description": "ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.",
-                        "type": "boolean"
-                    },
-                    "dial_timeout": {
-                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
-                        "type": "string"
-                    },
-                    "key_prefix": {
-                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
-                        "type": "string"
-                    },
-                    "read_timeout": {
-                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
-                        "type": "string"
-                    },
-                    "sentinel_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig"
-                    },
-                    "sentinel_tls": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
-                    },
-                    "tls": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
-                    },
-                    "write_timeout": {
-                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
-                "properties": {
-                    "ca_cert_file": {
-                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
-                        "type": "string"
-                    },
-                    "insecure_skip_verify": {
-                        "description": "InsecureSkipVerify skips certificate verification.",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig": {
-                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
-                "properties": {
-                    "redis_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig"
-                    },
-                    "type": {
-                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
-                "properties": {
-                    "db": {
-                        "description": "DB is the Redis database number (default: 0).",
-                        "type": "integer"
-                    },
-                    "master_name": {
-                        "description": "MasterName is the name of the Redis Sentinel master.",
-                        "type": "string"
-                    },
-                    "sentinel_addrs": {
-                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_authz.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
@@ -991,149 +828,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus": {
-                "description": "Current status of the workload",
-                "enum": [
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated",
-                    "auth_retrying",
-                    "policy_stopped",
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated",
-                    "auth_retrying",
-                    "policy_stopped",
-                    "running",
-                    "stopped",
-                    "error",
-                    "starting",
-                    "stopping",
-                    "unhealthy",
-                    "removing",
-                    "unknown",
-                    "unauthenticated",
-                    "auth_retrying",
-                    "policy_stopped"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "WorkloadStatusRunning",
-                    "WorkloadStatusStopped",
-                    "WorkloadStatusError",
-                    "WorkloadStatusStarting",
-                    "WorkloadStatusStopping",
-                    "WorkloadStatusUnhealthy",
-                    "WorkloadStatusRemoving",
-                    "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated",
-                    "WorkloadStatusAuthRetrying",
-                    "WorkloadStatusPolicyStopped"
-                ]
-            },
-            "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {
-                "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
-                "properties": {
-                    "additional_packages": {
-                        "description": "AdditionalPackages lists extra packages to install in the builder and\nruntime stages.\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
-                        "type": "string"
-                    },
-                    "runtime_env": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
-                        "type": "object"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_core.Workload": {
-                "properties": {
-                    "created_at": {
-                        "description": "CreatedAt is the timestamp when the workload was created.",
-                        "type": "string"
-                    },
-                    "group": {
-                        "description": "Group is the name of the group this workload belongs to, if any.",
-                        "type": "string"
-                    },
-                    "labels": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "Labels are the container labels (excluding standard ToolHive labels)",
-                        "type": "object"
-                    },
-                    "name": {
-                        "description": "Name is the name of the workload.\nIt is used as a unique identifier.",
-                        "type": "string"
-                    },
-                    "package": {
-                        "description": "Package specifies the Workload Package used to create this Workload.",
-                        "type": "string"
-                    },
-                    "port": {
-                        "description": "Port is the port on which the workload is exposed.\nThis is embedded in the URL.",
-                        "type": "integer"
-                    },
-                    "proxy_mode": {
-                        "description": "ProxyMode is the proxy mode that clients should use to connect.\nFor stdio transports, this will be the proxy mode (sse or streamable-http).\nFor direct transports (sse/streamable-http), this will be the same as TransportType.",
-                        "type": "string"
-                    },
-                    "remote": {
-                        "description": "Remote indicates whether this is a remote workload (true) or a container workload (false).",
-                        "type": "boolean"
-                    },
-                    "started_at": {
-                        "description": "StartedAt is when the container was last started (changes on restart)",
-                        "type": "string"
-                    },
-                    "status": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
-                    },
-                    "status_context": {
-                        "description": "StatusContext provides additional context about the workload's status.\nThe exact meaning is determined by the status and the underlying runtime.",
-                        "type": "string"
-                    },
-                    "tools": {
-                        "description": "ToolsFilter is the filter on tools applied to the workload.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "transport_type": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
-                    },
-                    "url": {
-                        "description": "URL is the URL of the workload exposed by the ToolHive proxy.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_groups.Group": {
                 "properties": {
                     "name": {
@@ -1159,62 +853,6 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_ignore.Config": {
-                "description": "IgnoreConfig contains configuration for ignore processing",
-                "properties": {
-                    "loadGlobal": {
-                        "description": "Whether to load global ignore patterns",
-                        "type": "boolean"
-                    },
-                    "printOverlays": {
-                        "description": "Whether to print resolved overlay paths for debugging",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config": {
-                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
-                "properties": {
-                    "audience": {
-                        "description": "Audience is the target audience for the exchanged token",
-                        "type": "string"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier",
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "description": "ClientSecret is the OAuth 2.0 client secret",
-                        "type": "string"
-                    },
-                    "external_token_header_name": {
-                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
-                        "type": "string"
-                    },
-                    "header_strategy": {
-                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of scopes to request for the exchanged token",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
-                        "type": "string"
-                    },
-                    "token_url": {
-                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
-                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1294,7 +932,7 @@ const docTemplate = `{
                     "additional_middleware_configs": {
                         "description": "AdditionalMiddlewareConfigs carries pre-built middleware configs injected by\nexternal-auth handlers (reached via *[]RunConfigBuilderOption) rather than\nderived from typed RunConfig fields. PopulateMiddlewareConfigs splices these\ninto the chain in the backend-egress group — after auth and before recovery —\ninstead of discarding them. Upstream carries these configs verbatim and never\ninspects their parameters; the middleware type identity (e.g. an enterprise\nauth type) is supplied by the caller via types.MiddlewareConfig.Type.\n\nEach entry's Type is expected to be a NEW egress middleware type (e.g. OBO),\nnot one already produced from a typed RunConfig field (auth, authz, audit,\ntokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type\nstring, so an injected Type that shadows a typed-field type would add a\nsecond instance of that middleware to the chain; the seam does not validate\nagainst this.",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                            "$ref": "#/components/schemas/types.MiddlewareConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1385,7 +1023,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "ignore_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config"
+                        "$ref": "#/components/schemas/ignore.Config"
                     },
                     "image": {
                         "description": "Image is the Docker image to run",
@@ -1410,7 +1048,7 @@ const docTemplate = `{
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                            "$ref": "#/components/schemas/types.MiddlewareConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1428,7 +1066,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "oidc_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig"
+                        "$ref": "#/components/schemas/auth.TokenValidatorConfig"
                     },
                     "permission_profile_name_or_path": {
                         "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
@@ -1439,7 +1077,12 @@ const docTemplate = `{
                         "type": "integer"
                     },
                     "proxy_mode": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode"
+                        "description": "ProxyMode is the effective HTTP protocol the proxy uses.\nFor stdio transports, this is the configured mode (sse or streamable-http).\nFor direct transports (sse/streamable-http), this matches the transport type.\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                        "enum": [
+                            "sse",
+                            "streamable-http"
+                        ],
+                        "type": "string"
                     },
                     "publish": {
                         "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
@@ -1469,14 +1112,14 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "remote_auth_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_remote.Config"
+                        "$ref": "#/components/schemas/remote.Config"
                     },
                     "remote_url": {
                         "description": "RemoteURL is the URL of the remote MCP server (if running remotely)",
                         "type": "string"
                     },
                     "runtime_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                        "$ref": "#/components/schemas/templates.RuntimeConfig"
                     },
                     "scaling_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ScalingConfig"
@@ -1502,6 +1145,10 @@ const docTemplate = `{
                         "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
                         "type": "boolean"
                     },
+                    "strict_protocol_validation": {
+                        "description": "StrictProtocolValidation enables strict MCP-Protocol-Version validation\non the streamable HTTP proxy: a request whose header names an unknown\nMCP revision is rejected with HTTP 400. Default false accepts any\nversion string (an absent header is always accepted in either mode).",
+                        "type": "boolean"
+                    },
                     "target_host": {
                         "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
                         "type": "string"
@@ -1511,14 +1158,14 @@ const docTemplate = `{
                         "type": "integer"
                     },
                     "telemetry_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_telemetry.Config"
+                        "$ref": "#/components/schemas/telemetry.Config"
                     },
                     "thv_ca_bundle": {
                         "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
                         "type": "string"
                     },
                     "token_exchange_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config"
+                        "$ref": "#/components/schemas/tokenexchange.Config"
                     },
                     "tools_filter": {
                         "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
@@ -1536,7 +1183,14 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "transport": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
+                        "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                        "enum": [
+                            "stdio",
+                            "sse",
+                            "streamable-http",
+                            "inspector"
+                        ],
+                        "type": "string"
                     },
                     "trust_proxy_headers": {
                         "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
@@ -1608,18 +1262,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_secrets.SecretParameter": {
-                "description": "Bearer token for authentication (alternative to OAuth)",
-                "properties": {
-                    "name": {
-                        "type": "string"
-                    },
-                    "target": {
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_skills.BuildResult": {
                 "properties": {
                     "reference": {
@@ -1645,6 +1287,24 @@ const docTemplate = `{
                     }
                 },
                 "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.FailureReason": {
+                "description": "Reason is a typed failure reason when Status is UpgradeStatusFailed.",
+                "enum": [
+                    "registry-unreachable",
+                    "digest-missing",
+                    "validation-rejected",
+                    "lock-write-failed",
+                    "unknown"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FailureReasonRegistryUnreachable",
+                    "FailureReasonDigestMissing",
+                    "FailureReasonValidationRejected",
+                    "FailureReasonLockWriteFailed",
+                    "FailureReasonUnknown"
+                ]
             },
             "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
                 "description": "Status is the current installation status.",
@@ -1686,6 +1346,10 @@ const docTemplate = `{
                     "installed_at": {
                         "description": "InstalledAt is the timestamp when the skill was installed.",
                         "type": "string"
+                    },
+                    "managed": {
+                        "description": "Managed indicates this install is tracked in the project's\ntoolhive.lock.yaml. Only ever true for project-scoped installs. No\nomitempty: false is an observable state (unmanaged), not an absence.",
+                        "type": "boolean"
                     },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
@@ -1835,6 +1499,153 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.SyncFailure": {
+                "properties": {
+                    "error": {
+                        "description": "Error is a human-readable description of the failure.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name that failed.",
+                        "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SyncResult": {
+                "properties": {
+                    "already_current": {
+                        "description": "AlreadyCurrent lists skills that already matched the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "drifted": {
+                        "description": "Drifted lists skills whose on-disk contentDigest differed from the lock\nfile. Normally these are reinstalled to match it; when Check is set,\nnothing is written and this field reports the drift only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "failed": {
+                        "description": "Failed lists skills that could not be synced, with the reason for each.\nDrift alone is never reported here — see Drifted.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncFailure"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "installed": {
+                        "description": "Installed lists skills that were installed or reinstalled to match the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "missing": {
+                        "description": "Missing lists lock entries with no corresponding install record at all\n— the fresh-clone state. Normally these are installed at their pinned\nreference; when Check is set, nothing is written and this field\nreports the gap only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "never_managed": {
+                        "description": "NeverManaged lists project-scoped skills never recorded as lock-managed.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "pruned": {
+                        "description": "Pruned lists removed-from-lock skills that were uninstalled because Prune was set.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "removed_from_lock": {
+                        "description": "RemovedFromLock lists previously managed skills absent from the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome": {
+                "properties": {
+                    "error": {
+                        "description": "Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name.",
+                        "type": "string"
+                    },
+                    "new_digest": {
+                        "description": "NewDigest is the digest the source currently resolves to. Equal to\nOldDigest when Status is UpgradeStatusUpToDate.",
+                        "type": "string"
+                    },
+                    "new_resolved_reference": {
+                        "description": "NewResolvedReference is the new resolvedReference when it changed.",
+                        "type": "string"
+                    },
+                    "old_digest": {
+                        "description": "OldDigest is the digest pinned in the lock file before this operation.",
+                        "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeResult": {
+                "properties": {
+                    "outcomes": {
+                        "description": "Outcomes contains one entry per skill considered for upgrade.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeStatus": {
+                "description": "Status is the outcome of the upgrade attempt.",
+                "enum": [
+                    "upgraded",
+                    "up-to-date",
+                    "not-upgradable",
+                    "ref-change-blocked",
+                    "failed"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "UpgradeStatusUpgraded",
+                    "UpgradeStatusUpToDate",
+                    "UpgradeStatusNotUpgradable",
+                    "UpgradeStatusRefChangeBlocked",
+                    "UpgradeStatusFailed"
+                ]
+            },
             "github_com_stacklok_toolhive_pkg_skills.ValidationResult": {
                 "properties": {
                     "errors": {
@@ -1859,125 +1670,6 @@ const docTemplate = `{
                     }
                 },
                 "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_telemetry.Config": {
-                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
-                "properties": {
-                    "caCertPath": {
-                        "description": "CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.\nWhen set, the OTLP exporters use this CA to verify the collector's TLS certificate\ninstead of relying solely on the system CA pool.\n+optional",
-                        "type": "string"
-                    },
-                    "customAttributes": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\n+optional",
-                        "type": "object"
-                    },
-                    "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "endpoint": {
-                        "description": "Endpoint is the OTLP endpoint URL\n+optional",
-                        "type": "string"
-                    },
-                    "environmentVariables": {
-                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: [\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"]\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "headers": {
-                        "additionalProperties": {
-                            "type": "string"
-                        },
-                        "description": "Headers contains authentication headers for the OTLP endpoint.\n+optional",
-                        "type": "object"
-                    },
-                    "insecure": {
-                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "metricsEnabled": {
-                        "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "samplingRate": {
-                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
-                        "type": "string"
-                    },
-                    "serviceName": {
-                        "description": "ServiceName is the service name for telemetry.\nWhen omitted, defaults to the server name (e.g., VirtualMCPServer name).\n+optional",
-                        "type": "string"
-                    },
-                    "serviceVersion": {
-                        "description": "ServiceVersion is the service version for telemetry.\nWhen omitted, defaults to the ToolHive version.\n+optional",
-                        "type": "string"
-                    },
-                    "tracingEnabled": {
-                        "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "useLegacyAttributes": {
-                        "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig": {
-                "properties": {
-                    "parameters": {
-                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
-                        "type": "object"
-                    },
-                    "type": {
-                        "description": "Type is a string representing the middleware type.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_transport_types.ProxyMode": {
-                "description": "ProxyMode is the effective HTTP protocol the proxy uses.\nFor stdio transports, this is the configured mode (sse or streamable-http).\nFor direct transports (sse/streamable-http), this matches the transport type.\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
-                "enum": [
-                    "sse",
-                    "streamable-http",
-                    "sse",
-                    "streamable-http"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "ProxyModeSSE",
-                    "ProxyModeStreamableHTTP"
-                ]
-            },
-            "github_com_stacklok_toolhive_pkg_transport_types.TransportType": {
-                "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
-                "enum": [
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector",
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector",
-                    "stdio",
-                    "sse",
-                    "streamable-http",
-                    "inspector"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "TransportTypeStdio",
-                    "TransportTypeSSE",
-                    "TransportTypeStreamableHTTP",
-                    "TransportTypeInspector"
-                ]
             },
             "github_com_stacklok_toolhive_pkg_webhook.Config": {
                 "properties": {
@@ -2163,6 +1855,20 @@ const docTemplate = `{
                     "StatusServerNotFound",
                     "StatusUnknown"
                 ]
+            },
+            "ignore.Config": {
+                "description": "IgnoreConfig contains configuration for ignore processing",
+                "properties": {
+                    "loadGlobal": {
+                        "description": "Whether to load global ignore patterns",
+                        "type": "boolean"
+                    },
+                    "printOverlays": {
+                        "description": "Whether to print resolved overlay paths for debugging",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
             },
             "model.Argument": {
                 "properties": {
@@ -2834,12 +2540,12 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "runtime_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                        "$ref": "#/components/schemas/templates.RuntimeConfig"
                     },
                     "secrets": {
                         "description": "Secret parameters to inject",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                            "$ref": "#/components/schemas/secrets.SecretParameter"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -2955,7 +2661,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "registry": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive-core_registry_types.Registry"
+                        "$ref": "#/components/schemas/registry.Registry"
                     },
                     "server_count": {
                         "description": "Number of servers in the registry",
@@ -3291,7 +2997,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "bearer_token": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                        "$ref": "#/components/schemas/secrets.SecretParameter"
                     },
                     "callback_port": {
                         "description": "Specific port for OAuth callback server",
@@ -3302,7 +3008,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "client_secret": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                        "$ref": "#/components/schemas/secrets.SecretParameter"
                     },
                     "issuer": {
                         "description": "OAuth/OIDC issuer URL (e.g., https://accounts.google.com)",
@@ -3432,6 +3138,36 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.syncSkillsRequest": {
+                "description": "Request to restore a project's installed skills to match its lock file",
+                "properties": {
+                    "adopt": {
+                        "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
+                        "type": "boolean"
+                    },
+                    "check": {
+                        "description": "Check verifies on-disk content against the lock file without installing or writing anything",
+                        "type": "boolean"
+                    },
+                    "clients": {
+                        "description": "Clients lists target client identifiers. Empty means every\nskill-supporting client detected on this host.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be synced",
+                        "type": "string"
+                    },
+                    "prune": {
+                        "description": "Prune removes project-scoped skills installed but not present in the lock file",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.toolOverride": {
                 "description": "Tool override",
                 "properties": {
@@ -3516,12 +3252,12 @@ const docTemplate = `{
                         "type": "integer"
                     },
                     "runtime_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                        "$ref": "#/components/schemas/templates.RuntimeConfig"
                     },
                     "secrets": {
                         "description": "Secret parameters to inject",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter"
+                            "$ref": "#/components/schemas/secrets.SecretParameter"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -3636,6 +3372,44 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.upgradeSkillsRequest": {
+                "description": "Request to re-resolve a project's lock entries and install newer content",
+                "properties": {
+                    "allow_ref_change": {
+                        "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
+                    "clients": {
+                        "description": "Clients lists target client identifiers. Empty means every\nskill-supporting client detected on this host.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "fail_on_changes": {
+                        "description": "FailOnChanges exits with an error when any mutable source would upgrade",
+                        "type": "boolean"
+                    },
+                    "names": {
+                        "description": "Names restricts the upgrade to specific skill names. Empty means every entry.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "preview": {
+                        "description": "Preview reports what would change without installing (still fetches to compare digests)",
+                        "type": "boolean"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.validateSkillRequest": {
                 "description": "Request to validate a skill definition",
                 "properties": {
@@ -3660,7 +3434,7 @@ const docTemplate = `{
                     "workloads": {
                         "description": "List of container information for each workload",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_core.Workload"
+                            "$ref": "#/components/schemas/core.Workload"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -3672,7 +3446,21 @@ const docTemplate = `{
                 "description": "Response containing workload status information",
                 "properties": {
                     "status": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
+                        "description": "Current status of the workload",
+                        "enum": [
+                            "running",
+                            "stopped",
+                            "error",
+                            "starting",
+                            "stopping",
+                            "unhealthy",
+                            "removing",
+                            "unknown",
+                            "unauthenticated",
+                            "auth_retrying",
+                            "policy_stopped"
+                        ],
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -3993,6 +3781,42 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "registry.Registry": {
+                "description": "Full registry data",
+                "properties": {
+                    "groups": {
+                        "description": "Groups is a slice of group definitions containing related MCP servers",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Group"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "last_updated": {
+                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
+                        "type": "string"
+                    },
+                    "remote_servers": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
+                        },
+                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
+                        "type": "object"
+                    },
+                    "servers": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/registry.ImageMetadata"
+                        },
+                        "description": "Servers is a map of server names to their corresponding server definitions",
+                        "type": "object"
+                    },
+                    "version": {
+                        "description": "Version is the schema version of the registry",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "registry.RemoteServerMetadata": {
                 "description": "Remote server details (if it's a remote server)",
                 "properties": {
@@ -4236,6 +4060,380 @@ const docTemplate = `{
                 "properties": {
                     "predicate": {},
                     "predicate_type": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "remote.Config": {
+                "description": "RemoteAuthConfig contains OAuth configuration for remote MCP servers",
+                "properties": {
+                    "authorize_url": {
+                        "type": "string"
+                    },
+                    "bearer_token": {
+                        "description": "Bearer token configuration (alternative to OAuth)",
+                        "type": "string"
+                    },
+                    "bearer_token_file": {
+                        "type": "string"
+                    },
+                    "cached_cimd_client_id": {
+                        "description": "CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD\nauthentication was used. Kept separate from CachedClientID (which holds\nDCR-issued IDs) so the two can have independent lifecycles — DCR credential\nrotation clears CachedClientID without touching the stable CIMD URL.\nRead by resolveClientCredentials to send the correct client_id on token refresh.",
+                        "type": "string"
+                    },
+                    "cached_client_id": {
+                        "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.\nClientID is stored as plain text since it's public information.",
+                        "type": "string"
+                    },
+                    "cached_client_secret_ref": {
+                        "type": "string"
+                    },
+                    "cached_dcr_callback_port": {
+                        "description": "CachedDCRCallbackPort is the callback port that was actually registered\nduring DCR. It may differ from CallbackPort when the requested port was\nunavailable and a fallback port was selected.",
+                        "type": "integer"
+                    },
+                    "cached_refresh_token_ref": {
+                        "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
+                        "type": "string"
+                    },
+                    "cached_reg_client_uri": {
+                        "description": "CachedRegClientURI is the registration_client_uri from the DCR response.\nThis is the endpoint used for RFC 7592 client read/update/delete operations.\nStored as plain text since it is not sensitive.",
+                        "type": "string"
+                    },
+                    "cached_reg_token_ref": {
+                        "description": "CachedRegTokenRef is a secret manager reference to the registration_access_token\nreturned in the DCR response. Used for RFC 7592 client update operations.\nStored as a secret reference since it's sensitive.",
+                        "type": "string"
+                    },
+                    "cached_secret_expiry": {
+                        "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
+                        "type": "string"
+                    },
+                    "cached_token_auth_method": {
+                        "description": "CachedTokenEndpointAuthMethod is the auth method used for the token endpoint\n(e.g., \"client_secret_basic\", \"none\"). Persisted for RFC 7592 updates.",
+                        "type": "string"
+                    },
+                    "cached_token_expiry": {
+                        "type": "string"
+                    },
+                    "callback_port": {
+                        "type": "integer"
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "OAuth endpoint configuration (from registry)",
+                        "type": "string"
+                    },
+                    "oauth_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "OAuth parameters for server-specific customization",
+                        "type": "object"
+                    },
+                    "resource": {
+                        "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707).",
+                        "type": "string"
+                    },
+                    "scope_param_name": {
+                        "description": "ScopeParamName overrides the query parameter name used to send scopes in the\nauthorization URL. When empty, the standard \"scope\" parameter is used.\nSome providers require a non-standard name (e.g., Slack uses \"user_scope\").",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "skip_browser": {
+                        "type": "boolean"
+                    },
+                    "timeout": {
+                        "example": "5m",
+                        "type": "string"
+                    },
+                    "token_url": {
+                        "type": "string"
+                    },
+                    "use_pkce": {
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "secrets.SecretParameter": {
+                "description": "Bearer token for authentication (alternative to OAuth)",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "target": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "addr": {
+                        "description": "Addr is the Redis server address (host:port). Required for standalone and cluster modes.\nMutually exclusive with SentinelConfig.",
+                        "type": "string"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "cluster_mode": {
+                        "description": "ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.",
+                        "type": "boolean"
+                    },
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "sentinel_tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisTLSRunConfig": {
+                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
+                "properties": {
+                    "ca_cert_file": {
+                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify skips certificate verification.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "telemetry.Config": {
+                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
+                "properties": {
+                    "caCertPath": {
+                        "description": "CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.\nWhen set, the OTLP exporters use this CA to verify the collector's TLS certificate\ninstead of relying solely on the system CA pool.\n+optional",
+                        "type": "string"
+                    },
+                    "customAttributes": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\n+optional",
+                        "type": "object"
+                    },
+                    "enablePrometheusMetricsPath": {
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "endpoint": {
+                        "description": "Endpoint is the OTLP endpoint URL\n+optional",
+                        "type": "string"
+                    },
+                    "environmentVariables": {
+                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: [\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"]\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Headers contains authentication headers for the OTLP endpoint.\n+optional",
+                        "type": "object"
+                    },
+                    "insecure": {
+                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "metricsEnabled": {
+                        "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "samplingRate": {
+                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
+                        "type": "string"
+                    },
+                    "serviceName": {
+                        "description": "ServiceName is the service name for telemetry.\nWhen omitted, defaults to the server name (e.g., VirtualMCPServer name).\n+optional",
+                        "type": "string"
+                    },
+                    "serviceVersion": {
+                        "description": "ServiceVersion is the service version for telemetry.\nWhen omitted, defaults to the ToolHive version.\n+optional",
+                        "type": "string"
+                    },
+                    "tracingEnabled": {
+                        "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "useLegacyAttributes": {
+                        "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "templates.RuntimeConfig": {
+                "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
+                "properties": {
+                    "additional_packages": {
+                        "description": "AdditionalPackages lists extra packages to install in the builder and\nruntime stages.\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "builder_image": {
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
+                        "type": "string"
+                    },
+                    "runtime_env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "tokenexchange.Config": {
+                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
+                "properties": {
+                    "audience": {
+                        "description": "Audience is the target audience for the exchanged token",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth 2.0 client identifier",
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "description": "ClientSecret is the OAuth 2.0 client secret",
+                        "type": "string"
+                    },
+                    "external_token_header_name": {
+                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of scopes to request for the exchanged token",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject_token_type": {
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
+                        "type": "string"
+                    },
+                    "token_url": {
+                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "types.MiddlewareConfig": {
+                "properties": {
+                    "parameters": {
+                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
+                        "type": "object"
+                    },
+                    "type": {
+                        "description": "Type is a string representing the middleware type.",
                         "type": "string"
                     }
                 },
@@ -6235,6 +6433,178 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Push a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/sync": {
+            "post": {
+                "description": "Restore a project's installed skills to match toolhive.lock.yaml",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.syncSkillsRequest",
+                                        "summary": "request",
+                                        "description": "Sync request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Sync request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (feature not enabled)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Sync project skills from the lock file",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/upgrade": {
+            "post": {
+                "description": "Re-resolve a project's lock entries and install newer content where available",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradeSkillsRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (feature not enabled)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (a requested name is not in the lock file)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Upgrade project skills",
                 "tags": [
                     "skills"
                 ]

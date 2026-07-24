@@ -557,6 +557,59 @@ func TestClose_Idempotent(t *testing.T) {
 	})
 }
 
+// invalidatorAggregator is a minimal aggregator.Aggregator that also
+// implements aggregator.CacheInvalidator, so TestInvalidateCapabilityCache_*
+// can assert coreVMCP.InvalidateCapabilityCache's delegation without depending
+// on the real cachingAggregator (covered separately in the aggregator package).
+type invalidatorAggregator struct {
+	aggregator.Aggregator
+	invalidateCalls int
+}
+
+func (a *invalidatorAggregator) InvalidateAll() { a.invalidateCalls++ }
+
+var _ aggregator.CacheInvalidator = (*invalidatorAggregator)(nil)
+
+// TestInvalidateCapabilityCache_DelegatesWhenSupported verifies (#5748) that
+// InvalidateCapabilityCache type-asserts the configured aggregator to
+// aggregator.CacheInvalidator and calls InvalidateAll when it is implemented.
+func TestInvalidateCapabilityCache_DelegatesWhenSupported(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	inv := &invalidatorAggregator{Aggregator: m.agg}
+	cfg.Aggregator = inv
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	c.InvalidateCapabilityCache()
+	assert.Equal(t, 1, inv.invalidateCalls)
+}
+
+// TestInvalidateCapabilityCache_WarnsWhenUnsupported verifies (#5748) that
+// InvalidateCapabilityCache is a WARN-logged no-op — not a silent one — when
+// the configured aggregator does not implement aggregator.CacheInvalidator
+// (baseConfig's plain MockAggregator does not).
+//
+//nolint:paralleltest // installs a global slog default + non-thread-safe buffer; must not run in parallel
+func TestInvalidateCapabilityCache_WarnsWhenUnsupported(t *testing.T) {
+	cfg, _ := baseConfig(t)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	assert.NotPanics(t, func() { c.InvalidateCapabilityCache() })
+	assert.Contains(t, buf.String(), "does not support it",
+		"unsupported aggregator must WARN-log, not silently no-op")
+}
+
 // Must run serially: it swaps the global slog default to capture output into a
 // non-thread-safe buffer, which is unsafe if other tests log concurrently.
 //

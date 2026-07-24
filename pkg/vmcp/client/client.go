@@ -708,10 +708,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
-	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
-	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
-	// We cannot distinguish auth failures from routing errors without the raw status code,
-	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	// ErrLegacySSEServer is toolhive-core's sentinel for a 4xx (except 401) on
+	// initialize POST against the "sse" transport type, where the SDK client
+	// cannot distinguish an auth rejection from a legacy SSE-only server without
+	// the raw status code. Under the streamable-http transport this arm is dead:
+	// mcp-go's streamable-HTTP client surfaces a generic HTTP status error for a
+	// 403 on initialize (e.g. "request failed with status 403"), not this
+	// sentinel, so that case falls through to the string-based classification
+	// below and still maps to ErrBackendUnavailable (see
+	// TestRegression_403OnInitialize_LegacySSEFallback). This arm only fires for
+	// the sse transport type; it is kept for backend targets still configured
+	// with legacy SSE.
 	if errors.Is(err, transport.ErrLegacySSEServer) {
 		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
 		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",

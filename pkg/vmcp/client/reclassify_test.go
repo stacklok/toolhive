@@ -19,7 +19,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
-
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -260,6 +259,8 @@ func TestDispatch_TransientDoesNotReclassify(t *testing.T) {
 // TestReclassify_WarnsOnlyOnActualChange captures slog to confirm the WARN (which
 // gates the reclassification counter in the same branch) fires only when the
 // revision actually changes.
+//
+//nolint:paralleltest // swaps the global slog default; must not run concurrently with other tests
 func TestReclassify_WarnsOnlyOnActualChange(t *testing.T) {
 	// Not parallel: swaps the global slog default.
 	var buf bytes.Buffer

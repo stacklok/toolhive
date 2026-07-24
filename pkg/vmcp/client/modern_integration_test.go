@@ -17,7 +17,6 @@ import (
 
 	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
-
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"

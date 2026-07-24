@@ -14,12 +14,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-
-	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // newProbeClient builds a real httpBackendClient with an unauthenticated
@@ -145,7 +144,7 @@ func TestProbeRevision_TruthTable(t *testing.T) {
 			h := newProbeClient(t)
 			target := &vmcp.BackendTarget{WorkloadID: "b1", BaseURL: srv.URL, TransportType: "streamable-http"}
 
-			rev, _, err := h.probeRevision(context.Background(), target)
+			rev, err := h.probeRevision(context.Background(), target)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantRev, rev)
 
@@ -172,7 +171,7 @@ func TestProbeRevision_TransientLeavesUnprobed(t *testing.T) {
 	h := newProbeClient(t)
 	target := &vmcp.BackendTarget{WorkloadID: "dead", BaseURL: url, TransportType: "streamable-http"}
 
-	_, _, err := h.probeRevision(context.Background(), target)
+	_, err := h.probeRevision(context.Background(), target)
 	require.Error(t, err)
 
 	_, ok := h.cachedRevision("dead")

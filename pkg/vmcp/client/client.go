@@ -1047,41 +1047,38 @@ func (h *httpBackendClient) modernDiscover(
 //
 // A hard error is also returned when the backend transport cannot be built at all
 // (e.g. invalid auth/CA config); that is a genuine misconfiguration.
+// The resolved capabilities are intentionally not returned: callers that need
+// them (ListCapabilities) re-fetch via modernDiscover, so probeRevision only
+// classifies and caches the revision.
 func (h *httpBackendClient) probeRevision(
 	ctx context.Context, target *vmcp.BackendTarget,
-) (mcpparser.Revision, *mcp.ServerCapabilities, error) {
+) (mcpparser.Revision, error) {
 	hc, err := h.buildModernHTTPClient(ctx, target)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to build transport for backend %s: %w", target.WorkloadID, err)
+		return 0, fmt.Errorf("failed to build transport for backend %s: %w", target.WorkloadID, err)
 	}
 	defer hc.CloseIdleConnections()
 
-	var discover struct {
-		Capabilities mcp.ServerCapabilities `json:"capabilities"`
-	}
-	err = modernCall(ctx, hc, target.BaseURL, "server/discover", nil, "", &discover)
+	err = modernCall(ctx, hc, target.BaseURL, "server/discover", nil, "", nil)
 	switch {
 	case err == nil:
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
-		return mcpparser.RevisionModern, &discover.Capabilities, nil
+		return mcpparser.RevisionModern, nil
 	case errors.Is(err, errModernProtocolError), errors.Is(err, errModernInputRequired):
 		// Both prove the peer is Modern: -3202x means it validated our Modern
 		// protocol metadata; input_required is only returned after decoding a valid
-		// Modern envelope (resultType present, != "complete"). Discover just failed
-		// application-side, so there are no usable caps — nil caps => modernEnumerate
-		// returns an empty list, and the cache-hit path tolerates the same to nil
-		// caps, so both yield an empty list consistently.
+		// Modern envelope (resultType present, != "complete").
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
-		return mcpparser.RevisionModern, nil, nil
+		return mcpparser.RevisionModern, nil
 	case errors.Is(err, errModernAuth), errors.Is(err, errModernTransient):
 		// Inconclusive: an auth blip or a transient outage tells us nothing about
 		// the revision. Leave the backend unprobed so the next call re-probes.
-		return 0, nil, err
+		return 0, err
 	default:
 		slog.Debug("backend is not Modern; falling back to Legacy",
 			"backend", target.WorkloadID, "probe_error", err)
 		h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
-		return mcpparser.RevisionLegacy, nil, nil
+		return mcpparser.RevisionLegacy, nil
 	}
 }
 
@@ -1106,16 +1103,7 @@ func (h *httpBackendClient) modernEnumerate(
 
 	var tools []mcp.Tool
 	if caps != nil && caps.Tools != nil {
-		tools, err = pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
-			var page struct {
-				Tools      []mcp.Tool `json:"tools"`
-				NextCursor mcp.Cursor `json:"nextCursor"`
-			}
-			if err := modernCall(ctx, hc, endpoint, "tools/list", cursorParams(cursor), "", &page); err != nil {
-				return nil, "", err
-			}
-			return page.Tools, page.NextCursor, nil
-		})
+		tools, err = modernListAll[mcp.Tool](ctx, hc, endpoint, "tools/list", "tools")
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list tools")
 		}
@@ -1124,16 +1112,7 @@ func (h *httpBackendClient) modernEnumerate(
 	var resources []mcp.Resource
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
-		resources, err = pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
-			var page struct {
-				Resources  []mcp.Resource `json:"resources"`
-				NextCursor mcp.Cursor     `json:"nextCursor"`
-			}
-			if err := modernCall(ctx, hc, endpoint, "resources/list", cursorParams(cursor), "", &page); err != nil {
-				return nil, "", err
-			}
-			return page.Resources, page.NextCursor, nil
-		})
+		resources, err = modernListAll[mcp.Resource](ctx, hc, endpoint, "resources/list", "resources")
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 		}
@@ -1141,21 +1120,10 @@ func (h *httpBackendClient) modernEnumerate(
 		// Resource templates share the resources capability flag. A backend that
 		// does not implement resources/templates/list (-32601) degrades to an
 		// empty template list, mirroring the Legacy queryResourceTemplates path.
-		templates, err = pagination.ListAll(
-			ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.ResourceTemplate, mcp.Cursor, error) {
-				var page struct {
-					ResourceTemplates []mcp.ResourceTemplate `json:"resourceTemplates"`
-					NextCursor        mcp.Cursor             `json:"nextCursor"`
-				}
-				if err := modernCall(ctx, hc, endpoint, "resources/templates/list", cursorParams(cursor), "", &page); err != nil {
-					return nil, "", err
-				}
-				return page.ResourceTemplates, page.NextCursor, nil
-			})
+		templates, err = modernListAll[mcp.ResourceTemplate](ctx, hc, endpoint, "resources/templates/list", "resourceTemplates")
 		switch {
 		case errors.Is(err, mcp.ErrMethodNotFound):
 			templates = nil
-			err = nil // clear so a later reader can't mistake it for a live error
 		case err != nil:
 			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
 		}
@@ -1163,16 +1131,7 @@ func (h *httpBackendClient) modernEnumerate(
 
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
-		prompts, err = pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
-			var page struct {
-				Prompts    []mcp.Prompt `json:"prompts"`
-				NextCursor mcp.Cursor   `json:"nextCursor"`
-			}
-			if err := modernCall(ctx, hc, endpoint, "prompts/list", cursorParams(cursor), "", &page); err != nil {
-				return nil, "", err
-			}
-			return page.Prompts, page.NextCursor, nil
-		})
+		prompts, err = modernListAll[mcp.Prompt](ctx, hc, endpoint, "prompts/list", "prompts")
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 		}
@@ -1192,6 +1151,32 @@ func cursorParams(cursor mcp.Cursor) map[string]any {
 		return nil
 	}
 	return map[string]any{"cursor": string(cursor)}
+}
+
+// modernListAll fetches every page of a Modern */list method, following
+// nextCursor (#5851). itemsField is the result key holding the item array
+// ("tools", "resources", "resourceTemplates", "prompts"); the envelope is decoded
+// into a raw-message map so one helper serves all four list shapes.
+func modernListAll[T any](
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField string,
+) ([]T, error) {
+	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
+		var page map[string]json.RawMessage
+		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", &page); err != nil {
+			return nil, "", err
+		}
+		var items []T
+		if raw, ok := page[itemsField]; ok {
+			if err := json.Unmarshal(raw, &items); err != nil {
+				return nil, "", fmt.Errorf("decoding %s from %s: %w", itemsField, method, err)
+			}
+		}
+		var next mcp.Cursor
+		if raw, ok := page["nextCursor"]; ok {
+			_ = json.Unmarshal(raw, &next) // best-effort: a malformed cursor ends pagination
+		}
+		return items, next, nil
+	})
 }
 
 // newCapabilityListFromMCP converts backend mcp types into the vmcp domain
@@ -1407,7 +1392,7 @@ func (h *httpBackendClient) dispatch(
 ) error {
 	rev, cached := h.cachedRevision(target.WorkloadID)
 	if !cached {
-		probed, _, err := h.probeRevision(ctx, target)
+		probed, err := h.probeRevision(ctx, target)
 		if err != nil {
 			return wrapBackendError(err, target.WorkloadID, "probe revision")
 		}
@@ -1444,7 +1429,7 @@ func (h *httpBackendClient) dispatch(
 func (h *httpBackendClient) reclassify(
 	ctx context.Context, target *vmcp.BackendTarget, prev mcpparser.Revision,
 ) mcpparser.Revision {
-	corrected, _, err := h.probeRevision(ctx, target)
+	corrected, err := h.probeRevision(ctx, target)
 	if err != nil {
 		// Transport couldn't even be built to re-probe; keep the prior revision.
 		return prev
@@ -1711,7 +1696,8 @@ func (h *httpBackendClient) modernReadResource(
 		} `json:"contents"`
 		Meta map[string]any `json:"_meta"`
 	}
-	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", map[string]any{"uri": backendURI}, backendURI, &res); err != nil {
+	params := map[string]any{"uri": backendURI}
+	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, &res); err != nil {
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 	mcpContents := make([]mcp.ResourceContents, len(res.Contents))

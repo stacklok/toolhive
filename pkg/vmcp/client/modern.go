@@ -54,13 +54,13 @@ var errWrongEra = errors.New("backend response is not a Modern (2026-07-28) MCP 
 // process the request), a success body means a lenient Legacy backend MAY have
 // executed the request — so the caller MUST NOT auto-retry it (double-execution
 // of a side-effecting tool). The cache may still be reclassified.
-var errLegacyResponseBody = errors.New("backend returned a Legacy-shaped success result (no resultType); it may have executed the request")
+var errLegacyResponseBody = errors.New("backend returned a Legacy-shaped body (no resultType); it may have executed")
 
 // errModernInputRequired is returned when a Modern envelope decodes with a
 // resultType other than "complete" (e.g. "input_required"). Multi-round tool
 // retrieval is deferred; this shim detects and errors rather than returning a
 // blank success.
-var errModernInputRequired = errors.New("Modern response requires additional input (multi-round retrieval unsupported)")
+var errModernInputRequired = errors.New("modern response requires additional input (multi-round retrieval unsupported)")
 
 // errModernProtocolError wraps a well-formed JSON-RPC error whose code is one of
 // the Modern-specific codes (-32020/-32021/-32022): the peer validated our
@@ -180,6 +180,13 @@ func modernCall(
 	if err != nil {
 		return err
 	}
+	return interpretModernResult(result, rpcErr, method, out)
+}
+
+// interpretModernResult maps a decoded Modern JSON-RPC response to an error or
+// decodes it into out. Split from modernCall to keep each within the cyclomatic
+// limit; see the modernCall doc for the error taxonomy.
+func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, method string, out any) error {
 	if rpcErr != nil {
 		if rpcErr.Code == jsonRPCCodeMethodNotFound {
 			return fmt.Errorf("%w: %s", mcp.ErrMethodNotFound, rpcErr.Message)
@@ -191,7 +198,6 @@ func modernCall(
 	}
 
 	// The Modern result is an envelope keyed by resultType (modern_envelope.go).
-	// A result with no resultType is a Legacy-shaped body: wrong era.
 	var envelope struct {
 		ResultType string `json:"resultType"`
 	}

@@ -178,9 +178,9 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 | Capability | Served? | Notes |
 |------------|---------|-------|
 | Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered; a backend's asynchronous `notifications/tools/list_changed` is propagated to already-registered sessions — see below |
-| Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity |
-| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend |
-| Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session |
+| Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity; a backend's asynchronous `notifications/resources/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
+| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
+| Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session; a backend's asynchronous `notifications/prompts/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
 | Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
 | Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
 
@@ -190,7 +190,7 @@ The completion handler is a single global handler installed via `WithCompletionH
 
 vMCP advertises `resources.subscribe: true` and answers `resources/subscribe` / `resources/unsubscribe` at **ack level**: the request is accepted (enforcing session binding and validating the URI is an advertised, admitted resource), and go-sdk records the subscription. vMCP does **not** currently propagate backend `notifications/resources/updated` to the subscribed client — doing so requires persistent per-session backend connections, which is out of scope. Clients that subscribe will receive a success ack but no update stream yet.
 
-### Tools list_changed propagation (#5748)
+### Tools/resources/prompts list_changed propagation (#5748, #5969)
 
 Unlike the per-call backend client (`pkg/vmcp/client`), the **persistent**
 per-session backend connection (`pkg/vmcp/session/internal/backend`) stays
@@ -203,10 +203,13 @@ non-nil `ListChangedSink` is supplied at connection time, the connector:
   backends hang when this stream is opened against them. SSE backends need no
   extra option: their whole session is already one continuous stream.
 - Registers an `OnNotification` handler that dispatches
-  `notifications/tools/list_changed` to the sink (`kind=KindTools`, a typed
-  `ChangeKind` constant rather than a bare string so a typo is a compile
-  error) and logs `notifications/message` received out-of-call (log-only; no
-  relay).
+  `notifications/tools/list_changed` (`kind=KindTools`),
+  `notifications/resources/list_changed` (`kind=KindResources` — also covers
+  resource templates, since MCP 2025-11-25 has no separate wire method for
+  template changes), and `notifications/prompts/list_changed`
+  (`kind=KindPrompts`) to the sink — `ChangeKind` is a typed constant rather
+  than a bare string so a typo is a compile error — and logs
+  `notifications/message` received out-of-call (log-only; no relay).
 
 The sink is built once per session, at registration (`pkg/vmcp/server`'s
 `buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,
@@ -217,20 +220,27 @@ the token-staleness note below). It is threaded through
 single nilable `ListChangedSink` parameter) down to every backend connector
 opened for that session.
 
+`buildListChangedSink` builds **one coalescing worker per `ChangeKind`**
+(`KindTools`, `KindResources`, `KindPrompts`) rather than a single shared
+worker: a tools notification resyncs only the session's tool store, without
+forcing a redundant re-apply (and possible spurious downstream
+`list_changed`) of its resources or prompts overlay, and vice versa.
+
 **The sink is non-blocking (runs on the backend receive-loop goroutine).** It
 must not do real work inline: the mcpcompat client dispatches notifications
 synchronously on its receive loop, so a blocking sink would stall that
 backend's notification delivery and let a misbehaving backend amplify one
-notification into unbounded work. The sink therefore only hands off to a
-**per-session coalescing worker** (`listChangedResyncWorker`): `trigger()`
-sets a dirty flag and, at most, starts **one** worker goroutine — never one
-goroutine per notification. At most one resync runs at a time per session;
-notifications that arrive while a resync is in flight collapse into a single
-follow-up run, so a notification storm is bounded to O(1) concurrent work per
-session. The worker goroutine exits when idle, so an idle session holds no
-goroutine.
+notification into unbounded work. The sink therefore only hands off to the
+matching **per-(session, kind) coalescing worker** (`listChangedResyncWorker`):
+`trigger()` sets a dirty flag and, at most, starts **one** worker goroutine —
+never one goroutine per notification. At most one resync runs at a time per
+(session, kind); notifications that arrive while a resync is in flight
+collapse into a single follow-up run, so a notification storm is bounded to
+O(1) concurrent work per (session, kind) — up to 3 concurrent resyncs per
+session in the worst case, one per kind. Each worker goroutine exits when
+idle, so an idle session holds no goroutine.
 
-The worker's resync body (`runListChangedResync`), off the receive loop:
+Each worker's resync body (`runListChangedResync`), off the receive loop:
 
 1. **Liveness guard** — looks the session up via `GetMultiSession` and returns
    immediately if it was terminated/expired, so a storm of notifications for a
@@ -243,67 +253,100 @@ The worker's resync body (`runListChangedResync`), off the receive loop:
    capability cache key and the outbound backend authentication are derived
    from the **context** (not from an explicit identity argument), so without
    this the resync would enumerate backends *unauthenticated* — advertising
-   tool metadata the principal's own credentials would not surface, or wrongly
-   dropping credential-gated tools, while replacing the correctly-scoped
-   registration-time set.
+   metadata the principal's own credentials would not surface, or wrongly
+   dropping credential-gated tools/resources/prompts, while replacing the
+   correctly-scoped registration-time set.
 3. Calls `core.InvalidateCapabilityCache()`, which purges the **entire**
-   per-identity capability cache (`aggregator.CacheInvalidator`). This is
-   coarse (not scoped to the one backend that changed): the LRU key is a hash
-   of identity + forwarded headers + backend-set, so per-backend invalidation
-   would need a reverse index that is disproportionate here. The coalescing
-   above already bounds the purge to at most once per resync burst, and a
-   purge only forces the next call per identity to re-sweep — an accepted
-   de-opt / follow-up. An aggregator that does not implement `CacheInvalidator`
+   per-identity capability cache (`aggregator.CacheInvalidator`), covering all
+   capability kinds together (tools, resources, resource templates, prompts
+   share one cached `AggregatedCapabilities` per identity). This is coarse (not
+   scoped to the one backend that changed): the LRU key is a hash of identity +
+   forwarded headers + backend-set, so per-backend invalidation would need a
+   reverse index that is disproportionate here. The coalescing above already
+   bounds the purge to at most once per resync burst per kind, and a purge
+   only forces the next call per identity to re-sweep — an accepted de-opt /
+   follow-up. An aggregator that does not implement `CacheInvalidator`
    WARN-logs instead of silently no-opping.
-4. Re-derives the session's advertised tool set from the (now cold) cache via
-   the same `serveSessionTools` helper session registration uses, and
-   **replaces** — not merges — the SDK session's tool store
-   (`SessionWithTools.SetSessionTools`), so a tool the backend removed
-   disappears rather than lingering from the registration-time merge.
+4. Re-derives and **replaces** — not merges — the session's advertised set for
+   the notification's kind, from the (now cold) cache: `KindTools` re-derives
+   via `serveSessionTools` and replaces the tool store
+   (`SessionWithTools.SetSessionTools`); `KindResources` re-derives via
+   `coreSessionResources`/`coreSessionResourceTemplates` and replaces BOTH the
+   resource store (`SessionWithResources.SetSessionResources`) and the
+   resource-template store
+   (`SessionWithResourceTemplates.SetSessionResourceTemplates`) — one
+   notification method covers both, per MCP 2025-11-25; `KindPrompts`
+   re-derives via `coreSessionPrompts` and replaces the prompt store
+   (`SessionWithPrompts.SetSessionPrompts`). Replacing (rather than merging)
+   means a tool the backend removed disappears rather than lingering from the
+   registration-time merge — but see the add-only caveat below for resources
+   and prompts.
 
-The go-sdk server auto-emits `notifications/tools/list_changed` to the
-downstream client whenever `SetSessionTools` changes something, now that
-`WithToolCapabilities(true)` is set (`pkg/vmcp/server/serve.go`).
+The go-sdk server auto-emits the corresponding `list_changed` notification
+(`notifications/tools/list_changed`, `notifications/resources/list_changed`,
+or `notifications/prompts/list_changed`) to the downstream client whenever the
+matching `SetSession*` call changes something, now that
+`WithToolCapabilities(true)`, `WithResourceCapabilities(true, true)`, and
+`WithPromptCapabilities(true)` are all set (`pkg/vmcp/server/serve.go`).
 
-**Identity staleness (B1)**: the sink reuses the identity captured at
+**Identity staleness (B1)**: each worker reuses the identity captured at
 registration for its re-aggregation and admission view. If that identity's
-upstream tokens are refreshed later (see #5323), the resync's `core.ListTools`
-call authorizes/aggregates against the (potentially stale) captured tokens,
-not the live per-request ones. This only affects the *accuracy of the
-asynchronous resync's own view* — every live call still authenticates via the
-fresh per-request identity through `enforceSessionBinding`, so staleness here
-cannot grant a call that would otherwise be denied.
+upstream tokens are refreshed later (see #5323), the resync's
+`core.ListTools`/`ListResources`/`ListPrompts` call authorizes/aggregates
+against the (potentially stale) captured tokens, not the live per-request
+ones. This only affects the *accuracy of the asynchronous resync's own view*
+— every live call still authenticates via the fresh per-request identity
+through `enforceSessionBinding`, so staleness here cannot grant a call that
+would otherwise be denied.
 
-**Registration-time emission (R1)**: go-sdk's own `AddTool`/`RemoveTools`
-debounce (10ms) and then broadcast `notifications/tools/list_changed` to
-**every** session currently connected to the shared `*gosdk.Server` — not
-only the session whose tool overlay changed — and a session is eligible for
-that broadcast from the moment its transport connects (`Server.bind`), before
-its own `initialize`/`notifications/initialized` round-trip completes.
-go-sdk's own source documents this as a known upstream gap ("potential spec
-violation... when the feature list changes before the session ... is
-initialized"). This means every session's registration-time per-session
-`AddTool` calls (`setSessionToolsDirect`) now cause a broadcast to every other
-already-connected session too. There is no supported hook to scope or
-suppress this without patching the vendored SDK, so it is accepted as a
-benign nuisance: MCP notifications are inherently a "you may want to refetch"
-hint, so an extra one only costs an idempotent `tools/list` round-trip — it
-never changes what any given session's own `tools/list` actually returns.
+**Registration-time emission (R1)**: go-sdk's own `AddTool`/`RemoveTools` (and
+the resource/prompt equivalents) debounce (10ms) and then broadcast the
+corresponding `list_changed` notification to **every** session currently
+connected to the shared `*gosdk.Server` — not only the session whose overlay
+changed — and a session is eligible for that broadcast from the moment its
+transport connects (`Server.bind`), before its own
+`initialize`/`notifications/initialized` round-trip completes. go-sdk's own
+source documents this as a known upstream gap ("potential spec violation...
+when the feature list changes before the session ... is initialized"). This
+means every session's registration-time per-session `AddTool`/resource/prompt
+calls (`setSessionToolsDirect`/`setSessionResourcesDirect`/
+`setSessionResourceTemplatesDirect`/`setSessionPromptsDirect`) now cause a
+broadcast to every other already-connected session too. There is no supported
+hook to scope or suppress this without patching the vendored SDK, so it is
+accepted as a benign nuisance for all three capability kinds: MCP
+notifications are inherently a "you may want to refetch" hint, so an extra one
+only costs an idempotent list round-trip — it never changes what any given
+session's own list actually returns.
 
-**Scope**: tools only. Resources/prompts `list_changed` propagation is a
-tracked follow-up — the backend connector does not dispatch those
-notification methods to the sink yet, and cross-pod session restore
-(`RestoreSession`) does not thread a sink at all (no live `ClientSession` to
-resync there).
+**Scope**: additions AND removals propagate for tools. For resources
+(including resource templates) and prompts, only **additions** propagate
+today: toolhive-core's mcpcompat per-session sync for resources/resource
+templates/prompts (`syncSessionResources`/`syncSessionResourceTemplates`/
+`syncSessionPrompts` in `mcpcompat/server/session.go`) is add-only — unlike
+`syncSessionTools`, which also calls `RemoveTools` — so a backend-removed
+resource/template/prompt stays registered on the session's go-sdk server
+(listed until re-initialize) even though the overlay this PR replaces no
+longer contains it. `resyncSessionResources`/`resyncSessionPrompts` still
+REPLACE (not merge) their overlay, so once toolhive-core gains removal
+reconciliation ([stacklok/toolhive-core#184](https://github.com/stacklok/toolhive-core/issues/184)),
+removals start propagating with no change needed on the vMCP side. Advertising
+`listChanged: true` stays honest in the meantime — notifications ARE emitted on
+change (except that a pure removal which EMPTIES the overlay issues no `Add*`
+and therefore triggers no downstream `list_changed`, since go-sdk notifies only
+via `Add*`/`RemoveTools`); `listChanged` promises notification, not list
+minimization — but until that follow-up lands, a refetch after a pure removal
+returns a stale superset for resources/templates/prompts. Cross-pod session
+restore (`RestoreSession`) does not thread a sink at all for any kind (no live
+`ClientSession` to resync there).
 
 **Implementation**: `pkg/vmcp/session/internal/backend/mcp_session.go`
-(`ChangeKind`/`KindTools`, `ListChangedSink`, connector wiring),
-`pkg/vmcp/aggregator/aggregator.go` and `caching_aggregator.go`
-(`CacheInvalidator`), `pkg/vmcp/core/core_vmcp.go`
+(`ChangeKind`/`KindTools`/`KindResources`/`KindPrompts`, `ListChangedSink`,
+connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
+`caching_aggregator.go` (`CacheInvalidator`), `pkg/vmcp/core/core_vmcp.go`
 (`InvalidateCapabilityCache`), `pkg/vmcp/server/serve_list_changed.go`
 (`listChangedResyncWorker` coalescing, `buildListChangedSink`,
-`runListChangedResync`, `resyncSessionTools`) with `Server.resyncBaseCtx`
-cancelled on `Stop`.
+`runListChangedResync`, `resyncSessionTools`, `resyncSessionResources`,
+`resyncSessionPrompts`) with `Server.resyncBaseCtx` cancelled on `Stop`.
 
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 

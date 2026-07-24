@@ -350,10 +350,11 @@ type Server struct {
 	shutdownFuncs []func(context.Context) error
 
 	// resyncBaseCtx is the server-lifetime parent context for asynchronous
-	// tools/list_changed resync work (#5748). It is cancelled by a shutdownFunc
-	// on Stop, so an in-flight backend re-aggregation triggered by a late
-	// notification cannot outlive the server. Set by Serve; nil for direct-Serve
-	// callers that never register a list_changed sink.
+	// tools/resources/prompts list_changed resync work (#5748, #5969). It is
+	// cancelled by a shutdownFunc on Stop, so an in-flight backend
+	// re-aggregation triggered by a late notification cannot outlive the
+	// server. Set by Serve; nil for direct-Serve callers that never register a
+	// list_changed sink.
 	resyncBaseCtx context.Context
 }
 

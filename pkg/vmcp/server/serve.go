@@ -241,43 +241,57 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return srv.coreSubscribeHandler(ctx, "resources/unsubscribe", uri)
 	}
 
-	// Build the mcp-go server (mirrors server.New): tools and resources are
-	// registered dynamically, so capabilities start disabled — except resources,
-	// which advertise subscribe support so spec-compliant clients issue
-	// resources/subscribe (the handlers above answer it at ack level).
+	// Build the mcp-go server (mirrors server.New): tools, resources, and
+	// prompts are registered dynamically, so capabilities start disabled —
+	// except resources, which additionally advertise subscribe support so
+	// spec-compliant clients issue resources/subscribe (the handlers above
+	// answer it at ack level).
 	//
-	// tools.listChanged is now advertised (#5748): a persistent backend
-	// connection's notifications/tools/list_changed drives a session resync
-	// (serve_list_changed.go) that replaces the SDK session's tool store via
-	// SetSessionTools, and go-sdk auto-emits notifications/tools/list_changed to
-	// the downstream client whenever this capability is on.
+	// tools.listChanged (#5748) and resources.listChanged/prompts.listChanged
+	// (#5969) are now advertised: a persistent backend connection's
+	// notifications/tools/list_changed, notifications/resources/list_changed,
+	// or notifications/prompts/list_changed drives a per-kind session resync
+	// (serve_list_changed.go) that replaces the SDK session's tool, resource
+	// (+ resource-template), or prompt store via SetSessionTools/
+	// SetSessionResources/SetSessionResourceTemplates/SetSessionPrompts, and
+	// go-sdk auto-emits the corresponding list_changed notification to the
+	// downstream client whenever that capability is on. WithPromptCapabilities
+	// also fixes a spec-conformance defect: vMCP already served prompts per
+	// session (SessionWithPrompts) but never declared the prompts capability at
+	// initialize, violating MCP 2025-11-25's "Servers that support prompts MUST
+	// declare the prompts capability during initialization".
 	//
 	// R1 (verified against toolhive-core v0.0.32 / go-sdk v1.6.1): go-sdk's own
-	// AddTool/RemoveTools call a shared changeAndNotify that debounces (10ms)
-	// and then broadcasts the notification to EVERY session currently connected
-	// to this *gosdk.Server (mcpcompat/server/server.go's srv is one instance
-	// shared across all sessions) — not just the session whose tool overlay
-	// changed. go-sdk's own bind() adds a session to that broadcast list as soon
-	// as the transport connects (Connect), before initialize/notifications
-	// initialized even round-trip; go-sdk's shared.go itself documents this as a
-	// known upstream gap ("potential spec violation... when the feature list
-	// changes before the session ... is initialized"). Concretely: every
-	// session's registration-time per-session AddTool calls (setSessionToolsDirect)
-	// now cause a list_changed broadcast to every OTHER already-connected
-	// session too, not only the one just registered — this is inherent go-sdk
-	// behavior, not something introduced by the #5748 resync sink, and there is
-	// no supported hook to scope or suppress it short of patching the vendored
-	// SDK (out of scope here). It is accepted as a benign nuisance: MCP clients
-	// treat list_changed as "you may want to refetch," so an extra notification
-	// only costs an idempotent tools/list round-trip — it never changes what a
-	// given session's tools/list actually returns (each session's advertised
-	// set still comes solely from its own overlay). See
-	// docs/arch/10-virtual-mcp-architecture.md for the propagation writeup.
+	// AddTool/RemoveTools (and the resource/prompt equivalents) call a shared
+	// changeAndNotify that debounces (10ms) and then broadcasts the
+	// notification to EVERY session currently connected to this *gosdk.Server
+	// (mcpcompat/server/server.go's srv is one instance shared across all
+	// sessions) — not just the session whose overlay changed. go-sdk's own
+	// bind() adds a session to that broadcast list as soon as the transport
+	// connects (Connect), before initialize/notifications initialized even
+	// round-trip; go-sdk's shared.go itself documents this as a known upstream
+	// gap ("potential spec violation... when the feature list changes before
+	// the session ... is initialized"). Concretely: every session's
+	// registration-time per-session AddTool/resource/prompt calls
+	// (setSessionToolsDirect/setSessionResourcesDirect/
+	// setSessionResourceTemplatesDirect/setSessionPromptsDirect) now cause a
+	// list_changed broadcast to every OTHER already-connected session too, not
+	// only the one just registered — this is inherent go-sdk behavior, not
+	// something introduced by the #5748/#5969 resync sinks, and there is no
+	// supported hook to scope or suppress it short of patching the vendored SDK
+	// (out of scope here). It is accepted as a benign nuisance for all three
+	// capability kinds: MCP clients treat list_changed as "you may want to
+	// refetch," so an extra notification only costs an idempotent list
+	// round-trip — it never changes what a given session's own list actually
+	// returns (each session's advertised set still comes solely from its own
+	// overlay). See docs/arch/10-virtual-mcp-architecture.md for the
+	// propagation writeup.
 	mcpServer := server.NewMCPServer(
 		serveCfg.Name,
 		serveCfg.Version,
 		server.WithToolCapabilities(true),
-		server.WithResourceCapabilities(true, false),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithHooks(hooks),
 		server.WithCompletionHandler(completionHandler),
@@ -330,11 +344,12 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		statusReporter:   cfg.StatusReporter,
 	}
 
-	// Server-lifetime parent context for asynchronous tools/list_changed resync
-	// work (#5748). Cancelling it on Stop aborts any in-flight backend
-	// re-aggregation a late notification kicked off, so nothing outlives the
-	// server. context.Background() is the parent (not the Serve ctx, which may be
-	// request-scoped) so the resync lifetime is bounded solely by Stop.
+	// Server-lifetime parent context for asynchronous tools/resources/prompts
+	// list_changed resync work (#5748, #5969). Cancelling it on Stop aborts any
+	// in-flight backend re-aggregation a late notification kicked off, so
+	// nothing outlives the server. context.Background() is the parent (not the
+	// Serve ctx, which may be request-scoped) so the resync lifetime is bounded
+	// solely by Stop.
 	resyncCtx, resyncCancel := context.WithCancel(context.Background())
 	srv.resyncBaseCtx = resyncCtx
 	srv.shutdownFuncs = append(srv.shutdownFuncs, func(context.Context) error {

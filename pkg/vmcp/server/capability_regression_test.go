@@ -62,12 +62,18 @@ func TestRegression_InitializeAdvertisesToolsAndResourcesCapabilities(t *testing
 		"tools capability must be advertised in initialize on the Serve path; got %v", capabilities)
 	assert.Contains(t, capabilities, "resources",
 		"resources capability must be advertised in initialize on the Serve path; got %v", capabilities)
+	assert.Contains(t, capabilities, "prompts",
+		"prompts capability must be advertised in initialize on the Serve path (#5969 fixes a latent bug"+
+			" where it was never advertised even though per-session prompts were served); got %v", capabilities)
 }
 
-// TestRegression_InitializeAdvertisesToolsListChanged pins #5748's capability
-// flip: tools.listChanged must now be true in the initialize response (it was
-// false — and therefore omitted, per the SDK's omitempty — before #5748).
-func TestRegression_InitializeAdvertisesToolsListChanged(t *testing.T) {
+// TestRegression_InitializeAdvertisesListChanged pins the #5748 (tools) and
+// #5969 (resources/prompts) capability flips: tools.listChanged,
+// resources.listChanged, and prompts.listChanged must all be true in the
+// initialize response (they were false — and therefore omitted, per the
+// SDK's omitempty — before these changes). resources.subscribe must remain
+// true throughout (unrelated to listChanged, pinned pre-existing behavior).
+func TestRegression_InitializeAdvertisesListChanged(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "cap-tool"}}}
@@ -96,6 +102,17 @@ func TestRegression_InitializeAdvertisesToolsListChanged(t *testing.T) {
 	require.True(t, ok, "tools capability must be an object; capabilities: %v", capabilities)
 	assert.Equal(t, true, toolsCaps["listChanged"],
 		"tools.listChanged must be true so downstream clients trust the resync notification (#5748)")
+
+	resourcesCaps, ok := capabilities["resources"].(map[string]any)
+	require.True(t, ok, "resources capability must be an object; capabilities: %v", capabilities)
+	assert.Equal(t, true, resourcesCaps["subscribe"], "resources.subscribe must remain true")
+	assert.Equal(t, true, resourcesCaps["listChanged"],
+		"resources.listChanged must be true so downstream clients trust the resync notification (#5969)")
+
+	promptsCaps, ok := capabilities["prompts"].(map[string]any)
+	require.True(t, ok, "prompts capability must be an object; capabilities: %v", capabilities)
+	assert.Equal(t, true, promptsCaps["listChanged"],
+		"prompts.listChanged must be true so downstream clients trust the resync notification (#5969)")
 }
 
 // TestRegression_SessionRegistrationDoesNotSpuriouslyInvalidateCache verifies

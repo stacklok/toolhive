@@ -38,6 +38,65 @@ func newTestRegistry(t *testing.T) vmcpauth.OutgoingAuthRegistry {
 // headerforward.MergeForwardedHeaders; full coverage lives in
 // pkg/vmcp/headerforward/transport_test.go (TestMergeForwardedHeaders).
 
+// TestNewListChangedNotificationHandler_DispatchesByMethod verifies (#5748,
+// #5969) newListChangedNotificationHandler's wire-method dispatch: each of
+// the three list_changed methods fires sink with the matching ChangeKind, and
+// neither notifications/message nor an unknown method fires sink at all.
+func TestNewListChangedNotificationHandler_DispatchesByMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		method    string
+		wantFired bool
+		wantKind  ChangeKind
+	}{
+		{"tools/list_changed dispatches KindTools", vmcp.MethodToolsListChangedNotification, true, KindTools},
+		{"resources/list_changed dispatches KindResources", vmcp.MethodResourcesListChangedNotification, true, KindResources},
+		{"prompts/list_changed dispatches KindPrompts", vmcp.MethodPromptsListChangedNotification, true, KindPrompts},
+		{"notifications/message does not dispatch", vmcp.MethodLogNotification, false, ""},
+		{"unknown method does not dispatch", "notifications/resources/updated", false, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			type firedCall struct {
+				workloadID string
+				kind       ChangeKind
+			}
+			fired := make(chan firedCall, 1)
+			sink := func(_ context.Context, workloadID string, kind ChangeKind) {
+				fired <- firedCall{workloadID: workloadID, kind: kind}
+			}
+
+			handler := newListChangedNotificationHandler("backend-1", sink)
+			handler(mcpmcp.JSONRPCNotification{
+				JSONRPC:      "2.0",
+				Notification: mcpmcp.Notification{Method: tc.method},
+			})
+
+			if !tc.wantFired {
+				select {
+				case got := <-fired:
+					t.Fatalf("sink must not fire for method %q, but fired with kind %q", tc.method, got.kind)
+				case <-time.After(50 * time.Millisecond):
+				}
+				return
+			}
+
+			select {
+			case got := <-fired:
+				assert.Equal(t, "backend-1", got.workloadID)
+				assert.Equal(t, tc.wantKind, got.kind)
+			case <-time.After(5 * time.Second):
+				t.Fatalf("sink never fired for method %q", tc.method)
+			}
+		})
+	}
+}
+
 func TestCreateMCPClient_UnsupportedTransport(t *testing.T) {
 	t.Parallel()
 
@@ -62,25 +121,31 @@ func TestCreateMCPClient_UnsupportedTransport(t *testing.T) {
 }
 
 // listChangedTestBackend is a real mcpcompat MCP server (streamable-HTTP) with
-// WithToolCapabilities(true). It captures its one connected session (via
-// OnRegisterSession) and exposes addTool, which appends a per-session tool via
-// SessionWithTools.SetSessionTools — the same mechanism ToolHive's own vMCP
-// Server uses (setSessionToolsDirect/resyncSessionTools) — which is what
-// actually drives the underlying go-sdk server's real
-// notifications/tools/list_changed broadcast. (The mcpcompat-wrapper-level
-// MCPServer.AddTool called AFTER the server starts serving does NOT do this:
-// it only mutates the wrapper's pre-serve tool set, registered once at
-// buildServer time, so it has no effect on an already-connected session.)
+// WithToolCapabilities(true), WithResourceCapabilities(true, true), and
+// WithPromptCapabilities(true). It captures its one connected session (via
+// OnRegisterSession) and exposes addTool/addResource/addPrompt, which append a
+// per-session tool/resource/prompt via SessionWithTools.SetSessionTools /
+// SessionWithResources.SetSessionResources / SessionWithPrompts.SetSessionPrompts
+// — the same mechanism ToolHive's own vMCP Server uses
+// (setSessionToolsDirect/resyncSessionTools and their resource/prompt
+// counterparts) — which is what actually drives the underlying go-sdk
+// server's real notifications/{tools,resources,prompts}/list_changed
+// broadcast. (The mcpcompat-wrapper-level MCPServer.AddTool/AddResource/
+// AddPrompt called AFTER the server starts serving does NOT do this: it only
+// mutates the wrapper's pre-serve set, registered once at buildServer time, so
+// it has no effect on an already-connected session.)
 type listChangedTestBackend struct {
 	url string
 
 	// ready closes once OnRegisterSession has captured session, decoupling
-	// addTool from the client-side race noted below.
+	// addTool/addResource/addPrompt from the client-side race noted below.
 	ready chan struct{}
 
-	mu      sync.Mutex
-	session mcpserver.ClientSession
-	tools   map[string]mcpserver.ServerTool
+	mu        sync.Mutex
+	session   mcpserver.ClientSession
+	tools     map[string]mcpserver.ServerTool
+	resources map[string]mcpserver.ServerResource
+	prompts   map[string]mcpserver.ServerPrompt
 }
 
 func newListChangedTool(name string) mcpserver.ServerTool {
@@ -88,6 +153,26 @@ func newListChangedTool(name string) mcpserver.ServerTool {
 		Tool: mcpmcp.NewTool(name, mcpmcp.WithDescription("a list_changed test tool")),
 		Handler: func(_ context.Context, _ mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
 			return mcpmcp.NewToolResultText("ok"), nil
+		},
+	}
+}
+
+func newListChangedResource(uri string) mcpserver.ServerResource {
+	return mcpserver.ServerResource{
+		Resource: mcpmcp.Resource{URI: uri, Name: uri},
+		Handler: func(context.Context, mcpmcp.ReadResourceRequest) ([]mcpmcp.ResourceContents, error) {
+			return []mcpmcp.ResourceContents{mcpmcp.TextResourceContents{URI: uri, Text: "ok"}}, nil
+		},
+	}
+}
+
+func newListChangedPrompt(name string) mcpserver.ServerPrompt {
+	return mcpserver.ServerPrompt{
+		Prompt: mcpmcp.NewPrompt(name),
+		Handler: func(context.Context, mcpmcp.GetPromptRequest) (*mcpmcp.GetPromptResult, error) {
+			return &mcpmcp.GetPromptResult{Messages: []mcpmcp.PromptMessage{
+				mcpmcp.NewPromptMessage(mcpmcp.RoleUser, mcpmcp.NewTextContent("ok")),
+			}}, nil
 		},
 	}
 }
@@ -101,6 +186,12 @@ func newListChangedTestBackend(t *testing.T) *listChangedTestBackend {
 		tools: map[string]mcpserver.ServerTool{
 			"initial_tool": newListChangedTool("initial_tool"),
 		},
+		resources: map[string]mcpserver.ServerResource{
+			"initial_resource": newListChangedResource("initial_resource"),
+		},
+		prompts: map[string]mcpserver.ServerPrompt{
+			"initial_prompt": newListChangedPrompt("initial_prompt"),
+		},
 	}
 
 	hooks := &mcpserver.Hooks{}
@@ -111,18 +202,44 @@ func newListChangedTestBackend(t *testing.T) *listChangedTestBackend {
 		for k, v := range b.tools {
 			tools[k] = v
 		}
+		resources := make(map[string]mcpserver.ServerResource, len(b.resources))
+		for k, v := range b.resources {
+			resources[k] = v
+		}
+		prompts := make(map[string]mcpserver.ServerPrompt, len(b.prompts))
+		for k, v := range b.prompts {
+			prompts[k] = v
+		}
 		b.mu.Unlock()
+
 		sessionWithTools, ok := session.(mcpserver.SessionWithTools)
 		if !ok {
 			t.Errorf("listChangedTestBackend: session does not support per-session tools")
 			return
 		}
 		sessionWithTools.SetSessionTools(tools)
+
+		sessionWithResources, ok := session.(mcpserver.SessionWithResources)
+		if !ok {
+			t.Errorf("listChangedTestBackend: session does not support per-session resources")
+			return
+		}
+		sessionWithResources.SetSessionResources(resources)
+
+		sessionWithPrompts, ok := session.(mcpserver.SessionWithPrompts)
+		if !ok {
+			t.Errorf("listChangedTestBackend: session does not support per-session prompts")
+			return
+		}
+		sessionWithPrompts.SetSessionPrompts(prompts)
+
 		close(b.ready)
 	})
 
 	srv := mcpserver.NewMCPServer("list-changed-backend", "1.0.0",
 		mcpserver.WithToolCapabilities(true),
+		mcpserver.WithResourceCapabilities(true, true),
+		mcpserver.WithPromptCapabilities(true),
 		mcpserver.WithHooks(hooks),
 	)
 	streamableSrv := mcpserver.NewStreamableHTTPServer(srv)
@@ -165,6 +282,56 @@ func (b *listChangedTestBackend) addTool(t *testing.T, name string) {
 	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
 	require.True(t, ok, "listChangedTestBackend: session does not support per-session tools")
 	sessionWithTools.SetSessionTools(tools)
+}
+
+// addResource adds uri to the connected session's per-session resource set via
+// SetSessionResources, triggering a real, asynchronous
+// notifications/resources/list_changed broadcast. See addTool for the b.ready
+// synchronization rationale.
+func (b *listChangedTestBackend) addResource(t *testing.T, uri string) {
+	t.Helper()
+	select {
+	case <-b.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("listChangedTestBackend: timed out waiting for session registration")
+	}
+
+	b.mu.Lock()
+	session := b.session
+	b.resources[uri] = newListChangedResource(uri)
+	resources := make(map[string]mcpserver.ServerResource, len(b.resources))
+	for k, v := range b.resources {
+		resources[k] = v
+	}
+	b.mu.Unlock()
+	sessionWithResources, ok := session.(mcpserver.SessionWithResources)
+	require.True(t, ok, "listChangedTestBackend: session does not support per-session resources")
+	sessionWithResources.SetSessionResources(resources)
+}
+
+// addPrompt adds name to the connected session's per-session prompt set via
+// SetSessionPrompts, triggering a real, asynchronous
+// notifications/prompts/list_changed broadcast. See addTool for the b.ready
+// synchronization rationale.
+func (b *listChangedTestBackend) addPrompt(t *testing.T, name string) {
+	t.Helper()
+	select {
+	case <-b.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("listChangedTestBackend: timed out waiting for session registration")
+	}
+
+	b.mu.Lock()
+	session := b.session
+	b.prompts[name] = newListChangedPrompt(name)
+	prompts := make(map[string]mcpserver.ServerPrompt, len(b.prompts))
+	for k, v := range b.prompts {
+		prompts[k] = v
+	}
+	b.mu.Unlock()
+	sessionWithPrompts, ok := session.(mcpserver.SessionWithPrompts)
+	require.True(t, ok, "listChangedTestBackend: session does not support per-session prompts")
+	sessionWithPrompts.SetSessionPrompts(prompts)
 }
 
 // TestCreateMCPClient_ContinuousListeningGatedOnSink verifies createMCPClient
@@ -213,55 +380,93 @@ func TestCreateMCPClient_ContinuousListeningGatedOnSink(t *testing.T) {
 }
 
 // TestCreateMCPClient_ListChangedSink_FiresOnBackendNotification is the
-// end-to-end regression for #5748: a non-nil sink fires with the backend's
-// WorkloadID and kind="tools" when the real backend emits
-// notifications/tools/list_changed asynchronously (outside any in-flight
-// call), and the nil-sink path never panics or opens the standalone stream.
+// end-to-end regression for #5748 (tools) and #5969 (resources, prompts): a
+// non-nil sink fires with the backend's WorkloadID and the expected kind when
+// the real backend emits notifications/{tools,resources,prompts}/list_changed
+// asynchronously (outside any in-flight call), over the same
+// continuous-listening connection, and the nil-sink path never panics or
+// opens the standalone stream.
 func TestCreateMCPClient_ListChangedSink_FiresOnBackendNotification(t *testing.T) {
 	t.Parallel()
 
-	b := newListChangedTestBackend(t)
-	target := &vmcp.BackendTarget{
-		WorkloadID:    "list-changed-backend",
-		WorkloadName:  "list-changed-backend",
-		BaseURL:       b.url,
-		TransportType: "streamable-http",
+	tests := []struct {
+		name     string
+		trigger  func(t *testing.T, b *listChangedTestBackend)
+		wantKind ChangeKind
+	}{
+		{"tools", func(t *testing.T, b *listChangedTestBackend) {
+			t.Helper()
+			b.addTool(t, "added_tool")
+		}, KindTools},
+		{"resources", func(t *testing.T, b *listChangedTestBackend) {
+			t.Helper()
+			b.addResource(t, "added_resource")
+		}, KindResources},
+		{"prompts", func(t *testing.T, b *listChangedTestBackend) {
+			t.Helper()
+			b.addPrompt(t, "added_prompt")
+		}, KindPrompts},
 	}
 
-	type firedCall struct {
-		backendWorkloadID string
-		kind              ChangeKind
-	}
-	fired := make(chan firedCall, 4)
-	sink := func(_ context.Context, backendWorkloadID string, kind ChangeKind) {
-		fired <- firedCall{backendWorkloadID: backendWorkloadID, kind: kind}
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	c, err := createMCPClient(
-		context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
+			b := newListChangedTestBackend(t)
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "list-changed-backend",
+				WorkloadName:  "list-changed-backend",
+				BaseURL:       b.url,
+				TransportType: "streamable-http",
+			}
 
-	_, err = c.Initialize(context.Background(), mcpmcp.InitializeRequest{
-		Params: mcpmcp.InitializeParams{
-			ProtocolVersion: mcpmcp.LATEST_PROTOCOL_VERSION,
-			ClientInfo:      mcpmcp.Implementation{Name: "test-client", Version: "1.0"},
-		},
-	})
-	require.NoError(t, err)
+			type firedCall struct {
+				backendWorkloadID string
+				kind              ChangeKind
+			}
+			// Buffered generously: registration itself sets all three per-session
+			// stores (tools, resources, prompts), each of which fires its own
+			// registration-time list_changed broadcast (see serve.go's R1 note) in
+			// addition to the one this test explicitly triggers below.
+			fired := make(chan firedCall, 16)
+			sink := func(_ context.Context, backendWorkloadID string, kind ChangeKind) {
+				fired <- firedCall{backendWorkloadID: backendWorkloadID, kind: kind}
+			}
 
-	// Backend asynchronously changes its (per-session) tool set — a real
-	// tools/list_changed trigger, independent of any in-flight call from this
-	// client.
-	b.addTool(t, "added_tool")
+			c, err := createMCPClient(
+				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
 
-	select {
-	case got := <-fired:
-		assert.Equal(t, "list-changed-backend", got.backendWorkloadID)
-		assert.Equal(t, KindTools, got.kind)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for the list_changed sink to fire")
+			_, err = c.Initialize(context.Background(), mcpmcp.InitializeRequest{
+				Params: mcpmcp.InitializeParams{
+					ProtocolVersion: mcpmcp.LATEST_PROTOCOL_VERSION,
+					ClientInfo:      mcpmcp.Implementation{Name: "test-client", Version: "1.0"},
+				},
+			})
+			require.NoError(t, err)
+
+			// Backend asynchronously changes its per-session set — a real
+			// list_changed trigger, independent of any in-flight call from this
+			// client. Drain fired notifications (which may also include
+			// registration-time broadcasts of OTHER kinds, per the buffer comment
+			// above) until the expected kind is observed.
+			tc.trigger(t, b)
+
+			deadline := time.After(10 * time.Second)
+			for {
+				select {
+				case got := <-fired:
+					assert.Equal(t, "list-changed-backend", got.backendWorkloadID)
+					if got.kind == tc.wantKind {
+						return
+					}
+				case <-deadline:
+					t.Fatalf("timed out waiting for a %q list_changed notification", tc.wantKind)
+				}
+			}
+		})
 	}
 }
 

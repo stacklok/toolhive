@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -168,6 +169,11 @@ type fakeCore struct {
 	// fixed struct type because atomic.Value panics when Store sees differing
 	// concrete context types across calls (HTTP request ctx vs Background).
 	lastListToolsCtx atomic.Pointer[ctxBox]
+	// lastListResourcesCtx and lastListPromptsCtx are the #5969 analogues, so
+	// the resources/prompts resyncs are guarded against silently dropping
+	// identity/header scoping too (auth-scoping regression guard).
+	lastListResourcesCtx atomic.Pointer[ctxBox]
+	lastListPromptsCtx   atomic.Pointer[ctxBox]
 }
 
 // ctxBox wraps a context.Context for atomic.Pointer storage on fakeCore.
@@ -195,8 +201,9 @@ func (f *fakeCore) CallTool(
 	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
 }
 
-func (f *fakeCore) ListResources(context.Context, *auth.Identity) ([]vmcp.Resource, error) {
+func (f *fakeCore) ListResources(ctx context.Context, _ *auth.Identity) ([]vmcp.Resource, error) {
 	f.listResourcesCalls.Add(1)
+	f.lastListResourcesCtx.Store(&ctxBox{ctx: ctx})
 	return f.resources, nil
 }
 
@@ -214,8 +221,9 @@ func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string)
 	return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: uri, Text: "resource-body"}}}, nil
 }
 
-func (f *fakeCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, error) {
+func (f *fakeCore) ListPrompts(ctx context.Context, _ *auth.Identity) ([]vmcp.Prompt, error) {
 	f.listPromptsCalls.Add(1)
+	f.lastListPromptsCtx.Store(&ctxBox{ctx: ctx})
 	return f.prompts, nil
 }
 
@@ -752,7 +760,9 @@ func registerServeSessionWithRegistry(
 // MakeSessionWithID received for the registered session and invoke it
 // directly, simulating an asynchronous backend notification firing after
 // registration completes.
-func registerServeSessionCapturingSink(t *testing.T, fc *fakeCore) (srv *Server, sessionID, baseURL string, state *toolSessionState) {
+func registerServeSessionCapturingSink(
+	t *testing.T, fc *fakeCore,
+) (sessionID, baseURL string, state *toolSessionState) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	factory, state := newToolSessionFactory(t, ctrl, fc.tools)
@@ -791,7 +801,7 @@ func registerServeSessionCapturingSink(t *testing.T, fc *fakeCore) (srv *Server,
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 	require.Eventually(t, func() bool { return state.sink() != nil },
 		2*time.Second, 10*time.Millisecond, "MakeSessionWithID should have received a non-nil sink")
-	return srv, sessionID, ts.URL, state
+	return sessionID, ts.URL, state
 }
 
 // TestListChangedSink_EndToEnd_ResyncsRegisteredSession drives a real session
@@ -804,7 +814,7 @@ func TestListChangedSink_EndToEnd_ResyncsRegisteredSession(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "kept"}, {Name: "removed"}}}
-	_, sessionID, baseURL, state := registerServeSessionCapturingSink(t, fc)
+	sessionID, baseURL, state := registerServeSessionCapturingSink(t, fc)
 
 	listResp := postServeMCP(t, baseURL, map[string]any{
 		"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": map[string]any{},
@@ -835,6 +845,133 @@ func TestListChangedSink_EndToEnd_ResyncsRegisteredSession(t *testing.T) {
 		got := toolNamesFromListResult(t, env)
 		return assert.ObjectsAreEqualValues([]string{"added", "kept"}, sortedCopy(got))
 	}, 2*time.Second, 10*time.Millisecond, "tools/list must reflect the resynced (replaced) tool set")
+}
+
+// TestListChangedSink_EndToEnd_ResyncsRegisteredSession_Resources mirrors
+// TestListChangedSink_EndToEnd_ResyncsRegisteredSession for resources (#5969):
+// a resources/list_changed sink invocation invalidates the cache and resyncs
+// the session's resource AND resource-template stores. Unlike tools, this
+// pins the documented ADD-ONLY limitation (resyncSessionResources doc
+// comment; toolhive-core mcpcompat per-session resource/template sync has no
+// removal reconciliation): an addition ("added"/"added-tmpl") becomes visible,
+// but a removed entry ("res-removed"/"tmpl-removed") STILL appears — it is
+// not expected to disappear here, unlike the tools contrast test above.
+func TestListChangedSink_EndToEnd_ResyncsRegisteredSession_Resources(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		resources: []vmcp.Resource{
+			{Name: "res-kept", URI: "res-kept"},
+			{Name: "res-removed", URI: "res-removed"},
+		},
+		resourceTemplates: []vmcp.ResourceTemplate{
+			{Name: "tmpl-kept", URITemplate: "tmpl-kept"},
+			{Name: "tmpl-removed", URITemplate: "tmpl-removed"},
+		},
+	}
+	sessionID, baseURL, state := registerServeSessionCapturingSink(t, fc)
+
+	// Before snapshot: the added entries must be absent and the to-be-removed
+	// entries present, so the post-resync assertions cannot pass vacuously.
+	beforeResources := postServeMCPAndReadBody(t, baseURL, "resources/list", sessionID)
+	beforeTemplates := postServeMCPAndReadBody(t, baseURL, "resources/templates/list", sessionID)
+	assert.NotContains(t, beforeResources, "res-added")
+	assert.Contains(t, beforeResources, "res-removed")
+	assert.NotContains(t, beforeTemplates, "tmpl-added")
+	assert.Contains(t, beforeTemplates, "tmpl-removed")
+
+	// The core's advertised set changes: "res-removed"/"tmpl-removed" are gone
+	// (as if the backend removed them), "res-added"/"tmpl-added" are new.
+	fc.resources = []vmcp.Resource{
+		{Name: "res-kept", URI: "res-kept"},
+		{Name: "res-added", URI: "res-added"},
+	}
+	fc.resourceTemplates = []vmcp.ResourceTemplate{
+		{Name: "tmpl-kept", URITemplate: "tmpl-kept"},
+		{Name: "tmpl-added", URITemplate: "tmpl-added"},
+	}
+
+	sink := state.sink()
+	require.NotNil(t, sink)
+	sink(context.Background(), "some-backend", "resources")
+
+	require.Eventually(t, func() bool {
+		return fc.invalidateCacheCalls.Load() >= 1
+	}, 2*time.Second, 10*time.Millisecond, "sink must invalidate the capability cache")
+
+	require.Eventually(t, func() bool {
+		resourcesBody := postServeMCPAndReadBody(t, baseURL, "resources/list", sessionID)
+		templatesBody := postServeMCPAndReadBody(t, baseURL, "resources/templates/list", sessionID)
+		return strings.Contains(resourcesBody, "res-kept") &&
+			strings.Contains(resourcesBody, "res-added") &&
+			strings.Contains(templatesBody, "tmpl-kept") &&
+			strings.Contains(templatesBody, "tmpl-added")
+	}, 2*time.Second, 10*time.Millisecond, "resources/list and resources/templates/list must reflect the resynced additions")
+
+	// ADD-ONLY GUARD (tracked toolhive-core follow-up, see resyncSessionResources
+	// doc comment): a removed resource/template is NOT expected to disappear —
+	// toolhive-core's mcpcompat per-session sync only adds, never removes, so
+	// the overlay being replaced here does not (yet) reach the live SDK server's
+	// removal path the way tools does.
+	resourcesBody := postServeMCPAndReadBody(t, baseURL, "resources/list", sessionID)
+	templatesBody := postServeMCPAndReadBody(t, baseURL, "resources/templates/list", sessionID)
+	assert.Contains(t, resourcesBody, "res-removed",
+		"add-only limitation: a removed resource still lingers until the toolhive-core follow-up lands")
+	assert.Contains(t, templatesBody, "tmpl-removed",
+		"add-only limitation: a removed resource template still lingers until the toolhive-core follow-up lands")
+}
+
+// TestListChangedSink_EndToEnd_ResyncsRegisteredSession_Prompts mirrors
+// TestListChangedSink_EndToEnd_ResyncsRegisteredSession for prompts (#5969),
+// including the same ADD-ONLY guard as the resources test above.
+func TestListChangedSink_EndToEnd_ResyncsRegisteredSession_Prompts(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{prompts: []vmcp.Prompt{{Name: "prompt-kept"}, {Name: "prompt-removed"}}}
+	sessionID, baseURL, state := registerServeSessionCapturingSink(t, fc)
+
+	// Before snapshot: the added prompt must be absent and the to-be-removed
+	// prompt present, so the post-resync assertions cannot pass vacuously.
+	beforePrompts := postServeMCPAndReadBody(t, baseURL, "prompts/list", sessionID)
+	assert.NotContains(t, beforePrompts, "prompt-added")
+	assert.Contains(t, beforePrompts, "prompt-removed")
+
+	fc.prompts = []vmcp.Prompt{{Name: "prompt-kept"}, {Name: "prompt-added"}}
+
+	sink := state.sink()
+	require.NotNil(t, sink)
+	sink(context.Background(), "some-backend", "prompts")
+
+	require.Eventually(t, func() bool {
+		return fc.invalidateCacheCalls.Load() >= 1
+	}, 2*time.Second, 10*time.Millisecond, "sink must invalidate the capability cache")
+
+	require.Eventually(t, func() bool {
+		body := postServeMCPAndReadBody(t, baseURL, "prompts/list", sessionID)
+		return strings.Contains(body, "prompt-kept") && strings.Contains(body, "prompt-added")
+	}, 2*time.Second, 10*time.Millisecond, "prompts/list must reflect the resynced (added) prompt")
+
+	// ADD-ONLY GUARD (tracked toolhive-core follow-up, see resyncSessionPrompts
+	// doc comment): a removed prompt is NOT expected to disappear —
+	// toolhive-core's mcpcompat per-session prompt sync only adds, never
+	// removes.
+	body := postServeMCPAndReadBody(t, baseURL, "prompts/list", sessionID)
+	assert.Contains(t, body, "prompt-removed",
+		"add-only limitation: a removed prompt still lingers until the toolhive-core follow-up lands")
+}
+
+// postServeMCPAndReadBody sends a JSON-RPC list request over the Streamable
+// HTTP protocol and returns the raw response body as a string, for substring
+// assertions against the (un-parsed) list result.
+func postServeMCPAndReadBody(t *testing.T, baseURL, method, sessionID string) string {
+	t.Helper()
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0", "id": 99, "method": method, "params": map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return string(body)
 }
 
 // toolNamesFromListResult extracts the tool names from a tools/list JSON-RPC

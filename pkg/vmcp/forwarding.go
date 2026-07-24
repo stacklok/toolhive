@@ -25,6 +25,22 @@ const (
 	// (pkg/vmcp/session/internal/backend) to recognize a backend's asynchronous
 	// tool-set change and trigger cache invalidation + session resync (#5748).
 	MethodToolsListChangedNotification = "notifications/tools/list_changed"
+
+	// MethodResourcesListChangedNotification is the notifications/resources/list_changed
+	// wire method. Per MCP 2025-11-25 there is no separate wire method for resource
+	// TEMPLATE changes, so this method also covers a backend's resource-template-set
+	// change. Used by the persistent session-backed backend connection
+	// (pkg/vmcp/session/internal/backend) to recognize a backend's asynchronous
+	// resource (and resource-template) set change and trigger cache invalidation +
+	// session resync (#5969, mirroring #5748's tools handling).
+	MethodResourcesListChangedNotification = "notifications/resources/list_changed"
+
+	// MethodPromptsListChangedNotification is the notifications/prompts/list_changed
+	// wire method. Used by the persistent session-backed backend connection
+	// (pkg/vmcp/session/internal/backend) to recognize a backend's asynchronous
+	// prompt-set change and trigger cache invalidation + session resync (#5969,
+	// mirroring #5748's tools handling).
+	MethodPromptsListChangedNotification = "notifications/prompts/list_changed"
 )
 
 // SamplingRequester sends an MCP sampling (sampling/createMessage) request to the

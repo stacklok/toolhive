@@ -24,9 +24,14 @@ type ListChangedSink = backend.ListChangedSink
 // reason as ListChangedSink.
 type ChangeKind = backend.ChangeKind
 
-// KindTools re-exports backend.KindTools so out-of-tree callers can match on it
-// without importing the internal package.
-const KindTools = backend.KindTools
+// KindTools, KindResources, and KindPrompts re-export the corresponding
+// backend.Kind* constants so out-of-tree callers can match on them without
+// importing the internal package.
+const (
+	KindTools     = backend.KindTools
+	KindResources = backend.KindResources
+	KindPrompts   = backend.KindPrompts
+)
 
 // ValidateCaller checks caller against a stored identity-binding string (the
 // value persisted under MetadataKeyIdentityBinding) and returns nil when the

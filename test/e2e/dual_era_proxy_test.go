@@ -247,7 +247,7 @@ func assertCorrelated(results []crossDeliveryResult, wantCount int, label string
 // extractNonce pulls the echoed "nonce" key out of a tools/call response's
 // result._meta, per yardstick-server's echo tool: "Also echoes back any
 // _meta field from the request for testing metadata propagation." Returns
-// "" if absent or unparseable, which the caller's nonce-equality assertion
+// "" if absent or unparsable, which the caller's nonce-equality assertion
 // then reports as a mismatch.
 func extractNonce(resp *e2e.RawResponse) string {
 	if resp.Result == nil {

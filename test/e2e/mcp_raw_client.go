@@ -39,6 +39,16 @@ const (
 	HeaderMCPProtocolVersion = "MCP-Protocol-Version"
 	// HeaderMCPSessionID is the HTTP header carrying the Legacy session id.
 	HeaderMCPSessionID = "Mcp-Session-Id"
+	// HeaderMCPMethod is the HTTP header carrying the JSON-RPC method on Modern
+	// requests. A real go-sdk v1.7 streamable-HTTP server requires it on every
+	// Modern request (see pkg/mcp/revision.go ValidateHeaderConsistency); the
+	// ToolHive single-server proxy does not read it, but a Modern backend does.
+	HeaderMCPMethod = "Mcp-Method"
+	// HeaderMCPName is the HTTP header naming the request's target
+	// tool/resource/prompt on name-bearing Modern methods (tools/call,
+	// resources/read, prompts/get). Sent as the plain identifier; the draft
+	// spec also permits a base64 sentinel encoding, which we do not use.
+	HeaderMCPName = "Mcp-Name"
 )
 
 // requestIDCounter assigns default JSON-RPC ids so distinct RawRequests get
@@ -85,22 +95,51 @@ func NewLegacyInitializeRequest(clientName, clientVersion string) *RawRequest {
 	return r
 }
 
-// NewModernRequest builds a Modern (2026-07-28) JSON-RPC request: it sets the
-// MCP-Protocol-Version header and the reserved _meta keys protocolVersion and
+// NewModernRequest builds a Modern (2026-07-28) JSON-RPC request emitting the
+// full conformant wire shape a real go-sdk v1.7 client produces: the
+// MCP-Protocol-Version header, the reserved _meta keys protocolVersion and
 // clientCapabilities (clientInfo is optional per the draft schema and is
-// omitted by default). Each can be independently overridden or removed via
-// SetHeader/DeleteHeader and SetMeta/DeleteMeta.
+// omitted by default), the Mcp-Method header (always), and the Mcp-Name header
+// for name-bearing methods (tools/call, resources/read, prompts/get). A Modern
+// backend rejects a request missing these headers (-32020); the ToolHive
+// single-server proxy ignores them. Each field can be independently overridden
+// or removed via SetHeader/DeleteHeader and SetMeta/DeleteMeta.
 func NewModernRequest(method string, params map[string]any) (*RawRequest, error) {
 	r, err := newRawRequest(method, params)
 	if err != nil {
 		return nil, err
 	}
 	r.headers[HeaderMCPProtocolVersion] = MCPVersionModern
+	r.headers[HeaderMCPMethod] = method
+	if name, ok := modernNameHeader(method, params); ok {
+		r.headers[HeaderMCPName] = name
+	}
 	r.meta = map[string]any{
 		MetaKeyProtocolVersion:    MCPVersionModern,
 		MetaKeyClientCapabilities: map[string]any{},
 	}
 	return r, nil
+}
+
+// modernNameHeader returns the plain Mcp-Name header value for a name-bearing
+// Modern method, mirroring go-sdk v1.7's streamable-HTTP encoding and
+// pkg/mcp's ValidateHeaderConsistency: tools/call and prompts/get name the
+// "name" param, resources/read names the "uri" param. Any other method (e.g.
+// tools/list, server/discover) carries no Mcp-Name, and sending one there
+// would fail the backend's consistency check, so it is omitted.
+func modernNameHeader(method string, params map[string]any) (string, bool) {
+	key := ""
+	switch method {
+	case "tools/call", "prompts/get":
+		key = "name"
+	case "resources/read":
+		key = "uri"
+	}
+	if key == "" {
+		return "", false
+	}
+	v, ok := params[key].(string)
+	return v, ok && v != ""
 }
 
 func newRawRequest(method string, params map[string]any) (*RawRequest, error) {
@@ -230,7 +269,7 @@ type RawResponse struct {
 	StatusCode int
 	Headers    http.Header
 	Body       []byte // raw response body, always populated
-	ID         any    // echoed "id"; nil if absent, JSON null, or unparseable
+	ID         any    // echoed "id"; nil if absent, JSON null, or unparsable
 	Result     json.RawMessage
 	Error      *RawRPCError
 }

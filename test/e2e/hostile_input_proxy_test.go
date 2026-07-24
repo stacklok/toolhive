@@ -151,7 +151,7 @@ var _ = Describe("Hostile Input Proxy", Label("proxy", "stateless", "hostile-inp
 		Expect(mockServer.GetCount()).To(Equal(countBefore),
 			"oversized body must be rejected by bodylimit before the backend is contacted")
 
-		// Unlike the classification cases above, an unparseable body is NOT
+		// Unlike the classification cases above, an unparsable body is NOT
 		// rejected at the edge: parseRPCRequest fails to decode it as either a
 		// single request or a batch, so RoundTrip never calls ClassifyRevision
 		// and forwards the body unclassified (Legacy passthrough) -- the proxy
@@ -166,7 +166,7 @@ var _ = Describe("Hostile Input Proxy", Label("proxy", "stateless", "hostile-inp
 		Expect(err).ToNot(HaveOccurred(), "must not hang or crash the proxy")
 		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 		Expect(mockServer.GetCount()).To(Equal(countBefore+1),
-			"an unparseable body skips classification and IS forwarded to the backend")
+			"an unparsable body skips classification and IS forwarded to the backend")
 
 		By("the proxy still serves a well-formed request after the hostile inputs above")
 		req, err := e2e.NewModernRequest("tools/list", nil)

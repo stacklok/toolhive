@@ -174,6 +174,8 @@ func syncMapLen(m *sync.Map) int {
 // growth here would come from net/http's own idle-connection handling, not
 // from code owned by this package -- hence the loose tolerance rather than a
 // strict equality.
+//
+//nolint:paralleltest // reads process-wide runtime.NumGoroutine() as a baseline and starts an HTTP proxy; must run serially
 func TestModernLoadDoesNotAccumulateState(t *testing.T) {
 	port := pickFreePort(t)
 	proxy, ctx, cancel := startProxyWithBackend(t, port)

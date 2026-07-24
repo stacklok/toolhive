@@ -35,12 +35,22 @@ func TestRawClientBuilders(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, MCPVersionModern, req.headers[HeaderMCPProtocolVersion])
+		require.Equal(t, "tools/list", req.headers[HeaderMCPMethod], "Mcp-Method is required on every Modern request")
+		require.NotContains(t, req.headers, HeaderMCPName, "tools/list is not name-bearing, so no Mcp-Name")
 
 		wire := wireOf(t, req)
 		meta := wire["params"].(map[string]any)["_meta"].(map[string]any)
 		require.Equal(t, MCPVersionModern, meta[MetaKeyProtocolVersion])
 		require.Equal(t, map[string]any{}, meta[MetaKeyClientCapabilities])
 		require.NotContains(t, meta, MetaKeyClientInfo)
+	})
+
+	t.Run("ModernRequest sets Mcp-Name to the plain target name for name-bearing methods", func(t *testing.T) {
+		t.Parallel()
+		req, err := NewModernRequest("tools/call", map[string]any{"name": "echo"})
+		require.NoError(t, err)
+		require.Equal(t, "tools/call", req.headers[HeaderMCPMethod])
+		require.Equal(t, "echo", req.headers[HeaderMCPName], "tools/call must name its tool in Mcp-Name, matching body params.name")
 	})
 
 	t.Run("ModernRequest fields are independently overridable", func(t *testing.T) {

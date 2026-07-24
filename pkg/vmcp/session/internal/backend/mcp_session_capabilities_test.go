@@ -67,6 +67,11 @@ type fakeBackend struct {
 	// method name. Tests asserting transport-chain behavior (e.g. HeaderForward)
 	// use headersFor(method) to inspect the headers a backend actually saw.
 	headersByMethod map[string]http.Header
+
+	// metaByMethod records the raw params._meta keyed by JSON-RPC method name.
+	// Tests asserting outbound W3C trace context propagation (SEP-414) use
+	// metaFor(method) to inspect the _meta a backend actually saw on the wire.
+	metaByMethod map[string]json.RawMessage
 }
 
 type jsonRPCError struct {
@@ -82,6 +87,7 @@ func newFakeBackend(t *testing.T, fb *fakeBackend) string {
 	fb.t = t
 	fb.methodCalls = make(map[string]int)
 	fb.headersByMethod = make(map[string]http.Header)
+	fb.metaByMethod = make(map[string]json.RawMessage)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", fb.handle)
@@ -116,6 +122,15 @@ func (f *fakeBackend) headersFor(method string) http.Header {
 	return h.Clone()
 }
 
+// metaFor returns the raw params._meta recorded for the most recent JSON-RPC
+// request with the given method, or nil if no such request was seen or it
+// carried no _meta field.
+func (f *fakeBackend) metaFor(method string) json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.metaByMethod[method]
+}
+
 // handle implements the JSON-RPC subset needed for backend init. The
 // streamable-HTTP transport sends POST requests with Accept:
 // application/json, text/event-stream — we always reply with
@@ -142,7 +157,8 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
 		Params  struct {
-			Cursor string `json:"cursor"`
+			Cursor string          `json:"cursor"`
+			Meta   json.RawMessage `json:"_meta"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(body, &msg); err != nil {
@@ -154,6 +170,7 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.methodCalls[msg.Method]++
 	f.headersByMethod[msg.Method] = r.Header.Clone()
+	f.metaByMethod[msg.Method] = msg.Params.Meta
 	f.mu.Unlock()
 
 	// Notifications (no id, e.g. notifications/initialized) get an empty 202.

@@ -37,12 +37,50 @@ type InstallOptions struct {
 	Reference string `json:"-"`
 	// Digest is the OCI digest for upgrade detection.
 	Digest string `json:"-"`
+	// LockSource overrides the value recorded as the lock entry's Source. When
+	// empty, the entry's Source is Name as given by the caller before any
+	// internal resolution. Set by Sync/Upgrade, which pass an already-resolved
+	// Name that must not overwrite the entry's original Source. Internal use
+	// only — NOT exposed via HTTP API.
+	LockSource string `json:"-"`
+	// LockResolvedReference overrides the value recorded as the lock entry's
+	// ResolvedReference. When empty, the entry's ResolvedReference is
+	// whatever this install actually resolved to. Set by Sync when
+	// reinstalling at a pinned reference: without this override, a drift
+	// repair would overwrite ResolvedReference with the internal pinned
+	// form (e.g. a digest or commit hash spliced into the reference)
+	// instead of preserving what Source originally resolved to. Internal
+	// use only — NOT exposed via HTTP API.
+	LockResolvedReference string `json:"-"`
+	// RequiredByParent is set when this install is a transitively materialized
+	// dependency (toolhive.requires) of another skill, naming that parent.
+	// Empty means the user explicitly requested this install. Internal use
+	// only — NOT exposed via HTTP API.
+	RequiredByParent string `json:"-"`
+	// Visited tracks skill names already materialized in this dependency
+	// tree, preventing infinite recursion on a requires cycle. Left nil by
+	// external callers; Install initializes it on first entry and threads it
+	// through recursive dependency installs. Internal use only — NOT exposed
+	// via HTTP API.
+	Visited map[string]struct{} `json:"-"`
+	// SyncRestore forces re-extraction to every existing client even when
+	// Digest matches the currently-installed digest. Set by Sync when
+	// reinstalling at a pinned reference: the whole point is repairing
+	// on-disk drift that happened without the pinned digest changing, so the
+	// normal "same digest means content is already correct" fast path must
+	// not apply. Internal use only — NOT exposed via HTTP API.
+	SyncRestore bool `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
 	// Skill is the installed skill.
 	Skill InstalledSkill `json:"skill"`
+	// PreExisting is the store record as it was before this install, or nil
+	// when this install created the record. Rollback uses it to restore the
+	// previous state instead of destructively deleting a record this call
+	// did not create. Internal use only — NOT exposed via HTTP API.
+	PreExisting *InstalledSkill `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -53,6 +91,12 @@ type UninstallOptions struct {
 	Scope Scope `json:"scope,omitempty"`
 	// ProjectRoot is the project root path for project-scoped skills.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// Visited tracks skill names already removed in this cascade-uninstall
+	// tree, preventing infinite recursion on a requiredBy cycle. Left nil by
+	// external callers; Uninstall initializes it on first entry and threads
+	// it through recursive cascade removals. Internal use only — NOT exposed
+	// via HTTP API.
+	Visited map[string]struct{} `json:"-"`
 }
 
 // InfoOptions configures the behavior of the Info operation.
@@ -131,6 +175,139 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+}
+
+// SyncOptions configures the behavior of the Sync operation.
+type SyncOptions struct {
+	// ProjectRoot is the project root path whose lock file should be synced.
+	ProjectRoot string `json:"project_root"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+	// Prune removes project-scoped skills that are installed but not present
+	// in the lock file. When false, such skills are only reported.
+	Prune bool `json:"prune,omitempty"`
+	// Check verifies on-disk content against contentDigest without installing
+	// or writing anything.
+	Check bool `json:"check,omitempty"`
+	// Adopt writes lock entries for existing unmanaged project-scope installs.
+	Adopt bool `json:"adopt,omitempty"`
+}
+
+// FailureReason is a typed failure reason for sync/upgrade operations, per
+// RFC THV-0080's exit-code and automation contract. Only reasons the current
+// feature set can actually produce are defined; the RFC's remaining values
+// (the Sigstore verification reasons and ref-change-blocked, which surfaces
+// as an UpgradeStatus rather than a failure) land together with the code
+// that emits them.
+type FailureReason string
+
+// Typed failure reasons for sync/upgrade operations.
+const (
+	// FailureReasonRegistryUnreachable means the skill's remote source — an
+	// OCI registry or a git host — could not be reached.
+	FailureReasonRegistryUnreachable FailureReason = "registry-unreachable"
+	FailureReasonDigestMissing       FailureReason = "digest-missing"
+	FailureReasonValidationRejected  FailureReason = "validation-rejected"
+	FailureReasonLockWriteFailed     FailureReason = "lock-write-failed"
+	FailureReasonUnknown             FailureReason = "unknown"
+)
+
+// SyncFailure describes a single skill that failed to sync.
+type SyncFailure struct {
+	// Name is the skill name that failed.
+	Name string `json:"name"`
+	// Reason is a typed failure reason for CI and automation.
+	Reason FailureReason `json:"reason,omitempty"`
+	// Error is a human-readable description of the failure.
+	Error string `json:"error"`
+}
+
+// SyncResult contains the outcome of a Sync operation.
+type SyncResult struct {
+	// Installed lists skills that were installed or reinstalled to match the lock file.
+	Installed []string `json:"installed,omitempty"`
+	// Drifted lists skills whose on-disk contentDigest differed from the lock
+	// file. Normally these are reinstalled to match it; when Check is set,
+	// nothing is written and this field reports the drift only.
+	Drifted []string `json:"drifted,omitempty"`
+	// Missing lists lock entries with no corresponding install record at all
+	// — the fresh-clone state. Normally these are installed at their pinned
+	// reference; when Check is set, nothing is written and this field
+	// reports the gap only.
+	Missing []string `json:"missing,omitempty"`
+	// AlreadyCurrent lists skills that already matched the lock file.
+	AlreadyCurrent []string `json:"already_current,omitempty"`
+	// NeverManaged lists project-scoped skills never recorded as lock-managed.
+	NeverManaged []string `json:"never_managed,omitempty"`
+	// RemovedFromLock lists previously managed skills absent from the lock file.
+	RemovedFromLock []string `json:"removed_from_lock,omitempty"`
+	// Pruned lists removed-from-lock skills that were uninstalled because Prune was set.
+	Pruned []string `json:"pruned,omitempty"`
+	// Failed lists skills that could not be synced, with the reason for each.
+	// Drift alone is never reported here — see Drifted.
+	Failed []SyncFailure `json:"failed,omitempty"`
+}
+
+// UpgradeOptions configures the behavior of the Upgrade operation.
+type UpgradeOptions struct {
+	// ProjectRoot is the project root path whose lock file should be upgraded.
+	ProjectRoot string `json:"project_root"`
+	// Names restricts the upgrade to specific skill names. Empty means every
+	// entry in the lock file.
+	Names []string `json:"names,omitempty"`
+	// Preview reports what would change without installing (still fetches
+	// artifacts to compare digests).
+	Preview bool `json:"preview,omitempty"`
+	// FailOnChanges exits with an error when any mutable source would upgrade.
+	FailOnChanges bool `json:"fail_on_changes,omitempty"`
+	// AllowRefChange permits resolvedReference changes during upgrade.
+	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+}
+
+// UpgradeStatus represents the outcome of upgrading a single skill.
+type UpgradeStatus string
+
+const (
+	// UpgradeStatusUpgraded indicates the skill was installed at a new digest.
+	UpgradeStatusUpgraded UpgradeStatus = "upgraded"
+	// UpgradeStatusUpToDate indicates the resolved source still points at the pinned digest.
+	UpgradeStatusUpToDate UpgradeStatus = "up-to-date"
+	// UpgradeStatusNotUpgradable indicates the entry is pinned to an immutable
+	// reference (an OCI digest or a full git commit hash) and cannot be upgraded.
+	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
+	// UpgradeStatusRefChangeBlocked indicates re-resolution changed resolvedReference.
+	UpgradeStatusRefChangeBlocked UpgradeStatus = "ref-change-blocked"
+	// UpgradeStatusFailed indicates the upgrade attempt failed.
+	UpgradeStatusFailed UpgradeStatus = "failed"
+)
+
+// UpgradeOutcome describes the result of attempting to upgrade one skill.
+type UpgradeOutcome struct {
+	// Name is the skill name.
+	Name string `json:"name"`
+	// Status is the outcome of the upgrade attempt.
+	Status UpgradeStatus `json:"status"`
+	// OldDigest is the digest pinned in the lock file before this operation.
+	OldDigest string `json:"old_digest,omitempty"`
+	// NewDigest is the digest the source currently resolves to. Equal to
+	// OldDigest when Status is UpgradeStatusUpToDate.
+	NewDigest string `json:"new_digest,omitempty"`
+	// NewResolvedReference is the new resolvedReference when it changed.
+	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	// Reason is a typed failure reason when Status is UpgradeStatusFailed.
+	Reason FailureReason `json:"reason,omitempty"`
+	// Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.
+	Error string `json:"error,omitempty"`
+}
+
+// UpgradeResult contains the outcome of an Upgrade operation.
+type UpgradeResult struct {
+	// Outcomes contains one entry per skill considered for upgrade.
+	Outcomes []UpgradeOutcome `json:"outcomes"`
 }
 
 // LocalBuild represents a locally-built OCI skill artifact in the local store.

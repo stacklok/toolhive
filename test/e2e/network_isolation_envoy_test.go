@@ -77,7 +77,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 
 		envoyRun(config, runArgs...).ExpectSuccess()
 		Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).
-			To(Succeed(), "Envoy server should be running within 120 seconds")
+			To(Succeed(), "Envoy server should be running within 180 seconds")
 		return serverName
 	}
 
@@ -218,6 +218,41 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 	})
 
 	// ── Envoy-specific regression guards ─────────────────────────────────────
+
+	// ── AllowPort enforcement ─────────────────────────────────────────────────
+
+	Describe("AllowPort enforcement", func() {
+		// This test proves that AllowPort is honoured end-to-end through a real
+		// Envoy container, not just in the generated config. It uses a restrictive
+		// profile that allows example.com on port 443 only and asserts:
+		//   - HTTPS (port 443) succeeds
+		//   - HTTP  (port 80)  is blocked
+		// This was a parity gap vs Squid (see #5915): before the fix, Envoy
+		// ignored AllowPort and the HTTP request would have succeeded.
+		It("blocks a request on a non-allowed port while permitting the allowed port", func() {
+			profile := `{
+				"name": "port-test",
+				"network": {
+					"outbound": {
+						"insecure_allow_all": false,
+						"allow_host": ["example.com"],
+						"allow_port": [443]
+					}
+				}
+			}`
+			server := startFetchServer("port", profile)
+
+			By("HTTPS request (port 443) must succeed")
+			httpsResult := fetchThrough(server, "https://example.com", 30*time.Second)
+			Expect(httpsResult.IsError).To(BeFalse(),
+				"https://example.com must be allowed (port 443 is in AllowPort)")
+
+			By("HTTP request (port 80) must be blocked")
+			httpResult := fetchThrough(server, "http://example.com", 30*time.Second)
+			Expect(httpResult.IsError).To(BeTrue(),
+				"http://example.com must be blocked (port 80 is not in AllowPort)")
+		})
+	})
 
 	Describe("Envoy route timeout disabled for long-lived streams", func() {
 		// Guards the timeout:"0s" fix. Envoy's default RouteAction.timeout is 15s;

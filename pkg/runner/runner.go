@@ -42,6 +42,30 @@ import (
 // ErrContainerExitedRestartNeeded is returned when a container exits and needs to be restarted
 var ErrContainerExitedRestartNeeded = errors.New("container exited, restart needed")
 
+// probeProtocolVersion is the MCP protocol revision the readiness probe advertises
+// in the JSON-RPC params.protocolVersion of its initialize handshake.
+//
+// It is deliberately pinned to 2025-11-25 — the current stable revision and the
+// newest one that still defines the `initialize` method — rather than tracking
+// mcp.LATEST_PROTOCOL_VERSION. The upcoming 2026-07-28 revision (draft; subject to
+// change until it ships) removes `initialize` entirely (replaced by server/discover
+// + per-request _meta, SEP-2575), so a probe that sent method:"initialize" with a
+// 2026-07-28 version string would be internally inconsistent. When ToolHive adopts
+// 2026-07-28 (issue #5754) the probe must switch to server/discover — which, like
+// all 2026-07-28 Streamable HTTP POSTs, carries the required Mcp-Method/Mcp-Name
+// headers — and fall back to this initialize path for older backends. Pinning here
+// keeps the probe's method and version consistent regardless of what the SDK later
+// declares "latest".
+//
+// The value is sent only in the request body, NOT as an MCP-Protocol-Version
+// header: the spec scopes that header to requests made AFTER initialization
+// (carrying the negotiated version), and requires a server to reject an unsupported
+// header value with HTTP 400. Sending it on the initialize request itself would let
+// a backend that only supports an older revision 400 the probe — a false
+// "not-ready" — whereas body-based version negotiation degrades gracefully (the
+// server answers HTTP 200 with its own supported version).
+const probeProtocolVersion = "2025-11-25"
+
 // Runner is responsible for running an MCP server with the provided configuration
 type Runner struct {
 	// Config is the configuration for the runner
@@ -187,16 +211,17 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Create transport with runtime
 	transportConfig := types.Config{
-		Type:              r.Config.Transport,
-		ProxyPort:         r.Config.Port,
-		TargetPort:        r.Config.TargetPort,
-		Host:              r.Config.Host,
-		TargetHost:        r.Config.TargetHost,
-		Deployer:          r.Config.Deployer,
-		Debug:             r.Config.Debug,
-		TrustProxyHeaders: r.Config.TrustProxyHeaders,
-		EndpointPrefix:    r.Config.EndpointPrefix,
-		SessionTTL:        effectiveSessionTTL,
+		Type:                     r.Config.Transport,
+		ProxyPort:                r.Config.Port,
+		TargetPort:               r.Config.TargetPort,
+		Host:                     r.Config.Host,
+		TargetHost:               r.Config.TargetHost,
+		Deployer:                 r.Config.Deployer,
+		Debug:                    r.Config.Debug,
+		TrustProxyHeaders:        r.Config.TrustProxyHeaders,
+		StrictProtocolValidation: r.Config.StrictProtocolValidation,
+		EndpointPrefix:           r.Config.EndpointPrefix,
+		SessionTTL:               effectiveSessionTTL,
 	}
 
 	// Set proxy mode for stdio transport
@@ -997,9 +1022,12 @@ func waitForInitializeSuccess(
 		// Format: http://localhost:port/mcp
 		endpoint = serverURL
 		method = "POST"
-		payload = `{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",` +
-			`"params":{"protocolVersion":"2024-11-05","capabilities":{},` +
-			`"clientInfo":{"name":"toolhive","version":"1.0"}}}`
+		payload = fmt.Sprintf(
+			`{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",`+
+				`"params":{"protocolVersion":%q,"capabilities":{},`+
+				`"clientInfo":{"name":"toolhive","version":"1.0"}}}`,
+			probeProtocolVersion,
+		)
 	case "sse":
 		// For SSE, just check if the SSE endpoint is available
 		// We can't easily call initialize without establishing a full SSE connection,
@@ -1049,7 +1077,10 @@ func waitForInitializeSuccess(
 			if method == "POST" {
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Accept", "application/json, text/event-stream")
-				req.Header.Set("MCP-Protocol-Version", "2024-11-05")
+				// No MCP-Protocol-Version header: it is scoped to post-initialize
+				// requests (carrying the negotiated version) and a server MUST reject
+				// an unsupported value with HTTP 400. The initialize body's
+				// protocolVersion negotiates gracefully instead. See probeProtocolVersion.
 			}
 
 			resp, err := httpClient.Do(req) // #nosec G704 -- endpoint is the local MCP server readiness URL

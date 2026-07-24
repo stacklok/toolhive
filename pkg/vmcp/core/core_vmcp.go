@@ -349,6 +349,45 @@ func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]
 	return c.admission.FilterPrompts(ctx, identity, agg.Prompts)
 }
 
+// Discover aggregates backend capabilities ONCE and derives all four
+// capability-presence flags from that single view, applying the exact same
+// admission-filter code paths ListTools/ListResources/ListResourceTemplates/
+// ListPrompts each apply independently (advertisedTools+FilterTools,
+// FilterResources, filterResourceTemplates, FilterPrompts). Sharing those
+// helpers against one aggregatedView call -- rather than reimplementing the
+// filtering -- is what guarantees a flag can never drift from what the
+// corresponding List* verb would show for the same identity.
+func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error) {
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+
+	tools, err := c.admission.FilterTools(ctx, identity, c.advertisedTools(agg))
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+	templates, err := c.filterResourceTemplates(ctx, identity, agg.ResourceTemplates)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+
+	return DiscoverCapabilities{
+		HasTools:             len(tools) > 0,
+		HasResources:         len(resources) > 0,
+		HasResourceTemplates: len(templates) > 0,
+		HasPrompts:           len(prompts) > 0,
+	}, nil
+}
+
 // LookupTool resolves an advertised tool name (incl. composite tools) to its
 // capability without invoking it. It delegates to ListTools, so it applies the
 // same health/advertising AND admission view: a name that is unknown, unadvertised,
@@ -480,6 +519,22 @@ func (c *coreVMCP) LookupBackend(
 		}
 	}
 	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
+}
+
+// InvalidateCapabilityCache implements VMCP.InvalidateCapabilityCache. It
+// type-asserts the configured aggregator to aggregator.CacheInvalidator and
+// delegates; when the aggregator does not implement it, the call is a WARN-logged
+// no-op — not a silent one — because a caller relying on invalidation (the
+// list_changed resync path) needs to know the request had no effect (go-style:
+// no silent no-ops).
+func (c *coreVMCP) InvalidateCapabilityCache() {
+	invalidator, ok := c.aggregator.(aggregator.CacheInvalidator)
+	if !ok {
+		slog.Warn("capability cache invalidation requested but the configured aggregator does not support it",
+			"aggregatorType", fmt.Sprintf("%T", c.aggregator))
+		return
+	}
+	invalidator.InvalidateAll()
 }
 
 // Close stops the workflow state store's cleanup goroutine. It is idempotent:

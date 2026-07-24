@@ -151,6 +151,18 @@ type Config struct {
 	// later is a one-line change rather than a re-thread through the server.
 	HeartbeatInterval time.Duration
 
+	// ModernDispatchEnabled turns on direct dispatch of well-formed MCP
+	// 2026-07-28 ("Modern") stateless requests to the vMCP core
+	// (classifyingHandler → dispatchModern), bypassing the SDK Serve/session
+	// layer. When false (the default), a well-formed Modern request falls
+	// through to the SDK path unchanged, byte-identical to the pre-Modern-
+	// dispatch wire behavior.
+	//
+	// TEMPORARY: this is a safety lever for the hand-rolled pre-release Modern
+	// envelope, off by default until Modern dispatch is conformance-validated.
+	// Remove once that validation lands; see issue #5959.
+	ModernDispatchEnabled bool
+
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
 	// This should be a composed middleware chain (e.g., TokenValidator + MCP parser).
@@ -336,6 +348,14 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+
+	// resyncBaseCtx is the server-lifetime parent context for asynchronous
+	// tools/resources/prompts list_changed resync work (#5748, #5969). It is
+	// cancelled by a shutdownFunc on Stop, so an in-flight backend
+	// re-aggregation triggered by a late notification cannot outlive the
+	// server. Set by Serve; nil for direct-Serve callers that never register a
+	// list_changed sink.
+	resyncBaseCtx context.Context
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -621,13 +641,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	var mcpHandler http.Handler = streamableServer
 
-	// Classify Modern (2026-07-28) vs Legacy at the decode seam and reject
-	// malformed Modern requests before dispatch. No routing change: Legacy
-	// and well-formed Modern requests both fall through to the same handler
-	// (Modern dispatch lands in Phase 2, #5756). Applied before telemetry
-	// (i.e. it runs closer to the handler) so a rejection is still recorded
-	// by the telemetry middleware instead of bypassing it entirely.
-	mcpHandler = classificationMiddleware(mcpHandler)
+	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
+	// malformed Modern requests before dispatch, and — when
+	// Config.ModernDispatchEnabled — route well-formed Modern requests to the
+	// vMCP core (dispatchModern) instead of the SDK. Applied before telemetry
+	// (i.e. it runs closer to the handler) so a rejection or a dispatcher 403
+	// is still recorded by the telemetry middleware instead of bypassing it
+	// entirely.
+	mcpHandler = s.classifyingHandler(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
@@ -1211,7 +1232,19 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// after initialize may receive a "tool not found" error before AddSessionTools
 	// completes. Conforming MCP clients call tools/list before tools/call, so this
 	// window is expected to be harmless in practice.
-	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID); retErr != nil {
+	//
+	// The list_changed sink is built here, before CreateSession, so it can be
+	// threaded through to every backend connector this session opens (#5748).
+	// Capture BOTH the caller identity AND the per-request forwarded headers from
+	// the registration context: the asynchronous resync re-enumerates backends
+	// through the same identity+header-keyed path a live request uses (cache key
+	// and outbound backend auth are derived from the context, not passed
+	// explicitly), so it must reconstruct a faithful context or it would
+	// enumerate unauthenticated. See buildListChangedSink.
+	identity, _ := auth.IdentityFromContext(ctx)
+	forwardedHeaders := headerforward.ForwardedHeadersFromContext(ctx)
+	sink := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
+	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID, sink); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,
 			"error", retErr)

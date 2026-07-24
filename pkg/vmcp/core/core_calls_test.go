@@ -45,6 +45,7 @@ func TestCallTool_RoutesToBackend(t *testing.T) {
 	got, err := c.CallTool(context.Background(), nil, "tool_a", map[string]any{"a": 1}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	assert.Equal(t, testBackendID, got.BackendID, "CallTool must stamp the routed target's backend onto the result")
 }
 
 func TestCallTool_NotFound(t *testing.T) {
@@ -121,6 +122,7 @@ func TestCallTool_CompositeWorkflow(t *testing.T) {
 	require.NotNil(t, got)
 	assert.False(t, got.IsError)
 	assert.Equal(t, true, got.StructuredContent["ok"])
+	assert.Empty(t, got.BackendID, "a composite tool has no single serving backend")
 }
 
 func TestCallTool_CompositeNotAccessible(t *testing.T) {
@@ -160,6 +162,7 @@ func TestReadResource(t *testing.T) {
 	got, err := c.ReadResource(context.Background(), nil, "file://a")
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	assert.Equal(t, testBackendID, got.BackendID, "ReadResource must stamp the routed target's backend onto the result")
 }
 
 func TestReadResource_NotFound(t *testing.T) {
@@ -194,6 +197,7 @@ func TestGetPrompt(t *testing.T) {
 	got, err := c.GetPrompt(context.Background(), nil, "p1", map[string]any{"x": 1})
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	assert.Equal(t, testBackendID, got.BackendID, "GetPrompt must stamp the routed target's backend onto the result")
 }
 
 func TestGetPrompt_CopyBeforeMutate(t *testing.T) {

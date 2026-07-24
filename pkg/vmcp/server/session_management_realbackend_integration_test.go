@@ -36,9 +36,28 @@ import (
 // startRealMCPBackend is defined in testutil_test.go as a shared test utility.
 
 // newRealTestHandler builds the full vMCP handler backed by the MCP server at
-// backendURL. It is the low-level helper used by newRealTestServer and any test
-// that needs control over the httptest.Server configuration (e.g. WriteTimeout).
+// backendURL, with Modern dispatch's kill-switch at its default (off): a
+// well-formed Modern (2026-07-28) request falls through to the SDK path, same
+// as a Legacy request. It is the low-level helper used by newRealTestServer
+// and any test that needs control over the httptest.Server configuration
+// (e.g. WriteTimeout). Use newRealModernTestHandler for a switch-on handler.
 func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithConfig(t, backendURL, false)
+}
+
+// newRealModernTestHandler is newRealTestHandler with the Modern dispatch
+// kill-switch on: a well-formed Modern request routes through
+// classifyingHandler -> dispatchModern instead of falling through to the SDK.
+func newRealModernTestHandler(t *testing.T, backendURL string) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithConfig(t, backendURL, true)
+}
+
+// newRealTestHandlerWithConfig is the shared construction path for
+// newRealTestHandler and newRealModernTestHandler, parameterized on the Modern
+// dispatch kill-switch so the two stay in lockstep other than that one field.
+func newRealTestHandlerWithConfig(t *testing.T, backendURL string, modernDispatchEnabled bool) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -81,11 +100,12 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{
-			Host:           "127.0.0.1",
-			Port:           0,
-			SessionTTL:     5 * time.Minute,
-			SessionFactory: factory,
-			Aggregator:     agg,
+			Host:                  "127.0.0.1",
+			Port:                  0,
+			SessionTTL:            5 * time.Minute,
+			ModernDispatchEnabled: modernDispatchEnabled,
+			SessionFactory:        factory,
+			Aggregator:            agg,
 		},
 		rt,
 		backendClient,
@@ -100,11 +120,22 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 }
 
 // newRealTestServer builds a vMCP server with session management and a real
-// SessionFactory. The BackendRegistry mock returns the backend at backendURL
-// so that CreateSession() opens a real HTTP connection to the MCP server.
+// SessionFactory, Modern dispatch's kill-switch off (the default). The
+// BackendRegistry mock returns the backend at backendURL so that
+// CreateSession() opens a real HTTP connection to the MCP server.
 func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(newRealTestHandler(t, backendURL))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// newRealModernTestServer is newRealTestServer with the Modern dispatch
+// kill-switch on, for tests that exercise the classifyingHandler ->
+// dispatchModern path against a real backend.
+func newRealModernTestServer(t *testing.T, backendURL string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(newRealModernTestHandler(t, backendURL))
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -238,15 +269,15 @@ func TestIntegration_RealBackend_NonSSEGetRejectedWithNotAcceptable(t *testing.T
 }
 
 // TestIntegration_RealBackend_ModernRequestRejectedByClassification verifies
-// the classificationMiddleware wiring end-to-end through the real chain (not
-// just the unit-level table covering classificationMiddleware in isolation):
+// the classifyingHandler wiring end-to-end through the real chain (not
+// just the unit-level table covering classifyingHandler in isolation):
 // a request that signals Modern (2026-07-28) via a reserved _meta key, but
 // carries a mismatched MCP-Protocol-Version header, is rejected with a
 // -32020 (HeaderMismatch) JSON-RPC error before ever reaching the backend.
 func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testing.T) {
 	t.Parallel()
 
-	// Rejected by classificationMiddleware before dispatch, so no real MCP
+	// Rejected by classifyingHandler before dispatch, so no real MCP
 	// backend is needed.
 	ts := newRealTestServer(t, "http://127.0.0.1:0")
 
@@ -297,7 +328,7 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 // valid clientCapabilities, and a matching MCP-Protocol-Version header — is
 // still rejected with -32020 (HeaderMismatch) when its Mcp-Method HTTP header
 // disagrees with the JSON-RPC body's actual method. This exercises the real
-// ParsingMiddleware -> classificationMiddleware flow (unlike
+// ParsingMiddleware -> classifyingHandler flow (unlike
 // TestClassificationMiddleware in classification_test.go, which injects a
 // pre-built ParsedMCPRequest and bypasses ParsingMiddleware), and covers a
 // genuine Mcp-Method/body mismatch rather than the protocolVersion mismatch
@@ -305,7 +336,7 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 func TestIntegration_RealBackend_ModernRequestRejectedByHeaderMismatch(t *testing.T) {
 	t.Parallel()
 
-	// Rejected by classificationMiddleware before dispatch, so no real MCP
+	// Rejected by classifyingHandler before dispatch, so no real MCP
 	// backend is needed.
 	ts := newRealTestServer(t, "http://127.0.0.1:0")
 

@@ -39,6 +39,7 @@ var ErrServerUnreachable = errors.New("could not reach ToolHive API server — i
 
 // Compile-time interface check.
 var _ skills.SkillService = (*Client)(nil)
+var _ skills.SkillLockService = (*Client)(nil)
 
 // Client is an HTTP client for the ToolHive Skills API.
 type Client struct {
@@ -265,6 +266,42 @@ func (c *Client) GetContent(ctx context.Context, opts skills.ContentOptions) (*s
 		return nil, err
 	}
 	return &content, nil
+}
+
+// Sync restores a project's installed skills to match its lock file.
+func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
+	body := syncRequest{
+		ProjectRoot: opts.ProjectRoot,
+		Clients:     opts.Clients,
+		Prune:       opts.Prune,
+		Check:       opts.Check,
+		Adopt:       opts.Adopt,
+	}
+
+	var result skills.SyncResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/sync", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Upgrade re-resolves a project's lock entries and installs newer content
+// where available.
+func (c *Client) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
+	body := upgradeRequest{
+		ProjectRoot:    opts.ProjectRoot,
+		Names:          opts.Names,
+		Preview:        opts.Preview,
+		FailOnChanges:  opts.FailOnChanges,
+		AllowRefChange: opts.AllowRefChange,
+		Clients:        opts.Clients,
+	}
+
+	var result skills.UpgradeResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/upgrade", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // --- internal helpers ---

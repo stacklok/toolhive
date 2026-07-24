@@ -173,9 +173,9 @@ reachable from the local machine.
 The upstream STRICT_DNS cluster resolves the MCP container's hostname inside the
 internal Docker network and forwards HTTP traffic to the MCP server port.
 
-The admin interface binds to `127.0.0.1` inside the Envoy container (container
-loopback, not reachable via Docker port forwarding) as a precaution against the
-admin API being accessible from other containers.
+The admin interface is intentionally omitted from the bootstrap configuration.
+Envoy does not start an admin server when the field is absent, eliminating the
+attack surface entirely.
 
 ### Bootstrap lifecycle
 
@@ -218,33 +218,30 @@ backend is stable.
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
 | Destination IP deny | ✓ (`dst` ACL, resolved IP) | ~ (IP literal in `:authority` only; resolved IP not enforced — see Known Limitations) |
 | Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
+| Port-based allowlist | ✓ (`AllowPort` ACL, AND-d with host) | ✓ (combined host+port regex; bare hostname allowed when port 80 is listed, matching Squid's plain-HTTP behaviour) |
 | Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
 | Access logs | Per-container, text format | Unified stdout, structured |
 | Config format | Text template | Typed Go structs → protobuf-JSON |
 | Runtime config update | Restart required | xDS-capable (not yet used) |
-| Upstream image | Stacklok-built | Upstream distroless (pinned tag) |
+| Upstream image | Stacklok-built | Upstream distroless (pinned tag+digest) |
 
 ## Known Limitations
 
-- **Tag-pinned image.** The Envoy image is pinned by tag (`v1.32.3`), not by
-  digest. A future PR should pin by digest and add a `TOOLHIVE_ENVOY_IMAGE`
-  override for supply-chain policy requirements (the env var already exists).
-  Tracked in #5903.
-- **Admin interface port.** The admin API on `:9901` (loopback-only inside the
-  container) is always enabled. A follow-up can disable it entirely or make it
-  conditional.
 - **CONNECT access log timing.** Envoy logs CONNECT tunnel entries when the
   tunnel closes, not when it opens. With keep-alive HTTP clients the log entry
   may be delayed by minutes. Egress access logs are visible in `docker logs` but
   appear after the connection closes.
+- **`AllowPort` with port 443 only will deny plain-HTTP traffic.** Port 80 is
+  treated as the HTTP default: when 80 is in `AllowPort`, a bare `:authority`
+  header (plain HTTP, which omits the default port) is permitted alongside the
+  explicit `host:80` form — matching Squid's `allowed_ports` behaviour. When
+  port 80 is NOT in `AllowPort` (e.g., `AllowPort:[443]` only), bare-hostname
+  authorities are denied since port 80 is not listed. This is fail-closed (over-
+  blocks rather than a bypass).
 - **No transparent L3/L4.** Non-cooperative traffic (workloads that ignore
   `HTTP_PROXY`) is contained by the `Internal: true` network, not Envoy. True
   non-bypassable enforcement requires iptables TPROXY + an init container with
   `CAP_NET_ADMIN` — this is Phase 2 and requires its own architecture doc.
-- **No port-based allowlist.** `AllowPort` from the permission profile is not
-  yet translated into Envoy egress policy, so an allowlisted host is reachable on
-  any port. Squid honours `AllowPort`; the Envoy backend currently does not,
-  which is a parity gap. Tracked in #5915.
 - **Gateway deny matches the requested name, not the resolved IP.** The deny
   filter matches the `:authority` string (the gateway IP literal and the two
   Docker-internal hostnames). Because an HTTP RBAC filter cannot see the address

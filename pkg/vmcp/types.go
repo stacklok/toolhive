@@ -557,6 +557,11 @@ type ToolCallResult struct {
 	// This includes progressToken, trace context, and custom backend metadata.
 	// Per MCP specification, this field is optional and may be nil.
 	Meta map[string]any
+
+	// BackendID is the logical backend that served the call, set by the core
+	// after routing. Empty for a composite tool (no single serving backend).
+	// Audit-only: never serialized to the client.
+	BackendID string `json:"-"`
 }
 
 // ResourceContent represents a single resource content item,
@@ -585,6 +590,10 @@ type ResourceReadResult struct {
 	// because they return []ResourceContents directly, not a result wrapper.
 	// This field is preserved for future SDK improvements but may be nil.
 	Meta map[string]any
+
+	// BackendID is the logical backend that served the read, set by the core
+	// after routing. Audit-only: never serialized to the client.
+	BackendID string `json:"-"`
 }
 
 // PromptMessage represents a single message in a prompt response,
@@ -611,6 +620,10 @@ type PromptGetResult struct {
 	// This includes progressToken, trace context, and custom backend metadata.
 	// Per MCP specification, this field is optional and may be nil.
 	Meta map[string]any
+
+	// BackendID is the logical backend that served the get, set by the core
+	// after routing. Audit-only: never serialized to the client.
+	BackendID string `json:"-"`
 }
 
 // Completion reference type constants, matching the MCP completion/complete

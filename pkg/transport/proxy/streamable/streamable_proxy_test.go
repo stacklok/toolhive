@@ -4,12 +4,15 @@
 package streamable
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -326,6 +329,7 @@ func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+		WithStandaloneSSE(false), // keep the 405 GET response so this test terminates promptly
 	)
 	ctx := t.Context()
 
@@ -396,4 +400,155 @@ func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
 	defer resp2.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp2.StatusCode, "/.well-known/ subtree must still reach authInfoHandler")
+}
+
+// nonFlushableResponseWriter implements http.ResponseWriter but deliberately
+// does NOT implement http.Flusher, to exercise handleGet's capability check.
+type nonFlushableResponseWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	statusCode int
+}
+
+func newNonFlushableResponseWriter() *nonFlushableResponseWriter {
+	return &nonFlushableResponseWriter{header: make(http.Header)}
+}
+
+func (w *nonFlushableResponseWriter) Header() http.Header { return w.header }
+
+func (w *nonFlushableResponseWriter) Write(b []byte) (int, error) { return w.body.Write(b) }
+
+func (w *nonFlushableResponseWriter) WriteHeader(statusCode int) { w.statusCode = statusCode }
+
+// TestHandleGet_StandaloneSSEDisabledReturns405 verifies handleGet returns 405
+// when the proxy was constructed with WithStandaloneSSE(false), regardless of
+// whether the underlying ResponseWriter supports flushing.
+func TestHandleGet_StandaloneSSEDisabledReturns405(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithStandaloneSSE(false))
+	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil)
+	rec := httptest.NewRecorder()
+
+	proxy.handleGet(rec, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(), "no stream should be registered when SSE is disabled")
+}
+
+// TestHandleGet_NonFlushableWriterReturns500 verifies handleGet fails loudly
+// with 500 when the ResponseWriter does not support streaming, rather than
+// silently degrading (standaloneSSE defaults to true here).
+func TestHandleGet_NonFlushableWriterReturns500(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil)
+	rec := newNonFlushableResponseWriter()
+
+	proxy.handleGet(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.statusCode)
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(), "stream must not remain registered after the capability check fails")
+}
+
+// TestHandleGet_DefaultEnabledRegistersAndDeregistersStream verifies that,
+// with standaloneSSE at its default (enabled) and a known Mcp-Session-Id, a
+// GET request registers a stream for the lifetime of the connection and
+// deregisters it on client disconnect (request context cancellation).
+func TestHandleGet_DefaultEnabledRegistersAndDeregistersStream(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
+	sessID := uuid.NewString()
+	require.NoError(t, proxy.sessionManager.AddWithID(sessID))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil).WithContext(ctx)
+	req.Header.Set("Mcp-Session-Id", sessID)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		proxy.handleGet(rec, req)
+	}()
+
+	require.Eventually(t, func() bool {
+		return proxy.serverStreams.streamCount() == 1
+	}, time.Second, 5*time.Millisecond, "stream was not registered")
+
+	cancel() // simulate client disconnect
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleGet did not return after client disconnect")
+	}
+
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(), "stream must be deregistered after disconnect")
+	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+}
+
+// TestHandleGet_SessionDecisionMatrix verifies handleGet's Mcp-Session-Id
+// resolution matrix directly (without a full HTTP round-trip): no header is
+// rejected with 400, an unknown session with 404, and a known session opens
+// the stream with 200.
+func TestHandleGet_SessionDecisionMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		setHeader     bool
+		useKnownSess  bool
+		wantStatus    int
+		wantStreamReg bool
+	}{
+		{name: "no header", setHeader: false, wantStatus: http.StatusBadRequest},
+		{name: "unknown session", setHeader: true, useKnownSess: false, wantStatus: http.StatusNotFound},
+		{name: "known session", setHeader: true, useKnownSess: true, wantStatus: http.StatusOK, wantStreamReg: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := NewHTTPProxy("localhost", 0, nil, nil)
+			sessID := uuid.NewString()
+			require.NoError(t, proxy.sessionManager.AddWithID(sessID))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil).WithContext(ctx)
+			if tt.setHeader {
+				if tt.useKnownSess {
+					req.Header.Set("Mcp-Session-Id", sessID)
+				} else {
+					req.Header.Set("Mcp-Session-Id", uuid.NewString())
+				}
+			}
+			rec := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				proxy.handleGet(rec, req)
+			}()
+
+			if tt.wantStreamReg {
+				require.Eventually(t, func() bool {
+					return proxy.serverStreams.streamCount() == 1
+				}, time.Second, 5*time.Millisecond, "stream was not registered")
+				cancel()
+			}
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("handleGet did not return")
+			}
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
 }

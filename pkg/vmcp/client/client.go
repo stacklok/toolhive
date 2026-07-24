@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -707,10 +708,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
-	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
-	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
-	// We cannot distinguish auth failures from routing errors without the raw status code,
-	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	// ErrLegacySSEServer is toolhive-core's sentinel for a 4xx (except 401) on
+	// initialize POST against the "sse" transport type, where the SDK client
+	// cannot distinguish an auth rejection from a legacy SSE-only server without
+	// the raw status code. Under the streamable-http transport this arm is dead:
+	// mcp-go's streamable-HTTP client surfaces a generic HTTP status error for a
+	// 403 on initialize (e.g. "request failed with status 403"), not this
+	// sentinel, so that case falls through to the string-based classification
+	// below and still maps to ErrBackendUnavailable (see
+	// TestRegression_403OnInitialize_LegacySSEFallback). This arm only fires for
+	// the sse transport type; it is kept for backend targets still configured
+	// with legacy SSE.
 	if errors.Is(err, transport.ErrLegacySSEServer) {
 		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
 		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
@@ -1056,13 +1064,19 @@ func (h *httpBackendClient) CallTool(
 		Params: mcp.CallToolParams{
 			Name:      backendToolName,
 			Arguments: arguments,
-			Meta:      conversion.ToMCPMeta(meta),
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, meta)),
 		},
 	})
 	if err != nil {
 		// Network/connection errors are operational errors
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
+
+	// Flush the backend's server->client stream before the deferred Close tears
+	// down this per-call client, so a fire-and-forget notification the backend
+	// emitted mid-call (progress/logging) is relayed downstream instead of being
+	// dropped. See drainServerToClientNotifications for the lost-notification race.
+	h.drainServerToClientNotifications(ctx, c)
 
 	// Extract _meta field from backend response
 	responseMeta := conversion.FromMCPMeta(result.Meta)
@@ -1154,9 +1168,12 @@ func (h *httpBackendClient) ReadResource(
 		slog.Debug("translating resource URI", "client_uri", uri, "backend_uri", backendURI)
 	}
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See TestOutboundMetaTraceContext for details/tripwire.
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
 		Params: mcp.ReadResourceParams{
-			URI: backendURI,
+			URI:  backendURI,
+			Meta: conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {
@@ -1209,10 +1226,13 @@ func (h *httpBackendClient) GetPrompt(
 
 	stringArgs := conversion.ConvertPromptArguments(arguments)
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See TestOutboundMetaTraceContext for details/tripwire.
 	result, err := c.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
 			Name:      backendPromptName,
 			Arguments: stringArgs,
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {

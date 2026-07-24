@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,28 @@ func collectAuthorityRegexes(rbac *envoyHTTPRBAC) []string {
 func authorityMatched(patterns []string, authority string) bool {
 	for _, p := range patterns {
 		if regexp.MustCompile("^(?:" + p + ")$").MatchString(authority) {
+			return true
+		}
+	}
+	return false
+}
+
+// listenerAllowsAuthority returns true when the ALLOW RBAC filter in the given
+// listener would permit a request with the given :authority value.
+func listenerAllowsAuthority(listener envoyListener, authority string) bool {
+	rbac := findRBACFilter(listener)
+	if rbac == nil {
+		return false
+	}
+	for _, policy := range rbac.Rules.Policies {
+		allMatch := true
+		for _, perm := range policy.Permissions {
+			if !permMatchesAuthority(perm, authority) {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
 			return true
 		}
 	}
@@ -489,6 +512,10 @@ func TestBuildIngressCluster_UpstreamAddress(t *testing.T) {
 
 	assert.Equal(t, ingressClusterName, cluster.Name)
 	assert.Equal(t, "STRICT_DNS", cluster.Type)
+	// V4_ONLY prevents slow AAAA lookup timeouts when IPv6 is unavailable.
+	// A regression dropping this would fail silently (extra latency only).
+	assert.Equal(t, "V4_ONLY", cluster.DnsLookupFamily,
+		"ingress STRICT_DNS cluster must use V4_ONLY to avoid IPv6 lookup timeouts")
 	require.NotNil(t, cluster.LoadAssignment)
 	require.NotEmpty(t, cluster.LoadAssignment.Endpoints)
 	require.NotEmpty(t, cluster.LoadAssignment.Endpoints[0].LBEndpoints)
@@ -523,14 +550,6 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 	t.Parallel()
 
 	b := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{},
 	}
 
@@ -561,21 +580,13 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 		"bootstrap file must contain valid JSON")
 }
 
-// TestEnvoyAdmin_LoopbackOnly asserts that the admin block written by
-// writeEnvoyBootstrap binds only on the loopback address and never on
-// 0.0.0.0 or an empty address that would expose admin to all interfaces.
-func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
+// TestEnvoyAdmin_Absent asserts that the admin interface is entirely absent from
+// the generated bootstrap. Omitting the admin block causes Envoy to skip the
+// admin server, removing the attack surface without affecting proxy behaviour.
+func TestEnvoyAdmin_Absent(t *testing.T) {
 	t.Parallel()
 
 	b := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{},
 	}
 
@@ -586,12 +597,12 @@ func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	s := string(data)
 
-	assert.Contains(t, s, "127.0.0.1",
-		"admin address must be loopback 127.0.0.1")
-	assert.NotContains(t, s, "0.0.0.0",
-		"admin address must NOT bind on 0.0.0.0")
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m), "bootstrap must be valid JSON")
+
+	_, hasAdmin := m["admin"]
+	assert.False(t, hasAdmin, "bootstrap must not contain an admin block")
 }
 
 // TestGetEnvoyImage verifies that getEnvoyImage returns the default image when
@@ -725,7 +736,6 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 				clusters = append(clusters, buildIngressCluster(tc.spec))
 			}
 			b := envoyBootstrap{
-				Admin:           &envoyAdmin{Address: envoyAddress{SocketAddress: envoySocketAddress{Address: "127.0.0.1", PortValue: 9901}}},
 				StaticResources: envoyStaticResources{Listeners: listeners, Clusters: clusters},
 			}
 			cfg, err := json.Marshal(b)
@@ -747,9 +757,10 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 }
 
 // TestEnvoyProxy_SetupOrchestration covers the container-orchestration branch
-// logic of SetupEgress/SetupIngress without a live daemon: the egress container
-// is always created (named <name>-egress), a non-stdio workload reserves an
-// ingress port that SetupIngress returns, and a stdio workload reserves none.
+// logic of SetupEgress/SetupIngress without a live daemon. SetupEgress must NOT
+// create any container — it only returns env vars. SetupIngress creates the
+// Envoy container (named <name>-egress) and returns the ingress port (0 for
+// stdio).
 func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 	t.Parallel()
 
@@ -863,4 +874,295 @@ func TestListenerTimeoutsDisabledForStreaming(t *testing.T) {
 		}
 	}
 	assert.True(t, sawPlainHTTP, "egress must have a plain-HTTP route")
+}
+
+// TestBuildAllowlistPolicies_AllowPort verifies that AllowPort entries are
+// translated into combined host+port regex matchers, matching Squid's
+// allowed_ports ACL behaviour including plain-HTTP bare-hostname support.
+// Tests cover:
+//   - AllowPort alone (any host on listed ports, bare hostname allowed when port 80 in list)
+//   - AllowHost + AllowPort (both must match; bare hostname allowed when port 80 in list)
+//   - AllowHost without AllowPort (any port, original behaviour)
+//   - InsecureAllowAll ignores port constraints
+func TestBuildAllowlistPolicies_AllowPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		out  *permissions.OutboundNetworkPermissions
+		// authority strings that must be allowed / denied
+		allowed []string
+		denied  []string
+	}{
+		{
+			name: "AllowPort only — any host on listed ports; bare hostname allowed when port 80 listed",
+			out:  &permissions.OutboundNetworkPermissions{AllowPort: []int{80, 443}},
+			// Bare "example.com" = plain HTTP = port 80 → allowed
+			allowed: []string{"example.com:80", "anything.io:443", "example.com"},
+			denied:  []string{"example.com:8080", "example.com:22"},
+		},
+		{
+			name: "AllowHost + AllowPort — host AND port must match",
+			out: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+				AllowPort: []int{443},
+			},
+			allowed: []string{"example.com:443"},
+			denied: []string{
+				"example.com:80", // right host, wrong port
+				"other.com:443",  // right port, wrong host
+				"other.com:80",   // neither
+			},
+		},
+		{
+			name: "AllowHost without AllowPort — any port allowed",
+			out: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+			},
+			allowed: []string{"example.com:443", "example.com:8080", "example.com:22"},
+			denied:  []string{"other.com:443"},
+		},
+		{
+			name:    "InsecureAllowAll ignores AllowPort",
+			out:     &permissions.OutboundNetworkPermissions{InsecureAllowAll: true, AllowPort: []int{443}},
+			allowed: []string{"example.com:80", "anything.io:9999"},
+			denied:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			spec := proxySpec{
+				WorkloadName: "app",
+				GatewayIP:    dockerDefaultBridgeGatewayIP,
+				Permissions:  &permissions.NetworkPermissions{Outbound: tt.out},
+			}
+			listener := buildEgressListener(spec)
+			for _, a := range tt.allowed {
+				assert.True(t, listenerAllowsAuthority(listener, a),
+					"authority %q should be allowed", a)
+			}
+			for _, a := range tt.denied {
+				assert.False(t, listenerAllowsAuthority(listener, a),
+					"authority %q should be denied", a)
+			}
+		})
+	}
+}
+
+// permMatchesAuthority tests a single envoyPermission against an authority
+// string, replicating Envoy's full-string anchoring for safe_regex and
+// exact/suffix/prefix string matches.
+func permMatchesAuthority(perm envoyPermission, authority string) bool {
+	if perm.Any != nil && *perm.Any {
+		return true
+	}
+	if perm.Header != nil && perm.Header.Name == ":authority" && perm.Header.StringMatch != nil {
+		sm := perm.Header.StringMatch
+		switch {
+		case sm.SafeRegex != nil:
+			return regexp.MustCompile("^(?:" + sm.SafeRegex.Regex + ")$").MatchString(authority)
+		case sm.Exact != "":
+			return authority == sm.Exact
+		case sm.Suffix != "":
+			return strings.HasSuffix(authority, sm.Suffix)
+		case sm.Prefix != "":
+			return strings.HasPrefix(authority, sm.Prefix)
+		}
+	}
+	if perm.OrRules != nil {
+		for _, r := range perm.OrRules.Rules {
+			if permMatchesAuthority(r, authority) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestBuildAllowlistPolicies_AllowPort_Structure guards against a wrong
+// permMatchesAuthority re-implementation masking a config regression: it checks
+// the actual RBAC policy shape (single SafeRegex combining host + port) rather
+// than just whether the helper says the authority is allowed or denied (F6).
+func TestBuildAllowlistPolicies_AllowPort_Structure(t *testing.T) {
+	t.Parallel()
+	spec := proxySpec{
+		WorkloadName: "app",
+		GatewayIP:    dockerDefaultBridgeGatewayIP,
+		Permissions: &permissions.NetworkPermissions{
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+				AllowPort: []int{80, 443},
+			},
+		},
+	}
+	listener := buildEgressListener(spec)
+	rbac := findRBACFilter(listener)
+	require.NotNil(t, rbac)
+	policy, ok := rbac.Rules.Policies["example.com"]
+	require.True(t, ok, "expected policy keyed 'example.com'")
+	// Must have exactly 1 permission: a single SafeRegex encoding both host and port.
+	require.Len(t, policy.Permissions, 1,
+		"AllowHost+AllowPort policy must have exactly 1 combined safe_regex permission")
+	perm := policy.Permissions[0]
+	require.NotNil(t, perm.Header, "permission must be a header matcher")
+	require.NotNil(t, perm.Header.StringMatch, "permission must have a string match")
+	require.NotNil(t, perm.Header.StringMatch.SafeRegex, "permission must use safe_regex")
+	// The regex must actually match the expected authorities — including bare
+	// hostname (plain HTTP) because port 80 is listed. Evaluating the full regex
+	// here rather than inspecting its text guards against a reimplementation that
+	// produces a different but equivalent string (N2: the previous assertion of
+	// assert.Contains(re,"?") was vacuous because "?" appears in non-capturing groups).
+	re := perm.Header.StringMatch.SafeRegex.Regex
+	compile := func(r string) *regexp.Regexp { return regexp.MustCompile("^(?:" + r + ")$") }
+	assert.True(t, compile(re).MatchString("example.com"), "bare hostname must match (plain HTTP, port 80 implied)")
+	assert.True(t, compile(re).MatchString("example.com:80"), "explicit port 80 must match")
+	assert.True(t, compile(re).MatchString("example.com:443"), "explicit port 443 must match")
+	assert.False(t, compile(re).MatchString("example.com:8080"), "non-listed port must not match")
+	assert.False(t, compile(re).MatchString("other.com:443"), "wrong host must not match")
+}
+
+// TestBuildAllowlistPolicies_AdditionalCases covers edge cases not in the main
+// AllowPort table (F7): multi-port OR shape, port-less authority divergence from
+// Squid, and gateway-deny ordering under AllowPort-only (F8).
+func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
+	t.Parallel()
+
+	// F7a: AllowHost + multi-port — authority with a non-listed port is denied.
+	t.Run("AllowHost+multi-port denies non-listed port", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{80, 443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		assert.True(t, listenerAllowsAuthority(l, "example.com:443"), "port 443 must be allowed")
+		assert.True(t, listenerAllowsAuthority(l, "example.com:80"), "port 80 must be allowed")
+		assert.False(t, listenerAllowsAuthority(l, "example.com:8080"), "port 8080 must be denied")
+		assert.False(t, listenerAllowsAuthority(l, "other.com:443"), "wrong host must be denied")
+	})
+
+	// F7b: Port-less authority (plain HTTP default port) — Squid parity.
+	// Plain HTTP omits the port from :authority ("example.com" not "example.com:80").
+	// When port 80 is in AllowPort the port suffix is made optional so both the
+	// bare form and the explicit ":80" form are accepted, matching Squid behaviour.
+	t.Run("port-less authority is allowed when port 80 is in AllowPort (Squid parity)", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{80},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		// Bare hostname (plain HTTP) must be allowed when port 80 is listed.
+		assert.True(t, listenerAllowsAuthority(l, "example.com"),
+			"port-less authority must be allowed when port 80 is in AllowPort (plain HTTP parity with Squid)")
+		assert.True(t, listenerAllowsAuthority(l, "example.com:80"),
+			"explicit port 80 must be allowed")
+		assert.False(t, listenerAllowsAuthority(l, "example.com:443"),
+			"port 443 must not be allowed when only port 80 is listed")
+		// Bare hostname must be denied when port 80 is NOT in the list.
+		spec443 := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"example.com"},
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l443 := buildEgressListener(spec443)
+		assert.False(t, listenerAllowsAuthority(l443, "example.com"),
+			"port-less authority must be denied when port 80 is NOT in AllowPort")
+		assert.True(t, listenerAllowsAuthority(l443, "example.com:443"),
+			"explicit port 443 must be allowed")
+	})
+
+	// F8: Gateway-deny DENY filter is evaluated before the ALLOW filter even
+	// when AllowPort-only is configured (deny-before-allow ordering).
+	t.Run("gateway-deny precedes AllowPort-only allow", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		// The gateway deny filter must precede the allow filter.
+		deny := findDenyRBACFilter(l)
+		require.NotNil(t, deny, "DENY filter must be present")
+		hcm := l.FilterChains[0].Filters[0].TypedConfig.(*envoyHCM)
+		var denyIdx, allowIdx int
+		for i, f := range hcm.HTTPFilters {
+			if rbac, ok := f.TypedConfig.(*envoyHTTPRBAC); ok {
+				if rbac.Rules.Action == "DENY" {
+					denyIdx = i
+				} else {
+					allowIdx = i
+				}
+			}
+		}
+		assert.Less(t, denyIdx, allowIdx, "DENY filter must appear before ALLOW filter")
+		// Gateway IP must be denied even though port 443 is in AllowPort.
+		gatewayPats := collectAuthorityRegexes(deny)
+		assert.True(t, authorityMatched(gatewayPats, dockerDefaultBridgeGatewayIP+":443"),
+			"gateway IP on port 443 must be caught by the DENY filter")
+	})
+
+	// N3: AllowPort-only with port 443 (no port 80) — bare hostname denied,
+	// explicit :443 allowed. Exercises the includes80=false branch of anyHostPortRegex.
+	t.Run("AllowPort-only port-443 — bare hostname denied, explicit port allowed", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		assert.True(t, listenerAllowsAuthority(l, "anything.io:443"), "port 443 must be allowed")
+		assert.False(t, listenerAllowsAuthority(l, "anything.io"), "bare hostname must be denied (port 80 not listed)")
+		assert.False(t, listenerAllowsAuthority(l, "anything.io:80"), "port 80 must be denied")
+	})
+
+	// N4: Wildcard host + AllowPort — the subdomain (.*\.)? path in hostPortMatchRegex.
+	t.Run("wildcard AllowHost + AllowPort matches subdomains on listed ports only", func(t *testing.T) {
+		t.Parallel()
+		spec := proxySpec{
+			WorkloadName: "app",
+			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			Permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"*.example.com"},
+					AllowPort: []int{443},
+				},
+			},
+		}
+		l := buildEgressListener(spec)
+		assert.True(t, listenerAllowsAuthority(l, "api.example.com:443"), "subdomain on allowed port must match")
+		assert.True(t, listenerAllowsAuthority(l, "example.com:443"), "apex on allowed port must match")
+		assert.False(t, listenerAllowsAuthority(l, "api.example.com:80"), "subdomain on disallowed port must not match")
+		assert.False(t, listenerAllowsAuthority(l, "api.example.com"), "bare subdomain must not match (port 80 not listed)")
+		assert.False(t, listenerAllowsAuthority(l, "other.com:443"), "non-matching host must not match")
+	})
 }

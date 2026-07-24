@@ -220,6 +220,7 @@ func newOIDCAuthMiddleware(
 		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
 		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
 		Scopes:            oidcCfg.Scopes,
+		CACertPath:        oidcCfg.CABundlePath,
 	}
 
 	// Wire optional dependencies from the embedded auth server so the JWT

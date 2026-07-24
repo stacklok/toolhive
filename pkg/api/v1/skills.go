@@ -5,6 +5,7 @@ package v1
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -18,12 +19,19 @@ import (
 // SkillsRoutes defines the routes for skill management.
 type SkillsRoutes struct {
 	skillService skills.SkillService
+	lockService  skills.SkillLockService
 }
 
-// SkillsRouter creates a new router for skill management endpoints.
+// SkillsRouter creates a new router for skill management endpoints. If
+// skillService's concrete implementation also satisfies skills.SkillLockService
+// (as skillsvc.New's does), /sync and /upgrade are served; otherwise both
+// return 501.
 func SkillsRouter(skillService skills.SkillService) http.Handler {
 	routes := SkillsRoutes{
 		skillService: skillService,
+	}
+	if lockSvc, ok := skillService.(skills.SkillLockService); ok {
+		routes.lockService = lockSvc
 	}
 
 	r := chi.NewRouter()
@@ -37,6 +45,8 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
 	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
 	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
+	r.Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
+	r.Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
 
 	return r
 }
@@ -364,4 +374,93 @@ func (s *SkillsRoutes) getSkillContent(w http.ResponseWriter, r *http.Request) e
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(content)
+}
+
+// syncSkills restores a project's installed skills to match its lock file.
+//
+//	@Summary		Sync project skills from the lock file
+//	@Description	Restore a project's installed skills to match toolhive.lock.yaml
+//	@Tags			skills
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		syncSkillsRequest	true	"Sync request"
+//	@Success		200		{object}	skills.SyncResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (feature not enabled)"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Failure		501		{string}	string	"Not Implemented"
+//	@Router			/api/v1beta/skills/sync [post]
+func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error {
+	if s.lockService == nil {
+		return httperr.WithCode(errors.New("skill sync is not supported by this server"), http.StatusNotImplemented)
+	}
+
+	var req syncSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.lockService.Sync(r.Context(), skills.SyncOptions{
+		ProjectRoot: req.ProjectRoot,
+		Clients:     req.Clients,
+		Prune:       req.Prune,
+		Check:       req.Check,
+		Adopt:       req.Adopt,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
+}
+
+// upgradeSkills re-resolves a project's lock entries and installs newer
+// content where available. With fail_on_changes set, it evaluates the plan
+// and returns the outcomes without installing anything — clients derive the
+// freshness verdict from the outcome statuses, mirroring sync's check mode.
+//
+//	@Summary		Upgrade project skills
+//	@Description	Re-resolve a project's lock entries and install newer content where available
+//	@Tags			skills
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		upgradeSkillsRequest	true	"Upgrade request"
+//	@Success		200		{object}	skills.UpgradeResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (feature not enabled)"
+//	@Failure		404		{string}	string	"Not Found (a requested name is not in the lock file)"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Failure		501		{string}	string	"Not Implemented"
+//	@Router			/api/v1beta/skills/upgrade [post]
+func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) error {
+	if s.lockService == nil {
+		return httperr.WithCode(errors.New("skill upgrade is not supported by this server"), http.StatusNotImplemented)
+	}
+
+	var req upgradeSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.lockService.Upgrade(r.Context(), skills.UpgradeOptions{
+		ProjectRoot:    req.ProjectRoot,
+		Names:          req.Names,
+		Preview:        req.Preview,
+		FailOnChanges:  req.FailOnChanges,
+		AllowRefChange: req.AllowRefChange,
+		Clients:        req.Clients,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
 }

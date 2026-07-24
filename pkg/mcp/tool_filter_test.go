@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1872,6 +1874,234 @@ func TestNewListToolsMappingMiddleware_MissingContentTypeCannotSmuggleToolsList(
 			assert.Contains(t, recorder.Body.String(), "tool1")
 			assert.NotContains(t, recorder.Body.String(), "tool2",
 				"the excluded tool must not be exposed just because Content-Type was missing")
+		})
+	}
+}
+
+func TestClientAcceptsJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		accept string
+		want   bool
+	}{
+		{name: "application/json", accept: "application/json", want: true},
+		{name: "application/json with other alternatives", accept: "application/json, text/event-stream", want: true},
+		{name: "text/event-stream only", accept: "text/event-stream", want: false},
+		{name: "wildcard", accept: "*/*", want: true},
+		{name: "application subtype wildcard", accept: "application/*", want: true},
+		{name: "empty header", accept: "", want: true},
+		{name: "application/json with quality parameter", accept: "application/json;q=0.9", want: true},
+		{name: "uppercase media type is case-insensitive", accept: "APPLICATION/JSON", want: true},
+		{name: "application/json-patch+json is not application/json", accept: "application/json-patch+json", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+
+			assert.Equal(t, tt.want, clientAcceptsJSON(req))
+		})
+	}
+}
+
+// TestNewToolCallMappingMiddleware_FilteredTool covers the HTTP-level
+// behavior of the *toolCallFilter case in NewToolCallMappingMiddleware: a
+// tools/call request for a tool blocked by the filter must be rejected with
+// a JSON-RPC error (never the raw, filter-specific "blocked" reason -- see
+// the NOTE above the *toolCallFilter case) rather than a bare HTTP 400,
+// unless the client can only receive an event stream, in which case the
+// legacy 400 fallback still applies.
+func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		accept        string
+		setAccept     bool
+		id            any
+		expectStatus  int
+		expectJSONRPC bool
+	}{
+		{
+			name:          "Accept: application/json - numeric id",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            1,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:          "Accept: application/json - string id",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            "req-42",
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:          "Accept: application/json, text/event-stream",
+			accept:        "application/json, text/event-stream",
+			setAccept:     true,
+			id:            1,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:         "Accept: text/event-stream only - falls back to 400",
+			accept:       "text/event-stream",
+			setAccept:    true,
+			id:           1,
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name:          "No Accept header - JSON allowed by default",
+			setAccept:     false,
+			id:            1,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:          "null id is echoed as null",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            nil,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+			require.NoError(t, err)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+			})
+			handler := middleware(next)
+
+			idJSON, err := json.Marshal(tt.id)
+			require.NoError(t, err)
+			body := fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"blocked_tool"}}`,
+				idJSON,
+			)
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			if tt.setAccept {
+				req.Header.Set("Accept", tt.accept)
+			}
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.False(t, nextCalled, "next handler must not be called for a filtered tool")
+			assert.Equal(t, tt.expectStatus, recorder.Code)
+
+			if !tt.expectJSONRPC {
+				return
+			}
+
+			assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+
+			var response map[string]any
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+
+			assert.Equal(t, "2.0", response["jsonrpc"])
+			errObj, ok := response["error"].(map[string]any)
+			require.True(t, ok, "response must carry a JSON-RPC error object")
+			assert.Equal(t, float64(CodeInvalidParams), errObj["code"])
+			assert.Equal(t, "tool not found", errObj["message"])
+			assert.NotContains(t, errObj["message"], "filter",
+				"a filtered tool must look the same as a nonexistent one")
+
+			expectedID, err := json.Marshal(tt.id)
+			require.NoError(t, err)
+			actualID, err := json.Marshal(response["id"])
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedID), string(actualID))
+		})
+	}
+}
+
+// TestNewToolCallMappingMiddleware_AllowedToolPassesThrough verifies that a
+// tools/call request for an allowed tool is forwarded unmodified.
+func TestNewToolCallMappingMiddleware_AllowedToolPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+	require.NoError(t, err)
+
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := middleware(next)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed_tool"}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Accept", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.True(t, nextCalled, "next handler must be called for an allowed tool")
+	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
+// TestNewToolCallMappingMiddleware_BogusRequest verifies that a malformed
+// tools/call request (missing/nil params, or params without a name) is still
+// rejected with a bare HTTP 400 -- unlike a filtered tool, this is a
+// malformed-request case, not a filtering decision, per the current MCP spec.
+func TestNewToolCallMappingMiddleware_BogusRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "params missing name",
+			body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{}}}`,
+		},
+		{
+			name: "nil params",
+			body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+			require.NoError(t, err)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+			})
+			handler := middleware(next)
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			req.Header.Set("Accept", "application/json")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.False(t, nextCalled, "next handler must not be called for a malformed request")
+			assert.Equal(t, http.StatusBadRequest, recorder.Code)
 		})
 	}
 }

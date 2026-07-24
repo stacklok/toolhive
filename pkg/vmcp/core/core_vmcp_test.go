@@ -352,6 +352,76 @@ func TestListResourceTemplates_Empty(t *testing.T) {
 	assert.Empty(t, templates)
 }
 
+// TestDiscover_SingleAggregation verifies Discover derives all four
+// capability-presence flags from ONE aggregation call (reg.List +
+// AggregateCapabilities each Times(1)) rather than the four independent
+// fan-outs ListTools/ListResources/ListResourceTemplates/ListPrompts would
+// cost if called separately.
+func TestDiscover_SingleAggregation(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	backends := []vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}
+	m.reg.EXPECT().List(gomock.Any()).Return(backends).Times(1)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), backends).Return(&aggregator.AggregatedCapabilities{
+		Tools:             []vmcp.Tool{backendTool("echo")},
+		Resources:         []vmcp.Resource{{URI: "file://a", BackendID: testBackendID}},
+		ResourceTemplates: []vmcp.ResourceTemplate{{URITemplate: "file:///logs/{date}.txt", BackendID: testBackendID}},
+		Prompts:           []vmcp.Prompt{{Name: "p1", BackendID: testBackendID}},
+		RoutingTable:      &vmcp.RoutingTable{},
+	}, nil).Times(1)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	caps, err := c.Discover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, DiscoverCapabilities{
+		HasTools: true, HasResources: true, HasResourceTemplates: true, HasPrompts: true,
+	}, caps)
+}
+
+// TestDiscover_EmptyAggregate verifies an empty aggregated view yields every
+// flag false, not an error.
+func TestDiscover_EmptyAggregate(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	caps, err := c.Discover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, DiscoverCapabilities{}, caps)
+}
+
+// TestDiscover_DeniedIdentityHidesTools is the security-critical case: a
+// backend advertising a tool must NOT set HasTools for an identity the
+// admission seam denies that tool to. Deriving the flag from the raw
+// aggregate instead of the admission-filtered set would leak the tool's
+// existence to an identity that cannot call it.
+func TestDiscover_DeniedIdentityHidesTools(t *testing.T) {
+	t.Parallel()
+	_, m := baseConfig(t)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{"echo": {authorized: false}}}
+	c := checkCore(m, newCedarAdmission(authorizer))
+	expectAggregationAnyTimes(m, &aggregator.AggregatedCapabilities{
+		Tools:        []vmcp.Tool{backendTool("echo")},
+		RoutingTable: &vmcp.RoutingTable{},
+	})
+
+	caps, err := c.Discover(t.Context(), cedarIdentity())
+	require.NoError(t, err)
+	assert.False(t, caps.HasTools,
+		"a denied identity must not see HasTools=true even though the backend advertises a tool")
+}
+
 func TestListTools_AggregationError(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
@@ -555,6 +625,59 @@ func TestClose_Idempotent(t *testing.T) {
 		require.NoError(t, c.Close())
 		require.NoError(t, c.Close())
 	})
+}
+
+// invalidatorAggregator is a minimal aggregator.Aggregator that also
+// implements aggregator.CacheInvalidator, so TestInvalidateCapabilityCache_*
+// can assert coreVMCP.InvalidateCapabilityCache's delegation without depending
+// on the real cachingAggregator (covered separately in the aggregator package).
+type invalidatorAggregator struct {
+	aggregator.Aggregator
+	invalidateCalls int
+}
+
+func (a *invalidatorAggregator) InvalidateAll() { a.invalidateCalls++ }
+
+var _ aggregator.CacheInvalidator = (*invalidatorAggregator)(nil)
+
+// TestInvalidateCapabilityCache_DelegatesWhenSupported verifies (#5748) that
+// InvalidateCapabilityCache type-asserts the configured aggregator to
+// aggregator.CacheInvalidator and calls InvalidateAll when it is implemented.
+func TestInvalidateCapabilityCache_DelegatesWhenSupported(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	inv := &invalidatorAggregator{Aggregator: m.agg}
+	cfg.Aggregator = inv
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	c.InvalidateCapabilityCache()
+	assert.Equal(t, 1, inv.invalidateCalls)
+}
+
+// TestInvalidateCapabilityCache_WarnsWhenUnsupported verifies (#5748) that
+// InvalidateCapabilityCache is a WARN-logged no-op — not a silent one — when
+// the configured aggregator does not implement aggregator.CacheInvalidator
+// (baseConfig's plain MockAggregator does not).
+//
+//nolint:paralleltest // installs a global slog default + non-thread-safe buffer; must not run in parallel
+func TestInvalidateCapabilityCache_WarnsWhenUnsupported(t *testing.T) {
+	cfg, _ := baseConfig(t)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	assert.NotPanics(t, func() { c.InvalidateCapabilityCache() })
+	assert.Contains(t, buf.String(), "does not support it",
+		"unsupported aggregator must WARN-log, not silently no-op")
 }
 
 // Must run serially: it swaps the global slog default to capture output into a

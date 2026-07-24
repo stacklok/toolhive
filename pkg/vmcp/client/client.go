@@ -1064,6 +1064,12 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
+	// Flush the backend's server->client stream before the deferred Close tears
+	// down this per-call client, so a fire-and-forget notification the backend
+	// emitted mid-call (progress/logging) is relayed downstream instead of being
+	// dropped. See drainServerToClientNotifications for the lost-notification race.
+	h.drainServerToClientNotifications(ctx, c)
+
 	// Extract _meta field from backend response
 	responseMeta := conversion.FromMCPMeta(result.Meta)
 

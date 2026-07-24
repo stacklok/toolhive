@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/exp/jsonrpc2"
+
+	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
 // sseKeepAliveInterval is the cadence at which an otherwise-idle SSE stream
@@ -189,9 +191,28 @@ func rewriteRequestParam(req *jsonrpc2.Request, key string, value any) (*jsonrpc
 	return &jsonrpc2.Request{ID: req.ID, Method: req.Method, Params: data}, nil
 }
 
-// isSupportedMCPVersion is intentionally permissive: we accept any present version string.
-// This avoids being pedantic and breaking on new protocol dates while remaining compliant,
-// since this proxy is transport-level and does not depend on specific MCP versions.
-func isSupportedMCPVersion(_ string) bool {
-	return true
+// supportedMCPVersions is the set of MCP protocol revision dates this proxy
+// recognizes when strict validation is enabled (WithStrictProtocolValidation).
+// The upcoming stateless revision is sourced from mcp.MCPVersionModern rather
+// than duplicated as a literal, so the strict gate and the ClassifyRevision
+// routing path (which keys off the same constant) cannot drift if that draft
+// date changes before it is finalized.
+var supportedMCPVersions = map[string]struct{}{
+	"2024-11-05":         {},
+	"2025-03-26":         {},
+	"2025-06-18":         {},
+	"2025-11-25":         {},
+	mcp.MCPVersionModern: {},
+}
+
+// isSupportedMCPVersion reports whether version is one of the known MCP
+// protocol revision dates in supportedMCPVersions. It is only consulted when
+// the proxy's strict protocol validation is enabled (see
+// WithStrictProtocolValidation); in the default permissive mode, handlePost
+// never calls it and any MCP-Protocol-Version header value is accepted, since
+// this proxy is transport-level and does not depend on a specific MCP
+// revision.
+func isSupportedMCPVersion(version string) bool {
+	_, ok := supportedMCPVersions[version]
+	return ok
 }

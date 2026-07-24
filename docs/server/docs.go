@@ -1502,6 +1502,10 @@ const docTemplate = `{
                         "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
                         "type": "boolean"
                     },
+                    "strict_protocol_validation": {
+                        "description": "StrictProtocolValidation enables strict MCP-Protocol-Version validation\non the streamable HTTP proxy: a request whose header names an unknown\nMCP revision is rejected with HTTP 400. Default false accepts any\nversion string (an absent header is always accepted in either mode).",
+                        "type": "boolean"
+                    },
                     "target_host": {
                         "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
                         "type": "string"

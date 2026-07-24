@@ -771,6 +771,25 @@ For deployment behind reverse proxy, proxies respect X-Forwarded headers (Host, 
 
 **Security**: Only enable if ToolHive is behind trusted reverse proxy.
 
+### MCP-Protocol-Version Validation (Streamable HTTP)
+
+**Implementation**: `pkg/transport/proxy/streamable/streamable_proxy.go`, `pkg/transport/proxy/streamable/utils.go`
+
+By default, the streamable HTTP proxy is version-agnostic: it accepts any
+`MCP-Protocol-Version` header value (including an absent header, per the
+streamable HTTP spec's rule to assume `2025-03-26`). This is intentional --
+the proxy is transport-level and does not depend on a specific MCP revision,
+so it avoids being pedantic and breaking on new protocol dates.
+
+**Opt-in strict mode**: `thv run --strict-protocol-validation` rejects a
+request whose `MCP-Protocol-Version` header names an unknown/unsupported MCP
+revision with HTTP 400. An absent header is still accepted in strict mode.
+The set of recognized revisions is `supportedMCPVersions` in
+`pkg/transport/proxy/streamable/utils.go`. This is wired through
+`runner.WithStrictProtocolValidation` -> `RunConfig.StrictProtocolValidation`
+-> `types.Config.StrictProtocolValidation` -> `StdioTransport.SetStrictProtocolValidation`
+-> `streamable.WithStrictProtocolValidation`.
+
 ### SSE Endpoint URL Rewriting
 
 **Problem**: When using path-based ingress routing that strips path prefixes:

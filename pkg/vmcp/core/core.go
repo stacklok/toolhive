@@ -32,6 +32,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
+// DiscoverCapabilities summarizes, for one identity, whether each capability
+// kind has at least one admission-filtered entry. It carries no descriptor
+// arrays -- only presence flags -- unlike the []vmcp.Tool/Resource/etc. slices
+// ListTools/ListResources/ListResourceTemplates/ListPrompts return.
+type DiscoverCapabilities struct {
+	HasTools             bool
+	HasResources         bool
+	HasResourceTemplates bool
+	HasPrompts           bool
+}
+
 // VMCP is the core Virtual MCP domain object.
 //
 // Contract:
@@ -196,6 +207,20 @@ type VMCP interface {
 	// LookupTool/LookupResource/LookupPrompt — a lookup never resolves what the
 	// corresponding authorized list would not show.
 	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
+
+	// Discover returns identity's capability-presence flags -- whether it is
+	// admitted to at least one tool, resource, resource template, and prompt --
+	// from a SINGLE aggregation of backend capabilities, for server/discover.
+	//
+	// It applies the exact same admission-filtered code paths
+	// ListTools/ListResources/ListResourceTemplates/ListPrompts use against one
+	// shared aggregated view, so a flag is true iff the ADMISSION-FILTERED set
+	// for that capability is non-empty -- never derived from the raw aggregate,
+	// which would leak capabilities identity cannot reach. This mirrors the
+	// post-admission-summary precedent ListBackends(filterUnauthorized=true)
+	// established, applied to presence flags instead of a backend list. See
+	// ListTools for the nil/anonymous identity semantics.
+	Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error)
 
 	// BackendHealth returns the backend health reporter the core owns, or nil when health
 	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and

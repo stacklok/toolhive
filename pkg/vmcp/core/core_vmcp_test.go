@@ -352,6 +352,76 @@ func TestListResourceTemplates_Empty(t *testing.T) {
 	assert.Empty(t, templates)
 }
 
+// TestDiscover_SingleAggregation verifies Discover derives all four
+// capability-presence flags from ONE aggregation call (reg.List +
+// AggregateCapabilities each Times(1)) rather than the four independent
+// fan-outs ListTools/ListResources/ListResourceTemplates/ListPrompts would
+// cost if called separately.
+func TestDiscover_SingleAggregation(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	backends := []vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}
+	m.reg.EXPECT().List(gomock.Any()).Return(backends).Times(1)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), backends).Return(&aggregator.AggregatedCapabilities{
+		Tools:             []vmcp.Tool{backendTool("echo")},
+		Resources:         []vmcp.Resource{{URI: "file://a", BackendID: testBackendID}},
+		ResourceTemplates: []vmcp.ResourceTemplate{{URITemplate: "file:///logs/{date}.txt", BackendID: testBackendID}},
+		Prompts:           []vmcp.Prompt{{Name: "p1", BackendID: testBackendID}},
+		RoutingTable:      &vmcp.RoutingTable{},
+	}, nil).Times(1)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	caps, err := c.Discover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, DiscoverCapabilities{
+		HasTools: true, HasResources: true, HasResourceTemplates: true, HasPrompts: true,
+	}, caps)
+}
+
+// TestDiscover_EmptyAggregate verifies an empty aggregated view yields every
+// flag false, not an error.
+func TestDiscover_EmptyAggregate(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	caps, err := c.Discover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, DiscoverCapabilities{}, caps)
+}
+
+// TestDiscover_DeniedIdentityHidesTools is the security-critical case: a
+// backend advertising a tool must NOT set HasTools for an identity the
+// admission seam denies that tool to. Deriving the flag from the raw
+// aggregate instead of the admission-filtered set would leak the tool's
+// existence to an identity that cannot call it.
+func TestDiscover_DeniedIdentityHidesTools(t *testing.T) {
+	t.Parallel()
+	_, m := baseConfig(t)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{"echo": {authorized: false}}}
+	c := checkCore(m, newCedarAdmission(authorizer))
+	expectAggregationAnyTimes(m, &aggregator.AggregatedCapabilities{
+		Tools:        []vmcp.Tool{backendTool("echo")},
+		RoutingTable: &vmcp.RoutingTable{},
+	})
+
+	caps, err := c.Discover(t.Context(), cedarIdentity())
+	require.NoError(t, err)
+	assert.False(t, caps.HasTools,
+		"a denied identity must not see HasTools=true even though the backend advertises a tool")
+}
+
 func TestListTools_AggregationError(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)

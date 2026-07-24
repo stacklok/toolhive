@@ -82,6 +82,9 @@ func (*stubVMCP) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Bac
 func (*stubVMCP) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
 	return nil, nil
 }
+func (*stubVMCP) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
+	return core.DiscoverCapabilities{}, nil
+}
 func (s *stubVMCP) Close() error                 { s.closed = true; return nil }
 func (*stubVMCP) BackendHealth() health.Reporter { return nil }
 func (*stubVMCP) InvalidateCapabilityCache()     {}
@@ -360,6 +363,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		EndpointPath:            "/e",
 		SessionTTL:              time.Second,
 		HeartbeatInterval:       time.Second,
+		ModernDispatchEnabled:   true,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"x-test"},

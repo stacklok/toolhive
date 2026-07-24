@@ -331,15 +331,15 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: false,
 		},
 		{
-			name:   "Server discover default-denies (not allow-listed)",
+			name:   "Server discover is always allowed",
 			method: "server/discover",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
-			expectStatus:     http.StatusForbidden,
-			expectAuthorized: false,
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
 		},
 		{
 			name:   "Subscriptions listen is always allowed",
@@ -467,16 +467,13 @@ func TestSubscriptionsListenIsAllowlistedPendingDelivery(t *testing.T) {
 	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["subscriptions/listen"])
 }
 
-// TestServerDiscoverIsNotAllowlisted guards a deliberate omission: server/discover must
-// stay absent from MCPMethodToFeatureOperation so it default-denies (403) until Modern
-// serving is wired up with proper response filtering (#5830). Its response enumerates
-// tool/resource descriptors, and re-adding it as always-allowed would let a Cedar-restricted
-// client bypass ResponseFilteringWriter and enumerate the full catalog. This test forces a
-// conscious decision if someone re-adds the entry.
-func TestServerDiscoverIsNotAllowlisted(t *testing.T) {
+// TestServerDiscoverIsAllowlisted guards the now-safe allow-listing of server/discover:
+// its Modern envelope is post-admission capability flags (booleans), never per-resource
+// descriptors, so unlike tools/list or prompts/list there is nothing here for
+// ResponseFilteringWriter to filter -- always-allowed is correct, not a bypass.
+func TestServerDiscoverIsAllowlisted(t *testing.T) {
 	t.Parallel()
-	_, ok := MCPMethodToFeatureOperation["server/discover"]
-	require.False(t, ok, "server/discover must not be allow-listed until Modern serving with response filtering lands (#5830)")
+	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["server/discover"])
 }
 
 // TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.

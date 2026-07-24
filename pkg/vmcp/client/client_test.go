@@ -1722,6 +1722,7 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 					&stubElicitationRequester{},
 					&stubSamplingRequester{},
 					nil,
+					nil,
 				)
 			}
 

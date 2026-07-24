@@ -69,6 +69,8 @@ func newPerToolSessionFactory(
 			}).AnyTimes()
 			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
 				Return("unauthenticated", true).AnyTimes()
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyBackendIDs).
+				Return("", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -323,6 +324,13 @@ type Server struct {
 	// vmcpSessionMgr manages session-scoped backend client lifecycle.
 	vmcpSessionMgr SessionManager
 
+	// listChanged consumes backend list_changed notifications and propagates
+	// them to affected, still-live sessions (see list_changed.go). Serve always
+	// constructs and starts it; server.New sets its cache invalidator once the
+	// caching aggregator is known. Nil only for a *Server built by a test that
+	// bypasses Serve entirely.
+	listChanged *listChangedCoordinator
+
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
@@ -515,17 +523,31 @@ func New(
 	elicitAdapter := NewSDKElicitationAdapter(srv.MCPServer())
 	elicitation.bind(elicitAdapter)
 
+	// Give the list_changed coordinator its cache invalidator now that the
+	// caching aggregator is known. cachedAgg is the exact instance the core
+	// calls into; type-asserting it here (rather than threading a second
+	// collaborator through core.New/Serve) keeps CacheInvalidator scoped to
+	// this one wiring point. cachedAgg implements it whenever caching is
+	// enabled (ttl > 0); when disabled, NewCachingAggregator returns cfg.Aggregator
+	// unwrapped, which does not implement it, and invalidation is skipped —
+	// there is no cache to go stale.
+	if inv, ok := cachedAgg.(aggregator.CacheInvalidator); ok {
+		srv.listChanged.setInvalidator(inv)
+	}
+
 	// Bind the server->client forwarders onto the concrete backend client so a
-	// backend's mid-call elicitation, sampling, and progress/logging traffic is
-	// relayed to the downstream client on the same session. This mirrors the
-	// elicitation late-binding above (the SDK adapters wrap the mcp-go server Serve
-	// just built, so they cannot exist before this point); a backend client that
-	// does not implement the binder simply does not forward server->client traffic.
+	// backend's mid-call elicitation, sampling, progress/logging, and
+	// list_changed traffic is relayed to the downstream client on the same
+	// session. This mirrors the elicitation late-binding above (the SDK adapters
+	// wrap the mcp-go server Serve just built, so they cannot exist before this
+	// point); a backend client that does not implement the binder simply does
+	// not forward server->client traffic.
 	if binder, ok := backendClient.(vmcp.ClientForwarderBinder); ok {
 		binder.BindForwarders(
 			elicitAdapter,
 			NewSDKSamplingAdapter(srv.MCPServer()),
 			NewSDKNotifierAdapter(srv.MCPServer()),
+			srv.BackendListChangedNotifier(),
 		)
 	}
 
@@ -1105,6 +1127,30 @@ func setSessionToolsDirect(session server.ClientSession, tools []server.ServerTo
 	return nil
 }
 
+// setSessionToolsReplace sets tools directly on the session via the
+// SessionWithTools interface, REPLACING any existing session tools rather than
+// merging with them (compare setSessionToolsDirect, used at registration, which
+// merges to preserve tools set by earlier calls). The list_changed coordinator
+// uses this to re-project a session's tool set after a backend's tools changed:
+// a tool the backend removed must actually disappear from the session, which a
+// merge could never achieve. SetSessionTools itself does the add/remove
+// reconciliation against the live go-sdk server (session.go's syncSessionTools),
+// including the RemoveTools call for names that dropped out — that reconciliation
+// is what emits the downstream notifications/tools/list_changed.
+func setSessionToolsReplace(session server.ClientSession, tools []server.ServerTool) error {
+	sessionWithTools, ok := session.(server.SessionWithTools)
+	if !ok {
+		return fmt.Errorf("session does not support per-session tools")
+	}
+
+	toolMap := make(map[string]server.ServerTool, len(tools))
+	for _, tool := range tools {
+		toolMap[tool.Tool.Name] = tool
+	}
+	sessionWithTools.SetSessionTools(toolMap)
+	return nil
+}
+
 // lazyInjectSessionTools injects tools into the SDK ephemeral session for sessions
 // that were reconstructed from Redis on a different pod (cross-pod session sharing).
 //
@@ -1211,7 +1257,8 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// after initialize may receive a "tool not found" error before AddSessionTools
 	// completes. Conforming MCP clients call tools/list before tools/call, so this
 	// window is expected to be harmless in practice.
-	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID); retErr != nil {
+	var multiSess vmcpsession.MultiSession
+	if multiSess, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,
 			"error", retErr)
@@ -1223,7 +1270,50 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// handlers that route through the core. CreateSession above still establishes the bound
 	// session record (identity binding, TTL, Validate). The returned error becomes retErr
 	// (named return), so the defer terminates the session on failure.
-	return s.injectCoreSessionCapabilities(ctx, session)
+	if retErr = s.injectCoreSessionCapabilities(ctx, session); retErr != nil {
+		return retErr
+	}
+
+	// Register with the list_changed coordinator only once capability injection
+	// has succeeded, so a session that never fully registered is never tracked.
+	// backendIDs comes from the MultiSession's own metadata (populated by the
+	// factory at CreateSession) rather than being re-derived here, so it always
+	// matches the backends this session actually connected to. fwdHeaders is
+	// cloned: it is retained for the whole session lifetime off the request path,
+	// so defense-in-depth against a caller mutating the request-scoped map after
+	// this returns (copy-before-mutate). identity is immutable (safe to retain)
+	// and backendIDs is a fresh map, so neither needs cloning.
+	identity, _ := auth.IdentityFromContext(ctx)
+	s.listChanged.track(sessionID, &trackedSession{
+		sess:       session,
+		identity:   identity,
+		fwdHeaders: maps.Clone(headerforward.ForwardedHeadersFromContext(ctx)),
+		backendIDs: backendIDSetFromMetadata(multiSess),
+	})
+	return nil
+}
+
+// backendIDSetFromMetadata extracts the session's connected backend ID set from
+// its MultiSession metadata (vmcpsession.MetadataKeyBackendIDs, a comma-separated
+// sorted list written by the session factory). Returns an empty, non-nil set
+// when the key is absent or empty rather than nil, so
+// list_changed.affectedKinds's range-over-nil-map degrades to "no backends",
+// not a panic.
+func backendIDSetFromMetadata(sess vmcpsession.MultiSession) map[string]struct{} {
+	ids := make(map[string]struct{})
+	if sess == nil {
+		return ids
+	}
+	raw, ok := sess.GetMetadataValue(vmcpsession.MetadataKeyBackendIDs)
+	if !ok || raw == "" {
+		return ids
+	}
+	for _, id := range strings.Split(raw, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // backendHealth returns the core-owned backend health reporter, or nil when health

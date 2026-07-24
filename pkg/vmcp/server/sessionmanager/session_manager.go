@@ -89,6 +89,17 @@ type Manager struct {
 	// path can build a per-session optimizer over the core's tools. The store and
 	// cleanup remain owned by this Manager (cleanup returned from New).
 	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error)
+
+	// onTerminate, when set via SetOnTerminate, is invoked with the session ID on
+	// every SUCCESSFUL Terminate (the SDK's DELETE path and internal
+	// terminations). It is the explicit unregister hook the list_changed
+	// coordinator needs to drop a session from its registry promptly, since
+	// mcpcompat exposes no OnUnregisterSession hook. Best-effort, idempotent
+	// bookkeeping only — it must not block or take Manager locks. TTL expiry does
+	// NOT flow through Terminate (it is handled by the storage cleanup goroutine),
+	// so observers must still tolerate a session vanishing without this callback
+	// (the coordinator additionally prunes lazily via Validate during a sweep).
+	onTerminate func(sessionID string)
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
@@ -158,6 +169,14 @@ func New(
 		return optimizerCleanup(ctx)
 	}
 	return sm, cleanup, nil
+}
+
+// SetOnTerminate installs a callback invoked with the session ID on every
+// successful Terminate (see the onTerminate field). It is wired once at
+// composition time (Serve), before the server accepts connections, so no
+// concurrent Terminate can race the assignment. Passing nil clears it.
+func (m *Manager) SetOnTerminate(fn func(sessionID string)) {
+	m.onTerminate = fn
 }
 
 // OptimizerFactory returns the resolved (telemetry-wrapped) optimizer factory, or
@@ -489,6 +508,20 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	if sessionID == "" {
 		return false, fmt.Errorf("Manager.Terminate: empty session ID")
+	}
+
+	// Fire the unregister hook only on a SUCCESSFUL termination (err == nil):
+	// a transient storage error may leave the session alive, so dropping it from
+	// observers (e.g. the list_changed coordinator) then would silently stop
+	// delivering to a still-live session. The "already gone" success path DOES
+	// fire it, which correctly prunes an observer entry for a racily-removed
+	// session.
+	if sm.onTerminate != nil {
+		defer func() {
+			if err == nil {
+				sm.onTerminate(sessionID)
+			}
+		}()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), terminateTimeout)

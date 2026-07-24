@@ -54,9 +54,28 @@ type cachingAggregator struct {
 	cache *lru.Cache[string, cacheEntry]
 }
 
+var _ CacheInvalidator = (*cachingAggregator)(nil)
+
 type cacheEntry struct {
 	caps *AggregatedCapabilities
 	at   time.Time
+	// backendIDs is the set of backend IDs that contributed to caps, captured at
+	// AggregateCapabilities time from the backends argument. It lets
+	// InvalidateBackend scope eviction to only the cache entries a given backend
+	// actually contributed to.
+	backendIDs map[string]struct{}
+}
+
+// CacheInvalidator lets a caller evict every cached capability view that a
+// specific backend contributed to, without waiting for the TTL to expire. The
+// list_changed coordinator (pkg/vmcp/server) uses this so a backend's
+// notifications/{tools,resources,prompts}/list_changed forces a fresh sweep of
+// just that backend on the next AggregateCapabilities call, instead of serving
+// a stale cached view for up to ttl.
+type CacheInvalidator interface {
+	// InvalidateBackend evicts every cache entry whose backend set includes
+	// backendID. It is a no-op if no cached entry references backendID.
+	InvalidateBackend(backendID string)
 }
 
 // NewCachingAggregator wraps next so AggregateCapabilities results are memoized per identity
@@ -97,8 +116,34 @@ func (c *cachingAggregator) AggregateCapabilities(
 	if err != nil {
 		return nil, err
 	}
-	c.cache.Add(key, cacheEntry{caps: caps, at: time.Now()})
+	backendIDs := make(map[string]struct{}, len(backends))
+	for _, b := range backends {
+		backendIDs[b.ID] = struct{}{}
+	}
+	c.cache.Add(key, cacheEntry{caps: caps, at: time.Now(), backendIDs: backendIDs})
 	return caps, nil
+}
+
+// InvalidateBackend implements CacheInvalidator. It scans the cache (bounded to
+// capabilityCacheMaxEntries) rather than maintaining a backend->keys reverse
+// index: hashicorp/golang-lru's base Cache has no eviction callback (see
+// NewCachingAggregator), so a reverse index kept in sync via NewWithEvict would
+// need its own lock, and updating it from evictions while InvalidateBackend
+// holds no cache-wide lock of its own would invert lock order against the
+// cache's internal lock. A full scan under only the LRU's own internal
+// locking (Keys/Peek/Remove are each independently locked) avoids that
+// entirely, at O(cache size) — bounded by capabilityCacheMaxEntries (1024),
+// cheap relative to the backend sweep it triggers.
+func (c *cachingAggregator) InvalidateBackend(backendID string) {
+	for _, key := range c.cache.Keys() {
+		e, ok := c.cache.Peek(key)
+		if !ok {
+			continue
+		}
+		if _, hit := e.backendIDs[backendID]; hit {
+			c.cache.Remove(key)
+		}
+	}
 }
 
 // cacheKey derives a collision-resistant key from the inputs that drive backend enumeration:

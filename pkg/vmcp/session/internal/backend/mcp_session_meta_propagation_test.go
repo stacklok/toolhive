@@ -51,7 +51,7 @@ func TestHTTPSession_CallTool_InjectsTraceparent(t *testing.T) { //nolint:parall
 	}
 
 	registry := newTestRegistry(t)
-	connector := NewHTTPConnector(registry)
+	connector := NewHTTPConnector(registry, nil)
 
 	initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

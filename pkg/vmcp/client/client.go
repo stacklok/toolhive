@@ -623,11 +623,12 @@ func (h *httpBackendClient) defaultClientFactory(
 	}
 
 	// Register the notification forwarder before Initialize (the caller runs it
-	// after this factory returns) so a backend's mid-call progress/logging
-	// notifications are relayed to the downstream client. OnNotification is a
-	// post-construction method, so it applies to both transports.
-	if fwd != nil && forwarding && fwd.notifier != nil {
-		c.OnNotification(newNotificationForwarder(ctx, fwd.notifier))
+	// after this factory returns) so a backend's mid-call progress/logging and
+	// list_changed notifications are relayed to the downstream client / reported
+	// to the list_changed coordinator. OnNotification is a post-construction
+	// method, so it applies to both transports.
+	if fwd != nil && forwarding && (fwd.notifier != nil || fwd.listChanged != nil) {
+		c.OnNotification(newNotificationForwarder(ctx, fwd.notifier, fwd.listChanged, target.WorkloadID))
 	}
 
 	// Start the client connection

@@ -108,7 +108,7 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 			},
 		}
 
-		connector := NewHTTPConnector(registry)
+		connector := NewHTTPConnector(registry, nil)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -151,7 +151,7 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 		}
 
 		registry := newTestRegistry(t)
-		connector := NewHTTPConnector(registry)
+		connector := NewHTTPConnector(registry, nil)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -211,7 +211,7 @@ func connectAndCallEcho(t *testing.T, target *vmcp.BackendTarget) Session {
 	t.Helper()
 
 	registry := newTestRegistry(t)
-	connector := NewHTTPConnector(registry)
+	connector := NewHTTPConnector(registry, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)

@@ -65,7 +65,12 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 		authtypes.StrategyTypeUnauthenticated,
 		strategies.NewUnauthenticatedStrategy(),
 	))
-	factory := vmcpsession.NewSessionFactory(authReg)
+
+	// Mirrors the composition root's (pkg/vmcp/cli) late-bound wiring: the
+	// factory needs a non-nil BackendListChangedNotifier before server.New's
+	// list_changed coordinator exists.
+	listChangedHolder := vmcp.NewLateBoundListChangedNotifier()
+	factory := vmcpsession.NewSessionFactory(authReg, vmcpsession.WithBackendListChangedNotifier(listChangedHolder))
 
 	// Real backend client + aggregator: server.New routes through core.New + Serve, so the
 	// core sources the advertised set by querying the real backend through this client and
@@ -93,6 +98,8 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 		nil,
 	)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	listChangedHolder.Bind(srv.BackendListChangedNotifier())
 
 	handler, err := srv.Handler(context.Background())
 	require.NoError(t, err)

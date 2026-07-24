@@ -57,6 +57,13 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 			mock.EXPECT().GetData().Return(nil).AnyTimes()
 			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
 			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+			// The Serve-path enforceSessionBinding / handleSessionRegistrationImpl
+			// read individual keys via GetMetadataValue rather than the full-map
+			// GetMetadata; a "noop" session is anonymous with no real backends.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
+				Return("unauthenticated", true).AnyTimes()
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyBackendIDs).
+				Return("", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			mock.EXPECT().Tools().Return(nil).AnyTimes()
 			mock.EXPECT().AllTools().Return(nil).AnyTimes()
@@ -109,6 +116,10 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			// GetMetadataValue (not the full-map GetMetadata); return the same sentinel.
 			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
 				Return("unauthenticated", true).AnyTimes()
+			// handleSessionRegistrationImpl reads the backend ID set for the
+			// list_changed coordinator's registry.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyBackendIDs).
+				Return("", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)

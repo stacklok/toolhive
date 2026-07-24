@@ -478,6 +478,10 @@ func TestIntegration_AuditLogging(t *testing.T) {
 			// Serve-path enforceSessionBinding reads the binding via GetMetadataValue.
 			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
 				Return("unauthenticated", true).AnyTimes()
+			// handleSessionRegistrationImpl reads the backend ID set for the
+			// list_changed coordinator's registry.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyBackendIDs).
+				Return("", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			mock.EXPECT().Tools().Return(auditTools).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()

@@ -17,6 +17,42 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
+// MockBackendListChangedNotifier is a mock of BackendListChangedNotifier interface.
+type MockBackendListChangedNotifier struct {
+	ctrl     *gomock.Controller
+	recorder *MockBackendListChangedNotifierMockRecorder
+	isgomock struct{}
+}
+
+// MockBackendListChangedNotifierMockRecorder is the mock recorder for MockBackendListChangedNotifier.
+type MockBackendListChangedNotifierMockRecorder struct {
+	mock *MockBackendListChangedNotifier
+}
+
+// NewMockBackendListChangedNotifier creates a new mock instance.
+func NewMockBackendListChangedNotifier(ctrl *gomock.Controller) *MockBackendListChangedNotifier {
+	mock := &MockBackendListChangedNotifier{ctrl: ctrl}
+	mock.recorder = &MockBackendListChangedNotifierMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockBackendListChangedNotifier) EXPECT() *MockBackendListChangedNotifierMockRecorder {
+	return m.recorder
+}
+
+// NotifyBackendListChanged mocks base method.
+func (m *MockBackendListChangedNotifier) NotifyBackendListChanged(backendID string, kind vmcp.ListChangedKind) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "NotifyBackendListChanged", backendID, kind)
+}
+
+// NotifyBackendListChanged indicates an expected call of NotifyBackendListChanged.
+func (mr *MockBackendListChangedNotifierMockRecorder) NotifyBackendListChanged(backendID, kind any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NotifyBackendListChanged", reflect.TypeOf((*MockBackendListChangedNotifier)(nil).NotifyBackendListChanged), backendID, kind)
+}
+
 // MockSamplingRequester is a mock of SamplingRequester interface.
 type MockSamplingRequester struct {
 	ctrl     *gomock.Controller
@@ -133,13 +169,13 @@ func (m *MockClientForwarderBinder) EXPECT() *MockClientForwarderBinderMockRecor
 }
 
 // BindForwarders mocks base method.
-func (m *MockClientForwarderBinder) BindForwarders(elicitation vmcp.ElicitationRequester, sampling vmcp.SamplingRequester, notifier vmcp.ClientNotifier) {
+func (m *MockClientForwarderBinder) BindForwarders(elicitation vmcp.ElicitationRequester, sampling vmcp.SamplingRequester, notifier vmcp.ClientNotifier, listChanged vmcp.BackendListChangedNotifier) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "BindForwarders", elicitation, sampling, notifier)
+	m.ctrl.Call(m, "BindForwarders", elicitation, sampling, notifier, listChanged)
 }
 
 // BindForwarders indicates an expected call of BindForwarders.
-func (mr *MockClientForwarderBinderMockRecorder) BindForwarders(elicitation, sampling, notifier any) *gomock.Call {
+func (mr *MockClientForwarderBinderMockRecorder) BindForwarders(elicitation, sampling, notifier, listChanged any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BindForwarders", reflect.TypeOf((*MockClientForwarderBinder)(nil).BindForwarders), elicitation, sampling, notifier)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BindForwarders", reflect.TypeOf((*MockClientForwarderBinder)(nil).BindForwarders), elicitation, sampling, notifier, listChanged)
 }

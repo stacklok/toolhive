@@ -19,7 +19,59 @@ const (
 
 	// MethodLogNotification is the notifications/message (logging) wire method.
 	MethodLogNotification = "notifications/message"
+
+	// MethodToolListChanged is the notifications/tools/list_changed wire method.
+	MethodToolListChanged = "notifications/tools/list_changed"
+
+	// MethodResourceListChanged is the notifications/resources/list_changed wire method.
+	MethodResourceListChanged = "notifications/resources/list_changed"
+
+	// MethodPromptListChanged is the notifications/prompts/list_changed wire method.
+	MethodPromptListChanged = "notifications/prompts/list_changed"
 )
+
+// ListChangedKind identifies which capability list changed on a backend.
+type ListChangedKind int
+
+const (
+	// ListChangedTools indicates a backend's tools/list_changed notification.
+	ListChangedTools ListChangedKind = iota
+	// ListChangedResources indicates a backend's resources/list_changed notification.
+	ListChangedResources
+	// ListChangedPrompts indicates a backend's prompts/list_changed notification.
+	ListChangedPrompts
+)
+
+// ListChangedKindForMethod maps a wire notification method to its ListChangedKind.
+// It returns false for any method that is not one of the three list_changed
+// notifications, so callers (the backend client's OnNotification handler and the
+// persistent session connector's notification handler) share one classification.
+func ListChangedKindForMethod(method string) (ListChangedKind, bool) {
+	switch method {
+	case MethodToolListChanged:
+		return ListChangedTools, true
+	case MethodResourceListChanged:
+		return ListChangedResources, true
+	case MethodPromptListChanged:
+		return ListChangedPrompts, true
+	default:
+		return 0, false
+	}
+}
+
+// BackendListChangedNotifier receives notice that a backend's tool, resource, or
+// prompt list changed (a notifications/{tools,resources,prompts}/list_changed
+// notification from that backend). Implementations MUST be non-blocking: this is
+// called directly from a backend client's OnNotification handler, which runs on
+// the client's receive loop — a blocking implementation would stall that loop
+// (and, on the mid-call path, the drain-ping barrier in
+// drainServerToClientNotifications).
+type BackendListChangedNotifier interface {
+	// NotifyBackendListChanged records that backendID's capability list of the
+	// given kind changed. It must return without blocking on I/O or downstream
+	// locks.
+	NotifyBackendListChanged(backendID string, kind ListChangedKind)
+}
 
 // SamplingRequester sends an MCP sampling (sampling/createMessage) request to the
 // client and blocks for the response.
@@ -75,9 +127,14 @@ type ClientNotifier interface {
 type ClientForwarderBinder interface {
 	// BindForwarders installs the elicitation, sampling, and notification
 	// requesters used to relay a backend's mid-call server->client traffic to the
-	// downstream client. It is called exactly once, before serving begins. Any of
-	// the arguments may be nil to leave that forwarding path disabled.
-	BindForwarders(elicitation ElicitationRequester, sampling SamplingRequester, notifier ClientNotifier)
+	// downstream client, plus the sink that receives a backend's list_changed
+	// notifications (mid-call and, on the persistent session connector, idle). It
+	// is called exactly once, before serving begins. Any of the arguments may be
+	// nil to leave that forwarding path disabled: a nil listChanged means backend
+	// list_changed notifications are dropped rather than propagated downstream.
+	BindForwarders(
+		elicitation ElicitationRequester, sampling SamplingRequester, notifier ClientNotifier, listChanged BackendListChangedNotifier,
+	)
 }
 
 // SamplingRequest is the domain-typed sampling (sampling/createMessage) request.

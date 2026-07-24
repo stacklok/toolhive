@@ -236,15 +236,27 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return srv.coreSubscribeHandler(ctx, "resources/unsubscribe", uri)
 	}
 
-	// Build the mcp-go server (mirrors server.New): tools and resources are
-	// registered dynamically, so capabilities start disabled — except resources,
-	// which advertise subscribe support so spec-compliant clients issue
-	// resources/subscribe (the handlers above answer it at ack level).
+	// Build the mcp-go server (mirrors server.New): tools, resources, and
+	// prompts are registered dynamically (per session, after initialize), so
+	// their capabilities are declared up front with listChanged=true —
+	// resources additionally advertise subscribe support so spec-compliant
+	// clients issue resources/subscribe (the handlers above answer it at ack
+	// level). These flags gate BOTH the initialize advertisement AND go-sdk's
+	// own auto-emission of notifications/{tools,resources,prompts}/list_changed
+	// (shouldSendListChangedNotification): they are what makes the list_changed
+	// coordinator's re-projection (setSessionToolsReplace et al., see
+	// list_changed.go) actually reach the downstream client. One side effect: a
+	// session's registration-time setSessionToolsDirect now also triggers an
+	// initial post-initialize notifications/tools/list_changed (go-sdk's
+	// notificationDelay, ~10ms after registerAndSync) even though nothing
+	// changed after advertisement — benign, but tests that assert on downstream
+	// notification traffic must tolerate/consume it.
 	mcpServer := server.NewMCPServer(
 		serveCfg.Name,
 		serveCfg.Version,
-		server.WithToolCapabilities(false),
-		server.WithResourceCapabilities(true, false),
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithHooks(hooks),
 		server.WithCompletionHandler(completionHandler),
@@ -300,6 +312,22 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	if optimizerCleanup != nil {
 		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
 	}
+
+	// The list_changed coordinator consumes backend list_changed notifications
+	// (see vmcp.BackendListChangedNotifier / list_changed.go) and propagates them
+	// to every affected, still-live session. Its invalidator is set later, by
+	// server.New, once the caching aggregator is known; its worker goroutine is
+	// started here so it is running before any session can register.
+	srv.listChanged = newListChangedCoordinator(srv)
+	srv.listChanged.start()
+	srv.shutdownFuncs = append(srv.shutdownFuncs, srv.listChanged.stop)
+
+	// Drop a session from the coordinator's registry the moment it is terminated
+	// (SDK DELETE or internal termination), rather than only lazily on the next
+	// sweep — mcpcompat has no OnUnregisterSession hook, so the session manager's
+	// Terminate is the explicit unregister point. TTL expiry does not flow through
+	// Terminate, so the coordinator still prunes lazily via Validate as a backstop.
+	vmcpSessMgr.SetOnTerminate(srv.listChanged.untrack)
 
 	// Serve owns the injected core's lifecycle: release its backend connections
 	// when the server stops. core.VMCP.Close is idempotent, so this is safe even

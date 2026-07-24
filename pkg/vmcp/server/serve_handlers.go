@@ -583,6 +583,7 @@ func (s *Server) terminateOnBindingFailure(sessionID, capability string, err err
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)
 	}
+	s.listChanged.untrack(sessionID)
 }
 
 // backendDisplayName resolves a logical backend ID to its human-readable name via

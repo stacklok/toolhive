@@ -24,22 +24,25 @@ type boundForwarders struct {
 	elicitation vmcp.ElicitationRequester
 	sampling    vmcp.SamplingRequester
 	notifier    vmcp.ClientNotifier
+	listChanged vmcp.BackendListChangedNotifier
 }
 
 // BindForwarders implements vmcp.ClientForwarderBinder. server.New calls it once,
 // after Serve builds the mcp-go server the adapters wrap and before serving
 // begins, so the backend clients created per call can relay a backend's mid-call
-// server->client traffic (elicitation, sampling, progress/logging) to the
-// downstream client.
+// server->client traffic (elicitation, sampling, progress/logging, list_changed)
+// to the downstream client.
 func (h *httpBackendClient) BindForwarders(
 	elicitation vmcp.ElicitationRequester,
 	sampling vmcp.SamplingRequester,
 	notifier vmcp.ClientNotifier,
+	listChanged vmcp.BackendListChangedNotifier,
 ) {
 	h.forwarders.Store(&boundForwarders{
 		elicitation: elicitation,
 		sampling:    sampling,
 		notifier:    notifier,
+		listChanged: listChanged,
 	})
 }
 
@@ -92,9 +95,18 @@ func (h *httpBackendClient) enableBackendLogging(
 // for enqueued handlers to finish (jsonrpc2.Connection.Close drains the handler
 // queue), so the forward completes before teardown.
 //
-// Only runs when server->client forwarding is bound (fwd.notifier != nil, the
-// same condition under which the notification forwarder is registered); other
-// deployments keep the pre-forwarding fast path with no extra round-trip.
+// Only runs when the progress/logging notifier is bound (fwd.notifier != nil).
+// The notification forwarder itself is now registered under the broader
+// condition fwd.notifier != nil || fwd.listChanged != nil, so the gate here is
+// deliberately narrower: it exists to drain fire-and-forget progress/logging
+// notifications that would otherwise be lost at Close. A mid-call
+// list_changed rides the same FIFO handler queue, so this barrier drains it too
+// when the notifier is bound; and even without the barrier a mid-call
+// list_changed is redundant — the persistent session connector
+// (pkg/vmcp/session/internal/backend) delivers backend list_changed on its own
+// standalone stream, and the TTL-bounded re-sweep would pick up any missed one.
+// So a deployment with only listChanged bound (no notifier) intentionally keeps
+// the pre-forwarding fast path with no extra round-trip.
 // Best-effort: a ping failure only forgoes the barrier — the tool result is
 // already in hand, so it must not fail the call.
 func (h *httpBackendClient) drainServerToClientNotifications(ctx context.Context, c *client.Client) {
@@ -209,15 +221,26 @@ func newSamplingForwarder(callCtx context.Context, req vmcp.SamplingRequester) c
 // newNotificationForwarder builds an OnNotification handler that relays a
 // backend's mid-call notifications/progress and notifications/message to the
 // downstream client via the bound notifier, using the captured per-call
-// downstream context. Forwarding is best-effort: a missing downstream session
-// (the notifier no-ops) or a forwarding error is logged at debug and dropped,
-// never surfaced to the backend. Other notification methods are ignored (the
-// go-sdk server re-emits list-changed notifications automatically).
-func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotifier) func(mcp.JSONRPCNotification) {
+// downstream context, and reports a backend's list_changed notifications
+// (tools/resources/prompts) to listChanged, keyed by backendID. Forwarding is
+// best-effort: a missing downstream session (the notifier no-ops) or a
+// forwarding error is logged at debug and dropped, never surfaced to the
+// backend. Either notifier or listChanged may be nil — a nil notifier disables
+// the progress/logging path, a nil listChanged disables the list_changed path —
+// so this handler can be registered when only one of the two is bound. The
+// list_changed notify call is non-blocking (map-write + non-blocking channel
+// send in the coordinator), so it never stalls this receive-loop-invoked
+// handler or the drain-ping barrier. Any other notification method is ignored.
+func newNotificationForwarder(
+	callCtx context.Context, notifier vmcp.ClientNotifier, listChanged vmcp.BackendListChangedNotifier, backendID string,
+) func(mcp.JSONRPCNotification) {
 	return func(n mcp.JSONRPCNotification) {
 		fields := n.Params.AdditionalFields
 		switch n.Method {
 		case vmcp.MethodProgressNotification:
+			if notifier == nil {
+				return
+			}
 			err := notifier.NotifyProgress(callCtx, vmcp.ProgressNotification{
 				ProgressToken: fields["progressToken"],
 				Progress:      toFloat(fields["progress"]),
@@ -228,6 +251,9 @@ func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotif
 				slog.Debug("failed to forward progress notification", "error", err)
 			}
 		case vmcp.MethodLogNotification:
+			if notifier == nil {
+				return
+			}
 			err := notifier.NotifyLog(callCtx, vmcp.LogMessage{
 				Level:  toString(fields["level"]),
 				Logger: toString(fields["logger"]),
@@ -237,8 +263,12 @@ func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotif
 				slog.Debug("failed to forward log notification", "error", err)
 			}
 		default:
-			// Other notifications (list_changed, resources/updated, ...) are not
-			// mid-call server->client traffic this forwarder relays.
+			if listChanged == nil {
+				return
+			}
+			if kind, ok := vmcp.ListChangedKindForMethod(n.Method); ok {
+				listChanged.NotifyBackendListChanged(backendID, kind)
+			}
 		}
 	}
 }

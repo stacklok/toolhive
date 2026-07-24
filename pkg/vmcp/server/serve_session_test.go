@@ -77,6 +77,11 @@ func newToolSessionFactory(
 			// enforceSessionBinding reads the binding via the single-key accessor.
 			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
 				Return("unauthenticated", true).AnyTimes()
+			// handleSessionRegistrationImpl reads the backend ID set for the
+			// list_changed coordinator's registry; this fake session has no real
+			// backends, so an empty (but present) value is the accurate answer.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyBackendIDs).
+				Return("", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)
@@ -134,12 +139,21 @@ type fakeCore struct {
 	promptErr         error // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
 	completeErr       error // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
 	lookupResourceErr error // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
+
+	// listToolsErr, when non-nil (via Store), makes ListTools return it instead of
+	// f.tools. An atomic.Pointer so tests can toggle it AFTER initial session
+	// registration succeeded, concurrently with the list_changed coordinator's
+	// background re-sweep goroutine, without a data race.
+	listToolsErr atomic.Pointer[error]
 }
 
 var _ core.VMCP = (*fakeCore)(nil)
 
 func (f *fakeCore) ListTools(context.Context, *auth.Identity) ([]vmcp.Tool, error) {
 	f.listToolsCalls.Add(1)
+	if p := f.listToolsErr.Load(); p != nil && *p != nil {
+		return nil, *p
+	}
 	return f.tools, nil
 }
 

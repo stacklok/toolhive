@@ -114,6 +114,12 @@ type defaultMultiSessionFactory struct {
 	connector          backendConnector
 	maxConcurrency     int
 	backendInitTimeout time.Duration
+
+	// listChangedSink receives a backend's list_changed notifications from the
+	// persistent per-backend connections this factory opens (see
+	// backend.NewHTTPConnector). Nil disables the idle (no-call-in-flight)
+	// list_changed delivery path entirely; set via WithBackendListChangedNotifier.
+	listChangedSink vmcp.BackendListChangedNotifier
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -139,10 +145,31 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 	}
 }
 
+// WithBackendListChangedNotifier sets the sink that receives a backend's
+// list_changed notifications delivered over this factory's persistent backend
+// connections (the idle, no-call-in-flight path; the mid-call path is wired
+// separately onto the per-call backend client). Nil (the default) disables it.
+func WithBackendListChangedNotifier(sink vmcp.BackendListChangedNotifier) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.listChangedSink = sink
+	}
+}
+
 // NewSessionFactory creates a MultiSessionFactory that connects to backends
 // over HTTP using the given outgoing auth registry.
 func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
-	return newSessionFactoryWithConnector(backend.NewHTTPConnector(registry), opts...)
+	f := &defaultMultiSessionFactory{
+		maxConcurrency:     defaultMaxBackendInitConcurrency,
+		backendInitTimeout: defaultBackendInitTimeout,
+	}
+	for _, opt := range opts {
+		opt(f)
+	}
+	// Built AFTER options are applied: the connector needs f.listChangedSink,
+	// which WithBackendListChangedNotifier sets above. Building it eagerly
+	// (before opts) would permanently bind a nil sink regardless of options.
+	f.connector = backend.NewHTTPConnector(registry, f.listChangedSink)
+	return f
 }
 
 // newSessionFactoryWithConnector creates a MultiSessionFactory backed by an

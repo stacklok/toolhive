@@ -124,3 +124,101 @@ func TestCachingAggregator_ErrorNotCached(t *testing.T) {
 	_, err = c.AggregateCapabilities(ctx, testBackends)
 	require.NoError(t, err, "the error must not have been cached")
 }
+
+// TestCachingAggregator_InvalidateBackend_ScopedEviction verifies that
+// InvalidateBackend evicts only the cache entries whose backend set includes
+// the invalidated backend, leaving entries scoped to unrelated backends
+// (or unrelated identities over the SAME backend set) untouched.
+func TestCachingAggregator_InvalidateBackend_ScopedEviction(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mock := mocks.NewMockAggregator(ctrl)
+
+	b1, b2 := []vmcp.Backend{{ID: "b1"}}, []vmcp.Backend{{ID: "b2"}}
+	aliceB1 := ctxWithSubject("alice")
+	bobB2 := ctxWithSubject("bob")
+
+	// One sweep to populate each of the two distinct cache entries; a second
+	// sweep per key proves the corresponding entry was (or was not) evicted.
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).
+		Return(&aggregator.AggregatedCapabilities{}, nil).Times(3)
+
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+	inv, ok := c.(aggregator.CacheInvalidator)
+	require.True(t, ok, "cachingAggregator must implement CacheInvalidator")
+
+	// Populate both entries.
+	_, err := c.AggregateCapabilities(aliceB1, b1)
+	require.NoError(t, err)
+	_, err = c.AggregateCapabilities(bobB2, b2)
+	require.NoError(t, err)
+
+	// Invalidate only b1's entry.
+	inv.InvalidateBackend("b1")
+
+	// alice/b1 must re-sweep (evicted) — this is the 3rd AggregateCapabilities call.
+	_, err = c.AggregateCapabilities(aliceB1, b1)
+	require.NoError(t, err)
+
+	// bob/b2 must still be a cache hit — no further AggregateCapabilities call is
+	// permitted by the mock (Times(3) is already exhausted), so gomock fails the
+	// test if this call reaches the wrapped aggregator instead of hitting cache.
+	_, err = c.AggregateCapabilities(bobB2, b2)
+	require.NoError(t, err)
+}
+
+// TestCachingAggregator_InvalidateBackend_MultiBackendEntry verifies the
+// multi-member backendIDs lookup: an entry aggregated over {b1,b2} is evicted
+// when EITHER of its member backends is invalidated (here b1), exercising the
+// set-membership branch that a single-backend entry does not.
+func TestCachingAggregator_InvalidateBackend_MultiBackendEntry(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mock := mocks.NewMockAggregator(ctrl)
+
+	// One sweep to populate the {b1,b2} entry, plus one more after eviction.
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).
+		Return(&aggregator.AggregatedCapabilities{}, nil).Times(2)
+
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+	inv, ok := c.(aggregator.CacheInvalidator)
+	require.True(t, ok)
+
+	ctx := ctxWithSubject("alice")
+	multi := []vmcp.Backend{{ID: "b1"}, {ID: "b2"}}
+
+	_, err := c.AggregateCapabilities(ctx, multi)
+	require.NoError(t, err)
+
+	// Invalidating a member (b1) of the {b1,b2} entry must evict it.
+	inv.InvalidateBackend("b1")
+
+	// Re-sweep required (this is the 2nd AggregateCapabilities call).
+	_, err = c.AggregateCapabilities(ctx, multi)
+	require.NoError(t, err)
+}
+
+// TestCachingAggregator_InvalidateBackend_NoMatchIsNoop verifies that
+// invalidating a backend ID no cached entry references is a harmless no-op:
+// the existing entry survives and the next call is still a cache hit.
+func TestCachingAggregator_InvalidateBackend_NoMatchIsNoop(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mock := mocks.NewMockAggregator(ctrl)
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).
+		Return(&aggregator.AggregatedCapabilities{}, nil).Times(1)
+
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+	inv, ok := c.(aggregator.CacheInvalidator)
+	require.True(t, ok)
+
+	ctx := ctxWithSubject("alice")
+	_, err := c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err)
+
+	inv.InvalidateBackend("unrelated-backend")
+
+	// Still a cache hit: the mock's Times(1) would fail this test otherwise.
+	_, err = c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err)
+}

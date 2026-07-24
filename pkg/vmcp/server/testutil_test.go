@@ -47,8 +47,28 @@ func startRealMCPBackend(t *testing.T) string {
 	mux.Handle("/mcp", streamableSrv)
 
 	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
+	cleanupBackendServer(t, ts)
 	return ts.URL + "/mcp"
+}
+
+// cleanupBackendServer tears down an in-process backend httptest.Server used as
+// a vMCP backend. It force-closes active client connections BEFORE Close.
+//
+// vMCP's persistent session connector opens a standalone SSE GET stream and
+// holds it open for the whole session (continuous listening, enabled whenever a
+// list_changed sink is wired — which the real-backend test harness now does).
+// That stream is a StateActive inbound request on this backend server, and
+// httptest.Server.Close blocks until outstanding requests complete — nothing
+// else closes that stream during a test, so a plain Close would hang until the
+// package test timeout. CloseClientConnections force-drops the active
+// connections first (the connector does not reconnect, matching the Phase-1
+// no-reconnect behavior), so the subsequent Close returns promptly.
+func cleanupBackendServer(t *testing.T, ts *httptest.Server) {
+	t.Helper()
+	t.Cleanup(func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	})
 }
 
 // MCPTestClient provides higher-level test utilities for MCP protocol interactions.

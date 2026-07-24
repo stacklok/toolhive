@@ -232,11 +232,20 @@ func (c *mcpSession) GetPrompt(
 // registry provides the authentication strategy for outgoing backend requests.
 // Pass a registry configured with the "unauthenticated" strategy to disable auth.
 //
+// listChanged, when non-nil, is reported a backend's tools/resources/prompts
+// list_changed notifications for as long as this session's client is open —
+// unlike the per-call client in pkg/vmcp/client, which only observes such
+// notifications during an in-flight tools/call, this session-backed client is
+// persistent, so it is the delivery path for a backend list_changed that fires
+// while no call is in flight (the "idle" path). Nil disables it entirely: no
+// continuous-listening stream is opened and no OnNotification handler is
+// registered, reproducing the pre-list_changed construction exactly.
+//
 // A single secrets.EnvironmentProvider is constructed once per connector and
 // shared across every session it creates; its lifetime matches the connector's.
 // It is consumed by BuildHeaderForwardTripper to resolve secret-backed entries
 // in target.HeaderForward.
-func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
+func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, listChanged vmcp.BackendListChangedNotifier) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
@@ -249,9 +258,36 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 		identity *auth.Identity,
 		sessionHint string,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider)
+		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider, listChanged)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
+		}
+
+		// Register the persistent list_changed listener before the Initialize
+		// handshake / capability queries below so a notification that arrives
+		// during (or immediately after) initialization is never missed. The
+		// handler only reports notifications; it does not block the receive
+		// loop it runs on (see vmcp.BackendListChangedNotifier).
+		//
+		// Lifecycle: this handler (and the standalone GET stream + go-sdk reader
+		// goroutine behind it) lives as long as the underlying client connection.
+		// mcpSession.Close tears it down — but Close is only reached when the
+		// MultiSession is EVICTED from the session Manager's ValidatingCache, and
+		// that eviction is LAZY: the cache has no background TTL sweeper, so an
+		// entry is dropped only on a cache hit that returns ErrExpired (i.e. the
+		// session is re-accessed after its TTL) or under LRU capacity pressure. An
+		// idle session that is never re-accessed and never evicted by capacity thus
+		// keeps this stream and its reader goroutine open until the process exits.
+		// There is also no reconnection on transport drop (Phase-1 limitation
+		// documented on mcpSession), so a dropped connection simply stops delivering
+		// list_changed notifications for that backend until a new session is created.
+		if listChanged != nil {
+			workloadID := target.WorkloadID
+			c.OnNotification(func(n mcp.JSONRPCNotification) {
+				if kind, ok := vmcp.ListChangedKindForMethod(n.Method); ok {
+					listChanged.NotifyBackendListChanged(workloadID, kind)
+				}
+			})
 		}
 
 		caps, err := initAndQueryCapabilities(ctx, c, target)
@@ -274,6 +310,88 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	}
 }
 
+// newStreamableClient builds (but does not start) a streamable-HTTP mcpcompat
+// client over base for target.
+//
+// For streamable-HTTP each MCP call is normally a single bounded HTTP
+// request/response pair, so a per-response body size limit is safe and correct.
+// http.Client.Timeout provides a hard wall-clock deadline; WithHTTPTimeout
+// additionally wraps each SDK request in a context.WithTimeout so the mcpcompat
+// transport surfaces a descriptive error before the stdlib deadline fires. Both
+// are set to defaultBackendRequestTimeout: defense-in-depth.
+//
+// EXCEPTION — continuousListening (i.e. this connector has a list_changed sink):
+// to receive a backend's idle list_changed the go-sdk holds a standalone SSE GET
+// stream open for the WHOLE session. That long-lived stream must not be bounded
+// like a single request: http.Client.Timeout caps the entire body read (it would
+// tear the stream down after defaultBackendRequestTimeout and then churn
+// reconnects, silently losing idle notifications in each ~30s gap), and the
+// cumulative io.LimitReader would EOF the stream after maxBackendResponseSize
+// TOTAL bytes. This mirrors newSSEClient's rationale. So when continuous
+// listening is on: no client Timeout, no WithHTTPTimeout (the mcpcompat shim maps
+// WithHTTPTimeout straight onto http.Client.Timeout — it has no per-request
+// timeout separate from the stream), and the size limit is applied only to the
+// JSON-RPC POST responses, never the standalone GET stream. Per-request calls
+// stay bounded by their context deadline (the init handshake via
+// backendInitTimeout; runtime calls via the request context), exactly as the SSE
+// transport already relies on.
+//
+// TRADEOFF (intentional): dropping BOTH timeouts means the POST calls on a
+// continuous-listening client (CallTool/ReadResource/GetPrompt) have NO
+// client-level wall-clock backstop — they rely solely on the caller's request
+// context deadline. This is the same accepted tradeoff as the SSE branch
+// (newSSEClient), which likewise omits http.Client.Timeout so its long-lived
+// stream survives. A caller that invokes these with a deadline-less context would
+// have no timeout; in practice runtime calls carry the incoming request's
+// deadline and the init path carries backendInitTimeout.
+func newStreamableClient(
+	target *vmcp.BackendTarget, base http.RoundTripper, sessionHint string, continuousListening bool,
+) (*mcpclient.Client, error) {
+	sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := base.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		// The standalone SSE stream is a GET; capping its cumulative length would
+		// kill a long-lived stream (see the EXCEPTION note above).
+		if continuousListening && req.Method == http.MethodGet {
+			return resp, nil
+		}
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.LimitReader(resp.Body, maxBackendResponseSize),
+			Closer: resp.Body,
+		}
+		return resp, nil
+	})
+	httpClient := &http.Client{Transport: sizeLimited}
+	streamableOpts := []mcptransport.StreamableHTTPCOption{
+		mcptransport.WithHTTPBasicClient(httpClient),
+	}
+	if !continuousListening {
+		// No standalone stream to keep alive: retain the defense-in-depth wall-clock
+		// bound on every request at both the http.Client and SDK layers, as before.
+		httpClient.Timeout = defaultBackendRequestTimeout
+		streamableOpts = append(streamableOpts, mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout))
+	}
+	if sessionHint != "" {
+		streamableOpts = append(streamableOpts, mcptransport.WithSession(sessionHint))
+	}
+	if continuousListening {
+		// A backend's idle list_changed notification is routed by the go-sdk onto
+		// the standalone SSE stream, so the client must hold it open to receive it —
+		// mirroring the per-call client's forwarding path (see
+		// httpBackendClient.newStreamableHTTPClient). A backend without a standalone
+		// GET stream answers the GET with 405, which the go-sdk treats as a clean
+		// "no stream" (closes the body and returns; no retry spin) — see
+		// streamableClientConn.connectStandaloneSSE.
+		streamableOpts = append(streamableOpts, mcptransport.WithContinuousListening())
+	}
+	return mcpclient.NewStreamableHttpClient(target.BaseURL, streamableOpts...)
+}
+
 // createMCPClient builds and starts a mcpcompat MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
@@ -283,6 +401,10 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // ctx is used only to resolve secret-backed entries in target.HeaderForward at
 // client-creation time; the transport itself is started with context.Background()
 // as described above. provider supplies values for those secret-backed headers.
+// listChanged is non-nil only to decide whether the streamable-HTTP transport
+// needs a continuous-listening standalone stream open (see the streamable-HTTP
+// case below); the OnNotification handler itself is registered by the caller
+// (NewHTTPConnector) after this function returns.
 func createMCPClient(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -290,6 +412,7 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
+	listChanged vmcp.BackendListChangedNotifier,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -346,40 +469,7 @@ func createMCPClient(
 	switch target.TransportType {
 	case "streamable-http", "streamable":
 		// "streamable" is a legacy alias for "streamable-http".
-		//
-		// For streamable-HTTP, each MCP call is a single bounded HTTP
-		// request/response pair, so a per-response body size limit is safe and
-		// correct. http.Client.Timeout provides a hard wall-clock deadline;
-		// WithHTTPTimeout additionally wraps each SDK request in a
-		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
-		// error before the stdlib deadline fires. Both are set to
-		// defaultBackendRequestTimeout: defense-in-depth.
-		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			resp, err := base.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.LimitReader(resp.Body, maxBackendResponseSize),
-				Closer: resp.Body,
-			}
-			return resp, nil
-		})
-		httpClient := &http.Client{
-			Transport: sizeLimited,
-			Timeout:   defaultBackendRequestTimeout,
-		}
-		streamableOpts := []mcptransport.StreamableHTTPCOption{
-			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
-			mcptransport.WithHTTPBasicClient(httpClient),
-		}
-		if sessionHint != "" {
-			streamableOpts = append(streamableOpts, mcptransport.WithSession(sessionHint))
-		}
-		c, err = mcpclient.NewStreamableHttpClient(target.BaseURL, streamableOpts...)
+		c, err = newStreamableClient(target, base, sessionHint, listChanged != nil)
 	case "sse":
 		// For SSE, the entire session is delivered as one long-lived HTTP
 		// response body. Applying io.LimitReader to that body would silently

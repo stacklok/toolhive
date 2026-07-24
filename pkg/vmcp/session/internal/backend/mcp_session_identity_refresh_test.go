@@ -81,7 +81,7 @@ func TestHTTPSession_PerRequestIdentity_DrivesUpstreamAuthHeader(t *testing.T) {
 		UpstreamTokens: map[string]string{providerName: staleToken},
 	}
 
-	connector := NewHTTPConnector(registry)
+	connector := NewHTTPConnector(registry, nil)
 	initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
@@ -157,7 +157,7 @@ func TestHTTPSession_FallbackIdentity_UsedWhenContextHasNoIdentity(t *testing.T)
 		UpstreamTokens: map[string]string{providerName: fallbackTokenVal},
 	}
 
-	connector := NewHTTPConnector(registry)
+	connector := NewHTTPConnector(registry, nil)
 	initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 

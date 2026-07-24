@@ -348,9 +348,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Debug("VMCP_SESSION_HMAC_SECRET is set but no longer used after #5306; ignoring",
 			"env_var", "VMCP_SESSION_HMAC_SECRET")
 	}
+	// listChangedHolder resolves the construction-order inversion between the
+	// session factory (built here, needs a non-nil BackendListChangedNotifier to
+	// hand to the persistent backend connector) and server.New's list_changed
+	// coordinator (constructed later, inside Serve). It is bound to the real
+	// coordinator once srv exists, below.
+	listChangedHolder := vmcp.NewLateBoundListChangedNotifier()
+
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
+	sessionFactory := vmcpsession.NewSessionFactory(
+		outgoingRegistry, vmcpsession.WithBackendListChangedNotifier(listChangedHolder),
+	)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -464,6 +473,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}
+
+	// Bind the late-bound holder to the server's real list_changed coordinator
+	// now that it exists, so the session factory's persistent backend
+	// connections (already built above, holding listChangedHolder) start
+	// reporting real backend list_changed notifications.
+	listChangedHolder.Bind(srv.BackendListChangedNotifier())
 
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)

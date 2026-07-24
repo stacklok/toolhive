@@ -145,7 +145,7 @@ func TestNewNotificationForwarder_ForwardsProgress(t *testing.T) {
 			return nil
 		})
 
-	handler := newNotificationForwarder(callCtx, notifier)
+	handler := newNotificationForwarder(callCtx, notifier, nil, "backend-1")
 	handler(progressNotification("tok-1", 0.5, 1.0, "halfway"))
 }
 
@@ -164,7 +164,7 @@ func TestNewNotificationForwarder_ForwardsLog(t *testing.T) {
 			return nil
 		})
 
-	handler := newNotificationForwarder(t.Context(), notifier)
+	handler := newNotificationForwarder(t.Context(), notifier, nil, "backend-1")
 	handler(mcp.JSONRPCNotification{
 		Notification: mcp.Notification{
 			Method: vmcp.MethodLogNotification,
@@ -176,7 +176,8 @@ func TestNewNotificationForwarder_ForwardsLog(t *testing.T) {
 }
 
 // TestNewNotificationForwarder_IgnoresUnknownMethod verifies that a notification
-// method the forwarder does not relay does not reach the notifier.
+// method the forwarder does not relay does not reach the notifier and, when
+// listChanged is nil, is silently dropped rather than panicking.
 func TestNewNotificationForwarder_IgnoresUnknownMethod(t *testing.T) {
 	t.Parallel()
 
@@ -184,9 +185,9 @@ func TestNewNotificationForwarder_IgnoresUnknownMethod(t *testing.T) {
 	notifier := mocks.NewMockClientNotifier(ctrl)
 	// No EXPECT calls: any invocation fails the test.
 
-	handler := newNotificationForwarder(t.Context(), notifier)
+	handler := newNotificationForwarder(t.Context(), notifier, nil, "backend-1")
 	handler(mcp.JSONRPCNotification{
-		Notification: mcp.Notification{Method: "notifications/tools/list_changed"},
+		Notification: mcp.Notification{Method: "notifications/some/other"},
 	})
 }
 
@@ -201,9 +202,50 @@ func TestNewNotificationForwarder_SwallowsError(t *testing.T) {
 		NotifyProgress(gomock.Any(), gomock.Any()).
 		Return(errors.New("transport closed"))
 
-	handler := newNotificationForwarder(t.Context(), notifier)
+	handler := newNotificationForwarder(t.Context(), notifier, nil, "backend-1")
 	assert.NotPanics(t, func() {
 		handler(progressNotification("tok", 1, 0, ""))
+	})
+}
+
+// TestNewNotificationForwarder_ListChanged verifies that a backend's
+// list_changed notification is routed to the bound BackendListChangedNotifier,
+// keyed by backendID, for each of the three kinds, and that an unrecognized
+// method with a non-nil listChanged still does not fire it.
+func TestNewNotificationForwarder_ListChanged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		want   vmcp.ListChangedKind
+	}{
+		{"tools", vmcp.MethodToolListChanged, vmcp.ListChangedTools},
+		{"resources", vmcp.MethodResourceListChanged, vmcp.ListChangedResources},
+		{"prompts", vmcp.MethodPromptListChanged, vmcp.ListChangedPrompts},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			listChanged := mocks.NewMockBackendListChangedNotifier(ctrl)
+			listChanged.EXPECT().NotifyBackendListChanged("backend-1", tt.want)
+
+			handler := newNotificationForwarder(t.Context(), nil, listChanged, "backend-1")
+			handler(mcp.JSONRPCNotification{Notification: mcp.Notification{Method: tt.method}})
+		})
+	}
+}
+
+// TestNewNotificationForwarder_ListChangedNilSafe verifies that a nil
+// listChanged does not panic on an unrecognized (or list_changed) method.
+func TestNewNotificationForwarder_ListChangedNilSafe(t *testing.T) {
+	t.Parallel()
+
+	handler := newNotificationForwarder(t.Context(), nil, nil, "backend-1")
+	assert.NotPanics(t, func() {
+		handler(mcp.JSONRPCNotification{Notification: mcp.Notification{Method: vmcp.MethodToolListChanged}})
 	})
 }
 
@@ -214,17 +256,19 @@ func TestBindForwarders_StoresSnapshot(t *testing.T) {
 	elicit := mocks.NewMockElicitationRequester(ctrl)
 	sampling := mocks.NewMockSamplingRequester(ctrl)
 	notifier := mocks.NewMockClientNotifier(ctrl)
+	listChanged := mocks.NewMockBackendListChangedNotifier(ctrl)
 
 	h := &httpBackendClient{}
 	assert.Nil(t, h.forwarders.Load())
 
-	h.BindForwarders(elicit, sampling, notifier)
+	h.BindForwarders(elicit, sampling, notifier, listChanged)
 
 	fwd := h.forwarders.Load()
 	require.NotNil(t, fwd)
 	assert.Same(t, elicit, fwd.elicitation)
 	assert.Same(t, sampling, fwd.sampling)
 	assert.Same(t, notifier, fwd.notifier)
+	assert.Same(t, listChanged, fwd.listChanged)
 }
 
 // TestDeriveForwardCtx_CancelsOnHandlerCancel verifies that the derived context

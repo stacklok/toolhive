@@ -126,7 +126,10 @@ func startForwardingBackend(t *testing.T) string {
 	mux.Handle("/mcp", streamableSrv)
 
 	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
+	// Force-close active connections before Close: the persistent session
+	// connector holds a standalone SSE GET stream open for the whole session
+	// (see cleanupBackendServer), which Close would otherwise block on.
+	cleanupBackendServer(t, ts)
 	return ts.URL + "/mcp"
 }
 

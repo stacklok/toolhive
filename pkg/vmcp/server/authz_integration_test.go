@@ -118,18 +118,27 @@ func buildCedarAuthzServer(
 	require.NoError(t, err)
 	agg := aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil)
 
-	// Inject a fixed authenticated identity on every request so the session binds to it at
+	// Inject an authenticated identity on every request so the session binds to it at
 	// initialize and the Cedar authorizer can resolve the principal on subsequent calls.
-	// The MCP parser is composed inside it, mirroring the production incoming-auth factory
-	// (see pkg/vmcp/auth/factory): audit and authz read parsed MCP data from the request
-	// context, and the audit middleware sits between auth and the parser applied in Handler.
+	// The principal defaults to the fixed "user-123" (all existing authz tests rely on
+	// this), but a request carrying X-Test-Principal derives the identity from that header
+	// instead — letting a single running server authenticate different callers as distinct
+	// principals (see TestRegression_PerSessionToolProjection_DivergesByPrincipal), without
+	// changing behavior for any test that never sets the header. The MCP parser is composed
+	// inside it, mirroring the production incoming-auth factory (see pkg/vmcp/auth/factory):
+	// audit and authz read parsed MCP data from the request context, and the audit
+	// middleware sits between auth and the parser applied in Handler.
 	identityMiddleware := func(next http.Handler) http.Handler {
 		withParser := mcpparser.ParsingMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal := r.Header.Get("X-Test-Principal")
+			if principal == "" {
+				principal = "user-123"
+			}
 			id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-				Subject: "user-123",
+				Subject: principal,
 				Name:    "Test User",
-				Claims:  map[string]any{"sub": "user-123", "name": "Test User"},
+				Claims:  map[string]any{"sub": principal, "name": "Test User"},
 			}}
 			withParser.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
 		})
@@ -517,6 +526,132 @@ func TestIntegration_CedarAuthzDenial_ModernPath_IsAudited(t *testing.T) {
 	event := findToolCallAuditEvent(t, auditLogPath)
 	assert.Equal(t, "denied", event["outcome"],
 		"a policy-denied Modern tools/call must be audited with outcome denied")
+}
+
+// waitForClientTool polls c.ListTools until toolName appears in the advertised
+// set, or the deadline elapses. The poll condition is best-effort: any
+// transport/read error returns false so the poll simply retries, and it never
+// calls require/FailNow inside the closure (testify runs the condition on its
+// own goroutine, where FailNow would Goexit off the test goroutine, hang the
+// poll to its ceiling, and misreport the failure).
+func waitForClientTool(t *testing.T, c *MCPTestClient, toolName string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		resp := c.ListTools()
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false
+		}
+		return resp.StatusCode == http.StatusOK && strings.Contains(string(body), `"`+toolName+`"`)
+	}, 5*time.Second, 50*time.Millisecond,
+		"client's tools/list must advertise "+toolName)
+}
+
+// listToolsBody returns the client's current tools/list response body as a
+// string. Unlike waitForClientTool's poll closure, this runs on the test
+// goroutine, so requiring a clean read/200 here is safe.
+func listToolsBody(t *testing.T, c *MCPTestClient) string {
+	t.Helper()
+	resp := c.ListTools()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "tools/list must succeed")
+	return string(body)
+}
+
+// TestRegression_PerSessionToolProjection_DivergesByPrincipal pins the fixed
+// per-principal Cedar admission behind the mcp-go -> go-sdk migration
+// (toolhive-core v0.0.32, #5742): two clients authenticated as DIFFERENT
+// principals, against the SAME running server instance, must get divergent
+// tools/list projections when a Cedar policy permits a tool for one principal
+// only. Before the fix, the server's identity middleware stamped every request
+// with a single fixed principal, so per-session admission could not diverge by
+// caller — this test would have failed (or passed vacuously) against that
+// regression.
+func TestRegression_PerSessionToolProjection_DivergesByPrincipal(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startEchoPingBackend(t)
+	// The Cedar principal for a JWT-claims-derived caller is Client::"<sub>"
+	// (cedar authorizeToolCall). Give each principal a DISTINCT positively-
+	// permitted tool -- alice may call echo, bob may call ping -- so the two
+	// sessions' tools/list projections (gated by these call_tool permissions)
+	// must diverge in BOTH directions on the same running server.
+	ts := newCedarAuthzTestServer(t, backendURL,
+		`permit(principal == Client::"alice", action == Action::"call_tool", resource == Tool::"echo");`,
+		`permit(principal == Client::"bob", action == Action::"call_tool", resource == Tool::"ping");`)
+
+	alice := NewMCPTestClient(t, ts.URL).WithPrincipal("alice")
+	alice.InitializeSession()
+	bob := NewMCPTestClient(t, ts.URL).WithPrincipal("bob")
+	bob.InitializeSession()
+
+	// Wait until EACH session has registered its OWN permitted tool. This is
+	// the anti-vacuity guard: it proves both sessions finished their
+	// (asynchronous) registration and each principal resolved to its own
+	// identity. Without it, an empty tools/list (registration still pending)
+	// would be indistinguishable from a correctly-filtered one, so a real
+	// cross-principal projection leak could pass unnoticed.
+	waitForClientTool(t, alice, "echo")
+	waitForClientTool(t, bob, "ping")
+
+	// Divergence in both directions: alice sees echo but NOT bob's ping; bob
+	// sees ping but NOT alice's echo. A regression that collapsed all sessions
+	// onto one fixed principal, or shared a cached projection across principals,
+	// would leak the other principal's tool here.
+	aliceTools := listToolsBody(t, alice)
+	assert.Contains(t, aliceTools, `"echo"`, "alice must see her permitted tool echo")
+	assert.NotContains(t, aliceTools, `"ping"`,
+		"alice must NOT see bob's tool ping on the SAME server instance")
+
+	bobTools := listToolsBody(t, bob)
+	assert.Contains(t, bobTools, `"ping"`, "bob must see his permitted tool ping")
+	assert.NotContains(t, bobTools, `"echo"`,
+		"bob must NOT see alice's tool echo on the SAME server instance")
+}
+
+// TestRegression_PerSessionToolCall_DeniedForUnprivilegedPrincipal is the
+// call-path counterpart of TestRegression_PerSessionToolProjection_DivergesByPrincipal:
+// on the SAME running server, a tools/call for a tool permitted to one
+// principal (alice) must succeed, while the identical call from a different
+// principal (bob) on their own concurrently-registered session must be denied
+// by the pre-dispatch authorization gate (403), not silently allowed through a
+// shared/fixed identity.
+func TestRegression_PerSessionToolCall_DeniedForUnprivilegedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	ts := newCedarAuthzTestServer(t, backendURL,
+		`permit(principal == Client::"alice", action == Action::"call_tool", resource == Tool::"echo");`)
+
+	alice := NewMCPTestClient(t, ts.URL).WithPrincipal("alice")
+	alice.InitializeSession()
+	bob := NewMCPTestClient(t, ts.URL).WithPrincipal("bob")
+	bob.InitializeSession()
+
+	// Wait for alice's session to register echo before calling it.
+	waitForClientTool(t, alice, "echo")
+
+	aliceResp := alice.CallTool("echo", map[string]any{"input": "hello"})
+	defer aliceResp.Body.Close()
+	aliceBody, err := io.ReadAll(aliceResp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, aliceResp.StatusCode,
+		"alice is permitted to call echo; body: %s", string(aliceBody))
+	assert.Contains(t, string(aliceBody), "hello", "alice's permitted call must reach the real backend")
+
+	bobResp := bob.CallTool("echo", map[string]any{"input": "hello"})
+	defer bobResp.Body.Close()
+	bobBody, err := io.ReadAll(bobResp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, bobResp.StatusCode,
+		"bob is not permitted to call echo on the SAME running server; body: %s", string(bobBody))
+	rpcErr := parseRPCError(t, bobBody)
+	require.True(t, rpcErr.present, "the 403 must carry a JSON-RPC error envelope, body: %s", string(bobBody))
+	assert.Equal(t, mcpparser.JSONRPCCodeDenied, rpcErr.code,
+		"bob's denied call must surface the genericized authorization JSON-RPC error code")
 }
 
 // findToolCallAuditEvent reads the newline-delimited JSON audit log at path and

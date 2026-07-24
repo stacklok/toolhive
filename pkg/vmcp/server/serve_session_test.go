@@ -174,6 +174,20 @@ type fakeCore struct {
 	// identity/header scoping too (auth-scoping regression guard).
 	lastListResourcesCtx atomic.Pointer[ctxBox]
 	lastListPromptsCtx   atomic.Pointer[ctxBox]
+
+	// callIdentitiesMu guards callIdentities. Additive, nil-safe recording of
+	// the identity CallTool observed per invocation (issue #156 item U3 /
+	// #5742 regression guard): nil until a test opts in via
+	// enableCallIdentityRecording, so existing fakeCore users that never call
+	// it are unaffected. Keyed by the request-supplied "caller" argument (which
+	// travels in the request BODY, independent of the context-bridged identity),
+	// with the observed identity as the value. A test asserts value.Subject ==
+	// key: since key and value come from independent sources, a concurrency
+	// regression that SWAPPED identities between two racing requests (request
+	// caller=p1 handled with p2's identity) records a mismatched pair and fails,
+	// not just a collapse where one key goes missing.
+	callIdentitiesMu sync.Mutex
+	callIdentities   map[string]*auth.Identity
 }
 
 // ctxBox wraps a context.Context for atomic.Pointer storage on fakeCore.
@@ -188,17 +202,56 @@ func (f *fakeCore) ListTools(ctx context.Context, _ *auth.Identity) ([]vmcp.Tool
 }
 
 func (f *fakeCore) CallTool(
-	_ context.Context, _ *auth.Identity, name string, args map[string]any, _ map[string]any,
+	_ context.Context, identity *auth.Identity, name string, args map[string]any, _ map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	f.callToolCalls.Add(1)
 	f.lastCallToolName.Store(name)
 	if args != nil {
 		f.lastCallToolArgs.Store(args)
 	}
+	f.recordCallIdentity(args, identity)
 	if f.callErr != nil {
 		return nil, f.callErr
 	}
 	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
+}
+
+// enableCallIdentityRecording turns on per-call identity recording (see
+// callIdentities). Call before Serve; a fakeCore that never calls this keeps
+// the zero-value nil map, so recordCallIdentity/CallTool remain a no-op and
+// existing callers are unaffected.
+func (f *fakeCore) enableCallIdentityRecording() {
+	f.callIdentitiesMu.Lock()
+	defer f.callIdentitiesMu.Unlock()
+	f.callIdentities = make(map[string]*auth.Identity)
+}
+
+// recordCallIdentity stores the observed identity keyed by the request-supplied
+// "caller" argument (from args, which travels in the request body independent of
+// the context-bridged identity) when recording is enabled; nil-safe no-op
+// otherwise (callIdentities is nil for every fakeCore that never calls
+// enableCallIdentityRecording). Keying on the request-body caller rather than
+// the identity's own Subject is what makes callIdentityFor(caller).Subject ==
+// caller a non-tautological, swap-detecting assertion.
+func (f *fakeCore) recordCallIdentity(args map[string]any, identity *auth.Identity) {
+	f.callIdentitiesMu.Lock()
+	defer f.callIdentitiesMu.Unlock()
+	if f.callIdentities == nil {
+		return
+	}
+	key := ""
+	if caller, ok := args["caller"].(string); ok {
+		key = caller
+	}
+	f.callIdentities[key] = identity
+}
+
+// callIdentityFor returns the identity CallTool observed for the request whose
+// "caller" argument equals key, or nil if no such call was recorded.
+func (f *fakeCore) callIdentityFor(key string) *auth.Identity {
+	f.callIdentitiesMu.Lock()
+	defer f.callIdentitiesMu.Unlock()
+	return f.callIdentities[key]
 }
 
 func (f *fakeCore) ListResources(ctx context.Context, _ *auth.Identity) ([]vmcp.Resource, error) {
@@ -1815,6 +1868,16 @@ func postServeMCP(t *testing.T, baseURL string, body map[string]any, sessionID s
 // FailNow/Goexit would run off the test goroutine and misreport. postServeMCP
 // wraps it for the common test-goroutine case.
 func doServeMCP(baseURL string, body map[string]any, sessionID string) (*http.Response, error) {
+	return doServeMCPWithHeaders(baseURL, body, sessionID, nil)
+}
+
+// doServeMCPWithHeaders is doServeMCP plus caller-supplied extra headers (e.g.
+// X-Test-Principal), for tests that need per-request header control. doServeMCP
+// delegates here with a nil header map (the range is then a no-op), so both
+// share one request-building path.
+func doServeMCPWithHeaders(
+	baseURL string, body map[string]any, sessionID string, headers map[string]string,
+) (*http.Response, error) {
 	rawBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1828,6 +1891,9 @@ func doServeMCP(baseURL string, body map[string]any, sessionID string) (*http.Re
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	return http.DefaultClient.Do(req)

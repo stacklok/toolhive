@@ -23,9 +23,10 @@ import (
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 )
 
-// componentName is toolhive's stacklok.component value (D8). toolhive-core
+// ComponentName is toolhive's stacklok.component value (D8). toolhive-core
 // defines the AttrStacklokComponent key but leaves the value to each component.
-const componentName = "toolhive"
+// Exported so pkg/telemetry's build-info registration uses the same value.
+const ComponentName = "toolhive"
 
 // Config holds the telemetry configuration for all providers.
 // It contains service information, OTLP settings, and Prometheus configuration.
@@ -206,7 +207,7 @@ func NewCompositeProvider(
 	// as the last detector so they win over any collision from CustomAttributes or
 	// OTEL_RESOURCE_ATTRIBUTES — the ownership labels must not be user-overridable.
 	ownershipAttrs := []attribute.KeyValue{
-		attribute.String(coremetrics.AttrStacklokComponent, componentName),
+		attribute.String(coremetrics.AttrStacklokComponent, ComponentName),
 		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
 	}
 

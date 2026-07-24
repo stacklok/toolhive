@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry/providers"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -38,9 +39,6 @@ const (
 	networkTransportTCP = "tcp"
 	// networkProtocolHTTP is the OTEL value for HTTP protocol
 	networkProtocolHTTP = "http"
-	// componentName is toolhive's stacklok.component value (D8). toolhive-core
-	// defines the AttrStacklokComponent key but leaves the value to each component.
-	componentName = "toolhive"
 )
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
@@ -126,7 +124,7 @@ func NewHTTPMiddleware(
 // build version/commit.
 func registerBuildInfo(meter metric.Meter) {
 	info := versions.GetVersionInfo()
-	if err := coremetrics.RegisterBuildInfo(meter, componentName, info.Version, info.Commit); err != nil {
+	if err := coremetrics.RegisterBuildInfo(meter, providers.ComponentName, info.Version, info.Commit); err != nil {
 		slog.Debug("failed to register build info", "error", err)
 	}
 }

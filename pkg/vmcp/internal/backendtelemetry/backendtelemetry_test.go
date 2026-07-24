@@ -142,7 +142,7 @@ func TestMonitorBackends_HealthGaugeReportsRegistryStatusBeyondHealthyUnhealthy(
 	// record() only ever distinguishes success/failure, so before any request
 	// completes for these backends, the gauge must surface the registry's own
 	// finer-grained status rather than collapsing it to healthy/unhealthy.
-	_, unregister, err := MonitorBackends(
+	_, _, unregister, err := MonitorBackends(
 		context.Background(), mp, tracenoop.NewTracerProvider(), registry, vmcpmocks.NewMockBackendClient(ctrl),
 	)
 	require.NoError(t, err)
@@ -152,6 +152,91 @@ func TestMonitorBackends_HealthGaugeReportsRegistryStatusBeyondHealthyUnhealthy(
 		"degraded-backend":        string(vmcp.BackendDegraded),
 		"unauthenticated-backend": string(vmcp.BackendUnauthenticated),
 	}, healthPoints(t, reader))
+}
+
+func TestMonitorBackends_HealthGaugeNormalizesEmptyHealthStatusToHealthy(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+	// No HealthStatus set (zero value) and no request has completed yet, so
+	// nothing classifies this backend — matches filterHealthyBackends's
+	// "empty/zero-value: assume healthy" convention rather than reporting
+	// every healthStates point as 0.
+	registry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{
+		{ID: "be1", Name: "unclassified-backend"},
+	}).AnyTimes()
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	_, _, unregister, err := MonitorBackends(
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, vmcpmocks.NewMockBackendClient(ctrl),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, unregister()) })
+
+	assert.Equal(t, map[string]string{"unclassified-backend": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+}
+
+// fakeStatusProvider is a minimal health.StatusProvider stub so tests can pin
+// a specific per-backend status without constructing a full health.Monitor.
+type fakeStatusProvider struct {
+	statuses map[string]vmcp.BackendHealthStatus
+}
+
+func (f *fakeStatusProvider) QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool) {
+	status, tracked := f.statuses[backendID]
+	return status, tracked
+}
+
+func TestMonitorBackends_HealthGaugePrefersLiveProviderOverRegistryAndRecordedState(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+	// Registry snapshot says healthy; a request has also succeeded (record()
+	// would say healthy too). The live provider disagrees with both — it must win,
+	// exactly as filterHealthyBackends prefers it over the registry snapshot.
+	registry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{
+		{ID: "be1", Name: "backend-1", HealthStatus: vmcp.BackendHealthy},
+	}).AnyTimes()
+
+	baseClient := vmcpmocks.NewMockBackendClient(ctrl)
+	target := &vmcp.BackendTarget{WorkloadName: "backend-1", TransportType: "sse"}
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	decorated, setter, unregister, err := MonitorBackends(
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, unregister()) })
+
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{}, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+
+	// The health monitor (built after MonitorBackends, per core.New's ordering)
+	// now reports this backend as unhealthy — e.g. the circuit breaker tripped
+	// after the last successful request. The gauge must reflect this immediately,
+	// not the stale registry snapshot or the last recorded request outcome.
+	setter.Set(&fakeStatusProvider{statuses: map[string]vmcp.BackendHealthStatus{
+		"be1": vmcp.BackendUnhealthy,
+	}})
+	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendUnhealthy)}, healthPoints(t, reader))
+
+	// A backend the live provider doesn't track (tracked=false) falls back to
+	// record()-derived state, not straight to the registry snapshot.
+	setter.Set(&fakeStatusProvider{statuses: map[string]vmcp.BackendHealthStatus{}})
+	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+
+	// A nil provider (monitoring disabled) restores the original fallback chain.
+	setter.Set(nil)
+	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
 }
 
 func TestMonitorBackends_HealthGaugeTransitionsOnRequestOutcome(t *testing.T) {
@@ -169,7 +254,7 @@ func TestMonitorBackends_HealthGaugeTransitionsOnRequestOutcome(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	decorated, unregister, err := MonitorBackends(
+	decorated, _, unregister, err := MonitorBackends(
 		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
 	)
 	require.NoError(t, err)
@@ -208,7 +293,7 @@ func TestMonitorBackends_HealthGaugeDropsBackendRemovedFromRegistry(t *testing.T
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	_, unregister, err := MonitorBackends(
+	_, _, unregister, err := MonitorBackends(
 		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
 	)
 	require.NoError(t, err)
@@ -224,6 +309,67 @@ func TestMonitorBackends_HealthGaugeDropsBackendRemovedFromRegistry(t *testing.T
 	// its last-known state indefinitely.
 	backends = backends[:1]
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+}
+
+// clientOperationDurationServers returns the mcp_server label value recorded
+// on every mcp.client.operation.duration data point.
+func clientOperationDurationServers(t *testing.T, reader sdkmetric.Reader) []string {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	var servers []string
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "mcp.client.operation.duration" {
+				continue
+			}
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			require.True(t, ok, "mcp.client.operation.duration must be a float64 Histogram")
+			for _, dp := range hist.DataPoints {
+				name, ok := dp.Attributes.Value(attribute.Key(coremetrics.LabelMCPServer))
+				require.True(t, ok, "mcp_server label must be present on mcp.client.operation.duration")
+				servers = append(servers, name.AsString())
+			}
+		}
+	}
+	return servers
+}
+
+func TestMonitorBackends_ClientOperationDurationCarriesBackendIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+	registry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{
+		{ID: "be1", Name: "backend-1", HealthStatus: vmcp.BackendHealthy},
+	}).AnyTimes()
+
+	baseClient := vmcpmocks.NewMockBackendClient(ctrl)
+	target := &vmcp.BackendTarget{WorkloadName: "backend-1", TransportType: "sse"}
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	decorated, _, unregister, err := MonitorBackends(
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, unregister()) })
+
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{}, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	require.NoError(t, err)
+
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("backend unreachable"))
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	require.Error(t, err)
+
+	// Both the success and error data points must carry the backend identity —
+	// without it, per-backend latency/error-rate breakdown is impossible.
+	assert.Equal(t, []string{"backend-1", "backend-1"}, clientOperationDurationServers(t, reader))
 }
 
 func TestBackendHealth_ConcurrentSetAndSnapshot(t *testing.T) {

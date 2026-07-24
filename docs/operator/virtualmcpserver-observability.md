@@ -101,7 +101,8 @@ Duration of composite tool workflow executions, recorded regardless of outcome.
 #### `stacklok.vmcp.token_cache.requests` (Counter)
 
 Total number of vMCP token cache lookups, split by hit/miss result
-(`pkg/vmcp/cache/telemetry.go`).
+(`pkg/vmcp/cache/telemetry.go`). Not yet emitted: no production `TokenCache`
+implementation is currently wired through `NewMeteredTokenCache`.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|

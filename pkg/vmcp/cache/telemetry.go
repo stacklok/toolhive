@@ -37,6 +37,10 @@ var _ TokenCache = (*meteredTokenCache)(nil)
 // NewMeteredTokenCache wraps base with hit/miss instrumentation using the given
 // meter provider. If instrument creation fails, base is returned unwrapped so
 // caching keeps working without metrics.
+//
+// No concrete TokenCache implementation exists in this package yet — this
+// decorator is metrics scaffolding ahead of that work. stacklok.vmcp.token_cache.requests
+// is not emitted until a caller constructs a TokenCache and wraps it here.
 func NewMeteredTokenCache(base TokenCache, meterProvider metric.MeterProvider) TokenCache {
 	if meterProvider == nil {
 		return base

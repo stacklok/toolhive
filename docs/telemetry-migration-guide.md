@@ -41,6 +41,7 @@ ToolHive's telemetry has been updated across three areas:
 | `--otel-env-vars` flag | Include host environment variables in spans |
 | `--otel-use-legacy-attributes` flag | Control legacy attribute dual emission |
 | OTLP header credential redaction | `Config.String()` / `Config.GoString()` redact header values |
+| `stacklok.vmcp.token_cache.requests` metric | Hit/miss counter for the vMCP token cache; not yet emitted (no production `TokenCache` implementation wired in) |
 
 ---
 
@@ -253,8 +254,16 @@ regardless of that flag's setting.
 | `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | |
 | `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | Renamed, not deleted |
 | `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | Now split by `outcome` label instead of a separate errors counter |
+| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | Merged into the executions counter above, not a standalone metric |
 | `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | |
 | `toolhive_vmcp_backend_requests_duration` | `mcp.client.operation.duration` | OTEL MCP semconv histogram |
+| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count |
+| `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | Merged into one counter split by `outcome` label |
+| `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | |
+| `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | |
+| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | |
+| `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
+| `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | |
 
 The new `mcp.server.operation.duration` and `mcp.client.operation.duration`
 metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,
@@ -277,6 +286,12 @@ only the semconv metric that already covered the same signal:
 
 A dashboard or alert built on any of these six metrics has no direct
 successor query — it must be rebuilt against the semconv histogram.
+
+Full request-volume parity for `toolhive_mcp_requests` requires summing both
+`mcp_server_operation_duration_seconds_count` and
+`http_server_request_duration_seconds_count`: GET (SSE-open) and DELETE
+(session-terminate) requests carry no MCP method and so only appear in the
+latter.
 
 ---
 

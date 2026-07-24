@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
@@ -57,23 +58,31 @@ var healthStates = []vmcp.BackendHealthStatus{
 // The returned unregister func releases the gauge callback and must be called when the
 // decorated client is no longer in use (e.g. from the owning VMCP's Close), so a future
 // rebuild of the backend client does not accumulate callbacks against stale health state.
+//
+// The returned *HealthProviderSetter lets the caller attach a live health.StatusProvider
+// once it becomes available (health.Monitor is built after MonitorBackends is called in
+// core.New, since it depends on the decorated client already existing). Until it's set —
+// or if it's never set because health monitoring is disabled — the gauge falls back to
+// registry/record()-derived state exactly as before.
 func MonitorBackends(
 	_ context.Context,
 	meterProvider metric.MeterProvider,
 	tracerProvider trace.TracerProvider,
 	registry vmcp.BackendRegistry,
 	backendClient vmcp.BackendClient,
-) (vmcp.BackendClient, func() error, error) {
+) (vmcp.BackendClient, *HealthProviderSetter, func() error, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
-	// health is mutated on request success/failure so the gauge reflects live
-	// health within one collection interval. It is never seeded or pruned here;
-	// membership at collection time comes from registry.List, below. record()
-	// only distinguishes success/failure, so it can only ever set BackendHealthy
-	// or BackendUnhealthy; the richer states (degraded, unknown, unauthenticated)
-	// can only come from the registry's own HealthStatus (the health monitor's
-	// assessment), used as the fallback below until the first request completes.
-	health := &backendHealth{states: make(map[string]vmcp.BackendHealthStatus)}
+	// recordedHealth is mutated on request success/failure so the gauge reflects
+	// live health within one collection interval. It is never seeded or pruned
+	// here; membership at collection time comes from registry.List, below.
+	// record() only distinguishes success/failure, so it can only ever set
+	// BackendHealthy or BackendUnhealthy; the richer states (degraded, unknown,
+	// unauthenticated) can only come from the registry's own HealthStatus (a
+	// health monitor's discovery-time assessment), used as a fallback below when
+	// no live StatusProvider is set or it doesn't track a given backend.
+	recordedHealth := &backendHealth{states: make(map[string]vmcp.BackendHealthStatus)}
+	providerSetter := &HealthProviderSetter{}
 
 	clientOperationDuration, err := meter.Float64Histogram(
 		"mcp.client.operation.duration",
@@ -82,7 +91,7 @@ func MonitorBackends(
 		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
 	}
 
 	healthGauge, err := meter.Int64ObservableGauge(
@@ -90,16 +99,14 @@ func MonitorBackends(
 		metric.WithDescription("Per-backend health: 1 for the observed state, 0 otherwise, per (mcp_server, state)"),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create backend health gauge: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create backend health gauge: %w", err)
 	}
 	registration, err := meter.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
-			states := health.snapshot()
+			states := recordedHealth.snapshot()
+			provider := providerSetter.get()
 			for _, backend := range registry.List(ctx) {
-				current, recorded := states[backend.Name]
-				if !recorded {
-					current = backend.HealthStatus
-				}
+				current := currentHealthStatus(backend, states, provider)
 				for _, state := range healthStates {
 					value := int64(0)
 					if state == current {
@@ -116,15 +123,69 @@ func MonitorBackends(
 		healthGauge,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to register backend health callback: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to register backend health callback: %w", err)
 	}
 
 	return &telemetryBackendClient{
 		backendClient:           backendClient,
 		tracer:                  tracerProvider.Tracer(instrumentationName),
-		health:                  health,
+		health:                  recordedHealth,
 		clientOperationDuration: clientOperationDuration,
-	}, registration.Unregister, nil
+	}, providerSetter, registration.Unregister, nil
+}
+
+// currentHealthStatus resolves a backend's health for the gauge callback, in the
+// same precedence order filterHealthyBackends uses for capability filtering: the
+// live health.StatusProvider first (so the gauge agrees with what's actually
+// driving capability aggregation and respects circuit-breaker state), then the
+// request-outcome map record() maintains, then the registry's discovery-time
+// snapshot. An empty/zero-value HealthStatus (no source has classified the
+// backend yet) is normalized to BackendHealthy, matching
+// filterHealthyBackends's "empty/zero-value: assume healthy" convention —
+// otherwise none of healthStates would match and the gauge would silently
+// report every state as 0 for that backend instead of a definite one.
+func currentHealthStatus(
+	backend vmcp.Backend, recorded map[string]vmcp.BackendHealthStatus, provider health.StatusProvider,
+) vmcp.BackendHealthStatus {
+	status := backend.HealthStatus
+	if s, ok := recorded[backend.Name]; ok {
+		status = s
+	}
+	if provider != nil {
+		if s, tracked := provider.QueryBackendStatus(backend.ID); tracked {
+			status = s
+		}
+	}
+	if status == "" {
+		return vmcp.BackendHealthy
+	}
+	return status
+}
+
+// HealthProviderSetter lets core.New attach a live health.StatusProvider to an
+// already-registered health gauge once the health.Monitor is built — which happens
+// after MonitorBackends is called, since the monitor is constructed from the
+// decorated backend client MonitorBackends returns. Safe for concurrent use: Set
+// is called at most once from New, and get() may run concurrently from the
+// gauge's observable callback.
+type HealthProviderSetter struct {
+	mu       sync.RWMutex
+	provider health.StatusProvider
+}
+
+// Set attaches provider so the health gauge callback prefers it over the
+// registry/record()-derived fallback. A nil provider (health monitoring
+// disabled or failed to start) is a valid, explicit no-op.
+func (s *HealthProviderSetter) Set(provider health.StatusProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.provider = provider
+}
+
+func (s *HealthProviderSetter) get() health.StatusProvider {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.provider
 }
 
 // backendHealth tracks the latest observed health of each backend, keyed by
@@ -222,10 +283,13 @@ func (t *telemetryBackendClient) record(
 		trace.WithSpanKind(trace.SpanKindClient),
 	)
 
-	// Attributes for mcp.client.operation.duration (spec-required)
+	// Attributes for mcp.client.operation.duration (spec-required + bounded
+	// backend identity so per-backend latency/error rate stays queryable —
+	// the deleted toolhive_vmcp_backend_requests_duration twin carried this).
 	specMetricAttrs := metric.WithAttributes(
 		attribute.String("mcp.method.name", mcpMethod),
 		attribute.String("network.transport", networkTransport),
+		attribute.String(coremetrics.LabelMCPServer, target.WorkloadName),
 	)
 
 	start := time.Now()
@@ -239,6 +303,7 @@ func (t *telemetryBackendClient) record(
 			specMetricAttrsWithError := metric.WithAttributes(
 				attribute.String("mcp.method.name", mcpMethod),
 				attribute.String("network.transport", networkTransport),
+				attribute.String(coremetrics.LabelMCPServer, target.WorkloadName),
 				attribute.String("error.type", fmt.Sprintf("%T", *err)),
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)

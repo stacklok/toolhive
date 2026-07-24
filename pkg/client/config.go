@@ -93,6 +93,8 @@ const (
 	Factory ClientApp = "factory"
 	// CopilotCli represents the GitHub Copilot CLI.
 	CopilotCli ClientApp = "copilot-cli"
+	// Qoder represents the Qoder IDE.
+	Qoder ClientApp = "qoder"
 )
 
 const (
@@ -1021,6 +1023,33 @@ var supportedClientIntegrations = []clientAppConfig{
 			{JSONPointer: "/openAIBaseURL", ValueField: "ProxyBaseURL"},
 			{JSONPointer: "/apiKey", ValueField: "PlaceholderAPIKey"},
 		},
+	},
+	{
+		ClientType:           ClientApp(Qoder),
+		Description:          "Qoder IDE",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{},
+		PlatformPrefix: map[Platform][]string{
+			PlatformDarwin:  {".qoder"},
+			PlatformLinux:   {".qoder"},
+			PlatformWindows: {"AppData", "Roaming", "Qoder", "SharedClientCache"},
+		},
+		Extension:                     JSON,
+		IsTransportTypeFieldSupported: true,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          httpTransportLabel,
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: httpTransportLabel,
+		},
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          defaultURLFieldName,
+			types.TransportTypeSSE:            defaultURLFieldName,
+			types.TransportTypeStreamableHTTP: defaultURLFieldName,
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", skillsDirName},
+		SkillsProjectPath: []string{".qoder", skillsDirName},
 	},
 	{
 		// Claude Desktop routes LLM traffic through the gateway via its

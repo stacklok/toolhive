@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -97,14 +98,30 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 		return fmt.Errorf("failed to pull image from registry: %w", err)
 	}
 
-	// Convert reference to tag for daemon.Write
-	tag, ok := ref.(name.Tag)
-	if !ok {
-		// If it's not a tag, try to convert to tag
-		tag, err = name.NewTag(ref.String())
-		if err != nil {
-			return fmt.Errorf("failed to convert reference to tag: %w", err)
+	// Convert reference to a name.Tag for daemon.Write.
+	// name.ParseReference returns name.Digest (not name.Tag) for tag@digest
+	// references like "image:tag@sha256:...". In that case we extract the tag
+	// portion (everything before the '@') so daemon.Write can store the image
+	// under its human-readable tag, while the pull itself was verified against
+	// the digest by go-containerregistry.
+	var tag name.Tag
+	switch v := ref.(type) {
+	case name.Tag:
+		tag = v
+	case name.Digest:
+		refStr := ref.String()
+		if atIdx := strings.Index(refStr, "@"); atIdx >= 0 {
+			// tag@digest — use the portion before '@' as the tag reference.
+			tag, err = name.NewTag(refStr[:atIdx])
+		} else {
+			// digest-only (no tag) — fall back to repository:latest.
+			tag, err = name.NewTag(v.Repository.String())
 		}
+		if err != nil {
+			return fmt.Errorf("failed to derive tag from digest reference: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported image reference type %T", ref)
 	}
 
 	// Save the image to the local daemon

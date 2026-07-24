@@ -388,3 +388,55 @@ func TestHorizontalScaling_InMemoryOnlyMode(t *testing.T) {
 	require.NotNil(t, sess)
 	assert.NotEmpty(t, sess.Tools(), "session on pod A must have tools")
 }
+
+// ---------------------------------------------------------------------------
+// Regression: cross-pod Validate() must observe a shared-store termination
+// ---------------------------------------------------------------------------
+
+// TestRegression_Validate_TerminatedInStore_ReturnsTerminated pins the real
+// U5 fix (toolhive-core v0.0.32, #5742): a session that Manager A ("pod A")
+// still holds live in its node-local cache, but which was terminated in the
+// SHARED Redis store by a second Manager ("pod B"), must be reported as
+// terminated by Manager A's very next Validate() call -- not treated as an
+// error (which the streamable transport would map to a retryable 503) and not
+// silently reported as still-live. Manager.Validate's documented contract
+// collapses "explicitly terminated" and "absent from storage" into the same
+// (isTerminated=true, nil) signal; this test exercises the termination
+// specifically via a DIFFERENT Manager instance terminating the SAME shared
+// store, not via Manager A's own Terminate (which the existing
+// "TestSessionManager_Terminate" suite already covers and which additionally
+// touches Manager A's local bookkeeping directly).
+func TestRegression_Validate_TerminatedInStore_ReturnsTerminated(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	storage := newSharedRedisStorage(t, mr)
+	backend := startMCPBackend(t, "backend-alpha", "echo")
+
+	// Manager A ("pod A"): create a full (Phase 2) session.
+	smA := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
+	sessionID := createSession(t, smA, nil)
+
+	// Sanity: the session must currently validate as live, or the
+	// post-termination assertion below would pass vacuously.
+	isTerminated, err := smA.Validate(sessionID)
+	require.NoError(t, err)
+	require.False(t, isTerminated, "a freshly created session must validate as live")
+
+	// Manager B ("pod B"): a second Manager over the SAME shared Redis store
+	// terminates the session out-of-band. This mutates only the shared store --
+	// it does NOT go through Manager A's in-process bookkeeping -- exactly like
+	// a DELETE served by a different replica.
+	smB := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
+	isNotAllowed, err := smB.Terminate(sessionID)
+	require.NoError(t, err)
+	require.False(t, isNotAllowed)
+
+	// Manager A must observe the cross-pod termination on the very next
+	// Validate() call against the shared store.
+	isTerminated, err = smA.Validate(sessionID)
+	require.NoError(t, err)
+	assert.True(t, isTerminated,
+		"Manager A must report the session as terminated after Manager B terminates it "+
+			"in the shared store, even though Manager A never terminated it locally")
+}

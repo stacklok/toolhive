@@ -5,6 +5,7 @@ package skillsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -267,10 +268,17 @@ func (s *service) installAndRegister(
 		updated, err := s.recordLockState(ctx, opts, originalName, result.Skill)
 		if err != nil {
 			rollback()
-			return nil, httperr.WithCode(
-				fmt.Errorf("recording skill in project lock file: %w", err),
-				http.StatusInternalServerError,
-			)
+			// Preserve a specific code already attached deeper in the chain
+			// — dependency materialization runs inside recordLockState, so a
+			// dep's 502 (git resolve) or 404 (registry miss) must reach the
+			// API boundary as itself, not masked to 500. Only a code-less
+			// failure (e.g. an actual lock write error) defaults to 500.
+			wrapped := fmt.Errorf("recording skill in project lock file: %w", err)
+			var coded *httperr.CodedError
+			if !errors.As(err, &coded) {
+				wrapped = httperr.WithCode(wrapped, http.StatusInternalServerError)
+			}
+			return nil, wrapped
 		}
 		result.Skill = updated
 	}

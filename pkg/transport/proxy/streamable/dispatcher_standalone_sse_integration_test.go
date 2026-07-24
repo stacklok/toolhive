@@ -460,12 +460,19 @@ func TestStandaloneSSE_ListChangedRefiltersThroughExistingMiddleware(t *testing.
 	assert.Contains(t, string(listRespBody), "allowed_tool")
 	assert.NotContains(t, string(listRespBody), "filtered_tool")
 
-	// (3) tools/call POST for the filtered tool is still blocked.
+	// (3) tools/call POST for the filtered tool is still blocked. Since #5944 the
+	// tool-call filter returns a JSON-RPC error over HTTP 200 (the client accepts
+	// JSON) rather than a bare 400, so a filtered tool is indistinguishable from a
+	// tool that does not exist.
 	callBody := `{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"filtered_tool"}}`
 	callResp, err := http.Post(endpoint, "application/json", strings.NewReader(callBody)) //nolint:noctx // test-only
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = callResp.Body.Close() })
-	assert.Equal(t, http.StatusBadRequest, callResp.StatusCode)
+	assert.Equal(t, http.StatusOK, callResp.StatusCode)
+	callRespBody, err := io.ReadAll(callResp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(callRespBody), `"error"`)
+	assert.Contains(t, string(callRespBody), "tool not found")
 }
 
 // ------------------------- Routing security regressions -------------------------

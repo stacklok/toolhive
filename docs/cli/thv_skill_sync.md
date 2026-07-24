@@ -11,16 +11,23 @@ mdx:
 
 ## thv skill sync
 
-Restore project skills to match the lock file
+Restore project skills to match the lock file (experimental)
 
 ### Synopsis
 
 Restore a project's installed skills to match toolhive.lock.yaml.
 
+Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
+server while the lock file feature rolls out.
+
 Missing or drifted skills are reinstalled at their pinned digest. Use
 --check to report drift without installing anything (suitable for CI).
 Use --adopt to record lock entries for existing unmanaged installs, and
 --prune to remove installs no longer present in the lock file.
+
+Unless --check is set, sync prompts for confirmation before installing —
+skill content is a set of AI-followed instructions. Pass --yes to skip the
+prompt (required in non-interactive contexts such as CI).
 
 ```
 thv skill sync [flags]
@@ -36,6 +43,7 @@ thv skill sync [flags]
   -h, --help                  help for sync
       --project-root string   Project root path (default: auto-detected from the current directory)
       --prune                 Remove installs no longer present in the lock file
+      --yes                   Skip the confirmation prompt (required when not running interactively)
 ```
 
 ### Options inherited from parent commands

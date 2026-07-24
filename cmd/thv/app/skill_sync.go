@@ -18,18 +18,26 @@ var (
 	skillSyncCheck       bool
 	skillSyncAdopt       bool
 	skillSyncPrune       bool
+	skillSyncYes         bool
 	skillSyncFormat      string
 )
 
 var skillSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Restore project skills to match the lock file",
+	Short: "Restore project skills to match the lock file (experimental)",
 	Long: `Restore a project's installed skills to match toolhive.lock.yaml.
+
+Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
+server while the lock file feature rolls out.
 
 Missing or drifted skills are reinstalled at their pinned digest. Use
 --check to report drift without installing anything (suitable for CI).
 Use --adopt to record lock entries for existing unmanaged installs, and
---prune to remove installs no longer present in the lock file.`,
+--prune to remove installs no longer present in the lock file.
+
+Unless --check is set, sync prompts for confirmation before installing —
+skill content is a set of AI-followed instructions. Pass --yes to skip the
+prompt (required in non-interactive contexts such as CI).`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&skillSyncFormat),
 	),
@@ -49,6 +57,8 @@ func init() {
 		"Write lock entries for existing unmanaged project-scope installs")
 	skillSyncCmd.Flags().BoolVar(&skillSyncPrune, "prune", false,
 		"Remove installs no longer present in the lock file")
+	skillSyncCmd.Flags().BoolVar(&skillSyncYes, "yes", false,
+		"Skip the confirmation prompt (required when not running interactively)")
 	AddFormatFlag(skillSyncCmd, &skillSyncFormat)
 }
 
@@ -56,6 +66,20 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 	projectRoot, err := resolveProjectRoot(skillSyncProjectRoot)
 	if err != nil {
 		return err
+	}
+
+	if !skillSyncCheck {
+		if !skillSyncYes {
+			printLockEntriesSummary(projectRoot)
+		}
+		confirmed, confirmErr := requireConfirmation("Sync skills for "+projectRoot, skillSyncYes)
+		if confirmErr != nil {
+			return confirmErr
+		}
+		if !confirmed {
+			fmt.Println("Sync cancelled.")
+			return nil
+		}
 	}
 
 	c := newSkillClient(cmd.Context())
@@ -70,7 +94,29 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 		return formatSkillError("sync skills", err)
 	}
 
-	return printSyncResult(result, skillSyncFormat)
+	if err := printSyncResult(result, skillSyncFormat); err != nil {
+		return err
+	}
+	return syncExitError(result, skillSyncCheck)
+}
+
+// syncExitError maps a SyncResult to RFC THV-0080's exit-code contract.
+// Partial failure takes precedence over check-mode drift: something
+// actually going wrong is a stronger signal than the project merely not
+// matching its lock file. Missing counts toward the check failure exactly
+// like drift — on a fresh clone every locked skill is missing, and that is
+// the canonical state the CI gate exists to catch.
+func syncExitError(result *skills.SyncResult, check bool) error {
+	if len(result.Failed) > 0 {
+		return withExitCode(fmt.Errorf("sync failed for %d skill(s)", len(result.Failed)), ExitCodePartialFailure)
+	}
+	if outOfSync := len(result.Drifted) + len(result.Missing); check && outOfSync > 0 {
+		return withExitCode(
+			fmt.Errorf("%d skill(s) drifted from or are missing against the lock file", outOfSync),
+			ExitCodeCheckFailure,
+		)
+	}
+	return nil
 }
 
 func printSyncResult(result *skills.SyncResult, format string) error {

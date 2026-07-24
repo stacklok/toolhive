@@ -54,11 +54,23 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
 	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
 
-	// server/discover is intentionally NOT allow-listed: it default-denies (403) for now.
-	// Its response enumerates tool/resource descriptors and would bypass
-	// ResponseFilteringWriter (which only filters tools/list, prompts/list, resources/list,
-	// and find_tool). When Modern serving is wired up (#5830), add it as allow +
-	// response-filter, not always-allowed.
+	// server/discover, Modern's (2026-07-28) replacement for initialize+capability
+	// negotiation, is always-allowed on THIS path (the single-server pkg/runner HTTP
+	// authz Middleware -- vMCP's Modern dispatcher never consults this map at all, it
+	// re-homes admission through core.Check*/core.List* directly). The always-allowed
+	// choice rests on initialize parity, not on any per-request filtering this map
+	// enforces: DiscoverResult carries the exact same Capabilities *ServerCapabilities
+	// (+ Instructions) shape InitializeResult does, and "initialize" above has always
+	// been always-allowed in this map. discover therefore adds no new exposure class --
+	// note ServerCapabilities.Experimental/.Extensions (arbitrary backend-authored maps)
+	// and Instructions (free text) are already freeform fields a backend can populate on
+	// the always-allowed initialize response today, so "no descriptors" is a property of
+	// how vMCP's dispatcher happens to build the value, not a guarantee this wire shape
+	// makes on its own. Classifying it as MCPOperationList instead would be safe too --
+	// response_filter.go hardcodes an exact 4-method filter list (tools/list,
+	// prompts/list, resources/list, find_tool), so server/discover would just pass
+	// through unfiltered -- but always-allowed is simpler and equally safe here.
+	"server/discover": {Feature: "", Operation: ""},
 
 	// Subscriptions - always allowed for now. This method carries no single resource
 	// identifier the parser extracts (params are a notification-type filter with an

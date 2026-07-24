@@ -183,15 +183,16 @@ var _ = Describe("Modern Functional Round-Trip — Streamable Proxy", Label("pro
 		Expect(sessionIDFromInfo(infoOut)).To(BeEmpty(), "Modern must have no session id (inverse of the Legacy leg)")
 	})
 
-	It("reaches server/discover (no authz configured, so it is NOT 403-denied)", func() {
-		// The design plan's ground truth said server/discover "currently
-		// default-denies (403) through authz" -- verified at Step 2.1 that
-		// this only holds when authz middleware is actually wired, which
-		// only happens when RunConfig.AuthzConfig != nil
-		// (pkg/runner/middleware.go:210). A bare `thv run` like this
-		// BeforeEach never enables it, so server/discover reaches the
-		// backend and succeeds. See pkg/authz/middleware.go's comment on
-		// why server/discover isn't allow-listed for when authz IS on.
+	It("reaches server/discover (baseline: no authz middleware wired at all)", func() {
+		// As of #5953, server/discover is always-allowed in
+		// pkg/authz/middleware.go's MCPMethodToFeatureOperation map, so this
+		// no-authz baseline and the "under authz" case in the
+		// "server/discover Authorization Guard" Describe below now assert
+		// the same 200 outcome -- kept as two separate specs because they
+		// exercise different code paths: this one never wires the authz
+		// middleware at all (RunConfig.AuthzConfig == nil,
+		// pkg/runner/middleware.go:210), the other wires it and relies on
+		// discover's always-allowed entry in that map.
 		req, err := e2e.NewModernRequest("server/discover", nil)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -321,17 +322,24 @@ var _ = Describe("Legacy Functional Round-Trip — real SDK client (yardstick-cl
 	})
 })
 
-// server/discover is deliberately excluded from pkg/authz/middleware.go's
-// MCPMethodToFeatureOperation map (see its comment at middleware.go:57-61):
-// discover's response enumerates every tool/resource descriptor and would
-// bypass ResponseFilteringWriter (which only filters tools/list, prompts/list,
-// resources/list, and find_tool) -- a fail-safe deny, not an oversight.
-// Consequence (known "for now" gap, #5830): a real Modern client (like
-// yardstick-client) that hits this 403 has no JSON-RPC "unsupported version"
-// data to parse, so its own fallback-on-non-modern-error path kicks in and it
-// silently downgrades to a Legacy 2025-11-25 initialize handshake instead of
-// surfacing the denial -- which is why this guard uses the raw client, not
-// yardstick-client, to actually observe the 403.
+// server/discover used to be excluded from pkg/authz/middleware.go's
+// MCPMethodToFeatureOperation map (default-deny, 403) to keep its
+// unfiltered tool/resource descriptors away from ResponseFilteringWriter
+// (which only filters tools/list, prompts/list, resources/list, and
+// find_tool). #5953 ("Serve MCP 2026-07-28 Modern stateless requests through
+// vMCP") flipped this to always-allowed ({Feature:"", Operation:""} --
+// initialize parity, same rationale as "initialize" itself already being
+// always-allowed): discover carries the same Capabilities/Instructions shape
+// initialize does, so it adds no new exposure class, and #5953's own
+// middleware comment notes discover would "just pass through unfiltered"
+// under the response-filter either way -- a deliberate, documented tradeoff,
+// not an oversight.
+//
+// Consequence for dual-era: Modern-through-authz no longer downgrades.
+// Previously a real Modern client's discover got 403'd under authz, so its
+// fallback-on-non-modern-error path kicked in and it silently negotiated
+// down to a Legacy 2025-11-25 initialize handshake. Now discover succeeds,
+// so the client stays Modern -- this guard now positively proves that.
 var _ = Describe("server/discover Authorization Guard", Label("proxy", "stateless", "dual-era", "e2e", "authz"), Serial, func() {
 	var (
 		config     *e2e.TestConfig
@@ -394,8 +402,39 @@ var _ = Describe("server/discover Authorization Guard", Label("proxy", "stateles
 		}
 	})
 
-	It("denies server/discover with 403 when authz is enabled", func() {
+	It("server/discover is allowed under authz (Modern's initialize replacement)", func() {
 		req, err := e2e.NewModernRequest("server/discover", nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		resp, err := client.Send(context.Background(), proxyURL, req)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(200))
+		Expect(resp.Error).To(BeNil())
+
+		By("confirming authz still allows the policy-permitted echo tool call")
+		callReq, err := e2e.NewModernRequest("tools/call", map[string]any{
+			"name":      "echo",
+			"arguments": map[string]any{"input": "stillworks"},
+		})
+		Expect(err).ToNot(HaveOccurred())
+		callResp, err := client.Send(context.Background(), proxyURL, callReq)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(callResp.StatusCode).To(Equal(200))
+		Expect(callResp.Error).To(BeNil())
+	})
+
+	It("still denies with 403 a method the Cedar policy does not permit", func() {
+		// server/discover's always-allowed flip doesn't touch the general
+		// default-deny rule (MCPMethodToFeatureOperation's doc comment:
+		// "Methods not in this map are denied by default"). tools/call IS in
+		// the map and routes through Cedar; the policy in this BeforeEach
+		// only permits resource == Tool::"echo", so calling any other tool
+		// name still gets denied -- keeps the 403/denial path (and its
+		// non-conformant-envelope wire shape, #5950) covered by this suite.
+		req, err := e2e.NewModernRequest("tools/call", map[string]any{
+			"name":      "notpermitted",
+			"arguments": map[string]any{"input": "shouldbedenied"},
+		})
 		Expect(err).ToNot(HaveOccurred())
 
 		resp, err := client.Send(context.Background(), proxyURL, req)
@@ -408,16 +447,5 @@ var _ = Describe("server/discover Authorization Guard", Label("proxy", "stateles
 		// envelope's job to fix, not this guard's -- here we're asserting authz
 		// *behavior* (denied, code 403), not wire conformance.
 		Expect(resp.Error.Code).To(Equal(int64(403)))
-
-		By("confirming authz still allows the policy-permitted echo tool call")
-		callReq, err := e2e.NewModernRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "stillworks"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		callResp, err := client.Send(context.Background(), proxyURL, callReq)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(callResp.StatusCode).To(Equal(200))
-		Expect(callResp.Error).To(BeNil())
 	})
 })

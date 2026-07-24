@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -50,6 +51,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
+
+// modernDispatchEnvVar is the kill-switch env var for direct-to-core dispatch
+// of well-formed MCP 2026-07-28 ("Modern") stateless requests (default off;
+// see server.Config.ModernDispatchEnabled). Env-only ahead of any CLI-flag or
+// CRD wiring.
+const modernDispatchEnvVar = "TOOLHIVE_VMCP_MODERN_STATELESS"
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
@@ -408,6 +415,21 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}()
 	}
 
+	// Read the Modern-stateless-dispatch kill-switch once, here at the
+	// composition root. Unset is the deliberate "off" default. A non-empty
+	// value that fails to parse as a bool is an operator typo (e.g. "ture"),
+	// not a request to enable the feature — warn and stay disabled rather
+	// than silently treating it as false.
+	modernDispatchEnabled := false
+	if raw := os.Getenv(modernDispatchEnvVar); raw != "" {
+		var err error
+		if modernDispatchEnabled, err = strconv.ParseBool(raw); err != nil {
+			slog.Warn(fmt.Sprintf("%s has an unrecognized value %q; Modern stateless dispatch stays disabled",
+				modernDispatchEnvVar, raw))
+			modernDispatchEnabled = false
+		}
+	}
+
 	// Resolve transport defaults once here at the composition root: the
 	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
 	// Config, so server.New, Serve, and the derive* helpers downstream are pure
@@ -420,6 +442,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Host:                    cfg.Host,
 		Port:                    cfg.Port,
 		SessionTTL:              cfg.SessionTTL,
+		ModernDispatchEnabled:   modernDispatchEnabled,
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,

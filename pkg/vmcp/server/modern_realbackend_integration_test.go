@@ -111,7 +111,7 @@ func TestIntegration_Modern_RealBackend_ToolCall(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{
 		"name":      "echo",
@@ -135,13 +135,36 @@ func TestIntegration_Modern_RealBackend_ToolCall(t *testing.T) {
 	assert.NotEqual(t, true, result["isError"], "tool call must not be marked as an error")
 }
 
+// TestIntegration_Modern_RealBackend_KillSwitchOff verifies that with the
+// Modern dispatch kill-switch at its default (off), a well-formed Modern
+// tools/call request is NOT served by dispatchModern: it falls through to the
+// SDK path, which has no session for this request and so cannot produce a
+// Modern envelope (no "resultType" in the response, and no 200 as
+// TestIntegration_Modern_RealBackend_ToolCall gets with the switch on).
+func TestIntegration_Modern_RealBackend_KillSwitchOff(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	ts := newRealTestServer(t, backendURL)
+
+	resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"input": "hello modern"},
+	}, 1, "echo")
+	defer resp.Body.Close()
+
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+	result, _ := decoded["result"].(map[string]any)
+	assert.NotContains(t, result, "resultType", "must not be served by dispatchModern: decoded: %+v", decoded)
+}
+
 // TestIntegration_Modern_RealBackend_ToolsList verifies tools/list against the
 // real backend's discovered tool set, with the Modern cacheability envelope.
 func TestIntegration_Modern_RealBackend_ToolsList(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "tools/list", nil, 1, "")
 	defer resp.Body.Close()
@@ -168,7 +191,7 @@ func TestIntegration_Modern_RealBackend_Discover(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "server/discover", nil, 1, "")
 	defer resp.Body.Close()
@@ -200,7 +223,7 @@ func TestIntegration_Modern_RealBackend_Complete(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "completion/complete", map[string]any{
 		"ref":      map[string]any{"type": "ref/prompt", "name": "nonexistent"},
@@ -226,7 +249,7 @@ func TestIntegration_Modern_RealBackend_Ping(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "ping", nil, 7, "")
 	defer resp.Body.Close()
@@ -246,7 +269,7 @@ func TestIntegration_Modern_RealBackend_Notification(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "tools/list", nil, nil, "")
 	defer resp.Body.Close()
@@ -266,7 +289,7 @@ func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "resources/subscribe", map[string]any{"uri": "file:///x"}, 1, "")
 	defer resp.Body.Close()
@@ -285,7 +308,7 @@ func TestIntegration_Modern_RealBackend_MalformedArguments(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
-	ts := newRealTestServer(t, backendURL)
+	ts := newRealModernTestServer(t, backendURL)
 
 	resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{
 		"name":      "echo",

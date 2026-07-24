@@ -38,13 +38,15 @@ type classificationErrorBody struct {
 }
 
 // classifyingHandlerTestServer builds a minimal *Server for driving
-// classifyingHandler in isolation, carrying only the field the handler reads
-// beyond config scalars: the core a well-formed Modern request dispatches to.
-func classifyingHandlerTestServer() *Server {
+// classifyingHandler in isolation, carrying only the two fields the handler
+// reads beyond config scalars: the kill-switch and the core a switch-on
+// dispatch routes to.
+func classifyingHandlerTestServer(modernDispatchEnabled bool) *Server {
 	return &Server{
 		config: &Config{
-			Name:    testServerName,
-			Version: testServerVersion,
+			Name:                  testServerName,
+			Version:               testServerVersion,
+			ModernDispatchEnabled: modernDispatchEnabled,
 		},
 		core: &modernFakeCore{tools: []vmcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}},
 	}
@@ -54,12 +56,13 @@ func TestClassifyingHandler(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		parsed          *mcpparser.ParsedMCPRequest
-		protocolHeader  string
-		wantPassthrough bool
-		wantDispatched  bool
-		wantCode        int64
+		name                  string
+		parsed                *mcpparser.ParsedMCPRequest
+		protocolHeader        string
+		modernDispatchEnabled bool
+		wantPassthrough       bool
+		wantDispatched        bool
+		wantCode              int64
 	}{
 		{
 			name:            "nil parsed request passes through",
@@ -88,12 +91,24 @@ func TestClassifyingHandler(t *testing.T) {
 		{
 			// tools/list is deliberately not in the Mcp-Name-required set, so this
 			// case only needs Mcp-Method (required on every Modern request) to pass
-			// ValidateHeaderConsistency; a well-formed Modern request then dispatches
-			// to the core unconditionally rather than falling through to next.
-			name:           "well-formed modern request dispatches to the core",
-			parsed:         wellFormedModernToolsList(),
-			protocolHeader: mcpparser.MCPVersionModern,
-			wantDispatched: true,
+			// ValidateHeaderConsistency; with the kill-switch on, a well-formed
+			// Modern request then dispatches to the core instead of falling
+			// through to next.
+			name:                  "well-formed modern request dispatches to the core when the kill-switch is on",
+			parsed:                wellFormedModernToolsList(),
+			protocolHeader:        mcpparser.MCPVersionModern,
+			modernDispatchEnabled: true,
+			wantDispatched:        true,
+		},
+		{
+			// Same well-formed Modern request, but with the kill-switch at its
+			// default (off): dispatch must not happen and the request falls
+			// through to the SDK path unchanged, byte-identical to pre-Modern-
+			// dispatch wire behavior.
+			name:            "well-formed modern request falls through to next when the kill-switch is off",
+			parsed:          wellFormedModernToolsList(),
+			protocolHeader:  mcpparser.MCPVersionModern,
+			wantPassthrough: true,
 		},
 		{
 			// A body that is otherwise a well-formed Modern request (valid _meta
@@ -244,7 +259,7 @@ func TestClassifyingHandler(t *testing.T) {
 			})
 
 			rec := httptest.NewRecorder()
-			classifyingHandlerTestServer().classifyingHandler(next).ServeHTTP(rec, req)
+			classifyingHandlerTestServer(tt.modernDispatchEnabled).classifyingHandler(next).ServeHTTP(rec, req)
 
 			if tt.wantPassthrough {
 				assert.True(t, nextCalled, "expected the request to fall through to next")

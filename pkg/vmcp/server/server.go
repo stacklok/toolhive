@@ -151,6 +151,18 @@ type Config struct {
 	// later is a one-line change rather than a re-thread through the server.
 	HeartbeatInterval time.Duration
 
+	// ModernDispatchEnabled turns on direct dispatch of well-formed MCP
+	// 2026-07-28 ("Modern") stateless requests to the vMCP core
+	// (classifyingHandler → dispatchModern), bypassing the SDK Serve/session
+	// layer. When false (the default), a well-formed Modern request falls
+	// through to the SDK path unchanged, byte-identical to the pre-Modern-
+	// dispatch wire behavior.
+	//
+	// TEMPORARY: this is a safety lever for the hand-rolled pre-release Modern
+	// envelope, off by default until Modern dispatch is conformance-validated.
+	// Remove once that validation lands; see issue #5959.
+	ModernDispatchEnabled bool
+
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
 	// This should be a composed middleware chain (e.g., TokenValidator + MCP parser).
@@ -629,11 +641,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	var mcpHandler http.Handler = streamableServer
 
 	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
-	// malformed Modern requests before dispatch, and route well-formed Modern
-	// requests to the vMCP core (dispatchModern) instead of the SDK. Applied
-	// before telemetry (i.e. it runs closer to the handler) so a rejection or
-	// a dispatcher 403 is still recorded by the telemetry middleware instead
-	// of bypassing it entirely.
+	// malformed Modern requests before dispatch, and — when
+	// Config.ModernDispatchEnabled — route well-formed Modern requests to the
+	// vMCP core (dispatchModern) instead of the SDK. Applied before telemetry
+	// (i.e. it runs closer to the handler) so a rejection or a dispatcher 403
+	// is still recorded by the telemetry middleware instead of bypassing it
+	// entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {

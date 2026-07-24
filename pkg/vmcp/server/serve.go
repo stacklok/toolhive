@@ -66,6 +66,11 @@ type ServerConfig struct {
 	// connections (default: 30s when zero).
 	HeartbeatInterval time.Duration
 
+	// ModernDispatchEnabled turns on direct dispatch of well-formed MCP
+	// 2026-07-28 ("Modern") stateless requests to the vMCP core, bypassing the
+	// SDK Serve/session layer (default false; see Config.ModernDispatchEnabled).
+	ModernDispatchEnabled bool
+
 	// AuthMiddleware is the optional authentication middleware applied to MCP routes.
 	// If nil, no authentication is required.
 	AuthMiddleware func(http.Handler) http.Handler
@@ -399,6 +404,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		EndpointPath:            cfg.EndpointPath,
 		SessionTTL:              cfg.SessionTTL,
 		HeartbeatInterval:       cfg.HeartbeatInterval,
+		ModernDispatchEnabled:   cfg.ModernDispatchEnabled,
 		AuthMiddleware:          cfg.AuthMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,

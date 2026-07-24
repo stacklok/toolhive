@@ -11,10 +11,11 @@ import (
 
 // classifyingHandler classifies a parsed MCP request as Legacy (2025-11-25) or
 // Modern (2026-07-28) at the decode seam, rejects a malformed Modern request
-// with the correct JSON-RPC error before it reaches dispatch, and routes a
-// well-formed Modern request to dispatchModern instead of the SDK. Modern
-// dispatch is unconditional: a well-formed Modern request always reaches
-// dispatchModern. Legacy traffic always falls through to next unchanged.
+// with the correct JSON-RPC error before it reaches dispatch, and — when
+// Config.ModernDispatchEnabled — routes a well-formed Modern request to
+// dispatchModern instead of the SDK. Legacy traffic always falls through to
+// next unchanged, as does a well-formed Modern request while the switch is
+// off (default), matching pre-Modern-dispatch wire behavior byte for byte.
 //
 // ValidateHeaderConsistency (Mcp-Method/Mcp-Name) only applies to Modern
 // requests: a Legacy request carrying a stray Mcp-Method/Mcp-Name header
@@ -62,6 +63,14 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 
 		if err := mcpparser.ValidateHeaderConsistency(parsed); err != nil {
 			mcpparser.WriteClassificationError(w, parsed.ID, err)
+			return
+		}
+
+		// TEMPORARY kill-switch (default off): until Modern dispatch is
+		// conformance-validated, a well-formed Modern request falls through to
+		// the SDK path unless explicitly enabled. See issue #5959.
+		if !s.config.ModernDispatchEnabled {
+			next.ServeHTTP(w, r)
 			return
 		}
 

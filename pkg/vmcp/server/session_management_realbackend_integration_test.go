@@ -36,12 +36,28 @@ import (
 // startRealMCPBackend is defined in testutil_test.go as a shared test utility.
 
 // newRealTestHandler builds the full vMCP handler backed by the MCP server at
-// backendURL. It is the low-level helper used by newRealTestServer and any test
-// that needs control over the httptest.Server configuration (e.g. WriteTimeout).
-// A well-formed Modern (2026-07-28) request always routes through
-// classifyingHandler -> dispatchModern; a Legacy request is unaffected and
-// still falls through to the SDK.
+// backendURL, with Modern dispatch's kill-switch at its default (off): a
+// well-formed Modern (2026-07-28) request falls through to the SDK path, same
+// as a Legacy request. It is the low-level helper used by newRealTestServer
+// and any test that needs control over the httptest.Server configuration
+// (e.g. WriteTimeout). Use newRealModernTestHandler for a switch-on handler.
 func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithConfig(t, backendURL, false)
+}
+
+// newRealModernTestHandler is newRealTestHandler with the Modern dispatch
+// kill-switch on: a well-formed Modern request routes through
+// classifyingHandler -> dispatchModern instead of falling through to the SDK.
+func newRealModernTestHandler(t *testing.T, backendURL string) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithConfig(t, backendURL, true)
+}
+
+// newRealTestHandlerWithConfig is the shared construction path for
+// newRealTestHandler and newRealModernTestHandler, parameterized on the Modern
+// dispatch kill-switch so the two stay in lockstep other than that one field.
+func newRealTestHandlerWithConfig(t *testing.T, backendURL string, modernDispatchEnabled bool) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -84,11 +100,12 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{
-			Host:           "127.0.0.1",
-			Port:           0,
-			SessionTTL:     5 * time.Minute,
-			SessionFactory: factory,
-			Aggregator:     agg,
+			Host:                  "127.0.0.1",
+			Port:                  0,
+			SessionTTL:            5 * time.Minute,
+			ModernDispatchEnabled: modernDispatchEnabled,
+			SessionFactory:        factory,
+			Aggregator:            agg,
 		},
 		rt,
 		backendClient,
@@ -103,11 +120,22 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 }
 
 // newRealTestServer builds a vMCP server with session management and a real
-// SessionFactory. The BackendRegistry mock returns the backend at backendURL
-// so that CreateSession() opens a real HTTP connection to the MCP server.
+// SessionFactory, Modern dispatch's kill-switch off (the default). The
+// BackendRegistry mock returns the backend at backendURL so that
+// CreateSession() opens a real HTTP connection to the MCP server.
 func newRealTestServer(t *testing.T, backendURL string) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(newRealTestHandler(t, backendURL))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// newRealModernTestServer is newRealTestServer with the Modern dispatch
+// kill-switch on, for tests that exercise the classifyingHandler ->
+// dispatchModern path against a real backend.
+func newRealModernTestServer(t *testing.T, backendURL string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(newRealModernTestHandler(t, backendURL))
 	t.Cleanup(ts.Close)
 	return ts
 }

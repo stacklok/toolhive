@@ -42,9 +42,19 @@ func newUnauthenticatedAuthRegistry(t *testing.T) vmcpauth.OutgoingAuthRegistry 
 	return reg
 }
 
-// newSharedRedisStorage creates a RedisSessionDataStorage pointing at mr.
-// The storage is closed via t.Cleanup.
+// newSharedRedisStorage creates a RedisSessionDataStorage pointing at mr with
+// a long (1h) TTL, suitable for tests that are not exercising TTL expiry
+// itself. The storage is closed via t.Cleanup.
 func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsession.DataStorage {
+	t.Helper()
+	return newSharedRedisStorageWithTTL(t, mr, time.Hour)
+}
+
+// newSharedRedisStorageWithTTL is like newSharedRedisStorage but lets the
+// caller control the sliding-window TTL, so tests can pin TTL-refresh and
+// TTL-expiry behaviour with a short duration combined with mr.FastForward.
+// The storage is closed via t.Cleanup.
+func newSharedRedisStorageWithTTL(t *testing.T, mr *miniredis.Miniredis, ttl time.Duration) transportsession.DataStorage {
 	t.Helper()
 	storage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
@@ -52,7 +62,7 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 			Addr: mr.Addr(),
 		},
 		"test:vmcp:session:",
-		time.Hour,
+		ttl,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = storage.Close() })

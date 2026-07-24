@@ -117,17 +117,23 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 // is unimplemented, and any cursor a Modern client sends is ignored. This is
 // unrelated to the aggregator's UPSTREAM cursor-following for internal
 // discovery (#5851); that's a different layer.
+//
+// A List*/Discover failure logs the full error server-side and returns a
+// generic -32603 message to the client (writeModernListError below): unlike
+// the call/read/get verbs, these errors come from aggregation and routing
+// plumbing (backend IDs, upstream addressing), and security.md forbids
+// leaking that detail to callers.
 func (s *Server) dispatchModernToolsList(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {
 	tools, err := s.core.ListTools(ctx, identity)
 	if err != nil {
-		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, err.Error())
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
 	result, err := newModernToolsList(tools, s.config.Name, s.config.Version)
 	if err != nil {
-		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, err.Error())
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
 	writeModernResult(w, parsed.ID, result)
@@ -138,7 +144,7 @@ func (s *Server) dispatchModernResourcesList(
 ) {
 	resources, err := s.core.ListResources(ctx, identity)
 	if err != nil {
-		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, err.Error())
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
 	writeModernResult(w, parsed.ID, newModernResourcesList(resources, s.config.Name, s.config.Version))
@@ -149,7 +155,7 @@ func (s *Server) dispatchModernResourceTemplatesList(
 ) {
 	templates, err := s.core.ListResourceTemplates(ctx, identity)
 	if err != nil {
-		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, err.Error())
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
 	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(templates, s.config.Name, s.config.Version))
@@ -160,7 +166,7 @@ func (s *Server) dispatchModernPromptsList(
 ) {
 	prompts, err := s.core.ListPrompts(ctx, identity)
 	if err != nil {
-		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, err.Error())
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
 	writeModernResult(w, parsed.ID, newModernPromptsList(prompts, s.config.Name, s.config.Version))
@@ -189,7 +195,7 @@ func (s *Server) dispatchModernDiscover(
 ) {
 	caps, err := s.core.Discover(ctx, identity)
 	if err != nil {
-		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, err.Error())
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
 	result := newModernDiscover(
@@ -386,10 +392,15 @@ func hasNonObjectArguments(params json.RawMessage) bool {
 // gateDenied runs the PRE-dispatch admission classification for a gated
 // method's Check* result, mirroring authzCallGate exactly: only an
 // errors.Is(checkErr, vmcp.ErrAuthorizationFailed) denial returns true. Any
-// other error is infrastructure (aggregation/backend plumbing), so the gate
-// fails OPEN -- it logs and admits, rather than converting an authorizer
-// outage into a false 403. This WARN is the only operational signal of that
-// outage admitting traffic; do not remove it.
+// other error falls through to the WARN+admit branch below, but only
+// CheckToolCall can actually produce one: it re-aggregates
+// (c.aggregatedView) and returns that error unwrapped on failure, so a
+// tools/call gate can fail OPEN on an aggregation/backend-plumbing outage.
+// CheckResourceRead and CheckPromptGet need no aggregated view and always
+// wrap their error as vmcp.ErrAuthorizationFailed (core_checks.go), so their
+// gates never take this fail-open path in practice. This WARN is the only
+// operational signal of that fail-open outage admitting traffic; do not
+// remove it.
 func gateDenied(ctx context.Context, method string, checkErr error) bool {
 	if checkErr == nil {
 		return false
@@ -400,6 +411,16 @@ func gateDenied(ctx context.Context, method string, checkErr error) bool {
 	slog.WarnContext(ctx, "vmcp authz gate: non-authorization error, admitting request",
 		"method", method, "error", checkErr)
 	return false
+}
+
+// writeModernListError logs a List*/Discover failure server-side with the
+// full error and writes a generic -32603 message to the client. Unlike
+// writeModernDispatchError's call/read/get verbs, these errors surface
+// aggregation and routing plumbing (backend IDs, upstream addressing), and
+// security.md forbids exposing that detail to callers.
+func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, method string, err error) {
+	slog.ErrorContext(ctx, "vmcp modern dispatch: list/discover failed", "method", method, "error", err)
+	writeModernError(w, id, jsonRPCCodeInternalError, "internal error")
 }
 
 // writeModernDispatchError classifies a POST-dispatch error from

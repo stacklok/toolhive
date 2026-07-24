@@ -347,23 +347,16 @@ func TestModernCallToolResult(t *testing.T) {
 	}
 }
 
-// TestModernPointerBuildersTolerateNil asserts the four pointer-domain
-// builders don't panic on a nil result -- defense-in-depth against a
-// plausible aggregator bug, not an expected input (see the doc comments on
-// newModernCallToolResult/newModernReadResourceResult/newModernGetPromptResult/
-// newModernComplete).
-func TestModernPointerBuildersTolerateNil(t *testing.T) {
+// TestModernCompleteTolerateNil asserts newModernComplete doesn't panic on a
+// nil result -- defense-in-depth against a plausible aggregator bug, not an
+// expected input (see its doc comment). newModernCallToolResult,
+// newModernReadResourceResult, and newModernGetPromptResult carry no
+// equivalent guard: their callers in modern_dispatch.go dereference
+// result.BackendID before invoking the builder, so a nil result already
+// panics upstream.
+func TestModernCompleteTolerateNil(t *testing.T) {
 	t.Parallel()
 
-	require.NotPanics(t, func() {
-		newModernCallToolResult(nil, "other-server", "9.9.9")
-	})
-	require.NotPanics(t, func() {
-		newModernReadResourceResult(nil, "other-server", "9.9.9")
-	})
-	require.NotPanics(t, func() {
-		newModernGetPromptResult(nil, "other-server", "9.9.9")
-	})
 	require.NotPanics(t, func() {
 		newModernComplete(nil, "other-server", "9.9.9")
 	})

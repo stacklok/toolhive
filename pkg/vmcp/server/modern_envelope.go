@@ -357,13 +357,10 @@ func newModernPromptsList(prompts []vmcp.Prompt, serverName, serverVersion strin
 // omitempty-false) when the core did not set it, matching the SDK's
 // omitempty behavior.
 //
-// result is expected non-nil (core.CallTool never returns a nil result
-// without an error); the nil check below is defense-in-depth against a
-// plausible aggregator bug, not an expected input.
+// result is non-nil on every call: dispatchModernToolCall (modern_dispatch.go)
+// dereferences result.BackendID before calling this builder, so a nil result
+// would already have panicked upstream.
 func newModernCallToolResult(result *vmcp.ToolCallResult, serverName, serverVersion string) modernCallToolResult {
-	if result == nil {
-		result = &vmcp.ToolCallResult{}
-	}
 	var structuredContent any
 	if len(result.StructuredContent) > 0 {
 		structuredContent = result.StructuredContent
@@ -380,15 +377,12 @@ func newModernCallToolResult(result *vmcp.ToolCallResult, serverName, serverVers
 // newModernReadResourceResult builds the resources/read wire result from the
 // core's ResourceReadResult.
 //
-// result is expected non-nil (core.ReadResource never returns a nil result
-// without an error); the nil check below is defense-in-depth against a
-// plausible aggregator bug, not an expected input.
+// result is non-nil on every call: dispatchModernResourceRead
+// (modern_dispatch.go) dereferences result.BackendID before calling this
+// builder, so a nil result would already have panicked upstream.
 func newModernReadResourceResult(
 	result *vmcp.ResourceReadResult, serverName, serverVersion string,
 ) modernReadResourceResult {
-	if result == nil {
-		result = &vmcp.ResourceReadResult{}
-	}
 	return modernReadResourceResult{
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
@@ -400,13 +394,10 @@ func newModernReadResourceResult(
 // newModernGetPromptResult builds the prompts/get wire result from the
 // core's PromptGetResult.
 //
-// result is expected non-nil (core.GetPrompt never returns a nil result
-// without an error); the nil check below is defense-in-depth against a
-// plausible aggregator bug, not an expected input.
+// result is non-nil on every call: dispatchModernPromptGet
+// (modern_dispatch.go) dereferences result.BackendID before calling this
+// builder, so a nil result would already have panicked upstream.
 func newModernGetPromptResult(result *vmcp.PromptGetResult, serverName, serverVersion string) modernGetPromptResult {
-	if result == nil {
-		result = &vmcp.PromptGetResult{}
-	}
 	return modernGetPromptResult{
 		ResultType:  modernResultTypeComplete,
 		Description: result.Description,

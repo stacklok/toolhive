@@ -36,6 +36,16 @@ const (
 	fwdLogData        = "hello-from-backend"
 )
 
+// forwardingRealBackendTimeout bounds each real-backend forwarding test. These
+// exercise async, server-initiated traffic relayed backend -> vMCP -> downstream
+// over real in-process HTTP clients; under the full-suite parallel `-race` load
+// on CI a single relay can take many seconds. The timeout is deliberately
+// generous so a slow-but-working relay is not mistaken for a hang: it is the
+// single deadline the tests wait against (waitNotification derives its own
+// deadline from the per-test context), so a genuine hang still fails with a
+// clear error rather than blocking to the `go test` global timeout. See #5962.
+const forwardingRealBackendTimeout = 60 * time.Second
+
 // startForwardingBackend starts a real in-process MCP backend whose tools drive
 // server->client traffic (elicitation, sampling, progress, logging) during a
 // tools/call. Returns the backend's /mcp URL.
@@ -202,24 +212,22 @@ func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, with
 	return dc
 }
 
-// waitNotification blocks for a forwarded notification with the given method.
-func (dc *downstreamClient) waitNotification(t *testing.T, method string) mcpmcp.JSONRPCNotification {
+// waitNotification blocks for a forwarded notification with the given method,
+// or until ctx is done. It waits against the caller's context rather than an
+// independent hardcoded timer so there is a single deadline for the test (see
+// forwardingRealBackendTimeout): a fixed timer shorter than the context flaked
+// under CI `-race` load — the async backend -> vMCP -> downstream relay can take
+// well over a second — while a timer longer than the context would mask a hang.
+func (dc *downstreamClient) waitNotification(ctx context.Context, t *testing.T, method string) mcpmcp.JSONRPCNotification {
 	t.Helper()
-	// Give the forwarded notification generous headroom: these are async,
-	// server-initiated messages relayed backend -> vMCP -> downstream, and under
-	// the full-suite parallel `-race` load on CI the round trip can take well over
-	// a second. The previous 5s deadline flaked (timed out) there while passing in
-	// milliseconds locally. Stay under the callers' 20s context so a genuine hang
-	// still fails cleanly rather than blocking to the context deadline.
-	deadline := time.After(15 * time.Second)
 	for {
 		select {
 		case n := <-dc.notifCh:
 			if n.Method == method {
 				return n
 			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for %s notification", method)
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s notification: %v", method, ctx.Err())
 		}
 	}
 }
@@ -229,7 +237,7 @@ func (dc *downstreamClient) waitNotification(t *testing.T, method string) mcpmcp
 // carried back into the tool result.
 func TestForwarding_Elicitation_RealBackend(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)
@@ -259,7 +267,7 @@ func TestForwarding_Elicitation_RealBackend(t *testing.T) {
 // message carried back into the tool result.
 func TestForwarding_Sampling_RealBackend(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)
@@ -282,7 +290,7 @@ func TestForwarding_Sampling_RealBackend(t *testing.T) {
 // the tool result is read.
 func TestForwarding_Progress_RealBackend(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)
@@ -295,7 +303,7 @@ func TestForwarding_Progress_RealBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, res.IsError)
 
-	n := dc.waitNotification(t, "notifications/progress")
+	n := dc.waitNotification(ctx, t, "notifications/progress")
 	assert.Equal(t, fwdProgressToken, n.Params.AdditionalFields["progressToken"])
 	assert.InDelta(t, 0.5, n.Params.AdditionalFields["progress"], 1e-9)
 	assert.Equal(t, "halfway", n.Params.AdditionalFields["message"])
@@ -306,7 +314,7 @@ func TestForwarding_Progress_RealBackend(t *testing.T) {
 // to the downstream client, which has itself set a logging level.
 func TestForwarding_Logging_RealBackend(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)
@@ -323,7 +331,7 @@ func TestForwarding_Logging_RealBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, res.IsError)
 
-	n := dc.waitNotification(t, "notifications/message")
+	n := dc.waitNotification(ctx, t, "notifications/message")
 	assert.Equal(t, "info", n.Params.AdditionalFields["level"])
 	assert.Equal(t, fwdLogData, n.Params.AdditionalFields["data"])
 }
@@ -334,7 +342,7 @@ func TestForwarding_Logging_RealBackend(t *testing.T) {
 // the deadline.
 func TestForwarding_Sampling_NoDownstreamCapability(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)
@@ -359,7 +367,7 @@ func TestForwarding_Sampling_NoDownstreamCapability(t *testing.T) {
 // cleanly (a failed tools/call) rather than hanging until the deadline.
 func TestForwarding_Elicitation_NoDownstreamCapability(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)
@@ -442,7 +450,7 @@ func newSamplingClient(ctx context.Context, t *testing.T, vmcpURL, summary, mode
 // would be lopsided (A=0, B=2 instead of 1/1) — either check trips.
 func TestForwarding_Sampling_RealBackend_SessionIsolation(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
 	defer cancel()
 
 	backendURL := startForwardingBackend(t)

@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -150,10 +151,12 @@ type httpBackendClient struct {
 	// first ListCapabilities for a backend and read on subsequent calls to skip
 	// the Modern-first discover probe.
 	//
-	// ponytail: never evicted — a transient failure on the FIRST probe pins a
-	// backend to RevisionLegacy for the process lifetime. Recovery depends on
-	// re-classification-on-error (re-probe and flip the cached revision when a
-	// call reveals the other era); a TTL/periodic re-probe is deferred until
+	// ponytail: never evicted, no singleflight/CAS. Concurrent first-probes are
+	// last-writer-wins-safe: writes are idempotent for a deterministic backend
+	// (every probe agrees), and a flapping backend self-heals via
+	// dispatch->reclassify (a call revealing the other era re-probes and flips).
+	// A transient probe failure caches nothing (probeRevision returns uncached),
+	// so a blip cannot pin a revision; a TTL/periodic re-probe is deferred until
 	// flapping backends surface.
 	revisions sync.Map // map[string]mcpparser.Revision
 }
@@ -483,10 +486,7 @@ func (*httpBackendClient) newStreamableHTTPClient(
 		}
 		return resp, nil
 	})
-	httpClient := &http.Client{
-		Transport: sizeLimitedTransport,
-		Timeout:   30 * time.Second,
-	}
+	httpClient := newBackendHTTPClient(sizeLimitedTransport, 30*time.Second)
 	transportOpts := []transport.StreamableHTTPCOption{
 		transport.WithHTTPTimeout(30 * time.Second),
 		transport.WithHTTPBasicClient(httpClient),
@@ -522,7 +522,8 @@ func (*httpBackendClient) newSSEClient(
 ) (*client.Client, error) {
 	c, err := client.NewSSEMCPClient(
 		target.BaseURL,
-		transport.WithHTTPClient(&http.Client{Transport: baseTransport}),
+		// timeout 0: SSE is one long-lived stream, so no client timeout.
+		transport.WithHTTPClient(newBackendHTTPClient(baseTransport, 0)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSE client: %w", err)
@@ -990,7 +991,21 @@ func (h *httpBackendClient) buildModernHTTPClient(ctx context.Context, target *v
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Transport: rt, Timeout: 30 * time.Second}, nil
+	return newBackendHTTPClient(rt, 30*time.Second), nil
+}
+
+// newBackendHTTPClient is the single choke point for every backend *http.Client
+// (Legacy streamable/SSE and Modern shim). It installs SameHostRedirectPolicy so a
+// malicious backend's cross-host 30x cannot exfiltrate the auth/identity/
+// header-forward credentials the RoundTripper chain re-injects on each hop — Go's
+// built-in Authorization stripping does not cover RoundTripper-injected headers.
+// timeout 0 means no client timeout (long-lived SSE stream).
+func newBackendHTTPClient(rt http.RoundTripper, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport:     rt,
+		Timeout:       timeout,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
+	}
 }
 
 // modernDiscover issues a Modern server/discover and returns the backend's
@@ -1016,13 +1031,14 @@ func (h *httpBackendClient) modernDiscover(
 // probeRevision resolves a backend's MCP revision, Modern-first.
 //
 // It attempts a Modern server/discover and:
-//   - classifies MODERN (and caches it) on a clean discover result, or on a
+//   - classifies MODERN (and caches it) on a clean discover result, on a
 //     Modern-specific protocol error (-3202x) which proves the peer validated our
-//     Modern headers/_meta;
+//     Modern headers/_meta, or on an input_required envelope (only returned after
+//     decoding a valid Modern envelope, so it too proves Modern);
 //   - classifies LEGACY (and caches it) on a GENUINE not-Modern signal —
 //     errWrongEra, a -32601 (discover is mandatory for Modern), a generic
-//     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, a
-//     200-with-Legacy-result, or an input_required envelope;
+//     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, or a
+//     200-with-Legacy-result;
 //   - returns the error UNCACHED (leaving the backend unprobed) on an
 //     INCONCLUSIVE outcome — an auth blip (errModernAuth, 401/403) or a transient
 //     failure (errModernTransient: 408/429/5xx, mid-read, or transport/timeout).
@@ -1048,13 +1064,13 @@ func (h *httpBackendClient) probeRevision(
 	case err == nil:
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
 		return mcpparser.RevisionModern, &discover.Capabilities, nil
-	case errors.Is(err, errModernProtocolError):
-		// The peer validated our Modern protocol metadata and rejected it: it IS
-		// Modern, discover just failed application-side. No usable caps.
-		// nil caps => modernEnumerate returns an empty list. The cache-hit path
-		// tolerates the same -3202x error to nil caps, so both yield an empty
-		// list consistently (a Modern backend that rejects our discover exposes
-		// no enumerable capabilities).
+	case errors.Is(err, errModernProtocolError), errors.Is(err, errModernInputRequired):
+		// Both prove the peer is Modern: -3202x means it validated our Modern
+		// protocol metadata; input_required is only returned after decoding a valid
+		// Modern envelope (resultType present, != "complete"). Discover just failed
+		// application-side, so there are no usable caps — nil caps => modernEnumerate
+		// returns an empty list, and the cache-hit path tolerates the same to nil
+		// caps, so both yield an empty list consistently.
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
 		return mcpparser.RevisionModern, nil, nil
 	case errors.Is(err, errModernAuth), errors.Is(err, errModernTransient):

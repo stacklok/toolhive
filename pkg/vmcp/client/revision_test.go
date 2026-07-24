@@ -82,6 +82,16 @@ func TestProbeRevision_TruthTable(t *testing.T) {
 			wantRev: mcpparser.RevisionModern,
 		},
 		{
+			// A valid Modern envelope with a non-"complete" resultType proves the peer
+			// is Modern (it decoded), so it must NOT fall back to Legacy.
+			name: "input_required envelope -> Modern",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				id, _ := modernReq(t, r)
+				writeModernResult(t, w, id, map[string]any{"resultType": "input_required"})
+			},
+			wantRev: mcpparser.RevisionModern,
+		},
+		{
 			name: "discover -32601 (method not found) -> Legacy",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")

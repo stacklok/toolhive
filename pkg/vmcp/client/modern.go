@@ -153,6 +153,10 @@ func modernCall(
 	// Mcp-Method is required on EVERY Modern request (ValidateHeaderConsistency).
 	req.Header.Set("Mcp-Method", method)
 	if name != "" && mcpparser.IsNameRequiredMethod(method) {
+		// ponytail: sent raw; non-ASCII identifiers are not sentinel-encoded yet.
+		// URIs and ASCII names are safe; a non-ASCII name is unspecified behavior
+		// (a strict peer MAY reject or misinterpret the header). Add =?base64?..?=
+		// encoding if such names appear.
 		req.Header.Set("Mcp-Name", name)
 	}
 	// Mcp-Session-Id is deliberately never set: Modern is stateless.

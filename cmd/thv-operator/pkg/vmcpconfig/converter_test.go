@@ -186,8 +186,8 @@ func TestConverter_OIDCResolution(t *testing.T) {
 		},
 		{
 			name:          "inline resolved ThvCABundlePath maps to CABundlePath",
-			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
-			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeInline),
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeInline),
 			mockReturn: &oidc.OIDCConfig{
 				Issuer:          "https://issuer.example.com",
 				ThvCABundlePath: "/config/certs/example-ca/ca.crt",
@@ -201,8 +201,8 @@ func TestConverter_OIDCResolution(t *testing.T) {
 		},
 		{
 			name:          "k8s service account ThvCABundlePath maps to CABundlePath",
-			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
-			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount),
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount),
 			mockReturn: &oidc.OIDCConfig{
 				Issuer:          "https://kubernetes.default.svc",
 				ThvCABundlePath: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
@@ -218,8 +218,8 @@ func TestConverter_OIDCResolution(t *testing.T) {
 		},
 		{
 			name:          "empty ThvCABundlePath results in empty CABundlePath",
-			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
-			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeInline),
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeInline),
 			mockReturn: &oidc.OIDCConfig{
 				Issuer: "https://issuer.example.com",
 			},

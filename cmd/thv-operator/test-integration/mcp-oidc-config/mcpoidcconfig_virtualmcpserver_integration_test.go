@@ -713,9 +713,9 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			caCMName    string
 			caCMKey     string
 			caConfigMap *corev1.ConfigMap
-			oidcConfig  *mcpv1alpha1.MCPOIDCConfig
-			vmcpServer  *mcpv1alpha1.VirtualMCPServer
-			mcpGroup    *mcpv1alpha1.MCPGroup
+			oidcConfig  *mcpv1beta1.MCPOIDCConfig
+			vmcpServer  *mcpv1beta1.VirtualMCPServer
+			mcpGroup    *mcpv1beta1.MCPGroup
 			ns          *corev1.Namespace
 		)
 
@@ -745,7 +745,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}
 			Expect(k8sClient.Create(ctx, caConfigMap)).Should(Succeed())
 
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      groupName,
 					Namespace: namespace,
@@ -753,17 +753,17 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}
 			Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://auth.example.internal/realms/demo",
 						ClientID: "test-client",
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: caCMName},
 								Key:                  caCMKey,
@@ -776,7 +776,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(k8sClient.Create(ctx, oidcConfig)).Should(Succeed())
 
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -785,7 +785,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid &&
+					if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid &&
 						cond.Status == metav1.ConditionTrue {
 						return true
 					}
@@ -793,17 +793,17 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				return false
 			}, timeout, interval).Should(BeTrue())
 
-			vmcpServer = &mcpv1alpha1.VirtualMCPServer{
+			vmcpServer = &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      vmcpName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
 					Config:   vmcpconfig.Config{Group: groupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "oidc",
-						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
 							Name:     configName,
 							Audience: "test-vmcp-audience",
 							Scopes:   []string{"openid"},

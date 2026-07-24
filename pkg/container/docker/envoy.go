@@ -53,6 +53,19 @@ func getEnvoyImage() string {
 	return defaultEnvoyImage
 }
 
+// getEnvoyImageForCreate returns the image reference to use in Docker container
+// create calls. Docker's create API requires an image that is indexed in the
+// local daemon: after daemon.Write stores an image under its tag, the daemon
+// cannot look it up by the full tag@digest string. Stripping the digest suffix
+// here is safe — integrity was verified by go-containerregistry during PullImage.
+func getEnvoyImageForCreate() string {
+	img := getEnvoyImage()
+	if idx := strings.Index(img, "@"); idx >= 0 {
+		return img[:idx]
+	}
+	return img
+}
+
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
 // envoyBootstrap is the top-level Envoy bootstrap configuration.
@@ -930,7 +943,7 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 	envoyLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
 
 	containerConfig := &container.Config{
-		Image:  envoyImage,
+		Image:  getEnvoyImageForCreate(),
 		Cmd:    []string{"-c", "/etc/envoy/envoy.json"},
 		Labels: envoyLabels,
 	}

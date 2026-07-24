@@ -24,7 +24,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 	t.Run("two backends: both session IDs written to metadata", func(t *testing.T) {
 		t.Parallel()
 
-		connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+		connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 			ids := map[string]string{
 				"backend-a": "sess-a",
 				"backend-b": "sess-b",
@@ -72,7 +72,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 	t.Run("partial failure: only successful backend written", func(t *testing.T) {
 		t.Parallel()
 
-		connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+		connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 			if target.WorkloadID == "backend-ok" {
 				return &mockConnectedBackend{sessID: "sess-ok"}, &vmcp.CapabilityList{}, nil
 			}
@@ -103,7 +103,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 func TestRestoreSession_FreshlyPopulatesMetadataKeyBackendIDs(t *testing.T) {
 	t.Parallel()
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		ids := map[string]string{
 			"backend-a": "sess-a",
 			"backend-b": "sess-b",
@@ -181,7 +181,7 @@ func TestRestoreSession_PassesStoredSessionHintToConnector(t *testing.T) {
 	// connector records the session hint it receives for each backend.
 	// It always returns a stable session ID so that the original session
 	// has predictable per-backend metadata to store.
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, sessionHint string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, sessionHint string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		mu.Lock()
 		hintsReceived[target.WorkloadID] = sessionHint
 		mu.Unlock()
@@ -224,6 +224,72 @@ func TestRestoreSession_PassesStoredSessionHintToConnector(t *testing.T) {
 		"RestoreSession must pass stored backend-b session ID as hint to connector")
 }
 
+// TestMakeSession_ThreadsListChangedSinkToConnector verifies (#5748) that a
+// sink passed to MakeSessionWithID reaches the connector for every backend in
+// the session, and that a session created WITHOUT a sink argument (the
+// pre-existing 4-arg call shape) passes nil — so existing callers are
+// unaffected.
+func TestMakeSession_ThreadsListChangedSinkToConnector(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sink threaded to every backend connector", func(t *testing.T) {
+		t.Parallel()
+
+		var mu sync.Mutex
+		received := map[string]internalbk.ListChangedSink{}
+
+		connector := func(
+			_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, sink internalbk.ListChangedSink,
+		) (internalbk.Session, *vmcp.CapabilityList, error) {
+			mu.Lock()
+			received[target.WorkloadID] = sink
+			mu.Unlock()
+			return &mockConnectedBackend{sessID: "sess-" + target.WorkloadID}, &vmcp.CapabilityList{}, nil
+		}
+
+		factory := newSessionFactoryWithConnector(connector)
+		backends := []*vmcp.Backend{{ID: "backend-a"}, {ID: "backend-b"}}
+
+		var sinkCalls int
+		sink := internalbk.ListChangedSink(func(context.Context, string, string) { sinkCalls++ })
+
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends, sink)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, received, 2)
+		for _, id := range []string{"backend-a", "backend-b"} {
+			require.NotNil(t, received[id], "connector for %s must receive a non-nil sink", id)
+			received[id](context.Background(), id, "tools")
+		}
+		assert.Equal(t, 2, sinkCalls, "the same sink function must reach every backend's connector call")
+	})
+
+	t.Run("no sink argument passes nil (pre-existing call shape unaffected)", func(t *testing.T) {
+		t.Parallel()
+
+		var receivedSink internalbk.ListChangedSink
+		var sinkWasNonNil bool
+		connector := func(
+			_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, sink internalbk.ListChangedSink,
+		) (internalbk.Session, *vmcp.CapabilityList, error) {
+			receivedSink = sink
+			sinkWasNonNil = sink != nil
+			return &mockConnectedBackend{sessID: "sess"}, &vmcp.CapabilityList{}, nil
+		}
+
+		factory := newSessionFactoryWithConnector(connector)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, []*vmcp.Backend{{ID: "backend-a"}})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		assert.False(t, sinkWasNonNil, "omitting the variadic sink argument must pass nil to the connector")
+		assert.Nil(t, receivedSink)
+	})
+}
+
 // TestMakeSession_PassesEmptySessionHintToConnector verifies that MakeSession
 // (creating a new session, not restoring) passes an empty hint so that the
 // backend always creates a fresh session.
@@ -233,7 +299,7 @@ func TestMakeSession_PassesEmptySessionHintToConnector(t *testing.T) {
 	var mu sync.Mutex
 	hintsReceived := map[string]string{}
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, sessionHint string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, sessionHint string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		mu.Lock()
 		hintsReceived[target.WorkloadID] = sessionHint
 		mu.Unlock()

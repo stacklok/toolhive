@@ -277,10 +277,15 @@ func (sm *Manager) Generate() string {
 //  4. Persists session metadata to storage and caches the live MultiSession
 //     in the node-local map.
 //
+// sink, when supplied (at most the first value is used), is threaded to
+// MultiSessionFactory.MakeSessionWithID so every backend connector opened for
+// this session can report an asynchronous backend notification (#5748).
+//
 // The returned MultiSession can be retrieved later via GetMultiSession().
 func (sm *Manager) CreateSession(
 	ctx context.Context,
 	sessionID string,
+	sink ...vmcpsession.ListChangedSink,
 ) (vmcpsession.MultiSession, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("Manager.CreateSession: session ID must not be empty")
@@ -318,7 +323,7 @@ func (sm *Manager) CreateSession(
 	backends := sm.listAllBackends(ctx)
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
-	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends)
+	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends, sink...)
 	if err != nil {
 		sm.cleanupFailedPlaceholder(sessionID, placeholder)
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)

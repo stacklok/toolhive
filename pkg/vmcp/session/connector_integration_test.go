@@ -263,7 +263,7 @@ func TestIdentityBinding_CallerRejection(t *testing.T) {
 	}
 
 	// No backend connector needed: auth validation fires before any routing.
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 	factory := newSessionFactoryWithConnector(connector)
@@ -372,7 +372,7 @@ func TestIdentityBinding_RestoreSession_RoundTrip(t *testing.T) {
 		},
 	}
 
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 	factory := newSessionFactoryWithConnector(connector)

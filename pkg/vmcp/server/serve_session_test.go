@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,6 +50,20 @@ import (
 // toolSessionState tracks observable behaviour of the mock session factory below.
 type toolSessionState struct {
 	makeWithIDCalled atomic.Bool
+
+	// sinkMu guards capturedSink: the sink passed to MakeSessionWithID (#5748),
+	// captured so tests can invoke it directly to simulate an asynchronous
+	// backend notification firing after registration.
+	sinkMu       sync.Mutex
+	capturedSink vmcpsession.ListChangedSink
+}
+
+// sink returns the ListChangedSink MakeSessionWithID most recently received, or
+// nil if none was supplied.
+func (s *toolSessionState) sink() vmcpsession.ListChangedSink {
+	s.sinkMu.Lock()
+	defer s.sinkMu.Unlock()
+	return s.capturedSink
 }
 
 // newToolSessionFactory creates a MockMultiSessionFactory whose MakeSessionWithID
@@ -59,9 +75,16 @@ func newToolSessionFactory(
 	t.Helper()
 	state := &toolSessionState{}
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(
+			_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, sink ...vmcpsession.ListChangedSink,
+		) (vmcpsession.MultiSession, error) {
 			state.makeWithIDCalled.Store(true)
+			if len(sink) > 0 {
+				state.sinkMu.Lock()
+				state.capturedSink = sink[0]
+				state.sinkMu.Unlock()
+			}
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -134,6 +157,10 @@ type fakeCore struct {
 	promptErr         error // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
 	completeErr       error // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
 	lookupResourceErr error // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
+
+	// invalidateCacheCalls counts InvalidateCapabilityCache invocations, so tests
+	// covering the list_changed sink can assert the cache was re-swept (#5748).
+	invalidateCacheCalls atomic.Int32
 }
 
 var _ core.VMCP = (*fakeCore)(nil)
@@ -264,6 +291,8 @@ func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.B
 func (*fakeCore) Close() error { return nil }
 
 func (*fakeCore) BackendHealth() health.Reporter { return nil }
+
+func (f *fakeCore) InvalidateCapabilityCache() { f.invalidateCacheCalls.Add(1) }
 
 // TestServeRegistersSessionHooks verifies that Serve registers the OnRegisterSession
 // hook and wires two-phase session creation: an MCP initialize triggers the hook,
@@ -701,6 +730,122 @@ func registerServeSessionWithRegistry(
 	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 	return srv, sessionID, ts.URL
+}
+
+// registerServeSessionCapturingSink is registerServeSession plus the
+// toolSessionState so a test can retrieve the ListChangedSink (#5748)
+// MakeSessionWithID received for the registered session and invoke it
+// directly, simulating an asynchronous backend notification firing after
+// registration completes.
+func registerServeSessionCapturingSink(t *testing.T, fc *fakeCore) (srv *Server, sessionID, baseURL string, state *toolSessionState) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	factory, state := newToolSessionFactory(t, ctrl, fc.tools)
+
+	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	streamable := server.NewStreamableHTTPServer(
+		srv.mcpServer,
+		server.WithEndpointPath("/mcp"),
+		server.WithSessionIdManager(srv.vmcpSessionMgr),
+	)
+	ts := httptest.NewServer(streamable)
+	t.Cleanup(ts.Close)
+
+	initResp := postServeMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+	sessionID = initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
+		2*time.Second, 10*time.Millisecond, "session should be registered")
+	require.Eventually(t, func() bool { return state.sink() != nil },
+		2*time.Second, 10*time.Millisecond, "MakeSessionWithID should have received a non-nil sink")
+	return srv, sessionID, ts.URL, state
+}
+
+// TestListChangedSink_EndToEnd_ResyncsRegisteredSession drives a real session
+// registration over HTTP, then invokes the captured sink directly (simulating
+// a backend's asynchronous notifications/tools/list_changed) and verifies,
+// via a real tools/list request, that the session's advertised set reflects
+// the core's now-changed tool set — including a REMOVED tool disappearing —
+// and that the cache was invalidated (#5748).
+func TestListChangedSink_EndToEnd_ResyncsRegisteredSession(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "kept"}, {Name: "removed"}}}
+	_, sessionID, baseURL, state := registerServeSessionCapturingSink(t, fc)
+
+	listResp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": map[string]any{},
+	}, sessionID)
+	env, _ := readServeJSONRPC(t, listResp)
+	listResp.Body.Close()
+	before := toolNamesFromListResult(t, env)
+	assert.ElementsMatch(t, []string{"kept", "removed"}, before)
+
+	// The core's advertised set changes (as if the backend's own tool set
+	// changed): "removed" is gone, "added" is new.
+	fc.tools = []vmcp.Tool{{Name: "kept"}, {Name: "added"}}
+
+	sink := state.sink()
+	require.NotNil(t, sink)
+	sink(context.Background(), "some-backend", "tools")
+
+	require.Eventually(t, func() bool {
+		return fc.invalidateCacheCalls.Load() >= 1
+	}, 2*time.Second, 10*time.Millisecond, "sink must invalidate the capability cache")
+
+	require.Eventually(t, func() bool {
+		listResp := postServeMCP(t, baseURL, map[string]any{
+			"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": map[string]any{},
+		}, sessionID)
+		defer listResp.Body.Close()
+		env, _ := readServeJSONRPC(t, listResp)
+		got := toolNamesFromListResult(t, env)
+		return assert.ObjectsAreEqualValues([]string{"added", "kept"}, sortedCopy(got))
+	}, 2*time.Second, 10*time.Millisecond, "tools/list must reflect the resynced (replaced) tool set")
+}
+
+// toolNamesFromListResult extracts the tool names from a tools/list JSON-RPC
+// response envelope.
+func toolNamesFromListResult(t *testing.T, env map[string]any) []string {
+	t.Helper()
+	result, ok := env["result"].(map[string]any)
+	require.True(t, ok, "tools/list response must have a result object; env: %v", env)
+	rawTools, ok := result["tools"].([]any)
+	require.True(t, ok, "result.tools must be an array; result: %v", result)
+	names := make([]string, 0, len(rawTools))
+	for _, rt := range rawTools {
+		tm, ok := rt.(map[string]any)
+		require.True(t, ok)
+		name, _ := tm["name"].(string)
+		names = append(names, name)
+	}
+	return names
+}
+
+// sortedCopy returns a sorted copy of ss for order-independent comparison.
+func sortedCopy(ss []string) []string {
+	out := make([]string, len(ss))
+	copy(out, ss)
+	sort.Strings(out)
+	return out
 }
 
 // TestServeCoreToolHandler exercises the Serve tool handler's error/denial branches by

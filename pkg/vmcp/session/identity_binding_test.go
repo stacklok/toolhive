@@ -24,7 +24,7 @@ import (
 // backend to be skipped during init. This lets us exercise session-metadata
 // logic without real backend connections.
 func nilBackendConnector() backendConnector {
-	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 }
@@ -226,6 +226,7 @@ func TestRestoreSession_PassesNilIdentityToConnector(t *testing.T) {
 		_ *vmcp.BackendTarget,
 		id *auth.Identity,
 		_ string,
+		_ internalbk.ListChangedSink,
 	) (internalbk.Session, *vmcp.CapabilityList, error) {
 		connectorCalled = true
 		capturedIdentity = id

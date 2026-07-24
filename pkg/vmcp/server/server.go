@@ -1211,7 +1211,12 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// after initialize may receive a "tool not found" error before AddSessionTools
 	// completes. Conforming MCP clients call tools/list before tools/call, so this
 	// window is expected to be harmless in practice.
-	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID); retErr != nil {
+	//
+	// The list_changed sink is built here, before CreateSession, so it can be
+	// threaded through to every backend connector this session opens (#5748).
+	identity, _ := auth.IdentityFromContext(ctx)
+	sink := s.buildListChangedSink(sessionID, session, identity)
+	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID, sink); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,
 			"error", retErr)

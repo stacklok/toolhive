@@ -482,6 +482,22 @@ func (c *coreVMCP) LookupBackend(
 	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
 }
 
+// InvalidateCapabilityCache implements VMCP.InvalidateCapabilityCache. It
+// type-asserts the configured aggregator to aggregator.CacheInvalidator and
+// delegates; when the aggregator does not implement it, the call is a WARN-logged
+// no-op — not a silent one — because a caller relying on invalidation (the
+// list_changed resync path) needs to know the request had no effect (go-style:
+// no silent no-ops).
+func (c *coreVMCP) InvalidateCapabilityCache() {
+	invalidator, ok := c.aggregator.(aggregator.CacheInvalidator)
+	if !ok {
+		slog.Warn("capability cache invalidation requested but the configured aggregator does not support it",
+			"aggregatorType", fmt.Sprintf("%T", c.aggregator))
+		return
+	}
+	invalidator.InvalidateAll()
+}
+
 // Close stops the workflow state store's cleanup goroutine. It is idempotent:
 // the underlying Stop closes a channel that cannot be closed twice, so the work
 // is guarded by sync.Once and subsequent calls return nil.

@@ -177,7 +177,7 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 
 | Capability | Served? | Notes |
 |------------|---------|-------|
-| Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered |
+| Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered; a backend's asynchronous `notifications/tools/list_changed` is propagated to already-registered sessions — see below |
 | Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity |
 | Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend |
 | Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session |
@@ -189,6 +189,85 @@ The completion handler is a single global handler installed via `WithCompletionH
 ### Subscription limitation (ack-level)
 
 vMCP advertises `resources.subscribe: true` and answers `resources/subscribe` / `resources/unsubscribe` at **ack level**: the request is accepted (enforcing session binding and validating the URI is an advertised, admitted resource), and go-sdk records the subscription. vMCP does **not** currently propagate backend `notifications/resources/updated` to the subscribed client — doing so requires persistent per-session backend connections, which is out of scope. Clients that subscribe will receive a success ack but no update stream yet.
+
+### Tools list_changed propagation (#5748)
+
+Unlike the per-call backend client (`pkg/vmcp/client`), the **persistent**
+per-session backend connection (`pkg/vmcp/session/internal/backend`) stays
+open for the session's lifetime, so it can observe a backend's asynchronous
+(out-of-band) notifications rather than only mid-call traffic. When a
+non-nil `ListChangedSink` is supplied at connection time, the connector:
+
+- Enables `WithContinuousListening()` on streamable-HTTP backends (opens a
+  standalone GET stream) — gated **strictly** on a non-nil sink, because some
+  backends hang when this stream is opened against them. SSE backends need no
+  extra option: their whole session is already one continuous stream.
+- Registers an `OnNotification` handler that dispatches
+  `notifications/tools/list_changed` to the sink (`kind="tools"`) and
+  logs `notifications/message` received out-of-call (log-only; no relay).
+
+The sink is built once per session, at registration (`pkg/vmcp/server`'s
+`buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,
+and the caller's identity **captured at registration time** (a deliberate
+snapshot, not re-resolved per firing — see the token-staleness note below).
+It is threaded through `MultiSessionFactory.MakeSessionWithID` (a trailing
+variadic parameter so the many pre-existing call sites are unaffected) down
+to every backend connector opened for that session.
+
+When the sink fires for `kind="tools"`, it:
+
+1. Calls `core.InvalidateCapabilityCache()`, which purges the **entire**
+   per-identity capability cache (`aggregator.CacheInvalidator`) — coarse
+   (not scoped to the one backend that changed) but simple, and briefly
+   de-optimizes other identities' caches rather than risking a stale read for
+   the one that matters. An aggregator that does not implement
+   `CacheInvalidator` WARN-logs instead of silently no-opping.
+2. Re-derives the session's advertised tool set from the (now cold) cache via
+   the same `serveSessionTools` helper session registration uses, and
+   **replaces** — not merges — the SDK session's tool store
+   (`SessionWithTools.SetSessionTools`), so a tool the backend removed
+   disappears rather than lingering from the registration-time merge.
+
+The go-sdk server auto-emits `notifications/tools/list_changed` to the
+downstream client whenever `SetSessionTools` changes something, now that
+`WithToolCapabilities(true)` is set (`pkg/vmcp/server/serve.go`).
+
+**Identity staleness (B1)**: the sink reuses the identity captured at
+registration for its re-aggregation and admission view. If that identity's
+upstream tokens are refreshed later (see #5323), the resync's `core.ListTools`
+call authorizes/aggregates against the (potentially stale) captured tokens,
+not the live per-request ones. This only affects the *accuracy of the
+asynchronous resync's own view* — every live call still authenticates via the
+fresh per-request identity through `enforceSessionBinding`, so staleness here
+cannot grant a call that would otherwise be denied.
+
+**Registration-time emission (R1)**: go-sdk's own `AddTool`/`RemoveTools`
+debounce (10ms) and then broadcast `notifications/tools/list_changed` to
+**every** session currently connected to the shared `*gosdk.Server` — not
+only the session whose tool overlay changed — and a session is eligible for
+that broadcast from the moment its transport connects (`Server.bind`), before
+its own `initialize`/`notifications/initialized` round-trip completes.
+go-sdk's own source documents this as a known upstream gap ("potential spec
+violation... when the feature list changes before the session ... is
+initialized"). This means every session's registration-time per-session
+`AddTool` calls (`setSessionToolsDirect`) now cause a broadcast to every other
+already-connected session too. There is no supported hook to scope or
+suppress this without patching the vendored SDK, so it is accepted as a
+benign nuisance: MCP notifications are inherently a "you may want to refetch"
+hint, so an extra one only costs an idempotent `tools/list` round-trip — it
+never changes what any given session's own `tools/list` actually returns.
+
+**Scope**: tools only. Resources/prompts `list_changed` propagation is a
+tracked follow-up — the backend connector does not dispatch those
+notification methods to the sink yet, and cross-pod session restore
+(`RestoreSession`) does not thread a sink at all (no live `ClientSession` to
+resync there).
+
+**Implementation**: `pkg/vmcp/session/internal/backend/mcp_session.go`
+(`ListChangedSink`, connector wiring), `pkg/vmcp/aggregator/aggregator.go`
+and `caching_aggregator.go` (`CacheInvalidator`), `pkg/vmcp/core/core_vmcp.go`
+(`InvalidateCapabilityCache`), `pkg/vmcp/server/serve_list_changed.go`
+(`buildListChangedSink`, `resyncSessionTools`).
 
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 

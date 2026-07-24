@@ -5,6 +5,7 @@ package session
 
 import (
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
@@ -12,6 +13,12 @@ import (
 // MultiSession is an alias for sessiontypes.MultiSession, re-exported here for
 // backward compatibility and convenience.
 type MultiSession = sessiontypes.MultiSession
+
+// ListChangedSink is an alias for backend.ListChangedSink, re-exported here so
+// callers outside the pkg/vmcp/session/internal/backend package (e.g.
+// pkg/vmcp/server, which builds the session-registration sink) can reference it
+// without importing the internal package directly.
+type ListChangedSink = backend.ListChangedSink
 
 // ValidateCaller checks caller against a stored identity-binding string (the
 // value persisted under MetadataKeyIdentityBinding) and returns nil when the

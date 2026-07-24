@@ -55,11 +55,20 @@ type MultiSessionFactory interface {
 	//
 	// All other behaviour (partial initialisation, bounded concurrency, etc.)
 	// is identical to MakeSession.
+	//
+	// sink is a trailing variadic parameter (at most the first value is used) so
+	// the many pre-existing 4-argument call sites across the session/server test
+	// suites continue to compile unchanged. When a value is supplied, it is
+	// threaded to every backend connector for this session and invoked
+	// (best-effort) when a backend emits a notification consumed asynchronously
+	// — currently only notifications/tools/list_changed (#5748). Pass no value,
+	// or nil, to leave that consumption disabled for this session.
 	MakeSessionWithID(
 		ctx context.Context,
 		id string,
 		identity *auth.Identity,
 		backends []*vmcp.Backend,
+		sink ...ListChangedSink,
 	) (MultiSession, error)
 
 	// RestoreSession reconstructs a live MultiSession from persisted metadata.
@@ -96,6 +105,12 @@ type MultiSessionFactory interface {
 // Mcp-Session-Id hint during Initialize so the backend can resume rather than
 // re-initialize. Pass an empty string for brand-new sessions.
 //
+// sink, when non-nil, is invoked (best-effort, possibly from a receive-loop
+// goroutine) whenever this backend emits a notification the connector consumes
+// asynchronously (currently only notifications/tools/list_changed). Pass nil to
+// leave that consumption disabled; a connector that does not support it may
+// ignore the parameter entirely. See backend.ListChangedSink.
+//
 // The returned backend.Session owns the underlying transport connection and
 // must be closed when the session ends. The returned CapabilityList is used
 // to populate the session's routing table and capability lists.
@@ -107,6 +122,7 @@ type backendConnector func(
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
+	sink backend.ListChangedSink,
 ) (backend.Session, *vmcp.CapabilityList, error)
 
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
@@ -177,12 +193,13 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 	b *vmcp.Backend,
 	identity *auth.Identity,
 	sessionHint string,
+	sink backend.ListChangedSink,
 ) *initResult {
 	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
 	defer cancel()
 
 	target := vmcp.BackendToTarget(b)
-	conn, caps, err := f.connector(bCtx, target, identity, sessionHint)
+	conn, caps, err := f.connector(bCtx, target, identity, sessionHint, sink)
 	if err != nil {
 		if conn != nil {
 			_ = conn.Close()
@@ -249,11 +266,21 @@ func (f *defaultMultiSessionFactory) MakeSessionWithID(
 	id string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
+	sink ...ListChangedSink,
 ) (MultiSession, error) {
 	if err := validateSessionID(id); err != nil {
 		return nil, err
 	}
-	return f.makeSession(ctx, id, identity, backends)
+	return f.makeSession(ctx, id, identity, backends, firstSink(sink))
+}
+
+// firstSink returns the first sink in a variadic slice, or nil. See
+// MultiSessionFactory.MakeSessionWithID's doc comment for why sink is variadic.
+func firstSink(sink []ListChangedSink) ListChangedSink {
+	if len(sink) == 0 {
+		return nil
+	}
+	return sink[0]
 }
 
 // validateSessionID checks that id is non-empty and contains only visible
@@ -302,6 +329,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 	sessionHints map[string]string,
+	sink backend.ListChangedSink,
 ) *defaultMultiSession {
 	filtered := make([]*vmcp.Backend, 0, len(backends))
 	for _, b := range backends {
@@ -322,7 +350,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			rawResults[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID])
+			rawResults[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID], sink)
 		}(i, b)
 	}
 	wg.Wait()
@@ -377,8 +405,9 @@ func (f *defaultMultiSessionFactory) makeSession(
 	sessID string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
+	sink backend.ListChangedSink,
 ) (MultiSession, error) {
-	baseSession := f.makeBaseSession(ctx, sessID, identity, backends, nil)
+	baseSession := f.makeBaseSession(ctx, sessID, identity, backends, nil, sink)
 
 	// Apply session binding: extracts the (iss, sub) identity tuple, stores it in
 	// session metadata under MetadataKeyIdentityBinding, and wraps the session with
@@ -460,8 +489,12 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 
 	// Build the base session (backend connections + routing table) without the
-	// security wrapper. Pass nil identity — see comment above.
-	baseSession := f.makeBaseSession(ctx, id, nil, filteredBackends, sessionHints)
+	// security wrapper. Pass nil identity — see comment above. Pass nil sink: a
+	// cross-pod restore has no SDK ClientSession to resync (the restoring pod may
+	// not be the one serving the client's connection), so tools list_changed
+	// propagation on this path is a follow-up (#5748 scope: the CreateSession
+	// path only).
+	baseSession := f.makeBaseSession(ctx, id, nil, filteredBackends, sessionHints, nil)
 
 	// Restore only the identity-binding key from stored metadata. The other
 	// keys (MetadataKeyBackendIDs, MetadataKeyBackendSessionPrefix.*) are

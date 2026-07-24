@@ -42,18 +42,31 @@ const (
 // ChangeKind identifies which capability class a backend reported changed via
 // ListChangedSink. Using a typed constant (rather than a bare string) means a
 // typo is a compile error at the producer and consumer instead of a silent
-// no-op, and gives the resources/prompts follow-up (#5748) an obvious extension
-// point (KindResources/KindPrompts).
+// no-op.
 type ChangeKind string
 
-// KindTools is reported when a backend emits notifications/tools/list_changed.
-const KindTools ChangeKind = "tools"
+const (
+	// KindTools is reported when a backend emits notifications/tools/list_changed.
+	KindTools ChangeKind = "tools"
+
+	// KindResources is reported when a backend emits
+	// notifications/resources/list_changed. Per MCP 2025-11-25 there is no
+	// separate wire method for resource TEMPLATE changes, so this kind also
+	// covers a resync of the backend's resource templates (see
+	// resyncSessionResources in pkg/vmcp/server).
+	KindResources ChangeKind = "resources"
+
+	// KindPrompts is reported when a backend emits
+	// notifications/prompts/list_changed.
+	KindPrompts ChangeKind = "prompts"
+)
 
 // ListChangedSink is invoked when a persistent backend connection observes a
 // notification this package consumes asynchronously (outside any in-flight
-// call) — currently only notifications/tools/list_changed, reported with
-// kind=KindTools. Resources/prompts list_changed are out of scope for #5748 (a
-// tracked follow-up); this package does not dispatch them to sink.
+// call): notifications/tools/list_changed (kind=KindTools),
+// notifications/resources/list_changed (kind=KindResources, which also covers
+// resource templates — MCP 2025-11-25 has no separate wire method for those),
+// and notifications/prompts/list_changed (kind=KindPrompts).
 //
 // The sink is invoked on the mcpcompat client's receive-loop goroutine (see
 // Client.dispatch in toolhive-core), so implementations MUST be non-blocking:
@@ -67,24 +80,30 @@ type ListChangedSink func(ctx context.Context, backendWorkloadID string, kind Ch
 
 // newListChangedNotificationHandler builds the OnNotification handler
 // registered by createMCPClient when sink is non-nil. It dispatches
-// notifications/tools/list_changed to sink (kind=KindTools) and log-only handles
-// notifications/message; every other notification method is ignored — this
-// handler is not the mid-call server->client relay (that is
-// pkg/vmcp/client's per-call notification forwarder), it only feeds the
-// session-registration resync path.
+// notifications/tools/list_changed (kind=KindTools),
+// notifications/resources/list_changed (kind=KindResources, also covering
+// resource templates), and notifications/prompts/list_changed
+// (kind=KindPrompts) to sink, and log-only handles notifications/message;
+// every other notification method is ignored — this handler is not the
+// mid-call server->client relay (that is pkg/vmcp/client's per-call
+// notification forwarder), it only feeds the session-registration resync path.
 func newListChangedNotificationHandler(workloadID string, sink ListChangedSink) func(mcp.JSONRPCNotification) {
 	return func(n mcp.JSONRPCNotification) {
 		switch n.Method {
 		case vmcp.MethodToolsListChangedNotification:
 			sink(context.Background(), workloadID, KindTools)
+		case vmcp.MethodResourcesListChangedNotification:
+			sink(context.Background(), workloadID, KindResources)
+		case vmcp.MethodPromptsListChangedNotification:
+			sink(context.Background(), workloadID, KindPrompts)
 		case vmcp.MethodLogNotification:
 			// Out-of-call backend log messages are not relayed to the downstream
 			// client on this path; log so the signal is visible rather than
 			// silently dropped.
 			slog.Debug("backend log notification received outside call", "backendID", workloadID)
 		default:
-			// Other notification types (resources/prompts list_changed, resource
-			// subscription updates, ...) are out of scope here (#5748 follow-up).
+			// Other notification types (resource subscription updates, ...) are
+			// out of scope here.
 		}
 	}
 }
@@ -347,12 +366,13 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // registered, and the streamable-HTTP branch does not enable continuous
 // listening). When non-nil, an OnNotification handler is registered (before
 // c.Start, per the mcpcompat client's registration contract) that invokes sink
-// on notifications/tools/list_changed and log-only handles notifications/message.
-// For the streamable-HTTP transport, a non-nil sink also enables
-// mcptransport.WithContinuousListening() — required for the backend's
-// asynchronous (outside any in-flight call) notifications to reach this client
-// at all — since some backends hang when a standalone GET stream is opened
-// against them, this must stay opt-in (#5748 R3).
+// on notifications/tools/list_changed, notifications/resources/list_changed
+// (which also covers resource templates), and notifications/prompts/list_changed,
+// and log-only handles notifications/message. For the streamable-HTTP transport,
+// a non-nil sink also enables mcptransport.WithContinuousListening() — required
+// for the backend's asynchronous (outside any in-flight call) notifications to
+// reach this client at all — since some backends hang when a standalone GET
+// stream is opened against them, this must stay opt-in (#5748 R3).
 func createMCPClient(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -484,9 +504,11 @@ func createMCPClient(
 	// Register the notification handler before Start (mirrors the per-call
 	// client in pkg/vmcp/client, and matches the mcpcompat client's own
 	// registration contract): the handler dispatches
-	// notifications/tools/list_changed to sink and logs notifications/message.
-	// Strictly gated on sink != nil so a nil-sink caller registers no handler at
-	// all — this function's behavior for that caller is unchanged.
+	// notifications/tools/list_changed, notifications/resources/list_changed,
+	// and notifications/prompts/list_changed to sink and logs
+	// notifications/message. Strictly gated on sink != nil so a nil-sink caller
+	// registers no handler at all — this function's behavior for that caller is
+	// unchanged.
 	if sink != nil {
 		c.OnNotification(newListChangedNotificationHandler(target.WorkloadID, sink))
 	}

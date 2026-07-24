@@ -58,6 +58,107 @@ func (f *fakeToolsSession) SetSessionTools(tools map[string]server.ServerTool) {
 var _ server.ClientSession = (*fakeToolsSession)(nil)
 var _ server.SessionWithTools = (*fakeToolsSession)(nil)
 
+// fakeCapsSession is a minimal server.ClientSession + SessionWithResources +
+// SessionWithResourceTemplates + SessionWithPrompts fake used to test
+// resyncSessionResources/resyncSessionPrompts/runListChangedResync without a
+// live SDK session. It records every SetSession* call so tests can assert
+// replacement semantics (#5969, mirroring fakeToolsSession for #5748).
+type fakeCapsSession struct {
+	id string
+
+	mu                               sync.Mutex
+	resources                        map[string]server.ServerResource
+	resourceTemplates                map[string]server.ServerResourceTemplate
+	prompts                          map[string]server.ServerPrompt
+	setSessionResourcesCalls         int
+	setSessionResourceTemplatesCalls int
+	setSessionPromptsCalls           int
+}
+
+func (*fakeCapsSession) Initialize()                                         {}
+func (*fakeCapsSession) Initialized() bool                                   { return true }
+func (*fakeCapsSession) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
+func (f *fakeCapsSession) SessionID() string                                 { return f.id }
+
+func (f *fakeCapsSession) GetSessionResources() map[string]server.ServerResource {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]server.ServerResource, len(f.resources))
+	for k, v := range f.resources {
+		out[k] = v
+	}
+	return out
+}
+
+func (f *fakeCapsSession) SetSessionResources(resources map[string]server.ServerResource) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resources = resources
+	f.setSessionResourcesCalls++
+}
+
+func (f *fakeCapsSession) GetSessionResourceTemplates() map[string]server.ServerResourceTemplate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]server.ServerResourceTemplate, len(f.resourceTemplates))
+	for k, v := range f.resourceTemplates {
+		out[k] = v
+	}
+	return out
+}
+
+func (f *fakeCapsSession) SetSessionResourceTemplates(templates map[string]server.ServerResourceTemplate) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resourceTemplates = templates
+	f.setSessionResourceTemplatesCalls++
+}
+
+func (f *fakeCapsSession) GetSessionPrompts() map[string]server.ServerPrompt {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]server.ServerPrompt, len(f.prompts))
+	for k, v := range f.prompts {
+		out[k] = v
+	}
+	return out
+}
+
+func (f *fakeCapsSession) SetSessionPrompts(prompts map[string]server.ServerPrompt) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prompts = prompts
+	f.setSessionPromptsCalls++
+}
+
+var _ server.ClientSession = (*fakeCapsSession)(nil)
+var _ server.SessionWithResources = (*fakeCapsSession)(nil)
+var _ server.SessionWithResourceTemplates = (*fakeCapsSession)(nil)
+var _ server.SessionWithPrompts = (*fakeCapsSession)(nil)
+
+// resourcesOnlySession implements server.ClientSession + SessionWithResources
+// but NOT SessionWithResourceTemplates, so a resyncSessionResources test can
+// prove the templates-half type assertion fails loudly. It provides its own
+// resource methods (rather than embedding fakeCapsSession, which would also
+// promote the template/prompt methods and satisfy those interfaces).
+type resourcesOnlySession struct {
+	fake fakeCapsSession
+}
+
+func (*resourcesOnlySession) Initialize()                                         {}
+func (*resourcesOnlySession) Initialized() bool                                   { return true }
+func (*resourcesOnlySession) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
+func (s *resourcesOnlySession) SessionID() string                                 { return s.fake.id }
+func (s *resourcesOnlySession) GetSessionResources() map[string]server.ServerResource {
+	return s.fake.GetSessionResources()
+}
+func (s *resourcesOnlySession) SetSessionResources(resources map[string]server.ServerResource) {
+	s.fake.SetSessionResources(resources)
+}
+
+var _ server.ClientSession = (*resourcesOnlySession)(nil)
+var _ server.SessionWithResources = (*resourcesOnlySession)(nil)
+
 // stubSessionManager is a minimal SessionManager for the #5748 resync tests.
 // Only GetMultiSession is meaningful (its returned liveness bool drives the
 // resync liveness guard); the rest satisfy the interface and fail loudly if a
@@ -131,6 +232,135 @@ func TestResyncSessionTools_SessionWithoutToolSupport(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not support per-session tools")
 }
 
+// TestResyncSessionResources_SessionWithoutResourceSupport verifies (#5969)
+// resyncSessionResources fails loudly (rather than silently no-opping) when
+// the session does not implement server.SessionWithResources.
+func TestResyncSessionResources_SessionWithoutResourceSupport(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{resources: []vmcp.Resource{{Name: "r", URI: "r"}}}
+	srv := &Server{core: fc}
+
+	// plainSession implements only server.ClientSession, not SessionWithResources.
+	type plainSession struct{ server.ClientSession }
+	sess := plainSession{&fakeCapsSession{id: "sess-1"}}
+
+	err := srv.resyncSessionResources(context.Background(), sess, "sess-1", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support per-session resources")
+}
+
+// TestResyncSessionResources_SessionWithoutTemplateSupport verifies (#5969)
+// resyncSessionResources fails loudly when the session supports per-session
+// resources but not resource templates (SessionWithResourceTemplates). The
+// resource store is set before the template assertion fails, so this pins the
+// exact error surfaced for the templates half.
+func TestResyncSessionResources_SessionWithoutTemplateSupport(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{resources: []vmcp.Resource{{Name: "r", URI: "r"}}}
+	srv := &Server{core: fc}
+
+	// resourcesOnlySession implements SessionWithResources but NOT
+	// SessionWithResourceTemplates.
+	sess := &resourcesOnlySession{fake: fakeCapsSession{id: "sess-1"}}
+
+	err := srv.resyncSessionResources(context.Background(), sess, "sess-1", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support per-session resource templates")
+}
+
+// TestResyncSessionPrompts_SessionWithoutPromptSupport verifies (#5969)
+// resyncSessionPrompts fails loudly (rather than silently no-opping) when the
+// session does not implement server.SessionWithPrompts.
+func TestResyncSessionPrompts_SessionWithoutPromptSupport(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{prompts: []vmcp.Prompt{{Name: "p"}}}
+	srv := &Server{core: fc}
+
+	// plainSession implements only server.ClientSession, not SessionWithPrompts.
+	type plainSession struct{ server.ClientSession }
+	sess := plainSession{&fakeCapsSession{id: "sess-1"}}
+
+	err := srv.resyncSessionPrompts(context.Background(), sess, "sess-1", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support per-session prompts")
+}
+
+// TestResyncSessionResources_ReplacesRatherThanMerges verifies (#5969) that
+// resyncSessionResources REPLACES both the session's resource store AND its
+// resource-template store with the freshly core-derived sets — unlike
+// setSessionResourcesDirect/setSessionResourceTemplatesDirect's
+// registration-time MERGE — so a resource/template the backend removed (and
+// the core therefore no longer advertises) disappears rather than lingering.
+func TestResyncSessionResources_ReplacesRatherThanMerges(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		resources:         []vmcp.Resource{{Name: "kept", URI: "kept"}, {Name: "added", URI: "added"}},
+		resourceTemplates: []vmcp.ResourceTemplate{{Name: "kept-tmpl", URITemplate: "kept-tmpl"}},
+	}
+	srv := &Server{core: fc}
+
+	sess := &fakeCapsSession{
+		id: "sess-1",
+		resources: map[string]server.ServerResource{
+			"kept":    {Resource: mcp.Resource{Name: "kept", URI: "kept"}},
+			"removed": {Resource: mcp.Resource{Name: "removed", URI: "removed"}}, // must disappear
+		},
+		resourceTemplates: map[string]server.ServerResourceTemplate{
+			"kept-tmpl":    {Template: mcp.ResourceTemplate{Name: "kept-tmpl", URITemplate: "kept-tmpl"}},
+			"removed-tmpl": {Template: mcp.ResourceTemplate{Name: "removed-tmpl", URITemplate: "removed-tmpl"}}, // must disappear
+		},
+	}
+
+	err := srv.resyncSessionResources(context.Background(), sess, "sess-1", nil)
+	require.NoError(t, err)
+
+	gotResources := sess.GetSessionResources()
+	assert.Len(t, gotResources, 2)
+	assert.Contains(t, gotResources, "kept")
+	assert.Contains(t, gotResources, "added")
+	assert.NotContains(t, gotResources, "removed",
+		"resync must REPLACE the resource store, dropping a no-longer-advertised resource")
+	assert.Equal(t, 1, sess.setSessionResourcesCalls)
+
+	gotTemplates := sess.GetSessionResourceTemplates()
+	assert.Len(t, gotTemplates, 1)
+	assert.Contains(t, gotTemplates, "kept-tmpl")
+	assert.NotContains(t, gotTemplates, "removed-tmpl",
+		"resync must REPLACE the resource-template store, dropping a no-longer-advertised template")
+	assert.Equal(t, 1, sess.setSessionResourceTemplatesCalls)
+}
+
+// TestResyncSessionPrompts_ReplacesRatherThanMerges verifies (#5969) that
+// resyncSessionPrompts REPLACES the session's prompt store with the freshly
+// core-derived set — unlike setSessionPromptsDirect's registration-time
+// MERGE — so a prompt the backend removed (and the core therefore no longer
+// advertises) disappears rather than lingering.
+func TestResyncSessionPrompts_ReplacesRatherThanMerges(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{prompts: []vmcp.Prompt{{Name: "kept"}, {Name: "added"}}}
+	srv := &Server{core: fc}
+
+	sess := &fakeCapsSession{id: "sess-1", prompts: map[string]server.ServerPrompt{
+		"kept":    {Prompt: mcp.Prompt{Name: "kept"}},
+		"removed": {Prompt: mcp.Prompt{Name: "removed"}}, // must disappear after resync
+	}}
+
+	err := srv.resyncSessionPrompts(context.Background(), sess, "sess-1", nil)
+	require.NoError(t, err)
+
+	got := sess.GetSessionPrompts()
+	assert.Len(t, got, 2)
+	assert.Contains(t, got, "kept")
+	assert.Contains(t, got, "added")
+	assert.NotContains(t, got, "removed", "resync must REPLACE the prompt store, dropping a no-longer-advertised prompt")
+	assert.Equal(t, 1, sess.setSessionPromptsCalls)
+}
+
 // TestListChangedResyncWorker_CoalescesAndNonBlocking verifies the B-HIGH-2
 // hand-off: trigger() returns immediately, never spawns a goroutine per call,
 // runs at most one resync at a time, and coalesces concurrent triggers into a
@@ -191,11 +421,12 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 		"50 triggers during one in-flight run must coalesce into exactly one follow-up run")
 }
 
-// TestRunListChangedResync verifies (#5748) the resync body run off the receive
-// loop: it skips terminated sessions (liveness guard), and for a live session
-// it invalidates the cache and reconstructs a context carrying the captured
-// identity + forwarded headers (B-HIGH-1) before re-deriving/replacing the
-// session's tools.
+// TestRunListChangedResync verifies (#5748, extended by #5969) the resync
+// body run off the receive loop, per capability kind: it skips terminated
+// sessions (liveness guard), and for a live session it invalidates the cache
+// and reconstructs a context carrying the captured identity + forwarded
+// headers (B-HIGH-1) before re-deriving/replacing ONLY the store belonging to
+// the notification's kind.
 func TestRunListChangedResync(t *testing.T) {
 	t.Parallel()
 
@@ -203,71 +434,208 @@ func TestRunListChangedResync(t *testing.T) {
 	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}}
 	fwd := map[string]string{fwdKey: "acme"}
 
-	t.Run("terminated session: skipped entirely", func(t *testing.T) {
-		t.Parallel()
-		fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
-		srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: false}}
-		sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
-			"stale": {Tool: mcp.Tool{Name: "stale"}},
-		}}
+	tests := []struct {
+		name string
+		kind vmcpsession.ChangeKind
+	}{
+		{"KindTools", vmcpsession.KindTools},
+		{"KindResources", vmcpsession.KindResources},
+		{"KindPrompts", vmcpsession.KindPrompts},
+	}
 
-		srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "terminated session must not invalidate the cache")
-		assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "terminated session must not re-aggregate")
-		assert.Equal(t, 0, sess.setSessionToolsCalls)
-	})
+			t.Run("terminated session: skipped entirely", func(t *testing.T) {
+				t.Parallel()
+				fc := &fakeCore{
+					tools:             []vmcp.Tool{{Name: "fresh"}},
+					resources:         []vmcp.Resource{{Name: "fresh", URI: "fresh"}},
+					resourceTemplates: []vmcp.ResourceTemplate{{Name: "fresh", URITemplate: "fresh"}},
+					prompts:           []vmcp.Prompt{{Name: "fresh"}},
+				}
+				srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: false}}
+				toolsSess := &fakeToolsSession{id: "sess-1"}
+				capsSess := &fakeCapsSession{id: "sess-1"}
 
-	t.Run("live session: invalidates, reconstructs ctx, replaces tools", func(t *testing.T) {
-		t.Parallel()
-		fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
-		srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: true}}
-		sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
-			"stale": {Tool: mcp.Tool{Name: "stale"}},
-		}}
+				var sess server.ClientSession = toolsSess
+				if tc.kind != vmcpsession.KindTools {
+					sess = capsSess
+				}
 
-		srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd)
+				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind)
 
-		assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(), "live session must invalidate the cache once")
-		assert.Equal(t, 1, sess.setSessionToolsCalls)
-		got := sess.GetSessionTools()
-		require.Len(t, got, 1)
-		assert.Contains(t, got, "fresh")
-		assert.NotContains(t, got, "stale", "resync must replace the stale set")
+				assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "terminated session must not invalidate the cache")
+				assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "terminated session must not re-aggregate")
+				assert.Equal(t, int32(0), fc.listResourcesCalls.Load(), "terminated session must not re-aggregate")
+				assert.Equal(t, int32(0), fc.listResourceTemplatesCalls.Load(), "terminated session must not re-aggregate")
+				assert.Equal(t, int32(0), fc.listPromptsCalls.Load(), "terminated session must not re-aggregate")
+			})
 
-		// B-HIGH-1: the resync must call the core with a context carrying the
-		// captured identity AND forwarded headers, so the cache key and outbound
-		// backend auth match a real request from this principal.
-		box := fc.lastListToolsCtx.Load()
-		require.NotNil(t, box, "ListTools must have been called")
-		resyncCtx := box.ctx
-		gotID, ok := auth.IdentityFromContext(resyncCtx)
-		require.True(t, ok, "resync context must carry the captured identity")
-		assert.Equal(t, "alice", gotID.Subject)
-		assert.Equal(t, "acme", headerforward.ForwardedHeadersFromContext(resyncCtx)[fwdKey],
-			"resync context must carry the captured forwarded headers")
-	})
+			t.Run("live session: invalidates, reconstructs ctx, replaces only this kind", func(t *testing.T) {
+				t.Parallel()
+				fc := &fakeCore{
+					tools:             []vmcp.Tool{{Name: "fresh"}},
+					resources:         []vmcp.Resource{{Name: "fresh", URI: "fresh"}},
+					resourceTemplates: []vmcp.ResourceTemplate{{Name: "fresh", URITemplate: "fresh"}},
+					prompts:           []vmcp.Prompt{{Name: "fresh"}},
+				}
+				srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: true}}
+				toolsSess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
+					"stale": {Tool: mcp.Tool{Name: "stale"}},
+				}}
+				capsSess := &fakeCapsSession{
+					id: "sess-1",
+					resources: map[string]server.ServerResource{
+						"stale": {Resource: mcp.Resource{Name: "stale", URI: "stale"}},
+					},
+					resourceTemplates: map[string]server.ServerResourceTemplate{
+						"stale": {Template: mcp.ResourceTemplate{Name: "stale", URITemplate: "stale"}},
+					},
+					prompts: map[string]server.ServerPrompt{
+						"stale": {Prompt: mcp.Prompt{Name: "stale"}},
+					},
+				}
+
+				var sess server.ClientSession = toolsSess
+				if tc.kind != vmcpsession.KindTools {
+					sess = capsSess
+				}
+
+				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind)
+
+				assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(), "live session must invalidate the cache once")
+
+				var resyncCtx context.Context
+				switch tc.kind {
+				case vmcpsession.KindTools:
+					assert.Equal(t, int32(1), fc.listToolsCalls.Load())
+					assert.Equal(t, int32(0), fc.listResourcesCalls.Load())
+					assert.Equal(t, int32(0), fc.listResourceTemplatesCalls.Load())
+					assert.Equal(t, int32(0), fc.listPromptsCalls.Load())
+					assert.Equal(t, 1, toolsSess.setSessionToolsCalls)
+					got := toolsSess.GetSessionTools()
+					require.Len(t, got, 1)
+					assert.Contains(t, got, "fresh")
+					assert.NotContains(t, got, "stale", "resync must replace the stale set")
+					box := fc.lastListToolsCtx.Load()
+					require.NotNil(t, box, "ListTools must have been called")
+					resyncCtx = box.ctx
+				case vmcpsession.KindResources:
+					assert.Equal(t, int32(0), fc.listToolsCalls.Load())
+					assert.Equal(t, int32(1), fc.listResourcesCalls.Load())
+					assert.Equal(t, int32(1), fc.listResourceTemplatesCalls.Load())
+					assert.Equal(t, int32(0), fc.listPromptsCalls.Load())
+					assert.Equal(t, 1, capsSess.setSessionResourcesCalls)
+					assert.Equal(t, 1, capsSess.setSessionResourceTemplatesCalls)
+					gotResources := capsSess.GetSessionResources()
+					require.Len(t, gotResources, 1)
+					assert.Contains(t, gotResources, "fresh")
+					assert.NotContains(t, gotResources, "stale", "resync must replace the stale set")
+					gotTemplates := capsSess.GetSessionResourceTemplates()
+					require.Len(t, gotTemplates, 1)
+					assert.Contains(t, gotTemplates, "fresh")
+					assert.NotContains(t, gotTemplates, "stale", "resync must replace the stale set")
+					box := fc.lastListResourcesCtx.Load()
+					require.NotNil(t, box, "ListResources must have been called")
+					resyncCtx = box.ctx
+				case vmcpsession.KindPrompts:
+					assert.Equal(t, int32(0), fc.listToolsCalls.Load())
+					assert.Equal(t, int32(0), fc.listResourcesCalls.Load())
+					assert.Equal(t, int32(0), fc.listResourceTemplatesCalls.Load())
+					assert.Equal(t, int32(1), fc.listPromptsCalls.Load())
+					assert.Equal(t, 1, capsSess.setSessionPromptsCalls)
+					got := capsSess.GetSessionPrompts()
+					require.Len(t, got, 1)
+					assert.Contains(t, got, "fresh")
+					assert.NotContains(t, got, "stale", "resync must replace the stale set")
+					box := fc.lastListPromptsCtx.Load()
+					require.NotNil(t, box, "ListPrompts must have been called")
+					resyncCtx = box.ctx
+				}
+
+				// B-HIGH-1 (all kinds): the resync must call the core with a context
+				// carrying the captured identity AND forwarded headers, so the cache
+				// key and outbound backend auth match a real request from this
+				// principal. Asserting this for every kind guards a future refactor
+				// from silently dropping identity/header scoping on the
+				// resources/prompts paths.
+				require.NotNil(t, resyncCtx)
+				gotID, ok := auth.IdentityFromContext(resyncCtx)
+				require.True(t, ok, "resync context must carry the captured identity")
+				assert.Equal(t, "alice", gotID.Subject)
+				assert.Equal(t, "acme", headerforward.ForwardedHeadersFromContext(resyncCtx)[fwdKey],
+					"resync context must carry the captured forwarded headers")
+			})
+		})
+	}
 }
 
-// TestBuildListChangedSink_IgnoresNonToolsKind verifies the sink's kind gate:
-// a non-tools ChangeKind is dropped synchronously on the receive loop (no
-// worker goroutine, no cache invalidation, no resync). The gate returns before
-// worker.trigger, so the assertion is deterministic without waiting.
-func TestBuildListChangedSink_IgnoresNonToolsKind(t *testing.T) {
+// TestBuildListChangedSink_DispatchesByKind verifies (#5969) the sink's
+// per-kind worker dispatch: a KindResources or KindPrompts notification
+// triggers its own worker (invalidating the cache and resyncing only that
+// kind's store), and an unknown ChangeKind is dropped synchronously (no
+// worker goroutine, no cache invalidation, no resync).
+func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 	t.Parallel()
 
-	fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
-	srv := &Server{
-		core:           fc,
-		vmcpSessionMgr: &stubSessionManager{alive: true},
-		resyncBaseCtx:  context.Background(),
-	}
-	sess := &fakeToolsSession{id: "sess-1"}
+	t.Run("KindResources triggers a resources-only resync", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "fresh", URI: "fresh"}}}
+		srv := &Server{
+			core:           fc,
+			vmcpSessionMgr: &stubSessionManager{alive: true},
+			resyncBaseCtx:  context.Background(),
+		}
+		sess := &fakeCapsSession{id: "sess-1"}
 
-	sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
-	// A resources list_changed (out of scope) must be ignored synchronously.
-	sink(context.Background(), "backend-1", vmcpsession.ChangeKind("resources"))
+		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink(context.Background(), "backend-1", vmcpsession.KindResources)
 
-	assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "non-tools kind must not invalidate the cache")
-	assert.Equal(t, 0, sess.setSessionToolsCalls, "non-tools kind must not resync tools")
+		require.Eventually(t, func() bool { return fc.invalidateCacheCalls.Load() >= 1 },
+			2*time.Second, 10*time.Millisecond, "KindResources must invalidate the cache")
+		require.Eventually(t, func() bool { return len(sess.GetSessionResources()) == 1 },
+			2*time.Second, 10*time.Millisecond, "KindResources must resync the session's resources")
+		assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "a resources notification must not resync tools")
+		assert.Equal(t, int32(0), fc.listPromptsCalls.Load(), "a resources notification must not resync prompts")
+	})
+
+	t.Run("KindPrompts triggers a prompts-only resync", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{prompts: []vmcp.Prompt{{Name: "fresh"}}}
+		srv := &Server{
+			core:           fc,
+			vmcpSessionMgr: &stubSessionManager{alive: true},
+			resyncBaseCtx:  context.Background(),
+		}
+		sess := &fakeCapsSession{id: "sess-1"}
+
+		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink(context.Background(), "backend-1", vmcpsession.KindPrompts)
+
+		require.Eventually(t, func() bool { return fc.invalidateCacheCalls.Load() >= 1 },
+			2*time.Second, 10*time.Millisecond, "KindPrompts must invalidate the cache")
+		require.Eventually(t, func() bool { return len(sess.GetSessionPrompts()) == 1 },
+			2*time.Second, 10*time.Millisecond, "KindPrompts must resync the session's prompts")
+		assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "a prompts notification must not resync tools")
+		assert.Equal(t, int32(0), fc.listResourcesCalls.Load(), "a prompts notification must not resync resources")
+	})
+
+	t.Run("unknown kind is dropped synchronously", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
+		srv := &Server{
+			core:           fc,
+			vmcpSessionMgr: &stubSessionManager{alive: true},
+			resyncBaseCtx:  context.Background(),
+		}
+		sess := &fakeToolsSession{id: "sess-1"}
+
+		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink(context.Background(), "backend-1", vmcpsession.ChangeKind("unknown"))
+
+		assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "unknown kind must not invalidate the cache")
+		assert.Equal(t, 0, sess.setSessionToolsCalls, "unknown kind must not resync anything")
+	})
 }

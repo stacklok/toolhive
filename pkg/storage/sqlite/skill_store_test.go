@@ -72,6 +72,52 @@ func TestSkillStore_Create(t *testing.T) {
 
 	// InstalledAt is set by the DB DEFAULT, so just assert it is not zero.
 	assert.False(t, got.InstalledAt.IsZero(), "InstalledAt should not be zero")
+	assert.False(t, got.Managed, "Managed should default to false")
+}
+
+func TestSkillStore_ManagedFlagRoundTrip(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+
+	sk := testSkill("managed-test")
+	sk.Scope = skills.ScopeProject
+	sk.ProjectRoot = "/tmp/project"
+	sk.Managed = true
+	require.NoError(t, store.Create(t.Context(), sk))
+
+	got, err := store.Get(t.Context(), sk.Metadata.Name, sk.Scope, sk.ProjectRoot)
+	require.NoError(t, err)
+	assert.True(t, got.Managed)
+
+	// Update can flip managed back to false (e.g. sync --prune leaving the
+	// record but marking it unmanaged).
+	got.Managed = false
+	require.NoError(t, store.Update(t.Context(), got))
+
+	got, err = store.Get(t.Context(), sk.Metadata.Name, sk.Scope, sk.ProjectRoot)
+	require.NoError(t, err)
+	assert.False(t, got.Managed)
+}
+
+// TestSkillStore_ManagedRequiresProjectScope guards the invariant that
+// Managed only ever applies to project-scoped installs (it pins a skill in
+// a project's lock file, which doesn't exist for user-scoped installs).
+func TestSkillStore_ManagedRequiresProjectScope(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+
+	sk := testSkill("managed-user-scope")
+	sk.Managed = true // sk.Scope is ScopeUser from testSkill
+	err := store.Create(t.Context(), sk)
+	require.ErrorIs(t, err, errManagedRequiresProjectScope)
+
+	// Also rejected on Update: create a valid user-scoped record, then try
+	// to flip Managed on it.
+	sk.Managed = false
+	require.NoError(t, store.Create(t.Context(), sk))
+	sk.Managed = true
+	err = store.Update(t.Context(), sk)
+	require.ErrorIs(t, err, errManagedRequiresProjectScope)
 }
 
 func TestSkillStore_CreateDuplicate(t *testing.T) {

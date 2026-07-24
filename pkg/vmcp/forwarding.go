@@ -19,6 +19,12 @@ const (
 
 	// MethodLogNotification is the notifications/message (logging) wire method.
 	MethodLogNotification = "notifications/message"
+
+	// MethodToolsListChangedNotification is the notifications/tools/list_changed
+	// wire method. Used by the persistent session-backed backend connection
+	// (pkg/vmcp/session/internal/backend) to recognize a backend's asynchronous
+	// tool-set change and trigger cache invalidation + session resync (#5748).
+	MethodToolsListChangedNotification = "notifications/tools/list_changed"
 )
 
 // SamplingRequester sends an MCP sampling (sampling/createMessage) request to the

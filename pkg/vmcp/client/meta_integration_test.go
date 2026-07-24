@@ -10,11 +10,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
@@ -29,7 +33,7 @@ func TestMetaPreservation_CallTool(t *testing.T) {
 	t.Parallel()
 
 	// Create and start a real MCP server that returns _meta
-	port, cleanup := startTestMCPServer(t)
+	port, _, cleanup := startTestMCPServer(t)
 	defer cleanup()
 
 	// Create vMCP backend client with unauthenticated strategy
@@ -77,7 +81,7 @@ func TestMetaPreservation_CallTool(t *testing.T) {
 func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 	t.Parallel()
 
-	port, cleanup := startTestMCPServer(t)
+	port, _, cleanup := startTestMCPServer(t)
 	defer cleanup()
 
 	registry := auth.NewDefaultOutgoingAuthRegistry()
@@ -124,7 +128,7 @@ func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 func TestMetaPreservation_CallTool_Error(t *testing.T) {
 	t.Parallel()
 
-	port, cleanup := startTestMCPServer(t)
+	port, _, cleanup := startTestMCPServer(t)
 	defer cleanup()
 
 	registry := auth.NewDefaultOutgoingAuthRegistry()
@@ -171,7 +175,7 @@ func TestMetaPreservation_CallTool_Error(t *testing.T) {
 func TestMetaPreservation_GetPrompt(t *testing.T) {
 	t.Parallel()
 
-	port, cleanup := startTestMCPServer(t)
+	port, _, cleanup := startTestMCPServer(t)
 	defer cleanup()
 
 	registry := auth.NewDefaultOutgoingAuthRegistry()
@@ -227,7 +231,7 @@ func TestMetaPreservation_GetPrompt(t *testing.T) {
 func TestMetaPreservation_ReadResource(t *testing.T) {
 	t.Parallel()
 
-	port, cleanup := startTestMCPServer(t)
+	port, _, cleanup := startTestMCPServer(t)
 	defer cleanup()
 
 	registry := auth.NewDefaultOutgoingAuthRegistry()
@@ -263,10 +267,151 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 	assert.Equal(t, "text/plain", result.Contents[0].MimeType)
 }
 
+// TestOutboundMetaTraceContext verifies that the vMCP backend client injects the
+// current W3C trace context (traceparent) into outbound params._meta (SEP-414)
+// for CallTool, and that it is omitted entirely when there is no active span.
+//
+// ReadResource and GetPrompt are NOT asserted for on-the-wire traceparent
+// delivery here: github.com/stacklok/toolhive-core's mcpcompat client (as of
+// v0.0.32) builds the underlying go-sdk resources/read and prompts/get
+// requests without forwarding request.Params.Meta at all (only CallTool's
+// non-resume path converts and forwards Meta - see mcpcompat/client/client.go
+// CallTool vs ReadResource/GetPrompt). This means the Meta we set on
+// mcp.ReadResourceParams/mcp.GetPromptParams in client.go and mcp_session.go
+// is silently dropped before it reaches the wire for these two operations
+// today. The code changes are still correct and forward-compatible: they will
+// start working the moment mcpcompat forwards Meta the same way it already
+// does for CallTool, with no further change needed on our side. This is
+// analogous to the pre-existing SDK limitation documented in
+// TestMetaPreservation_ReadResource (inbound resource _meta).
+//
+// This test mutates the global OTEL propagator, so it must NOT run in
+// parallel with the other tests in this file (see propagation_test.go for the
+// same convention in pkg/telemetry).
+func TestOutboundMetaTraceContext(t *testing.T) { //nolint:paralleltest // Mutates global OTEL propagator
+	oldPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer otel.SetTextMapPropagator(oldPropagator)
+
+	port, capture, cleanup := startTestMCPServer(t)
+	defer cleanup()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	err := registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{})
+	require.NoError(t, err)
+
+	backendClient, err := vmcpclient.NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "test-backend",
+		WorkloadName:  "Test Backend",
+		BaseURL:       "http://127.0.0.1:" + port,
+		TransportType: "streamable-http",
+	}
+
+	tp := sdktrace.NewTracerProvider()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	tracer := tp.Tracer("test")
+
+	//nolint:paralleltest // sequential: shares capture/backendClient state with the sibling subtests below
+	t.Run("CallTool injects traceparent", func(t *testing.T) {
+		spanCtx, span := tracer.Start(context.Background(), "test-span")
+		ctx, cancel := context.WithTimeout(spanCtx, 5*time.Second)
+		defer cancel()
+		defer span.End()
+
+		_, err := backendClient.CallTool(ctx, target, "test_tool_capture_meta", nil, nil)
+		require.NoError(t, err)
+
+		got := capture.get("tool")
+		require.NotNil(t, got, "expected params._meta to be sent")
+		traceparent, ok := got.AdditionalFields["traceparent"].(string)
+		require.True(t, ok, "expected traceparent in captured _meta")
+		// Prove span identity, not just presence: assert the W3C traceparent
+		// carries the active span's TraceID rather than a stale/global one.
+		assert.Contains(t, traceparent, span.SpanContext().TraceID().String(),
+			"traceparent must carry the active span's TraceID")
+	})
+
+	//nolint:paralleltest // sequential: shares capture/backendClient state with the sibling subtests
+	t.Run("ReadResource and GetPrompt: mcpcompat drops outbound Meta (documented SDK limitation)", func(t *testing.T) {
+		spanCtx, span := tracer.Start(context.Background(), "test-span")
+		ctx, cancel := context.WithTimeout(spanCtx, 5*time.Second)
+		defer cancel()
+		defer span.End()
+
+		// TODO: tripwire for a toolhive-core/mcpcompat limitation (see this
+		// test's doc comment). These asserts pass ONLY because mcpcompat drops
+		// outbound Params.Meta on the resources/read and prompts/get paths. When
+		// they start failing, mcpcompat now forwards Meta: delete the
+		// forward-compat NOTE comments in client.go/mcp_session.go and replace
+		// these nil checks with traceparent assertions (as done for CallTool).
+		_, err := backendClient.ReadResource(ctx, target, "test://capture-resource")
+		require.NoError(t, err)
+		assert.Nil(t, capture.get("resource"),
+			"expected nil ONLY because mcpcompat v0.0.32 drops outbound Meta for resources/read; "+
+				"if this is now non-nil, mcpcompat forwards Meta — delete the forward-compat NOTE comments "+
+				"in client.go/mcp_session.go and assert traceparent here instead")
+
+		_, err = backendClient.GetPrompt(ctx, target, "test_prompt_capture_meta", nil)
+		require.NoError(t, err)
+		assert.Nil(t, capture.get("prompt"),
+			"expected nil ONLY because mcpcompat v0.0.32 drops outbound Meta for prompts/get; "+
+				"if this is now non-nil, mcpcompat forwards Meta — delete the forward-compat NOTE comments "+
+				"in client.go/mcp_session.go and assert traceparent here instead")
+	})
+
+	//nolint:paralleltest // sequential: reuses the "tool" capture key populated above to prove _meta is now absent
+	t.Run("CallTool omits _meta without an active span", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err := backendClient.CallTool(ctx, target, "test_tool_capture_meta", nil, nil)
+		require.NoError(t, err)
+
+		got := capture.get("tool")
+		assert.Nil(t, got, "expected no _meta to be sent without an active trace context")
+	})
+}
+
+// metaCapture records the inbound params._meta observed by the test server's
+// capture-only tool/resource/prompt handlers, keyed by capability name. It
+// lets tests assert what the vMCP client actually sent on the wire (e.g. an
+// injected traceparent), as opposed to what the backend echoes back.
+type metaCapture struct {
+	mu   sync.Mutex
+	meta map[string]*mcp.Meta
+}
+
+func newMetaCapture() *metaCapture {
+	return &metaCapture{meta: make(map[string]*mcp.Meta)}
+}
+
+func (c *metaCapture) record(key string, meta *mcp.Meta) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.meta[key] = meta
+}
+
+// get returns the captured _meta for key, or nil if the capability was never
+// invoked or was invoked without a _meta field.
+func (c *metaCapture) get(key string) *mcp.Meta {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.meta[key]
+}
+
 // startTestMCPServer creates and starts a test MCP server with tools that return _meta.
-// Returns the port and cleanup function.
-func startTestMCPServer(t *testing.T) (string, func()) {
+// It also registers capture-only "test_tool_capture_meta", "test_prompt_capture_meta", and
+// "test://capture-resource" capabilities that record the inbound params._meta they receive
+// into the returned metaCapture, so tests can assert on OUTBOUND _meta (e.g. injected W3C
+// trace context) rather than only on what the backend echoes back.
+// Returns the port, the meta capture, and a cleanup function.
+func startTestMCPServer(t *testing.T) (string, *metaCapture, func()) {
 	t.Helper()
+
+	capture := newMetaCapture()
 
 	// Create MCP server
 	mcpServer := server.NewMCPServer("test-backend", "1.0.0")
@@ -385,6 +530,51 @@ func startTestMCPServer(t *testing.T) (string, func()) {
 		},
 	)
 
+	// Add capture-only tool/resource/prompt that record inbound params._meta
+	// for outbound-propagation assertions (see metaCapture).
+	mcpServer.AddTool(
+		mcp.NewTool("test_tool_capture_meta",
+			mcp.WithDescription("Capture-only tool that records inbound _meta"),
+		),
+		func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			capture.record("tool", request.Params.Meta)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{mcp.NewTextContent("captured")},
+			}, nil
+		},
+	)
+	mcpServer.AddPrompt(
+		mcp.NewPrompt("test_prompt_capture_meta",
+			mcp.WithPromptDescription("Capture-only prompt that records inbound _meta"),
+		),
+		func(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			capture.record("prompt", request.Params.Meta)
+			return &mcp.GetPromptResult{
+				Messages: []mcp.PromptMessage{
+					{Role: "user", Content: mcp.NewTextContent("captured")},
+				},
+			}, nil
+		},
+	)
+	mcpServer.AddResource(
+		mcp.Resource{
+			URI:         "test://capture-resource",
+			Name:        "Capture Resource",
+			Description: "Capture-only resource that records inbound _meta",
+			MIMEType:    "text/plain",
+		},
+		func(_ context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			capture.record("resource", request.Params.Meta)
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI:      "test://capture-resource",
+					MIMEType: "text/plain",
+					Text:     "captured",
+				},
+			}, nil
+		},
+	)
+
 	// Create HTTP handler for the MCP server
 	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// MCP over HTTP uses POST requests with JSON-RPC
@@ -438,5 +628,5 @@ func startTestMCPServer(t *testing.T) (string, func()) {
 		_ = listener.Close()
 	}
 
-	return port, cleanup
+	return port, capture, cleanup
 }

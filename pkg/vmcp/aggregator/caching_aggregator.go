@@ -101,6 +101,17 @@ func (c *cachingAggregator) AggregateCapabilities(
 	return caps, nil
 }
 
+// Compile-time assertion: cachingAggregator implements CacheInvalidator.
+var _ CacheInvalidator = (*cachingAggregator)(nil)
+
+// InvalidateAll implements CacheInvalidator by purging every cached entry, so the
+// next AggregateCapabilities call for any identity re-sweeps the backends rather
+// than serving a cached view until its TTL expires. See CacheInvalidator's doc
+// for why this is coarse (whole-cache) rather than per-backend.
+func (c *cachingAggregator) InvalidateAll() {
+	c.cache.Purge()
+}
+
 // cacheKey derives a collision-resistant key from the inputs that drive backend enumeration:
 // the caller's subject, the forwarded headers (passthrough credentials/scopes), and the
 // backend ID set. Hashing keeps raw credential values out of the cache keys.

@@ -1542,6 +1542,33 @@ func TestWithSessionTTL(t *testing.T) {
 	}
 }
 
+// TestWithStrictProtocolValidation verifies the builder option sets
+// RunConfig.StrictProtocolValidation, mirroring WithTrustProxyHeaders's
+// plumbing (see cmd/thv/app/run_flags.go's --strict-protocol-validation flag).
+func TestWithStrictProtocolValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		strict bool
+	}{
+		{name: "enabled", strict: true},
+		{name: "disabled (default)", strict: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithStrictProtocolValidation(tt.strict)(builder)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.strict, builder.config.StrictProtocolValidation)
+		})
+	}
+}
+
 func TestResolveRegistryServerName(t *testing.T) {
 	t.Parallel()
 

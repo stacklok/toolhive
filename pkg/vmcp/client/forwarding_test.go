@@ -175,6 +175,34 @@ func TestNewNotificationForwarder_ForwardsLog(t *testing.T) {
 	})
 }
 
+func TestNewNotificationForwarder_UsesWithoutCancelContext(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	notifier := mocks.NewMockClientNotifier(ctrl)
+
+	baseCtx, cancel := context.WithCancel(context.WithValue(t.Context(), ctxKey{}, "downstream-session"))
+	cancel()
+
+	notifier.EXPECT().
+		NotifyLog(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ vmcp.LogMessage) error {
+			assert.Equal(t, "downstream-session", ctx.Value(ctxKey{}))
+			assert.NoError(t, ctx.Err(), "notification forwarding should ignore cancellation on callCtx")
+			return nil
+		})
+
+	handler := newNotificationForwarder(baseCtx, notifier)
+	handler(mcp.JSONRPCNotification{
+		Notification: mcp.Notification{
+			Method: vmcp.MethodLogNotification,
+			Params: mcp.NotificationParams{
+				AdditionalFields: map[string]any{"level": "info", "data": "hello"},
+			},
+		},
+	})
+}
+
 // TestNewNotificationForwarder_IgnoresUnknownMethod verifies that a notification
 // method the forwarder does not relay does not reach the notifier.
 func TestNewNotificationForwarder_IgnoresUnknownMethod(t *testing.T) {

@@ -63,3 +63,59 @@ func TestRegression_InitializeAdvertisesToolsAndResourcesCapabilities(t *testing
 	assert.Contains(t, capabilities, "resources",
 		"resources capability must be advertised in initialize on the Serve path; got %v", capabilities)
 }
+
+// TestRegression_InitializeAdvertisesToolsListChanged pins #5748's capability
+// flip: tools.listChanged must now be true in the initialize response (it was
+// false — and therefore omitted, per the SDK's omitempty — before #5748).
+func TestRegression_InitializeAdvertisesToolsListChanged(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "cap-tool"}}}
+	_, _, baseURL := registerServeSession(t, fc)
+
+	initResp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, 200, initResp.StatusCode, "initialize should succeed")
+
+	env, _ := readServeJSONRPC(t, initResp)
+	result, ok := env["result"].(map[string]any)
+	require.True(t, ok, "initialize response must have a result object; env: %v", env)
+	capabilities, ok := result["capabilities"].(map[string]any)
+	require.True(t, ok, "result.capabilities must be present; result: %v", result)
+
+	toolsCaps, ok := capabilities["tools"].(map[string]any)
+	require.True(t, ok, "tools capability must be an object; capabilities: %v", capabilities)
+	assert.Equal(t, true, toolsCaps["listChanged"],
+		"tools.listChanged must be true so downstream clients trust the resync notification (#5748)")
+}
+
+// TestRegression_SessionRegistrationDoesNotSpuriouslyInvalidateCache verifies
+// the #5748 R1 concern at the layer this PR controls: registering a session —
+// with no backend list_changed notification ever firing — must NOT invoke
+// InvalidateCapabilityCache or the resync path. Those only run from the sink
+// built in buildListChangedSink, which is invoked solely by a persistent
+// backend connection's OnNotification handler (mcp_session.go), never by
+// session registration itself.
+//
+// (go-sdk's OWN early/broadcast-scoped auto-notify behavior at registration —
+// documented in serve.go next to WithToolCapabilities(true) — is an upstream
+// SDK characteristic this PR cannot suppress; it is unrelated to whether OUR
+// code spuriously self-triggers, which is what this test pins.)
+func TestRegression_SessionRegistrationDoesNotSpuriouslyInvalidateCache(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "cap-tool"}}}
+	registerServeSession(t, fc)
+
+	assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(),
+		"session registration alone must never invalidate the capability cache")
+}

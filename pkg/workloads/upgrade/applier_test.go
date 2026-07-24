@@ -507,6 +507,7 @@ func fullyConfiguredOld(t *testing.T) *runner.RunConfig {
 		PermissionProfileNameOrPath: "none",
 		IsolateNetwork:              true,
 		TrustProxyHeaders:           true,
+		StrictProtocolValidation:    true,
 		Stateless:                   true,
 		EndpointPrefix:              "/mcp",
 		SessionTTL:                  "30m",
@@ -569,6 +570,7 @@ func TestApplier_Apply_PreservesFullUserConfig(t *testing.T) {
 	assert.Equal(t, old.PermissionProfileNameOrPath, got.PermissionProfileNameOrPath, "named profile preserved")
 	assert.Equal(t, old.IsolateNetwork, got.IsolateNetwork)
 	assert.Equal(t, old.TrustProxyHeaders, got.TrustProxyHeaders)
+	assert.Equal(t, old.StrictProtocolValidation, got.StrictProtocolValidation)
 	assert.Equal(t, old.Stateless, got.Stateless)
 	assert.Equal(t, old.EndpointPrefix, got.EndpointPrefix)
 	assert.Equal(t, old.SessionTTL, got.SessionTTL)

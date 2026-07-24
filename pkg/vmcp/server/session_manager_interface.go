@@ -24,7 +24,13 @@ type SessionManager interface {
 	// CreateSession completes Phase 2 of the two-phase session creation pattern.
 	// Called from OnRegisterSession hook once context is available; creates backend
 	// connections and replaces the placeholder with a fully-formed MultiSession.
-	CreateSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, error)
+	//
+	// sink, when non-nil, is threaded to MultiSessionFactory.MakeSessionWithID and
+	// reaches every backend connector opened for this session (#5748). Pass nil to
+	// disable asynchronous list_changed consumption for this session.
+	CreateSession(
+		ctx context.Context, sessionID string, sink vmcpsession.ListChangedSink,
+	) (vmcpsession.MultiSession, error)
 
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
 	// Returns (nil, false) if the session does not exist or is still a placeholder.

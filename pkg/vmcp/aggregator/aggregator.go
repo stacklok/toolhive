@@ -211,6 +211,25 @@ type ToolOverride interface {
 	ApplyOverrides(ctx context.Context, tools []vmcp.Tool) ([]vmcp.Tool, error)
 }
 
+// CacheInvalidator is optionally implemented by an Aggregator that memoizes
+// AggregateCapabilities results (see cachingAggregator). It lets a caller force
+// a re-sweep of all cached entries after learning, out of band, that backend
+// capabilities changed — e.g. a persistent backend connection observing
+// notifications/tools/list_changed (#5748) — rather than waiting out the TTL.
+//
+// InvalidateAll purges the ENTIRE cache (every identity's entry), not just the
+// backend that changed: the cache has no per-backend index, and coarse
+// invalidation briefly de-optimizes other identities' cached views rather than
+// leaving any identity looking at stale capabilities. Callers that type-assert
+// an Aggregator to this interface must handle the case where it is not
+// implemented (a non-caching or differently-implemented Aggregator) — see
+// core.coreVMCP.InvalidateCapabilityCache for the WARN-log fallback.
+type CacheInvalidator interface {
+	// InvalidateAll purges every cached AggregateCapabilities entry so the next
+	// call for any identity re-sweeps the backends.
+	InvalidateAll()
+}
+
 // Common aggregation errors.
 var (
 	// ErrNoBackendsFound indicates no backends were discovered.

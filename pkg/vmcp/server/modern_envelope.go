@@ -419,7 +419,7 @@ func modernToolFromDomain(t vmcp.Tool) (mcp.Tool, error) {
 		Name:           t.Name,
 		Description:    t.Description,
 		RawInputSchema: schemaJSON,
-		// ponytail: a tool with no annotations still marshals "annotations":{}
+		// A tool with no annotations still marshals "annotations":{}
 		// because mcpcompat's Tool.MarshalJSON (mcpcompat/mcp/tools.go:343)
 		// writes the field unconditionally. Shared with Legacy's
 		// coreSessionTools, so the real fix belongs in mcpcompat, not here --

@@ -644,7 +644,7 @@ func TestModernDescriptorFieldMapping(t *testing.T) {
 			}`,
 		},
 		{
-			// Pins the known ponytail-noted behavior at the mapping site: a
+			// Pins the known documented behavior at the mapping site: a
 			// tool with no annotations still emits "annotations":{} because
 			// mcpcompat's Tool.MarshalJSON writes the field unconditionally.
 			name: "tool with no annotations still emits annotations:{}",

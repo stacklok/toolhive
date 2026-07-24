@@ -417,9 +417,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 
 	// Read the Modern-stateless-dispatch kill-switch once, here at the
 	// composition root. Unset is the deliberate "off" default. A non-empty
-	// value that fails to parse as a bool is an operator typo (e.g. "ture"),
-	// not a request to enable the feature — warn and stay disabled rather
-	// than silently treating it as false.
+	// value that fails to parse as a bool is an operator typo (a misspelled
+	// "true"), not a request to enable the feature — warn and stay disabled
+	// rather than silently treating it as false.
 	modernDispatchEnabled := false
 	if raw := os.Getenv(modernDispatchEnvVar); raw != "" {
 		var err error

@@ -56,7 +56,7 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		return
 	}
 
-	// ponytail: defensive/unreachable today -- ParsingMiddleware rejects a
+	// Defensive/unreachable today -- ParsingMiddleware rejects a
 	// JSON-RPC batch (leading '[') with HTTP 400 / -32600 before a
 	// ParsedMCPRequest is ever built (parser.go's IsBatchRequest check, ~line
 	// 119), so dispatchModern never sees one and IsBatch is hardcoded false
@@ -112,11 +112,12 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 
 // The four list-dispatch helpers below (tools/list, resources/list,
 // resources/templates/list, prompts/list) always return the full
-// admission-filtered set from the matching core.List* and never set the
-// envelope's nextCursor (it's omitempty) -- client-facing cursor pagination
-// is unimplemented, and any cursor a Modern client sends is ignored. This is
-// unrelated to the aggregator's UPSTREAM cursor-following for internal
-// discovery (#5851); that's a different layer.
+// admission-filtered set from the matching core.List* and do not emit a
+// nextCursor: the Modern list-result envelopes carry no cursor field at all
+// (PaginatedResult.nextCursor is optional, so omitting it is spec-valid),
+// client-facing cursor pagination is unimplemented, and any cursor a Modern
+// client sends is ignored. This is unrelated to the aggregator's UPSTREAM
+// cursor-following for internal discovery (#5851); that's a different layer.
 //
 // A List*/Discover failure logs the full error server-side and returns a
 // generic -32603 message to the client (writeModernListError below): unlike
@@ -187,9 +188,9 @@ func (s *Server) dispatchModernPromptsList(
 // ListPrompts independently here used to cost four -- and those four weren't
 // even a consistent snapshot of the aggregated view). A single fan-out per
 // request is fine for now, but a probe the spec expects to be cheap across
-// requests too. ponytail: no cross-request cache; add a short-TTL
-// per-identity capability cache only if profiling shows the per-request
-// fan-out cost matters (#5761, tracked separately, not blocking here).
+// requests too. There is no cross-request cache; add a short-TTL per-identity
+// capability cache only if profiling shows the per-request fan-out cost
+// matters (#5761, tracked separately, not blocking here).
 func (s *Server) dispatchModernDiscover(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {

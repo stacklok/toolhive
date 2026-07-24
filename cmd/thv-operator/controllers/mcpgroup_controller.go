@@ -43,6 +43,8 @@ type MCPGroupReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop
 // which aims to move the current state of the cluster closer to the desired state.
+//
+// NOTE: throwaway line to exercise the reviewer-router workflow; will be reverted.
 func (r *MCPGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Reconciling MCPGroup", "mcpgroup", req.NamespacedName)

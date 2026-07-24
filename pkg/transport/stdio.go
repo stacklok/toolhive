@@ -68,6 +68,11 @@ type StdioTransport struct {
 	authInfoHandler   http.Handler
 	prefixHandlers    map[string]http.Handler
 
+	// strictProtocolValidation controls whether the streamable HTTP proxy
+	// rejects an unknown/unsupported MCP-Protocol-Version header with 400.
+	// See streamable.WithStrictProtocolValidation.
+	strictProtocolValidation bool
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -137,6 +142,14 @@ func NewStdioTransport(
 // SetProxyMode allows configuring the proxy mode (SSE or Streamable HTTP)
 func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
 	t.proxyMode = mode
+}
+
+// SetStrictProtocolValidation configures whether the streamable HTTP proxy
+// rejects requests carrying an unknown/unsupported MCP-Protocol-Version
+// header with HTTP 400. Default false preserves the version-agnostic
+// behavior of accepting any header value.
+func (t *StdioTransport) SetStrictProtocolValidation(strict bool) {
+	t.strictProtocolValidation = strict
 }
 
 // SetSessionStorage configures a custom session storage backend.
@@ -264,6 +277,7 @@ func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
 	return append(opts,
 		streamable.WithAuthInfoHandler(t.authInfoHandler),
 		streamable.WithPrefixHandlers(t.prefixHandlers),
+		streamable.WithStrictProtocolValidation(t.strictProtocolValidation),
 	)
 }
 

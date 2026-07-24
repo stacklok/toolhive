@@ -211,16 +211,17 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Create transport with runtime
 	transportConfig := types.Config{
-		Type:              r.Config.Transport,
-		ProxyPort:         r.Config.Port,
-		TargetPort:        r.Config.TargetPort,
-		Host:              r.Config.Host,
-		TargetHost:        r.Config.TargetHost,
-		Deployer:          r.Config.Deployer,
-		Debug:             r.Config.Debug,
-		TrustProxyHeaders: r.Config.TrustProxyHeaders,
-		EndpointPrefix:    r.Config.EndpointPrefix,
-		SessionTTL:        effectiveSessionTTL,
+		Type:                     r.Config.Transport,
+		ProxyPort:                r.Config.Port,
+		TargetPort:               r.Config.TargetPort,
+		Host:                     r.Config.Host,
+		TargetHost:               r.Config.TargetHost,
+		Deployer:                 r.Config.Deployer,
+		Debug:                    r.Config.Debug,
+		TrustProxyHeaders:        r.Config.TrustProxyHeaders,
+		StrictProtocolValidation: r.Config.StrictProtocolValidation,
+		EndpointPrefix:           r.Config.EndpointPrefix,
+		SessionTTL:               effectiveSessionTTL,
 	}
 
 	// Set proxy mode for stdio transport

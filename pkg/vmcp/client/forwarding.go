@@ -62,6 +62,51 @@ func (h *httpBackendClient) enableBackendLogging(
 	}
 }
 
+// drainServerToClientNotifications flushes any in-flight backend->downstream
+// notification off the per-call backend client before it is closed, closing a
+// lost-notification race that otherwise drops fire-and-forget notifications
+// (notifications/progress, notifications/message) under load.
+//
+// The race: a backend emits such a notification mid tools/call and then returns
+// the result. The notification and the result travel on SEPARATE streams — the
+// notification on the standalone SSE stream, the result on the tools/call
+// response stream — and the client reads every stream through a single FIFO
+// channel feeding one receive loop. CallTool returns as soon as the RESULT is
+// read; its deferred Close then cancels the receive loop. If the standalone
+// stream's notification has not yet been read and enqueued for handling when
+// Close fires, it is discarded and never reaches newNotificationForwarder, so
+// the downstream client never sees it (a permanent loss, not a slow delivery).
+// Blocking server->client REQUESTS (elicitation/sampling) are immune: the
+// backend tool blocks on the response, so the client is guaranteed to still be
+// reading when they arrive.
+//
+// The fix is a synchronous ping used purely as a drain barrier. The backend
+// flushes the notification onto the wire before returning the result, so by the
+// time CallTool returns the notification bytes are already buffered on the
+// client's standalone connection. A ping is a full backend round-trip; while it
+// is in flight the receive loop drains the buffered notification off the shared
+// FIFO channel (a local buffered read completes far ahead of the ping's network
+// round-trip), enqueuing it for handling. Because the ping response arrives on
+// that same FIFO channel AFTER the notification, the ping returning proves the
+// notification was already read and enqueued. The subsequent Close then waits
+// for enqueued handlers to finish (jsonrpc2.Connection.Close drains the handler
+// queue), so the forward completes before teardown.
+//
+// Only runs when server->client forwarding is bound (fwd.notifier != nil, the
+// same condition under which the notification forwarder is registered); other
+// deployments keep the pre-forwarding fast path with no extra round-trip.
+// Best-effort: a ping failure only forgoes the barrier — the tool result is
+// already in hand, so it must not fail the call.
+func (h *httpBackendClient) drainServerToClientNotifications(ctx context.Context, c *client.Client) {
+	fwd := h.forwarders.Load()
+	if fwd == nil || fwd.notifier == nil {
+		return
+	}
+	if err := c.Ping(ctx); err != nil {
+		slog.Debug("notification drain ping failed; forwarded notifications may be lost", "error", err)
+	}
+}
+
 // forwardingClientOptions builds the client-level options that install the
 // elicitation and sampling handlers on a backend client, each closing over the
 // captured per-call downstream context so the handler can relay to the right
@@ -169,11 +214,16 @@ func newSamplingForwarder(callCtx context.Context, req vmcp.SamplingRequester) c
 // never surfaced to the backend. Other notification methods are ignored (the
 // go-sdk server re-emits list-changed notifications automatically).
 func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotifier) func(mcp.JSONRPCNotification) {
+	// Backend notifications are delivered asynchronously and can arrive just after
+	// the tool call context is cancelled; keep the captured downstream-session
+	// values but ignore cancellation so best-effort forwarding still runs.
+	forwardCtx := context.WithoutCancel(callCtx)
+
 	return func(n mcp.JSONRPCNotification) {
 		fields := n.Params.AdditionalFields
 		switch n.Method {
 		case vmcp.MethodProgressNotification:
-			err := notifier.NotifyProgress(callCtx, vmcp.ProgressNotification{
+			err := notifier.NotifyProgress(forwardCtx, vmcp.ProgressNotification{
 				ProgressToken: fields["progressToken"],
 				Progress:      toFloat(fields["progress"]),
 				Total:         toFloat(fields["total"]),
@@ -183,7 +233,7 @@ func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotif
 				slog.Debug("failed to forward progress notification", "error", err)
 			}
 		case vmcp.MethodLogNotification:
-			err := notifier.NotifyLog(callCtx, vmcp.LogMessage{
+			err := notifier.NotifyLog(forwardCtx, vmcp.LogMessage{
 				Level:  toString(fields["level"]),
 				Logger: toString(fields["logger"]),
 				Data:   fields["data"],

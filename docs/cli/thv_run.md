@@ -181,6 +181,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --secret stringArray                          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --session-ttl duration                        Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)
       --stateless                                   Declare the server as stateless (POST-only, no SSE). Use for MCP servers implementing streamable-HTTP stateless mode.
+      --strict-protocol-validation                  Reject client requests whose MCP-Protocol-Version header is an unknown/unsupported MCP revision with HTTP 400 (streamable-HTTP proxy only; an absent header is accepted). Off by default: any version is accepted.
       --target-host string                          Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                             Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
       --thv-ca-bundle string                        Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)

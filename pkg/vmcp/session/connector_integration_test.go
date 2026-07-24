@@ -114,7 +114,7 @@ func TestSessionFactory_Integration_CapabilityDiscovery(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, sess)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
@@ -143,7 +143,7 @@ func TestSessionFactory_Integration_CallTool(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -166,7 +166,7 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -189,7 +189,7 @@ func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -218,7 +218,7 @@ func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -263,11 +263,11 @@ func TestIdentityBinding_CallerRejection(t *testing.T) {
 	}
 
 	// No backend connector needed: auth validation fires before any routing.
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), alice, nil)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), alice, nil, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 
@@ -328,7 +328,7 @@ func TestIdentityBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -372,11 +372,11 @@ func TestIdentityBinding_RestoreSession_RoundTrip(t *testing.T) {
 		},
 	}
 
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, nil)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, nil, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 
@@ -478,7 +478,7 @@ func TestSessionFactory_Integration_RestoreSession_SendsStoredSessionHintToBacke
 
 	// Create the original session — the backend assigns a session ID over
 	// streamable-HTTP and we store it in metadata.
-	orig, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	orig, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = orig.Close() })
 

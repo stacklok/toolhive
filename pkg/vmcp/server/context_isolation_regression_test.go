@@ -55,8 +55,8 @@ func newPerToolSessionFactory(
 ) *sessionfactorymocks.MockMultiSessionFactory {
 	t.Helper()
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -90,6 +90,157 @@ func newPerToolSessionFactory(
 			return mock, nil
 		}).AnyTimes()
 	return factory
+}
+
+// principalIdentityMiddleware stamps a per-request auth.Identity onto the
+// request context, derived from the X-Test-Principal header, mirroring the
+// identity-stamping pattern in buildCedarAuthzServer's identityMiddleware
+// (authz_integration_test.go). It deliberately leaves Identity.Token empty:
+// the mock session factory below binds the session as "unauthenticated", and
+// validateCallerBinding's anonymous-session upgrade-attack guard only rejects
+// a caller that presents a non-empty Token -- so distinct Subjects with no
+// token pass the binding check while still giving each request its own
+// identity for coreToolHandler/core.CallTool to observe. A request with no
+// header is left unauthenticated, matching every other test in this file that
+// never sets this middleware.
+func principalIdentityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal := r.Header.Get("X-Test-Principal")
+		if principal == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+			Subject: principal,
+			Claims:  map[string]any{"sub": principal},
+		}}
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+	})
+}
+
+// TestRegression_ConcurrentSameSession_NoIdentityBleed pins the fix for issue
+// #156 item U3 (toolhive-core v0.0.32): go-sdk handles messages for an
+// existing session on that session's own connection goroutine using the
+// initialize-time context, so a per-POST request context (identity included)
+// would be lost unless bridged per-request. The shim bridges it via a nonce
+// keyed to the individual POST -- NOT the session ID -- specifically so two
+// concurrent POSTs on the SAME session cannot clobber each other's identity.
+// TestRegression_ConcurrentToolCalls_NoAuditBleed (above) already covers
+// concurrent same-session calls, but both requests carry the SAME (anonymous)
+// principal, so a regression that collapsed the per-POST bridge back to the
+// old session-keyed (or session-wide) context would not be caught there. This
+// test fires two concurrent tools/call POSTs on ONE session with DISTINCT
+// principals and asserts core.CallTool observed each request's own identity,
+// correlated by principal (a stable key), not by arrival order.
+func TestRegression_ConcurrentSameSession_NoIdentityBleed(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	testTool := vmcp.Tool{Name: "t"}
+	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
+	fc.enableCallIdentityRecording()
+	factory, _ := newToolSessionFactory(t, ctrl, []vmcp.Tool{testTool})
+
+	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	streamable := server.NewStreamableHTTPServer(
+		srv.mcpServer,
+		server.WithEndpointPath("/mcp"),
+		server.WithSessionIdManager(srv.vmcpSessionMgr),
+	)
+	ts := httptest.NewServer(principalIdentityMiddleware(streamable))
+	t.Cleanup(ts.Close)
+	baseURL := ts.URL
+
+	initResp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-11-25",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+	require.Eventually(t, func() bool {
+		_, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond, "session should be registered")
+
+	principals := []string{"p1", "p2"}
+	var wg sync.WaitGroup
+	wg.Add(len(principals))
+	callErrs := make([]error, len(principals))
+	for i, principal := range principals {
+		i, principal := i, principal
+		go func() {
+			defer wg.Done()
+			// No require/assert here: FailNow from a worker goroutine only runs
+			// Goexit off the test goroutine and misreports. Collect the error and
+			// assert on the test goroutine after wg.Wait() below.
+			resp, doErr := doServeMCPWithHeaders(baseURL, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      2 + i,
+				"method":  "tools/call",
+				"params": map[string]any{
+					"name": "t",
+					// "caller" travels in the request BODY and is echoed to
+					// fakeCore.CallTool via args, giving a correlator that is
+					// independent of the context-bridged identity. The recorder
+					// keys on it so the assertion below can detect a swap, not
+					// just a collapse.
+					"arguments": map[string]any{"caller": principal},
+				},
+			}, sessionID, map[string]string{"X-Test-Principal": principal})
+			if doErr != nil {
+				callErrs[i] = doErr
+				return
+			}
+			defer resp.Body.Close()
+			_, callErrs[i] = io.ReadAll(resp.Body)
+		}()
+	}
+
+	// Fail-fast wait: never block indefinitely on a WaitGroup.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent same-session calls to complete")
+	}
+	for i, callErr := range callErrs {
+		require.NoError(t, callErr, "call for principal %q must succeed", principals[i])
+	}
+
+	require.Equal(t, int32(len(principals)), fc.callToolCalls.Load(),
+		"core.CallTool must be called exactly once per concurrent request")
+
+	// For each request (identified by its body-supplied "caller"), the identity
+	// core.CallTool observed must be that request's OWN identity. The recorder
+	// keys on the caller argument (from the request body) and stores the
+	// observed identity (from the context bridge) as the value; asserting
+	// value.Subject == caller therefore correlates the two independent sources.
+	// This catches BOTH failure modes of the U3 regression: a collapse (one
+	// caller key never recorded -> NotNil fails) AND a symmetric swap (request
+	// caller=p1 handled with p2's identity -> callIdentityFor("p1").Subject is
+	// "p2" -> Equal fails), which a Subject-keyed recorder could not detect.
+	for _, principal := range principals {
+		got := fc.callIdentityFor(principal)
+		require.NotNil(t, got, "no identity was recorded for caller %q; did it bleed into another request?", principal)
+		assert.Equal(t, principal, got.Subject,
+			"the request with caller=%q must be handled with its OWN identity, not a concurrent request's", principal)
+	}
 }
 
 // TestRegression_ConcurrentToolCalls_NoAuditBleed fires two tools/call POSTs

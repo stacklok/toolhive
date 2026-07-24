@@ -120,6 +120,15 @@ type HTTPProxy struct {
 	// WithStandaloneSSE(false) to opt out.
 	standaloneSSE bool
 
+	// strictProtocolValidation controls whether handlePost rejects a request
+	// whose MCP-Protocol-Version header names an unknown/unsupported MCP
+	// revision (see isSupportedMCPVersion) with HTTP 400. Default false: any
+	// version string is accepted, since this proxy is transport-level and does
+	// not depend on a specific MCP revision. An absent header is always
+	// accepted, in either mode, per the streamable HTTP spec's rule to assume
+	// 2025-03-26 when the header is missing. Set via WithStrictProtocolValidation.
+	strictProtocolValidation bool
+
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
 
@@ -188,6 +197,16 @@ func WithStandaloneSSE(enabled bool) Option {
 	return func(p *HTTPProxy) {
 		p.standaloneSSE = enabled
 	}
+}
+
+// WithStrictProtocolValidation enables strict MCP-Protocol-Version checking.
+// When enabled, a request whose MCP-Protocol-Version header names an
+// unsupported/unknown MCP revision is rejected with HTTP 400. An absent
+// header is still accepted (the streamable HTTP spec says to assume
+// 2025-03-26). Default (false) preserves the version-agnostic behavior:
+// any version string is accepted.
+func WithStrictProtocolValidation(enabled bool) Option {
+	return func(p *HTTPProxy) { p.strictProtocolValidation = enabled }
 }
 
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
@@ -495,9 +514,15 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Optionally validate MCP-Protocol-Version; accept missing for compatibility
+	// MCP-Protocol-Version validation is opt-in via strictProtocolValidation
+	// (WithStrictProtocolValidation). Default (false) is version-agnostic:
+	// any header value is accepted, since this proxy is transport-level and
+	// does not depend on a specific MCP revision. When strict mode is
+	// enabled, a present-but-unrecognized version is rejected with 400; an
+	// absent header is always accepted in either mode, per the streamable
+	// HTTP spec's rule to assume 2025-03-26 when the header is missing.
 	protoVer := r.Header.Get("MCP-Protocol-Version")
-	if protoVer != "" && !isSupportedMCPVersion(protoVer) {
+	if p.strictProtocolValidation && protoVer != "" && !isSupportedMCPVersion(protoVer) {
 		writeHTTPError(w, http.StatusBadRequest, "Unsupported MCP-Protocol-Version")
 		return
 	}

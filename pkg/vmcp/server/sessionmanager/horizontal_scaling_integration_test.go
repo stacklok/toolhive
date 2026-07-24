@@ -42,9 +42,19 @@ func newUnauthenticatedAuthRegistry(t *testing.T) vmcpauth.OutgoingAuthRegistry 
 	return reg
 }
 
-// newSharedRedisStorage creates a RedisSessionDataStorage pointing at mr.
-// The storage is closed via t.Cleanup.
+// newSharedRedisStorage creates a RedisSessionDataStorage pointing at mr with
+// a long (1h) TTL, suitable for tests that are not exercising TTL expiry
+// itself. The storage is closed via t.Cleanup.
 func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsession.DataStorage {
+	t.Helper()
+	return newSharedRedisStorageWithTTL(t, mr, time.Hour)
+}
+
+// newSharedRedisStorageWithTTL is like newSharedRedisStorage but lets the
+// caller control the sliding-window TTL, so tests can pin TTL-refresh and
+// TTL-expiry behaviour with a short duration combined with mr.FastForward.
+// The storage is closed via t.Cleanup.
+func newSharedRedisStorageWithTTL(t *testing.T, mr *miniredis.Miniredis, ttl time.Duration) transportsession.DataStorage {
 	t.Helper()
 	storage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
@@ -52,7 +62,7 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 			Addr: mr.Addr(),
 		},
 		"test:vmcp:session:",
-		time.Hour,
+		ttl,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = storage.Close() })
@@ -89,7 +99,7 @@ func createSession(t *testing.T, sm *Manager, identity *auth.Identity) string {
 	if identity != nil {
 		ctx = auth.WithIdentity(ctx, identity)
 	}
-	_, err := sm.CreateSession(ctx, sessionID)
+	_, err := sm.CreateSession(ctx, sessionID, nil)
 	require.NoError(t, err)
 	return sessionID
 }
@@ -387,4 +397,56 @@ func TestHorizontalScaling_InMemoryOnlyMode(t *testing.T) {
 	require.True(t, ok, "pod A must still serve its own session")
 	require.NotNil(t, sess)
 	assert.NotEmpty(t, sess.Tools(), "session on pod A must have tools")
+}
+
+// ---------------------------------------------------------------------------
+// Regression: cross-pod Validate() must observe a shared-store termination
+// ---------------------------------------------------------------------------
+
+// TestRegression_Validate_TerminatedInStore_ReturnsTerminated pins the real
+// U5 fix (toolhive-core v0.0.32, #5742): a session that Manager A ("pod A")
+// still holds live in its node-local cache, but which was terminated in the
+// SHARED Redis store by a second Manager ("pod B"), must be reported as
+// terminated by Manager A's very next Validate() call -- not treated as an
+// error (which the streamable transport would map to a retryable 503) and not
+// silently reported as still-live. Manager.Validate's documented contract
+// collapses "explicitly terminated" and "absent from storage" into the same
+// (isTerminated=true, nil) signal; this test exercises the termination
+// specifically via a DIFFERENT Manager instance terminating the SAME shared
+// store, not via Manager A's own Terminate (which the existing
+// "TestSessionManager_Terminate" suite already covers and which additionally
+// touches Manager A's local bookkeeping directly).
+func TestRegression_Validate_TerminatedInStore_ReturnsTerminated(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	storage := newSharedRedisStorage(t, mr)
+	backend := startMCPBackend(t, "backend-alpha", "echo")
+
+	// Manager A ("pod A"): create a full (Phase 2) session.
+	smA := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
+	sessionID := createSession(t, smA, nil)
+
+	// Sanity: the session must currently validate as live, or the
+	// post-termination assertion below would pass vacuously.
+	isTerminated, err := smA.Validate(sessionID)
+	require.NoError(t, err)
+	require.False(t, isTerminated, "a freshly created session must validate as live")
+
+	// Manager B ("pod B"): a second Manager over the SAME shared Redis store
+	// terminates the session out-of-band. This mutates only the shared store --
+	// it does NOT go through Manager A's in-process bookkeeping -- exactly like
+	// a DELETE served by a different replica.
+	smB := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
+	isNotAllowed, err := smB.Terminate(sessionID)
+	require.NoError(t, err)
+	require.False(t, isNotAllowed)
+
+	// Manager A must observe the cross-pod termination on the very next
+	// Validate() call against the shared store.
+	isTerminated, err = smA.Validate(sessionID)
+	require.NoError(t, err)
+	assert.True(t, isTerminated,
+		"Manager A must report the session as terminated after Manager B terminates it "+
+			"in the shared store, even though Manager A never terminated it locally")
 }

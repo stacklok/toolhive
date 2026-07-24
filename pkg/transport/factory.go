@@ -52,6 +52,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.PrometheusHandler, config.Middlewares...,
 		)
 		stdio.SetProxyMode(config.ProxyMode)
+		stdio.SetStrictProtocolValidation(config.StrictProtocolValidation)
 		if config.SessionStorage != nil {
 			stdio.SetSessionStorage(config.SessionStorage)
 		}

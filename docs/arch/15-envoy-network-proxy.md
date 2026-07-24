@@ -173,9 +173,9 @@ reachable from the local machine.
 The upstream STRICT_DNS cluster resolves the MCP container's hostname inside the
 internal Docker network and forwards HTTP traffic to the MCP server port.
 
-The admin interface binds to `127.0.0.1` inside the Envoy container (container
-loopback, not reachable via Docker port forwarding) as a precaution against the
-admin API being accessible from other containers.
+The admin interface is intentionally omitted from the bootstrap configuration.
+Envoy does not start an admin server when the field is absent, eliminating the
+attack surface entirely.
 
 ### Bootstrap lifecycle
 
@@ -223,17 +223,10 @@ backend is stable.
 | Access logs | Per-container, text format | Unified stdout, structured |
 | Config format | Text template | Typed Go structs → protobuf-JSON |
 | Runtime config update | Restart required | xDS-capable (not yet used) |
-| Upstream image | Stacklok-built | Upstream distroless (pinned tag) |
+| Upstream image | Stacklok-built | Upstream distroless (pinned tag+digest) |
 
 ## Known Limitations
 
-- **Tag-pinned image.** The Envoy image is pinned by tag (`v1.32.3`), not by
-  digest. A future PR should pin by digest and add a `TOOLHIVE_ENVOY_IMAGE`
-  override for supply-chain policy requirements (the env var already exists).
-  Tracked in #5903.
-- **Admin interface port.** The admin API on `:9901` (loopback-only inside the
-  container) is always enabled. A follow-up can disable it entirely or make it
-  conditional.
 - **CONNECT access log timing.** Envoy logs CONNECT tunnel entries when the
   tunnel closes, not when it opens. With keep-alive HTTP clients the log entry
   may be delayed by minutes. Egress access logs are visible in `docker logs` but

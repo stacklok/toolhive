@@ -376,6 +376,16 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithStrictProtocolValidation sets whether the streamable HTTP proxy rejects
+// requests carrying an unknown/unsupported MCP-Protocol-Version header with
+// HTTP 400. Default false accepts any version string.
+func WithStrictProtocolValidation(strict bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.StrictProtocolValidation = strict
+		return nil
+	}
+}
+
 // WithStateless declares the server is stateless (POST-only, no SSE).
 func WithStateless(stateless bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

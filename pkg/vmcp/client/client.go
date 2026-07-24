@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -1056,7 +1057,7 @@ func (h *httpBackendClient) CallTool(
 		Params: mcp.CallToolParams{
 			Name:      backendToolName,
 			Arguments: arguments,
-			Meta:      conversion.ToMCPMeta(meta),
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, meta)),
 		},
 	})
 	if err != nil {
@@ -1160,9 +1161,12 @@ func (h *httpBackendClient) ReadResource(
 		slog.Debug("translating resource URI", "client_uri", uri, "backend_uri", backendURI)
 	}
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See TestOutboundMetaTraceContext for details/tripwire.
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
 		Params: mcp.ReadResourceParams{
-			URI: backendURI,
+			URI:  backendURI,
+			Meta: conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {
@@ -1215,10 +1219,13 @@ func (h *httpBackendClient) GetPrompt(
 
 	stringArgs := conversion.ConvertPromptArguments(arguments)
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See TestOutboundMetaTraceContext for details/tripwire.
 	result, err := c.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
 			Name:      backendPromptName,
 			Arguments: stringArgs,
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {

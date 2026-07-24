@@ -84,6 +84,7 @@ func (*stubVMCP) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.B
 }
 func (s *stubVMCP) Close() error                 { s.closed = true; return nil }
 func (*stubVMCP) BackendHealth() health.Reporter { return nil }
+func (*stubVMCP) InvalidateCapabilityCache()     {}
 
 // stubWatcher is a non-nil Watcher for the drift-guard test; its behavior is not
 // exercised there.

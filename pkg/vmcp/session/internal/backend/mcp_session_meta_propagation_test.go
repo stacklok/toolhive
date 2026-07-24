@@ -56,7 +56,7 @@ func TestHTTPSession_CallTool_InjectsTraceparent(t *testing.T) { //nolint:parall
 	initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	sess, _, err := connector(initCtx, target, nil, "")
+	sess, _, err := connector(initCtx, target, nil, "", nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 

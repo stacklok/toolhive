@@ -203,6 +203,15 @@ type VMCP interface {
 	// backend health (e.g. the /health route and periodic status reporting).
 	BackendHealth() health.Reporter
 
+	// InvalidateCapabilityCache forces the next List/Lookup/Call on every identity
+	// to re-sweep backend capabilities rather than serve a cached view. Serve's
+	// Server calls it after a backend reports notifications/tools/list_changed
+	// (#5748), before re-deriving the session's advertised tool set — otherwise
+	// the resync would immediately re-read the now-stale cached aggregation. It
+	// is a no-op (WARN-logged, not silent) when the configured Aggregator does
+	// not memoize results — see aggregator.CacheInvalidator.
+	InvalidateCapabilityCache()
+
 	// Close releases core-held resources (backend connections, the health monitor, etc.).
 	// Implementations must be idempotent: calling Close multiple times returns nil.
 	Close() error

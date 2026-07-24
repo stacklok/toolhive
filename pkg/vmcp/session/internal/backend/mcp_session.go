@@ -39,6 +39,56 @@ const (
 	defaultBackendRequestTimeout = 30 * time.Second
 )
 
+// ChangeKind identifies which capability class a backend reported changed via
+// ListChangedSink. Using a typed constant (rather than a bare string) means a
+// typo is a compile error at the producer and consumer instead of a silent
+// no-op, and gives the resources/prompts follow-up (#5748) an obvious extension
+// point (KindResources/KindPrompts).
+type ChangeKind string
+
+// KindTools is reported when a backend emits notifications/tools/list_changed.
+const KindTools ChangeKind = "tools"
+
+// ListChangedSink is invoked when a persistent backend connection observes a
+// notification this package consumes asynchronously (outside any in-flight
+// call) — currently only notifications/tools/list_changed, reported with
+// kind=KindTools. Resources/prompts list_changed are out of scope for #5748 (a
+// tracked follow-up); this package does not dispatch them to sink.
+//
+// The sink is invoked on the mcpcompat client's receive-loop goroutine (see
+// Client.dispatch in toolhive-core), so implementations MUST be non-blocking:
+// they must hand the work off (e.g. set a dirty flag / signal a worker) and
+// return immediately. A sink that does real work (network I/O, cache purges)
+// inline stalls that backend's entire notification delivery and lets a
+// misbehaving backend amplify one notification into unbounded work. The ctx
+// passed here is only for the hand-off; long-lived resync work must run under
+// a caller-owned, cancellable context, not this one.
+type ListChangedSink func(ctx context.Context, backendWorkloadID string, kind ChangeKind)
+
+// newListChangedNotificationHandler builds the OnNotification handler
+// registered by createMCPClient when sink is non-nil. It dispatches
+// notifications/tools/list_changed to sink (kind=KindTools) and log-only handles
+// notifications/message; every other notification method is ignored — this
+// handler is not the mid-call server->client relay (that is
+// pkg/vmcp/client's per-call notification forwarder), it only feeds the
+// session-registration resync path.
+func newListChangedNotificationHandler(workloadID string, sink ListChangedSink) func(mcp.JSONRPCNotification) {
+	return func(n mcp.JSONRPCNotification) {
+		switch n.Method {
+		case vmcp.MethodToolsListChangedNotification:
+			sink(context.Background(), workloadID, KindTools)
+		case vmcp.MethodLogNotification:
+			// Out-of-call backend log messages are not relayed to the downstream
+			// client on this path; log so the signal is visible rather than
+			// silently dropped.
+			slog.Debug("backend log notification received outside call", "backendID", workloadID)
+		default:
+			// Other notification types (resources/prompts list_changed, resource
+			// subscription updates, ...) are out of scope here (#5748 follow-up).
+		}
+	}
+}
+
 // httpRoundTripperFunc adapts a plain function to http.RoundTripper.
 type httpRoundTripperFunc func(*http.Request) (*http.Response, error)
 
@@ -236,11 +286,18 @@ func (c *mcpSession) GetPrompt(
 // shared across every session it creates; its lifetime matches the connector's.
 // It is consumed by BuildHeaderForwardTripper to resolve secret-backed entries
 // in target.HeaderForward.
+//
+// The returned function's sink parameter, when non-nil, enables persistent
+// backend-notification consumption for this backend connection — see
+// createMCPClient for what that does and does not enable (nil-sink callers are
+// completely unaffected: no OnNotification handler is registered and no
+// standalone GET stream is opened).
 func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
+	sink ListChangedSink,
 ) (Session, *vmcp.CapabilityList, error) {
 	provider := secrets.NewEnvironmentProvider()
 	return func(
@@ -248,8 +305,9 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
 		sessionHint string,
+		sink ListChangedSink,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider)
+		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider, sink)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -283,6 +341,18 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // ctx is used only to resolve secret-backed entries in target.HeaderForward at
 // client-creation time; the transport itself is started with context.Background()
 // as described above. provider supplies values for those secret-backed headers.
+//
+// sink is gated STRICTLY on non-nil: when nil, this function's behavior is
+// byte-for-byte identical to before sink existed (no OnNotification handler is
+// registered, and the streamable-HTTP branch does not enable continuous
+// listening). When non-nil, an OnNotification handler is registered (before
+// c.Start, per the mcpcompat client's registration contract) that invokes sink
+// on notifications/tools/list_changed and log-only handles notifications/message.
+// For the streamable-HTTP transport, a non-nil sink also enables
+// mcptransport.WithContinuousListening() — required for the backend's
+// asynchronous (outside any in-flight call) notifications to reach this client
+// at all — since some backends hang when a standalone GET stream is opened
+// against them, this must stay opt-in (#5748 R3).
 func createMCPClient(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -290,6 +360,7 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
+	sink ListChangedSink,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -379,6 +450,14 @@ func createMCPClient(
 		if sessionHint != "" {
 			streamableOpts = append(streamableOpts, mcptransport.WithSession(sessionHint))
 		}
+		if sink != nil {
+			// A standalone GET stream is the only way this client can receive a
+			// notification the backend emits outside an in-flight call (e.g.
+			// tools/list_changed after a registration-time capability change).
+			// Gated strictly on sink != nil: some backends hang when this stream
+			// is opened against them (#5748 R3), so it must stay opt-in.
+			streamableOpts = append(streamableOpts, mcptransport.WithContinuousListening())
+		}
 		c, err = mcpclient.NewStreamableHttpClient(target.BaseURL, streamableOpts...)
 	case "sse":
 		// For SSE, the entire session is delivered as one long-lived HTTP
@@ -400,6 +479,16 @@ func createMCPClient(
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create %s client: %w", target.TransportType, err)
+	}
+
+	// Register the notification handler before Start (mirrors the per-call
+	// client in pkg/vmcp/client, and matches the mcpcompat client's own
+	// registration contract): the handler dispatches
+	// notifications/tools/list_changed to sink and logs notifications/message.
+	// Strictly gated on sink != nil so a nil-sink caller registers no handler at
+	// all — this function's behavior for that caller is unchanged.
+	if sink != nil {
+		c.OnNotification(newListChangedNotificationHandler(target.WorkloadID, sink))
 	}
 
 	// Start the transport with context.Background() so that the transport's

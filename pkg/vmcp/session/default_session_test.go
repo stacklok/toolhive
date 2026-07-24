@@ -537,7 +537,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 	}
 
 	//nolint:unparam // second return is always nil by design in the success-path connector
-	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return &mockConnectedBackend{sessID: "bs-1"}, &vmcp.CapabilityList{
 			Tools:     []vmcp.Tool{tool},
 			Resources: []vmcp.Resource{resource},
@@ -549,7 +549,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(successConnector)
-		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -567,9 +567,9 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(successConnector)
-		s1, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+		s1, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 		require.NoError(t, err)
-		s2, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+		s2, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 		require.NoError(t, err)
 
 		assert.NotEqual(t, s1.ID(), s2.ID())
@@ -582,7 +582,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(successConnector)
-		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, nil)
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -598,7 +598,7 @@ func TestNewSessionFactory_MakeSession(t *testing.T) {
 		factory := newSessionFactoryWithConnector(successConnector)
 		// Mix of valid and nil entries; nil must not cause a panic.
 		backends := []*vmcp.Backend{nil, backend, nil}
-		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+		sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 		require.NoError(t, err)
 		require.NotNil(t, sess)
 
@@ -616,7 +616,7 @@ func TestNewSessionFactory_PartialInitialisation(t *testing.T) {
 		{ID: "fail", Name: "fail", BaseURL: "http://fail:9999", TransportType: "streamable-http"},
 	}
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		if target.WorkloadID == "fail" {
 			return nil, nil, errors.New("backend unavailable")
 		}
@@ -626,7 +626,7 @@ func TestNewSessionFactory_PartialInitialisation(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err, "partial init must not return an error")
 	require.NotNil(t, sess)
 
@@ -650,20 +650,20 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 	}{
 		{
 			name: "nil conn with nil caps",
-			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 				return nil, nil, nil
 			},
 		},
 		{
 			name: "nil conn with non-nil caps",
-			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 				return nil, &vmcp.CapabilityList{}, nil
 			},
 		},
 		{
 			name:          "non-nil conn with nil caps must close conn to avoid leak",
 			wantConnClose: true,
-			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+			connector: func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 				return &mockConnectedBackend{}, nil, nil
 			},
 		},
@@ -676,8 +676,8 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 			// Replace the connector with one that captures the mock so we can
 			// inspect closeCalled after MakeSession returns.
 			var captured *mockConnectedBackend
-			wrappedConnector := func(ctx context.Context, target *vmcp.BackendTarget, id *auth.Identity, hint string) (internalbk.Session, *vmcp.CapabilityList, error) {
-				conn, caps, err := tt.connector(ctx, target, id, hint)
+			wrappedConnector := func(ctx context.Context, target *vmcp.BackendTarget, id *auth.Identity, hint string, sink internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+				conn, caps, err := tt.connector(ctx, target, id, hint, sink)
 				if m, ok := conn.(*mockConnectedBackend); ok {
 					captured = m
 				}
@@ -685,7 +685,7 @@ func TestNewSessionFactory_ConnectorReturnsNilWithoutError(t *testing.T) {
 			}
 
 			factory := newSessionFactoryWithConnector(wrappedConnector)
-			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 			require.NoError(t, err)
 			require.NotNil(t, sess)
 			assert.Empty(t, sess.Tools())
@@ -707,12 +707,12 @@ func TestNewSessionFactory_ConnectorReturnsConnWithError(t *testing.T) {
 	backend := &vmcp.Backend{ID: "b1", Name: "b1", BaseURL: "http://x:9", TransportType: "streamable-http"}
 	leaked := &mockConnectedBackend{}
 
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return leaked, nil, errors.New("init failed but conn was partially opened")
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err, "partial failure must not abort the session")
 	require.NotNil(t, sess)
 	assert.Empty(t, sess.Tools())
@@ -732,7 +732,7 @@ func TestNewSessionFactory_CapabilityNameConflictIsResolvedDeterministically(t *
 		{ID: "alpha", Name: "alpha", BaseURL: "http://alpha:9", TransportType: "streamable-http"},
 	}
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return &mockConnectedBackend{sessID: target.WorkloadID}, &vmcp.CapabilityList{
 			Tools:     []vmcp.Tool{{Name: "fetch", BackendID: target.WorkloadID}},
 			Resources: []vmcp.Resource{{URI: "file://data", BackendID: target.WorkloadID}},
@@ -741,7 +741,7 @@ func TestNewSessionFactory_CapabilityNameConflictIsResolvedDeterministically(t *
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err)
 	require.NotNil(t, sess)
 	defer func() { require.NoError(t, sess.Close()) }()
@@ -766,12 +766,12 @@ func TestNewSessionFactory_AllBackendsFail(t *testing.T) {
 	t.Parallel()
 
 	backend := &vmcp.Backend{ID: "b1", Name: "b1", BaseURL: "http://x:9", TransportType: "streamable-http"}
-	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, errors.New("down")
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err, "all-fail must still return a valid (empty) session")
 	require.NotNil(t, sess)
 
@@ -785,7 +785,7 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 	backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
 
 	released := make(chan struct{})
-	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
@@ -795,7 +795,7 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector, WithBackendInitTimeout(50*time.Millisecond))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil)
 	require.NoError(t, err, "timeout is a partial failure, not a hard error")
 	require.NotNil(t, sess)
 
@@ -823,7 +823,7 @@ func TestNewSessionFactory_ParallelInit(t *testing.T) {
 	var mu sync.Mutex
 	var maxConcurrent, current int32
 
-	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	connector := func(_ context.Context, target *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		mu.Lock()
 		current++
 		if current > maxConcurrent {
@@ -844,7 +844,7 @@ func TestNewSessionFactory_ParallelInit(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector, WithMaxBackendInitConcurrency(3))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends, nil)
 	require.NoError(t, err)
 
 	// All backends must have been initialised.
@@ -864,10 +864,10 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 	backend2 := &vmcp.Backend{ID: "b2", Name: "backend-2", BaseURL: "http://localhost:9002", TransportType: "streamable-http"}
 
 	//nolint:unparam // error return is always nil by design in the success-path connector
-	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	successConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return &mockConnectedBackend{}, &vmcp.CapabilityList{}, nil
 	}
-	failConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	failConnector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, errors.New("connection refused")
 	}
 
@@ -928,7 +928,7 @@ func TestNewSessionFactory_MakeSession_Metadata(t *testing.T) {
 			t.Parallel()
 
 			factory := newSessionFactoryWithConnector(tt.connector)
-			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), tt.identity, tt.backends)
+			sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), tt.identity, tt.backends, nil)
 			require.NoError(t, err)
 			require.NotNil(t, sess)
 			defer func() { require.NoError(t, sess.Close()) }()
@@ -1138,15 +1138,15 @@ func TestValidateSessionID(t *testing.T) {
 func TestMakeSessionWithID_InvalidIDReturnsError(t *testing.T) {
 	t.Parallel()
 
-	f := newSessionFactoryWithConnector(func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+	f := newSessionFactoryWithConnector(func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	})
 
-	_, err := f.MakeSessionWithID(context.Background(), "", nil, nil)
+	_, err := f.MakeSessionWithID(context.Background(), "", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not be empty")
 
-	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, nil)
+	_, err = f.MakeSessionWithID(context.Background(), "bad id", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid character")
 }

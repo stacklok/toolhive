@@ -91,6 +91,14 @@ func TestIsImmutableSource(t *testing.T) {
 			want:  false,
 		},
 		{
+			// The sibling git resolver accepts uppercase hex; classifying
+			// an uppercase pin as mutable would needlessly re-clone it on
+			// every upgrade despite the pin being immutable.
+			name:  "git uppercase full commit hash source is immutable",
+			entry: lockfile.Entry{Source: "git://github.com/org/skill@ABCDEF0123456789ABCDEF0123456789ABCDEF01"},
+			want:  true,
+		},
+		{
 			name:  "git source with no ref is mutable",
 			entry: lockfile.Entry{Source: "git://github.com/org/skill"},
 			want:  false,

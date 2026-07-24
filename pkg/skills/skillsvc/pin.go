@@ -30,12 +30,15 @@ func isImmutableSource(entry lockfile.Entry) bool {
 	return isDigest
 }
 
+// isFullCommitHash accepts both hex cases: the sibling git resolver does
+// too, and classifying an uppercase-pinned source as mutable would
+// needlessly re-clone it on every upgrade despite the pin being immutable.
 func isFullCommitHash(ref string) bool {
 	if len(ref) != 40 {
 		return false
 	}
 	for _, c := range ref {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}

@@ -214,11 +214,16 @@ func newSamplingForwarder(callCtx context.Context, req vmcp.SamplingRequester) c
 // never surfaced to the backend. Other notification methods are ignored (the
 // go-sdk server re-emits list-changed notifications automatically).
 func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotifier) func(mcp.JSONRPCNotification) {
+	// Backend notifications are delivered asynchronously and can arrive just after
+	// the tool call context is cancelled; keep the captured downstream-session
+	// values but ignore cancellation so best-effort forwarding still runs.
+	forwardCtx := context.WithoutCancel(callCtx)
+
 	return func(n mcp.JSONRPCNotification) {
 		fields := n.Params.AdditionalFields
 		switch n.Method {
 		case vmcp.MethodProgressNotification:
-			err := notifier.NotifyProgress(callCtx, vmcp.ProgressNotification{
+			err := notifier.NotifyProgress(forwardCtx, vmcp.ProgressNotification{
 				ProgressToken: fields["progressToken"],
 				Progress:      toFloat(fields["progress"]),
 				Total:         toFloat(fields["total"]),
@@ -228,7 +233,7 @@ func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotif
 				slog.Debug("failed to forward progress notification", "error", err)
 			}
 		case vmcp.MethodLogNotification:
-			err := notifier.NotifyLog(callCtx, vmcp.LogMessage{
+			err := notifier.NotifyLog(forwardCtx, vmcp.LogMessage{
 				Level:  toString(fields["level"]),
 				Logger: toString(fields["logger"]),
 				Data:   fields["data"],

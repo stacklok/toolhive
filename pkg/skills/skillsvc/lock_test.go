@@ -52,8 +52,11 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver) (skills.SkillSe
 	// Only reached when a caller omits --clients with no prior DB record to
 	// fall back on (e.g. sync restoring an entry missing from a fresh
 	// clone) — the RFC's client-agnostic design expands that to every
-	// skill-supporting client detected on the host.
-	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code"})
+	// skill-supporting client detected on the host. Deliberately returns
+	// more than one client so tests can distinguish "preserved the skill's
+	// existing (narrower) client list" from "fell through to every detected
+	// client" (see TestUpgrade_PreservesExistingClients).
+	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
 
 	svc := New(store, WithPathResolver(pr), WithGitResolver(gr))
 	return svc, projectRoot

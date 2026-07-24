@@ -1691,6 +1691,10 @@ const docTemplate = `{
                         "description": "InstalledAt is the timestamp when the skill was installed.",
                         "type": "string"
                     },
+                    "managed": {
+                        "description": "Managed indicates this install is tracked in the project's\ntoolhive.lock.yaml. Only ever true for project-scoped installs. No\nomitempty: false is an observable state (unmanaged), not an absence.",
+                        "type": "boolean"
+                    },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
                     },

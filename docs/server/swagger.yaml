@@ -1567,6 +1567,13 @@ components:
             POST-based health check instead of the default GET probe.
             Applies to both remote URLs and local container workloads.
           type: boolean
+        strict_protocol_validation:
+          description: |-
+            StrictProtocolValidation enables strict MCP-Protocol-Version validation
+            on the streamable HTTP proxy: a request whose header names an unknown
+            MCP revision is rejected with HTTP 400. Default false accepts any
+            version string (an absent header is always accepted in either mode).
+          type: boolean
         target_host:
           description: TargetHost is the host to forward traffic to (only applicable
             to SSE transport)

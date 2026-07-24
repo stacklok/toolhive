@@ -66,7 +66,12 @@ func (c *coreVMCP) CallTool(
 		}
 		return nil, fmt.Errorf("routing tool %q: %w", name, err)
 	}
-	return c.backendClient.CallTool(ctx, target, name, argsCopy, metaCopy)
+	result, err := c.backendClient.CallTool(ctx, target, name, argsCopy, metaCopy)
+	if err != nil {
+		return nil, err
+	}
+	result.BackendID = target.WorkloadID
+	return result, nil
 }
 
 // ReadResource reads the resource at uri from its backend. Returns
@@ -95,7 +100,12 @@ func (c *coreVMCP) ReadResource(
 	}
 	// Pass the advertised URI; the backend client owns the single translation to
 	// the backend's capability name (client.go:874), matching CallTool.
-	return c.backendClient.ReadResource(ctx, target, uri)
+	result, err := c.backendClient.ReadResource(ctx, target, uri)
+	if err != nil {
+		return nil, err
+	}
+	result.BackendID = target.WorkloadID
+	return result, nil
 }
 
 // GetPrompt retrieves the named prompt from its backend. args is treated as
@@ -126,7 +136,12 @@ func (c *coreVMCP) GetPrompt(
 	}
 	// Pass the advertised name; the backend client owns the single translation to
 	// the backend's capability name (client.go:927), matching CallTool.
-	return c.backendClient.GetPrompt(ctx, target, name, maps.Clone(args))
+	result, err := c.backendClient.GetPrompt(ctx, target, name, maps.Clone(args))
+	if err != nil {
+		return nil, err
+	}
+	result.BackendID = target.WorkloadID
+	return result, nil
 }
 
 // Complete resolves argument-completion candidates for the referenced prompt or

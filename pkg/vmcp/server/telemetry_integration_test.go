@@ -83,7 +83,7 @@ func newBackendAwareTestFactory(tools []vmcp.Tool, rt *vmcp.RoutingTable) *backe
 }
 
 func (f *backendAwareTestFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend,
+	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink,
 ) (vmcpsession.MultiSession, error) {
 	return f.newSession(id), nil
 }
@@ -388,9 +388,9 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 }
 
 // TestIntegration_TelemetryRunsBeforeClassificationRejection is a regression
-// guard for the middleware ordering in server.go: classificationMiddleware
+// guard for the middleware ordering in server.go: classifyingHandler
 // must stay closer to the handler than the telemetry middleware, so a
-// request that classificationMiddleware rejects is still recorded as an
+// request that classifyingHandler rejects is still recorded as an
 // incoming request instead of being dropped before telemetry ever sees it.
 // If classification is ever reordered in front of telemetry, this test
 // starts failing because the rejected request would never reach it.
@@ -469,7 +469,7 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 	// TestIntegration_RealBackend_ModernRequestRejectedByClassification: a
 	// reserved _meta key signals Modern, but no valid protocolVersion is
 	// present and the header names a different (Legacy) version, so
-	// classificationMiddleware rejects with -32020 before dispatch.
+	// classifyingHandler rejects with -32020 before dispatch.
 	body := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,

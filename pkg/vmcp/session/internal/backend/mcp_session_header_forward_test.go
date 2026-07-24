@@ -112,7 +112,7 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sess, _, err := connector(ctx, target, nil, "")
+		sess, _, err := connector(ctx, target, nil, "", nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = sess.Close() })
 
@@ -155,7 +155,7 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		_, _, err := connector(ctx, target, nil, "")
+		_, _, err := connector(ctx, target, nil, "", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "restricted",
 			"connector must reject restricted header names in HeaderForward config")
@@ -216,7 +216,7 @@ func connectAndCallEcho(t *testing.T, target *vmcp.BackendTarget) Session {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	sess, caps, err := connector(ctx, target, nil, "")
+	sess, caps, err := connector(ctx, target, nil, "", nil)
 	require.NoError(t, err, "connector must initialise the backend successfully")
 	require.NotNil(t, sess, "connector returned nil session")
 	require.NotNil(t, caps, "connector returned nil capability list")

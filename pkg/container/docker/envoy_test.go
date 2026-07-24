@@ -550,14 +550,6 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 	t.Parallel()
 
 	b := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{},
 	}
 
@@ -588,21 +580,13 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 		"bootstrap file must contain valid JSON")
 }
 
-// TestEnvoyAdmin_LoopbackOnly asserts that the admin block written by
-// writeEnvoyBootstrap binds only on the loopback address and never on
-// 0.0.0.0 or an empty address that would expose admin to all interfaces.
-func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
+// TestEnvoyAdmin_Absent asserts that the admin interface is entirely absent from
+// the generated bootstrap. Omitting the admin block causes Envoy to skip the
+// admin server, removing the attack surface without affecting proxy behaviour.
+func TestEnvoyAdmin_Absent(t *testing.T) {
 	t.Parallel()
 
 	b := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{},
 	}
 
@@ -613,12 +597,12 @@ func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	s := string(data)
 
-	assert.Contains(t, s, "127.0.0.1",
-		"admin address must be loopback 127.0.0.1")
-	assert.NotContains(t, s, "0.0.0.0",
-		"admin address must NOT bind on 0.0.0.0")
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m), "bootstrap must be valid JSON")
+
+	_, hasAdmin := m["admin"]
+	assert.False(t, hasAdmin, "bootstrap must not contain an admin block")
 }
 
 // TestGetEnvoyImage verifies that getEnvoyImage returns the default image when
@@ -755,7 +739,6 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 			listeners = append(listeners, buildTransparentListener(tc.spec))
 			clusters = append(clusters, buildOriginalDstCluster())
 			b := envoyBootstrap{
-				Admin:           &envoyAdmin{Address: envoyAddress{SocketAddress: envoySocketAddress{Address: "127.0.0.1", PortValue: 9901}}},
 				StaticResources: envoyStaticResources{Listeners: listeners, Clusters: clusters},
 			}
 			cfg, err := json.Marshal(b)

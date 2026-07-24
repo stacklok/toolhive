@@ -468,17 +468,60 @@ func TestIntegration_CedarAuthzDenialIsAudited(t *testing.T) {
 
 	// The audit event is written after the response is flushed, so poll briefly.
 	require.Eventually(t, func() bool {
-		return findAuditEvent(t, auditLogPath, "mcp_tool_call") != nil
+		return findToolCallAuditEvent(t, auditLogPath) != nil
 	}, 5*time.Second, 50*time.Millisecond, "a tools/call audit event must be emitted for the denied call")
 
-	event := findAuditEvent(t, auditLogPath, "mcp_tool_call")
+	event := findToolCallAuditEvent(t, auditLogPath)
 	assert.Equal(t, "denied", event["outcome"],
 		"a policy-denied tools/call must be audited with outcome denied")
 }
 
-// findAuditEvent reads the newline-delimited JSON audit log at path and returns
-// the first event whose "type" matches eventType, or nil if none is present yet.
-func findAuditEvent(t *testing.T, path string, eventType string) map[string]any {
+// TestIntegration_CedarAuthzDenial_ModernPath_IsAudited is the Modern (2026-07-28)
+// counterpart of TestIntegration_CedarAuthzDenialIsAudited. The Modern stateless
+// dispatcher bypasses the SDK server (and its CallGate), so it re-homes the
+// pre-dispatch authorization gate itself; this proves that gate end-to-end through
+// the fully assembled server rather than only in the dispatchModern unit tests. A
+// policy-denied Modern tools/call must surface as HTTP 403 + JSON-RPC 403 AND be
+// audited with outcome "denied" (audit -> parsing -> classification ->
+// dispatchModern), confirming the audit middleware wraps the re-homed gate exactly
+// as it wraps the SDK CallGate on the Legacy path.
+func TestIntegration_CedarAuthzDenial_ModernPath_IsAudited(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	auditLogPath := filepath.Join(t.TempDir(), "audit.log")
+	// Permit only an unrelated tool: "echo" is default-denied, so the re-homed gate
+	// in dispatchModern rejects the call before it reaches the backend.
+	ts := buildCedarAuthzServer(t, backendURL, nil,
+		&audit.Config{Component: "vmcp-server", LogFile: auditLogPath},
+		`permit(principal, action == Action::"call_tool", resource == Tool::"unrelated");`)
+
+	resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"input": "hello modern"},
+	}, 1, "echo")
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "decoded: %+v", decoded)
+	errObj, ok := decoded["error"].(map[string]any)
+	require.True(t, ok, "the 403 must carry a JSON-RPC error envelope: %+v", decoded)
+	assert.EqualValues(t, mcpparser.JSONRPCCodeDenied, errObj["code"],
+		"a policy-denied Modern tools/call must surface JSON-RPC 403")
+
+	// The audit event is written after the response is flushed, so poll briefly.
+	require.Eventually(t, func() bool {
+		return findToolCallAuditEvent(t, auditLogPath) != nil
+	}, 5*time.Second, 50*time.Millisecond,
+		"a tools/call audit event must be emitted for the denied Modern call")
+
+	event := findToolCallAuditEvent(t, auditLogPath)
+	assert.Equal(t, "denied", event["outcome"],
+		"a policy-denied Modern tools/call must be audited with outcome denied")
+}
+
+// findToolCallAuditEvent reads the newline-delimited JSON audit log at path and
+// returns the first "mcp_tool_call" event, or nil if none is present yet.
+func findToolCallAuditEvent(t *testing.T, path string) map[string]any {
 	t.Helper()
 
 	data, err := os.ReadFile(path)
@@ -493,7 +536,7 @@ func findAuditEvent(t *testing.T, path string, eventType string) map[string]any 
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		if event["type"] == eventType {
+		if event["type"] == "mcp_tool_call" {
 			return event
 		}
 	}

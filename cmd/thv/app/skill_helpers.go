@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	tclient "github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/skills"
 	skillclient "github.com/stacklok/toolhive/pkg/skills/client"
 )
@@ -64,4 +65,19 @@ func validateProjectRootForScope(scopeVar, projectRootVar *string) func(*cobra.C
 		}
 		return nil
 	}
+}
+
+// resolveProjectRoot returns explicit if set, otherwise auto-detects the
+// project root by walking up from the current directory looking for .git —
+// used by commands (sync, upgrade) that operate on "the project you're in"
+// rather than requiring --project-root on every invocation.
+func resolveProjectRoot(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	root, err := tclient.DetectProjectRoot("")
+	if err != nil {
+		return "", fmt.Errorf("detecting project root: %w (use --project-root to specify it explicitly)", err)
+	}
+	return root, nil
 }

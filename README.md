@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2Ftoolhive%2Fstacklok.svg)](https://mcptoplist.com/server/mcp.so%2Ftoolhive%2Fstacklok)
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-byline-white.svg">
   <img src="docs/images/toolhive-byline-black.svg" alt="ToolHive logo" width="500"/>

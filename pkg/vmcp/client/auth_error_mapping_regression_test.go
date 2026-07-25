@@ -20,6 +20,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/client"
 	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -58,20 +59,19 @@ func TestRegression_401_MapsToErrAuthenticationFailed(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
-			c, err := client.NewStreamableHttpClient(
-				target.BaseURL,
-				mcptransport.WithHTTPTimeout(30*time.Second),
-			)
-			if err != nil {
-				return nil, err
-			}
-			if err := c.Start(ctx); err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
+	h := newProbeClient(t)
+	h.clientFactory = func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
+		c, err := client.NewStreamableHttpClient(
+			target.BaseURL,
+			mcptransport.WithHTTPTimeout(30*time.Second),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(ctx); err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	target := &vmcp.BackendTarget{
@@ -80,6 +80,10 @@ func TestRegression_401_MapsToErrAuthenticationFailed(t *testing.T) {
 		BaseURL:       srv.URL,
 		TransportType: "streamable-http",
 	}
+
+	// Pre-seed Legacy so ListCapabilities skips the Modern discover probe (which
+	// needs a real registry) and exercises the Legacy error-mapping path here.
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 	_, err := h.ListCapabilities(context.Background(), target)
 	require.Error(t, err)
@@ -90,12 +94,12 @@ func TestRegression_401_MapsToErrAuthenticationFailed(t *testing.T) {
 // TestRegression_403OnInitialize_LegacySSEFallback verifies that a backend
 // returning HTTP 403 on initialize is classified as ErrBackendUnavailable.
 //
-// NOTE: The mcp-go streamable-HTTP transport returns a generic HTTP error for
-// 403 ("request failed with status 403"), not transport.ErrLegacySSEServer.
-// The "legacy SSE" hint in wrapBackendError is only added when the origin error
-// IS transport.ErrLegacySSEServer (returned by SSE transport, not streamable-HTTP).
-// For streamable-HTTP, 403 falls through to string-based classification and
-// correctly maps to ErrBackendUnavailable, but without the SSE-specific message.
+// NOTE: a 4xx (except 401) on the initialize POST surfaces as
+// transport.ErrLegacySSEServer (see wrapBackendError), which wrapBackendError maps
+// to ErrBackendUnavailable while preserving the sentinel in the chain (see
+// TestRegression_403OnInitialize_PreservesSentinel). Because 403 is ambiguous
+// (auth rejection vs Modern-only backend), it drives a re-probe that returns the
+// same revision here and surfaces this error unchanged.
 func TestRegression_403OnInitialize_LegacySSEFallback(t *testing.T) {
 	t.Parallel()
 
@@ -109,20 +113,19 @@ func TestRegression_403OnInitialize_LegacySSEFallback(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
-			c, err := client.NewStreamableHttpClient(
-				target.BaseURL,
-				mcptransport.WithHTTPTimeout(30*time.Second),
-			)
-			if err != nil {
-				return nil, err
-			}
-			if err := c.Start(ctx); err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
+	h := newProbeClient(t)
+	h.clientFactory = func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
+		c, err := client.NewStreamableHttpClient(
+			target.BaseURL,
+			mcptransport.WithHTTPTimeout(30*time.Second),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(ctx); err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	target := &vmcp.BackendTarget{
@@ -132,6 +135,8 @@ func TestRegression_403OnInitialize_LegacySSEFallback(t *testing.T) {
 		TransportType: "streamable-http",
 	}
 
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
 	_, err := h.ListCapabilities(context.Background(), target)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, vmcp.ErrBackendUnavailable),
@@ -140,14 +145,14 @@ func TestRegression_403OnInitialize_LegacySSEFallback(t *testing.T) {
 		"error message should reference 403 status, got: %v", err)
 }
 
-// TestRegression_403OnInitialize_MatchesSentinel verifies that
-// transport.ErrLegacySSEServer is NOT in the error chain for 403 on
-// initialize, because wrapBackendError uses %v (not %w) for the
-// original error, AND the mcp-go streamable-HTTP transport does not
-// return ErrLegacySSEServer for 403 (it returns a generic HTTP error).
-// Regardless of which error type is at the origin, the sentinel should
-// never be in the chain.
-func TestRegression_403OnInitialize_MatchesSentinel(t *testing.T) {
+// TestRegression_403OnInitialize_PreservesSentinel verifies that a 403 on
+// initialize still classifies as ErrBackendUnavailable AND that the origin
+// transport.ErrLegacySSEServer is preserved in the error chain (wrapBackendError
+// now uses a second %w). The preserved sentinel is what lets dispatch detect a
+// revision mismatch — a 403 is ambiguous (auth rejection vs Modern-only backend),
+// so it drives a re-probe that returns the same revision here (Legacy) and
+// surfaces the original error unchanged.
+func TestRegression_403OnInitialize_PreservesSentinel(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -160,20 +165,19 @@ func TestRegression_403OnInitialize_MatchesSentinel(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
-			c, err := client.NewStreamableHttpClient(
-				target.BaseURL,
-				mcptransport.WithHTTPTimeout(30*time.Second),
-			)
-			if err != nil {
-				return nil, err
-			}
-			if err := c.Start(ctx); err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
+	h := newProbeClient(t)
+	h.clientFactory = func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
+		c, err := client.NewStreamableHttpClient(
+			target.BaseURL,
+			mcptransport.WithHTTPTimeout(30*time.Second),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(ctx); err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	target := &vmcp.BackendTarget{
@@ -183,13 +187,17 @@ func TestRegression_403OnInitialize_MatchesSentinel(t *testing.T) {
 		TransportType: "streamable-http",
 	}
 
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
 	_, err := h.ListCapabilities(context.Background(), target)
 	require.Error(t, err)
 
-	// wrapBackendError uses %v for the original error, so
-	// transport.ErrLegacySSEServer is NOT in the chain.
-	assert.False(t, errors.Is(err, mcptransport.ErrLegacySSEServer),
-		"transport.ErrLegacySSEServer should NOT be in the error chain (wrapBackendError uses %v)")
+	assert.ErrorIs(t, err, vmcp.ErrBackendUnavailable,
+		"403 on initialize must still classify as backend unavailable")
+	// wrapBackendError now preserves the origin via a second %w, so the sentinel
+	// is in the chain — this is what enables revision-mismatch detection.
+	assert.ErrorIs(t, err, mcptransport.ErrLegacySSEServer,
+		"transport.ErrLegacySSEServer must be preserved in the error chain (wrapBackendError uses %w)")
 }
 
 // TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure verifies
@@ -261,20 +269,19 @@ func TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure(t *testin
 	}))
 	t.Cleanup(srv.Close)
 
-	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
-			c, err := client.NewStreamableHttpClient(
-				target.BaseURL,
-				mcptransport.WithHTTPTimeout(30*time.Second),
-			)
-			if err != nil {
-				return nil, err
-			}
-			if err := c.Start(ctx); err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
+	h := newProbeClient(t)
+	h.clientFactory = func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
+		c, err := client.NewStreamableHttpClient(
+			target.BaseURL,
+			mcptransport.WithHTTPTimeout(30*time.Second),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(ctx); err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	target := &vmcp.BackendTarget{
@@ -283,6 +290,8 @@ func TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure(t *testin
 		BaseURL:       srv.URL,
 		TransportType: "streamable-http",
 	}
+
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

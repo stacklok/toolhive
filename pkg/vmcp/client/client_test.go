@@ -43,6 +43,8 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
@@ -72,6 +74,11 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 			BaseURL:       "http://localhost:8080",
 			TransportType: "streamable-http",
 		}
+
+		// Pre-seed the revision cache to Legacy so ListCapabilities skips the
+		// Modern discover probe (which would need a real transport/registry) and
+		// goes straight to the injected clientFactory under test.
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 		capabilities, err := backendClient.ListCapabilities(context.Background(), target)
 
@@ -366,6 +373,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
 
 		require.Error(t, err)
@@ -396,6 +404,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		data, err := backendClient.ReadResource(context.Background(), target, "test://resource")
 
 		require.Error(t, err)
@@ -426,6 +435,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		prompt, err := backendClient.GetPrompt(context.Background(), target, "test_prompt", map[string]any{"arg": "value"})
 
 		require.Error(t, err)
@@ -1769,4 +1779,93 @@ type stubSamplingRequester struct{}
 
 func (*stubSamplingRequester) RequestSampling(context.Context, vmcp.SamplingRequest) (*vmcp.SamplingResult, error) {
 	return nil, errors.New("stub: no downstream session")
+}
+
+// idleSpy is a RoundTripper that records CloseIdleConnections calls.
+type idleSpy struct{ closed int }
+
+func (*idleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *idleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestModernChain_CloseIdleConnectionsForwards verifies the trace/identity/auth
+// wrapper chain forwards CloseIdleConnections down to the concrete transport at
+// the bottom (a plain hc.CloseIdleConnections would otherwise be a silent no-op).
+func TestModernChain_CloseIdleConnectionsForwards(t *testing.T) {
+	t.Parallel()
+
+	spy := &idleSpy{}
+	chain := &tracePropagatingRoundTripper{
+		base: &identityPropagatingRoundTripper{
+			base: &authRoundTripper{base: spy},
+		},
+	}
+
+	// Reached the way http.Client.CloseIdleConnections reaches its transport.
+	chain.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed, "CloseIdleConnections must reach the bottom transport")
+}
+
+// TestNewBackendHTTPClient_RedirectPolicy verifies the shared choke point installs
+// SameHostRedirectPolicy: a cross-host 30x is refused (so the RoundTripper-injected
+// credential never reaches the attacker host), while a same-host redirect is
+// followed.
+func TestNewBackendHTTPClient_RedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	// inject mimics the auth/header-forward chain: it sets a credential on EVERY hop.
+	inject := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.Header.Set("Authorization", "secret")
+		return http.DefaultTransport.RoundTrip(req)
+	})
+
+	t.Run("cross-host redirect refused, no credential leak", func(t *testing.T) {
+		t.Parallel()
+
+		var attackerSawAuth atomic.Bool
+		attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "" {
+				attackerSawAuth.Store(true)
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(attacker.Close)
+
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Redirect(w, &http.Request{}, attacker.URL, http.StatusFound)
+		}))
+		t.Cleanup(origin.Close)
+
+		hc := newBackendHTTPClient(inject, 5*time.Second)
+		resp, err := hc.Get(origin.URL) //nolint:noctx // test
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		require.Error(t, err)
+		assert.ErrorIs(t, err, networking.ErrRedirectRefused)
+		assert.False(t, attackerSawAuth.Load(), "credential must not reach the cross-host redirect target")
+	})
+
+	t.Run("same-host redirect followed", func(t *testing.T) {
+		t.Parallel()
+
+		var landed atomic.Bool
+		mux := http.NewServeMux()
+		mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/end", http.StatusFound)
+		})
+		mux.HandleFunc("/end", func(w http.ResponseWriter, _ *http.Request) {
+			landed.Store(true)
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		hc := newBackendHTTPClient(inject, 5*time.Second)
+		resp, err := hc.Get(srv.URL + "/start") //nolint:noctx // test
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.True(t, landed.Load(), "same-host redirect must be followed")
+	})
 }

@@ -286,6 +286,11 @@ type DiscoveredBackend struct {
 	// Resets to 0 when the backend becomes healthy again.
 	// +optional
 	ConsecutiveFailures int `json:"consecutiveFailures,omitempty"`
+
+	// MCPRevision is the backend's negotiated MCP protocol revision
+	// ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+	// +optional
+	MCPRevision string `json:"mcpRevision,omitempty"`
 }
 
 // DeepCopyInto copies the receiver into out. Required for Kubernetes CRD types.

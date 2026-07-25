@@ -18,7 +18,14 @@ tasks:
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
-      - go install github.com/swaggo/swag/v2/cmd/swag@latest
+      # Pinned to the version go.mod already requires, so @latest can't
+      # silently drift onto a newer/older swag release. Note: swag v2.0.0-rc5
+      # itself still has a run-to-run nondeterminism bug that can double
+      # x-enum-varnames/enum entries for types from external modules
+      # (packages.go's loadExternalPackage doesn't memoize by import path) —
+      # pinning removes version drift as a variable but does not fix that bug.
+      # Keep in sync with .github/workflows/verify-docgen.yml.
+      - go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
 
   helm-docs:
     desc: Generate Helm chart documentation

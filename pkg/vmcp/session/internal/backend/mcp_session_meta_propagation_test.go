@@ -6,6 +6,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -72,7 +74,7 @@ func TestHTTPSession_CallTool_InjectsTraceparent(t *testing.T) { //nolint:parall
 		_, err := sess.CallTool(spanCtx, "echo", map[string]any{}, nil)
 		require.NoError(t, err)
 
-		raw := fb.metaFor(string(mcp.MethodToolsCall))
+		raw := fb.toolCallMeta()
 		require.NotEmpty(t, raw, "expected params._meta to be sent")
 
 		var meta map[string]any
@@ -101,7 +103,7 @@ func TestHTTPSession_CallTool_InjectsTraceparent(t *testing.T) { //nolint:parall
 		_, err := sess.CallTool(spanCtx, "echo", map[string]any{}, map[string]any{"progressToken": "tok"})
 		require.NoError(t, err)
 
-		raw := fb.metaFor(string(mcp.MethodToolsCall))
+		raw := fb.toolCallMeta()
 		require.NotEmpty(t, raw, "expected params._meta to be sent")
 
 		var meta map[string]any
@@ -119,7 +121,71 @@ func TestHTTPSession_CallTool_InjectsTraceparent(t *testing.T) { //nolint:parall
 		_, err := sess.CallTool(context.Background(), "echo", map[string]any{}, nil)
 		require.NoError(t, err)
 
-		raw := fb.metaFor(string(mcp.MethodToolsCall))
+		raw := fb.toolCallMeta()
 		assert.Empty(t, raw, "expected no _meta to be sent without an active trace context")
 	})
+}
+
+// TestHTTPSession_CallTool_StripsReservedModernMeta pins the session-path
+// counterpart to pkg/vmcp/client's TestLegacyCallTool_StripsReservedMeta_RealBackend:
+// mcp_session.go's CallTool (mcp_session.go:211) must strip the reserved
+// io.modelcontextprotocol/* _meta keys before forwarding a caller's _meta to
+// this Legacy (session-based, stateful) backend — go-sdk v1.7 hard-rejects any
+// _meta.protocolVersion on a stateful server regardless of its value — while
+// non-reserved caller keys (a custom key and progressToken) survive, and the
+// caller-supplied map is never mutated.
+func TestHTTPSession_CallTool_StripsReservedModernMeta(t *testing.T) {
+	t.Parallel()
+
+	fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+	url := newFakeBackend(t, fb)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "strip-meta-backend",
+		WorkloadName:  "strip-meta-backend",
+		BaseURL:       url,
+		TransportType: "streamable-http",
+	}
+
+	registry := newTestRegistry(t)
+	connector := NewHTTPConnector(registry)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, _, err := connector(ctx, target, nil, "", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	// Values are scalars (not nested maps/objects) even for the reserved keys:
+	// their exact shape is irrelevant here (they get stripped either way), and
+	// keeping the fixture flat lets maps.Clone's shallow copy below prove real
+	// immutability instead of merely catching top-level key deletion.
+	callerMeta := map[string]any{
+		"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
+		"io.modelcontextprotocol/clientInfo":         "downstream-modern-client",
+		"io.modelcontextprotocol/clientCapabilities": "none",
+		"custom-caller-key":                          "custom-value",
+		"progressToken":                              "tok",
+	}
+	// Snapshot before the call to prove the caller's own map is untouched after
+	// it (go-style.md: copy before mutating caller input).
+	wantCallerMeta := maps.Clone(callerMeta)
+
+	_, err = sess.CallTool(ctx, "echo", map[string]any{}, callerMeta)
+	require.NoError(t, err)
+
+	assert.Equal(t, wantCallerMeta, callerMeta, "the caller-supplied _meta map must not be mutated")
+
+	raw := fb.toolCallMeta()
+	require.NotEmpty(t, raw, "expected params._meta to be sent")
+
+	var gotMeta map[string]any
+	require.NoError(t, json.Unmarshal(raw, &gotMeta))
+
+	for _, k := range mcpparser.ReservedModernMetaKeys {
+		assert.NotContains(t, gotMeta, k, "reserved Modern _meta key %q must be stripped before the Legacy hop", k)
+	}
+	assert.Equal(t, "custom-value", gotMeta["custom-caller-key"], "non-reserved caller _meta must survive")
+	assert.Equal(t, "tok", gotMeta["progressToken"], "progressToken must survive")
 }

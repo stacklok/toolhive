@@ -1686,6 +1686,9 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 					select {
 					case events <- respBytes:
 					case <-time.After(5 * time.Second):
+						// t.Errorf, not t.Fatal: this runs on the server's own goroutine
+						// (Fatal's runtime.Goexit would kill the wrong one).
+						t.Errorf("timed out queuing server/discover fallback response for SSE delivery")
 					}
 					return
 				}
@@ -1715,6 +1718,8 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 				select {
 				case events <- respBytes:
 				case <-time.After(5 * time.Second):
+					// t.Errorf, not t.Fatal: this runs on the server's own goroutine.
+					t.Errorf("timed out queuing initialize response for SSE delivery")
 				}
 			})
 			mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {

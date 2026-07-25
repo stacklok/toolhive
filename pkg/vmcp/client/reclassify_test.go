@@ -49,6 +49,10 @@ func TestIsRevisionMismatch(t *testing.T) {
 			fmt.Errorf("wrap: %w", mcp.ErrMethodNotFound), false},
 		{"modern errLegacySSE (not a modern signal) -> NOT mismatch", mcpparser.RevisionModern,
 			fmt.Errorf("wrap: %w", transport.ErrLegacySSEServer), false},
+		{"modern negotiated-down -> mismatch", mcpparser.RevisionModern,
+			fmt.Errorf("wrap: %w", errModernNegotiatedDown), true},
+		{"legacy negotiated-down (not a legacy signal) -> NOT mismatch", mcpparser.RevisionLegacy,
+			fmt.Errorf("wrap: %w", errModernNegotiatedDown), false},
 		{"auth: ErrUnauthorized -> NOT mismatch", mcpparser.RevisionLegacy, transport.ErrUnauthorized, false},
 		{"auth: ErrAuthorizationRequired -> NOT mismatch", mcpparser.RevisionLegacy, transport.ErrAuthorizationRequired, false},
 		{"auth: ErrUpstreamTokenNotFound -> NOT mismatch", mcpparser.RevisionLegacy, authtypes.ErrUpstreamTokenNotFound, false},
@@ -304,18 +308,20 @@ func TestReclassify_WarnsOnlyOnActualChange(t *testing.T) {
 // underlying go-sdk v1.7 client (used by the Legacy/session-based code path,
 // legacyListCapabilities) is itself Modern-first (SEP-2575): its Connect() tries
 // server/discover before any legacy initialize, so a genuinely Modern backend
-// answers correctly even when dispatch hands it the stale Legacy revision.
+// answers correctly even when dispatch hands it the stale Legacy revision. The
+// call succeeds on the first attempt, so dispatch's reclassify-on-mismatch path
+// (which only fires on error; see dispatch's doc comment) is never entered and
+// the cache stays Legacy.
 //
-// This differs from the pre-v1.7 behavior (and this test's original name/intent):
-// back then, a Legacy attempt against a Modern-only backend failed at the
-// initialize step (errLegacyInitFailed+ErrLegacySSEServer), which dispatch
-// detected as a mismatch and corrected via reclassify+retry. Under v1.7 that
-// failure no longer occurs — the call now succeeds on the first attempt via the
-// SDK's own negotiation — so dispatch's mismatch path is never entered and the
-// cache is NOT flipped to Modern (dispatch only reclassifies on error; see its
-// doc comment). This is a bookkeeping staleness, not a wire-protocol
-// correctness issue: the backend still receives the correct (Modern) protocol
-// on every call regardless of what this repo's revision cache says.
+// The staleness is NOT purely internal bookkeeping: CachedRevision surfaces it
+// to health status (pkg/vmcp/health/status.go:260), which republishes it on
+// every health tick into the mcpRevision CRD status field — so an operator
+// reading that field sees "legacy" for a backend that is actually being driven
+// Modern on every call. The wire protocol itself is unaffected (the backend
+// always receives the correct, Modern request), and the loss is one-directional:
+// a mis-cached Modern->actually-Legacy backend still self-heals via
+// errModernNegotiatedDown (see the revisions field doc in client.go). Tracked
+// as #5992.
 func TestListCapabilities_MisCachedLegacy_StillSucceedsViaSDKNegotiation(t *testing.T) {
 	t.Parallel()
 

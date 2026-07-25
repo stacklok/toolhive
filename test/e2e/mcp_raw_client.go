@@ -304,10 +304,11 @@ func NewRawMCPClient(timeout time.Duration) (*RawMCPClient, error) {
 	}, nil
 }
 
-// Send marshals req and POSTs it to url. No Accept header is set by
-// default; a live streamable-HTTP MCP endpoint may require
-// "Accept: application/json, text/event-stream" — set it via
-// req.SetHeader("Accept", ...) when hitting a real proxy.
+// Send marshals req and POSTs it to url. A default
+// "Accept: application/json, text/event-stream" is applied by SendRaw (the
+// streamable-HTTP transport requires it; a real go-sdk server rejects a POST
+// without it as 400). Override it for a specific test via
+// req.SetHeader("Accept", ...).
 func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*RawResponse, error) {
 	body, err := req.marshal()
 	if err != nil {
@@ -325,6 +326,13 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 		return nil, fmt.Errorf("mcp_raw_client: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// The MCP streamable-HTTP transport requires Accept to list both
+	// application/json and text/event-stream on every POST; a real go-sdk
+	// server rejects a request without it (HTTP 400) before any classification.
+	// ToolHive's own proxy inbound is lenient about this, but a Modern backend
+	// behind it is not — so default it here (like Content-Type). Set before the
+	// caller loop so a test can still override Accept for a specific case.
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}

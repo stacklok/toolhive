@@ -289,6 +289,25 @@ func TestRawClientSend(t *testing.T) {
 		require.Nil(t, resp.Error)
 		require.Equal(t, []byte(`not json at all`), resp.Body)
 	})
+
+	t.Run("Accept defaults to the streamable-HTTP required value and is overridable", func(t *testing.T) {
+		t.Parallel()
+		server, captured := newCapturingServer(t, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+
+		req, err := NewModernRequest("tools/list", nil)
+		require.NoError(t, err)
+		_, err = client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+		require.Equal(t, "application/json, text/event-stream", captured.headers.Get("Accept"),
+			"a real go-sdk streamable-HTTP backend rejects a POST without this Accept (HTTP 400)")
+
+		override, err := NewModernRequest("tools/list", nil)
+		require.NoError(t, err)
+		override.SetHeader("Accept", "text/plain")
+		_, err = client.Send(context.Background(), server.URL, override)
+		require.NoError(t, err)
+		require.Equal(t, "text/plain", captured.headers.Get("Accept"), "a test must be able to override Accept")
+	})
 }
 
 func TestNewRawMCPClientRejectsNonPositiveTimeout(t *testing.T) {

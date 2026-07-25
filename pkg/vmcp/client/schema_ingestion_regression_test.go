@@ -26,18 +26,15 @@ import (
 // spurious "type" field for a schema that has none at the top level (e.g. a
 // oneOf-only schema).
 //
-// It is currently blocked: toolhive-core's mcp.ToolArgumentsSchema (backing
-// mcp.Tool.InputSchema's UnmarshalJSON) only captures $defs/type/properties/
-// required/additionalProperties. A raw "oneOf" in the wire JSON is silently
-// dropped during the SDK's own JSON->mcp.Tool unmarshal — before
-// conversion.ConvertToolInputSchema ever sees it — and MarshalJSON
-// unconditionally re-emits "type": tas.Type, fabricating "type":"" for a tool
-// whose schema legitimately omits a top-level type. See #5976 (toolhive-core
-// Tool.UnmarshalJSON) for the upstream fix; unskip this test in the
-// toolhive-core bump PR that lands it.
+// The fix landed in toolhive-core (stacklok/toolhive-core#186): its
+// mcp.ToolArgumentsSchema now preserves top-level keywords outside the modeled
+// fields via an Extra catch-all, and MarshalJSON emits "type" only when set. As
+// of the toolhive-core bump in this repo, a raw "oneOf" in the wire JSON
+// survives the SDK's JSON->mcp.Tool unmarshal through to
+// conversion.ConvertToolInputSchema, and a schema without a top-level type no
+// longer gains a fabricated "type":"". Closes the in-repo half of #5976.
 func TestRegression_ToolSchemaFidelity_PreservesCompositors(t *testing.T) {
 	t.Parallel()
-	t.Skip("blocked on #5976 (toolhive-core Tool.UnmarshalJSON); unskip in the toolhive-core bump PR")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

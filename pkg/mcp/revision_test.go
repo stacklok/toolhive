@@ -618,3 +618,56 @@ func TestDecodeSentinelName(t *testing.T) {
 		})
 	}
 }
+
+// TestStripReservedModernMeta pins the copy-before-mutate contract: it removes
+// exactly the reserved io.modelcontextprotocol/* keys, never mutates the
+// caller's map, and returns nil for empty input.
+func TestStripReservedModernMeta(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input returns nil", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, StripReservedModernMeta(nil))
+	})
+
+	t.Run("empty input returns nil", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, StripReservedModernMeta(map[string]any{}))
+	})
+
+	t.Run("removes reserved keys, preserves the rest", func(t *testing.T) {
+		t.Parallel()
+		in := map[string]any{
+			metaKeyProtocolVersion:    MCPVersionModern,
+			metaKeyClientInfo:         map[string]any{"name": "x"},
+			metaKeyClientCapabilities: map[string]any{},
+			"progressToken":           "tok-1",
+			"traceparent":             "00-abc-def-01",
+			"custom":                  42,
+		}
+		got := StripReservedModernMeta(in)
+		for _, k := range ReservedModernMetaKeys {
+			assert.NotContains(t, got, k, "reserved key %q must be stripped", k)
+		}
+		assert.Equal(t, "tok-1", got["progressToken"])
+		assert.Equal(t, "00-abc-def-01", got["traceparent"])
+		assert.Equal(t, 42, got["custom"])
+	})
+
+	t.Run("does not mutate the caller's map", func(t *testing.T) {
+		t.Parallel()
+		in := map[string]any{metaKeyProtocolVersion: MCPVersionModern, "custom": 1}
+		_ = StripReservedModernMeta(in)
+		assert.Contains(t, in, metaKeyProtocolVersion, "caller's map must be untouched")
+		assert.Len(t, in, 2)
+	})
+
+	t.Run("no reserved keys returns a copy, not the original", func(t *testing.T) {
+		t.Parallel()
+		in := map[string]any{"custom": 1}
+		got := StripReservedModernMeta(in)
+		require.Equal(t, in, got)
+		got["custom"] = 2
+		assert.Equal(t, 1, in["custom"], "returned value must be a copy")
+	})
+}

@@ -53,7 +53,7 @@ var (
 // is a free function backed by the global meter provider rather than the injected
 // one used by MonitorBackends.
 //
-// ponytail: no labels yet — old/new revision labels (and the CRD status surface)
+// NOTE: no labels yet — old/new revision labels (and the CRD status surface)
 // are deferred. If the global provider ever diverges from the injected one, thread
 // the meter down instead.
 func RecordRevisionReclassification(ctx context.Context) {

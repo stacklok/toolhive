@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -151,7 +152,7 @@ type httpBackendClient struct {
 	// first ListCapabilities for a backend and read on subsequent calls to skip
 	// the Modern-first discover probe.
 	//
-	// ponytail: never evicted, no singleflight/CAS. Concurrent first-probes are
+	// NOTE: never evicted, no singleflight/CAS. Concurrent first-probes are
 	// last-writer-wins-safe: writes are idempotent for a deterministic backend
 	// (every probe agrees), and a flapping backend self-heals via
 	// dispatch->reclassify (a call revealing the other era re-probes and flips).
@@ -1018,6 +1019,15 @@ func newBackendHTTPClient(rt http.RoundTripper, timeout time.Duration) *http.Cli
 // modernDiscover issues a Modern server/discover and returns the backend's
 // capability flags. Used both by probeRevision and, on a Modern cache hit, by
 // ListCapabilities to re-fetch the flags without re-running the fallback ladder.
+//
+// A clean discover response is not, by itself, proof the peer speaks the
+// Modern (2026-07-28) revision: a go-sdk v1.7 shim answers server/discover even
+// for a backend that negotiates down to Legacy. The authoritative signal is
+// supportedVersions (SEP-2575; mirroring go-sdk's own reference client at
+// mcp/client.go:428-444) — when it does not contain MCPVersionModern (including
+// when it is absent or empty), this returns errModernNegotiatedDown instead of
+// the capabilities, so callers do not mistake a negotiated-down Legacy backend
+// for Modern.
 func (h *httpBackendClient) modernDiscover(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (*mcp.ServerCapabilities, error) {
@@ -1026,26 +1036,51 @@ func (h *httpBackendClient) modernDiscover(
 		return nil, err
 	}
 	defer hc.CloseIdleConnections()
+	return discoverModernCapabilities(ctx, hc, target.BaseURL)
+}
+
+// discoverModernCapabilities issues the Modern server/discover call over an
+// already-built hc and applies the supportedVersions check (see modernDiscover's
+// doc comment for why a clean response alone does not prove Modern). Split out
+// so probeRevision can share this exact check over the *http.Client it must
+// build anyway (to hard-fail on a genuine transport misconfiguration before
+// classifying anything), instead of building the client twice.
+func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint string) (*mcp.ServerCapabilities, error) {
 	var discover struct {
-		Capabilities mcp.ServerCapabilities `json:"capabilities"`
+		Capabilities      mcp.ServerCapabilities `json:"capabilities"`
+		SupportedVersions []string               `json:"supportedVersions"`
 	}
-	if err := modernCall(ctx, hc, target.BaseURL, "server/discover", nil, "", &discover); err != nil {
+	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", &discover); err != nil {
 		return nil, err
+	}
+	// Exact-match on MCPVersionModern (2026-07-28): vMCP's shim only speaks that
+	// one Modern wire shape, so a backend must advertise exactly it to be driven
+	// Modern. This is intentionally stricter than go-sdk's reference client
+	// (negotiated >= 2026-07-28). TRIPWIRE: when a newer Modern revision is
+	// added, this must become a set/range check or a newer-only backend is
+	// wrongly classified Legacy — TestProbeRevision_RealBackends will catch it.
+	if !slices.Contains(discover.SupportedVersions, mcpparser.MCPVersionModern) {
+		return nil, fmt.Errorf("%w: supportedVersions=%v", errModernNegotiatedDown, discover.SupportedVersions)
 	}
 	return &discover.Capabilities, nil
 }
 
 // probeRevision resolves a backend's MCP revision, Modern-first.
 //
-// It attempts a Modern server/discover and:
-//   - classifies MODERN (and caches it) on a clean discover result, on a
-//     Modern-specific protocol error (-3202x) which proves the peer validated our
-//     Modern headers/_meta, or on an input_required envelope (only returned after
+// It attempts a Modern server/discover (via discoverModernCapabilities, the same
+// supportedVersions-checking core modernDiscover uses) and:
+//   - classifies MODERN (and caches it) when the discover result's
+//     supportedVersions contains MCPVersionModern, on a Modern-specific
+//     protocol error (-3202x) which proves the peer validated our Modern
+//     headers/_meta, or on an input_required envelope (only returned after
 //     decoding a valid Modern envelope, so it too proves Modern);
 //   - classifies LEGACY (and caches it) on a GENUINE not-Modern signal —
 //     errWrongEra, a -32601 (discover is mandatory for Modern), a generic
-//     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, or a
-//     200-with-Legacy-result;
+//     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, a
+//     200-with-Legacy-result, OR errModernNegotiatedDown (a clean discover
+//     envelope whose supportedVersions lacks 2026-07-28 — a go-sdk v1.7 shim
+//     answers server/discover even for a backend negotiating down to Legacy, so
+//     a clean response alone is not proof of Modern; see modernDiscover);
 //   - returns the error UNCACHED (leaving the backend unprobed) on an
 //     INCONCLUSIVE outcome — an auth blip (errModernAuth, 401/403) or a transient
 //     failure (errModernTransient: 408/429/5xx, mid-read, or transport/timeout).
@@ -1068,7 +1103,7 @@ func (h *httpBackendClient) probeRevision(
 	}
 	defer hc.CloseIdleConnections()
 
-	err = modernCall(ctx, hc, target.BaseURL, "server/discover", nil, "", nil)
+	_, err = discoverModernCapabilities(ctx, hc, target.BaseURL)
 	switch {
 	case err == nil:
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
@@ -1084,6 +1119,9 @@ func (h *httpBackendClient) probeRevision(
 		// the revision. Leave the backend unprobed so the next call re-probes.
 		return 0, err
 	default:
+		// Includes errModernNegotiatedDown (a clean-but-negotiated-down discover
+		// envelope) alongside errWrongEra and every other genuine not-Modern
+		// signal: all fall back to Legacy here.
 		slog.Debug("backend is not Modern; falling back to Legacy",
 			"backend", target.WorkloadID, "probe_error", err)
 		h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
@@ -1473,8 +1511,10 @@ func (h *httpBackendClient) reclassify(
 // reclassification). It is deliberately narrow, and keyed on rev because the same
 // sentinel means different things per era:
 //
-//   - Modern attempt: errWrongEra (protocol rejection) or errLegacyResponseBody
-//     (a Legacy-shaped success body). A data-plane -32601 comes back as
+//   - Modern attempt: errWrongEra (protocol rejection), errLegacyResponseBody (a
+//     Legacy-shaped success body), or errModernNegotiatedDown (a cached-Modern
+//     backend's discover now reports supportedVersions without 2026-07-28 — e.g.
+//     redeployed stateless->stateful). A data-plane -32601 comes back as
 //     mcp.ErrMethodNotFound and is a real not-found on a genuine Modern backend,
 //     NOT a mismatch.
 //   - Legacy attempt: an initialize-STEP rejection only — errLegacyInitFailed
@@ -1493,7 +1533,8 @@ func isRevisionMismatch(rev mcpparser.Revision, err error) bool {
 		return false
 	}
 	if rev == mcpparser.RevisionModern {
-		return errors.Is(err, errWrongEra) || errors.Is(err, errLegacyResponseBody)
+		return errors.Is(err, errWrongEra) || errors.Is(err, errLegacyResponseBody) ||
+			errors.Is(err, errModernNegotiatedDown)
 	}
 	return errors.Is(err, errLegacyInitFailed) &&
 		(errors.Is(err, mcp.ErrMethodNotFound) || errors.Is(err, transport.ErrLegacySSEServer))
@@ -1588,6 +1629,12 @@ func (h *httpBackendClient) legacyCallTool(
 		slog.Debug("translating tool name", "client_name", toolName, "backend_name", backendToolName)
 	}
 
+	// Strip the reserved io.modelcontextprotocol/* keys before forwarding to this
+	// Legacy (session-based, stateful) backend: a downstream Modern caller's
+	// _meta.protocolVersion is only valid on a stateless Modern hop, and go-sdk
+	// v1.7 hard-rejects ANY _meta.protocolVersion on a stateful server (HTTP 400)
+	// regardless of its value — see mcpparser.StripReservedModernMeta.
+	meta = mcpparser.StripReservedModernMeta(meta)
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendToolName,

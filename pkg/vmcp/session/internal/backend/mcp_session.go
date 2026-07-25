@@ -16,6 +16,7 @@ import (
 	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -202,6 +203,12 @@ func (c *mcpSession) CallTool(
 		slog.Debug("Translating tool name", "clientName", toolName, "backendName", backendName)
 	}
 
+	// Strip the reserved io.modelcontextprotocol/* keys before forwarding to this
+	// Legacy (session-based, stateful) backend: a downstream Modern caller's
+	// _meta.protocolVersion is only valid on a stateless Modern hop, and go-sdk
+	// v1.7 hard-rejects ANY _meta.protocolVersion on a stateful server (HTTP 400)
+	// regardless of its value — see mcpparser.StripReservedModernMeta.
+	meta = mcpparser.StripReservedModernMeta(meta)
 	result, err := c.client.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendName,

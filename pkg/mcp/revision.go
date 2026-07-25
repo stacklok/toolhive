@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -65,6 +66,34 @@ const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 // classifier that reads them) can strip a caller's copies before overlaying
 // its own authoritative values — see ModernRequestMeta.
 var ReservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities}
+
+// StripReservedModernMeta returns a copy of meta with every ReservedModernMetaKeys
+// entry removed, leaving all other caller-supplied keys (including trace-context
+// keys) untouched. The input is never mutated (maps.Clone).
+//
+// Use this at every Legacy backend egress that forwards a caller-supplied _meta
+// map: a downstream Modern request's reserved io.modelcontextprotocol/* _meta
+// claims a per-request protocol version that is only valid on a stateless
+// Modern hop. If it leaks onto a Legacy (session-based, stateful) backend call,
+// go-sdk v1.7 rejects the request outright (HTTP 400: "protocol version ...
+// is only supported on stateless HTTP servers") because ANY _meta.protocolVersion
+// on a stateful streamable-HTTP server is invalid, regardless of its value. vMCP
+// is the backend's actual MCP peer on this hop, not the downstream caller, so
+// these reserved keys must never cross it.
+//
+// nil or empty input returns nil (matching mergeModernMeta's caller-tolerant
+// convention); a non-empty map with none of the reserved keys present is
+// returned as-is (via maps.Clone, so callers still get a copy, not the original).
+func StripReservedModernMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	stripped := maps.Clone(meta)
+	for _, k := range ReservedModernMetaKeys {
+		delete(stripped, k)
+	}
+	return stripped
+}
 
 // ModernRequestMeta builds the reserved _meta object every Modern (2026-07-28)
 // request must carry: protocolVersion, clientInfo, and (empty) clientCapabilities.

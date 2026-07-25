@@ -1670,6 +1670,25 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 					http.Error(w, "Bad request", http.StatusBadRequest)
 					return
 				}
+				if req.Method == "server/discover" {
+					// go-sdk v1.7's Connect() is Modern-first (SEP-2575): it always
+					// tries server/discover before falling back to legacy initialize.
+					// Answer -32601 (method not found) over the SSE message channel so
+					// the client falls back to initialize below (which this fake
+					// already handles), instead of hanging waiting for a response that
+					// never comes.
+					respBytes, _ := json.Marshal(map[string]any{
+						"jsonrpc": "2.0",
+						"id":      req.ID,
+						"error":   map[string]any{"code": -32601, "message": "method not found"},
+					})
+					w.WriteHeader(http.StatusAccepted)
+					select {
+					case events <- respBytes:
+					case <-time.After(5 * time.Second):
+					}
+					return
+				}
 				if req.Method != "initialize" {
 					// Notifications (initialized, cancelled) need no response body.
 					w.WriteHeader(http.StatusAccepted)

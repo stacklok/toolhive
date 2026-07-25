@@ -83,6 +83,23 @@ var errModernAuth = errors.New("modern backend returned an auth status")
 // outage must not be mistaken for a not-Modern signal.
 var errModernTransient = errors.New("modern backend returned a transient error")
 
+// errModernNegotiatedDown is returned by modernDiscover when the backend
+// answers server/discover with a well-formed Modern envelope (err == nil from
+// modernCall) whose supportedVersions does NOT contain mcpparser.MCPVersionModern
+// (including an absent or empty list). Per SEP-2575 (and go-sdk's own reference
+// client, mcp/client.go:428-444), supportedVersions — not a clean discover
+// response alone — is the authoritative signal of whether a peer actually
+// speaks the Modern (2026-07-28) revision: a go-sdk v1.7 shim answers
+// server/discover even for a backend negotiating down to Legacy, so a clean
+// discover response is NOT by itself proof of Modern.
+//
+// This is a definitive Legacy signal carried in a valid Modern envelope —
+// distinct from errWrongEra (peer does not speak Modern's wire shape at all)
+// and from the other Modern-positive/inconclusive sentinels. Discover is
+// read-only (no side effects), so retrying under a corrected Legacy
+// classification is always safe.
+var errModernNegotiatedDown = errors.New("modern backend negotiated down: supportedVersions lacks 2026-07-28")
+
 // modernRequestID supplies monotonically increasing JSON-RPC request ids. Each
 // modernCall is a single request/response, so the id only has to be unique
 // enough to match a response within one SSE stream.
@@ -153,7 +170,7 @@ func modernCall(
 	// Mcp-Method is required on EVERY Modern request (ValidateHeaderConsistency).
 	req.Header.Set("Mcp-Method", method)
 	if name != "" && mcpparser.IsNameRequiredMethod(method) {
-		// ponytail: sent raw; non-ASCII identifiers are not sentinel-encoded yet.
+		// NOTE: sent raw; non-ASCII identifiers are not sentinel-encoded yet.
 		// URIs and ASCII names are safe; a non-ASCII name is unspecified behavior
 		// (a strict peer MAY reject or misinterpret the header). Add =?base64?..?=
 		// encoding if such names appear.

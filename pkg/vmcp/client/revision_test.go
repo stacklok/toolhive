@@ -33,7 +33,8 @@ func newProbeClient(t *testing.T) *httpBackendClient {
 }
 
 // discoverEnvelope is a valid Modern server/discover success body echoing the
-// request id.
+// request id, advertising supportedVersions that include 2026-07-28 (the
+// authoritative Modern signal — see errModernNegotiatedDown).
 func discoverEnvelope(t *testing.T, r *http.Request) []byte {
 	t.Helper()
 	body, _ := readAll(t, r)
@@ -45,8 +46,9 @@ func discoverEnvelope(t *testing.T, r *http.Request) []byte {
 		"jsonrpc": "2.0",
 		"id":      req.ID,
 		"result": map[string]any{
-			"resultType":   "complete",
-			"capabilities": map[string]any{"tools": map[string]any{}, "completions": map[string]any{}},
+			"resultType":        "complete",
+			"capabilities":      map[string]any{"tools": map[string]any{}, "completions": map[string]any{}},
+			"supportedVersions": []string{"2026-07-28", "2025-11-25"},
 		},
 	})
 	require.NoError(t, err)
@@ -65,12 +67,63 @@ func TestProbeRevision_TruthTable(t *testing.T) {
 		wantRev mcpparser.Revision
 	}{
 		{
-			name: "clean 2xx discover -> Modern",
+			name: "clean 2xx discover, supportedVersions includes 2026-07-28 -> Modern",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write(discoverEnvelope(t, r))
 			},
 			wantRev: mcpparser.RevisionModern,
+		},
+		{
+			// Empirical probe bytes from a stateful 2025-11-25 backend: the go-sdk
+			// v1.7 shim answers server/discover even though the backend negotiated
+			// down to Legacy. supportedVersions — not a clean response alone — is
+			// the authoritative Modern signal (SEP-2575; errModernNegotiatedDown).
+			name: "clean 2xx discover, supportedVersions WITHOUT 2026-07-28 (stateful negotiate-down) -> Legacy",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				t.Helper()
+				body, _ := readAll(t, r)
+				var req struct {
+					ID any `json:"id"`
+				}
+				require.NoError(t, json.Unmarshal(body, &req))
+				out, err := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"resultType":        "complete",
+						"capabilities":      map[string]any{"tools": map[string]any{}},
+						"supportedVersions": []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"},
+					},
+				})
+				require.NoError(t, err)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(out)
+			},
+			wantRev: mcpparser.RevisionLegacy,
+		},
+		{
+			name: "clean 2xx discover, supportedVersions absent -> Legacy",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				t.Helper()
+				body, _ := readAll(t, r)
+				var req struct {
+					ID any `json:"id"`
+				}
+				require.NoError(t, json.Unmarshal(body, &req))
+				out, err := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"resultType":   "complete",
+						"capabilities": map[string]any{"tools": map[string]any{}},
+					},
+				})
+				require.NoError(t, err)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(out)
+			},
+			wantRev: mcpparser.RevisionLegacy,
 		},
 		{
 			name: "recognized Modern protocol error (-32022) -> Modern",
@@ -189,7 +242,10 @@ func TestListCapabilities_ModernServedFromCache(t *testing.T) {
 		id, _ := modernReq(t, r)
 		switch r.Header.Get("Mcp-Method") {
 		case "server/discover":
-			writeModernResult(t, w, id, map[string]any{"capabilities": map[string]any{"tools": map[string]any{}}})
+			writeModernResult(t, w, id, map[string]any{
+				"capabilities":      map[string]any{"tools": map[string]any{}},
+				"supportedVersions": []string{"2026-07-28"},
+			})
 		case "tools/list":
 			writeModernResult(t, w, id, map[string]any{
 				"tools": []any{map[string]any{"name": "echo", "inputSchema": map[string]any{"type": "object"}}},

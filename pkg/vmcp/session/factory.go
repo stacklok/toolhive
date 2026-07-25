@@ -9,12 +9,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -91,7 +93,8 @@ type MultiSessionFactory interface {
 }
 
 // backendConnector creates a connected, initialised backend Session for use
-// within a single MultiSession. It is called once per backend during MakeSession.
+// within a single MultiSession. It is called once per backend that is not
+// skipped as Modern (see initOneBackend) during MakeSession.
 //
 // The connector is responsible for:
 //  1. Creating and starting the MCP client transport.
@@ -114,7 +117,10 @@ type MultiSessionFactory interface {
 // to populate the session's routing table and capability lists.
 //
 // On error the factory treats the failure as a partial failure: a warning is
-// logged and the backend is excluded from the session.
+// logged and the backend is excluded from the session — except when the
+// backend's revision has meanwhile resolved to Modern, in which case
+// initOneBackend logs at DEBUG instead (see initOneBackend's doc comment for
+// why a Modern backend's session-establishment sequence fails there).
 type backendConnector func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -128,6 +134,7 @@ type defaultMultiSessionFactory struct {
 	connector          backendConnector
 	maxConcurrency     int
 	backendInitTimeout time.Duration
+	revisionLookup     func(workloadID string) (mcpparser.Revision, bool)
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -150,6 +157,32 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 		if d > 0 {
 			f.backendInitTimeout = d
 		}
+	}
+}
+
+// WithRevisionLookup supplies a function that reports a backend's cached MCP
+// revision (Legacy vs. Modern) by workload ID, so initOneBackend can skip
+// connecting to a backend known to speak the stateless Modern (2026-07-28)
+// revision. The connect attempt fails there anyway, and skipping it avoids
+// both the resulting WARN and the wasted work — see initOneBackend's doc
+// comment for the exact failure mechanism.
+//
+// The lookup's second return distinguishes "known Modern" from "unprobed"
+// (including RevisionLegacy's zero value): only a confirmed Modern result
+// skips the connect. A nil lookup (the default) or a cache miss reproduces
+// today's behaviour exactly — every backend gets an unconditional connect
+// attempt.
+//
+// A func value, not an interface, per the option-pattern rule in
+// .claude/rules/go-style.md: it stays compile-time safe without exposing
+// CachedRevision on vmcp.BackendClient for every implementation to satisfy.
+//
+// Concurrency: lookup is called from the per-backend init goroutines started
+// by makeBaseSession, up to maxConcurrency at once, so it must be safe for
+// concurrent use.
+func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool)) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.revisionLookup = lookup
 	}
 }
 
@@ -185,29 +218,96 @@ type initResult struct {
 // It is called from a goroutine inside MakeSession and handles all partial-
 // initialisation cases: connector errors, and nil conn/caps without an error.
 // Returns a non-nil *initResult on success, nil when the backend should be
-// skipped (failure already logged as a warning).
+// skipped. The second return is true when the skip is a deliberate Modern
+// (2026-07-28 revision) skip rather than a failure.
+//
+// Why the connect is worth skipping — the sequence fails, but NOT at a Legacy
+// handshake. Measured against a real stateless backend: go-sdk v1.7's Connect
+// is Modern-first, so server/discover SUCCEEDS and Modern is negotiated; no
+// raw Legacy initialize is ever sent. Connect then opens a
+// subscriptions/listen stream, because mcpcompat's Initialize unconditionally
+// installs the three list-changed notification handlers
+// (mcpcompat/client.installNotificationHandlers) and go-sdk opens that stream
+// whenever any of them is set. A stateless backend cannot serve it — it has no
+// Mcp-Session-Id, so it answers "session not found" — which fails Connect,
+// tears the connection down, and in turn fails the follow-up tools/list in
+// initAndQueryCapabilities. The connector therefore returns (nil, nil, err).
+//
+// So the wasted work is a whole sequence (discover, a failed subscribe, a
+// failed tools/list, teardown), not one round-trip, and it ends in a WARN that
+// looks exactly like a genuinely dead backend. Skipping is also correct on its
+// own terms: all three purposes of a persistent per-backend connection are
+// inapplicable to a Modern backend — list_changed propagation (Modern removed
+// server-initiated notifications; its push channel is subscriptions/listen,
+// which vMCP does not implement), backend-session-id resume hints (no
+// Mcp-Session-Id), and identity-binding metadata. The first of those is
+// precisely what makes the connect fail: vMCP asks for a notification stream
+// the backend cannot give it.
+//
+// Known caveat (#5992): the direction that matters here — a backend redeployed
+// stateless→stateful, so a cached Modern label is now wrong — self-corrects only
+// on error. The Modern call fails, dispatch's isRevisionMismatch fires and
+// reclassify flips the cache (pkg/vmcp/client/client.go). (The opposite
+// direction, Legacy→Modern, does self-heal on success: legacyInit flips the
+// cache when initialize negotiates Modern, added in #5997.) So calls are never
+// wrong for long, but until some call has re-probed, this method keeps skipping
+// a backend that now wants a connection, and that session holds none for it —
+// list_changed propagation is lost until a NEW session is created after the
+// reclassification. Closing that window needs a periodic re-probe, which is
+// #5992's remaining scope, not this method's.
+//
+// Cold start: the revision cache is populated by the first backend call
+// through dispatch (probeRevision) or, when configured, the health monitor's
+// periodic check — neither is ordered before the first client session. So EVERY
+// session created before the first backend call still pays the failing sequence
+// above for each Modern backend, and its WARN is not suppressed, because the
+// cache is still cold when the post-error re-check below runs. N clients that
+// connect without calling anything each pay it; there is no per-process bound.
+// Sessions created after the cache is warm skip the connect entirely.
 func (f *defaultMultiSessionFactory) initOneBackend(
 	ctx context.Context,
 	b *vmcp.Backend,
 	identity *auth.Identity,
 	sessionHint string,
 	sink backend.ListChangedSink,
-) *initResult {
+) (*initResult, bool) {
+	target := vmcp.BackendToTarget(b)
+
+	if f.isKnownModern(target.WorkloadID) {
+		slog.Debug("Skipping backend connection for Modern backend; no session to hold",
+			"backendID", b.ID,
+			"backendName", b.Name,
+		)
+		return nil, true
+	}
+
 	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
 	defer cancel()
 
-	target := vmcp.BackendToTarget(b)
 	conn, caps, err := f.connector(bCtx, target, identity, sessionHint, sink)
 	if err != nil {
 		if conn != nil {
 			_ = conn.Close()
+		}
+		// Narrows the WARN to DEBUG when the backend has resolved to Modern
+		// since the pre-connect check — either an era mismatch that lost the
+		// cold-start race (the expected case, see this method's doc comment) or
+		// an unrelated genuine failure (transport, auth) on a backend that
+		// happens to be Modern. Both are cases where a WARN would misinform.
+		if f.isKnownModern(target.WorkloadID) {
+			slog.Debug("Backend failed to initialise and is now known Modern; skipping",
+				"backendID", b.ID,
+				"backendName", b.Name,
+				"error", err,
+			)
+			return nil, true
 		}
 		slog.Warn("Failed to initialise backend for session; continuing without it",
 			"backendID", b.ID,
 			"backendName", b.Name,
 			"error", err,
 		)
-		return nil
+		return nil, false
 	}
 	if conn == nil || caps == nil {
 		if conn != nil {
@@ -217,9 +317,20 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 			"backendID", b.ID,
 			"backendName", b.Name,
 		)
-		return nil
+		return nil, false
 	}
-	return &initResult{target: target, conn: conn, caps: caps}
+	return &initResult{target: target, conn: conn, caps: caps}, false
+}
+
+// isKnownModern reports whether workloadID's cached revision is confirmed
+// Modern. Returns false for an unprobed backend or when no lookup is
+// configured — indistinguishable from "attempt the connect" in either case.
+func (f *defaultMultiSessionFactory) isKnownModern(workloadID string) bool {
+	if f.revisionLookup == nil {
+		return false
+	}
+	rev, known := f.revisionLookup(workloadID)
+	return known && rev == mcpparser.RevisionModern
 }
 
 // buildRoutingTable populates a RoutingTable and capability lists from a sorted
@@ -331,6 +442,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	backends = filtered
 
 	rawResults := make([]*initResult, len(backends))
+	modernSkipped := make([]bool, len(backends))
 	sem := make(chan struct{}, f.maxConcurrency)
 	var wg sync.WaitGroup
 	wg.Add(len(backends))
@@ -339,7 +451,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			rawResults[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID], sink)
+			rawResults[i], modernSkipped[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID], sink)
 		}(i, b)
 	}
 	wg.Wait()
@@ -359,7 +471,10 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		return results[i].target.WorkloadID < results[j].target.WorkloadID
 	})
 
-	if len(results) == 0 && len(backends) > 0 {
+	// Only warn when at least one backend was actually expected to hold a
+	// session — a set that skipped every backend as Modern is working as
+	// designed, not a failure.
+	if len(results) == 0 && len(backends) > 0 && slices.Contains(modernSkipped, false) {
 		slog.Warn("All backends failed to initialise; session will have no capabilities",
 			"backendCount", len(backends))
 	}

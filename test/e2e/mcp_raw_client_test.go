@@ -290,7 +290,7 @@ func TestRawClientSend(t *testing.T) {
 		require.Equal(t, []byte(`not json at all`), resp.Body)
 	})
 
-	t.Run("Accept defaults to the streamable-HTTP required value and is overridable", func(t *testing.T) {
+	t.Run("no Accept header by default, opt-in via WithStreamableAccept", func(t *testing.T) {
 		t.Parallel()
 		server, captured := newCapturingServer(t, `{"jsonrpc":"2.0","id":1,"result":{}}`)
 
@@ -298,15 +298,16 @@ func TestRawClientSend(t *testing.T) {
 		require.NoError(t, err)
 		_, err = client.Send(context.Background(), server.URL, req)
 		require.NoError(t, err)
-		require.Equal(t, "application/json, text/event-stream", captured.headers.Get("Accept"),
-			"a real go-sdk streamable-HTTP backend rejects a POST without this Accept (HTTP 400)")
+		require.Empty(t, captured.headers.Get("Accept"),
+			"no Accept by default: it makes the ToolHive proxy emit an SSE body this client can't parse")
 
-		override, err := NewModernRequest("tools/list", nil)
+		withAccept, err := NewModernRequest("tools/list", nil)
 		require.NoError(t, err)
-		override.SetHeader("Accept", "text/plain")
-		_, err = client.Send(context.Background(), server.URL, override)
+		withAccept.WithStreamableAccept()
+		_, err = client.Send(context.Background(), server.URL, withAccept)
 		require.NoError(t, err)
-		require.Equal(t, "text/plain", captured.headers.Get("Accept"), "a test must be able to override Accept")
+		require.Equal(t, "application/json, text/event-stream", captured.headers.Get("Accept"),
+			"WithStreamableAccept opts into the Accept a real streamable-HTTP backend requires")
 	})
 }
 

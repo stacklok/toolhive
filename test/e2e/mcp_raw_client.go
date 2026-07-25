@@ -172,6 +172,16 @@ func (r *RawRequest) WithClientInfo(name, version string) *RawRequest {
 	return r.SetMeta(MetaKeyClientInfo, map[string]any{"name": name, "version": version})
 }
 
+// WithStreamableAccept sets "Accept: application/json, text/event-stream".
+// A real go-sdk streamable-HTTP server rejects a POST without this header
+// (HTTP 400), so requests bound for a real backend (e.g. the k8s tier) must
+// set it. Do NOT set it for requests to the ToolHive proxy: the proxy does not
+// require it and switches to an SSE response body when it is present, which
+// this client's plain-JSON parser cannot read.
+func (r *RawRequest) WithStreamableAccept() *RawRequest {
+	return r.SetHeader("Accept", "application/json, text/event-stream")
+}
+
 // WithRawBody replaces the entire request body with body, sent verbatim.
 // Use this for truncated, oversized, or garbage bodies. body is cloned;
 // mutating the caller's slice afterward has no effect on the request.
@@ -304,11 +314,12 @@ func NewRawMCPClient(timeout time.Duration) (*RawMCPClient, error) {
 	}, nil
 }
 
-// Send marshals req and POSTs it to url. A default
-// "Accept: application/json, text/event-stream" is applied by SendRaw (the
-// streamable-HTTP transport requires it; a real go-sdk server rejects a POST
-// without it as 400). Override it for a specific test via
-// req.SetHeader("Accept", ...).
+// Send marshals req and POSTs it to url. No Accept header is set by default:
+// the ToolHive proxy returns a plain JSON body without it (which this client's
+// populateEnvelope parses) and switches to an unparsable SSE response body
+// whenever Accept lists text/event-stream. A request bound for a REAL
+// streamable-HTTP MCP backend -- which rejects a POST lacking that Accept with
+// HTTP 400 -- should opt in via req.WithStreamableAccept().
 func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*RawResponse, error) {
 	body, err := req.marshal()
 	if err != nil {
@@ -326,13 +337,6 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 		return nil, fmt.Errorf("mcp_raw_client: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	// The MCP streamable-HTTP transport requires Accept to list both
-	// application/json and text/event-stream on every POST; a real go-sdk
-	// server rejects a request without it (HTTP 400) before any classification.
-	// ToolHive's own proxy inbound is lenient about this, but a Modern backend
-	// behind it is not — so default it here (like Content-Type). Set before the
-	// caller loop so a test can still override Accept for a specific case.
-	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}

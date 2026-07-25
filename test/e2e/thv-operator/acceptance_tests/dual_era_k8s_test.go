@@ -235,6 +235,9 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 				"arguments": map[string]any{"input": "anypod"},
 			})
 			Expect(err).ToNot(HaveOccurred())
+			// The backend is a real go-sdk streamable-HTTP server, which 400s a
+			// POST without this Accept; the ToolHive proxy tiers must NOT set it.
+			req.WithStreamableAccept()
 			resp, err := rawClient.Send(context.Background(), proxyURL(), req)
 			Expect(err).ToNot(HaveOccurred(), "request %d", i)
 			Expect(resp.StatusCode).To(Equal(http.StatusOK), "request %d", i)
@@ -265,6 +268,7 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 			if buildErr != nil {
 				return 0, buildErr
 			}
+			req.WithStreamableAccept() // real go-sdk backend requires Accept: text/event-stream
 			resp, sendErr := rawClient.Send(context.Background(), proxyURL(), req)
 			if sendErr != nil {
 				return 0, sendErr

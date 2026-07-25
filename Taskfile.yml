@@ -13,17 +13,16 @@ tasks:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
       - swag init -g pkg/api/server.go --v3.1 -o docs/server --parseDependencyLevel 1
+      # swag can non-deterministically double enum arrays for types from
+      # external modules (see cmd/help/dedupe-enums); normalize the output.
+      - go run ./cmd/help/dedupe-enums docs/server/docs.go docs/server/swagger.json docs/server/swagger.yaml
       - task: helm-docs
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
       # Pinned to the version go.mod already requires, so @latest can't
-      # silently drift onto a newer/older swag release. Note: swag v2.0.0-rc5
-      # itself still has a run-to-run nondeterminism bug that can double
-      # x-enum-varnames/enum entries for types from external modules
-      # (packages.go's loadExternalPackage doesn't memoize by import path) —
-      # pinning removes version drift as a variable but does not fix that bug.
+      # silently drift onto a newer/older swag release.
       # Keep in sync with .github/workflows/verify-docgen.yml.
       - go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
 

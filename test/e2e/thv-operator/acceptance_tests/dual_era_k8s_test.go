@@ -11,7 +11,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,10 +36,22 @@ import (
 // addition since (NodePort access, traffic-driving, pod eviction, Redis
 // kill) is new and verified only by go build/vet/lint, not a live run.
 //
-// Runs in its own namespace (not "default"): this file scales the shared
-// "redis" Deployment to 0 to test the 503 path, which would otherwise pull
-// Redis out from under the concurrent ratelimit_test.go Ordered block under
-// --procs=8.
+// Runs in its own namespace (not "default") to keep its Redis and MCPServer
+// resources isolated from the concurrent ratelimit_test.go Ordered block
+// under --procs=8.
+//
+// SCOPE (deliberate): this single-server MCPServer tier covers the MODERN
+// (2026-07-28, stateless) path only -- Modern multi-replica routing and
+// pod-eviction self-heal. It deliberately does NOT cover mixed Legacy+Modern
+// traffic or a session-store (Redis) outage: both need a Legacy (session)
+// client to open a session against this STATELESS backend, and a single
+// go-sdk backend cannot be both stateless (to serve Modern per-request
+// clients, spec below) and session-issuing (for Legacy clients) at once.
+// Serving both eras over one backend is cross-generation bridging, which is a
+// vMCP capability (epic #5743, design #5756), out of scope for a single-server
+// MCPServer -- the proxy here does per-request version discrimination, not
+// generation bridging. When that bridge is implemented, add the mixed-era and
+// session-store-outage coverage as a vMCP e2e test, not here.
 //
 // Confirmed live (Step 4.1): the MCPServer controller creates TWO separate
 // workloads -- a Deployment named after the CR (the proxy runner, one
@@ -232,53 +243,6 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 		}
 	})
 
-	It("serves mixed Legacy and Modern traffic over the shared Redis session store", func() {
-		rawClient, err := e2e.NewRawMCPClient(15 * time.Second)
-		Expect(err).ToNot(HaveOccurred())
-
-		By("Legacy: initialize then a session-keyed tools/call")
-		initReq := e2e.NewLegacyInitializeRequest("k8s-mixed-legacy", "1.0")
-		initResp, err := rawClient.Send(context.Background(), proxyURL(), initReq)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(initResp.StatusCode).To(Equal(http.StatusOK))
-		sessionID := initResp.Headers.Get(e2e.HeaderMCPSessionID)
-		Expect(sessionID).ToNot(BeEmpty())
-
-		legacyReq, err := e2e.NewLegacyRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "legacymixed"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		legacyReq.WithSessionID(sessionID)
-		legacyResp, err := rawClient.Send(context.Background(), proxyURL(), legacyReq)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(legacyResp.StatusCode).To(Equal(http.StatusOK))
-		Expect(legacyResp.Error).To(BeNil())
-
-		By("Modern: stateless tools/call, no session id, alongside the Legacy session above")
-		modernReq, err := e2e.NewModernRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "modernmixed"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		modernResp, err := rawClient.Send(context.Background(), proxyURL(), modernReq)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(modernResp.StatusCode).To(Equal(http.StatusOK))
-		Expect(modernResp.Error).To(BeNil())
-		Expect(modernResp.Headers.Get(e2e.HeaderMCPSessionID)).To(BeEmpty(), "Modern must never carry Mcp-Session-Id")
-
-		By("the Legacy session is still usable after the Modern request")
-		legacyReq2, err := e2e.NewLegacyRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "legacymixed2"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		legacyReq2.WithSessionID(sessionID)
-		legacyResp2, err := rawClient.Send(context.Background(), proxyURL(), legacyReq2)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(legacyResp2.StatusCode).To(Equal(http.StatusOK))
-	})
-
 	It("degrades cleanly and self-heals when a backend pod is evicted mid-traffic", func() {
 		rawClient, err := e2e.NewRawMCPClient(15 * time.Second)
 		Expect(err).ToNot(HaveOccurred())
@@ -329,99 +293,4 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 			return ready, nil
 		}, timeout, pollingInterval).Should(Equal(backendReplicas))
 	})
-
-	It("returns 503 when Redis becomes unavailable, then recovers once Redis is restored", func() {
-		rawClient, err := e2e.NewRawMCPClient(15 * time.Second)
-		Expect(err).ToNot(HaveOccurred())
-
-		By("establishing a Legacy session while Redis is up")
-		initReq := e2e.NewLegacyInitializeRequest("k8s-redis-503", "1.0")
-		initResp, err := rawClient.Send(context.Background(), proxyURL(), initReq)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(initResp.StatusCode).To(Equal(http.StatusOK))
-		sessionID := initResp.Headers.Get(e2e.HeaderMCPSessionID)
-		Expect(sessionID).ToNot(BeEmpty())
-
-		By("scaling Redis to 0")
-		Expect(scaleRedis(ctx, testNamespace, 0)).To(Succeed())
-		Eventually(func() (int, error) {
-			podList := &corev1.PodList{}
-			if err := k8sClient.List(ctx, podList, client.InNamespace(testNamespace), client.MatchingLabels{"app": "redis"}); err != nil {
-				return 0, err
-			}
-			return len(podList.Items), nil
-		}, timeout, pollingInterval).Should(Equal(0))
-
-		By("a request against the existing session now gets 503 (session store unavailable)")
-		req, err := e2e.NewLegacyRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "redisdown"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		req.WithSessionID(sessionID)
-		Eventually(func() (int, error) {
-			resp, sendErr := rawClient.Send(context.Background(), proxyURL(), req)
-			if sendErr != nil {
-				return 0, sendErr
-			}
-			return resp.StatusCode, nil
-		}, timeout, pollingInterval).Should(Equal(http.StatusServiceUnavailable))
-
-		By("restoring Redis")
-		Expect(scaleRedis(ctx, testNamespace, 1)).To(Succeed())
-		Eventually(func() error {
-			return testutil.CheckPodsReady(ctx, k8sClient, testNamespace, map[string]string{"app": "redis"})
-		}, timeout, pollingInterval).Should(Succeed())
-
-		// Redis has no persistence here (a plain in-memory Deployment, see
-		// EnsureRedis) -- scaling to 0 wiped every session key, so the
-		// pre-outage sessionID is gone, not just temporarily unreachable.
-		// Reusing it now would correctly 404 (session-not-found), not 200:
-		// that would assert session *survival* across an outage that
-		// destroys state, which isn't the property here. The property is
-		// functional recovery -- a brand new session must work.
-		By("Redis is functionally back: a fresh initialize + call succeeds")
-		var newSessionID string
-		Eventually(func() (int, error) {
-			resp, sendErr := rawClient.Send(context.Background(), proxyURL(), e2e.NewLegacyInitializeRequest("k8s-redis-503-post", "1.0"))
-			if sendErr != nil {
-				return 0, sendErr
-			}
-			newSessionID = resp.Headers.Get(e2e.HeaderMCPSessionID)
-			return resp.StatusCode, nil
-		}, timeout, pollingInterval).Should(Equal(http.StatusOK))
-		Expect(newSessionID).ToNot(BeEmpty())
-
-		req2, err := e2e.NewLegacyRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "redisback"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		req2.WithSessionID(newSessionID)
-		resp2, err := rawClient.Send(context.Background(), proxyURL(), req2)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(resp2.StatusCode).To(Equal(http.StatusOK))
-
-		By("the pre-outage session is gone, not silently revived -- confirms the outage really cleared state")
-		staleReq, err := e2e.NewLegacyRequest("tools/call", map[string]any{
-			"name":      "echo",
-			"arguments": map[string]any{"input": "stalesession"},
-		})
-		Expect(err).ToNot(HaveOccurred())
-		staleReq.WithSessionID(sessionID)
-		staleResp, err := rawClient.Send(context.Background(), proxyURL(), staleReq)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(staleResp.StatusCode).To(Equal(http.StatusNotFound))
-	})
 })
-
-// scaleRedis patches the "redis" Deployment's replica count (0 to simulate
-// an outage, 1 to restore) -- the same Deployment EnsureRedis creates.
-func scaleRedis(ctx context.Context, namespace string, replicas int32) error {
-	deploy := &appsv1.Deployment{}
-	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "redis", Namespace: namespace}, deploy); err != nil {
-		return err
-	}
-	deploy.Spec.Replicas = ptr.To(replicas)
-	return k8sClient.Update(ctx, deploy)
-}

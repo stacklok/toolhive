@@ -154,11 +154,19 @@ type httpBackendClient struct {
 	//
 	// NOTE: never evicted, no singleflight/CAS. Concurrent first-probes are
 	// last-writer-wins-safe: writes are idempotent for a deterministic backend
-	// (every probe agrees), and a flapping backend self-heals via
-	// dispatch->reclassify (a call revealing the other era re-probes and flips).
-	// A transient probe failure caches nothing (probeRevision returns uncached),
-	// so a blip cannot pin a revision; a TTL/periodic re-probe is deferred until
-	// flapping backends surface.
+	// (every probe agrees). A transient probe failure caches nothing
+	// (probeRevision returns uncached), so a blip cannot pin a revision.
+	//
+	// Self-healing is ASYMMETRIC under go-sdk v1.7: a mis-cached Modern backend
+	// that has actually negotiated down to Legacy self-heals via
+	// dispatch->reclassify (errModernNegotiatedDown re-probes and flips it). A
+	// mis-cached Legacy backend that has actually become Modern does NOT: the
+	// SDK's own client transparently negotiates Modern on the Legacy dispatch
+	// path, so calls keep succeeding and no error ever reaches reclassify's
+	// trigger (see TestListCapabilities_MisCachedLegacy_StillSucceedsViaSDKNegotiation
+	// in reclassify_test.go). The stale Legacy value still surfaces externally
+	// via CachedRevision -> health status -> the mcpRevision CRD field. Tracked
+	// as #5992; until fixed, a TTL/periodic re-probe would close this gap.
 	revisions sync.Map // map[string]mcpparser.Revision
 }
 
@@ -1057,8 +1065,10 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 	// one Modern wire shape, so a backend must advertise exactly it to be driven
 	// Modern. This is intentionally stricter than go-sdk's reference client
 	// (negotiated >= 2026-07-28). TRIPWIRE: when a newer Modern revision is
-	// added, this must become a set/range check or a newer-only backend is
-	// wrongly classified Legacy — TestProbeRevision_RealBackends will catch it.
+	// added, this must become a set/range check (alongside the sibling
+	// exact-match in classifyUnsupportedProtocolVersion, modern.go) or a
+	// newer-only backend is wrongly classified Legacy — TestProbeRevision_RealBackends
+	// will catch it.
 	if !slices.Contains(discover.SupportedVersions, mcpparser.MCPVersionModern) {
 		return nil, fmt.Errorf("%w: supportedVersions=%v", errModernNegotiatedDown, discover.SupportedVersions)
 	}
@@ -1090,13 +1100,34 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 // A hard error is also returned when the backend transport cannot be built at all
 // (e.g. invalid auth/CA config); that is a genuine misconfiguration. Note that
 // dispatch, the sole caller, does not distinguish these error classes — it falls
-// back to Legacy uncached on any error this function returns.
+// back to Legacy uncached on any error this function returns. A "sse" target
+// (see below) returns before that check runs, so its transport is first
+// validated on the Legacy call path instead.
 // The resolved capabilities are intentionally not returned: callers that need
 // them (ListCapabilities) re-fetch via modernDiscover, so probeRevision only
 // classifies and caches the revision.
+//
+// A "sse" target is classified Legacy without a network call. TransportType ==
+// "sse" specifically names the deprecated 2024-11-05 two-endpoint transport
+// (GET /sse + POST /messages) — see ssecommon.HTTPSSEEndpoint and the GET-only
+// httpsse proxy — not "any backend that happens to use SSE" (Modern itself uses
+// SSE response streams). modernCall is a single-endpoint POST, so it can never
+// reach a Modern endpoint through an /sse BaseURL, even for a dual-era server
+// that also hosts a Modern endpoint, because that lives at a different path.
+// This also sidesteps POSTing into a GET-only stream and hanging to the client
+// timeout (errModernTransient, uncached, re-probed on every call).
 func (h *httpBackendClient) probeRevision(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (mcpparser.Revision, error) {
+	if target.TransportType == "sse" {
+		// The 2024-11-05 two-endpoint transport (GET /sse + POST /messages) has no
+		// Modern endpoint to discover at this BaseURL — see the doc comment above.
+		// Note: HTTP+SSE is Deprecated per the MCP spec, not removed; this gate is
+		// ToolHive routing, not a protocol requirement.
+		h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+		return mcpparser.RevisionLegacy, nil
+	}
+
 	hc, err := h.buildModernHTTPClient(ctx, target)
 	if err != nil {
 		return 0, fmt.Errorf("failed to build transport for backend %s: %w", target.WorkloadID, err)

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,13 +24,6 @@ const (
 	testExternalAudience = "toolhive-authserver"
 )
 
-// newExternalTestJWKS creates a separate JWKS for simulating an external issuer.
-// It reuses newTestJWKS but conceptually represents a different signing authority.
-func newExternalTestJWKS(t *testing.T) *testJWKS {
-	t.Helper()
-	return newTestJWKS(t)
-}
-
 // startJWKSServer creates a test HTTP server that serves a JWKS endpoint.
 // The returned server must be closed by the caller.
 func startJWKSServer(t *testing.T, tj *testJWKS) *httptest.Server {
@@ -38,30 +32,13 @@ func startJWKSServer(t *testing.T, tj *testJWKS) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		// Serve only the public keys.
-		publicJWKS := publicKeysFrom(t, tj)
 		w.Header().Set("Content-Type", "application/json")
-		err := json.NewEncoder(w).Encode(publicJWKS)
-		require.NoError(t, err)
+		_ = json.NewEncoder(w).Encode(tj.publicJWKS())
 	})
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
-}
-
-// publicKeysFrom extracts the public portion of the test JWKS keys.
-func publicKeysFrom(t *testing.T, tj *testJWKS) map[string]interface{} {
-	t.Helper()
-	keys := make([]map[string]interface{}, 0, len(tj.jwks.Keys))
-	for _, key := range tj.jwks.Keys {
-		pub := key.Public()
-		raw, err := pub.MarshalJSON()
-		require.NoError(t, err, "failed to marshal public key")
-		var m map[string]interface{}
-		require.NoError(t, json.Unmarshal(raw, &m), "failed to unmarshal public key")
-		keys = append(keys, m)
-	}
-	return map[string]interface{}{"keys": keys}
 }
 
 // startDiscoveryServer creates a test HTTP server that serves both OIDC discovery
@@ -71,21 +48,20 @@ func startDiscoveryServer(t *testing.T, tj *testJWKS) *httptest.Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		// The jwks_uri must use the test server's own base URL, which we
-		// don't know until the server starts. We use the Host header to
-		// construct it.
-		scheme := "http"
-		jwksURI := scheme + "://" + r.Host + "/jwks"
+		// The issuer and jwks_uri must use the test server's own base URL,
+		// which we don't know until the server starts. We use the Host header
+		// to construct them. The issuer must match the requested issuer URL
+		// (which the test configures as the discovery server's own URL).
+		base := "http://" + r.Host
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"issuer":   testExternalIssuer,
-			"jwks_uri": jwksURI,
+			"issuer":   base,
+			"jwks_uri": base + "/jwks",
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
-		publicJWKS := publicKeysFrom(t, tj)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(publicJWKS)
+		_ = json.NewEncoder(w).Encode(tj.publicJWKS())
 	})
 
 	srv := httptest.NewServer(mux)
@@ -102,7 +78,7 @@ func newMultiValidator(
 ) *MultiIssuerTokenValidator {
 	t.Helper()
 
-	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.jwks, testIssuer, []string{testIssuer})
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 
 	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, trustedIssuers)
@@ -129,7 +105,7 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 	t.Parallel()
 
 	selfJWKS := newTestJWKS(t)
-	externalJWKS := newExternalTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
 	jwksServer := startJWKSServer(t, externalJWKS)
 
 	tests := []struct {
@@ -323,7 +299,7 @@ func TestMultiIssuerTokenValidator_OIDCDiscovery(t *testing.T) {
 	t.Parallel()
 
 	selfJWKS := newTestJWKS(t)
-	externalJWKS := newExternalTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
 	discoveryServer := startDiscoveryServer(t, externalJWKS)
 
 	// Configure the trusted issuer WITHOUT a JWKS URL, forcing OIDC discovery.
@@ -360,16 +336,15 @@ func TestMultiIssuerTokenValidator_JWKSCaching(t *testing.T) {
 	t.Parallel()
 
 	selfJWKS := newTestJWKS(t)
-	externalJWKS := newExternalTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
 
 	// Track how many times the JWKS endpoint is hit.
 	var fetchCount atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		fetchCount.Add(1)
-		publicJWKS := publicKeysFrom(t, externalJWKS)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(publicJWKS)
+		_ = json.NewEncoder(w).Encode(externalJWKS.publicJWKS())
 	})
 	jwksServer := httptest.NewServer(mux)
 	t.Cleanup(jwksServer.Close)
@@ -395,4 +370,107 @@ func TestMultiIssuerTokenValidator_JWKSCaching(t *testing.T) {
 	}
 
 	assert.Equal(t, int32(1), fetchCount.Load(), "JWKS should be fetched only once due to caching")
+}
+
+func TestNewMultiIssuerTokenValidator_EmptyAudience(t *testing.T) {
+	t.Parallel()
+	selfJWKS := newTestJWKS(t)
+	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+	_, err = NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{{
+		IssuerURL:        testExternalIssuer,
+		ExpectedAudience: "",
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ExpectedAudience is required")
+}
+
+func TestMultiIssuerTokenValidator_DiscoveryFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		handler func(w http.ResponseWriter, r *http.Request)
+	}{
+		{
+			name: "non-200",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+		},
+		{
+			name: "malformed doc",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte("{not-json"))
+			},
+		},
+		{
+			name: "missing jwks_uri",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				// Issuer must match so discovery reaches the jwks_uri check.
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"issuer": "http://" + r.Host,
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			selfJWKS := newTestJWKS(t)
+			externalJWKS := newTestJWKS(t)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/.well-known/openid-configuration", tt.handler)
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+
+			trustedIssuers := []TrustedIssuer{{
+				IssuerURL:        server.URL,
+				ExpectedAudience: testExternalAudience,
+				// JWKSURL left empty to force discovery.
+			}}
+			validator := newMultiValidator(t, selfJWKS, trustedIssuers)
+
+			claims := externalClaims()
+			claims.Issuer = server.URL
+			rawToken := externalJWKS.signToken(t, claims, nil)
+
+			result, err := validator.Validate(context.Background(), rawToken)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "OIDC discovery failed")
+			assert.Nil(t, result)
+		})
+	}
+}
+
+func TestMultiIssuerTokenValidator_KidMismatch(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+
+	trustedIssuers := []TrustedIssuer{{
+		IssuerURL:        testExternalIssuer,
+		ExpectedAudience: testExternalAudience,
+		JWKSURL:          jwksServer.URL + "/jwks",
+	}}
+	validator := newMultiValidator(t, selfJWKS, trustedIssuers)
+
+	// Sign with a key whose public half is NOT in the served JWKS and whose
+	// kid does not match any served key. The kid lookup misses, so the
+	// validator falls back to trying every served key and fails verification.
+	unknownKey := newECDSAJWK(t, "unknown-kid")
+	claims := externalClaims()
+	rawToken := signWithJWK(t, unknownKey, jose.ES256, claims)
+
+	result, err := validator.Validate(context.Background(), rawToken)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "signature verification failed")
+	assert.Nil(t, result)
 }

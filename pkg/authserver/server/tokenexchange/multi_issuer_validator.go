@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +32,13 @@ const (
 	// external OIDC endpoints (1 MiB). This prevents resource exhaustion from
 	// unexpectedly large responses.
 	maxResponseBodySize = 1 << 20
+
+	// maxJWKSKeys caps the number of keys accepted from an external JWKS to
+	// prevent CPU amplification from a hostile endpoint serving many keys.
+	maxJWKSKeys = 100
+
+	// maxRedirects caps redirects followed when fetching external OIDC metadata.
+	maxRedirects = 5
 )
 
 // Compile-time check that MultiIssuerTokenValidator implements SubjectTokenValidator.
@@ -57,6 +65,13 @@ type TrustedIssuer struct {
 // is delegated to the SelfIssuedTokenValidator. For tokens from trusted external
 // issuers, the validator resolves the issuer's JWKS (via OIDC discovery if needed),
 // verifies the JWT signature, and validates standard claims.
+//
+// TODO(#5989): this validator is not yet wired into Factory (which still
+// constructs a SelfIssuedTokenValidator), so external subject tokens are not
+// reachable in production. External tokens carry no client_id claim, so the
+// handler's checkDelegationConsent fails them closed. The external-token
+// delegation-consent policy MUST land in the same change that wires this
+// validator into Factory — do not enable external issuers without it.
 type MultiIssuerTokenValidator struct {
 	selfIssuer    string
 	selfValidator *SelfIssuedTokenValidator
@@ -64,7 +79,9 @@ type MultiIssuerTokenValidator struct {
 	httpClient    *http.Client
 
 	// insecureSkipJWKSURLValidation disables HTTPS enforcement on discovered
-	// JWKS URLs. This MUST only be set for testing with httptest servers.
+	// JWKS URLs and relaxes the dial-time IP/scheme checks (so httptest servers
+	// on loopback over HTTP are reachable). This MUST only be set for testing
+	// with httptest servers.
 	insecureSkipJWKSURLValidation bool
 }
 
@@ -101,14 +118,47 @@ func NewMultiIssuerTokenValidator(
 		}
 	}
 
-	return &MultiIssuerTokenValidator{
+	v := &MultiIssuerTokenValidator{
 		selfIssuer:    selfIssuer,
 		selfValidator: selfValidator,
 		issuers:       issuers,
-		httpClient: &http.Client{
-			Timeout: httpTimeout,
+	}
+
+	v.httpClient = &http.Client{
+		Timeout: httpTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return errors.New("too many redirects")
+			}
+			// Re-validate the scheme of each redirect hop; the resolved IP
+			// is checked in DialContext below.
+			if !v.insecureSkipJWKSURLValidation && req.URL.Scheme != "https" {
+				return fmt.Errorf("redirect to non-HTTPS URL: %q", req.URL.Scheme)
+			}
+			return nil
 		},
-	}, nil
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				for _, ipa := range ips {
+					if !v.insecureSkipJWKSURLValidation && isDisallowedIP(ipa.IP) {
+						return nil, fmt.Errorf("refusing to connect to disallowed address %s", ipa.IP)
+					}
+				}
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(
+					ctx, network, net.JoinHostPort(ips[0].String(), port))
+			},
+		},
+	}
+
+	return v, nil
 }
 
 // Validate parses the raw JWT to extract the issuer claim, then routes validation
@@ -173,6 +223,12 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, fmt.Errorf("subject token is missing required 'sub' claim")
 	}
 
+	// Expiry is required so the delegated token can be bounded by the subject
+	// token's remaining lifetime.
+	if standardClaims.Expiry == nil {
+		return nil, errors.New("subject token is missing required 'exp' claim")
+	}
+
 	return buildValidatedClaims(standardClaims, extraClaims), nil
 }
 
@@ -185,6 +241,8 @@ func (v *MultiIssuerTokenValidator) resolveJWKS(
 ) (*jose.JSONWebKeySet, error) {
 	issuerConfig.mu.Lock()
 	defer issuerConfig.mu.Unlock()
+	// The lock is intentionally held across the network fetch so concurrent
+	// validations of the same issuer don't trigger duplicate JWKS fetches.
 
 	// Return cached JWKS if still valid.
 	if issuerConfig.jwks != nil && time.Now().Before(issuerConfig.jwksExp) {
@@ -194,7 +252,7 @@ func (v *MultiIssuerTokenValidator) resolveJWKS(
 	// Cache expired — clear the discovered URL so we re-discover on next fetch.
 	// This handles the (rare) case where an issuer rotates its JWKS endpoint URL.
 	// The explicitly configured JWKSURL (from TrustedIssuer) is preserved.
-	if issuerConfig.TrustedIssuer.JWKSURL == "" {
+	if issuerConfig.JWKSURL == "" {
 		issuerConfig.jwksURL = ""
 	}
 
@@ -270,6 +328,10 @@ func (v *MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerU
 		return "", fmt.Errorf("failed to parse discovery document: %w", err)
 	}
 
+	if doc.Issuer != issuerURL {
+		return "", fmt.Errorf("discovery document issuer %q does not match expected issuer %q", doc.Issuer, issuerURL)
+	}
+
 	if doc.JWKSURI == "" {
 		return "", fmt.Errorf("discovery document missing 'jwks_uri'")
 	}
@@ -297,11 +359,18 @@ func validateJWKSURL(jwksURL string) error {
 
 	host := u.Hostname()
 	ip := net.ParseIP(host)
-	if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
-		return fmt.Errorf("must not point to a private or loopback address")
+	if ip != nil && isDisallowedIP(ip) {
+		return errors.New("must not point to a private or loopback address")
 	}
 
 	return nil
+}
+
+// isDisallowedIP reports whether an IP must not be dialed when fetching
+// external OIDC metadata, blocking SSRF to internal/metadata addresses.
+func isDisallowedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 // fetchJWKS fetches a JSON Web Key Set from the given URL.
@@ -330,6 +399,13 @@ func (v *MultiIssuerTokenValidator) fetchJWKS(ctx context.Context, jwksURL strin
 	var jwks jose.JSONWebKeySet
 	if err := json.Unmarshal(body, &jwks); err != nil {
 		return nil, fmt.Errorf("failed to parse JWKS: %w", err)
+	}
+
+	if len(jwks.Keys) == 0 {
+		return nil, errors.New("JWKS contains no keys")
+	}
+	if len(jwks.Keys) > maxJWKSKeys {
+		return nil, fmt.Errorf("JWKS contains too many keys: %d (max %d)", len(jwks.Keys), maxJWKSKeys)
 	}
 
 	return &jwks, nil

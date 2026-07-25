@@ -115,6 +115,12 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"error", err,
 			"actor", actorID,
 		)
+		// TODO(#5989): this maps every validation failure to invalid_request,
+		// which is correct for a malformed/unverifiable subject token. Once the
+		// multi-issuer validator is wired in, grant-level failures reachable only
+		// on the external path (untrusted issuer, wrong audience, expired) should
+		// map to invalid_grant per RFC 6749 §5.2; that needs typed validator
+		// errors the handler can distinguish.
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified."))
 	}

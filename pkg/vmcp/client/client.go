@@ -1053,7 +1053,9 @@ func (h *httpBackendClient) modernDiscover(
 //     leaving it unprobed lets the next call re-probe once the outage clears.
 //
 // A hard error is also returned when the backend transport cannot be built at all
-// (e.g. invalid auth/CA config); that is a genuine misconfiguration.
+// (e.g. invalid auth/CA config); that is a genuine misconfiguration. Note that
+// dispatch, the sole caller, does not distinguish these error classes — it falls
+// back to Legacy uncached on any error this function returns.
 // The resolved capabilities are intentionally not returned: callers that need
 // them (ListCapabilities) re-fetch via modernDiscover, so probeRevision only
 // classifies and caches the revision.
@@ -1382,6 +1384,11 @@ func (*httpBackendClient) legacyInit(
 // and runs fn with it. Every call verb AND ListCapabilities route through this
 // seam so revision selection — and self-correction — lives in one place.
 //
+// A probeRevision error of any kind (inconclusive probe or transport-build
+// failure) falls back to Legacy — the pre-dual-era default — WITHOUT caching,
+// so a genuinely Modern backend re-probes on the next call instead of being
+// pinned to Legacy by one bad probe.
+//
 // On a revision mismatch (isRevisionMismatch), dispatch always re-probes
 // authoritatively and flips the cache so future calls use the corrected
 // revision. It RETRIES fn only when the failure proves the backend did NOT
@@ -1391,8 +1398,10 @@ func (*httpBackendClient) legacyInit(
 // cache is flipped but fn is NOT re-run. The retry is unconditionally single
 // (no re-check), so it can never loop.
 //
-// When the revision was just probed in THIS call (uncached), a re-probe would
-// return the same answer, so a mismatch is surfaced directly without re-probing.
+// When the revision was resolved in THIS call (uncached), a mismatch is surfaced
+// directly without re-probing: on a successful probe a re-probe would just repeat
+// the same answer, and on the Legacy fallback above there is no cached revision to
+// correct — the next call re-probes anyway once the outage clears.
 func (h *httpBackendClient) dispatch(
 	ctx context.Context, target *vmcp.BackendTarget,
 	fn func(ctx context.Context, rev mcpparser.Revision) error,
@@ -1401,9 +1410,19 @@ func (h *httpBackendClient) dispatch(
 	if !cached {
 		probed, err := h.probeRevision(ctx, target)
 		if err != nil {
-			return wrapBackendError(err, target.WorkloadID, "probe revision")
+			// A failed probe (auth blip / transient 5xx / timeout / connection
+			// refused, or a transport that could not be built) says nothing about
+			// the revision and must NOT fail a backend that is reachable on the
+			// Legacy path — which re-validates the transport itself. Fall back to Legacy —
+			// the pre-dual-era default — WITHOUT caching, so a transient outage
+			// never pins a revision and a genuinely Modern backend is corrected on
+			// the next call's re-probe.
+			slog.DebugContext(ctx, "revision probe inconclusive; attempting Legacy uncached",
+				"backend", target.WorkloadID, "probe_error", err)
+			rev = mcpparser.RevisionLegacy
+		} else {
+			rev = probed
 		}
-		rev = probed
 	}
 
 	err := fn(ctx, rev)

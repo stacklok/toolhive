@@ -17,6 +17,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
+// Default proxy-runner resource values used when a CR omits resource requests/limits.
+// These keep remote proxy containers bounded while remaining overrideable per CR.
+const (
+	DefaultProxyRunnerCPURequest    = "50m"
+	DefaultProxyRunnerCPULimit      = "200m"
+	DefaultProxyRunnerMemoryRequest = "64Mi"
+	DefaultProxyRunnerMemoryLimit   = "256Mi"
+)
+
 // BuildResourceRequirements builds Kubernetes resource requirements from CRD spec
 // Shared between MCPServer and MCPRemoteProxy
 func BuildResourceRequirements(resourceSpec mcpv1beta1.ResourceRequirements) corev1.ResourceRequirements {
@@ -43,6 +52,52 @@ func BuildResourceRequirements(resourceSpec mcpv1beta1.ResourceRequirements) cor
 	}
 
 	return resources
+}
+
+// BuildDefaultProxyRunnerResourceRequirements returns the default resource
+// requirements for proxy-runner containers (MCPRemoteProxy).
+func BuildDefaultProxyRunnerResourceRequirements() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(DefaultProxyRunnerCPURequest),
+			corev1.ResourceMemory: resource.MustParse(DefaultProxyRunnerMemoryRequest),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(DefaultProxyRunnerCPULimit),
+			corev1.ResourceMemory: resource.MustParse(DefaultProxyRunnerMemoryLimit),
+		},
+	}
+}
+
+// MergeResourceRequirements merges user-provided resource requirements on top of
+// defaults. User values take precedence for any field that is explicitly set.
+func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev1.ResourceRequirements {
+	merged := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{},
+		Limits:   corev1.ResourceList{},
+	}
+
+	for resourceName, quantity := range defaults.Requests {
+		merged.Requests[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range defaults.Limits {
+		merged.Limits[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range user.Requests {
+		merged.Requests[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range user.Limits {
+		merged.Limits[resourceName] = quantity.DeepCopy()
+	}
+
+	if len(merged.Requests) == 0 {
+		merged.Requests = nil
+	}
+	if len(merged.Limits) == 0 {
+		merged.Limits = nil
+	}
+
+	return merged
 }
 
 // BuildHealthProbe builds a Kubernetes health probe configuration

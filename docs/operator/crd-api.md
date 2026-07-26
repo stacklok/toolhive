@@ -4813,6 +4813,7 @@ This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.Di
 | `circuitBreakerState` _string_ | CircuitBreakerState is the current circuit breaker state (closed, open, half-open).<br />Empty when circuit breaker is disabled or not configured. |  | Enum: [closed open half-open] <br />Optional: \{\} <br /> |
 | `circuitLastChanged` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | CircuitLastChanged is the timestamp when the circuit breaker state last changed.<br />Empty when circuit breaker is disabled or has never changed state. |  | Optional: \{\} <br /> |
 | `consecutiveFailures` _integer_ | ConsecutiveFailures is the current count of consecutive health check failures.<br />Resets to 0 when the backend becomes healthy again. |  | Optional: \{\} <br /> |
+| `mcpRevision` _string_ | MCPRevision is the backend's negotiated MCP protocol revision<br />("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed. |  | Optional: \{\} <br /> |
 
 
 

@@ -108,20 +108,19 @@ func TestRegression_ToolSchemaFidelity_PreservesCompositors(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
-			c, err := client.NewStreamableHttpClient(
-				target.BaseURL,
-				mcptransport.WithHTTPTimeout(30*time.Second),
-			)
-			if err != nil {
-				return nil, err
-			}
-			if err := c.Start(ctx); err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
+	h := newProbeClient(t)
+	h.clientFactory = func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
+		c, err := client.NewStreamableHttpClient(
+			target.BaseURL,
+			mcptransport.WithHTTPTimeout(30*time.Second),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(ctx); err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	target := &vmcp.BackendTarget{

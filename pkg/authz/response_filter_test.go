@@ -6,6 +6,7 @@ package authz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1238,4 +1239,204 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 			assert.False(t, hasResult, "error response must not contain a result key")
 		})
 	}
+}
+
+// sseEvent is one event dispatched by parseSSEStream.
+type sseEvent struct {
+	eventType string
+	data      string
+}
+
+// parseSSEStream interprets body per the WHATWG HTML "server-sent events"
+// event-stream grammar (§"Interpreting an event stream"): lines end at CRLF,
+// LF, or CR; a line starting with ':' is a comment; a line containing ':'
+// splits into a field name and value (one leading space of the value is
+// stripped); a line without ':' is a field with an empty value. Only
+// recognized fields have any effect — "data" appends value+"\n" to the data
+// buffer, "event" sets the event type — and an UNRECOGNIZED field is ignored
+// outright. A blank line dispatches an event only when the data buffer is
+// non-empty, and pending data left at end-of-stream is discarded.
+//
+// The strictness is the point of these tests: a bare JSON object written
+// into a stream is one giant unrecognized field ('{"jsonrpc"' up to the
+// first colon) and yields no event at all — the silent client hang of #6037
+// — so a conformant-looking payload is not evidence of delivery.
+func parseSSEStream(t *testing.T, body []byte) []sseEvent {
+	t.Helper()
+
+	normalized := strings.ReplaceAll(string(body), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	lines := strings.Split(normalized, "\n")
+	// A trailing line terminator makes Split produce a final "" that is not a
+	// blank LINE (a blank line is two consecutive terminators); drop it so an
+	// unterminated final event is correctly left undispatched.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	var events []sseEvent
+	var dataBuf strings.Builder
+	var eventType string
+	for _, line := range lines {
+		switch {
+		case line == "":
+			if dataBuf.Len() > 0 {
+				events = append(events, sseEvent{
+					eventType: eventType,
+					data:      strings.TrimSuffix(dataBuf.String(), "\n"),
+				})
+			}
+			dataBuf.Reset()
+			eventType = ""
+		case strings.HasPrefix(line, ":"):
+			// Comment; ignored.
+		default:
+			name, value, hasColon := strings.Cut(line, ":")
+			if hasColon {
+				value = strings.TrimPrefix(value, " ")
+			} else {
+				value = ""
+			}
+			switch name {
+			case "data":
+				dataBuf.WriteString(value)
+				dataBuf.WriteString("\n")
+			case "event":
+				eventType = value
+			default:
+				// Unrecognized field: ignored per the grammar. A bare JSON
+				// line lands here.
+			}
+		}
+	}
+	return events
+}
+
+// newSSEFilteringWriter builds a ResponseFilteringWriter over a recorder
+// whose response is already committed as an SSE stream, the state
+// writeSSEError runs in.
+func newSSEFilteringWriter(t *testing.T) (*httptest.ResponseRecorder, *ResponseFilteringWriter) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/messages", nil)
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, nil, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+	return rr, rfw
+}
+
+// TestWriteSSEErrorIsParseableByAnSSEClient is the delivery guard for #6037:
+// the filtering-failure error on the SSE path must arrive as a dispatched,
+// default-typed SSE event whose data is the conformant JSON-RPC error — run
+// through a WHATWG-grammar parser, because conformant bytes that no SSE
+// client can see (the pre-fix behavior) must fail this test.
+func TestWriteSSEErrorIsParseableByAnSSEClient(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		id       jsonrpc2.ID
+		linesep  string
+		wantData string
+	}{
+		{
+			name:     "LF stream with int64 id",
+			id:       jsonrpc2.Int64ID(42),
+			linesep:  "\n",
+			wantData: `{"jsonrpc":"2.0","id":42,"error":{"code":-32603,"message":"internal error"}}`,
+		},
+		{
+			name:     "CRLF stream with string id",
+			id:       jsonrpc2.StringID("abc"),
+			linesep:  "\r\n",
+			wantData: `{"jsonrpc":"2.0","id":"abc","error":{"code":-32603,"message":"internal error"}}`,
+		},
+		{
+			// An unrecoverable id omits the key entirely (never "id":null),
+			// matching the empty-ID encoding asserted elsewhere (#6038).
+			name:     "empty id omits the id key",
+			id:       jsonrpc2.ID{},
+			linesep:  "\n",
+			wantData: `{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rr, rfw := newSSEFilteringWriter(t)
+			require.NoError(t, rfw.writeSSEError(tc.id, errors.New("boom"), []byte(tc.linesep)))
+
+			events := parseSSEStream(t, rr.Body.Bytes())
+			require.Len(t, events, 1, "the error must arrive as exactly one dispatched SSE event; body: %q", rr.Body.String())
+			ev := events[0]
+			assert.Empty(t, ev.eventType,
+				"the error event must be default-typed: MCP clients only process events with no type or type 'message'")
+			assert.JSONEq(t, tc.wantData, ev.data)
+
+			var decoded map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal([]byte(ev.data), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.id != jsonrpc2.ID{}, hasID, "id key presence mismatch")
+
+			// No mid-stream status rewrite: the old WriteHeader(500) was a
+			// usually-no-op on a committed stream (and a recorder pins it
+			// reliably); the in-band JSON-RPC error rides the 200 stream.
+			assert.Equal(t, http.StatusOK, rr.Code,
+				"writeSSEError must not attempt a status rewrite mid-stream")
+		})
+	}
+}
+
+// TestWriteSSEErrorAfterPartialEvent covers the truncation interaction from
+// #6037: if the failure lands while a previous event is partially written
+// (field lines emitted, no dispatching blank line yet), the error frame's
+// leading separator must first terminate that partial event so the error
+// still arrives as its own cleanly parseable event, rather than being
+// concatenated into the partial one's data buffer.
+func TestWriteSSEErrorAfterPartialEvent(t *testing.T) {
+	t.Parallel()
+
+	const wantData = `{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"internal error"}}`
+
+	testCases := []struct {
+		name    string
+		partial string
+	}{
+		{name: "after a typed field line", partial: "event: message\n"},
+		{name: "after an undispatched data line", partial: "data: {\"jsonrpc\":\"2.0\",\n"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rr, rfw := newSSEFilteringWriter(t)
+			_, err := rr.WriteString(tc.partial)
+			require.NoError(t, err)
+			require.NoError(t, rfw.writeSSEError(jsonrpc2.Int64ID(7), errors.New("boom"), []byte("\n")))
+
+			events := parseSSEStream(t, rr.Body.Bytes())
+			require.NotEmpty(t, events, "the error event must be dispatched; body: %q", rr.Body.String())
+			last := events[len(events)-1]
+			assert.JSONEq(t, wantData, last.data,
+				"the error must parse standalone, not merged into the partial event's data")
+		})
+	}
+}
+
+// TestBareJSONInEventStreamYieldsNoSSEEvent documents the #6037 failure mode
+// and validates parseSSEStream's strictness (guarding the guard): the
+// pre-fix writeErrorResponse wrote exactly these bytes into the stream, and
+// under the event-stream grammar they parse as an unrecognized field and are
+// discarded — zero events, client hangs. If parseSSEStream ever loosens
+// enough to accept this shape, the delivery guard above stops guarding.
+func TestBareJSONInEventStreamYieldsNoSSEEvent(t *testing.T) {
+	t.Parallel()
+
+	body := filterErrorBody(jsonrpc2.Int64ID(1))
+	assert.Empty(t, parseSSEStream(t, body),
+		"a bare JSON object must not parse as an SSE event")
+	assert.Empty(t, parseSSEStream(t, append(body, '\n')),
+		"a line terminator alone must not turn a bare JSON object into an event")
 }

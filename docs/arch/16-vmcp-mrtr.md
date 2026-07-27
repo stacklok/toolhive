@@ -21,6 +21,31 @@ the revision's finalization date, when it still lived at `schema/draft`
 should be re-verified against the final text once cut; the MRTR SEP and schema
 types were already Final at time of writing.
 
+**Draft-only dependencies (re-verify against the final cut).** The schema
+types and the SEPs are Final and low-risk. Four load-bearing points in this
+design rest on the draft *spec page's* text, which refines (or diverges from)
+the Final SEP and could still move before the final cut:
+
+- **The three-method table.** SEP-2322 (Final) also allows
+  `InputRequiredResult` on `GetTaskPayloadRequest`; the draft page dropped it
+  when tasks moved to an extension. If the final restores a fourth method,
+  the relay's method allow-list grows — a table edit, not a design change.
+- **Capability gating** (server requirement 7, "MUST NOT send an
+  `inputRequests` that the client has not declared") is page-only — SEP-2322
+  does not state it. Capability mirroring is designed around it; if the final
+  weakens it to SHOULD, mirroring remains correct (it is also what makes the
+  relay deliverable), only the backend-violation error becomes discretionary.
+- **Server requirement 6** ("at least one of `inputRequests` or
+  `requestState`") is page-only; it affects only what vMCP treats as a
+  backend protocol violation.
+- **The `requestState` security language** differs between the two: SEP-2322
+  says user-specific state "MUST use some mechanism to cryptographically
+  bind" it to the user, while the page allows omitting integrity protection
+  "only when tampering can cause nothing worse than request failure". The
+  workflow-handle design (below) satisfies the stricter reading — state never
+  leaves the server and the handle is owner-checked — so it is robust to
+  either landing in the final.
+
 ## Protocol recap (what MRTR actually is)
 
 The 2026-07-28 revision removes server-initiated requests: "Servers **MUST**

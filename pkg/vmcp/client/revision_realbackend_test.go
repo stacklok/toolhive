@@ -161,3 +161,66 @@ func TestLegacyCallTool_StripsReservedMeta_RealBackend(t *testing.T) {
 	}
 	assert.Equal(t, "custom-value", gotMeta["custom-caller-key"], "non-reserved caller _meta must survive")
 }
+
+// stubClientNotifier is a minimal ClientNotifier for BindForwarders: the
+// tools/call path only reads the bound requesters to decide WHICH forwarding
+// handlers to install — the real backend here never notifies mid-call, so it is
+// never invoked. (stubElicitationRequester/stubSamplingRequester live in
+// client_test.go.)
+type stubClientNotifier struct{}
+
+func (stubClientNotifier) NotifyProgress(context.Context, vmcp.ProgressNotification) error {
+	return nil
+}
+func (stubClientNotifier) NotifyLog(context.Context, vmcp.LogMessage) error { return nil }
+
+// TestCallTool_MisCachedLegacy_ForwardingAgainstStatelessBackend pins the
+// forwarding tools/call arm of the "stale Legacy cache is harmless" property
+// (issue #5992), previously covered only for ListCapabilities
+// (forwarding=false). A backend mis-cached Legacy that is genuinely
+// stateless-Modern is queried through the FORWARDING path: forwarders are
+// bound, so newStreamableHTTPClient enables transport.WithContinuousListening
+// — the standalone server->client GET stream that, opened against a session-less
+// backend, is exactly what made the POOLED session-factory connect fail in
+// #6006 (subscriptions/listen -> "session not found").
+//
+// The per-call path survives because of WHERE the skip lives: go-sdk's
+// streamableClientConn.sessionUpdated opens the standalone stream ONLY when the
+// negotiated protocol version is < 2026-07-28 (mcp/streamable.go). On the
+// mis-cached-Legacy hop the SDK's Modern-first client negotiates Modern off the
+// backend, so the version gate suppresses the standalone stream entirely — no
+// subscriptions/listen is ever attempted, Connect succeeds, and the call
+// round-trips. legacyInit then flips the cache to Modern in-band, so the next
+// call skips the legacy handshake.
+//
+// This is the behavior a regression in the version gate (or a shim change that
+// opens the stream unconditionally) would silently break: the call would start
+// failing only on the forwarding path, invisible to the ListCapabilities pin.
+func TestCallTool_MisCachedLegacy_ForwardingAgainstStatelessBackend(t *testing.T) {
+	t.Parallel()
+
+	srv := newRealEchoServer(t, true, nil) // stateless => Modern
+
+	h := newProbeClient(t)
+	h.BindForwarders(&stubElicitationRequester{}, &stubSamplingRequester{}, stubClientNotifier{})
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "real-backend",
+		WorkloadName:  "Real Backend",
+		BaseURL:       srv.URL + "/mcp",
+		TransportType: "streamable-http",
+	}
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy) // mis-cached
+
+	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello forwarding"}, nil)
+	require.NoError(t, err,
+		"the negotiated-Modern version gate must suppress the standalone stream so the per-call forwarding path survives")
+	require.Len(t, res.Content, 1)
+	assert.Equal(t, "hello forwarding", res.Content[0].Text)
+
+	// legacyInit flips the cache off the genuinely-negotiated Initialize result.
+	rev, ok := h.cachedRevision(target.WorkloadID)
+	require.True(t, ok)
+	assert.Equal(t, mcpparser.RevisionModern, rev,
+		"a successful mis-cached-Legacy call self-heals the cache to Modern")
+}

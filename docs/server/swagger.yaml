@@ -222,6 +222,14 @@ components:
             +kubebuilder:default=1024
             +optional
           type: integer
+        maxDelegationDepth:
+          description: |-
+            MaxDelegationDepth caps how many nested RFC 8693 "act" entries are
+            recorded in an audit event's delegationChain. Deeper chains are
+            truncated (marked with truncated=true). Defaults to 10 when unset.
+            +kubebuilder:default=10
+            +optional
+          type: integer
       type: object
     github_com_stacklok_toolhive_pkg_auth_awssts.Config:
       description: AWSStsConfig contains AWS STS token exchange configuration for

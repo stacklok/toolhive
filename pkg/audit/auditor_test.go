@@ -558,6 +558,150 @@ func TestExtractSubjects(t *testing.T) {
 
 		assert.Equal(t, "anonymous", subjects[SubjectKeyUser])
 	})
+
+	t.Run("with delegation chain", func(t *testing.T) {
+		t.Parallel()
+		claims := jwt.MapClaims{
+			"sub":  "user123",
+			"name": "John Doe",
+			"act": map[string]any{
+				"sub": "agent-1",
+				"act": map[string]any{"sub": "agent-2"},
+			},
+		}
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject:         claims["sub"].(string),
+				Name:            claims["name"].(string),
+				Claims:          claims,
+				DelegationChain: &parsed,
+			},
+		}
+		ctx := auth.WithIdentity(req.Context(), identity)
+		req = req.WithContext(ctx)
+
+		subjects := auditor.extractSubjects(req)
+		assert.Equal(t, "user123", subjects[SubjectKeyUserID])
+		assert.Equal(t, "John Doe", subjects[SubjectKeyUser])
+
+		chain := auditor.extractDelegationChain(req)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, 2)
+		assert.False(t, chain.Truncated)
+		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		assert.Equal(t, "agent-2", chain.Actors[1].Subject)
+	})
+
+	t.Run("delegation chain respects configured max depth", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 1
+		depthAuditor, err := NewAuditorWithTransport(&Config{MaxDelegationDepth: &maxDepth}, "sse")
+		require.NoError(t, err)
+
+		claims := jwt.MapClaims{
+			"sub": "user123",
+			"act": map[string]any{
+				"sub": "agent-1",
+				"act": map[string]any{"sub": "agent-2"},
+			},
+		}
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject:         "user123",
+				Claims:          claims,
+				DelegationChain: &parsed,
+			},
+		}
+		req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+		chain := depthAuditor.extractDelegationChain(req)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, 1, "chain must be capped at the configured max depth")
+		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		assert.True(t, chain.Truncated, "dropped trailing actors must mark the chain truncated")
+		assert.Equal(t, 1, chain.DroppedCount, "one dropped actor must be reported")
+	})
+
+	t.Run("no identity yields nil delegation chain", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest("GET", "/test", nil)
+
+		assert.Nil(t, auditor.extractDelegationChain(req))
+	})
+}
+
+func TestExtractDelegationChainFromIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil identity", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, extractDelegationChainFromIdentity(nil, auth.DefaultMaxDelegationDepth))
+	})
+
+	t.Run("identity without chain", func(t *testing.T) {
+		t.Parallel()
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user123"}}
+		assert.Nil(t, extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth))
+	})
+
+	t.Run("programmatic chain without raw act claim is re-bounded to max depth", func(t *testing.T) {
+		t.Parallel()
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				DelegationChain: &auth.DelegationChain{
+					Actors: []auth.DelegatedActor{
+						{Subject: "agent-1"},
+						{Subject: "agent-2"},
+					},
+				},
+			},
+		}
+		chain := extractDelegationChainFromIdentity(identity, 1)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, 1, "the parsed chain must be capped at maxDepth")
+		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		assert.True(t, chain.Truncated)
+		assert.Equal(t, 1, chain.DroppedCount)
+	})
+
+	t.Run("raw act claim without parsed chain is parsed with max depth", func(t *testing.T) {
+		t.Parallel()
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims: map[string]any{
+					"act": map[string]any{
+						"sub": "agent-1",
+						"act": map[string]any{"sub": "agent-2"},
+					},
+				},
+			},
+		}
+		chain := extractDelegationChainFromIdentity(identity, 1)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, 1, "the raw act claim must be parsed with the depth cap")
+		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		assert.True(t, chain.Truncated)
+		assert.Equal(t, 1, chain.DroppedCount)
+	})
+
+	t.Run("no chain and no act claim yields nil", func(t *testing.T) {
+		t.Parallel()
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims:  map[string]any{"sub": "user123"},
+			},
+		}
+		assert.Nil(t, extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth))
+	})
 }
 
 func TestDetermineComponent(t *testing.T) {
@@ -1262,5 +1406,49 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 			"chains whose recovery middleware runs OUTSIDE audit (e.g. the vMCP Serve path) "+
 				"must not lose the connection event to a panic")
 		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+	})
+
+	t.Run("delegated token stream open carries the delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		act := map[string]any{
+			"sub": "agent-1",
+			"act": map[string]any{"sub": "agent-2"},
+		}
+		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		delegated := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject:         "user-123",
+				Claims:          map[string]any{"act": act},
+				DelegationChain: &chain,
+			},
+		}
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Emulate inner auth attaching a delegated identity before the stream starts.
+			_ = auth.WithIdentity(r.Context(), delegated)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: message\ndata: {}\n\n"))
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+
+		logged, ok := events[0]["delegation_chain"].(map[string]any)
+		require.True(t, ok, "the SSE connection event must carry the delegation chain")
+		assert.Equal(t, false, logged["truncated"])
+		actors, ok := logged["actors"].([]any)
+		require.True(t, ok)
+		require.Len(t, actors, 2)
+		first, ok := actors[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-1", first["sub"])
+		second, ok := actors[1].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-2", second["sub"])
 	})
 }

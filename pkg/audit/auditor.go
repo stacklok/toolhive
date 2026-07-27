@@ -113,6 +113,18 @@ func (a *Auditor) Close() error {
 	return nil
 }
 
+// SetLogWriterForTest redirects the auditor's log output to w. It is intended
+// for tests in other packages (e.g. integration tests) that need to capture
+// emitted audit events without reimplementing the auditor.
+//
+// Deprecated: this is test-only surface on a production type. A future
+// NewAuditorWithWriter constructor accepting an explicit io.Writer should
+// replace it; keep usage confined to tests.
+func (a *Auditor) SetLogWriterForTest(w io.Writer) {
+	a.auditLogger = NewAuditLogger(w)
+	a.logWriter = w
+}
+
 // isSSETransport checks if the current transport is SSE
 func (a *Auditor) isSSETransport() bool {
 	return a.transportType == types.TransportTypeSSE.String()
@@ -320,6 +332,9 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Create the audit event
 	event := NewAuditEvent(eventType, source, outcome, subjects, component)
+
+	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
+	event.WithDelegationChain(a.extractDelegationChain(r))
 
 	// Add target information
 	target := a.extractTarget(r, eventType)
@@ -542,21 +557,65 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 	return subjects
 }
 
+// extractDelegationChainFromIdentity returns the RFC 8693 delegation chain
+// carried by the identity, re-bounded to maxDepth, or nil when the identity
+// has no chain. An already-parsed chain is re-bounded by applying maxDepth to
+// its actor list directly; an identity carrying only the raw "act" claim is
+// parsed once via auth.ParseDelegationChain. In both cases the configured cap
+// is enforced — there is no uncapped "honor as-is" fallback.
+func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *auth.DelegationChain {
+	if identity == nil {
+		return nil
+	}
+	if chain := identity.DelegationChain; chain != nil && len(chain.Actors) > 0 {
+		return rebindDelegationChain(chain, maxDepth)
+	}
+	if act, ok := identity.Claims["act"]; ok && act != nil {
+		chain := auth.ParseDelegationChain(act, maxDepth)
+		if len(chain.Actors) > 0 {
+			return &chain
+		}
+	}
+	return nil
+}
+
+// rebindDelegationChain applies maxDepth to an already-parsed chain: actors
+// beyond the cap are dropped, the chain is marked truncated, and the dropped
+// count accounts for both actors truncated at parse time and actors dropped
+// by this re-binding.
+func rebindDelegationChain(chain *auth.DelegationChain, maxDepth int) *auth.DelegationChain {
+	if maxDepth <= 0 {
+		maxDepth = auth.DefaultMaxDelegationDepth
+	}
+	bound := *chain
+	if len(bound.Actors) > maxDepth {
+		bound.DroppedCount += len(bound.Actors) - maxDepth
+		bound.Actors = bound.Actors[:maxDepth]
+		bound.Truncated = true
+	}
+	return &bound
+}
+
+// identityFromRequest resolves the authenticated identity for the request.
+// The context value is present when an auth middleware runs OUTSIDE audit;
+// the holder covers the audit-wraps-auth arrangement, where the identity
+// attached for inner handlers is published back up via auth.WithIdentity.
+func identityFromRequest(r *http.Request) (*auth.Identity, bool) {
+	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+		return identity, true
+	}
+	if holder, hok := auth.IdentityHolderFromContext(r.Context()); hok && holder.Identity != nil {
+		return holder.Identity, true
+	}
+	return nil, false
+}
+
 // extractSubjects extracts subject information from the HTTP request.
 func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
-	// Extract user information from Identity. The context value is present
-	// when an auth middleware runs OUTSIDE audit; the holder covers the
-	// audit-wraps-auth arrangement, where the identity attached for inner
-	// handlers is published back up via auth.WithIdentity.
-	identity, ok := auth.IdentityFromContext(r.Context())
-	if !ok {
-		if holder, hok := auth.IdentityHolderFromContext(r.Context()); hok && holder.Identity != nil {
-			identity, ok = holder.Identity, true
-		}
-	}
-	if ok {
+	// Extract user information from Identity.
+	if identity, ok := identityFromRequest(r); ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
 
@@ -566,6 +625,16 @@ func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	}
 
 	return subjects
+}
+
+// extractDelegationChain extracts the RFC 8693 delegation chain from the
+// HTTP request's identity, or nil when there is no identity or no chain.
+func (a *Auditor) extractDelegationChain(r *http.Request) *auth.DelegationChain {
+	identity, ok := identityFromRequest(r)
+	if !ok {
+		return nil
+	}
+	return extractDelegationChainFromIdentity(identity, a.config.MaxDelegationDepthOrDefault())
 }
 
 // determineComponent determines the component name based on the request.
@@ -751,6 +820,9 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 
 	// Create the audit event for SSE connection
 	event := NewAuditEvent(EventTypeSSEConnection, source, a.determineOutcome(statusCode), subjects, component)
+
+	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
+	event.WithDelegationChain(a.extractDelegationChain(r))
 
 	// Add target information
 	target := map[string]string{

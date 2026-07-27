@@ -203,6 +203,16 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 		identity.Email = email
 	}
 
+	// Parse the RFC 8693 "act" claim (if present) into a delegation chain so
+	// downstream consumers (audit logs, authorizers) see the full chain of
+	// parties acting on behalf of the subject.
+	if act, ok := claims["act"]; ok && act != nil {
+		chain := ParseDelegationChain(act, DefaultMaxDelegationDepth)
+		if len(chain.Actors) > 0 {
+			identity.DelegationChain = &chain
+		}
+	}
+
 	return identity, nil
 }
 

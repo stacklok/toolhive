@@ -62,6 +62,11 @@ type PrincipalInfo struct {
 	// Claims contains additional claims from the auth token.
 	// This preserves all JWT claims for authorization policies.
 	Claims map[string]any `json:"claims,omitempty"`
+
+	// DelegationChain is the parsed RFC 8693 "act" claim: the ordered list of
+	// parties that acted on behalf of this identity's subject (outermost/most
+	// recent first). Nil when the token carries no act claim.
+	DelegationChain *DelegationChain `json:"delegation_chain,omitempty"`
 }
 
 // Identity represents an authenticated user or service account.
@@ -183,6 +188,7 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		Email            string            `json:"email"`
 		Groups           []string          `json:"groups"`
 		Claims           map[string]any    `json:"claims"`
+		DelegationChain  *DelegationChain  `json:"delegationChain,omitempty"`
 		Token            string            `json:"token"`
 		TokenType        string            `json:"tokenType"`
 		Metadata         map[string]string `json:"metadata"`
@@ -242,6 +248,7 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		Email:            i.Email,
 		Groups:           i.Groups,
 		Claims:           claims,
+		DelegationChain:  i.DelegationChain,
 		Token:            token,
 		TokenType:        i.TokenType,
 		Metadata:         i.Metadata,

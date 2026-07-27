@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
@@ -64,19 +63,19 @@ func newModernMeta(serverName, serverVersion string) modernMeta {
 // the serverInfo-only newModernMeta above. The SDK path preserves backend
 // meta via conversion.ToMCPMeta (serve_handlers.go); dropping it here would
 // silently discard whatever the backend attached (progress tokens, trace
-// ids, ...). backendMeta is cloned before the serverInfo key is added (copy
-// before mutating caller input) so the domain result's map is never touched.
-// A Modern backend could in principle return that same namespaced key; the
-// unconditional overwrite is still correct here because the client's actual
-// MCP peer is vMCP, not the backend, so vMCP's own serverInfo must win.
+// ids, ...).
 //
-// Every other backendMeta key -- including any other io.modelcontextprotocol/*
-// reserved key a backend happens to set -- is forwarded unfiltered, matching
-// the Legacy path's conversion.ToMCPMeta. Stripping reserved keys is a
-// tracked follow-up; it must land in a helper shared by both paths, not here
-// only, or Legacy and Modern would drift.
+// Every reserved io.modelcontextprotocol/* key a backend set is stripped first,
+// then vMCP's own serverInfo is stamped last so it always wins: the client's
+// actual MCP peer is vMCP, not the backend, so no backend may speak for it.
+// mcpparser.StripReservedMeta is the SAME helper the Legacy path reaches through
+// conversion.ToMCPMeta -- keep it that way, or the two revisions drift (which is
+// exactly what this function's previous forward-everything behavior caused).
+// It clones, so the domain result's map is never mutated, and returns nil
+// whenever nothing survives -- hence the fallback below, since this result
+// always carries at least serverInfo.
 func newModernResultMeta(backendMeta map[string]any, serverName, serverVersion string) map[string]any {
-	meta := maps.Clone(backendMeta)
+	meta := mcpparser.StripReservedMeta(backendMeta)
 	if meta == nil {
 		meta = make(map[string]any, 1)
 	}

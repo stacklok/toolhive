@@ -135,7 +135,7 @@ var _ = Describe("Dual-Era Observability — OTLP Spans", Label("proxy", "statel
 			"--otel-endpoint", collector.URL(),
 			"--otel-insecure",
 			"--otel-sampling-rate", "1.0", // always-sample: assertions must not race the default 10% ratio
-			images.YardstickServerImageDualEra,
+			images.YardstickServerImage,
 		).ExpectSuccess()
 
 		err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

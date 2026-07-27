@@ -26,6 +26,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -205,6 +206,101 @@ func TestSignOCIEncryptedKey(t *testing.T) {
 	t.Setenv("COSIGN_PASSWORD", "wrong-password")
 	_, err = NewDefault(nil).SignOCI(t.Context(), ref, digestStr, Options{Key: keyPath})
 	require.Error(t, err, "a wrong password must fail key decryption")
+}
+
+func TestSignOCIInputErrors(t *testing.T) {
+	t.Parallel()
+	keyPath, _ := writeTestKey(t)
+
+	tests := []struct {
+		name    string
+		key     string
+		ref     string
+		digest  string
+		wantErr string
+	}{
+		{
+			name:    "garbage key file",
+			key:     writeGarbageKey(t),
+			ref:     "example.com/org/skill:v1",
+			digest:  "sha256:" + strings.Repeat("a", 64),
+			wantErr: "decoding signing key",
+		},
+		{
+			name:    "invalid image reference",
+			key:     keyPath,
+			ref:     "NOT a valid ref!!",
+			digest:  "sha256:" + strings.Repeat("a", 64),
+			wantErr: "parsing image reference",
+		},
+		{
+			name:    "empty digest",
+			key:     keyPath,
+			ref:     "example.com/org/skill:v1",
+			digest:  "",
+			wantErr: "digest is required",
+		},
+		{
+			name:    "malformed digest",
+			key:     keyPath,
+			ref:     "example.com/org/skill:v1",
+			digest:  "sha256:tooshort",
+			wantErr: "parsing digest",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewDefault(nil).SignOCI(t.Context(), tc.ref, tc.digest, Options{Key: tc.key})
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+func writeGarbageKey(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "garbage.key")
+	require.NoError(t, os.WriteFile(p, []byte("not a pem key"), 0o600))
+	return p
+}
+
+func TestParseManifestDigestNormalizesBareHex(t *testing.T) {
+	t.Parallel()
+	hexDigest := strings.Repeat("a", 64)
+	d, err := parseManifestDigest(hexDigest)
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:"+hexDigest, d.String())
+}
+
+func TestSimpleSigningPayloadBindsDigestAndRepo(t *testing.T) {
+	t.Parallel()
+	digestStr := "sha256:" + strings.Repeat("b", 64)
+	payload, err := simpleSigningPayload("example.com/org/skill:v1", digestStr)
+	require.NoError(t, err)
+
+	var got cosignSimpleSigning
+	require.NoError(t, json.Unmarshal(payload, &got))
+	assert.Equal(t, digestStr, got.Critical.Image.DockerManifestDigest)
+	// The identity is the repository, not the tag — retagging must not
+	// invalidate the signature's digest binding.
+	assert.Equal(t, "example.com/org/skill", got.Critical.Identity.DockerReference)
+	assert.Equal(t, "cosign container image signature", got.Critical.Type)
+}
+
+func TestFileKeypairMetadata(t *testing.T) {
+	t.Parallel()
+	keyPath, pubPEM := writeTestKey(t)
+	kp, err := loadKeypair(keyPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "ecdsa", kp.GetKeyAlgorithm())
+	assert.Equal(t, protocommon.HashAlgorithm_SHA2_256, kp.GetHashAlgorithm())
+	assert.Equal(t, protocommon.PublicKeyDetails_PKIX_ECDSA_P256_SHA_256, kp.GetSigningAlgorithm())
+	gotPEM, err := kp.GetPublicKeyPem()
+	require.NoError(t, err)
+	assert.Equal(t, string(pubPEM), gotPEM)
+	assert.Equal(t, pubPEM, kp.GetHint())
+	assert.NotNil(t, kp.GetPublicKey())
 }
 
 func TestResolveKeyPath(t *testing.T) {

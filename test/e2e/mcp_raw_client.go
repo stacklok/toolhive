@@ -375,10 +375,9 @@ type wireError struct {
 // wireResponse is the shape of a single JSON-RPC response object. ID is kept
 // as raw JSON so decodeID can preserve large integers exactly.
 type wireResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  json.RawMessage `json:"result"`
-	Error   *wireError      `json:"error"`
+	ID     json.RawMessage `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  *wireError      `json:"error"`
 }
 
 // populateEnvelope best-effort parses body as a single JSON-RPC response
@@ -390,7 +389,14 @@ func populateEnvelope(body []byte, out *RawResponse) {
 	if err := json.Unmarshal(body, &w); err != nil {
 		return
 	}
-	out.JSONRPC = w.JSONRPC
+	// encoding/json struct tags match case-insensitively as a fallback, which
+	// would let a miscased "JSONRPC" or "JsonRpc" key satisfy `json:"jsonrpc"`
+	// -- exactly the kind of malformed envelope this field exists to catch
+	// (see #5950). Read it from a raw map instead, which is case-sensitive.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		_ = json.Unmarshal(raw["jsonrpc"], &out.JSONRPC)
+	}
 	out.ID = decodeID(w.ID)
 	out.Result = w.Result
 	if w.Error != nil {

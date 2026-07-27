@@ -247,6 +247,21 @@ func TestRawClientSend(t *testing.T) {
 		require.Empty(t, resp.JSONRPC)
 	})
 
+	t.Run("a miscased jsonrpc key does not satisfy the version-tag check", func(t *testing.T) {
+		t.Parallel()
+		// encoding/json struct tags match case-insensitively as a fallback, so
+		// a naive `json:"jsonrpc"` unmarshal would let this non-conformant key
+		// through. resp.JSONRPC must only ever reflect the exact lowercase key.
+		server, _ := newCapturingServer(t, `{"JSONRPC":"2.0","id":1,"result":{}}`)
+
+		req, err := NewLegacyRequest("ping", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Empty(t, resp.JSONRPC)
+	})
+
 	t.Run("parses error.code, error.data and a large-int64 id without precision loss", func(t *testing.T) {
 		t.Parallel()
 		const bigID = "9223372036854775807"

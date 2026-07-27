@@ -148,7 +148,7 @@ func currentHealthStatus(
 	backend vmcp.Backend, recorded map[string]vmcp.BackendHealthStatus, provider health.StatusProvider,
 ) vmcp.BackendHealthStatus {
 	status := backend.HealthStatus
-	if s, ok := recorded[backend.Name]; ok {
+	if s, ok := recorded[backend.ID]; ok {
 		status = s
 	}
 	if provider != nil {
@@ -189,9 +189,11 @@ func (s *HealthProviderSetter) get() health.StatusProvider {
 }
 
 // backendHealth tracks the latest observed health of each backend, keyed by
-// workload name. It is read by the observable-gauge callback and written on each
-// request's success/failure, so the gauge reflects live health. set() only ever
-// receives BackendHealthy/BackendUnhealthy (record() has no visibility into the
+// workload ID (the same identity space as the registry and health.StatusProvider,
+// so a backend rename can't cause a stale/duplicate entry). It is read by the
+// observable-gauge callback and written on each request's success/failure, so
+// the gauge reflects live health. set() only ever receives
+// BackendHealthy/BackendUnhealthy (record() has no visibility into the
 // finer-grained states); those come from the registry instead, as a fallback for
 // backends the map has no entry for yet (see MonitorBackends).
 type backendHealth struct {
@@ -308,12 +310,12 @@ func (t *telemetryBackendClient) record(
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)
 
-			t.health.set(target.WorkloadName, vmcp.BackendUnhealthy)
+			t.health.set(target.WorkloadID, vmcp.BackendUnhealthy)
 			span.RecordError(*err)
 			span.SetStatus(codes.Error, (*err).Error())
 		} else {
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrs)
-			t.health.set(target.WorkloadName, vmcp.BackendHealthy)
+			t.health.set(target.WorkloadID, vmcp.BackendHealthy)
 		}
 		span.End()
 	}

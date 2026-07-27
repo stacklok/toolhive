@@ -118,7 +118,7 @@
           "refId": "A"
         }
       ],
-      "title": "HTTP Request Rate",
+      "title": "MCP Request Rate",
       "type": "timeseries"
     },
     {

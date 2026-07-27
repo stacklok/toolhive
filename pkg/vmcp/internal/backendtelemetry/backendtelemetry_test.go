@@ -203,7 +203,7 @@ func TestMonitorBackends_HealthGaugePrefersLiveProviderOverRegistryAndRecordedSt
 	}).AnyTimes()
 
 	baseClient := vmcpmocks.NewMockBackendClient(ctrl)
-	target := &vmcp.BackendTarget{WorkloadName: "backend-1", TransportType: "sse"}
+	target := &vmcp.BackendTarget{WorkloadID: "be1", WorkloadName: "backend-1", TransportType: "sse"}
 
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -249,7 +249,7 @@ func TestMonitorBackends_HealthGaugeTransitionsOnRequestOutcome(t *testing.T) {
 	}).AnyTimes()
 
 	baseClient := vmcpmocks.NewMockBackendClient(ctrl)
-	target := &vmcp.BackendTarget{WorkloadName: "backend-1", TransportType: "sse"}
+	target := &vmcp.BackendTarget{WorkloadID: "be1", WorkloadName: "backend-1", TransportType: "sse"}
 
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -346,7 +346,7 @@ func TestMonitorBackends_ClientOperationDurationCarriesBackendIdentity(t *testin
 	}).AnyTimes()
 
 	baseClient := vmcpmocks.NewMockBackendClient(ctrl)
-	target := &vmcp.BackendTarget{WorkloadName: "backend-1", TransportType: "sse"}
+	target := &vmcp.BackendTarget{WorkloadID: "be1", WorkloadName: "backend-1", TransportType: "sse"}
 
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))

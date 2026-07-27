@@ -203,62 +203,74 @@ func (rfw *ResponseFilteringWriter) filterAndEncode(response *jsonrpc2.Response)
 	return jsonrpc2.EncodeMessage(filteredResponse)
 }
 
+// sseLine pairs one scanned SSE line with the terminator that followed it in
+// the raw body: "\r\n", "\n", "\r", or nil for a final line with none. SSE
+// permits mixing all three within one stream, so each line keeps the
+// terminator it actually had rather than the body being forced onto one
+// stream-wide convention.
+type sseLine struct {
+	text []byte
+	term []byte
+}
+
+// processSSEResponse rewrites a text/event-stream body per SSE framing rules
+// rather than treating it as an arbitrary sequence of lines: within one
+// event, all `data:` field values concatenate (joined by LF, per spec) into a
+// single payload, and a blank line is structural — it dispatches the event
+// rather than being emittable content in its own right.
+//
+// Lines are scanned one terminator at a time instead of sniffing a single
+// separator convention for the whole body: sniffing disagrees with a client
+// that (per spec) may see CR, LF, and CRLF mixed within one stream, and that
+// disagreement is exactly the class of bug this rewrite exists to close.
+// Every line is re-emitted with the same terminator it was scanned with, so
+// the output is structurally identical to the input (minus a leading UTF-8
+// BOM, stripped below); only `data:` payloads are rewritten.
 func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error {
 	// Note: this routine is adapted from the one in pkg/mcp/tool_filter.go.
 	// I don't see an obvious way to factor out the commonalities, so I'm
 	// duplicating it here, but we should refactor response parsing
 	// respecting mime types to a common routine.
-	var linesep []byte
-	if bytes.Contains(rawResponse, []byte("\r\n")) {
-		linesep = []byte("\r\n")
-	} else if bytes.Contains(rawResponse, []byte("\n")) {
-		linesep = []byte("\n")
-	} else if bytes.Contains(rawResponse, []byte("\r")) {
-		linesep = []byte("\r")
-	} else {
-		// Length only, not the body: rawResponse is the full pre-filter payload
-		// (e.g. the unfiltered tools/list), and this error is logged upstream.
-		return fmt.Errorf("unsupported SSE line separator in %d-byte response", len(rawResponse))
-	}
 
-	var linesepTotal, linesepCount int
-	linesepTotal = bytes.Count(rawResponse, linesep)
-	lines := bytes.Split(rawResponse, linesep)
-	for _, line := range lines {
+	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
+	// before parsing lines, so strip it here too: otherwise the first line's
+	// "data:" prefix wouldn't match and the event would pass through
+	// unfiltered.
+	rawResponse = bytes.TrimPrefix(rawResponse, []byte("\xEF\xBB\xBF"))
+
+	var outputLines []sseLine
+	var event []sseLine
+	for len(rawResponse) > 0 {
+		idx := bytes.IndexAny(rawResponse, "\r\n")
+		var line, term []byte
+		switch {
+		case idx == -1:
+			line, term, rawResponse = rawResponse, nil, nil
+		case rawResponse[idx] == '\r' && idx+1 < len(rawResponse) && rawResponse[idx+1] == '\n':
+			line, term, rawResponse = rawResponse[:idx], rawResponse[idx:idx+2], rawResponse[idx+2:]
+		default:
+			line, term, rawResponse = rawResponse[:idx], rawResponse[idx:idx+1], rawResponse[idx+1:]
+		}
+
 		if len(line) == 0 {
+			outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
+			outputLines = append(outputLines, sseLine{term: term})
+			event = nil
 			continue
 		}
+		event = append(event, sseLine{text: line, term: term})
+	}
+	// A trailing event with no closing blank line is never dispatched by a
+	// spec-compliant client, but the backend did send these bytes, so write
+	// them (filtered) rather than drop them — without fabricating a
+	// terminator the backend didn't send.
+	outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
 
-		var written bool
-		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			w, err := rfw.writeSSEDataLine(data)
-			if err != nil {
-				return err
-			}
-			written = w
-		}
-
-		if !written {
-			_, err := rfw.ResponseWriter.Write(line)
-			if err != nil {
-				return fmt.Errorf("%w: %w", errBug, err)
-			}
-		}
-
-		_, err := rfw.ResponseWriter.Write(linesep)
-		if err != nil {
+	for _, l := range outputLines {
+		if _, err := rfw.ResponseWriter.Write(l.text); err != nil {
 			return fmt.Errorf("%w: %w", errBug, err)
 		}
-		linesepCount++
-	}
-
-	// This ensures we don't send too few line separators, which might break
-	// SSE parsing. Note it writes at most one separator back, however many
-	// were dropped — see writeSSEErrorLine's doc comment for the multi-event
-	// case that leaves mis-framed.
-	if linesepCount < linesepTotal {
-		_, err := rfw.ResponseWriter.Write(linesep)
-		if err != nil {
+		if _, err := rfw.ResponseWriter.Write(l.term); err != nil {
 			return fmt.Errorf("%w: %w", errBug, err)
 		}
 	}
@@ -266,55 +278,113 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	return nil
 }
 
-// writeSSEDataLine classifies a single SSE `data:` payload and writes the
-// filtered response when it is a clean Response. written reports whether the
-// caller should skip the raw passthrough for this line. A non-nil err means a
-// transport write failed and processSSEResponse should abort; a filtering or
-// encoding failure is instead written as a substitute error `data:` line via
-// writeSSEErrorLine and does not stop processing of the remaining frames. The
-// substitute line is reported as written so the caller skips the raw
-// passthrough: emitting the unfiltered frame after a failed filter would leak
-// the list this filter exists to scrub (#5257).
-func (rfw *ResponseFilteringWriter) writeSSEDataLine(data []byte) (written bool, err error) {
+// resolveSSEEvent assembles the `data:` payload of one SSE event (the lines
+// between two blank lines, exclusive) and returns the lines to emit in its
+// place. An event with no `data:` field (e.g. a bare "event: ping") or whose
+// assembled payload passes filterSSEEventData unchanged is returned as-is.
+func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
+	if len(event) == 0 {
+		return nil
+	}
+
+	var dataValues [][]byte
+	for _, l := range event {
+		// A bare "data" line with no colon doesn't match the "data:" prefix
+		// below, so it's excluded from assembly here, unlike strict WHATWG
+		// grammar (which treats it as a data field with an empty value).
+		// That's safe: its only effect on a spec-compliant client's buffer
+		// would be one extra LF, which is legal JSON whitespace outside a
+		// string literal and equally fatal to us and the client inside one.
+		data, ok := bytes.CutPrefix(l.text, []byte("data:"))
+		if !ok {
+			continue
+		}
+		// Per the WHATWG EventSource grammar, exactly one leading space after
+		// "data:" is part of the field delimiter, not the payload. Stripping
+		// more (or a differently-positioned space) would corrupt a payload
+		// split mid-string-literal across lines.
+		data, _ = bytes.CutPrefix(data, []byte(" "))
+		dataValues = append(dataValues, data)
+	}
+	if len(dataValues) == 0 {
+		return event
+	}
+
+	assembled := bytes.Join(dataValues, []byte("\n"))
+	if len(assembled) == 0 {
+		// A client never dispatches an empty data buffer, so there's nothing
+		// to classify or fail closed on.
+		return event
+	}
+	replacement := rfw.filterSSEEventData(assembled)
+	if replacement == nil {
+		return event
+	}
+
+	out := make([]sseLine, 0, len(event))
+	replaced := false
+	for _, l := range event {
+		if _, ok := bytes.CutPrefix(l.text, []byte("data:")); ok {
+			if replaced {
+				// Subsequent data: lines are already folded into the
+				// assembled payload above; only the first line carries it.
+				continue
+			}
+			// jsonrpc2.EncodeMessage and json.Marshal both escape newlines,
+			// so replacement can never contain a raw line separator and is
+			// always safe to emit as a single data: line.
+			out = append(out, sseLine{text: append([]byte("data: "), replacement...), term: l.term})
+			replaced = true
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// filterSSEEventData classifies an event's assembled data payload and returns
+// the payload to emit in its place. A nil replacement means the event's lines
+// pass through unchanged.
+func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) []byte {
 	message, decodeErr := jsonrpc2.DecodeMessage(data)
 	response, isResponse := message.(*jsonrpc2.Response)
 	switch {
 	case isResponse:
 		filteredData, ferr := rfw.filterAndEncode(response)
 		if ferr != nil {
-			slog.Warn("failed to filter/encode SSE response; emitting a JSON-RPC error in place of the frame",
-				"method", rfw.method, "error", ferr)
-			return true, rfw.writeSSEErrorLine(response.ID, ferr)
+			// errorResponseBody logs ferr itself, so don't repeat it here.
+			slog.Warn("emitting a JSON-RPC error in place of an SSE frame that failed to filter",
+				"method", rfw.method)
+			return rfw.errorResponseBody(response.ID, ferr)
 		}
-		// The caller writes linesep after this line, so do not append a
-		// terminator here. A hardcoded "\n" desyncs \r\n streams.
-		if _, werr := rfw.ResponseWriter.Write([]byte("data: " + string(filteredData))); werr != nil {
-			return false, fmt.Errorf("%w: %w", errBug, werr)
-		}
-		return true, nil
+		return filteredData
 	case carriesResult(data):
 		// The frame is not a clean Response but still carries a result. This
 		// covers a non-Response type (a request/notification frame smuggling a
 		// result), a decode error (missing or invalid jsonrpc tag, a response
 		// frame with no or a non-scalar id), and a batch array. All are
-		// upstream-controlled shapes that would otherwise fall through and leak
-		// the very list this filter scrubs (#5257). Fail closed and drop the line.
-		slog.Warn("SSE data line carried a result outside a clean Response frame; dropping as a protocol violation",
+		// upstream-controlled shapes that would otherwise leak the very list
+		// this filter scrubs (#5257). Fail closed with an explicit error
+		// envelope rather than dropping the event silently: an event
+		// dispatched with an empty data buffer isn't delivered to the
+		// client's handler at all, leaving it hanging on its own timeout
+		// (#6037).
+		slog.Warn("SSE event carried a result outside a clean Response frame; failing closed as a protocol violation",
 			"method", rfw.method)
-		return true, nil
+		return rfw.errorResponseBody(rfw.requestID(),
+			fmt.Errorf("dropped a frame carrying a result outside a clean Response"))
 	case decodeErr != nil:
-		// Genuinely undecodable and no smuggled result. Pass this line through
-		// unfiltered (this line only).
-		slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
+		// Genuinely undecodable and no smuggled result. Pass through unfiltered.
+		slog.Warn("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
 			"method", rfw.method, "error", decodeErr)
-		return false, nil
+		return nil
 	default:
-		// Genuine non-Response frame (e.g. an interleaved notifications/* message)
-		// with no result payload. Routine SSE traffic, so log at Debug to keep the
-		// suspicious branches above from being buried. Pass through this line only.
-		slog.Debug("SSE data line was not a JSON-RPC Response; passing through unfiltered",
+		// Genuine non-Response frame (e.g. an interleaved notifications/*
+		// message) with no result payload. Routine SSE traffic, so log at
+		// Debug to keep the suspicious branches above from being buried.
+		slog.Debug("SSE event data was not a JSON-RPC Response; passing through unfiltered",
 			"method", rfw.method)
-		return false, nil
+		return nil
 	}
 }
 
@@ -334,8 +404,29 @@ func requiresResponseFiltering(method string) bool {
 // result, a shape DecodeMessage rejects, or a batch array) but still carries a
 // result must not pass through: it would leak the list the filter exists to
 // scrub. See issue #5257.
+//
+// The payload may hold more than one top-level JSON value: an SSE event's
+// assembled data can concatenate several messages (e.g. a notification and a
+// response, one per data: line) into something DecodeMessage rejects as a
+// single value. A json.Decoder walks all of them instead of Unmarshal-ing the
+// whole payload as one document, so a result-bearing value after the first is
+// still caught rather than making the whole payload look undecodable.
 func carriesResult(data []byte) bool {
-	trimmed := bytes.TrimSpace(data)
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var value json.RawMessage
+		if dec.Decode(&value) != nil {
+			return false // EOF, or malformed JSON with nothing left to check
+		}
+		if valueCarriesResult(value) {
+			return true
+		}
+	}
+}
+
+// valueCarriesResult applies carriesResult's check to a single JSON value.
+func valueCarriesResult(value json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(value)
 	if len(trimmed) == 0 {
 		return false
 	}
@@ -346,14 +437,24 @@ func carriesResult(data []byte) bool {
 		}
 		return json.Unmarshal(trimmed, &probe) == nil && probe.Result != nil
 	case '[':
-		var batch []struct {
-			Result json.RawMessage `json:"result"`
-		}
+		// A single level, not recursive: a JSON-RPC batch is a flat array of
+		// message objects, so that's the whole legitimate surface. Recursing
+		// through nested arrays is O(d^2) on encoding/json's own nesting cap
+		// (10000), an easy amplification handle for something no client
+		// actually flattens.
+		var batch []json.RawMessage
 		if json.Unmarshal(trimmed, &batch) != nil {
 			return false
 		}
-		for i := range batch {
-			if batch[i].Result != nil {
+		for _, el := range batch {
+			elTrimmed := bytes.TrimSpace(el)
+			if len(elTrimmed) == 0 || elTrimmed[0] != '{' {
+				continue
+			}
+			var probe struct {
+				Result json.RawMessage `json:"result"`
+			}
+			if json.Unmarshal(elTrimmed, &probe) == nil && probe.Result != nil {
 				return true
 			}
 		}
@@ -380,7 +481,16 @@ func sseCarriesResult(rawResponse []byte) bool {
 // filterListResponse filters the list response based on authorization policies
 func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
 	if response.Error != nil {
-		// If there's an error in the response, don't filter
+		// A Response carrying both error and result is a protocol violation:
+		// DecodeMessage populates both fields as given, and some clients
+		// (e.g. the reference TS SDK's zod schema) silently strip the
+		// unexpected "error" key and treat it as a successful result. Fail
+		// closed rather than passing the smuggled list through under cover
+		// of the error field. See #5257.
+		if response.Result != nil {
+			return nil, fmt.Errorf("response carried both error and result")
+		}
+		// If there's an error and no result, don't filter
 		return response, nil
 	}
 
@@ -614,31 +724,15 @@ func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error)
 
 // writeErrorResponse writes an error response for the application/json path.
 // The SSE path must NOT use this: WriteHeader is a no-op once Flush() has
-// committed the headers, which is the case for any real SSE response. Use
-// writeSSEErrorLine instead.
+// committed the headers, which is the case for any real SSE response. On the
+// SSE path a filtering failure instead becomes the replacement payload of the
+// event's data: line (see filterSSEEventData), written through
+// processSSEResponse's normal line writer alongside every other line — no
+// separate write path or WriteHeader call is needed there.
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(rfw.errorResponseBody(id, err))
 	return writeErr
-}
-
-// writeSSEErrorLine writes a filtering failure as an SSE `data:` line, in place
-// of the frame that failed. It writes no terminator: processSSEResponse frames
-// this line exactly as it frames a successfully filtered one, so the error is
-// delivered wherever a filtered response would have been. Bodies carrying more
-// than one event are mis-framed by the separator reconciliation either way,
-// independently of whether filtering succeeded.
-//
-// Deliberately no WriteHeader: earlier lines are already on the wire and Flush()
-// has committed the headers, so a status change would be dropped — and
-// text/event-stream with a bare JSON body is unreadable by an SSE client
-// regardless. See issue #6037.
-func (rfw *ResponseFilteringWriter) writeSSEErrorLine(id jsonrpc2.ID, err error) error {
-	_, writeErr := rfw.ResponseWriter.Write([]byte("data: " + string(rfw.errorResponseBody(id, err))))
-	if writeErr != nil {
-		return fmt.Errorf("%w: %w", errBug, writeErr)
-	}
-	return nil
 }
 
 // requestID recovers the JSON-RPC id of the original request so an error

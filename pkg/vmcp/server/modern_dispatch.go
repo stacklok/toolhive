@@ -97,6 +97,11 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		s.dispatchModernPromptGet(ctx, w, parsed, identity)
 	case "completion/complete":
 		s.dispatchModernComplete(ctx, w, parsed, identity)
+	case methodSubscriptionsListen:
+		// Ungated, same bucket as the list verbs and discover -- see
+		// dispatchModernSubscriptionsListen for why, and for the one future
+		// change that would require gating it.
+		s.dispatchModernSubscriptionsListen(ctx, w, parsed, identity)
 	case "ping":
 		// ping is deliberately ungated (unauthenticated liveness, same bucket
 		// as initialize -- no Check*) and carries NEITHER resultType NOR

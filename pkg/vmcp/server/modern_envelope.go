@@ -255,6 +255,42 @@ type modernDiscoverResult struct {
 func newModernDiscover(
 	hasTools, hasResources, hasTemplates, hasPrompts bool, serverName, serverVersion string,
 ) modernDiscoverResult {
+	return modernDiscoverResult{
+		ResultType:        modernResultTypeComplete,
+		modernCacheable:   newModernCacheable(),
+		SupportedVersions: []string{mcpparser.MCPVersionModern, mcp.LATEST_PROTOCOL_VERSION},
+		Capabilities:      newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts),
+		Meta:              newModernMeta(serverName, serverVersion),
+	}
+}
+
+// newModernCapabilities shapes the four admission-filtered presence checks into
+// the wire capability flags. It is the SINGLE source of truth for what this
+// dispatcher advertises: server/discover publishes it verbatim (above), and
+// subscriptions/listen intersects a client's requested notification set against
+// it (honoredSubscriptions, modern_subscriptions.go). Keeping one builder is
+// what makes those two answers impossible to drift apart -- a client can never
+// be told a push capability exists by one verb and denied it by the other.
+//
+// Every push-related flag below is deliberately false, and each `false` is a
+// load-bearing statement about what vMCP can actually do, not an oversight:
+//
+//   - Tools/Prompts/Resources ListChanged: dispatchModern creates no session, so
+//     the per-session list_changed machinery (buildListChangedSink, wired only
+//     from handleSessionRegistrationImpl in server.go) never runs for a Modern
+//     client, whatever revision its backends speak.
+//   - Resources Subscribe: this stateless single-shot dispatcher has no
+//     persistent connection to a client to push a server-initiated
+//     resources/updated notification over, so resources/subscribe is not
+//     advertised here and returns -32601 by design, not by oversight. vMCP does
+//     not forward backend resources/updated on the Legacy path either
+//     (ack-level only; see docs/arch/10-virtual-mcp-architecture.md).
+//
+// Flipping any of them to true is a promise to deliver that notification type,
+// which today nothing in vMCP can keep. Implement delivery in the SAME change,
+// or a Modern client will subscribe successfully and then wait forever. See
+// #5743.
+func newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts bool) mcp.ServerCapabilities {
 	var caps mcp.ServerCapabilities
 	if hasTools {
 		caps.Tools = &struct {
@@ -262,11 +298,6 @@ func newModernDiscover(
 		}{}
 	}
 	if hasResources || hasTemplates {
-		// Subscribe is left false (omitted on the wire): this stateless
-		// single-shot dispatcher has no persistent connection to a client to
-		// push a server-initiated resources/updated notification over, so
-		// resources/subscribe is not advertised here and returns -32601 by
-		// design, not by oversight.
 		caps.Resources = &struct {
 			Subscribe   bool `json:"subscribe,omitempty"`
 			ListChanged bool `json:"listChanged,omitempty"`
@@ -278,13 +309,7 @@ func newModernDiscover(
 		}{}
 	}
 	caps.Completions = &struct{}{}
-	return modernDiscoverResult{
-		ResultType:        modernResultTypeComplete,
-		modernCacheable:   newModernCacheable(),
-		SupportedVersions: []string{mcpparser.MCPVersionModern, mcp.LATEST_PROTOCOL_VERSION},
-		Capabilities:      caps,
-		Meta:              newModernMeta(serverName, serverVersion),
-	}
+	return caps
 }
 
 // newModernToolsList builds the tools/list wire result from the core's

@@ -329,6 +329,18 @@ non-nil `ListChangedSink` is supplied at connection time, the connector:
   than a bare string so a typo is a compile error — and logs
   `notifications/message` received out-of-call (log-only; no relay).
 
+This propagation mechanism only applies to a Legacy (2025-11-25) backend: the
+per-session factory (`pkg/vmcp/session/factory.go`) skips the persistent
+connection — and therefore the handshake, the sink registration, and the
+standalone GET stream above — for any backend whose cached revision is known
+Modern (2026-07-28); see [Backend MCP Revision Classification](#backend-mcp-revision-classification)
+above for how that revision is resolved and cached. This is correct, not a gap in the skip: Modern removed
+`initialize` and `Mcp-Session-Id`, so there is no Legacy-shaped persistent
+connection to hold and no standalone GET stream a Modern backend could push
+on. Modern's own server-push mechanism is `subscriptions/listen` (see
+[Transport Architecture](03-transport-architecture.md)), which vMCP does not
+implement yet — so `list_changed` propagation is currently Legacy-only.
+
 The sink is built once per session, at registration (`pkg/vmcp/server`'s
 `buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,
 and the caller's identity **and per-request forwarded headers** captured **at

@@ -990,10 +990,18 @@ func (h *httpBackendClient) setRevision(workloadID string, rev mcpparser.Revisio
 	h.revisions.Store(workloadID, rev)
 }
 
+// Compile-time guard that this client still satisfies the optional read-model
+// every consumer type-asserts to. Without it, renaming or dropping
+// CachedRevision below would compile cleanly and silently disable the telemetry
+// revision label, the /status field, and the session layer's Modern-connect
+// skip — each of which degrades gracefully by design when the assertion fails.
+var _ vmcp.RevisionReporter = (*httpBackendClient)(nil)
+
 // CachedRevision reports a backend's resolved MCP revision for status/telemetry
 // read-models. The second return is false when the backend has never been probed.
-// Exported (not on vmcp.BackendClient) so the telemetry decorator and health
-// monitor can read it via an optional interface without an interface/mock change.
+// Exported (not on vmcp.BackendClient) so the telemetry decorator, health
+// monitor and session factory can read it via vmcp.RevisionReporter without an
+// interface/mock change.
 func (h *httpBackendClient) CachedRevision(workloadID string) (mcpparser.Revision, bool) {
 	return h.cachedRevision(workloadID)
 }

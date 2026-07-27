@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -34,10 +35,11 @@ type StatusResponse struct {
 
 // BackendStatus mirrors the server's backend status structure for test deserialization.
 type BackendStatus struct {
-	Name      string `json:"name"`
-	Health    string `json:"health"`
-	Transport string `json:"transport"`
-	AuthType  string `json:"auth_type,omitempty"`
+	Name        string `json:"name"`
+	Health      string `json:"health"`
+	Transport   string `json:"transport"`
+	AuthType    string `json:"auth_type,omitempty"`
+	MCPRevision string `json:"mcp_revision,omitempty"`
 }
 
 // createTestServerWithBackends creates a test server instance with custom backends
@@ -210,11 +212,28 @@ func createTestServerWithHealthMonitor(
 	t.Cleanup(ctrl.Finish)
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
-
 	if setupMock != nil {
 		setupMock(mockBackendClient)
 	}
+
+	return createTestServerWithClient(t, backends, monitorCfg, mockBackendClient, groupRef)
+}
+
+// createTestServerWithClient is createTestServerWithHealthMonitor but takes an
+// already-built vmcp.BackendClient instead of constructing a bare mock — used
+// when a test needs a client satisfying an optional interface (e.g. the
+// health monitor's CachedRevision accessor) that the plain mock doesn't
+// implement.
+func createTestServerWithClient(
+	t *testing.T,
+	backends []vmcp.Backend,
+	monitorCfg health.MonitorConfig,
+	client vmcp.BackendClient,
+	groupRef string,
+) *server.Server {
+	t.Helper()
+
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
@@ -233,7 +252,7 @@ func createTestServerWithHealthMonitor(
 		GroupRef:            groupRef,
 		HealthMonitorConfig: healthMonCfg,
 		SessionFactory:      newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
-	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
+	}, rt, client, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	type startResult struct {
@@ -367,6 +386,13 @@ func TestStatusEndpoint_ReflectsLiveHealthMonitor_Healthy(t *testing.T) {
 	assert.True(t, status.Healthy)
 	require.Len(t, status.Backends, 1)
 	assert.Equal(t, string(vmcp.BackendHealthy), status.Backends[0].Health)
+	// The monitor is running here, but this test's client is a plain mock with
+	// no CachedRevision method — the shape of any BackendClient other than
+	// httpBackendClient. The revision must stay empty rather than being
+	// invented, so this is the third distinct state of mcp_revision alongside
+	// the two dedicated tests below.
+	assert.Empty(t, status.Backends[0].MCPRevision,
+		"revision must stay empty for a client that cannot report one")
 }
 
 // TestStatusEndpoint_FallsBackToRegistry_WhenMonitorDisabled confirms the
@@ -391,4 +417,68 @@ func TestStatusEndpoint_FallsBackToRegistry_WhenMonitorDisabled(t *testing.T) {
 	}
 	assert.Equal(t, string(vmcp.BackendHealthy), healthByName["healthy-backend"])
 	assert.Equal(t, string(vmcp.BackendUnhealthy), healthByName["unhealthy-backend"])
+}
+
+// revClientStub wraps a MockBackendClient and adds the optional CachedRevision
+// accessor the health monitor reads (mirrors pkg/vmcp/health/monitor_test.go's
+// revClientStub, unexported there and so not reusable across packages).
+type revClientStub struct {
+	*mocks.MockBackendClient
+	rev mcpparser.Revision
+}
+
+func (s revClientStub) CachedRevision(string) (mcpparser.Revision, bool) { return s.rev, true }
+
+// TestStatusEndpoint_MCPRevision_Populated verifies /status surfaces the
+// backend's negotiated MCP revision once the health monitor has probed it —
+// the field has no static registry counterpart, so this requires a client
+// that implements CachedRevision (the bare mock does not).
+func TestStatusEndpoint_MCPRevision_Populated(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(&vmcp.CapabilityList{}, nil).
+		AnyTimes()
+	client := revClientStub{MockBackendClient: mockClient, rev: mcpparser.RevisionModern}
+
+	backends := []vmcp.Backend{{ID: "b1", Name: "modern-backend", TransportType: "streamable-http"}}
+	monitorCfg := health.MonitorConfig{
+		CheckInterval:      5 * time.Millisecond,
+		UnhealthyThreshold: 3,
+		Timeout:            time.Second,
+	}
+	srv := createTestServerWithClient(t, backends, monitorCfg, client, "")
+
+	require.Eventually(t, func() bool {
+		status := queryStatus(t, srv)
+		return len(status.Backends) == 1 && status.Backends[0].MCPRevision == mcpparser.MCPVersionModern
+	}, 5*time.Second, 20*time.Millisecond, "expected /status to report the negotiated MCP revision")
+}
+
+// TestStatusEndpoint_MCPRevision_AbsentWhenMonitorDisabled mirrors
+// TestStatusEndpoint_FallsBackToRegistry_WhenMonitorDisabled: with no health
+// monitor (and so no client capable of CachedRevision ever consulted), the
+// field must be empty and — because of omitempty — the "mcp_revision" key
+// must be absent from the JSON entirely, not merely an empty string.
+func TestStatusEndpoint_MCPRevision_AbsentWhenMonitorDisabled(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{{ID: "b1", Name: "test-backend", HealthStatus: vmcp.BackendHealthy}}
+	srv := createTestServerWithBackends(t, backends, "")
+
+	resp, err := http.Get("http://" + srv.Address() + "/status")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var raw struct {
+		Backends []map[string]any `json:"backends"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&raw))
+	require.Len(t, raw.Backends, 1)
+	_, present := raw.Backends[0]["mcp_revision"]
+	assert.False(t, present, "mcp_revision must be omitted, not present-empty, when unobservable")
 }

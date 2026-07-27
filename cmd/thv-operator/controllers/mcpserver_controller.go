@@ -46,6 +46,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/untrusted"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -54,6 +55,12 @@ type MCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// APIReader bypasses the informer cache for reads where freshness is
+	// load-bearing. Used for bump-CA Secrets: rotation decisions made on a
+	// stale cached read can mint a duplicate generation or fail to rotate on
+	// time (the cache lags a create/delete by tens of milliseconds, which is
+	// exactly the rotation window the tests and real rotations race).
+	APIReader client.Reader
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with the per-CR imagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -167,6 +174,8 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
@@ -227,6 +236,12 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Copy the status before the advisory validators run so the terminal gate
+	// below can skip its status write when the in-memory object is unchanged
+	// (advisory validators persist their own conditions and leave the object
+	// current when nothing changed).
+	statusBeforeGate := mcpServer.Status.DeepCopy()
+
 	// Check if the GroupRef is valid if specified
 	r.validateGroupRef(ctx, mcpServer)
 
@@ -241,11 +256,22 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	r.validateSessionStorageForReplicas(ctx, mcpServer)
 	r.validateRateLimitConfig(ctx, mcpServer)
 
+	// Surface the effective untrusted-mode posture for spec.untrusted=true
+	// workloads (disabled ⇒ reconciled as trusted, with a Warning event).
+	// Advisory only; never blocks the reconcile.
+	r.surfaceUntrustedModeCondition(ctx, mcpServer)
+
 	// Validate PodTemplateSpec early - before other validations
 	// This ensures we fail fast if the spec is invalid
 	if !r.validateAndUpdatePodTemplateStatus(ctx, mcpServer) {
 		// Invalid PodTemplateSpec - return without error to avoid infinite retries
 		// The user must fix the spec and the next reconciliation will retry
+		return ctrl.Result{}, nil
+	}
+
+	// Enforce the untrusted-workload env gate before any workload resources are
+	// created. Terminal spec error: condition + one-shot Warning, no requeue.
+	if !r.validateUntrustedSecretEnv(ctx, mcpServer, statusBeforeGate) {
 		return ctrl.Result{}, nil
 	}
 
@@ -359,6 +385,77 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Ensure untrusted-mode data-plane resources (bump CA, egress-policy
+	// ConfigMap, egress NetworkPolicy), or delete them on the untrusted→trusted
+	// flip. Terminal spec errors (invalid/unresolvable EgressPolicy) surface as
+	// a condition and stop without requeue, per the gate pattern.
+	if err := r.ensureUntrustedResources(ctx, mcpServer); err != nil {
+		var specErr *SpecValidationError
+		if stderrors.As(err, &specErr) {
+			ctxLogger.Error(err, "Untrusted egress policy rejected")
+			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+			mcpServer.Status.Message = fmt.Sprintf("Invalid untrusted egress policy: %s", specErr.Error())
+			// Terminal: a distinct reason (not ConditionReasonNotReady) and the
+			// observed generation, so the rejection is unambiguous and stale
+			// conditions from a newer spec are detectable.
+			meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonUntrustedPolicyInvalid,
+				Message:            mcpServer.Status.Message,
+				ObservedGeneration: mcpServer.Generation,
+			})
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after untrusted policy validation failure")
+			}
+			return ctrl.Result{}, nil
+		}
+		ctxLogger.Error(err, "Failed to ensure untrusted resources")
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure untrusted resources: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after untrusted resources error")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Ensure the TRUSTED-mode egress NetworkPolicy from spec.permissionProfile
+	// (opt-in: only when network.outbound pins allowHost/allowPort and is NOT
+	// InsecureAllowAll; deleted otherwise). Terminal spec errors (unknown
+	// builtin, missing ConfigMap/key, malformed profile) surface as a condition
+	// and stop without requeue, per the gate pattern. SECURITY INVARIANT: this
+	// policy is blast-radius reduction only, never a credential boundary — the
+	// credential guarantee exists only in untrusted mode (broker + single-
+	// tenancy), which trusted workloads do not have.
+	if err := r.ensureTrustedEgressNetworkPolicy(ctx, mcpServer); err != nil {
+		var specErr *SpecValidationError
+		if stderrors.As(err, &specErr) {
+			ctxLogger.Error(err, "Permission profile rejected for egress NetworkPolicy")
+			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+			mcpServer.Status.Message = fmt.Sprintf("Invalid permission profile: %s", specErr.Error())
+			meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonPermissionProfileInvalid,
+				Message:            mcpServer.Status.Message,
+				ObservedGeneration: mcpServer.Generation,
+			})
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after permission profile validation failure")
+			}
+			return ctrl.Result{}, nil
+		}
+		ctxLogger.Error(err, "Failed to ensure trusted egress NetworkPolicy")
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure trusted egress NetworkPolicy: %s", err.Error())
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after trusted egress NetworkPolicy error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
@@ -398,6 +495,22 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Define a new deployment
 		dep, err := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		if err != nil {
+			var specErr *SpecValidationError
+			if stderrors.As(err, &specErr) {
+				// Terminal spec error (e.g. the untrusted env gate firing on a spec
+				// that changed after the reconcile-time gate passed): surface the
+				// condition and stop without requeue — returning the error would
+				// requeue forever with backoff. Not expected on the normal path:
+				// validateUntrustedSecretEnv already terminates earlier.
+				ctxLogger.Error(err, "Deployment build rejected by spec validation")
+				mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+				mcpServer.Status.Message = fmt.Sprintf("Failed to build Deployment: %s", specErr.Error())
+				setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
+				if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+					ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment spec validation failure")
+				}
+				return ctrl.Result{}, nil
+			}
 			ctxLogger.Error(err, "Failed to build Deployment object")
 			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 			mcpServer.Status.Message = fmt.Sprintf("Failed to build Deployment: %s", err.Error())
@@ -493,6 +606,18 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// kubectl scale remain in control.
 		newDeployment, err := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		if err != nil {
+			var specErr *SpecValidationError
+			if stderrors.As(err, &specErr) {
+				// Terminal spec error: see the create-path branch above.
+				ctxLogger.Error(err, "Deployment update build rejected by spec validation")
+				mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+				mcpServer.Status.Message = fmt.Sprintf("Failed to build Deployment: %s", specErr.Error())
+				setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
+				if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+					ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment spec validation failure")
+				}
+				return ctrl.Result{}, nil
+			}
 			ctxLogger.Error(err, "Failed to build updated Deployment object")
 			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 			mcpServer.Status.Message = fmt.Sprintf("Failed to build Deployment: %s", err.Error())
@@ -571,6 +696,21 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: mcpServer.Generation,
 		})
+	} else if isUntrusted(mcpServer) && !r.groupIsVMCPFronted(ctx, mcpServer.Namespace, groupName) {
+		// Untrusted workloads are served only through a VirtualMCPServer
+		// (ADR-0001 D4: the trusted identity-aware front that provisions the
+		// per-session pods). A group with no fronting vMCP leaves the workload
+		// undiscoverable as an untrusted backend — surface it instead of
+		// reporting the group valid.
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:   mcpv1beta1.ConditionGroupRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1beta1.ConditionReasonGroupRefNotVMCPFronted,
+			Message: fmt.Sprintf(
+				"MCPGroup '%s' is not fronted by a VirtualMCPServer; untrusted workloads require one",
+				groupName),
+			ObservedGeneration: mcpServer.Generation,
+		})
 	} else {
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionGroupRefValidated,
@@ -585,6 +725,24 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 		ctxLogger.Error(err, "Failed to update MCPServer status after GroupRef validation")
 	}
 
+}
+
+// groupIsVMCPFronted reports whether at least one VirtualMCPServer in the
+// namespace fronts the named MCPGroup. List failures fail closed (reported
+// as not-fronted) — a transient API error must never silently attest that an
+// untrusted workload's group is vMCP-fronted.
+func (r *MCPServerReconciler) groupIsVMCPFronted(ctx context.Context, namespace, groupName string) bool {
+	vmcps := &mcpv1beta1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcps, client.InNamespace(namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for untrusted groupRef validation")
+		return false
+	}
+	for i := range vmcps.Items {
+		if vmcps.Items[i].Spec.GroupRef.GetName() == groupName {
+			return true
+		}
+	}
+	return false
 }
 
 // setCABundleRefCondition sets the CA bundle validation status condition
@@ -1039,6 +1197,202 @@ func logOBOSecretEnvVarError(ctx context.Context, err error) {
 			"see the referenced MCPExternalAuthConfig status for details")
 }
 
+// isUntrusted reports whether the workload must be treated as untrusted:
+// spec.untrusted is set AND untrusted mode is enabled for this operator
+// process (untrusted.ModeEnabled, the TOOLHIVE_ENABLE_UNTRUSTED_MODE env
+// gate). Single-tenant untrusted mode (one backend pod per user/session plus
+// its sidecar data plane) is too costly to be the default, so it is opt-in.
+// When the flag is off a spec.untrusted=true workload is reconciled as a
+// normal trusted workload; the reconciler surfaces that degradation on the
+// UntrustedMode condition (see surfaceUntrustedModeCondition). Every
+// untrusted-mode behavior — data-plane resources, the env gate, sentinel
+// injection, groupRef fronting validation — keys on this one check.
+func isUntrusted(m *mcpv1beta1.MCPServer) bool {
+	return m.Spec.Untrusted && untrusted.ModeEnabled()
+}
+
+// surfaceUntrustedModeCondition reports the effective untrusted-mode posture
+// for spec.untrusted=true workloads on the UntrustedMode condition: "false"
+// with ReasonUntrustedModeDisabled (plus a one-shot Warning event on entry
+// into the disabled state) when the mode is off, "true" when it is on. It
+// also clears the condition when spec.untrusted flips back to false, so the
+// status never claims an untrusted posture for a trusted workload. Advisory
+// only — the reconcile continues as trusted; this never fails the workload.
+func (r *MCPServerReconciler) surfaceUntrustedModeCondition(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
+	if !mcpServer.Spec.Untrusted {
+		if meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeUntrustedMode) != nil {
+			meta.RemoveStatusCondition(&mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeUntrustedMode)
+			if err := r.Status().Update(ctx, mcpServer); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to clear UntrustedMode condition after untrusted→trusted flip")
+			}
+		}
+		return
+	}
+
+	enabled := isUntrusted(mcpServer)
+	wasDisabled := meta.IsStatusConditionFalse(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeUntrustedMode)
+	status := func() metav1.ConditionStatus {
+		if enabled {
+			return metav1.ConditionTrue
+		}
+		return metav1.ConditionFalse
+	}()
+	reason := func() string {
+		if enabled {
+			return mcpv1beta1.ConditionReasonUntrustedModeEnabled
+		}
+		return mcpv1beta1.ConditionReasonUntrustedModeDisabled
+	}()
+	message := func() string {
+		if enabled {
+			return "spec.untrusted is true and untrusted mode is enabled; " +
+				"the workload gets the single-tenant data plane (per-session pods, egress broker)"
+		}
+		return "spec.untrusted is true but untrusted mode is disabled (" +
+			untrusted.EnvEnableUntrustedMode + " is not set on the operator); " +
+			"the workload is reconciled as a trusted workload: no per-session pods, no egress broker, " +
+			"and secretKeyRef backend env is admitted"
+	}()
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeUntrustedMode,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+	// legacy r.Status().Update call site (see .claude/rules/operator.md
+	// "Status Writes") — consistent with the other advisory validators in this
+	// reconciler; SetStatusCondition's no-op-on-unchanged semantics make the
+	// write idempotent on re-observation.
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after untrusted-mode posture check")
+		return
+	}
+
+	// Emit the Warning only on the transition into the disabled state, and
+	// only once the condition persisted — a failing status write would
+	// otherwise re-fire the event on every reconcile.
+	if !enabled && !wasDisabled && r.Recorder != nil {
+		r.Recorder.Eventf(mcpServer, nil, corev1.EventTypeWarning,
+			mcpv1beta1.ConditionReasonUntrustedModeDisabled, "UntrustedMode",
+			"spec.untrusted is true but untrusted mode is disabled on the operator "+
+				"(%s); reconciling as a trusted workload", untrusted.EnvEnableUntrustedMode)
+	}
+}
+
+// untrustedGateSuffix documents the gate's semantics on every rejection
+// message: the gate is admission-style, NOT eviction — it blocks creation of
+// future pods but does NOT evict a currently-running deployment (a workload
+// already running with the now-rejected config keeps running until its next
+// rollout).
+const untrustedGateSuffix = "The gate blocks creation of new pods until the spec is fixed; " +
+	"it does not evict a currently-running deployment."
+
+// validateUntrustedSecretEnv enforces the untrusted-workload env gate before any
+// workload resources are created: an untrusted-flagged MCPServer must never
+// receive a credential through backend (mcp) container env or Secret volumes.
+// It validates the fully-built pod-template patch (covering both spec.secrets and
+// raw spec.podTemplateSpec, which converge in the builder output).
+//
+// This is a terminal spec error — NOT retryable: it records a Valid=False
+// condition with ObservedGeneration, emits a one-shot Warning event on the
+// false-transition, and returns false so the caller returns ctrl.Result{}, nil
+// (no error → no forever-backoff), per .claude/rules/operator.md "Separate
+// terminal from transient errors". Wave 1 adds a CEL admission rule mirroring
+// this check for defense-in-depth.
+//
+// On the pass path the gate clears any Valid condition it previously latched
+// (mirroring the validateAuthzPrimaryUpstreamProviderIgnored RemoveStatusCondition
+// convention), so a fixed spec does not stay poisoned: clearing the condition
+// re-arms the one-shot Warning, which must fire again if the workload later
+// re-enters the rejected state.
+//
+// statusBefore is the status snapshotted at the start of Reconcile, before the
+// advisory validators ran. They persist their own condition writes, so if the
+// object is unchanged after they ran it is already current in the API server —
+// combined with SetStatusCondition's no-op-on-unchanged semantics this makes
+// re-observing a rejected spec write nothing (idempotent, per operator rules).
+func (r *MCPServerReconciler) validateUntrustedSecretEnv(
+	ctx context.Context, mcpServer *mcpv1beta1.MCPServer, statusBefore *mcpv1beta1.MCPServerStatus,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Fast path: trusted workloads skip the build entirely (the gate is a no-op
+	// for them), preserving exact current behavior.
+	if !isUntrusted(mcpServer) {
+		return true
+	}
+
+	builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+	if err != nil {
+		// The malformed-raw-template case is already owned by
+		// validateAndUpdatePodTemplateStatus, which ran earlier in Reconcile and
+		// terminates the reconcile — reaching here means the template parsed.
+		ctxLogger.Error(err, "Failed to build PodTemplateSpec for untrusted env validation")
+		return true
+	}
+	podTemplate := builder.WithSecrets(mcpServer.Spec.Secrets).Build()
+
+	if err := ctrlutil.ValidateNoSecretEnvForUntrusted(podTemplate, mcpContainerName, true); err != nil {
+		// Capture the transition before the status update so the Warning fires
+		// only when entering the invalid state, not on every re-observation.
+		wasInvalid := meta.IsStatusConditionFalse(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+
+		gateMessage := err.Error() + " " + untrustedGateSuffix
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		mcpServer.Status.Message = gateMessage
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonSecretEnvRejected,
+			Message:            gateMessage,
+			ObservedGeneration: mcpServer.Generation,
+		})
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, gateMessage)
+
+		// legacy r.Status().Update call site (see .claude/rules/operator.md
+		// "Status Writes") — consistent with the other terminal writes in this
+		// reconciler; the equality guard keeps it idempotent.
+		var statusErr error
+		if !equality.Semantic.DeepEqual(statusBefore, &mcpServer.Status) {
+			statusErr = r.Status().Update(ctx, mcpServer)
+			if statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after untrusted env validation failure")
+			}
+		}
+
+		// Emit the Warning only on the transition into the invalid state, and only
+		// once the condition persisted — a failing status write would otherwise
+		// re-fire the event on every reconcile.
+		if !wasInvalid && statusErr == nil && r.Recorder != nil {
+			r.Recorder.Eventf(mcpServer, nil, corev1.EventTypeWarning,
+				mcpv1beta1.ConditionReasonSecretEnvRejected, "ValidateUntrustedEnv",
+				"untrusted workload rejected: %s. Deployment blocked until the spec is fixed.", err.Error())
+		}
+
+		ctxLogger.Info("Untrusted workload rejected Secret/ConfigMap-sourced backend env or Secret volume",
+			"reason", err.Error())
+		return false
+	}
+
+	// Pass path: clear a previously latched Valid condition so a fixed spec
+	// recovers (and the one-shot Warning re-arms for any future rejection).
+	// Guarded by the statusBefore DeepEqual like the reject path: removing a
+	// condition that was never set mutates nothing (RemoveStatusCondition is a
+	// no-op on absent conditions), so the write only happens on the actual
+	// rejected→passing transition.
+	if meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeValid) != nil {
+		meta.RemoveStatusCondition(&mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+		if !equality.Semantic.DeepEqual(statusBefore, &mcpServer.Status) {
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to clear latched Valid condition after untrusted env validation passed")
+			}
+		}
+	}
+
+	return true
+}
+
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
 //nolint:gocyclo
@@ -1070,6 +1424,32 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		WithServiceAccount(serviceAccount).
 		WithSecrets(m.Spec.Secrets).
 		Build()
+	// Reject Secret/ConfigMap-sourced backend env and Secret volumes for
+	// untrusted-flagged workloads. Reconcile gates terminally before this
+	// builder runs; this direct check is defense-in-depth for the
+	// deploymentForMCPServer path (both spec.secrets and raw podTemplateSpec
+	// converge in the built patch). Wave 1 adds a CEL admission rule mirroring
+	// this check (untrusted ⇒ literal-only backend env) — the Go check stays.
+	// The error is a typed *SpecValidationError (VirtualMCPServer pattern) so
+	// call sites peel it with errors.As into terminal treatment (condition, no
+	// requeue) instead of a transient forever-backoff.
+	if err := ctrlutil.ValidateNoSecretEnvForUntrusted(finalPodTemplateSpec, mcpContainerName, isUntrusted(m)); err != nil {
+		return nil, &SpecValidationError{Message: err.Error()}
+	}
+	// Wave 1: for untrusted workloads, inject sentinel literals for each declared
+	// credentialEnvName so token-requiring servers boot (ADR-0001). Literal values
+	// pass the Wave-0 gate above by construction. Sentinel collision and forgery
+	// rejections are terminal SpecValidationErrors, same pattern as the gate.
+	// isUntrusted (not m.Spec.Untrusted): when the mode is disabled the workload
+	// is reconciled as trusted and no sentinels are injected.
+	if isUntrusted(m) && finalPodTemplateSpec != nil {
+		if err := ctrlutil.InjectUntrustedSentinels(finalPodTemplateSpec, mcpContainerName, m.Spec.EgressPolicy); err != nil {
+			return nil, &SpecValidationError{Message: err.Error()}
+		}
+		if err := ctrlutil.ValidateUntrustedSentinelForgery(finalPodTemplateSpec, mcpContainerName, m.Spec.EgressPolicy); err != nil {
+			return nil, &SpecValidationError{Message: err.Error()}
+		}
+	}
 	// Add pod template patch if we have one
 	if finalPodTemplateSpec != nil {
 		podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
@@ -2948,6 +3328,8 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mcpv1beta1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).

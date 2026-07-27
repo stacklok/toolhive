@@ -277,6 +277,17 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
 	}
 
+	// Untrusted workloads: stamp the MCPServer UID as a container label so the
+	// backend StatefulSet (built from these labels in DeployWorkload) carries the
+	// rename-safe selector the vMCP pod lifecycle resolves its clone template by
+	// (LabelMCPServerUID + toolhive=true). Without it the lifecycle finds zero
+	// StatefulSets and untrusted session provisioning always soft-fails.
+	if isUntrusted(m) {
+		options = append(options, runner.WithLabels([]string{
+			untrustedMCPServerUIDLabel + "=" + string(m.UID),
+		}))
+	}
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),

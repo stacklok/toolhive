@@ -166,6 +166,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=create;delete;get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -992,7 +993,12 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 		return true
 	}
 
-	_, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
+	parsed, err := ctrlutil.ParsePodTemplateSpec(vmcp.Spec.PodTemplateSpec)
+	if err == nil {
+		// Reserved-prefix guard: user templates must not override the
+		// operator-owned env wiring on the vmcp container.
+		err = validateNoReservedVMCPEnvVars(parsed)
+	}
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {
@@ -1709,7 +1715,9 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	// Check if environment variables have changed
+	// Check if environment variables have changed. The status manager is nil
+	// here: conditions are collected by the resource-ensuring path, not the
+	// drift check — and errors must still surface as "needs update" below.
 	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		return true // Trigger update to surface the error
@@ -2797,6 +2805,16 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigMapToVirtualMCPServer),
 			builder.WithPredicates(configMapDataChangedPredicate()),
+		).
+		// Watch Secrets referenced via
+		// spec.authServerConfig.storage.tokenEncryption.keySecretRef so that a
+		// KEK rotation (key-ID set change) rolls the vMCP pods onto the new env.
+		// The predicate filters out metadata-only updates; the mapper narrows to
+		// VirtualMCPServers whose rendered pod env would actually change.
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.mapKEKSecretToVirtualMCPServer),
+			builder.WithPredicates(secretDataChangedPredicate()),
 		).
 		Complete(r)
 }

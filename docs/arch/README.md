@@ -127,6 +127,14 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Dynamic forward proxy with per-request DNS and native HTTPS CONNECT tunnelling
     - Squid-vs-Envoy comparison and known limitations (`AllowPort` gap, V4_ONLY DNS, deny-all on empty profile)
 
+16. **[Untrusted Mode: Egress Credential Broker](16-untrusted-mode.md)**
+    - Single-tenant backends (one pod per (user, MCPServer)) + Envoy/broker sidecar
+    - THE SECURITY BOUNDARY stated loudly (theft/replay defeated; authority abuse + exfil not)
+    - Credential flow: consent → tsid → encrypted store → sidecar injection → D5 binding → D6c scanning
+    - Failure modes, configuration reference (CEL R1–R6, THV_UNTRUSTED_* tunables, KEK)
+    - Operations: alerts, generation-named CA rotation, upgrade story, known limitations
+    - Design decisions: [ADR-0001](adr/0001-untrusted-mcp-egress-broker.md)
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**
@@ -177,6 +185,10 @@ graph TB
         Plugins[14: Plugins System<br/>MaterializationAdapter]
     end
 
+    subgraph "Security Boundaries"
+        Untrusted[15: Untrusted Mode<br/>Egress credential broker]
+    end
+
     %% Navigation paths
     Overview --> Concepts
     Overview --> Deployment
@@ -207,6 +219,8 @@ graph TB
     Workloads --> Operator
     vMCP --> Operator
     AuthStorage --> Operator
+    Untrusted --> vMCP
+    Untrusted --> Operator
 
     %% Styling
     style Overview fill:#e1f5fe,stroke:#01579b,stroke-width:3px
@@ -223,6 +237,7 @@ graph TB
     style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style AuthStorage fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style Skills fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    style Untrusted fill:#ffebee,stroke:#b71c1c,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -280,6 +295,7 @@ Review all documents in order (00 → 01 → 02 → 03 → ...)
 - [Groups](07-groups.md)
 - [Workloads Lifecycle](08-workloads-lifecycle.md)
 - [Kubernetes Operator](09-operator-architecture.md)
+- [Untrusted Mode](16-untrusted-mode.md)
 
 ## Architecture Principles
 

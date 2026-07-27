@@ -297,6 +297,15 @@ components:
         When set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs
         for upstream IdP tokens before forwarding requests to the MCP server.
       properties:
+        authorize_url:
+          description: |-
+            AuthorizeURL is the ToolHive authorization server's authorize-endpoint URL
+            ({issuer}/oauth/authorize). When set, the 401 consent response includes it
+            so clients can direct the user to consent. It is only an endpoint: the
+            client merges its own client_id, redirect_uri, and PKCE parameters. It
+            must never be derived from the request Host header (attacker-controlled).
+            Optional; when empty the 401 body omits authorize_url.
+          type: string
         custom_header_name:
           description: CustomHeaderName is the header name when HeaderStrategy is
             "custom".
@@ -3800,6 +3809,8 @@ components:
           $ref: '#/components/schemas/storage.RedisTLSRunConfig'
         tls:
           $ref: '#/components/schemas/storage.RedisTLSRunConfig'
+        token_encryption:
+          $ref: '#/components/schemas/storage.TokenEncryptionRunConfig'
         write_timeout:
           description: WriteTimeout is the timeout for write operations (e.g., "3s").
           type: string
@@ -3843,6 +3854,26 @@ components:
             type: string
           type: array
           uniqueItems: false
+      type: object
+    storage.TokenEncryptionRunConfig:
+      description: |-
+        TokenEncryption configures envelope encryption for upstream OAuth tokens
+        at rest. Presence enables encryption; absence preserves the current
+        plaintext behavior.
+      properties:
+        active_key_id:
+          description: |-
+            ActiveKeyID identifies the KEK used to encrypt new writes. Other IDs in
+            Keys remain decrypt-only (retired), supporting lazy read-old/write-new
+            rotation.
+          type: string
+        keys:
+          additionalProperties:
+            type: string
+          description: |-
+            Keys maps key ID → name of the environment variable holding the
+            base64-encoded 32-byte key-encryption key.
+          type: object
       type: object
     telemetry.Config:
       description: |-

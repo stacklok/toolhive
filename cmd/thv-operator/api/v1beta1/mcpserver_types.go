@@ -19,6 +19,12 @@ const (
 
 	// ConditionPodTemplateValid indicates whether the PodTemplateSpec is valid
 	ConditionPodTemplateValid = "PodTemplateValid"
+
+	// ConditionTypeUntrustedMode reports the effective untrusted-mode posture
+	// when spec.untrusted is true: "false" with ReasonUntrustedModeDisabled
+	// when the operator runs with TOOLHIVE_ENABLE_UNTRUSTED_MODE off (the
+	// workload is reconciled as trusted), "true" otherwise.
+	ConditionTypeUntrustedMode = "UntrustedMode"
 )
 
 const (
@@ -38,6 +44,11 @@ const (
 
 	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
 	ConditionReasonGroupRefNotReady = "GroupRefNotReady"
+
+	// ConditionReasonGroupRefNotVMCPFronted indicates an untrusted workload's
+	// MCPGroup is not fronted by any VirtualMCPServer (ADR-0001 D4 requires the
+	// trusted identity-aware front).
+	ConditionReasonGroupRefNotVMCPFronted = "GroupRefNotVMCPFronted"
 )
 
 const (
@@ -46,6 +57,39 @@ const (
 
 	// ConditionReasonPodTemplateInvalid indicates PodTemplateSpec validation failed
 	ConditionReasonPodTemplateInvalid = "InvalidPodTemplateSpec"
+)
+
+const (
+	// ConditionReasonSecretEnvRejected indicates an untrusted-flagged workload
+	// attempted to source backend (mcp) container env from a Secret or ConfigMap,
+	// or mount a Secret volume — rejected by the untrusted env gate.
+	ConditionReasonSecretEnvRejected = "SecretEnvRejected"
+
+	// ConditionReasonUntrustedPolicyInvalid indicates a terminal rejection of an
+	// untrusted workload's egress policy (missing/invalid spec.egressPolicy, or
+	// destinations that resolve to no usable addresses). Distinct from
+	// ConditionReasonNotReady so operators can tell "fix the spec" apart from
+	// "wait for convergence".
+	ConditionReasonUntrustedPolicyInvalid = "UntrustedEgressPolicyInvalid"
+
+	// ConditionReasonUntrustedModeDisabled indicates spec.untrusted is true but
+	// the operator runs with untrusted mode disabled
+	// (TOOLHIVE_ENABLE_UNTRUSTED_MODE unset/false): the workload is reconciled
+	// as a normal trusted workload — no per-session pods, no egress broker,
+	// and secretKeyRef backend env is admitted.
+	ConditionReasonUntrustedModeDisabled = "UntrustedModeDisabled"
+
+	// ConditionReasonUntrustedModeEnabled indicates spec.untrusted is true and
+	// the operator runs with untrusted mode enabled; the workload gets the
+	// full single-tenant data plane.
+	ConditionReasonUntrustedModeEnabled = "UntrustedModeEnabled"
+
+	// ConditionReasonPermissionProfileInvalid indicates a terminal rejection of
+	// a trusted workload's spec.permissionProfile for egress NetworkPolicy
+	// rendering (unknown builtin name, missing ConfigMap/key, malformed profile
+	// JSON). Distinct from ConditionReasonNotReady so operators can tell "fix
+	// the spec" apart from "wait for convergence".
+	ConditionReasonPermissionProfileInvalid = "PermissionProfileInvalid"
 )
 
 // Condition type for CA bundle validation
@@ -221,6 +265,12 @@ const SessionStorageProviderRedis = "redis"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfigRef or externalAuthConfigRef)"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfigRef or externalAuthConfigRef)"
+// +kubebuilder:validation:XValidation:rule="!self.untrusted || (has(self.egressPolicy) && size(self.egressPolicy.providers) > 0)",message="egressPolicy with at least one provider is required when untrusted is true"
+// +kubebuilder:validation:XValidation:rule="!self.untrusted || has(self.groupRef)",message="untrusted workloads must belong to an MCPGroup fronted by a VirtualMCPServer"
+// +kubebuilder:validation:XValidation:rule="!self.untrusted || !has(self.secrets) || size(self.secrets) == 0",message="spec.secrets is forbidden when untrusted is true; declare providers in egressPolicy and use sentinel env"
+// +kubebuilder:validation:XValidation:rule="!self.untrusted || !has(self.podTemplateSpec)",message="podTemplateSpec is forbidden when untrusted is true"
+// +kubebuilder:validation:XValidation:rule="!self.untrusted || self.sessionAffinity == 'ClientIP'",message="untrusted workloads require sessionAffinity ClientIP"
+// +kubebuilder:validation:XValidation:rule="!self.untrusted || !has(self.backendReplicas)",message="backendReplicas is managed by the untrusted-mode session lifecycle and must not be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -376,6 +426,28 @@ type MCPServerSpec struct {
 	// The referenced MCPGroup must be in the same namespace.
 	// +optional
 	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
+
+	// Untrusted marks this MCP server as running untrusted code. When true, the operator
+	// enforces the untrusted-mode invariants (ADR-0001): no Secret/ConfigMap-sourced env on
+	// the backend container, single-tenant session-scoped backend pods, mandatory MCPGroup
+	// membership behind a VirtualMCPServer, and egress only through the credential-broker
+	// sidecar per EgressPolicy. K8s-only; ignored (and inert) in CLI/Docker mode.
+	// +kubebuilder:default=false
+	// +optional
+	Untrusted bool `json:"untrusted,omitempty"`
+
+	// EgressPolicy declares which upstream providers this server may call and where the
+	// broker may inject each provider's credential. Required when Untrusted is true.
+	// When Untrusted is true, PermissionProfile.Network.Outbound is IGNORED for the backend
+	// pod — the untrusted NetworkPolicy is derived solely from EgressPolicy (+ DNS + sidecar
+	// + vMCP). Do not merge the two vocabularies: OutboundNetworkPermissions is the
+	// Docker-mode/Squid dialect, EgressPolicy is the K8s untrusted-mode dialect. Only the
+	// NetworkPolicy rendering machinery is shared between them. SECURITY INVARIANT: the
+	// trusted-mode NetworkPolicy rendered from PermissionProfile is blast-radius reduction
+	// only, never a credential boundary — the credential guarantee comes solely from this
+	// field's broker + single-tenant pods in untrusted mode.
+	// +optional
+	EgressPolicy *EgressPolicy `json:"egressPolicy,omitempty"`
 
 	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
 	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
@@ -658,6 +730,57 @@ type OutboundNetworkPermissions struct {
 	// +listType=set
 	// +optional
 	AllowPort []int32 `json:"allowPort,omitempty"`
+}
+
+// EgressPolicy binds upstream providers to the exact destinations their credentials
+// may be injected for. The broker emits provider P's credential ONLY to hosts in
+// P's AllowedHosts, with method/path further constrained by the entry (ADR-0001 D5).
+type EgressPolicy struct {
+	// Providers maps an upstream provider name (as configured in the embedded auth
+	// server's upstream chain / upstream_inject strategy) to its egress constraints.
+	// +listType=map
+	// +listMapKey=provider
+	// +kubebuilder:validation:MinItems=1
+	Providers []ProviderEgress `json:"providers"`
+}
+
+// ProviderEgress is the per-provider egress constraint. Credential-to-destination
+// binding (ADR-0001 D5): the broker injects this provider's credential only to
+// AllowedHosts, only on AllowedMethods, only under AllowedPathPrefixes.
+type ProviderEgress struct {
+	// Provider is the logical upstream provider name (e.g. "github", "google").
+	// Must match the provider name used by the auth server and the vMCP
+	// upstream_inject strategy config for this workload.
+	// +kubebuilder:validation:MinLength=1
+	Provider string `json:"provider"`
+
+	// AllowedHosts is the exact set of destination hosts the credential may be
+	// injected for. Exact hostnames or one-label wildcards ("*.githubusercontent.com");
+	// no ports, no schemes.
+	// +listType=set
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`
+	AllowedHosts []string `json:"allowedHosts"`
+
+	// AllowedMethods constrains HTTP methods the broker will inject on.
+	// Empty means GET/HEAD/OPTIONS only (safe default — read-only).
+	// +listType=set
+	// +kubebuilder:validation:items:Enum=GET;HEAD;OPTIONS;POST;PUT;PATCH;DELETE
+	// +optional
+	AllowedMethods []string `json:"allowedMethods,omitempty"`
+
+	// AllowedPathPrefixes constrains URL paths the broker will inject on
+	// (prefix match, e.g. "/repos/"). Empty means "/" (all paths on the allowed hosts).
+	// +listType=set
+	// +optional
+	AllowedPathPrefixes []string `json:"allowedPathPrefixes,omitempty"`
+
+	// CredentialEnvName names the backend env var that would normally carry this
+	// provider's token (e.g. "GITHUB_TOKEN"). The operator injects a SENTINEL literal
+	// here so servers that refuse to start tokenless still boot; the broker ignores
+	// the sentinel value. Sentinel literal format: "thv-untrusted-sentinel:<provider>".
+	// +optional
+	CredentialEnvName string `json:"credentialEnvName,omitempty"`
 }
 
 // CABundleSource defines a source for CA certificate bundles.

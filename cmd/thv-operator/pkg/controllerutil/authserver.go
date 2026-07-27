@@ -6,10 +6,12 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -71,7 +73,101 @@ const (
 
 	// DefaultSentinelPort is the default Redis Sentinel port
 	DefaultSentinelPort = 26379
+
+	// TokenEncryptionKEKEnvVarPrefix is the prefix for the env var names
+	// carrying the base64 token-encryption KEKs to the embedded auth server:
+	// one SecretKeyRef env entry per data key of the referenced Secret, named
+	// <prefix>_<SANITIZED-ID>. The auth-server RunConfig references them by
+	// NAME only (TokenEncryptionRunConfig.Keys) — key values are sourced from
+	// the Secret at pod start. Active AND retired IDs are rendered so a
+	// rotation can never orphan ciphertext sealed under the old key.
+	TokenEncryptionKEKEnvVarPrefix = "TOOLHIVE_AUTHSERVER_TOKEN_ENCRYPTION_KEK" // #nosec G101 -- env var name, not a credential
+
+	// maxTokenEncryptionKeys bounds the KEK key IDs rendered per auth server.
+	// Secret data keys are operator-managed; the bound keeps a runaway Secret
+	// from inflating the pod env beyond apiserver limits.
+	maxTokenEncryptionKeys = 16
 )
+
+// tokenEncryptionKEKEnvVarName returns the env var name carrying the KEK for
+// the given key ID. The ID is uppercased and non-[A-Z0-9_] characters become
+// '_' so the name is env-var-safe (C_IDENTIFIER).
+func tokenEncryptionKEKEnvVarName(keyID string) string {
+	var b strings.Builder
+	b.WriteString(TokenEncryptionKEKEnvVarPrefix)
+	b.WriteByte('_')
+	for _, r := range strings.ToUpper(keyID) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// resolveTokenEncryptionKeyIDs reads the Secret referenced by
+// TokenEncryptionConfig and returns the validated KEK key-ID → env-var-name
+// map (deterministically ordered IDs). The active ID must be a data key of
+// the Secret; IDs are validated for uniqueness after env-var sanitization so
+// two IDs can never collide onto one env var name (which would silently hand
+// one KEK to two key IDs). Key VALUES are never inspected — only the data key
+// names are used.
+func resolveTokenEncryptionKeyIDs(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	te *mcpv1beta1.TokenEncryptionConfig,
+) (map[string]string, error) {
+	if te.KeySecretRef.Name == "" {
+		// CEL (XValidation on TokenEncryptionConfig) rejects this at admission;
+		// this is the reconcile-time backstop for objects that predate the rule.
+		return nil, fmt.Errorf("token encryption: keySecretRef.name must not be empty")
+	}
+	if te.ActiveKeyID == "" {
+		return nil, fmt.Errorf("token encryption: activeKeyId must not be empty")
+	}
+
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: te.KeySecretRef.Name}, secret); err != nil {
+		return nil, fmt.Errorf("token encryption: failed to get KEK secret %s/%s: %w",
+			namespace, te.KeySecretRef.Name, err)
+	}
+	if len(secret.Data) == 0 {
+		return nil, fmt.Errorf("token encryption: KEK secret %s/%s has no data keys",
+			namespace, te.KeySecretRef.Name)
+	}
+	if len(secret.Data) > maxTokenEncryptionKeys {
+		return nil, fmt.Errorf("token encryption: KEK secret %s/%s has %d data keys (max %d)",
+			namespace, te.KeySecretRef.Name, len(secret.Data), maxTokenEncryptionKeys)
+	}
+
+	envByID := make(map[string]string, len(secret.Data))
+	ids := make([]string, 0, len(secret.Data))
+	for id := range secret.Data {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if _, ok := secret.Data[te.ActiveKeyID]; !ok {
+		return nil, fmt.Errorf("token encryption: activeKeyId %q is not a data key of KEK secret %s/%s",
+			te.ActiveKeyID, namespace, te.KeySecretRef.Name)
+	}
+	seenEnv := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			return nil, fmt.Errorf("token encryption: KEK secret %s/%s carries an empty key ID",
+				namespace, te.KeySecretRef.Name)
+		}
+		env := tokenEncryptionKEKEnvVarName(id)
+		if other, dup := seenEnv[env]; dup {
+			return nil, fmt.Errorf("token encryption: key IDs %q and %q both sanitize to env var %q; "+
+				"rename one so the IDs are unique after sanitization", other, id, env)
+		}
+		seenEnv[env] = id
+		envByID[id] = env
+	}
+	return envByID, nil
+}
 
 // upstreamSecretBinding binds an upstream provider to the env var names for
 // the secrets it owns (client secret and, optionally, the DCR initial access
@@ -216,7 +312,10 @@ func GenerateAuthServerConfigByName(
 	}
 
 	volumes, volumeMounts := GenerateAuthServerVolumes(authServerConfig)
-	envVars := GenerateAuthServerEnvVars(authServerConfig)
+	envVars, err := GenerateAuthServerEnvVars(ctx, c, namespace, authServerConfig)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
 	return volumes, volumeMounts, envVars, nil
 }
@@ -352,12 +451,21 @@ func GenerateAuthServerVolumes(
 // provider that has a client secret reference configured, where PROVIDER is the
 // provider name uppercased with hyphens replaced by underscores.
 //
+// When storage.tokenEncryption is configured, the referenced KEK Secret is read
+// (data key NAMES only — never values) and one SecretKeyRef env entry is rendered
+// per key ID (active + retired) so key rotation can never orphan ciphertext.
+// A failure to read or validate the Secret is an error: rendering only the
+// active key would break decryption of rows sealed under retired keys.
+//
 // Returns nil slice if authConfig is nil or if no client secrets are configured.
 func GenerateAuthServerEnvVars(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
 	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
-) []corev1.EnvVar {
+) ([]corev1.EnvVar, error) {
 	if authConfig == nil {
-		return nil
+		return nil, nil
 	}
 
 	var envVars []corev1.EnvVar
@@ -403,7 +511,49 @@ func GenerateAuthServerEnvVars(
 		}
 	}
 
-	return envVars
+	// Generate one SecretKeyRef env entry per KEK data key when token
+	// encryption is configured. The env var NAMES (derived from the key IDs)
+	// are the indirection the auth-server RunConfig references
+	// (buildTokenEncryptionRunConfig uses the same derivation); the VALUES come
+	// from the operator-referenced Secret at pod start — KEKs never land in
+	// the CRD, a ConfigMap, or an env literal.
+	if te := authConfig.Storage.GetTokenEncryption(); te != nil {
+		envByID, err := resolveTokenEncryptionKeyIDs(ctx, c, namespace, te)
+		if err != nil {
+			return nil, err
+		}
+		envVars = append(envVars, TokenEncryptionEnvVars(te.KeySecretRef.Name, envByID)...)
+	}
+
+	return envVars, nil
+}
+
+// TokenEncryptionEnvVars renders the deterministic, sorted SecretKeyRef env
+// entries for a KEK key-ID → env-var-name set (one per data key of the named
+// Secret). Exported for the VirtualMCPServer reconciler, which re-derives the
+// same env list during its KEK-Secret watch mapping — the pod env and the
+// watch mapping must agree exactly, so both go through this function.
+func TokenEncryptionEnvVars(secretName string, envByID map[string]string) []corev1.EnvVar {
+	ids := make([]string, 0, len(envByID))
+	for id := range envByID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]corev1.EnvVar, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, corev1.EnvVar{
+			Name: envByID[id],
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: secretName,
+					},
+					Key: id,
+				},
+			},
+		})
+	}
+	return out
 }
 
 // AddEmbeddedAuthServerConfigOptions adds embedded auth server configuration to
@@ -455,11 +605,19 @@ func AddEmbeddedAuthServerConfigOptions(
 		return err
 	}
 
+	// Resolve the KEK key set (active + retired) so the RunConfig decrypts
+	// rows sealed under retired keys, matching the env vars
+	// GenerateAuthServerEnvVars renders on the same pod.
+	kekEnvByID, err := ResolveKEKKeySet(ctx, c, namespace, authServerConfig)
+	if err != nil {
+		return err
+	}
+
 	// Build the embedded auth server config for runner
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
 		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
-		oidcConfig.ResourceURL,
+		oidcConfig.ResourceURL, kekEnvByID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)
@@ -514,6 +672,14 @@ func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error 
 // controllers derive them from different sources (MCPServer uses oidcConfig.ResourceURL/Scopes;
 // VirtualMCPServer derives from the resolved vmcp Config).
 //
+// kekEnvByID maps KEK key ID → env var name for storage.tokenEncryption. Callers
+// that can read the KEK Secret should pass the map resolved by
+// resolveTokenEncryptionKeyIDs (active + retired IDs, so rotation never orphans
+// ciphertext); callers that cannot (e.g. offline renderers with no API access)
+// pass nil, which renders only the ACTIVE key ID via the same deterministic env
+// name derivation — retired keys are then decrypt-unavailable. Nil is also
+// correct when tokenEncryption is unset.
+//
 // resourceURL is used to default the RedirectURI on upstream providers when not explicitly set.
 // The default is {resourceURL}/oauth/callback as documented in the MCPExternalAuthConfig CRD.
 func BuildAuthServerRunConfig(
@@ -523,6 +689,7 @@ func BuildAuthServerRunConfig(
 	allowedAudiences []string,
 	scopesSupported []string,
 	resourceURL string,
+	kekEnvByID map[string]string,
 ) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
@@ -576,7 +743,7 @@ func BuildAuthServerRunConfig(
 	}
 
 	// Build storage configuration
-	storageCfg, err := buildStorageRunConfig(namespace, name, authConfig)
+	storageCfg, err := buildStorageRunConfig(namespace, name, authConfig, kekEnvByID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build storage config: %w", err)
 	}
@@ -604,10 +771,13 @@ func BuildAuthServerRunConfig(
 
 // buildStorageRunConfig converts CRD AuthServerStorageConfig to storage.RunConfig.
 // Returns nil (memory storage default) if no storage config is specified.
+//
+//nolint:gocyclo // sequential fail-loud config validation is clearest linear.
 func buildStorageRunConfig(
 	namespace string,
 	mcpServerName string,
 	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
+	kekEnvByID map[string]string,
 ) (*storage.RunConfig, error) {
 	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeMemory {
 		return nil, nil
@@ -656,6 +826,17 @@ func buildStorageRunConfig(
 		TLS:           convertRedisTLSConfig(redisConfig.TLS, false),
 	}
 
+	// Token encryption (Wave-5): the RunConfig references each KEK by env var
+	// NAME (resolved at pod start from the SecretKeyRef env entries rendered by
+	// GenerateAuthServerEnvVars) — the CRD never carries key material.
+	if te := authConfig.Storage.GetTokenEncryption(); te != nil {
+		teRc, err := buildTokenEncryptionRunConfig(te, kekEnvByID)
+		if err != nil {
+			return nil, err
+		}
+		rc.TokenEncryption = teRc
+	}
+
 	if redisConfig.SentinelConfig != nil {
 		// Resolve Sentinel addresses (static or via Kubernetes Service discovery)
 		sentinelAddrs, err := resolveSentinelAddrs(redisConfig.SentinelConfig, namespace)
@@ -674,6 +855,59 @@ func buildStorageRunConfig(
 		Type:        string(storage.TypeRedis),
 		RedisConfig: rc,
 	}, nil
+}
+
+// buildTokenEncryptionRunConfig builds the serializable token-encryption
+// config: every key ID in kekEnvByID (active + retired, resolved from the KEK
+// Secret) becomes a decrypt-capable key; the active ID encrypts new writes.
+// A nil kekEnvByID falls back to rendering only the active ID via the same
+// deterministic env name derivation resolveTokenEncryptionKeyIDs uses — the
+// fallback exists for callers without API access (offline renderers); when
+// the KEK Secret holds retired IDs those rows then fail decryption at startup
+// reads, which is the fail-closed direction.
+func buildTokenEncryptionRunConfig(
+	te *mcpv1beta1.TokenEncryptionConfig,
+	kekEnvByID map[string]string,
+) (*storage.TokenEncryptionRunConfig, error) {
+	if len(kekEnvByID) == 0 {
+		if te.ActiveKeyID == "" {
+			return nil, fmt.Errorf("token encryption: activeKeyId must not be empty")
+		}
+		return &storage.TokenEncryptionRunConfig{
+			ActiveKeyID: te.ActiveKeyID,
+			Keys:        map[string]string{te.ActiveKeyID: tokenEncryptionKEKEnvVarName(te.ActiveKeyID)},
+		}, nil
+	}
+	if _, ok := kekEnvByID[te.ActiveKeyID]; !ok {
+		return nil, fmt.Errorf("token encryption: active key ID %q not present in resolved KEK key set", te.ActiveKeyID)
+	}
+	return &storage.TokenEncryptionRunConfig{
+		ActiveKeyID: te.ActiveKeyID,
+		Keys:        kekEnvByID,
+	}, nil
+}
+
+// ResolveKEKKeySet resolves the full KEK key-ID → env-var-name set for
+// storage.tokenEncryption (active + retired) so key rotation never orphans
+// ciphertext. Returns nil when token encryption is unset. Used by every
+// controller path that builds the auth-server RunConfig AND renders the
+// matching pod env — the two must agree on the env var names, so both go
+// through the same resolution. Exported for the vMCP deployment builder,
+// which carries the ID set (names only) to the untrusted egress sidecars.
+func ResolveKEKKeySet(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
+) (map[string]string, error) {
+	if authConfig == nil || authConfig.Storage == nil {
+		return nil, nil
+	}
+	te := authConfig.Storage.GetTokenEncryption()
+	if te == nil {
+		return nil, nil
+	}
+	return resolveTokenEncryptionKeyIDs(ctx, c, namespace, te)
 }
 
 // convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.
@@ -988,11 +1222,19 @@ func AddAuthServerRefOptions(
 		return err
 	}
 
+	// Resolve the KEK key set (active + retired) so the RunConfig decrypts
+	// rows sealed under retired keys, matching the env vars
+	// GenerateAuthServerEnvVars renders on the same pod.
+	kekEnvByID, err := ResolveKEKKeySet(ctx, c, namespace, authServerConfig)
+	if err != nil {
+		return err
+	}
+
 	// Build the embedded auth server config for runner
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
 		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
-		oidcConfig.ResourceURL,
+		oidcConfig.ResourceURL, kekEnvByID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)

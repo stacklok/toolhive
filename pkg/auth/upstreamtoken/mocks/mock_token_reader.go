@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	storage "github.com/stacklok/toolhive/pkg/authserver/storage"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -42,9 +43,9 @@ func (m *MockTokenReader) EXPECT() *MockTokenReaderMockRecorder {
 }
 
 // GetAllUpstreamCredentials mocks base method.
-func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, sessionID string) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, sessionID string, expected *storage.ExpectedBinding) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAllUpstreamCredentials", ctx, sessionID)
+	ret := m.ctrl.Call(m, "GetAllUpstreamCredentials", ctx, sessionID, expected)
 	ret0, _ := ret[0].(map[string]upstreamtoken.UpstreamCredential)
 	ret1, _ := ret[1].([]string)
 	ret2, _ := ret[2].(error)
@@ -52,7 +53,7 @@ func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, session
 }
 
 // GetAllUpstreamCredentials indicates an expected call of GetAllUpstreamCredentials.
-func (mr *MockTokenReaderMockRecorder) GetAllUpstreamCredentials(ctx, sessionID any) *gomock.Call {
+func (mr *MockTokenReaderMockRecorder) GetAllUpstreamCredentials(ctx, sessionID, expected any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamCredentials", reflect.TypeOf((*MockTokenReader)(nil).GetAllUpstreamCredentials), ctx, sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamCredentials", reflect.TypeOf((*MockTokenReader)(nil).GetAllUpstreamCredentials), ctx, sessionID, expected)
 }

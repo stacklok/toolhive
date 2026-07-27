@@ -335,6 +335,27 @@ func newTestRedisDataStorage(t *testing.T) (*RedisSessionDataStorage, *miniredis
 	return s, mr
 }
 
+// TestRedisSessionDataStorage_RedisAccess pins the accessor the untrusted-mode
+// wiring uses to share the session store's connection and prefix: it returns
+// the live client (usable for the admission/pod-lease keys) and the exact
+// ':'-terminated key prefix the store writes under.
+func TestRedisSessionDataStorage_RedisAccess(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestRedisDataStorage(t)
+
+	client, prefix := s.RedisAccess()
+	assert.Equal(t, "test:data:", prefix)
+	require.NotNil(t, client)
+
+	// The returned client is the live connection: a write through it lands
+	// under the same Redis the store reads.
+	ctx := context.Background()
+	require.NoError(t, client.Set(ctx, prefix+"probe", "1", 0).Err())
+	got, err := client.Get(ctx, prefix+"probe").Result()
+	require.NoError(t, err)
+	assert.Equal(t, "1", got)
+}
+
 func TestRedisSessionDataStorage(t *testing.T) {
 	t.Parallel()
 

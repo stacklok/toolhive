@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -196,6 +197,7 @@ func registerOperatorScheme() {
 		mcpv1beta1.AddToScheme,
 		appsv1.AddToScheme,
 		corev1.AddToScheme,
+		networkingv1.AddToScheme,
 		rbacv1.AddToScheme,
 	} {
 		Expect(add(scheme.Scheme)).To(Succeed())

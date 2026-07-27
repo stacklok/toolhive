@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -1181,7 +1182,24 @@ func (v *TokenValidator) loadUpstreamTokens(
 		return nil, nil, nil
 	}
 
-	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid)
+	// Assert the caller's binding against the stored rows: the row's owning user
+	// must match the JWT subject and the consenting OAuth client must match the
+	// JWT's client. Storage enforces this per row (mismatched rows are excluded);
+	// the ctx already carries the Identity, so the explicit UserID is
+	// redundant-but-consistent — the client check is the new teeth.
+	//
+	// The ToolHive auth server mints "client_id" as a top-level JWT claim
+	// (pkg/authserver/server/session Session.New writes it into JWTClaims.Extra
+	// via ClientIDClaimKey, and fosite's JWTClaims.ToMap copies Extra into the
+	// top-level claim set), so this lookup fires for ToolHive-issued tokens.
+	// Third-party JWTs without the claim simply skip the client dimension —
+	// the user binding still applies.
+	expected := &storage.ExpectedBinding{UserID: identitySubject(claims)}
+	if clientID, ok := claims["client_id"].(string); ok {
+		expected.ClientID = clientID
+	}
+
+	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid, expected)
 	if err != nil {
 		// Log tsid at DEBUG only — it is credential-adjacent and must not
 		// leak into WARN-level logs or returned error strings.
@@ -1189,6 +1207,15 @@ func (v *TokenValidator) loadUpstreamTokens(
 		return nil, nil, fmt.Errorf("load upstream credentials: %w", err)
 	}
 	return creds, failed, nil
+}
+
+// identitySubject extracts the sub claim as the expected binding user, mirroring
+// claimsToIdentity (which requires sub per OIDC Core 1.0 §5.1). Kept as a
+// separate read because loadUpstreamTokens receives the raw claims map, not the
+// converted Identity.
+func identitySubject(claims jwt.MapClaims) string {
+	sub, _ := claims["sub"].(string)
+	return sub
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
@@ -1230,6 +1257,10 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
 			loadCtx := WithIdentity(r.Context(), identity)
+			// Carry the canonical user in the storage binding key as well so
+			// read-side binding validation enforces it without the storage
+			// package importing pkg/auth.
+			loadCtx = storage.ContextWithBindingUser(loadCtx, identity.PlatformUserID)
 			creds, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
 			if loadErr != nil {
 				slog.WarnContext(loadCtx, "upstream token storage unavailable",

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -36,6 +37,14 @@ type Config struct {
 	// ProviderName identifies which upstream provider's tokens to retrieve for injection.
 	// This is required and must match a configured upstream provider name.
 	ProviderName string `json:"provider_name" yaml:"provider_name"`
+
+	// AuthorizeURL is the ToolHive authorization server's authorize-endpoint URL
+	// ({issuer}/oauth/authorize). When set, the 401 consent response includes it
+	// so clients can direct the user to consent. It is only an endpoint: the
+	// client merges its own client_id, redirect_uri, and PKCE parameters. It
+	// must never be derived from the request Host header (attacker-controlled).
+	// Optional; when empty the 401 body omits authorize_url.
+	AuthorizeURL string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty"`
 }
 
 // MiddlewareParams represents the JSON parameters for the middleware factory.
@@ -106,16 +115,43 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf("custom_header_name must be specified when header_strategy is '%s'", HeaderStrategyCustom)
 	}
 
+	// AuthorizeURL, when set, must be an absolute https URL. It is emitted to
+	// clients in the 401 consent response, so it must point at the configured
+	// authorization server — never a relative or plain-HTTP address.
+	if cfg.AuthorizeURL != "" {
+		u, err := url.Parse(cfg.AuthorizeURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("authorize_url must be an absolute https:// URL")
+		}
+	}
+
 	return nil
+}
+
+// consentRequiredBody is the JSON body of the 401 consent response.
+type consentRequiredBody struct {
+	Error        string `json:"error"`
+	Provider     string `json:"provider"`
+	AuthorizeURL string `json:"authorize_url,omitempty"`
 }
 
 // writeUpstreamAuthRequired writes a 401 response with a WWW-Authenticate Bearer
 // challenge per RFC 6750 Section 3.1, signalling that the caller must re-authenticate
-// with the upstream IdP.
-func writeUpstreamAuthRequired(w http.ResponseWriter) {
+// with the upstream IdP, plus a JSON body carrying the provider and (when
+// configured) the authorize endpoint so the client can render an actionable
+// "connect your account" prompt. The body never contains token material.
+func writeUpstreamAuthRequired(w http.ResponseWriter, provider, authorizeURL string) {
 	w.Header().Set("WWW-Authenticate",
 		`Bearer error="invalid_token", error_description="upstream token is no longer valid; re-authentication required"`)
-	http.Error(w, "upstream authentication required", http.StatusUnauthorized)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	// Marshal errors are impossible for this fixed-shape struct; on failure the
+	// client still has the RFC 6750 challenge header to act on.
+	_ = json.NewEncoder(w).Encode(consentRequiredBody{
+		Error:        "upstream_consent_required",
+		Provider:     provider,
+		AuthorizeURL: authorizeURL,
+	})
 }
 
 // injectionFunc is a function that injects a token into an HTTP request.
@@ -178,7 +214,7 @@ func createMiddlewareFunc(cfg *Config) types.MiddlewareFunction {
 
 			token, exists := identity.UpstreamTokens[cfg.ProviderName]
 			if !exists || token == "" {
-				writeUpstreamAuthRequired(w)
+				writeUpstreamAuthRequired(w, cfg.ProviderName, cfg.AuthorizeURL)
 				return
 			}
 

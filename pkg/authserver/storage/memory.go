@@ -788,7 +788,11 @@ func cloneUpstreamTokens(t *UpstreamTokens) *UpstreamTokens {
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a defensive copy to prevent aliasing issues.
-func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, providerName string) (*UpstreamTokens, error) {
+// Binding validation (see ExpectedBinding) runs before expiry: a mismatched row
+// returns (nil, ErrInvalidBinding) and never enters the refresh path.
+func (s *MemoryStorage) GetUpstreamTokens(
+	ctx context.Context, sessionID, providerName string, expected *ExpectedBinding,
+) (*UpstreamTokens, error) {
 	if sessionID == "" {
 		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
 	}
@@ -811,6 +815,13 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 		return nil, nil
 	}
 
+	if err := checkUpstreamBinding(ctx, result, expected); err != nil {
+		// Unlike ErrExpired, no legitimate use exists for a mismatched row —
+		// release nothing.
+		return nil, err
+	}
+	warnIfAssertedUserOnLegacyRow(result, expected, sessionID, providerName)
+
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
 	// (storage TTL which includes DefaultRefreshTokenTTL buffer for refresh token survival).
 	// Return tokens along with ErrExpired so callers can use the refresh token.
@@ -826,7 +837,12 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 // Returns a map of providerName -> tokens with defensive copies.
 // Returns an empty map (not error) for unknown sessions.
 // Includes expired tokens (no expiry filtering at bulk-read level).
-func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string) (map[string]*UpstreamTokens, error) {
+// Binding validation applies per row: a mismatched row is excluded from the
+// result (with a WARN) rather than failing the whole read — callers treat a
+// missing provider as "needs consent", the safe degradation.
+func (s *MemoryStorage) GetAllUpstreamTokens(
+	ctx context.Context, sessionID string, expected *ExpectedBinding,
+) (map[string]*UpstreamTokens, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -836,10 +852,39 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 			continue
 		}
 		// Defensive copy (cloneUpstreamTokens handles nil)
-		result[key.providerName] = cloneUpstreamTokens(entry.value)
+		tokens := cloneUpstreamTokens(entry.value)
+		if err := checkUpstreamBinding(ctx, tokens, expected); err != nil {
+			slog.Warn("excluding upstream token row: binding validation failed",
+				"session_id", sessionID,
+				"provider", key.providerName,
+				"dimension", bindingMismatchDimension(err),
+			)
+			continue
+		}
+		warnIfAssertedUserOnLegacyRow(tokens, expected, sessionID, key.providerName)
+		result[key.providerName] = tokens
 	}
 
 	return result, nil
+}
+
+// warnIfAssertedUserOnLegacyRow emits a single WARN for the suspicious case:
+// the caller explicitly asserted an owning user (or Strict mode) but the row
+// carries no recorded owner (a legacy row predating binding fields), so the
+// user dimension could not actually be verified. Plain legacy passthrough
+// (nil expected, no ctx user) logs nothing — warning there would be spam on
+// hot paths.
+func warnIfAssertedUserOnLegacyRow(stored *UpstreamTokens, expected *ExpectedBinding, sessionID, providerName string) {
+	if stored == nil || stored.UserID != "" || expected == nil {
+		return
+	}
+	if expected.UserID == "" && !expected.Strict {
+		return
+	}
+	slog.Warn("upstream token row has no recorded owner; user binding could not be verified",
+		"session_id", sessionID,
+		"provider", providerName,
+	)
 }
 
 // DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).

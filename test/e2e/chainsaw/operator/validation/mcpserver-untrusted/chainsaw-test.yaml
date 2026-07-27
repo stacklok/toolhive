@@ -1,0 +1,238 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Test CEL validation rules R1-R6 for MCPServer untrusted mode.
+# These validations happen at the API server level and reject invalid specs immediately.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpserver-untrusted-cel-validation
+spec:
+  description: |
+    Test CEL validation rules for MCPServer untrusted mode (ADR-0001):
+    R1 egressPolicy required, R2 MCPGroup membership, R3 no spec.secrets,
+    R4 no podTemplateSpec, R5 sessionAffinity ClientIP, R6 no backendReplicas.
+  steps:
+    # R1: untrusted without egressPolicy should be rejected
+    - name: reject-untrusted-missing-egress-policy
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-r1-violation
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                groupRef:
+                  name: test-group
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* egressPolicy with at least one provider is required when untrusted is true *"
+
+    # R2: untrusted without groupRef should be rejected
+    - name: reject-untrusted-missing-group-ref
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-r2-violation
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* untrusted workloads must belong to an MCPGroup fronted by a VirtualMCPServer *"
+
+    # R3: untrusted with spec.secrets should be rejected
+    - name: reject-untrusted-with-secrets
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-r3-violation
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                groupRef:
+                  name: test-group
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+                secrets:
+                  - name: backend-creds
+                    key: token
+                    targetEnvName: API_TOKEN
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* spec.secrets is forbidden when untrusted is true *"
+
+    # R4: untrusted with podTemplateSpec should be rejected
+    - name: reject-untrusted-with-pod-template-spec
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-r4-violation
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                groupRef:
+                  name: test-group
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+                podTemplateSpec:
+                  spec:
+                    containers:
+                      - name: mcp
+                        env:
+                          - name: A
+                            value: b
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* podTemplateSpec is forbidden when untrusted is true *"
+
+    # R5: untrusted with sessionAffinity None should be rejected
+    - name: reject-untrusted-session-affinity-none
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-r5-violation
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                sessionAffinity: None
+                groupRef:
+                  name: test-group
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* untrusted workloads require sessionAffinity ClientIP *"
+
+    # R6: untrusted with backendReplicas should be rejected
+    - name: reject-untrusted-with-backend-replicas
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-r6-violation
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                groupRef:
+                  name: test-group
+                backendReplicas: 2
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* backendReplicas is managed by the untrusted-mode session lifecycle and must not be set *"
+
+    # Valid untrusted spec should be accepted
+    - name: accept-valid-untrusted
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-valid
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: true
+                groupRef:
+                  name: test-group
+                egressPolicy:
+                  providers:
+                    - provider: github
+                      allowedHosts:
+                        - api.github.com
+                        - "*.githubusercontent.com"
+                      allowedMethods:
+                        - GET
+                      credentialEnvName: GITHUB_TOKEN
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: untrusted-valid
+              spec:
+                untrusted: true
+
+    # Trusted workloads are inert for all rules at once
+    - name: accept-trusted-with-all-otherwise-forbidden-fields
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: trusted-inert
+                namespace: default
+              spec:
+                image: example/mcp-server:latest
+                untrusted: false
+                sessionAffinity: None
+                backendReplicas: 2
+                secrets:
+                  - name: backend-creds
+                    key: token
+                    targetEnvName: API_TOKEN
+                podTemplateSpec:
+                  spec:
+                    containers:
+                      - name: mcp
+                        env:
+                          - name: A
+                            value: b
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: trusted-inert
+              spec:
+                untrusted: false

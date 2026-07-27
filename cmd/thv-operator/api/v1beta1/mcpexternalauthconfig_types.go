@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
@@ -1017,6 +1018,10 @@ const (
 type AuthServerStorageType string
 
 // AuthServerStorageConfig configures the storage backend for the embedded auth server.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.tokenEncryption) || self.type == 'redis'",message="tokenEncryption requires storage type 'redis'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type AuthServerStorageConfig struct {
 	// Type specifies the storage backend type.
 	// Valid values: "memory" (default), "redis".
@@ -1028,6 +1033,48 @@ type AuthServerStorageConfig struct {
 	// Required when type is "redis".
 	// +optional
 	Redis *RedisStorageConfig `json:"redis,omitempty"`
+
+	// TokenEncryption enables envelope encryption of upstream tokens at rest.
+	// Requires redis storage: the RunConfig shape only supports token
+	// encryption on the Redis backend, and untrusted-mode egress (the primary
+	// consumer) requires Redis-backed token storage. ActiveKeyID names the
+	// key used for new writes; KeySecretRef references a Secret whose data
+	// keys are key IDs and values are base64 32-byte KEKs.
+	// +optional
+	TokenEncryption *TokenEncryptionConfig `json:"tokenEncryption,omitempty"`
+}
+
+// GetTokenEncryption returns the token-encryption config, or nil when unset
+// (nil-safe accessor for the operator's wiring paths).
+func (c *AuthServerStorageConfig) GetTokenEncryption() *TokenEncryptionConfig {
+	if c == nil {
+		return nil
+	}
+	return c.TokenEncryption
+}
+
+// TokenEncryptionConfig configures AES-256-GCM envelope encryption of
+// upstream OAuth token values stored in Redis. The Secret referenced by
+// KeySecretRef holds one data entry per key ID (value = base64 32-byte KEK);
+// the operator mounts every data key (active + retired) as a SecretKeyRef env
+// entry on the vMCP container and clones the same references into untrusted
+// egress-broker sidecars. Key material never appears in the CRD, a ConfigMap,
+// or a pod env literal.
+//
+// +kubebuilder:validation:XValidation:rule="self.keySecretRef.name.size() > 0",message="keySecretRef.name must not be empty"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type TokenEncryptionConfig struct {
+	// ActiveKeyID identifies the KEK used to encrypt new writes. Must match a
+	// data key of the Secret referenced by KeySecretRef.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ActiveKeyID string `json:"activeKeyId"`
+
+	// KeySecretRef references the Secret holding the key-encryption keys.
+	// Its data keys are key IDs; values are base64 32-byte KEKs.
+	// +kubebuilder:validation:Required
+	KeySecretRef corev1.LocalObjectReference `json:"keySecretRef"`
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.

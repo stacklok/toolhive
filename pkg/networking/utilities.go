@@ -99,9 +99,11 @@ func init() {
 		"fe80::/10",       // IPv6 link-local
 		"fc00::/7",        // IPv6 unique local addr
 		"100.64.0.0/10",   // RFC6598 shared address space (CGN)
+		"192.0.0.0/24",    // RFC6890 IETF protocol assignments
 		"192.0.2.0/24",    // RFC5737 documentation (TEST-NET-1)
 		"198.51.100.0/24", // RFC5737 documentation (TEST-NET-2)
 		"203.0.113.0/24",  // RFC5737 documentation (TEST-NET-3)
+		"198.18.0.0/15",   // RFC2544 benchmarking (device interconnect tests)
 		"224.0.0.0/4",     // IPv4 multicast
 		"240.0.0.0/4",     // RFC1112 reserved (Class E), incl. 255.255.255.255 broadcast
 		"ff00::/8",        // IPv6 multicast

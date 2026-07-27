@@ -1016,6 +1016,7 @@ The middleware chain execution order is critical and controlled by the order in 
 
 **Important Ordering Rules**:
 - Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
+  - Tradeoff: with `includeRequestData` enabled (default off), audit buffers the request body (up to `maxDataSize`, itself capped by the body-size limit) *before* authentication, so unauthenticated requests that will 401 also pay the buffer cost. This is inherent to auditing rejected requests — the body must be read before the outcome is known — and is bounded per-request.
 - Authentication must come before the other middlewares to establish client identity
 - Upstream Token Swap must come after Authentication (requires `tsid` claim) and before Token Exchange (so it can read the original JWT)
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)

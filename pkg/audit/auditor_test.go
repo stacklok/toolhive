@@ -402,6 +402,7 @@ func TestDetermineOutcome(t *testing.T) {
 		{403, OutcomeDenied},
 		{400, OutcomeFailure},
 		{404, OutcomeFailure},
+		{429, OutcomeFailure}, // Rate limiting is a load condition, not an identity/policy denial
 		{499, OutcomeFailure},
 		{500, OutcomeError},
 		{503, OutcomeError},

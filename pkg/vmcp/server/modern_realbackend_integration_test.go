@@ -356,32 +356,22 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{"name": tc.tool}, 1, tc.tool)
 			defer resp.Body.Close()
 
+			// Both today's -32603 and the follow-up's -32021 (documented HTTP
+			// 200 deviation) ride HTTP 200, so this holds across the fix.
+			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
-			errObj, ok := decoded["error"].(map[string]any)
+			_, ok := decoded["error"].(map[string]any)
 			require.True(t, ok, "the failure must be an explicit JSON-RPC error: %+v", decoded)
-			msg, _ := errObj["message"].(string)
 
-			// The refused request's NAME (elicitation/create etc.) is deliberately
-			// NOT asserted: today it appears in the message only via go-sdk's
-			// "calling %q" error wrapping — a dependency's string, which an
-			// upstream reword would break for no ToolHive reason (testing.md,
-			// test scope). The follow-up capability-error contract emits a
-			// vMCP-owned message; assert the named-request property THERE, on our
-			// own string.
-			//
-			// KNOWN LEAK, deliberately characterized rather than endorsed: the
-			// -32603 message echoes err.Error() verbatim (writeModernDispatchError's
-			// documented posture), which today includes the backend workload ID —
-			// contradicting writeModernListError's leak policy in the same file.
-			// The leak predates this test and affects both revisions; the
-			// follow-up replaces this message with a crafted one. When it does,
-			// FLIP this assertion to NotContains so the fix is a conscious,
-			// test-visible event. ("real-backend" IS a ToolHive string: the
-			// backend ID this fixture registers, echoed through vMCP's own
-			// "tool call failed on backend %s" wrapping.)
-			assert.Contains(t, msg, "real-backend",
-				"characterizes the pre-existing backend-ID leak; flip to NotContains when the message is sanitized")
+			// Nothing about the MESSAGE is asserted, deliberately. The refused
+			// request's name (elicitation/create etc.) reaches it only via
+			// go-sdk's "calling %q" error wrapping — a dependency's string
+			// (testing.md, test scope) — and the message also carries the
+			// pre-existing backend-workload-ID leak, which the follow-up
+			// capability-error contract fixes with vMCP-owned messages. Both
+			// message properties (names our string, no backend ID) are asserted
+			// THERE, where vMCP owns the text.
 		})
 	}
 }

@@ -651,48 +651,77 @@ spec:
 ```
 
 **Which token's claims a policy sees**: Cedar reads the primary upstream
-provider's *access token*. Claims that token asserts always win. Because many
-OIDC providers put profile claims in the `id_token` only and omit them from the
-access token, `name` and `email` fall back to **that same provider's `id_token`**
-(captured at login and stored alongside its access token) when the access token
-does not carry them. Provenance is preserved either way: `principal has
-claim_email` means "this upstream asserted an email". When a fallback happens the
-proxy logs, once per 30s:
+provider's *access token*. Claims that token asserts always win. Providers
+routinely split what they assert across their two tokens — `email` and group
+membership are both commonly in the `id_token` only — so any claim the access
+token does **not** carry falls back to **that same provider's `id_token`**
+(captured at login and stored alongside its access token). Provenance is preserved
+either way, since both tokens come from one login at one provider: `principal has
+claim_email` means "this upstream asserted an email", and `principal in
+THVGroup::"platform-eng"` means "this upstream put the user in that group". When a
+fallback happens the proxy logs, once per 30s:
 
 ```
-WARN upstream access token lacks profile claims; using the upstream ID token's
-     values for Cedar evaluation provider=okta claims="[email]"
+WARN upstream access token omits claims the upstream ID token asserts; using the
+     ID token's values for Cedar evaluation provider=okta claims="[email groups]"
 ```
 
-That fallback uses the stored `id_token` even after it has expired, by design. It
+Group and role claims are included, under whatever name the provider uses — the
+well-known names, `spec.incomingAuth.authzConfig.groupClaimName`/`roleClaimName`,
+and URI-style names such as `https://example.com/groups` alike. So are `hd`,
+`email_verified`, and any other claim the provider asserts about the user or their
+login (`acr`, `amr`, `auth_time`).
+
+Two categories are never taken from the `id_token`, no matter what the access
+token carries:
+
+* Claims that describe the `id_token` itself rather than the user — `iss`, `aud`,
+  `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
+  `sid`, `client_id`. That `id_token`'s audience is ToolHive's own auth-server
+  client, so a policy gating on the resource-server `aud`, on token lifetime, or
+  on the requesting `client_id` would otherwise read a fact about a different
+  token.
+* `sub`, the principal. A rule keyed on `Client::"<upstream-subject>"` keeps
+  matching the upstream identity, and an access token with no `sub` is rejected
+  outright rather than having a principal chosen for it.
+
+**Precedence is fill-only, not union.** A claim the access token asserts is used
+verbatim and is never extended. If your provider filters group claims per
+application (Okta group filters, Entra group-claim configuration) so that the
+access token carries a *partial* group list and the `id_token` carries the full
+one, policies see the partial list. That is deliberate: the access token's list is
+the provider's answer to "which of this user's groups are relevant to this
+resource server", and unioning in a list minted for a different audience would
+restore groups the provider chose to withhold. If policies need the fuller list,
+configure the upstream to assert it in the access token.
+
+The fallback uses the stored `id_token` even after it has expired, by design. It
 is read as a record of what the upstream asserted when the user logged in, not
 presented to anyone as a credential. Since a session can outlive an `id_token` by
 days, expiring it out of policy evaluation would let the same user be permitted
-early in a session and denied later, with no configuration change.
+early in a session and denied later, with no configuration change. The
+consequence to plan for: where a claim comes from the `id_token`, it is a
+login-time fact. Access tokens are refreshed, so claims read from them track the
+provider; a stored `id_token` is replaced only when a refresh rotates one. A group
+revoked upstream can therefore keep granting until the session ends — shorten
+`spec.authServerConfig.tokenLifespans.refreshTokenLifespan` (7d by default) if
+that window is too wide for your policies.
 
 The token the client presented — the one ToolHive's auth server issued — is
-never a claim source here, even though it mirrors a `name` and `email`. In a
-multi-upstream chain those mirrored values come from the **first** configured
-upstream (the identity provider), which need not be the provider
-`primaryUpstreamProvider` names, so using them could attribute one IdP's email to
-another.
+never a claim source here, even though it mirrors a `name` and `email`. A group,
+role or scope claim on it grants nothing. In a multi-upstream chain those mirrored
+values come from the **first** configured upstream (the identity provider), which
+need not be the provider `primaryUpstreamProvider` names, so using them could
+attribute one IdP's claims to another.
 
 An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
 `id_token`, so nothing is available to fall back to and the claim stays absent.
 The proxy says so once per 30s:
 
 ```
-WARN no upstream ID token stored for provider; policies referencing profile
-     claims the access token omits will deny provider=okta
+WARN no upstream ID token stored for provider; policies referencing claims the
+     access token omits will deny provider=okta
 ```
-
-Every other claim is upstream-access-token-only. In particular, group, role and
-scope claims are not substituted from anywhere, so a policy such as `principal in
-THVGroup::"platform-eng"` only ever matches groups the upstream access token
-asserts. The same holds for the principal: `sub` is never substituted, so a rule
-keyed on `Client::"<upstream-subject>"` keeps matching the upstream identity, and
-an access token with no `sub` is rejected outright rather than having a principal
-chosen for it.
 
 If a policy references a claim that neither the access token nor the `id_token`
 carries, `principal has claim_x` is false and the policy denies — author domain

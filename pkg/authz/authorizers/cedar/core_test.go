@@ -1485,7 +1485,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 					}),
 				},
 			},
-			// `sub` is excluded from mirroredIdentityClaims, so the request
+			// `sub` is in idTokenClaimsNeverSupplemented, so the request
 			// token's subject must NOT stand in: the AS-issued subject is an
 			// internal user ID, and supplementing it would silently retarget the
 			// Cedar principal instead of failing closed. An upstream access token
@@ -1523,9 +1523,9 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 	}
 }
 
-// TestSupplementProfileClaims covers which id_token claims may stand in for a
+// TestSupplementFromIDTokenClaims covers which id_token claims may stand in for a
 // missing access-token claim, and which may never do so.
-func TestSupplementProfileClaims(t *testing.T) {
+func TestSupplementFromIDTokenClaims(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1557,10 +1557,18 @@ func TestSupplementProfileClaims(t *testing.T) {
 			wantFilled: []string{"email", "name"},
 		},
 		{
-			// Taking these from this provider's id_token would be provenance-correct,
-			// but it would newly grant requests that deny today, so it is out of scope
-			// here and pinned as unchanged behaviour.
-			name:              "authorization_bearing_claims_are_not_filled",
+			// #6049: these are asserted by the same IdP for the same login as the
+			// access token's claims, so they are admitted. Withholding them was the
+			// deny-all trap for every `principal in THVGroup::"..."` policy against a
+			// provider that puts group membership in the id_token only.
+			//
+			// This is the case that flipped in #6049; the invariant that a group claim
+			// on the TOOLHIVE-ISSUED token grants nothing is a different property and
+			// is pinned elsewhere (TestResolveClaimsUpstreamSupplement's
+			// leaked-from-as-token fixtures,
+			// TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups/toolhive_groups_ignored_when_upstream_configured,
+			// and integration_test.go's direct_groups_ignored_when_upstream_configured).
+			name:              "authorization_bearing_claims_are_filled_from_the_id_token",
 			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice"},
 			idTokenClaims: jwt.MapClaims{
 				"groups": []interface{}{"platform-eng"},
@@ -1568,22 +1576,85 @@ func TestSupplementProfileClaims(t *testing.T) {
 				"scope":  "tools:write",
 				"hd":     "example.com",
 			},
-			wantMerged: jwt.MapClaims{"sub": "okta|alice"},
-			wantFilled: nil,
+			wantMerged: jwt.MapClaims{
+				"sub":    "okta|alice",
+				"groups": []interface{}{"platform-eng"},
+				"roles":  []interface{}{"admin"},
+				"scope":  "tools:write",
+				"hd":     "example.com",
+			},
+			wantFilled: []string{"groups", "hd", "roles", "scope"},
+		},
+		{
+			// A custom namespaced group claim, the shape GroupClaimName exists for.
+			// A fixed allow-list of claim names could not admit this, since the name
+			// is chosen by the deployment's IdP rather than by ToolHive.
+			name:              "custom_namespaced_claims_are_filled_from_the_id_token",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice"},
+			idTokenClaims: jwt.MapClaims{
+				"https://example.com/groups": []interface{}{"platform-eng"},
+				"cognito:groups":             []interface{}{"admins"},
+			},
+			wantMerged: jwt.MapClaims{
+				"sub":                        "okta|alice",
+				"https://example.com/groups": []interface{}{"platform-eng"},
+				"cognito:groups":             []interface{}{"admins"},
+			},
+			wantFilled: []string{"cognito:groups", "https://example.com/groups"},
 		},
 		{
 			// An id_token's registered claims describe that token. Merging them would
-			// overwrite the access token's own aud/exp with different-meaning values.
+			// overwrite the access token's own aud/exp with different-meaning values,
+			// or report ToolHive's own auth-server client as the requesting client.
 			name: "id_token_registered_claims_are_never_filled_or_overwritten",
 			accessTokenClaims: jwt.MapClaims{
 				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,
 			},
 			idTokenClaims: jwt.MapClaims{
-				"aud": "toolhive-as-client", "exp": 1000000000,
-				"nonce": "n-abc", "at_hash": "h-abc", "azp": "client-x",
+				"iss": "https://idp.example.com", "aud": "toolhive-as-client", "exp": 1000000000,
+				"nbf": 999999999, "iat": 999999999, "jti": "id-abc",
+				"nonce": "n-abc", "at_hash": "h-abc", "c_hash": "hc-abc", "s_hash": "hs-abc",
+				"azp": "client-x", "sid": "sess-abc", "client_id": "toolhive-as-client",
 			},
 			wantMerged: jwt.MapClaims{
 				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,
+			},
+			wantFilled: nil,
+		},
+		{
+			// `auth_time`/`acr`/`amr` describe the authentication event both tokens
+			// came out of, not the id_token, so they are admitted alongside the user's
+			// own claims — a step-up-auth gate can be satisfied by what the provider
+			// actually asserted about the login.
+			name:              "login_describing_claims_are_filled_from_the_id_token",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice"},
+			idTokenClaims: jwt.MapClaims{
+				"auth_time": 1700000000,
+				"acr":       "urn:mace:incommon:iap:silver",
+				"amr":       []interface{}{"mfa", "pwd"},
+			},
+			wantMerged: jwt.MapClaims{
+				"sub":       "okta|alice",
+				"auth_time": 1700000000,
+				"acr":       "urn:mace:incommon:iap:silver",
+				"amr":       []interface{}{"mfa", "pwd"},
+			},
+			wantFilled: []string{"acr", "amr", "auth_time"},
+		},
+		{
+			// Precedence is fill-only, not union: an access token asserting a PARTIAL
+			// group list keeps exactly that list. Per-audience claim filtering means
+			// the access token's list is the provider's answer for THIS resource
+			// server; unioning the id_token's would widen beyond it.
+			name: "partial_access_token_group_list_is_not_unioned_with_the_id_token",
+			accessTokenClaims: jwt.MapClaims{
+				"sub": "okta|alice", "groups": []interface{}{"platform-eng"},
+			},
+			idTokenClaims: jwt.MapClaims{
+				"groups": []interface{}{"platform-eng", "sre", "finance-admins"},
+			},
+			wantMerged: jwt.MapClaims{
+				"sub": "okta|alice", "groups": []interface{}{"platform-eng"},
 			},
 			wantFilled: nil,
 		},
@@ -1634,7 +1705,7 @@ func TestSupplementProfileClaims(t *testing.T) {
 			accessBefore := maps.Clone(tt.accessTokenClaims)
 			idTokenBefore := maps.Clone(tt.idTokenClaims)
 
-			merged, filled := supplementProfileClaims(tt.accessTokenClaims, tt.idTokenClaims)
+			merged, filled := supplementFromIDTokenClaims(tt.accessTokenClaims, tt.idTokenClaims)
 
 			assert.Equal(t, tt.wantMerged, merged)
 			assert.Equal(t, tt.wantFilled, filled)
@@ -1652,8 +1723,8 @@ func TestSupplementProfileClaims(t *testing.T) {
 
 // TestResolveClaimsUpstreamSupplement pins the claim-source contract of
 // resolveClaims on the embedded-auth-server path: the pinned provider's access
-// token wins, its id_token supplies only the profile claims the access token
-// omits, and the ToolHive-issued token is not a claim source at all.
+// token wins, its id_token supplies the claims the access token omits (bar the
+// token-describing ones), and the ToolHive-issued token is not a claim source at all.
 //
 // The email-filling case is the #5916 reproducer — an upstream IdP whose access
 // token is a well-formed JWT carrying no `email` (the provider asserts it in the
@@ -1672,6 +1743,10 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 		"email":     "leaked-from-as-token@example.com",
 		"name":      "Leaked From AS Token",
 		"client_id": "vscode",
+		// #6049 opened the id_token as a source of group claims. It did not open
+		// the issued token, so this group must never appear in any resolved claim
+		// set below — including the cases where the id_token does supply groups.
+		"groups": []interface{}{"leaked-from-as-token"},
 	}
 
 	tests := []struct {
@@ -1705,6 +1780,36 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 				"name":  "Alice",
 				// The id_token's own aud/nonce are absent: they describe that
 				// token, not the user.
+			},
+		},
+		{
+			// The #6049 shape: the pinned upstream asserts group membership in its
+			// id_token only, so before that change the resolved claim set had no
+			// `groups` key and every THVGroup policy denied for everyone. `hd` and
+			// custom namespaced claims ride the same rule.
+			name:     "access_token_without_groups_falls_back_to_id_token_groups",
+			provider: providerName,
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub": "hub|alice",
+				"iss": "https://hub.example.com",
+			}),
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":                        "hub|alice",
+				"groups":                     []interface{}{"platform-eng"},
+				"hd":                         "example.com",
+				"https://hub.example.com/ou": "infra",
+				// Token-describing claims are withheld even now that the id_token is
+				// a general claim source.
+				"aud": "toolhive-as-client",
+				"sid": "sess-abc",
+			}),
+			requestClaims: asIssuedClaims,
+			wantClaims: jwt.MapClaims{
+				"sub":                        "hub|alice",
+				"iss":                        "https://hub.example.com",
+				"groups":                     []interface{}{"platform-eng"},
+				"hd":                         "example.com",
+				"https://hub.example.com/ou": "infra",
 			},
 		},
 		{
@@ -1750,20 +1855,24 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 			// login, not presented as a credential, so `exp` is deliberately not
 			// enforced. Enforcing it would make a policy permit early in a session
 			// and silently deny later, since sessions outlive id_tokens by days.
+			// Since #6049 this covers group membership too, which is why
+			// resolveClaims documents it as a login-time fact.
 			name:     "expired_id_token_is_still_used",
 			provider: providerName,
 			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
 				"sub": "hub|alice",
 			}),
 			idToken: makeUnsignedJWT(jwt.MapClaims{
-				"sub":   "hub|alice",
-				"email": "alice@example.com",
-				"exp":   1000000000, // long past
+				"sub":    "hub|alice",
+				"email":  "alice@example.com",
+				"groups": []interface{}{"platform-eng"},
+				"exp":    1000000000, // long past
 			}),
 			requestClaims: asIssuedClaims,
 			wantClaims: jwt.MapClaims{
-				"sub":   "hub|alice",
-				"email": "alice@example.com",
+				"sub":    "hub|alice",
+				"email":  "alice@example.com",
+				"groups": []interface{}{"platform-eng"},
 			},
 		},
 		{
@@ -1915,7 +2024,7 @@ func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
 }
 
 // TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced pins the property that
-// keeps `sub` out of mirroredIdentityClaims: the Cedar principal entity ID is
+// keeps `sub` in idTokenClaimsNeverSupplemented: the Cedar principal entity ID is
 // derived from the upstream subject, never from the AS-issued token's internal
 // user ID. Unlike an attribute, the principal has no `has`-style guard available
 // in Cedar, so a supplemented subject would silently retarget every principal-keyed
@@ -1959,7 +2068,7 @@ func TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced(t *testing.T) {
 			wantAuthorize:  true,
 		},
 		{
-			// The sharp case. If `sub` were added to mirroredIdentityClaims, the
+			// The sharp case. If `sub` left idTokenClaimsNeverSupplemented, the
 			// AS subject would stand in, the principal would become
 			// Client::"7f3c1e64-..." and the broad permit would apply — the
 			// request would be ALLOWED instead of erroring. Fail closed instead.
@@ -2247,7 +2356,8 @@ func TestAuthorizeWithJWTClaims_CustomGroupClaimName(t *testing.T) {
 // TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups verifies the end-to-end
 // path where PrimaryUpstreamProvider is set AND the Cedar policy uses group-based
 // authorization (principal in THVGroup::"..."). Groups must be extracted from the
-// upstream token's claims, not from the ToolHive-issued token.
+// pinned provider's own tokens — its access token, or its id_token for the claims
+// that access token omits (#6049) — and never from the ToolHive-issued token.
 func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 	t.Parallel()
 
@@ -2339,6 +2449,83 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 					// Upstream token has no groups.
 					providerName: makeUnsignedJWT(jwt.MapClaims{
 						"sub": "upstream-user",
+					}),
+				},
+			},
+			wantAuthorize: false,
+		},
+		{
+			// #6049: the upstream asserts group membership in its id_token only —
+			// common where groups are a profile-scope claim. This denied for every
+			// user before that change; it is the grant the change exists to make.
+			name: "id_token_groups_authorize_when_the_access_token_omits_them",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub": "upstream-user",
+					}),
+				},
+				UpstreamIDTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub":    "upstream-user",
+						"groups": []interface{}{"platform-eng", "devs"},
+					}),
+				},
+			},
+			wantAuthorize: true,
+		},
+		{
+			// Precedence: the access token's group list is used verbatim, so a
+			// provider whose access token withholds the permitted group still denies
+			// even though its id_token asserts it. Fill-only, never union.
+			name: "access_token_groups_win_over_different_id_token_groups",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub":    "upstream-user",
+						"groups": []interface{}{"marketing"},
+					}),
+				},
+				UpstreamIDTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub":    "upstream-user",
+						"groups": []interface{}{"platform-eng"},
+					}),
+				},
+			},
+			wantAuthorize: false,
+		},
+		{
+			// The security invariant #6049 must not weaken, retested with the
+			// id_token path live: opening the id_token as a group source did not open
+			// the ToolHive-issued token. The issued token names the permitted group,
+			// the pinned upstream names none in either of its tokens, so this denies.
+			name: "toolhive_groups_still_ignored_when_an_id_token_is_present",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims: map[string]any{
+						"sub":    "thv-user",
+						"groups": []interface{}{"platform-eng"},
+					},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub": "upstream-user",
+					}),
+				},
+				UpstreamIDTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub":    "upstream-user",
+						"groups": []interface{}{"marketing"},
 					}),
 				},
 			},

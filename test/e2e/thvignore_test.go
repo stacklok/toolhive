@@ -25,7 +25,7 @@ var _ = Describe("THVIgnore E2E Tests", Label("core", "thvignore", "e2e"), func(
 
 	BeforeEach(func() {
 		config = e2e.NewTestConfig()
-		serverName = fmt.Sprintf("thvignore-test-%d", GinkgoRandomSeed())
+		serverName = e2e.GenerateUniqueServerName("thvignore-test")
 
 		// Check if thv binary is available
 		err := e2e.CheckTHVBinaryAvailable(config)

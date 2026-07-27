@@ -54,7 +54,7 @@ func TestRestoreBudgetFor(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		sess := newMockSession(t, ctrl, "s", nil)
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(sess, nil).AnyTimes()
 		registry := &fakeBackendRegistry{backends: backends}
 		storage := newTestSessionDataStorage(t)
@@ -218,7 +218,7 @@ func TestEvictionDeletesUntrustedSessionPods(t *testing.T) {
 		return sess
 	}
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(sessFor("unused"), nil).AnyTimes()
 
 	// Capacity 1: inserting the second session evicts the first (LRU).

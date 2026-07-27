@@ -40,7 +40,7 @@ func (r *captureResolver) ResolveTargets(
 
 //nolint:unparam // connector signature fixed by backendConnector
 func passThroughConnector(
-	_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string,
+	_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink,
 ) (internalbk.Session, *vmcp.CapabilityList, error) {
 	return &mockConnectedBackend{sessID: "bs-1"}, &vmcp.CapabilityList{}, nil
 }
@@ -73,7 +73,7 @@ func TestFactoryResolverSeam(t *testing.T) {
 		t.Parallel()
 		factory := newSessionFactoryWithConnector(passThroughConnector)
 		sess, err := factory.MakeSessionWithID(context.Background(), "sess-1",
-			identityWithIssSub("iss", "sub"), []*vmcp.Backend{testBackend("b1")})
+			identityWithIssSub("iss", "sub"), []*vmcp.Backend{testBackend("b1")}, nil)
 		require.NoError(t, err)
 		require.NoError(t, sess.Close())
 	})
@@ -84,7 +84,7 @@ func TestFactoryResolverSeam(t *testing.T) {
 		factory := newSessionFactoryWithConnector(passThroughConnector, WithUntrustedResolver(resolver))
 
 		sess, err := factory.MakeSessionWithID(context.Background(), "sess-1",
-			identityWithIssSub("https://issuer", "user-1"), []*vmcp.Backend{testBackend("b1")})
+			identityWithIssSub("https://issuer", "user-1"), []*vmcp.Backend{testBackend("b1")}, nil)
 		require.NoError(t, err)
 		require.NoError(t, sess.Close())
 		require.Equal(t, 1, resolver.called)
@@ -121,7 +121,7 @@ func TestFactoryResolverSeam(t *testing.T) {
 
 		hints := make(chan string, 1)
 		connector := func(
-			_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, hint string,
+			_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, hint string, _ internalbk.ListChangedSink,
 		) (internalbk.Session, *vmcp.CapabilityList, error) {
 			hints <- hint
 			return &mockConnectedBackend{sessID: "bs-new"}, &vmcp.CapabilityList{}, nil
@@ -153,7 +153,7 @@ func TestFactoryResolverSeam(t *testing.T) {
 
 		hints := make(chan string, 1)
 		connector := func(
-			_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, hint string,
+			_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, hint string, _ internalbk.ListChangedSink,
 		) (internalbk.Session, *vmcp.CapabilityList, error) {
 			hints <- hint
 			return &mockConnectedBackend{sessID: "bs-1"}, &vmcp.CapabilityList{}, nil

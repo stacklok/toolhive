@@ -282,7 +282,13 @@ func TestDeleteUnknownSessionReturnsJSONRPCError(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
-	assert.Contains(t, string(body), `"id":null`)
+
+	// A DELETE carries no JSON-RPC id, and MCP encodes an absent id by
+	// omitting the "id" key entirely (schema/2025-11-25), never as null.
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	_, ok := parsed["id"]
+	assert.False(t, ok, `"id" key should be absent`)
 }
 
 // TestSingleRequestWithStaleSessionIncludesRequestID verifies that a single

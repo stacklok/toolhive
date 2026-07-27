@@ -1223,9 +1223,10 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 	require.NoError(t, err)
 
 	// Claims of the token the client actually presented, as minted by the
-	// embedded auth server: upstream subject plus the mirrored id_token profile.
+	// embedded auth server: an internal ToolHive user ID (a UserResolver UUID,
+	// deliberately NOT the upstream subject) plus the mirrored id_token profile.
 	asIssuedClaims := jwt.MapClaims{
-		"sub":       "hub|alice",
+		"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
 		"email":     "alice@example.com",
 		"name":      "Alice",
 		"iss":       "https://thv-as.example.com/",
@@ -1293,7 +1294,7 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 
 			identity := &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
-					Subject: "hub|alice",
+					Subject: "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
 					Claims:  asIssuedClaims,
 				},
 				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},

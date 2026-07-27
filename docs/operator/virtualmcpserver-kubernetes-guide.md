@@ -653,10 +653,11 @@ spec:
 **Which token's claims a policy sees**: Cedar reads the primary upstream
 provider's *access token*. Claims that token asserts always win. Because many
 OIDC providers put profile claims in the `id_token` only and omit them from the
-access token, the three user-identity claims the auth server mirrors into the
-token it issues — `sub`, `name` and `email` — fall back to that mirrored value
-when the upstream access token does not carry them. When this happens the proxy
-logs, once per 30s:
+access token, the two user-profile claims the auth server mirrors into the token
+it issues — `name` and `email` — fall back to that mirrored value when the
+upstream access token does not carry them. So `principal has claim_email` means
+"known from a trusted source", not "asserted by the upstream IdP itself". When a
+fallback happens the proxy logs, once per 30s:
 
 ```
 WARN upstream token lacks identity claims; using the request token's values for
@@ -666,10 +667,15 @@ WARN upstream token lacks identity claims; using the request token's values for
 Every other claim is upstream-only. In particular, group, role and scope claims
 are read from the upstream access token or not at all, so a policy such as
 `principal in THVGroup::"platform-eng"` only ever matches groups the upstream IdP
-asserts. If a policy references a claim neither token carries, `principal has
-claim_x` is false and the policy denies — author domain and group gates
-defensively with `has`, and confirm the claim is present in the upstream access
-token (not just the `id_token`) before gating on it.
+asserts. The same holds for the principal itself: `sub` is never substituted, so a
+rule keyed on `Client::"<upstream-subject>"` keeps matching the upstream identity,
+and an upstream access token with no `sub` is rejected outright rather than
+falling back to ToolHive's internal user ID.
+
+If a policy references a claim neither token carries, `principal has claim_x` is
+false and the policy denies — author domain and group gates defensively with
+`has`, and confirm the claim is present in the upstream access token (not just the
+`id_token`) before gating on it.
 
 > **Migration: `primaryUpstreamProvider` location**
 >

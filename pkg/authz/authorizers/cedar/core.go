@@ -19,6 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/syncutil"
 )
@@ -171,9 +172,8 @@ type Authorizer struct {
 	// Mutex for thread safety
 	mu sync.RWMutex
 	// primaryUpstreamProvider names the upstream IDP provider whose access token
-	// is the primary source of JWT claims for Cedar evaluation. Its claims are
-	// merged over the request token's claims (upstream wins per key); see
-	// resolveClaims for the precedence rules and why they are not a plain replace.
+	// is the source of JWT claims for Cedar evaluation, aside from the narrow
+	// user-profile supplement described in resolveClaims.
 	// When empty, claims from the token on the original client request are used,
 	// which may be a ToolHive-issued token or any other bearer token.
 	primaryUpstreamProvider string
@@ -192,6 +192,11 @@ type Authorizer struct {
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
+	// supplementLog rate-limits the warning that the upstream token lacked
+	// identity claims. It is deliberately separate from claimKeyLog: a shared
+	// timer would let whichever fires first suppress the other for the rest of
+	// the window, hiding the claim-key dump on exactly the deployments that need it.
+	supplementLog *syncutil.AtMost
 	// multiValuedClaims lists JWT claim names normalized to a canonical unpadded
 	// space-delimited string, plus a companion Cedar Set, before Cedar evaluation.
 	// See ConfigOptions.MultiValuedClaims.
@@ -211,11 +216,12 @@ type ConfigOptions struct {
 	// When empty, claims from the ToolHive-issued token are used.
 	// Must match an entry in identity.UpstreamTokens (e.g. "default", "github").
 	//
-	// The upstream token's claims do not replace the request token's claims: they
-	// are merged over them, so a claim the upstream access token omits (commonly
-	// `email`, which many providers place in the id_token only) falls back to the
-	// value the ToolHive-issued token carries, while every claim the upstream does
-	// assert wins. See resolveClaims for the full contract.
+	// The user-profile claims in mirroredIdentityClaims fall back to the
+	// ToolHive-issued token when the upstream access token omits them, so
+	// `principal has claim_email` means "known from a trusted source", not
+	// "asserted by the upstream IDP itself". Every other claim, including all
+	// group/role/scope claims, comes from the upstream token or not at all. See
+	// resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -329,6 +335,7 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 		roleClaimName:           options.RoleClaimName,
 		serverName:              serverName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
+		supplementLog:           syncutil.NewAtMost(30 * time.Second),
 		multiValuedClaims:       options.MultiValuedClaims,
 	}
 
@@ -547,15 +554,14 @@ func (a *Authorizer) IsAuthorized(
 //
 // When primaryUpstreamProvider is set (the embedded auth server path), the
 // upstream IDP access token is the claim source, with one narrow supplement: the
-// user-identity claims listed in mirroredIdentityClaims fall back to the request
-// token's values when the upstream access token does not carry them. Using the
-// upstream token alone was a deny-all trap, because many OIDC providers put
-// identity claims such as `email` in the id_token only and omit them from the
-// JWT access token (JetBrains Hub is a public example), so every policy
-// referencing `claim_email` silently denied every request. See #5916.
+// claims listed in mirroredIdentityClaims fall back to the request token's values
+// when the upstream access token does not carry them. Using the upstream token
+// alone was a deny-all trap, because many OIDC providers put identity claims such
+// as `email` in the id_token only and omit them from the access token, so every
+// policy referencing `claim_email` silently denied every request (#5916).
 //
 // The supplement is deliberately restricted to mirroredIdentityClaims rather
-// than being a general merge of the two claim sets, for two reasons:
+// than being a general merge of the two claim sets. Read this before widening it:
 //
 //   - Authorization-bearing claims stay single-sourced. `groups`, `roles`, `hd`
 //     and custom namespaced claims are asserted by the upstream IDP or not at
@@ -565,6 +571,10 @@ func (a *Authorizer) IsAuthorized(
 //     upstream identity. Letting `iss`, `aud`, `exp`, `jti` or `client_id` fill
 //     upstream gaps would hand policies the auth server's own values under the
 //     guise of upstream claims.
+//   - `sub` is excluded for both reasons at once: the AS-issued subject is an
+//     internal ToolHive user ID rather than a copy of the upstream subject, and
+//     it becomes the Cedar principal entity ID rather than a mere attribute (see
+//     mirroredIdentityClaims).
 //
 // Within mirroredIdentityClaims an upstream value always wins, so a claim the
 // upstream IDP does assert can never be shadowed by the token presented on the
@@ -572,6 +582,11 @@ func (a *Authorizer) IsAuthorized(
 // signature-verified by the auth middleware before reaching any authorizer, and
 // the upstream token is held in server-side session state after the auth server's
 // code exchange, never supplied by the client.
+//
+// Note the resulting policy semantics: `principal has claim_email` (and
+// claim_name) means "known from a trusted source", not "asserted by the upstream
+// IDP itself". A claim absent from both sides stays absent, so `has`-guarded
+// policies still fail closed.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 
@@ -617,16 +632,12 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 
 	merged, filled := supplementUpstreamClaims(upstreamClaims, requestClaims)
 	if len(filled) > 0 {
-		// Shares claimKeyLog with logClaimKeys so a deployment whose upstream
-		// token permanently lacks these claims does not emit a line per
-		// authorization check. This is the JWT-branch counterpart of the
-		// opaque-token Warn above: without it, an operator whose upstream issues
-		// JWT access tokens without `email` gets no signal that policies
-		// referencing `claim_email` read a value sourced from the AS-issued token
-		// rather than the upstream one (#5916).
+		// Rate-limited on its own timer, not claimKeyLog: sharing one would let
+		// this Warn consume the window and permanently starve the claim-key dump
+		// below, which is the thing you want when debugging a denying policy.
 		//
 		// Claim keys only — never claim values, which hold user PII.
-		a.claimKeyLog.Do(func() {
+		a.supplementLog.Do(func() {
 			slog.Warn("upstream token lacks identity claims; using the request token's values for Cedar evaluation",
 				"provider", a.primaryUpstreamProvider,
 				"claims", filled)
@@ -636,18 +647,28 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 	return merged, nil
 }
 
-// mirroredIdentityClaims are the user-identity claims the embedded auth server
-// copies from the upstream OIDC identity into the access token it issues (see
-// session.New in pkg/authserver/server/session/session.go: the JWT subject plus
-// the UserClaims name/email pair). Because the AS-issued values are copies of the
-// upstream ones, they are the only claims that can stand in for a missing
-// upstream claim without misrepresenting its source.
+// mirroredIdentityClaims are the claims that may stand in for a missing upstream
+// claim: the user-profile pair the embedded auth server copies verbatim from the
+// upstream OIDC identity into the token it issues (session.New in
+// pkg/authserver/server/session). Referencing that package's constants makes a
+// rename on either side a compile error; it does not catch a claim being ADDED to
+// session.New, which still needs a deliberate decision here.
 //
-// Keep this list in sync with session.New. Adding a claim here widens what a
-// non-upstream token can contribute to a policy decision, so anything
-// authorization-bearing (groups, roles, scopes) belongs nowhere near it — see
-// resolveClaims for the full rationale.
-var mirroredIdentityClaims = []string{"sub", "name", "email"}
+// `sub` is deliberately NOT in this list even though session.New sets a subject.
+// The AS-issued subject is an internal ToolHive user ID — a fresh UUID from
+// UserResolver (pkg/authserver/server/handlers/user.go), distinct from the
+// upstream subject, which travels separately as UpstreamSubject
+// (handlers/callback.go). It is also the one identity claim that becomes the Cedar
+// principal entity ID via extractClientIDFromClaims rather than an attribute, and
+// Cedar has no `has`-style guard in the principal position. Supplementing it
+// would silently retarget the principal instead of failing closed, so a `forbid`
+// keyed on an upstream subject would stop matching with no diagnostic. An upstream
+// access token with no `sub` violates RFC 9068 and is better surfaced as
+// ErrMissingPrincipal.
+//
+// Widening this list widens what a non-upstream token can contribute to a policy
+// decision — see resolveClaims before adding anything.
+var mirroredIdentityClaims = []string{session.NameClaimKey, session.EmailClaimKey}
 
 // supplementUpstreamClaims returns a fresh claim set holding every upstream claim
 // plus, for each name in mirroredIdentityClaims that the upstream token does not
@@ -677,8 +698,8 @@ func supplementUpstreamClaims(upstreamClaims, requestClaims jwt.MapClaims) (merg
 		filled = append(filled, name)
 	}
 
-	// Sorted so the logged claim list is stable across runs (map iteration is
-	// not, and mirroredIdentityClaims is ordered for readability, not sorted).
+	// Sorted for a canonical, easily-greppable log line — mirroredIdentityClaims is
+	// ordered for readability (name, email), not alphabetically.
 	slices.Sort(filled)
 	return merged, filled
 }

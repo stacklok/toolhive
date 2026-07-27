@@ -1269,21 +1269,37 @@ func newCapabilityListFromMCP(
 	tools []mcp.Tool, resources []mcp.Resource, templates []mcp.ResourceTemplate, prompts []mcp.Prompt,
 ) *vmcp.CapabilityList {
 	capabilities := &vmcp.CapabilityList{
-		Tools:             make([]vmcp.Tool, len(tools)),
+		Tools:             make([]vmcp.Tool, 0, len(tools)),
 		Resources:         make([]vmcp.Resource, len(resources)),
 		ResourceTemplates: make([]vmcp.ResourceTemplate, len(templates)),
 		Prompts:           make([]vmcp.Prompt, len(prompts)),
 	}
 
-	for i, tool := range tools {
-		capabilities.Tools[i] = vmcp.Tool{
+	for _, tool := range tools {
+		inputSchema := conversion.ConvertToolInputSchema(tool.InputSchema)
+
+		// SEP-2243 requires a Streamable HTTP client to reject a tool definition
+		// whose x-mcp-header annotations violate the extension's constraints, and
+		// vMCP is this backend's client. Rejecting here — at the single ingestion
+		// seam both the Legacy and Modern paths share — also protects vMCP's own
+		// downstream clients: an invalid annotation republished in the aggregated
+		// tools/list would make a conformant downstream client reject the whole
+		// list, taking every other backend's tools down with it. Dropping the one
+		// offending tool is the narrower failure.
+		if err := mcpparser.ValidateParamHeaders(inputSchema); err != nil {
+			slog.Warn("rejecting backend tool with invalid x-mcp-header annotation",
+				"backend", backendID, "tool", tool.Name, "error", err)
+			continue
+		}
+
+		capabilities.Tools = append(capabilities.Tools, vmcp.Tool{
 			Name:         tool.Name,
 			Description:  tool.Description,
-			InputSchema:  conversion.ConvertToolInputSchema(tool.InputSchema),
+			InputSchema:  inputSchema,
 			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
 			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
 			BackendID:    backendID,
-		}
+		})
 	}
 
 	for i, resource := range resources {

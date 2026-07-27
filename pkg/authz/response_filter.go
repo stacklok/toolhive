@@ -177,7 +177,9 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	} else if bytes.Contains(rawResponse, []byte("\r")) {
 		linesep = []byte("\r")
 	} else {
-		return fmt.Errorf("unsupported separator: %s", string(rawResponse))
+		// Length only, not the body: rawResponse is the full pre-filter payload
+		// (e.g. the unfiltered tools/list), and this error is logged upstream.
+		return fmt.Errorf("unsupported SSE line separator in %d-byte response", len(rawResponse))
 	}
 
 	var linesepTotal, linesepCount int
@@ -526,11 +528,14 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	return filteredResponse, nil
 }
 
-// writeErrorResponse writes an error response
+// writeErrorResponse logs the full filtering error server-side and sends the client a
+// generic message. err can originate in policy evaluation and name tools or
+// resources, so security.md forbids returning it verbatim.
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
+	slog.Error("error filtering response", "method", rfw.method, "error", err)
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, fmt.Sprintf("Error filtering response: %v", err)),
+		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "internal error"),
 	}
 
 	// Encode before writing any header, so an encode failure never leaves a
@@ -541,7 +546,7 @@ func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error
 		// jsonrpc2.Response built from a valid ID and message above. Fall back
 		// to a hardcoded valid JSON-RPC error body rather than writing nothing.
 		slog.Error("failed to encode JSON-RPC error response", "error", encErr)
-		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Internal server error"}}`, mcpparser.CodeInternalError)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"internal error"}}`, mcpparser.CodeInternalError)
 	}
 
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)

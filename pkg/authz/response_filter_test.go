@@ -1163,11 +1163,10 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 	// array, so the pre-fix JSON path wrote it through raw.
 	const smuggled = `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
 
-	// writeErrorResponse wraps the carriesResult error message and reports the
-	// standard JSON-RPC Internal Error code (mcpparser.CodeInternalError), not
-	// the HTTP status.
-	wantErr := `"error":{"code":` + strconv.FormatInt(mcpparser.CodeInternalError, 10) + `,"message":"Error filtering response: ` +
-		`dropped a frame carrying a result outside a clean Response"}`
+	// writeErrorResponse logs the carriesResult error server-side and sends the
+	// client a fixed generic message alongside the standard JSON-RPC Internal
+	// Error code (mcpparser.CodeInternalError), not the HTTP status.
+	wantErr := `"error":{"code":` + strconv.FormatInt(mcpparser.CodeInternalError, 10) + `,"message":"internal error"}`
 
 	testCases := []struct {
 		name      string

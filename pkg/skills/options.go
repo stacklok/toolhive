@@ -31,6 +31,12 @@ type InstallOptions struct {
 	ProjectRoot string `json:"project_root,omitempty"`
 	// Group is the group name to add the skill to after installation.
 	Group string `json:"group,omitempty"`
+	// AllowUnsigned permits installing a project-scoped skill whose artifact
+	// carries no Sigstore signature. Without it, unsigned artifacts are
+	// rejected; with it, the lock entry records the exception as
+	// "unsigned: true". Skill content is AI-executed instructions, so this
+	// is an explicit per-install trust decision, never a default.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
@@ -70,6 +76,30 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// Provenance carries the verified signer identity established during
+	// install-time verification, for recording into the lock entry. Set by
+	// the verification step, nil when the artifact is unsigned or
+	// verification did not run. Internal use only — NOT exposed via HTTP API.
+	Provenance *ProvenanceInfo `json:"-"`
+	// SigstoreBundle is the serialized Sigstore bundle backing Provenance,
+	// persisted alongside the install record so sync can re-verify offline.
+	// Internal use only — NOT exposed via HTTP API.
+	SigstoreBundle []byte `json:"-"`
+}
+
+// ProvenanceInfo is the verified signer identity of an installed artifact,
+// the in-memory mirror of the lock file's provenance block.
+type ProvenanceInfo struct {
+	// SignerIdentity is the certificate subject identity (workflow path for
+	// GitHub Actions certificates, SAN verbatim otherwise).
+	SignerIdentity string `json:"-"`
+	// CertIssuer is the OIDC issuer that authenticated the signer.
+	CertIssuer string `json:"-"`
+	// RepositoryURI is the source repository from the certificate
+	// extensions, when present.
+	RepositoryURI string `json:"-"`
+	// SigstoreURL is the Sigstore instance the signature chains to.
+	SigstoreURL string `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.

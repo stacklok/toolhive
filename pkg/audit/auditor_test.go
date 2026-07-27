@@ -1224,4 +1224,43 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 		assert.Equal(t, OutcomeSuccess, events[0]["outcome"],
 			"net/http sends an implicit 200 when the handler writes nothing")
 	})
+
+	t.Run("flush before first write logs the connection event", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		// A handler that establishes the stream by flushing headers and then
+		// blocks (waiting for events to send) never hits WriteHeader/Write.
+		flusher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		})
+		auditor.Middleware(flusher).ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1, "the flush must not bypass the connection event")
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+		assert.Equal(t, OutcomeSuccess, events[0]["outcome"])
+	})
+
+	t.Run("panic before first write still logs the connection event", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		panicker := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			panic("boom before first write")
+		})
+		handler := auditor.Middleware(panicker)
+		require.Panics(t, func() {
+			handler.ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+		}, "no recovery middleware on this chain: the panic must propagate")
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1,
+			"chains whose recovery middleware runs OUTSIDE audit (e.g. the vMCP Serve path) "+
+				"must not lose the connection event to a panic")
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+	})
 }

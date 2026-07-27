@@ -84,15 +84,56 @@ func TestWriteNotFound(t *testing.T) {
 func TestNotFoundResponse(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	resp := NotFoundResponse(req)
+	tests := []struct {
+		name      string
+		requestID any
+		wantID    string
+	}{
+		{
+			// A request with no id of its own: bodiless GET/DELETE, or a
+			// notification. JSON-RPC requires a null id here.
+			name:      "nil id renders null",
+			requestID: nil,
+			wantID:    `"id":null`,
+		},
+		{
+			name:      "string id is echoed",
+			requestID: "req-1",
+			wantID:    `"id":"req-1"`,
+		},
+		{
+			// The shape the transparent proxy passes: the raw bytes of the
+			// incoming "id", forwarded verbatim so a numeric id stays numeric
+			// rather than being coerced to a float or a string (#5945).
+			name:      "raw numeric id is echoed verbatim",
+			requestID: json.RawMessage(`42`),
+			wantID:    `"id":42`,
+		},
+		{
+			name:      "raw string id is echoed verbatim",
+			requestID: json.RawMessage(`"abc"`),
+			wantID:    `"id":"abc"`,
+		},
+	}
 
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-	assert.Equal(t, req, resp.Request)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), `"code":-32001`)
-	assert.Contains(t, string(body), `"id":null`)
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			resp := NotFoundResponse(req, tt.requestID)
+
+			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+			assert.Equal(t, req, resp.Request)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), `"code":-32001`)
+			assert.Contains(t, string(body), tt.wantID)
+			// ContentLength must match the body actually written, or a client
+			// reading exactly that many bytes truncates or blocks.
+			assert.Equal(t, int64(len(body)), resp.ContentLength)
+		})
+	}
 }

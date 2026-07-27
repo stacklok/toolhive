@@ -19,7 +19,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/syncutil"
 )
@@ -563,25 +562,26 @@ func (a *Authorizer) IsAuthorized(
 // source is that provider's upstream credentials — and only that provider's. Its
 // access token is primary; the profile claims listed in profileClaimsFromIDToken
 // fall back to the same provider's id_token when the access token does not carry
-// them. The access token alone was a deny-all trap, because many OIDC providers
-// put identity claims such as `email` in the id_token only and omit them from the
-// access token, so every policy referencing `claim_email` silently denied every
-// request (#5916).
+// them, because many OIDC providers assert `email` only in the id_token and the
+// access token alone was therefore a deny-all trap (#5916).
 //
-// Both tokens come from the same upstream login for the same provider name
-// (projected side by side from one credential bundle in TokenValidator.Middleware),
-// so a supplemented claim carries the same provenance as one read directly from
-// the access token: `principal has claim_email` means "this upstream asserted an
-// email", never "some other trusted party did". That is why the ToolHive-issued
-// token the client presented is NOT a claim source on this path, even though it
-// mirrors the upstream name/email: in a multi-upstream chain those mirrored values
-// come from the FIRST configured upstream (the identity provider — see
-// handlers/callback.go, and validateChain, which requires chain[0] to be
-// upstreams[0]), which need not be the pinned provider. Using them would
-// attribute the identity provider's email to a different IdP.
+// Both tokens belong to the same upstream provider and session: the auth
+// middleware splits a single credential bundle into Identity.UpstreamTokens and
+// Identity.UpstreamIDTokens (see TokenValidator.Middleware in pkg/auth/token.go),
+// so a given key denotes the same provider and session in both maps. That is what
+// makes a supplemented claim carry the same provenance as one read from the access
+// token: `principal has claim_email` means "this upstream asserted an email". (The
+// two maps' key SETS may differ — a provider can have an access token but no
+// id_token, which is why the fallback is conditional. That is not a case of one key
+// meaning two different identities.)
 //
-// The supplement is deliberately restricted to profileClaimsFromIDToken rather
-// than being a general merge of the two token bodies. Read this before widening it:
+// The ToolHive-issued token the client presented is deliberately NOT a claim
+// source here, even though it mirrors a name/email — in a multi-upstream chain
+// those belong to the first configured upstream, which need not be the pinned
+// provider, so using them could attribute one IdP's email to another.
+//
+// The supplement is restricted to profileClaimsFromIDToken rather than merging
+// the two token bodies. Read this before widening it:
 //
 //   - An id_token's registered claims (`iss`, `aud`, `exp`, `nonce`, `at_hash`,
 //     `azp`) describe that token, not the user. Merging them would overwrite the
@@ -600,16 +600,10 @@ func (a *Authorizer) IsAuthorized(
 // never be shadowed. A claim absent from both tokens stays absent, so `has`-guarded
 // policies still fail closed.
 //
-// The stored id_token is used without checking `exp`, deliberately. It is read
-// here as a record of what the upstream asserted at login, not presented as a
-// credential — the "callers MUST check exp" contract on UpstreamCredential.IDToken
-// exists for RFC 8693 subject-token use, and the service that owns the field says
-// so (see the TODO in pkg/auth/upstreamtoken/service.go). Enforcing it here would
-// be actively harmful: sessions live for the refresh-token lifespan (7 days by
-// default) while id_tokens expire in minutes, so a policy would permit early in a
-// session and silently deny later. The claims are no staler than the alternative —
-// the ToolHive-issued token's mirrored profile claims are also captured once at
-// login and never refreshed.
+// The id_token is used without checking `exp`, deliberately: it is read as a record
+// of what the upstream asserted at login, not presented as a credential, and
+// rejecting it once expired would flip a policy from permit to deny mid-session.
+// See Identity.UpstreamIDTokens for that contract and its two consumers.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 
@@ -710,15 +704,29 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	return merged
 }
 
+// OIDC Core 1.0 §5.1 standard claim names, declared here rather than borrowed
+// from another package. What this code reads is an upstream provider's id_token,
+// so these are wire names fixed by the OIDC spec — not names ToolHive chooses.
+// Anchoring them to a ToolHive constant would invert the dependency: renaming that
+// constant would silently change which claim Cedar reads out of a third party's
+// token. Two literals also do not justify pulling an authorization-server
+// dependency tree into the authorizer.
+const (
+	oidcNameClaim  = "name"
+	oidcEmailClaim = "email"
+)
+
 // profileClaimsFromIDToken are the OIDC Core §5.1 profile claims that may be read
-// from the primary provider's id_token when its access token omits them. They are
-// spelled with the auth server's own constants — the same two claims it extracts
-// from that id_token into the token it issues (upstream/oidc.go into session.New) —
-// so a rename on either side is a compile error. That does not catch a claim being
-// ADDED there, which still needs a deliberate decision here.
+// from the primary provider's id_token when its access token omits them. They
+// coincide with the two claims the embedded auth server extracts from that same
+// id_token: pkg/authserver/upstream/oidc.go reads them by their OIDC names, and the
+// callback handler then passes them to session.New
+// (pkg/authserver/server/handlers/callback.go). Both sides key off the wire names
+// independently — a shared reliance on the spec, not a coupling. If the auth server
+// ever mirrors more, adding it here is a separate, deliberate decision.
 //
 // Widening this list widens what can satisfy a policy — see resolveClaims first.
-var profileClaimsFromIDToken = []string{session.NameClaimKey, session.EmailClaimKey}
+var profileClaimsFromIDToken = []string{oidcNameClaim, oidcEmailClaim}
 
 // supplementProfileClaims returns a fresh claim set holding every access-token
 // claim plus, for each name in profileClaimsFromIDToken that the access token does

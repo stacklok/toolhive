@@ -23,12 +23,20 @@ const TokenSessionIDClaimKey = "tsid"
 // the original JWT captured at the initial OIDC login (OIDC Core 1.0 §3.1.3.7).
 // It is not independently validated for freshness.
 //
-// Callers MUST check its `exp` claim before using it (e.g. as the subject_token
-// of an RFC 8693 token exchange), as it may be expired. Note also that the ID
+// Callers that PRESENT it as a credential — e.g. as the subject_token of an
+// RFC 8693 token exchange — are subject to expiry and must either check its `exp`
+// claim first or handle the resulting rejection. Today's such consumer
+// (pkg/vmcp/auth/strategies) deliberately takes the second option: it lets the IdP
+// reject the exchange and surfaces the `invalid_grant`. Note also that the ID
 // token's `aud` is this auth server's client registration with the issuing
 // upstream, not the token-exchange endpoint — whether a target authorization
 // server accepts it as a subject token is governed by that server's policy and
 // is typically limited to the same issuer/audience.
+//
+// Callers that only READ ITS CLAIMS are a different case and deliberately do not
+// check `exp`: the token is then evidence of what the upstream asserted at login,
+// and expiry says nothing about whether that assertion happened. See
+// Identity.UpstreamIDTokens for the two consumers and why they differ.
 //
 // IDToken may be empty when the upstream login did not return an id_token
 // (e.g. the provider was not asked for the openid scope). An empty IDToken
@@ -57,9 +65,10 @@ type TokenReader interface {
 	//
 	// Each returned IDToken is the rotated ID token when a refresh produced
 	// one (OIDC Core 1.0 §12.2), otherwise the original JWT captured at OIDC
-	// login (OIDC Core 1.0 §3.1.3.7). Callers MUST check each ID token's `exp`
-	// claim before using it for e.g. RFC 8693 subject-token exchange, as it may
-	// be expired.
+	// login (OIDC Core 1.0 §3.1.3.7), and it may be expired. Callers that PRESENT
+	// it as a credential (e.g. RFC 8693 subject-token exchange) must check `exp`
+	// first or handle the resulting rejection; callers that only READ ITS CLAIMS
+	// are unaffected by expiry. See UpstreamCredential for both consumers.
 	//
 	// Returns an empty map and nil failed slice (not error) for unknown sessions.
 	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
@@ -78,8 +87,10 @@ type Service interface {
 	//   - ErrNoRefreshToken if the access token is expired and no refresh token is available
 	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token)
 	//
-	// The returned UpstreamCredential.IDToken may be empty or expired; callers
-	// MUST check its `exp` claim before using it (e.g. as the subject_token of
-	// an RFC 8693 token exchange). See UpstreamCredential for details.
+	// The returned UpstreamCredential.IDToken may be empty or expired. Callers that
+	// PRESENT it as a credential (e.g. as the subject_token of an RFC 8693 token
+	// exchange) must check its `exp` claim first or handle the resulting rejection;
+	// callers that only READ ITS CLAIMS are unaffected by expiry. See
+	// UpstreamCredential for details.
 	GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error)
 }

@@ -664,6 +664,12 @@ WARN upstream access token lacks profile claims; using the upstream ID token's
      values for Cedar evaluation provider=okta claims="[email]"
 ```
 
+That fallback uses the stored `id_token` even after it has expired, by design. It
+is read as a record of what the upstream asserted when the user logged in, not
+presented to anyone as a credential. Since a session can outlive an `id_token` by
+days, expiring it out of policy evaluation would let the same user be permitted
+early in a session and denied later, with no configuration change.
+
 The token the client presented — the one ToolHive's auth server issued — is
 never a claim source here, even though it mirrors a `name` and `email`. In a
 multi-upstream chain those mirrored values come from the **first** configured

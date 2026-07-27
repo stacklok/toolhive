@@ -82,7 +82,9 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // the rotated ID token when a refresh produced one (OIDC Core 1.0 §12.2),
 // otherwise the original JWT captured at the initial OIDC login; it is not
 // independently validated for freshness and may be empty if the upstream login
-// never yielded one. Callers MUST check its exp claim before use.
+// never yielded one. Callers that PRESENT it as a credential must expect expiry
+// to be rejected; callers that only READ ITS CLAIMS are unaffected by expiry. See
+// Identity.UpstreamIDTokens for both consumers.
 //
 // Returns an empty map and nil failed slice (not error) for unknown sessions.
 func (s *InProcessService) GetAllUpstreamCredentials(
@@ -131,9 +133,15 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 		result[providerName] = *refreshed
 	}
 
-	// TODO(auth): the "check exp" contract on UpstreamCredential.IDToken is
-	// documented but not enforced here. Enforcement belongs at the RFC 8693
-	// token-exchange consumer when it receives the credential.
+	// The returned ID tokens are deliberately not checked for expiry here. Neither
+	// of today's two consumers wants that pre-check: one presents the token as an
+	// RFC 8693 subject_token and relies on the IdP to reject an expired assertion
+	// (pkg/vmcp/auth/strategies surfaces the resulting invalid_grant), and the other
+	// only reads its claims, for which expiry is irrelevant. Enforcing it here would
+	// break the second while duplicating what the IdP already does for the first.
+	// A future consumer that presents the token to a sink which does NOT validate
+	// `exp` would change that calculus — such a caller must check it itself.
+	// See Identity.UpstreamIDTokens for both.
 	return result, failed, nil
 }
 

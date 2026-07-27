@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -467,8 +468,19 @@ func TestRegression_BridgeCellA_PerPrincipalSessionIsolation(t *testing.T) {
 // Modern client's request carries reserved io.modelcontextprotocol/* _meta
 // keys, but vMCP -- not the downstream caller -- is the Legacy backend's MCP
 // peer on this hop, and go-sdk v1.7 hard-rejects (HTTP 400) ANY
+// legacyRequestPassthroughMetaKeys mirrors pkg/mcp's unexported
+// passthroughMetaKeys: the reserved keys StripReservedMeta deliberately does NOT
+// remove, because they are end-to-end payload for the original endpoints rather
+// than per-hop control. Duplicated here only because the production set is
+// unexported; keep the two in sync, and prefer widening the production set over
+// adding exemptions here.
+var legacyRequestPassthroughMetaKeys = map[string]struct{}{
+	mcpparser.ReservedMetaPrefix + "related-task":             {},
+	mcpparser.ReservedMetaPrefix + "model-immediate-response": {},
+}
+
 // _meta.protocolVersion on a stateful server. legacyCallTool strips them via
-// mcpparser.StripReservedModernMeta before forwarding
+// mcpparser.StripReservedMeta before forwarding
 // (pkg/vmcp/client/client.go); this asserts the Legacy backend receives NO
 // io.modelcontextprotocol/* key in the tools/call request body it actually
 // gets. Request path only -- response _meta is issue #5986's scope.
@@ -503,10 +515,16 @@ func TestRegression_BridgeCellA_NoReservedMetaLeakToLegacyBackend(t *testing.T) 
 		sawToolCall = true
 		params, _ := r.body["params"].(map[string]any)
 		meta, _ := params["_meta"].(map[string]any)
-		for _, reserved := range mcpparser.ReservedModernMetaKeys {
-			_, present := meta[reserved]
-			assert.False(t, present,
-				"Legacy backend must never see reserved Modern _meta key %q on the request path; got %+v", reserved, meta)
+		// Scan by prefix rather than against a fixed key list: #6024 replaced the
+		// enumerated strip set with ReservedMetaPrefix + a passthrough exemption,
+		// so a prefix scan also catches reserved keys added later. Matches the
+		// assertion style in modern_envelope_test.go and revision_realbackend_test.go.
+		for k := range meta {
+			if _, passthrough := legacyRequestPassthroughMetaKeys[k]; passthrough {
+				continue
+			}
+			assert.False(t, strings.HasPrefix(k, mcpparser.ReservedMetaPrefix),
+				"Legacy backend must never see reserved Modern _meta key %q on the request path; got %+v", k, meta)
 		}
 		assert.Equal(t, "n1", meta["vmcp.test/nonce"],
 			"the strip must be surgical, not a blanket _meta drop; got %+v", meta)

@@ -242,16 +242,28 @@ Reclassification never re-runs a request that may already have executed. An
 request) corrects the cache for *future* calls but returns the error, because the
 backend may have performed the side effect.
 
-### Reserved `_meta` must not cross a Legacy hop
+### vMCP owns the reserved `_meta` namespace on both hops
 
-Before any Legacy backend call, vMCP strips the reserved
-`io.modelcontextprotocol/*` keys from a caller-supplied `_meta`
-(`mcp.StripReservedModernMeta`, applied in `pkg/vmcp/client` and
-`pkg/vmcp/session/internal/backend`). This is not cosmetic: go-sdk v1.7 rejects
-**any** `_meta.protocolVersion` on a stateful streamable-HTTP server outright
-(HTTP 400), regardless of its value. vMCP — not the downstream caller — is the
-backend's MCP peer on that hop, so those keys are vMCP's to own. Non-reserved
-caller keys (progress tokens, W3C trace context) are preserved.
+vMCP is the client's MCP peer and the backends' MCP peer on two different hops,
+so the reserved `io.modelcontextprotocol/*` `_meta` keys are vMCP's to own in
+both directions. A single helper, `mcp.StripReservedMeta`, removes every key
+under that prefix (except the end-to-end passthrough keys — `related-task`,
+`model-immediate-response`) wherever a `_meta` map crosses vMCP:
+
+- **Request egress** — before any Legacy backend call (`pkg/vmcp/client`,
+  `pkg/vmcp/session/internal/backend`) and on the Modern request path, which
+  overlays vMCP's own authoritative values afterwards. This is not cosmetic:
+  go-sdk v1.7 rejects **any** `_meta.protocolVersion` on a stateful
+  streamable-HTTP server outright (HTTP 400), regardless of its value.
+- **Response/request egress to the client** — Legacy strips inside
+  `conversion.ToMCPMeta` (the funnel every Legacy egress crosses); Modern strips
+  in `newModernResultMeta` and re-stamps its own `serverInfo` last; the
+  elicitation adapter (a server→client request) crosses the same chokepoint.
+  This stops a backend fabricating the client's own identity (`serverInfo`,
+  `protocolVersion`, `clientInfo`).
+
+Non-reserved caller/backend keys (progress tokens, W3C trace context) are
+preserved throughout.
 
 ### Observability
 
@@ -316,6 +328,18 @@ non-nil `ListChangedSink` is supplied at connection time, the connector:
   (`kind=KindPrompts`) to the sink — `ChangeKind` is a typed constant rather
   than a bare string so a typo is a compile error — and logs
   `notifications/message` received out-of-call (log-only; no relay).
+
+This propagation mechanism only applies to a Legacy (2025-11-25) backend: the
+per-session factory (`pkg/vmcp/session/factory.go`) skips the persistent
+connection — and therefore the handshake, the sink registration, and the
+standalone GET stream above — for any backend whose cached revision is known
+Modern (2026-07-28); see [Backend MCP Revision Classification](#backend-mcp-revision-classification)
+above for how that revision is resolved and cached. This is correct, not a gap in the skip: Modern removed
+`initialize` and `Mcp-Session-Id`, so there is no Legacy-shaped persistent
+connection to hold and no standalone GET stream a Modern backend could push
+on. Modern's own server-push mechanism is `subscriptions/listen` (see
+[Transport Architecture](03-transport-architecture.md)), which vMCP does not
+implement yet — so `list_changed` propagation is currently Legacy-only.
 
 The sink is built once per session, at registration (`pkg/vmcp/server`'s
 `buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,

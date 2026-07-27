@@ -96,17 +96,22 @@ var errModernTransient = errors.New("modern backend returned a transient error")
 //     JSON-RPC error whose `data.supported` list omits it (including an absent
 //     or undecodable data payload).
 //
-// CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575 (and go-sdk's
-// own reference client, mcp/client.go:360-369), the advertised version list —
-// not a clean discover response or a bare -32022 alone — is the authoritative
-// signal of whether a peer actually speaks the Modern (2026-07-28) revision: a
-// go-sdk v1.7 shim answers both server/discover and protocol errors even for a
-// backend negotiating down to Legacy, so neither on its own is proof of Modern.
+// CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575, the advertised
+// version list — not a clean discover response or a bare -32022 alone — is the
+// authoritative signal of whether a peer actually speaks the Modern (2026-07-28)
+// revision: a go-sdk v1.7 shim answers both server/discover and protocol errors
+// even for a backend negotiating down to Legacy, so neither on its own is proof
+// of Modern. go-sdk's own reference client applies the same rule at both
+// sources above — mcp/client.go:428-444 for (1), the discover/supportedVersions
+// path, and mcp/client.go:360-369 for (2), the -32022/data.supported path.
 //
 // modernDiscover and probeRevision (client.go) both depend on this rule and
 // back-reference it here rather than restating it. Keep the explanation in one
 // place: it is the surface that has to be edited whenever the exact-match
-// tripwire in modernDiscover fires for a newer Modern revision.
+// tripwire in discoverModernCapabilities (client.go) fires for a newer Modern
+// revision. Note the tripwire is in discoverModernCapabilities, which does the
+// supportedVersions check; modernDiscover only builds the transport and
+// delegates to it.
 //
 // This is a definitive Legacy signal carried in a valid Modern envelope —
 // distinct from errWrongEra (peer does not speak Modern's wire shape at all)
@@ -275,12 +280,12 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 
 // mergeModernMeta strips the reserved io.modelcontextprotocol/* keys from a
 // caller-supplied _meta (if any) and overlays vMCP's authoritative values last.
-// The caller's _meta is never mutated (StripReservedModernMeta clones it).
+// The caller's _meta is never mutated (StripReservedMeta clones it).
 func mergeModernMeta(callerMeta any) map[string]any {
 	m, _ := callerMeta.(map[string]any)
-	meta := mcpparser.StripReservedModernMeta(m)
+	meta := mcpparser.StripReservedMeta(m)
 	if meta == nil {
-		// StripReservedModernMeta returns nil for empty/nil input; this needs a
+		// StripReservedMeta returns nil for empty/nil input; this needs a
 		// non-nil map to overlay vMCP's authoritative values onto below.
 		meta = map[string]any{}
 	}

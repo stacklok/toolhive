@@ -207,8 +207,9 @@ func (c *mcpSession) CallTool(
 	// Legacy (session-based, stateful) backend: a downstream Modern caller's
 	// _meta.protocolVersion is only valid on a stateless Modern hop, and go-sdk
 	// v1.7 hard-rejects ANY _meta.protocolVersion on a stateful server (HTTP 400)
-	// regardless of its value — see mcpparser.StripReservedModernMeta.
-	meta = mcpparser.StripReservedModernMeta(meta)
+	// regardless of its value — see mcpparser.StripReservedMeta. conversion.ToMCPMeta
+	// below strips too; this stays as the guard at the site that knows the hazard.
+	meta = mcpparser.StripReservedMeta(meta)
 	result, err := c.client.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendName,

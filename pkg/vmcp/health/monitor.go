@@ -13,18 +13,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
-
-// revisionReporter is the optional accessor for a backend's cached MCP revision.
-// The backend client (directly or through the telemetry decorator) implements it;
-// it is NOT part of vmcp.BackendClient, so the monitor reaches it via a type
-// assertion and simply reports no revision when absent.
-type revisionReporter interface {
-	CachedRevision(workloadID string) (mcpparser.Revision, bool)
-}
 
 // WithHealthCheckMarker marks a context as a health check request.
 // Authentication layers can use IsHealthCheck to identify and skip authentication
@@ -129,8 +120,8 @@ type Monitor struct {
 	checker vmcp.HealthChecker
 
 	// revisions reads each backend's negotiated MCP revision for the status
-	// read-model. Nil when the client does not implement revisionReporter.
-	revisions revisionReporter
+	// read-model. Nil when the client does not implement vmcp.RevisionReporter.
+	revisions vmcp.RevisionReporter
 
 	// statusTracker tracks health status for all backends.
 	statusTracker *statusTracker
@@ -267,7 +258,7 @@ func NewMonitor(
 
 	// The client (directly or via the telemetry decorator) optionally reports the
 	// negotiated MCP revision for the status read-model; nil when unsupported.
-	revisions, _ := client.(revisionReporter)
+	revisions, _ := client.(vmcp.RevisionReporter)
 
 	return &Monitor{
 		checker:       checker,

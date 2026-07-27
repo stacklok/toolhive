@@ -213,6 +213,21 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 	}
 }
 
+// ExpectMCPServersRunning waits for each named workload to reach the running
+// state within ServerReadyTimeout, and fails naming the workload that did not.
+//
+// Specs that start several workloads used to wait in a loop over a bare
+// Expect(err).ToNot(HaveOccurred()), so a timeout said only that some workload
+// in the set was not ready. The failure is reported at the caller's line so a
+// CI annotation still points at the spec rather than at this helper.
+func ExpectMCPServersRunning(config *TestConfig, serverNames ...string) {
+	for _, serverName := range serverNames {
+		err := WaitForMCPServer(config, serverName, ServerReadyTimeout())
+		ExpectWithOffset(1, err).ToNot(HaveOccurred(),
+			"workload %s (of %v) should reach the running state", serverName, serverNames)
+	}
+}
+
 // IsServerRunning checks if an MCP server is running
 func IsServerRunning(config *TestConfig, serverName string) bool {
 	workload, err := findWorkload(config, serverName)

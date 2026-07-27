@@ -5,14 +5,17 @@ package server
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 const (
@@ -221,6 +224,93 @@ func TestModernResultMetaOverwritesSpoofedServerInfo(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, testServerName, serverInfo["name"], "vMCP's real serverInfo must overwrite a backend-supplied one")
 	require.Equal(t, testServerVersion, serverInfo["version"])
+}
+
+// TestReservedResponseMetaStrippedByBothHelpers is the #5986 regression pin:
+// the Legacy and Modern response builders must both route backend _meta through
+// the SAME mcpparser.StripReservedMeta, so a backend cannot set a reserved
+// io.modelcontextprotocol/* key on a result and have it reach the client as if
+// vMCP had set it.
+//
+// It compares the two HELPERS, not the two end-to-end paths -- the outputs are
+// deliberately not equal (Modern always mints its own serverInfo, Legacy never
+// does, since the 2025-11-25 revision has no serverInfo _meta key). It also
+// cannot speak for Legacy resources/read, which drops backend result _meta
+// wholesale today (coreResourceHandler returns bare []mcp.ResourceContents)
+// while Modern preserves it -- a pre-existing divergence, out of scope here.
+func TestReservedResponseMetaStrippedByBothHelpers(t *testing.T) {
+	t.Parallel()
+
+	// One fixture, fed to both builders: a hostile backend spoofing vMCP's
+	// identity and asserting protocol control, alongside metadata it is
+	// legitimately allowed to attach.
+	backendMeta := map[string]any{
+		"io.modelcontextprotocol/serverInfo":         map[string]any{"name": "attacker", "version": "666"},
+		"io.modelcontextprotocol/protocolVersion":    "1999-01-01",
+		"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "spoofed-client"},
+		"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+		"io.modelcontextprotocol/logLevel":           "debug",
+		"io.modelcontextprotocol/subscriptionId":     "sub-1",
+		"io.modelcontextprotocol/futureThing":        "whatever",
+		// Reserved but relay-semantic: MUST survive (see passthroughMetaKeys).
+		"io.modelcontextprotocol/related-task": map[string]any{"taskId": "t-1"},
+		// Non-reserved backend metadata: MUST survive.
+		"progressToken": "tok-1",
+		"traceparent":   "00-abc-def-01",
+		"custom":        "keep-me",
+	}
+	snapshot := maps.Clone(backendMeta)
+
+	assertClean := func(t *testing.T, meta map[string]any, wantServerInfo bool) {
+		t.Helper()
+		for k := range meta {
+			if k == mcpparser.ReservedMetaPrefix+"related-task" {
+				continue
+			}
+			if k == modernServerInfoKey && wantServerInfo {
+				continue
+			}
+			require.False(t, strings.HasPrefix(k, mcpparser.ReservedMetaPrefix),
+				"backend-set reserved key %q must not reach the client", k)
+		}
+		require.Equal(t, "tok-1", meta["progressToken"], "non-reserved backend meta must survive")
+		require.Equal(t, "00-abc-def-01", meta["traceparent"])
+		require.Equal(t, "keep-me", meta["custom"])
+		require.Equal(t, map[string]any{"taskId": "t-1"}, meta[mcpparser.ReservedMetaPrefix+"related-task"],
+			"end-to-end task correlation must be relayed, not terminated")
+	}
+
+	t.Run("modern builder strips and re-stamps its own serverInfo", func(t *testing.T) {
+		t.Parallel()
+
+		got := newModernResultMeta(backendMeta, testServerName, testServerVersion)
+		assertClean(t, got, true)
+
+		serverInfo, ok := got[modernServerInfoKey].(modernServerInfo)
+		require.True(t, ok, "vMCP must stamp its own serverInfo")
+		require.Equal(t, testServerName, serverInfo.Name, "vMCP's serverInfo must beat the backend's")
+		require.Equal(t, testServerVersion, serverInfo.Version)
+	})
+
+	t.Run("legacy builder strips and stamps nothing", func(t *testing.T) {
+		t.Parallel()
+
+		got := conversion.ToMCPMeta(backendMeta)
+		require.NotNil(t, got)
+		// ToMCPMeta hoists progressToken out of the map, so put it back before
+		// running the shared assertions.
+		flat := maps.Clone(got.AdditionalFields)
+		flat["progressToken"] = got.ProgressToken
+		assertClean(t, flat, false)
+	})
+
+	t.Run("the caller's map is never mutated", func(t *testing.T) {
+		t.Parallel()
+
+		// Compare against a snapshot, not just the length: a swap-one-add-one
+		// mutation would keep the count identical.
+		require.Equal(t, snapshot, backendMeta, "neither builder may mutate the domain result's map")
+	})
 }
 
 // TestModernEnvelopeEmptyCollections asserts that an empty domain slice

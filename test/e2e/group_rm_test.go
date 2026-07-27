@@ -73,7 +73,7 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 			createWorkloadInGroup(workloadName, groupName)
 
 			// Verify the workload is running
-			err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)
+			err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
 			Expect(err).ToNot(HaveOccurred())
 
 			// Try to delete the group but provide 'n' for no
@@ -120,7 +120,7 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 
 			// Verify all workloads are running
 			for _, workloadName := range []string{groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2} {
-				err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
 				Expect(err).ToNot(HaveOccurred())
 			}
 
@@ -155,7 +155,7 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 
 			// Verify all workloads are running
 			for _, workloadName := range []string{workload1, workload2} {
-				err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
 				Expect(err).ToNot(HaveOccurred())
 			}
 

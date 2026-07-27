@@ -35,7 +35,7 @@ var _ = Describe("Group", Label("core", "groups", "e2e"), func() {
 	createWorkloadInGroup := func(workloadName, groupName string) {
 		e2e.NewTHVCommand(config, "run", "fetch", "--group", groupName, "--name", workloadName).ExpectSuccess()
 		createdWorkloads = append(createdWorkloads, workloadName)
-		err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)
+		err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
 		Expect(err).ToNot(HaveOccurred())
 	}
 
@@ -192,7 +192,7 @@ var _ = Describe("Group", Label("core", "groups", "e2e"), func() {
 				_, _ = e2e.NewTHVCommand(config, "restart", workloadName).ExpectSuccess()
 
 				By("Verifying the workload is still in the correct group")
-				err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
 				Expect(err).ToNot(HaveOccurred())
 
 				workloadGroupName, err := getWorkloadGroup(workloadName)

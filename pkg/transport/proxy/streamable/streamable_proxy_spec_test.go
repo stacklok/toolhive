@@ -254,7 +254,16 @@ func TestBatchRequestsRejected(t *testing.T) {
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			assert.Contains(t, string(body), `"code":-32600`)
-			assert.Contains(t, string(body), `"id":null`)
+
+			// A batch has no single request id to echo. MCP encodes that by
+			// omitting the "id" key entirely (schema/2025-11-25 types the
+			// error response id as optional, not nullable), never as null --
+			// a substring check for "id":null would miss the key being
+			// present-but-null, so the key's absence is checked directly.
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(body, &parsed))
+			_, hasID := parsed["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
 		})
 	}
 }

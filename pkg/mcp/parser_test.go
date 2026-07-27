@@ -284,7 +284,6 @@ func TestParsingMiddlewareRejectsBatch(t *testing.T) {
 
 			var resp struct {
 				JSONRPC string `json:"jsonrpc"`
-				ID      any    `json:"id"`
 				Error   struct {
 					Code    int64  `json:"code"`
 					Message string `json:"message"`
@@ -292,9 +291,17 @@ func TestParsingMiddlewareRejectsBatch(t *testing.T) {
 			}
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 			assert.Equal(t, "2.0", resp.JSONRPC)
-			assert.Nil(t, resp.ID, "batch rejection carries a null JSON-RPC id")
 			assert.Equal(t, CodeInvalidRequest, resp.Error.Code)
 			assert.NotEmpty(t, resp.Error.Message)
+
+			// A batch has no single request id to echo. A tagged-struct
+			// decode (above) can't tell an absent "id" key apart from a
+			// present null -- both decode to the zero value -- so the
+			// omission is checked via a map decode instead.
+			var asMap map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &asMap))
+			_, hasID := asMap["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
 		})
 	}
 }

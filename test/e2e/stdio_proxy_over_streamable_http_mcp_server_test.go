@@ -126,7 +126,13 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			body, err := io.ReadAll(resp.Body)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(string(body)).To(ContainSubstring(`"code":-32600`), "Should carry a JSON-RPC Invalid Request error")
-			Expect(string(body)).To(ContainSubstring(`"id":null`), "Batch rejection carries a null JSON-RPC id")
+
+			// A batch has no single request id to echo. MCP encodes that by
+			// omitting the "id" key entirely (schema/2025-11-25 types the
+			// error response id as optional, not nullable), never as null.
+			var parsed map[string]any
+			Expect(json.Unmarshal(body, &parsed)).To(Succeed())
+			Expect(parsed).ToNot(HaveKey("id"), "Batch rejection omits the JSON-RPC id key rather than emitting null")
 		})
 	})
 })

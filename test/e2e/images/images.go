@@ -13,12 +13,22 @@ package images
 const (
 	yardstickServerImageURL = "ghcr.io/stackloklabs/yardstick/yardstick-server"
 	yardstickServerImageTag = "1.1.1"
-	// YardstickServerImage is used in operator tests across multiple transport protocols
+	// YardstickServerImage is the Legacy (2025-11-25, go-sdk v1.6.1) yardstick backend
+	// used by the operator and vMCP e2e tests across multiple transport protocols
 	// (stdio, SSE, streamable-http) and tenancy modes.
 	// Note: This image is also referenced in 8 YAML fixture files under
 	// test/e2e/chainsaw/operator/. Those files are declarative Kubernetes manifests
 	// and cannot import Go constants directly.
 	YardstickServerImage = yardstickServerImageURL + ":" + yardstickServerImageTag
+
+	yardstickServerDualEraImageTag = "1.2.0"
+	// YardstickServerImageDualEra is the Modern-capable (2026-07-28, go-sdk v1.7)
+	// yardstick backend, used ONLY by the dual-era transport-proxy tests (#5837), which
+	// drive it as a Modern/stateless backend. The operator/vMCP suites must stay on the
+	// Legacy YardstickServerImage until the vMCP can drive a Modern backend (#5993): a
+	// v1.7 server in session mode answers server/discover but rejects the Modern
+	// data-plane, so the vMCP classifies it Modern and then cannot aggregate it.
+	YardstickServerImageDualEra = yardstickServerImageURL + ":" + yardstickServerDualEraImageTag
 
 	gofetchServerImageURL = "ghcr.io/stackloklabs/gofetch/server"
 	gofetchServerImageTag = "1.0.1"

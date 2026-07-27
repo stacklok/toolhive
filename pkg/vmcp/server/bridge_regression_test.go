@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -468,7 +469,7 @@ func TestRegression_BridgeCellA_PerPrincipalSessionIsolation(t *testing.T) {
 // keys, but vMCP -- not the downstream caller -- is the Legacy backend's MCP
 // peer on this hop, and go-sdk v1.7 hard-rejects (HTTP 400) ANY
 // _meta.protocolVersion on a stateful server. legacyCallTool strips them via
-// mcpparser.StripReservedModernMeta before forwarding
+// mcpparser.StripReservedMeta before forwarding
 // (pkg/vmcp/client/client.go); this asserts the Legacy backend receives NO
 // io.modelcontextprotocol/* key in the tools/call request body it actually
 // gets. Request path only -- response _meta is issue #5986's scope.
@@ -503,10 +504,12 @@ func TestRegression_BridgeCellA_NoReservedMetaLeakToLegacyBackend(t *testing.T) 
 		sawToolCall = true
 		params, _ := r.body["params"].(map[string]any)
 		meta, _ := params["_meta"].(map[string]any)
-		for _, reserved := range mcpparser.ReservedModernMetaKeys {
-			_, present := meta[reserved]
-			assert.False(t, present,
-				"Legacy backend must never see reserved Modern _meta key %q on the request path; got %+v", reserved, meta)
+		// Assert on the namespace, not a fixed list: this catches any reserved
+		// key, including ones the spec adds later. No passthroughMetaKeys entry
+		// is in play on a tools/call, so a blanket prefix check is exact.
+		for k := range meta {
+			assert.False(t, strings.HasPrefix(k, mcpparser.ReservedMetaPrefix),
+				"Legacy backend must never see reserved _meta key %q on the request path; got %+v", k, meta)
 		}
 		assert.Equal(t, "n1", meta["vmcp.test/nonce"],
 			"the strip must be surgical, not a blanket _meta drop; got %+v", meta)

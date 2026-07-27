@@ -449,7 +449,7 @@ func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, me
 //     see writeModernMissingCapability.
 //   - A recorded refusal with the capability DECLARED is deliberately NOT
 //     -32021: the client did declare it, so blaming the client would be
-//     wrong, and re-declaring cannot help. The spec's answer for a declared
+//     wrong, and declaring the capability on a retry cannot help. The spec's answer for a declared
 //     capability is resultType "input_required" (multi-round retrieval,
 //     SEP-2322), which this dispatcher does not implement — and the
 //     2026-07-28 error vocabulary has no "operation not supported" code, so
@@ -501,8 +501,8 @@ func writeModernCallFailure(
 // live session) and must not be changed for this one.
 //
 // The message names both the capability AND the gateway limitation, so a
-// caller that reacts to -32021 by re-declaring learns immediately that
-// re-declaring will not help here (the declared case is served by
+// caller that reacts to -32021 by declaring the capability on a retry
+// learns immediately that doing so will not help here (the declared case is served by
 // writeModernCallFailure's -32603 branch, not by MRTR).
 func writeModernMissingCapability(w http.ResponseWriter, id any, capName string) {
 	writeModernEnvelope(w, http.StatusOK, map[string]any{

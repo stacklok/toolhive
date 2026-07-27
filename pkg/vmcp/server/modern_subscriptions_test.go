@@ -391,6 +391,16 @@ func TestDispatchModernSubscriptionsListen_WireContract(t *testing.T) {
 // same change (#5743), including the schema MUST that every notification on a
 // listen stream carries io.modelcontextprotocol/subscriptionId, and update this
 // test deliberately rather than to make it pass.
+//
+// FLIPPING A FLAG ALSO RE-ENABLES CODE THAT IS CURRENTLY UNREACHABLE, and it
+// carries no test coverage today precisely because it cannot be entered. Restore
+// coverage for all three when you flip:
+//
+//   - the core.Discover call in dispatchModernSubscriptionsListen (the ceiling
+//     pre-check skips it entirely while nothing can be honored), AND
+//   - that call's error path, which maps a fan-out failure to -32603. Its test was
+//     removed rather than left asserting an unenterable branch.
+//   - the handler's non-empty-honored branch, including its WARN.
 func TestNewModernCapabilities_AdvertisesNoPushCapability(t *testing.T) {
 	t.Parallel()
 

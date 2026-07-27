@@ -94,7 +94,7 @@ func TestModernCall_RequestShaping(t *testing.T) {
 			if tt.callerMeta != nil {
 				params["_meta"] = tt.callerMeta
 			}
-			err := modernCall(context.Background(), srv.Client(), srv.URL, tt.method, params, tt.mcpName, nil)
+			err := modernCall(context.Background(), srv.Client(), srv.URL, tt.method, params, tt.mcpName, nil, nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, "application/json", gotReq.Header.Get("Content-Type"))
@@ -135,7 +135,7 @@ func TestModernCall_CallerMetaNotMutated(t *testing.T) {
 
 	callerMeta := map[string]any{"userKey": "v"}
 	params := map[string]any{"_meta": callerMeta, "name": "x"}
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "tools/list", params, "", nil))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "tools/list", params, "", nil, nil))
 
 	assert.Equal(t, map[string]any{"userKey": "v"}, callerMeta, "caller _meta must be untouched")
 	assert.NotContains(t, params, "does-not-add-keys")
@@ -160,7 +160,7 @@ func TestModernCall_Decode(t *testing.T) {
 		ResultType        string   `json:"resultType"`
 		SupportedVersions []string `json:"supportedVersions"`
 	}
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", &out))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out))
 	assert.Equal(t, "complete", out.ResultType)
 	assert.Equal(t, []string{"2026-07-28"}, out.SupportedVersions)
 }
@@ -190,7 +190,7 @@ func TestModernCall_SSEResponse(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	var out map[string]any
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", &out))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out))
 	assert.Equal(t, "complete", out["resultType"])
 	assert.Equal(t, true, out["ok"])
 }
@@ -307,7 +307,7 @@ func TestModernCall_ErrorMapping(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			err := modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil)
+			err := modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, nil)
 			require.Error(t, err)
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
@@ -347,7 +347,7 @@ func TestModernCall_LargeSSEEvent(t *testing.T) {
 	var got struct {
 		Blob string `json:"blob"`
 	}
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", &got))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &got))
 	assert.Len(t, got.Blob, len(big))
 }
 

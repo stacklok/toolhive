@@ -374,7 +374,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 		}
 
 		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
+		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)

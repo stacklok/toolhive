@@ -265,6 +265,7 @@ func (t telemetryBackendClient) CallTool(
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
+	paramHeaders map[string]string,
 ) (_ *vmcp.ToolCallResult, retErr error) {
 	attrs := []attribute.KeyValue{
 		attribute.String("tool_name", toolName),        // backward compat
@@ -276,7 +277,7 @@ func (t telemetryBackendClient) CallTool(
 	}
 	ctx, done := t.record(ctx, target, "call_tool", toolName, &retErr, attrs...)
 	defer done()
-	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
+	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta, paramHeaders)
 }
 
 func (t telemetryBackendClient) ReadResource(

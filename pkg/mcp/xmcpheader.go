@@ -4,9 +4,12 @@
 package mcp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -203,6 +206,185 @@ func walkCombinators(
 		}
 	}
 	return nil
+}
+
+// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER (2^53 - 1). SEP-2243
+// requires a mirrored integer to sit within this range, since a peer that parses
+// the header with JSON-number semantics could not round-trip a larger value.
+const maxSafeInteger = 1<<53 - 1
+
+// ErrUnmirrorableValue is returned when a designated parameter's value cannot be
+// mirrored into a header: a control character (header injection), a non-integral
+// or out-of-safe-range integer, or a value whose type contradicts the schema.
+var ErrUnmirrorableValue = errors.New("parameter value cannot be mirrored into an HTTP header")
+
+// MirrorParamHeaders derives the Mcp-Param-* headers to send with a tools/call,
+// given the tool's x-mcp-header annotations (from ParamHeaders) and the call's
+// arguments. The result maps full header names to values, ready to set on the
+// request; it is nil when nothing is to be mirrored.
+//
+// A designated parameter that is absent from args contributes no header. That is
+// deliberate rather than an error: an optional parameter the caller did not
+// supply has no value to mirror, and SEP-2243's -32020 covers the server's view
+// of a genuinely missing designated value.
+//
+// Annotations reached through an array element ("[]" in the path) are skipped: an
+// array holds many elements and a header holds one value, so there is no
+// well-defined single value to send. Combinator segments (oneOf/anyOf/allOf) are
+// dropped when resolving, because they are structural to the schema and absent
+// from the arguments the schema describes.
+//
+// It returns an error wrapping ErrUnmirrorableValue when a present value cannot
+// be safely rendered. Values originate from the caller (ultimately a model), so
+// they are untrusted: a CR, LF, or NUL in a string would let a caller forge
+// additional headers on vMCP's outgoing request, and is refused rather than
+// silently stripped.
+func MirrorParamHeaders(headers []ParamHeader, args map[string]any) (map[string]string, error) {
+	if len(headers) == 0 || len(args) == 0 {
+		return nil, nil
+	}
+	var out map[string]string
+	for _, h := range headers {
+		if slices.Contains(h.Path, "[]") {
+			continue
+		}
+		value, ok := resolveArg(args, h.Path)
+		if !ok {
+			continue
+		}
+		rendered, err := renderHeaderValue(h, value)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[h.HeaderName()] = rendered
+	}
+	return out, nil
+}
+
+// ParamHeadersForSchema is ParamHeaders followed by MirrorParamHeaders: it takes
+// a tool's inputSchema and a call's arguments and returns the Mcp-Param-* headers
+// to send. It exists so the several call sites that mirror headers share one
+// reading of the two-step dance rather than each re-deriving it.
+//
+// A schema error is returned unwrapped from ParamHeaders; a value error wraps
+// ErrUnmirrorableValue. Callers distinguish them because the first indicts the
+// backend's tool definition and the second the caller's arguments.
+func ParamHeadersForSchema(schema map[string]any, args map[string]any) (map[string]string, error) {
+	annotations, err := ParamHeaders(schema)
+	if err != nil {
+		return nil, err
+	}
+	if len(annotations) == 0 {
+		return nil, nil
+	}
+	return MirrorParamHeaders(annotations, args)
+}
+
+// resolveArg walks path through args and returns the value at its end. Segments
+// naming a combinator are skipped: they exist in the schema's structure, not in
+// the data it describes. A missing or non-object intermediate reports false.
+func resolveArg(args map[string]any, path []string) (any, bool) {
+	current := any(args)
+	for _, seg := range path {
+		if isCombinatorSegment(seg) {
+			continue
+		}
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = obj[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+// isCombinatorSegment reports whether a path segment is a combinator marker
+// emitted by walkCombinators (e.g. "oneOf[0]") rather than a property name.
+func isCombinatorSegment(seg string) bool {
+	for _, combinator := range []string{"oneOf", "anyOf", "allOf"} {
+		if strings.HasPrefix(seg, combinator+"[") && strings.HasSuffix(seg, "]") {
+			return true
+		}
+	}
+	return false
+}
+
+// renderHeaderValue converts a designated parameter's value to its header
+// spelling, enforcing the schema's declared type and SEP-2243's integer range.
+func renderHeaderValue(h ParamHeader, value any) (string, error) {
+	where := strings.Join(h.Path, ".")
+	switch h.Type {
+	case "string":
+		s, ok := value.(string)
+		if !ok {
+			return "", fmt.Errorf("%w: parameter %q is declared string but got %T", ErrUnmirrorableValue, where, value)
+		}
+		if bad, invalid := firstControlChar(s); invalid {
+			return "", fmt.Errorf(
+				"%w: parameter %q contains a control character (%q)", ErrUnmirrorableValue, where, bad)
+		}
+		return s, nil
+	case "boolean":
+		b, ok := value.(bool)
+		if !ok {
+			return "", fmt.Errorf("%w: parameter %q is declared boolean but got %T", ErrUnmirrorableValue, where, value)
+		}
+		return strconv.FormatBool(b), nil
+	case "integer":
+		return renderIntegerHeaderValue(where, value)
+	default:
+		// Unreachable: ParamHeaders admits only the three types above.
+		return "", fmt.Errorf("%w: parameter %q has unsupported type %q", ErrUnmirrorableValue, where, h.Type)
+	}
+}
+
+// renderIntegerHeaderValue renders an integer-declared parameter. JSON decoding
+// yields float64 for every number, so an integer arrives as a float that must be
+// checked for integrality and for SEP-2243's safe-integer range; the int/int64
+// cases cover arguments built in Go rather than decoded from JSON.
+func renderIntegerHeaderValue(where string, value any) (string, error) {
+	switch n := value.(type) {
+	case float64:
+		if n != math.Trunc(n) {
+			return "", fmt.Errorf("%w: parameter %q is declared integer but got %v", ErrUnmirrorableValue, where, n)
+		}
+		if n > maxSafeInteger || n < -maxSafeInteger {
+			return "", fmt.Errorf(
+				"%w: parameter %q value %v is outside the safe integer range", ErrUnmirrorableValue, where, n)
+		}
+		return strconv.FormatInt(int64(n), 10), nil
+	case int:
+		return renderIntegerHeaderValue(where, float64(n))
+	case int64:
+		return renderIntegerHeaderValue(where, float64(n))
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return "", fmt.Errorf("%w: parameter %q is declared integer but got %q", ErrUnmirrorableValue, where, n)
+		}
+		return renderIntegerHeaderValue(where, float64(i))
+	default:
+		return "", fmt.Errorf(
+			"%w: parameter %q is declared integer but got %T", ErrUnmirrorableValue, where, value)
+	}
+}
+
+// firstControlChar returns the first control character in s, reporting true when
+// one exists. CR and LF are the header-injection vectors; NUL and the other C0
+// controls are equally illegal in a header value.
+func firstControlChar(s string) (string, bool) {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return string(r), true
+		}
+	}
+	return "", false
 }
 
 // childPath returns path with seg appended, always in freshly allocated storage.

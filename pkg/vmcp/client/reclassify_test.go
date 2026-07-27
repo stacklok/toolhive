@@ -209,7 +209,7 @@ func TestDispatch_NoDoubleExecOnLegacyBody(t *testing.T) {
 	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
 	h.setRevision(target.WorkloadID, mcpparser.RevisionModern) // mis-cached Modern
 
-	_, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "x"}, nil)
+	_, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "x"}, nil, nil)
 	require.Error(t, err, "a Legacy-shaped body must surface as an error, not a blank success")
 	assert.EqualValues(t, 1, toolCalls.Load(), "the side-effecting tool must run exactly once (no double-exec)")
 

@@ -58,7 +58,7 @@ func TestMetaPreservation_CallTool(t *testing.T) {
 	// Call tool through vMCP backend client
 	result, err := backendClient.CallTool(ctx, target, "test_tool_with_meta", map[string]any{
 		"input": "test-value",
-	}, nil)
+	}, nil, nil)
 
 	// Verify call succeeded
 	require.NoError(t, err)
@@ -104,7 +104,7 @@ func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 	// Call tool that doesn't return _meta
 	result, err := backendClient.CallTool(ctx, target, "test_tool_no_meta", map[string]any{
 		"input": "test-value",
-	}, nil)
+	}, nil, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -151,7 +151,7 @@ func TestMetaPreservation_CallTool_Error(t *testing.T) {
 	// Call tool that returns an error with _meta
 	result, err := backendClient.CallTool(ctx, target, "test_tool_error", map[string]any{
 		"input": "trigger-error",
-	}, nil)
+	}, nil, nil)
 
 	// Should return result (not a Go error) when tool returns IsError=true
 	require.NoError(t, err, "IsError=true is not a transport error, should return result")
@@ -321,7 +321,7 @@ func TestOutboundMetaTraceContext(t *testing.T) { //nolint:paralleltest // Mutat
 		defer cancel()
 		defer span.End()
 
-		_, err := backendClient.CallTool(ctx, target, "test_tool_capture_meta", nil, nil)
+		_, err := backendClient.CallTool(ctx, target, "test_tool_capture_meta", nil, nil, nil)
 		require.NoError(t, err)
 
 		got := capture.get("tool")
@@ -367,7 +367,7 @@ func TestOutboundMetaTraceContext(t *testing.T) { //nolint:paralleltest // Mutat
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		_, err := backendClient.CallTool(ctx, target, "test_tool_capture_meta", nil, nil)
+		_, err := backendClient.CallTool(ctx, target, "test_tool_capture_meta", nil, nil, nil)
 		require.NoError(t, err)
 
 		got := capture.get("tool")

@@ -395,7 +395,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{
 				"result": "Sunny, 72°F",

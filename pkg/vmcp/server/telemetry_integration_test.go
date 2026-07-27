@@ -173,7 +173,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	// Use MinTimes(1) to verify the backend client is actually called during tool execution.
 	// If the tool call doesn't reach the backend client, this will cause a test failure.
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{"result": "found"},
 			Content:           []vmcp.Content{},

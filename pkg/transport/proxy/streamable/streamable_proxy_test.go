@@ -6,9 +6,12 @@ package streamable
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -549,6 +552,51 @@ func TestHandleGet_SessionDecisionMatrix(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+// TestWriteSSEErrorEvent verifies the "id" key is present and echoed for a
+// valid jsonrpc2.ID, and omitted entirely -- never sent as "id":null -- for
+// the zero-value ID (jsonrpc2.ID{}.IsValid() == false), in both cases
+// preserving the SSE "data: ...\n\n" framing writeSSEData produces.
+//
+// The body is decoded to map[string]any rather than a tagged struct: a
+// struct field of type `any` cannot distinguish an absent key from a
+// present-but-null one, so it would not detect a regression to "id":null.
+func TestWriteSSEErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		id     jsonrpc2.ID
+		wantID bool
+	}{
+		{name: "valid id is present and echoed", id: jsonrpc2.Int64ID(7), wantID: true},
+		{name: "zero-value id is omitted, not sent as null", id: jsonrpc2.ID{}, wantID: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+
+			writeSSEErrorEvent(rec, rec, tt.id, errors.New("boom"))
+
+			assert.True(t, rec.Flushed, "writeSSEErrorEvent must flush the SSE frame to the client")
+
+			body := rec.Body.String()
+			require.True(t, strings.HasPrefix(body, "data: "), "SSE frame must carry the data: prefix, got %q", body)
+			require.True(t, strings.HasSuffix(body, "\n\n"), "SSE frame must end with a blank line, got %q", body)
+			payload := strings.TrimSuffix(strings.TrimPrefix(body, "data: "), "\n\n")
+
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal([]byte(payload), &parsed))
+			_, hasID := parsed["id"]
+			assert.Equal(t, tt.wantID, hasID)
+			if tt.wantID {
+				assert.EqualValues(t, tt.id.Raw(), parsed["id"])
+			}
 		})
 	}
 }

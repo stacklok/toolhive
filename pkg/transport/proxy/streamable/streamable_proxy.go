@@ -769,6 +769,11 @@ func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
 // data: frame, for a request whose response headers (200 + text/event-stream)
 // have already been sent -- an HTTP error status can no longer be set at this
 // point, so the error must be communicated in-band as the response payload.
+//
+// The "id" key is included only if id.IsValid(); MCP narrows base JSON-RPC
+// 2.0 here (schema/2025-11-25 types the error response id as optional,
+// string|number, no null), so an invalid/absent id must be encoded by
+// omitting the key, never as "id":null.
 func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, id jsonrpc2.ID, err error) {
 	errMsg := "Internal error"
 	code := -32603
@@ -778,11 +783,13 @@ func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, id jsonrpc2
 	}
 	errObj := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id.Raw(),
 		"error": map[string]any{
 			"code":    code,
 			"message": errMsg,
 		},
+	}
+	if id.IsValid() {
+		errObj["id"] = id.Raw()
 	}
 	data, mErr := json.Marshal(errObj)
 	if mErr != nil {

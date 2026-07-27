@@ -70,6 +70,10 @@ func NotFoundBody(requestID any) []byte {
 // The transparent proxy threads the incoming id through as raw bytes, so a
 // json.RawMessage holding literal null -- or nothing -- is an absent id even
 // though the interface value is non-nil.
+//
+// Do not pass a typed jsonrpc2.ID here: its zero value is a non-nil interface
+// holding an empty struct, so this predicate would (wrongly) report it as
+// present and callers would emit "id":{}. Use id.IsValid() instead.
 func HasJSONRPCID(requestID any) bool {
 	if requestID == nil {
 		return false

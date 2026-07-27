@@ -67,7 +67,7 @@ var (
 func RecordRevisionReclassification(ctx context.Context) {
 	reclassCounterOnce.Do(func() {
 		reclassCounter, _ = otel.GetMeterProvider().Meter(instrumentationName).Int64Counter(
-			"toolhive_vmcp_backend_revision_reclassifications",
+			"stacklok.vmcp.backend.revision_reclassifications",
 			metric.WithDescription("Number of times a backend's MCP revision was reclassified after a mismatch"),
 		)
 	})

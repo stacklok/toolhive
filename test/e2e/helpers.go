@@ -220,6 +220,39 @@ func IsServerRunning(config *TestConfig, serverName string) bool {
 	return workload != nil && workload.Status == rt.WorkloadStatusRunning
 }
 
+// listTimeout bounds a single `thv list` call. It is well above how long a list
+// takes even on a loaded runner, and well below any readiness budget: callers
+// poll, so a list that overruns is retried rather than fatal. Run() would apply
+// TestConfig.TestTimeout instead, letting one hung list outlast the wait it is
+// being polled for.
+const listTimeout = 30 * time.Second
+
+// FindWorkload returns the named workload's record as reported by `thv list`, or
+// nil if it is not listed. newCmd builds each list invocation, so a spec that
+// runs thv under an isolated config/home/data env passes its own builder and
+// observes the workloads created in that state rather than the real config.
+//
+// --all is required so that workloads which have not reached running yet
+// (starting, error) are visible rather than filtered out.
+func FindWorkload(newCmd func(args ...string) *THVCommand, serverName string) (*core.Workload, error) {
+	stdout, stderr, err := newCmd("list", "--all", "--format", "json").RunWithTimeout(listTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("thv list: %w (stderr: %s)", err, strings.TrimSpace(stderr))
+	}
+
+	var workloads []core.Workload
+	if err := json.Unmarshal([]byte(stdout), &workloads); err != nil {
+		return nil, fmt.Errorf("failed to parse thv list output %q: %w", stdout, err)
+	}
+
+	for i := range workloads {
+		if workloads[i].Name == serverName {
+			return &workloads[i], nil
+		}
+	}
+	return nil, nil
+}
+
 // StopAndRemoveMCPServer stops and removes an MCP server
 // This function is designed for cleanup and tolerates servers that don't exist
 func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
@@ -411,31 +444,10 @@ func CreateFakeBrowserDir(tempDir string) (string, error) {
 	return dir, nil
 }
 
-// listTimeout bounds a single `thv list` call. It is well above how long a list
-// takes even on a loaded runner, and well below any readiness budget: callers
-// poll, so a list that overruns is retried rather than fatal. Run() would apply
-// TestConfig.TestTimeout instead, letting one hung list outlast the wait it is
-// being polled for.
-const listTimeout = 30 * time.Second
-
-// findWorkload returns the named workload's record, or nil if it is not listed.
-// --all is required so that workloads which have not reached running yet
-// (starting, error) are visible rather than filtered out.
+// findWorkload returns the named workload's record as reported by `thv list`,
+// or nil if it is not listed.
 func findWorkload(config *TestConfig, serverName string) (*core.Workload, error) {
-	stdout, stderr, err := NewTHVCommand(config, "list", "--all", "--format", "json").RunWithTimeout(listTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("thv list: %w (stderr: %s)", err, strings.TrimSpace(stderr))
-	}
-
-	var workloads []core.Workload
-	if err := json.Unmarshal([]byte(stdout), &workloads); err != nil {
-		return nil, fmt.Errorf("failed to parse thv list output %q: %w", stdout, err)
-	}
-
-	for i := range workloads {
-		if workloads[i].Name == serverName {
-			return &workloads[i], nil
-		}
-	}
-	return nil, nil
+	return FindWorkload(func(args ...string) *THVCommand {
+		return NewTHVCommand(config, args...)
+	}, serverName)
 }

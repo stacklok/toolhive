@@ -231,10 +231,13 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		// carries the authenticated identity (or records the 401/403 denial).
 		if a.isMCPStreamOpenRequest(r) {
 			sw := &streamOpenWriter{ResponseWriter: w, auditor: a, req: r}
+			// Deferred BEFORE ServeHTTP so a panic in an inner handler still
+			// produces the connection event during unwinding — some chains run
+			// the recovery middleware OUTSIDE audit (e.g. the vMCP Serve path),
+			// which would otherwise swallow the event entirely. If the stream
+			// already logged on first write this is a no-op.
+			defer sw.logOnce(http.StatusOK)
 			next.ServeHTTP(sw, r)
-			// Streams that end without a single write still get an event
-			// (net/http sends an implicit 200 in that case).
-			sw.logOnce(http.StatusOK)
 			return
 		}
 
@@ -703,7 +706,12 @@ func (sw *streamOpenWriter) Write(data []byte) (int, error) {
 }
 
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
+// A flush commits the response headers with an implicit 200, so it counts as
+// the stream being established — log the connection event here too, otherwise
+// a handler that flushes before its first write would delay (or, on a stream
+// that only ever flushes, lose) the event.
 func (sw *streamOpenWriter) Flush() {
+	sw.logOnce(http.StatusOK)
 	if flusher, ok := sw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}

@@ -1264,7 +1264,7 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 			expectAllowed: true,
 		},
 		{
-			// A JWT-shaped but unparseable upstream token must stay a hard deny:
+			// A JWT-shaped but unparsable upstream token must stay a hard deny:
 			// silently degrading a tampered token to other claims would let it
 			// bypass policy.
 			name:          "tampered_upstream_jwt_still_denies",

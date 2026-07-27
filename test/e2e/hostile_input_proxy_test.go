@@ -101,11 +101,7 @@ var _ = Describe("Hostile Input Proxy", Label("proxy", "stateless", "hostile-inp
 			resp, err := client.Send(context.Background(), proxyURL, req)
 			Expect(err).ToNot(HaveOccurred(), tc.name)
 			Expect(resp.StatusCode).To(Equal(tc.wantStatus), tc.name)
-			if tc.idNotEchoed {
-				Expect(resp.ID).To(BeNil(), "%s: echoed id", tc.name)
-			} else {
-				Expect(resp.ID).To(Equal(json.Number(fmt.Sprintf("%d", tc.id))), "%s: echoed id", tc.name)
-			}
+			Expect(resp.ID).To(Equal(json.Number(fmt.Sprintf("%d", tc.id))), "%s: echoed id", tc.name)
 			Expect(resp.Error).ToNot(BeNil(), tc.name)
 			Expect(resp.Error.Code).To(Equal(tc.wantCode), tc.name)
 			if tc.wantData != nil {
@@ -188,12 +184,6 @@ type hostileCase struct {
 	wantStatus int
 	wantCode   int64
 	wantData   map[string]any // nil means the error must carry no "data" field at all
-	// idNotEchoed marks a rejection path that -- unlike ClassificationErrorResponse
-	// -- doesn't echo the request id at all: session.NotFoundResponse hardcodes a
-	// nil id (see jsonrpc_errors.go's NotFoundBody(nil) call). A real minor
-	// asymmetry in the current code, left flagged rather than fixed (out of scope
-	// for a test-only step).
-	idNotEchoed bool
 }
 
 // hostileRejectionCases enumerates the classification-error and session-guard
@@ -273,10 +263,9 @@ func hostileRejectionCases() []hostileCase {
 				// in revision_guard_regression_test.go.
 				req.WithSessionID("foreign-" + uuid.NewString())
 			},
-			wantStatus:  http.StatusNotFound,
-			wantCode:    session.CodeSessionNotFound,
-			wantData:    nil,
-			idNotEchoed: true,
+			wantStatus: http.StatusNotFound,
+			wantCode:   session.CodeSessionNotFound,
+			wantData:   nil,
 		},
 	}
 }

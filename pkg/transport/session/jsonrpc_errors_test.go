@@ -84,15 +84,52 @@ func TestWriteNotFound(t *testing.T) {
 func TestNotFoundResponse(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	resp := NotFoundResponse(req)
+	tests := []struct {
+		name      string
+		requestID any
+		wantID    string
+	}{
+		{
+			name:      "no request id echoes null",
+			requestID: nil,
+			wantID:    `"id":null`,
+		},
+		{
+			name:      "string request id is echoed",
+			requestID: "req-1",
+			wantID:    `"id":"req-1"`,
+		},
+		{
+			// The transparent proxy passes the id straight through as a
+			// json.RawMessage; a nil one must still render as null rather
+			// than producing an invalid body.
+			name:      "raw json id is echoed verbatim",
+			requestID: json.RawMessage(`42`),
+			wantID:    `"id":42`,
+		},
+		{
+			name:      "nil raw json id echoes null",
+			requestID: json.RawMessage(nil),
+			wantID:    `"id":null`,
+		},
+	}
 
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-	assert.Equal(t, req, resp.Request)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), `"code":-32001`)
-	assert.Contains(t, string(body), `"id":null`)
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			resp := NotFoundResponse(req, tt.requestID)
+
+			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+			assert.Equal(t, req, resp.Request)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), `"code":-32001`)
+			assert.Contains(t, string(body), tt.wantID)
+			assert.Equal(t, int64(len(body)), resp.ContentLength)
+		})
+	}
 }

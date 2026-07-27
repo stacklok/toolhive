@@ -598,12 +598,17 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
+	// Echoed by the unknown-session guard below so its 404 correlates with the
+	// request, like every sibling error path (#5945). Stays nil for bodies that
+	// carry no JSON-RPC id, which NotFoundBody renders as "id":null.
+	var rpcID json.RawMessage
 
 	if len(reqBody) > 0 &&
 		((isMCP && isJSON) ||
 			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
 		method, params, id, singleRequest, isInit := t.parseRPCRequest(reqBody)
 		sawInitialize = isInit
+		rpcID = id
 		if singleRequest {
 			meta := mcp.ExtractMeta(params)
 			rev, cerr := mcp.ClassifyRevision(method, meta, req.Header.Get("MCP-Protocol-Version"))
@@ -628,7 +633,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 				slog.Error("session store lookup failed", "error", err)
 				return plainResponse(req, http.StatusServiceUnavailable, "session store unavailable"), nil
 			}
-			return session.NotFoundResponse(req), nil
+			return session.NotFoundResponse(req, rpcID), nil
 		}
 	}
 

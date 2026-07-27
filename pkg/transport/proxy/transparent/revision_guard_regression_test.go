@@ -104,6 +104,9 @@ func TestGuardUnknownSessionFiresDespiteForgedModernRevision(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
+	// The 404 echoes the request's JSON-RPC id so a client can correlate it,
+	// matching the classification-error path (#5945).
+	assert.Contains(t, string(body), `"id":1`)
 	assert.False(t, backendCalled.Load(),
 		"backend must not be contacted: the unknown-session guard must fire regardless of the classified revision")
 }

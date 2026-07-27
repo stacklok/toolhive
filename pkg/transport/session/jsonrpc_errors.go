@@ -54,11 +54,14 @@ func WriteNotFound(w http.ResponseWriter, requestID any) {
 	_, _ = w.Write(NotFoundBody(requestID))
 }
 
-// NotFoundResponse constructs an *http.Response with HTTP 404 and a
-// JSON-RPC error body. Use this in httputil.ReverseProxy.ModifyResponse
+// NotFoundResponse constructs an *http.Response with HTTP 404 and a JSON-RPC
+// error body echoing requestID. Use this in httputil.ReverseProxy.ModifyResponse
 // (transparent proxy) where no http.ResponseWriter is available.
-func NotFoundResponse(req *http.Request) *http.Response {
-	body := NotFoundBody(nil)
+//
+// Pass nil when the incoming request carries no JSON-RPC id: a GET or DELETE
+// (no body), or a body that did not parse as a single JSON-RPC request.
+func NotFoundResponse(req *http.Request, requestID any) *http.Response {
+	body := NotFoundBody(requestID)
 	hdr := make(http.Header)
 	hdr.Set("Content-Type", "application/json")
 	return &http.Response{

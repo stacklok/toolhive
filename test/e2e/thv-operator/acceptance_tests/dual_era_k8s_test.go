@@ -141,7 +141,7 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1beta1.MCPServerSpec{
-				Image:           images.YardstickServerImageDualEra,
+				Image:           images.YardstickServerImage,
 				Transport:       "streamable-http",
 				ProxyPort:       8080,
 				MCPPort:         8080,

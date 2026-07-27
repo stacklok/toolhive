@@ -19,10 +19,7 @@ jobs:
     runs-on: ubuntu-8cores-32gb
     timeout-minutes: 30
     env:
-      # Legacy (go-sdk v1.6.1) backend for the operator + virtualmcp suites.
-      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
-      # Modern (go-sdk v1.7) backend used only by the dual-era k8s spec (#5837).
-      YARDSTICK_IMAGE_DUAL_ERA: ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0
+      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0
     defaults:
       run:
         shell: bash
@@ -99,7 +96,6 @@ jobs:
         # Pull and load all test server images in parallel to speed up CI
         echo "Pulling and loading test server images..."
         docker pull ${{ env.YARDSTICK_IMAGE }} &
-        docker pull ${{ env.YARDSTICK_IMAGE_DUAL_ERA }} &
         docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
         docker pull python:3.9-slim &
@@ -110,7 +106,6 @@ jobs:
 
         # Load all images into kind
         kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
-        kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE_DUAL_ERA }}
         kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
         kind load docker-image --name toolhive python:3.9-slim

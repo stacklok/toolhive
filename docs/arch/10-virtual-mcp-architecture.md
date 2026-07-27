@@ -242,16 +242,28 @@ Reclassification never re-runs a request that may already have executed. An
 request) corrects the cache for *future* calls but returns the error, because the
 backend may have performed the side effect.
 
-### Reserved `_meta` must not cross a Legacy hop
+### vMCP owns the reserved `_meta` namespace on both hops
 
-Before any Legacy backend call, vMCP strips the reserved
-`io.modelcontextprotocol/*` keys from a caller-supplied `_meta`
-(`mcp.StripReservedModernMeta`, applied in `pkg/vmcp/client` and
-`pkg/vmcp/session/internal/backend`). This is not cosmetic: go-sdk v1.7 rejects
-**any** `_meta.protocolVersion` on a stateful streamable-HTTP server outright
-(HTTP 400), regardless of its value. vMCP — not the downstream caller — is the
-backend's MCP peer on that hop, so those keys are vMCP's to own. Non-reserved
-caller keys (progress tokens, W3C trace context) are preserved.
+vMCP is the client's MCP peer and the backends' MCP peer on two different hops,
+so the reserved `io.modelcontextprotocol/*` `_meta` keys are vMCP's to own in
+both directions. A single helper, `mcp.StripReservedMeta`, removes every key
+under that prefix (except the end-to-end passthrough keys — `related-task`,
+`model-immediate-response`) wherever a `_meta` map crosses vMCP:
+
+- **Request egress** — before any Legacy backend call (`pkg/vmcp/client`,
+  `pkg/vmcp/session/internal/backend`) and on the Modern request path, which
+  overlays vMCP's own authoritative values afterwards. This is not cosmetic:
+  go-sdk v1.7 rejects **any** `_meta.protocolVersion` on a stateful
+  streamable-HTTP server outright (HTTP 400), regardless of its value.
+- **Response/request egress to the client** — Legacy strips inside
+  `conversion.ToMCPMeta` (the funnel every Legacy egress crosses); Modern strips
+  in `newModernResultMeta` and re-stamps its own `serverInfo` last; the
+  elicitation adapter (a server→client request) crosses the same chokepoint.
+  This stops a backend fabricating the client's own identity (`serverInfo`,
+  `protocolVersion`, `clientInfo`).
+
+Non-reserved caller/backend keys (progress tokens, W3C trace context) are
+preserved throughout.
 
 ### Observability
 

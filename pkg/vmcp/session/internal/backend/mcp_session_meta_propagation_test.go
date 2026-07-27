@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,8 +184,12 @@ func TestHTTPSession_CallTool_StripsReservedModernMeta(t *testing.T) {
 	var gotMeta map[string]any
 	require.NoError(t, json.Unmarshal(raw, &gotMeta))
 
-	for _, k := range mcpparser.ReservedModernMetaKeys {
-		assert.NotContains(t, gotMeta, k, "reserved Modern _meta key %q must be stripped before the Legacy hop", k)
+	// Assert on the namespace, not a fixed list: this catches any reserved key,
+	// including ones added to the fixture later. No passthroughMetaKeys entry is
+	// in play here, so a blanket prefix check is exact.
+	for k := range gotMeta {
+		assert.False(t, strings.HasPrefix(k, mcpparser.ReservedMetaPrefix),
+			"reserved _meta key %q must be stripped before the Legacy hop", k)
 	}
 	assert.Equal(t, "custom-value", gotMeta["custom-caller-key"], "non-reserved caller _meta must survive")
 	assert.Equal(t, "tok", gotMeta["progressToken"], "progressToken must survive")

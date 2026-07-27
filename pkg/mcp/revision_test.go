@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -215,7 +216,7 @@ func TestClassifyRevision(t *testing.T) {
 			// logLevel is a reserved key that must be STRIPPED on egress but is
 			// NOT a Modern signal (go-sdk's validateRequestMeta gates purely on
 			// protocolVersion; SEP-2577 deprecates logLevel). Guards the split
-			// between ReservedModernMetaKeys and modernSignalMetaKeys: if
+			// between what StripReservedMeta removes and modernSignalMetaKeys: if
 			// hasModernSignal ever iterated the strip set again, this request
 			// would be misdetected Modern and rejected instead of classified
 			// Legacy.
@@ -673,46 +674,80 @@ func TestEncodeSentinelName(t *testing.T) {
 	}
 }
 
-// TestStripReservedModernMeta pins the copy-before-mutate contract: it removes
-// exactly the reserved io.modelcontextprotocol/* keys, never mutates the
-// caller's map, and returns nil for empty input.
-func TestStripReservedModernMeta(t *testing.T) {
+// TestStripReservedMeta pins the copy-before-mutate contract and the two halves
+// of the strip predicate: every ReservedMetaPrefix key goes EXCEPT the
+// passthroughMetaKeys, and nothing outside the prefix is touched.
+func TestStripReservedMeta(t *testing.T) {
 	t.Parallel()
 
 	t.Run("nil input returns nil", func(t *testing.T) {
 		t.Parallel()
-		assert.Nil(t, StripReservedModernMeta(nil))
+		assert.Nil(t, StripReservedMeta(nil))
 	})
 
 	t.Run("empty input returns nil", func(t *testing.T) {
 		t.Parallel()
-		assert.Nil(t, StripReservedModernMeta(map[string]any{}))
+		assert.Nil(t, StripReservedMeta(map[string]any{}))
 	})
 
 	t.Run("removes reserved keys, preserves the rest", func(t *testing.T) {
 		t.Parallel()
 		in := map[string]any{
+			// Request-side reserved keys.
 			metaKeyProtocolVersion:    MCPVersionModern,
 			metaKeyClientInfo:         map[string]any{"name": "x"},
 			metaKeyClientCapabilities: map[string]any{},
 			metaKeyLogLevel:           "debug",
-			"progressToken":           "tok-1",
-			"traceparent":             "00-abc-def-01",
-			"custom":                  42,
+			// Response/notification-side reserved keys: a backend must not be able
+			// to speak for vMCP on the way back to the client (#5986).
+			"io.modelcontextprotocol/serverInfo":     map[string]any{"name": "attacker"},
+			"io.modelcontextprotocol/subscriptionId": "sub-1",
+			// An unknown future reserved key must go too -- that is the whole point
+			// of matching a namespace rather than a fixed list.
+			"io.modelcontextprotocol/futureThing": "whatever",
+			// Not reserved: ordinary caller/backend metadata.
+			"progressToken": "tok-1",
+			"traceparent":   "00-abc-def-01",
+			"custom":        42,
+			// Reserved-adjacent, must NOT match: the second label differs, so the
+			// trailing slash in ReservedMetaPrefix is what saves it. This is
+			// registry provenance metadata, not per-hop control.
+			"io.modelcontextprotocol.registry/publisher-provided": map[string]any{"x": 1},
 		}
-		got := StripReservedModernMeta(in)
-		for _, k := range ReservedModernMetaKeys {
-			assert.NotContains(t, got, k, "reserved key %q must be stripped", k)
+		got := StripReservedMeta(in)
+
+		for k := range in {
+			if strings.HasPrefix(k, ReservedMetaPrefix) {
+				assert.NotContains(t, got, k, "reserved key %q must be stripped", k)
+			}
 		}
 		assert.Equal(t, "tok-1", got["progressToken"])
 		assert.Equal(t, "00-abc-def-01", got["traceparent"])
 		assert.Equal(t, 42, got["custom"])
+		assert.Contains(t, got, "io.modelcontextprotocol.registry/publisher-provided",
+			"the registry namespace is not this predicate's to strip")
+	})
+
+	t.Run("passthrough keys survive despite the reserved prefix", func(t *testing.T) {
+		t.Parallel()
+		// related-task is a 2025-11-25 MUST on task-related requests AND responses
+		// (tasks/result carries the task id nowhere else), so the strip must not
+		// eat it even though it sits under the reserved prefix.
+		in := map[string]any{
+			metaKeyProtocolVersion:                             MCPVersionModern,
+			"io.modelcontextprotocol/related-task":             map[string]any{"taskId": "t-1"},
+			"io.modelcontextprotocol/model-immediate-response": true,
+		}
+		got := StripReservedMeta(in)
+		assert.NotContains(t, got, metaKeyProtocolVersion)
+		assert.Equal(t, map[string]any{"taskId": "t-1"}, got["io.modelcontextprotocol/related-task"])
+		assert.Equal(t, true, got["io.modelcontextprotocol/model-immediate-response"])
 	})
 
 	t.Run("does not mutate the caller's map", func(t *testing.T) {
 		t.Parallel()
 		in := map[string]any{metaKeyProtocolVersion: MCPVersionModern, "custom": 1}
-		_ = StripReservedModernMeta(in)
+		_ = StripReservedMeta(in)
 		assert.Contains(t, in, metaKeyProtocolVersion, "caller's map must be untouched")
 		assert.Len(t, in, 2)
 	})
@@ -720,7 +755,7 @@ func TestStripReservedModernMeta(t *testing.T) {
 	t.Run("no reserved keys returns a copy, not the original", func(t *testing.T) {
 		t.Parallel()
 		in := map[string]any{"custom": 1}
-		got := StripReservedModernMeta(in)
+		got := StripReservedMeta(in)
 		require.Equal(t, in, got)
 		got["custom"] = 2
 		assert.Equal(t, 1, in["custom"], "returned value must be a copy")

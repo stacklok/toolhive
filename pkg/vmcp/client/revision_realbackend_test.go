@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -156,8 +157,12 @@ func TestLegacyCallTool_StripsReservedMeta_RealBackend(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.True(t, sawCall, "the backend's tool handler must have been invoked")
-	for _, k := range mcpparser.ReservedModernMetaKeys {
-		assert.NotContains(t, gotMeta, k, "reserved Modern _meta key %q must be stripped before the Legacy hop", k)
+	// Assert on the namespace, not a fixed list: this catches any reserved key,
+	// including ones added to the fixture later. No passthroughMetaKeys entry is
+	// in play here, so a blanket prefix check is exact.
+	for k := range gotMeta {
+		assert.False(t, strings.HasPrefix(k, mcpparser.ReservedMetaPrefix),
+			"reserved _meta key %q must be stripped before the Legacy hop", k)
 	}
 	assert.Equal(t, "custom-value", gotMeta["custom-caller-key"], "non-reserved caller _meta must survive")
 }

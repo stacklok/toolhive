@@ -62,30 +62,54 @@ const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 // hop, but — unlike the other reserved keys — its mere presence is NOT a claim
 // of the Modern revision: go-sdk's validateRequestMeta gates Modern-ness purely
 // on protocolVersion, and SEP-2577 already deprecates logLevel. It therefore
-// belongs in the egress strip set (ReservedModernMetaKeys) but not the ingress
-// signal set (modernSignalMetaKeys).
+// belongs in the strip set (ReservedMetaPrefix, minus passthroughMetaKeys) but
+// not the ingress signal set (modernSignalMetaKeys).
 const metaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 
-// ReservedModernMetaKeys is the EGRESS/strip set: every reserved per-hop
-// io.modelcontextprotocol/* control key that vMCP must remove before forwarding
-// a caller-supplied _meta onto a Legacy (session-based, stateful) backend hop,
-// where these keys are invalid — see StripReservedModernMeta.
+// ReservedMetaPrefix is the _meta key namespace the MCP spec reserves for the
+// protocol's own use. StripReservedMeta removes every key carrying it except
+// the passthroughMetaKeys below.
 //
-// Exported so a Modern client (the mirror of the classifier that reads these
-// keys) can strip a caller's copies before overlaying its own authoritative
-// values — see ModernRequestMeta / mergeModernMeta.
+// The trailing slash is load-bearing. The registry's
+// "io.modelcontextprotocol.registry/publisher-provided" (docs/registry/schema.md)
+// is ALSO spec-reserved — per the 2025-11-25 _meta key-name rules any prefix
+// whose second label is "modelcontextprotocol" or "mcp" is reserved — but it is
+// server-descriptor provenance, not per-hop control, and never rides a
+// tools/call result. The slash is what keeps this predicate off it.
 //
-// This is deliberately NOT the Modern-detection set: that is
-// modernSignalMetaKeys, a strict subset. "Strip this key on the way out" and
-// "this key means the request is Modern" are separate decisions, because a
-// reserved key can require the former without the latter (logLevel). Conflating
-// them would make a request rejectable merely for carrying a
-// strippable-but-not-signalling key.
-var ReservedModernMetaKeys = []string{
-	metaKeyProtocolVersion,
-	metaKeyClientInfo,
-	metaKeyClientCapabilities,
-	metaKeyLogLevel,
+// Matching one literal prefix deliberately does not implement that full
+// second-label rule: "dev.mcp/", "org.modelcontextprotocol.api/" and friends are
+// equally reserved and sail through. Nothing in this repo emits them and no
+// threat model calls for parsing the general rule.
+const ReservedMetaPrefix = "io.modelcontextprotocol/"
+
+// passthroughMetaKeys are the reserved keys StripReservedMeta must NOT remove.
+//
+// The reserved namespace holds two different kinds of key, and only one of them
+// is a gateway's to terminate:
+//
+//   - per-hop protocol control (protocolVersion, clientInfo, clientCapabilities,
+//     logLevel, serverInfo, subscriptionId) — scoped to a single MCP connection.
+//     vMCP is its client's peer and its backends' peer on two different hops, so
+//     it must strip these and mint its own.
+//   - end-to-end semantic payload — meaningful to the ORIGINAL endpoints and
+//     merely carried by intermediaries. Stripping these breaks the feature.
+//
+// Both entries below are the second kind, from the 2025-11-25 task facility:
+// "related-task" is a MUST on every task-related request AND response
+// (tasks/result in particular carries the task id nowhere else), and
+// "model-immediate-response" rides CreateTaskResult._meta. vMCP does not route
+// tasks/* today, so these are inert — but this strip is what would silently
+// break them later, and silent broken correlation is expensive to debug.
+//
+// Extend this by category, not by string: ask whether the key names something
+// about THIS hop (strip) or about the two endpoints (pass through).
+// A set, not a lookup table: struct{} values make membership the only question
+// this map can answer. A map[string]bool would let a future "key": false entry
+// read as "in the set" while silently stripping.
+var passthroughMetaKeys = map[string]struct{}{
+	"io.modelcontextprotocol/related-task":             {},
+	"io.modelcontextprotocol/model-immediate-response": {},
 }
 
 // modernSignalMetaKeys is the INGRESS/detection set consumed by hasModernSignal:
@@ -95,41 +119,66 @@ var ReservedModernMetaKeys = []string{
 // protocolVersion alongside one of them turns into a rejection, never a
 // downgrade.
 //
-// It is a strict subset of ReservedModernMetaKeys: logLevel is intentionally
+// It is deliberately narrower than what StripReservedMeta removes: logLevel is
 // excluded so a request carrying only logLevel — which go-sdk's
 // validateRequestMeta accepts (gating purely on protocolVersion) and which
 // SEP-2577 deprecates — is classified Legacy rather than misdetected as Modern
-// and then rejected.
+// and then rejected. "Strip this key on the way out" and "this key means the
+// request is Modern" are separate decisions; conflating them would make a
+// request rejectable merely for carrying a strippable-but-not-signalling key.
 var modernSignalMetaKeys = []string{
 	metaKeyProtocolVersion,
 	metaKeyClientInfo,
 	metaKeyClientCapabilities,
 }
 
-// StripReservedModernMeta returns a copy of meta with every ReservedModernMetaKeys
-// entry removed, leaving all other caller-supplied keys (including trace-context
-// keys) untouched. The input is never mutated (maps.Clone).
+// StripReservedMeta returns a copy of meta with every ReservedMetaPrefix key
+// removed except the passthroughMetaKeys, leaving all other caller-supplied keys
+// (progressToken, trace context, backend-custom fields) untouched. The input is
+// never mutated (maps.Clone).
 //
-// Use this at every Legacy backend egress that forwards a caller-supplied _meta
-// map: a downstream Modern request's reserved io.modelcontextprotocol/* _meta
-// claims a per-request protocol version that is only valid on a stateless
-// Modern hop. If it leaks onto a Legacy (session-based, stateful) backend call,
-// go-sdk v1.7 rejects the request outright (HTTP 400: "protocol version ...
-// is only supported on stateless HTTP servers") because ANY _meta.protocolVersion
-// on a stateful streamable-HTTP server is invalid, regardless of its value. vMCP
-// is the backend's actual MCP peer on this hop, not the downstream caller, so
-// these reserved keys must never cross it.
+// Use it on BOTH hops, in both directions, wherever a _meta map crosses vMCP:
 //
-// nil or empty input returns nil (matching mergeModernMeta's caller-tolerant
-// convention); a non-empty map with none of the reserved keys present is
-// returned as-is (via maps.Clone, so callers still get a copy, not the original).
-func StripReservedModernMeta(meta map[string]any) map[string]any {
+//   - Legacy backend egress (request): a downstream Modern caller's
+//     _meta.protocolVersion is only valid on a stateless Modern hop. go-sdk v1.7
+//     rejects the request outright (HTTP 400: "protocol version ... is only
+//     supported on stateless HTTP servers") for ANY _meta.protocolVersion on a
+//     stateful streamable-HTTP server, regardless of its value.
+//   - Modern backend egress (request): vMCP overlays its own authoritative
+//     values afterwards — see ModernRequestMeta / mergeModernMeta.
+//   - client egress (response, and server->client requests): a backend must not
+//     speak for vMCP. Only serverInfo is even schema-legal on a result
+//     (ResultMetaObject); the request-only keys arriving on one are a backend
+//     fabricating the client's own identity. The spec says nothing about what a
+//     gateway should forward, so this is derived rather than quoted: serverInfo
+//     identifies "the server software producing the response", vMCP is that
+//     software, therefore vMCP's value is the correct one.
+//
+// TRIPWIRE: if vMCP ever relays resource subscriptions it must MINT its own
+// io.modelcontextprotocol/subscriptionId from its own downstream listen request
+// — never forward a backend's, which names a request id on the vMCP<->backend
+// connection and collides across backends. That belongs in the notification
+// relay (pkg/vmcp/client/forwarding.go), not here; this helper only sees
+// requests and results. See pkg/transport/proxy/streamable/dispatcher_streams.go
+// for the same concern in the streamable proxy.
+//
+// Returns nil whenever the result would be empty -- for nil or empty input, and
+// also for a map whose keys were ALL reserved. Callers can therefore treat nil
+// as "no _meta to send" without a second length check (mergeModernMeta's
+// caller-tolerant convention, and what lets conversion.ToMCPMeta omit _meta
+// entirely rather than emit an empty object). A map with keys left over is
+// returned as a copy (maps.Clone), never the original.
+func StripReservedMeta(meta map[string]any) map[string]any {
 	if len(meta) == 0 {
 		return nil
 	}
 	stripped := maps.Clone(meta)
-	for _, k := range ReservedModernMetaKeys {
-		delete(stripped, k)
+	maps.DeleteFunc(stripped, func(k string, _ any) bool {
+		_, passthrough := passthroughMetaKeys[k]
+		return strings.HasPrefix(k, ReservedMetaPrefix) && !passthrough
+	})
+	if len(stripped) == 0 {
+		return nil
 	}
 	return stripped
 }
@@ -515,8 +564,8 @@ func metaFromParamsMap(paramsMap map[string]any) map[string]any {
 // hasModernSignal reports whether the request signals the Modern revision:
 // either the header exactly names MCPVersionModern, or _meta carries any of the
 // modernSignalMetaKeys (regardless of whether their values are well-formed).
-// It reads modernSignalMetaKeys, NOT ReservedModernMetaKeys — a key can be
-// reserved-for-stripping without signalling Modern (logLevel).
+// It reads modernSignalMetaKeys, NOT everything StripReservedMeta removes — a
+// key can be reserved-for-stripping without signalling Modern (logLevel).
 func hasModernSignal(meta map[string]any, protoHeader string) bool {
 	if protoHeader == MCPVersionModern {
 		return true

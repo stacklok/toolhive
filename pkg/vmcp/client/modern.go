@@ -270,12 +270,12 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 
 // mergeModernMeta strips the reserved io.modelcontextprotocol/* keys from a
 // caller-supplied _meta (if any) and overlays vMCP's authoritative values last.
-// The caller's _meta is never mutated (StripReservedModernMeta clones it).
+// The caller's _meta is never mutated (StripReservedMeta clones it).
 func mergeModernMeta(callerMeta any) map[string]any {
 	m, _ := callerMeta.(map[string]any)
-	meta := mcpparser.StripReservedModernMeta(m)
+	meta := mcpparser.StripReservedMeta(m)
 	if meta == nil {
-		// StripReservedModernMeta returns nil for empty/nil input; this needs a
+		// StripReservedMeta returns nil for empty/nil input; this needs a
 		// non-nil map to overlay vMCP's authoritative values onto below.
 		meta = map[string]any{}
 	}

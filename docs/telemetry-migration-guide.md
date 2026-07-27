@@ -18,8 +18,11 @@ ToolHive's telemetry has been updated across four areas:
 
 1. **Span attribute names** — Renamed to follow OTEL semantic conventions
    (HTTP, RPC, MCP/gen_ai namespaces).
-2. **New metrics** — Two new histogram metrics following the OTEL MCP spec:
-   `mcp.server.operation.duration` and `mcp.client.operation.duration`.
+2. **New metrics** — Three new histogram metrics following OTEL semantic
+   conventions: `mcp.server.operation.duration` and `mcp.client.operation.duration`
+   (OTEL MCP spec), and `http.server.request.duration` (OTEL HTTP spec, covering
+   transport-level requests that don't carry an MCP method — SSE connection opens,
+   session-terminate DELETEs, etc.).
 3. **Metric name and label standardization** — The legacy `toolhive_mcp_*` and
    `toolhive_vmcp_*` metric names and their label vocabulary (`server`,
    `mcp_method`, `tool`, `workflow.name`, …) have been replaced by the shared
@@ -28,6 +31,15 @@ ToolHive's telemetry has been updated across four areas:
    duplicated an OTel-semconv equivalent have been deleted outright (see
    [Deleted Legacy Metrics](#deleted-legacy-metrics) below). This is a breaking
    change for any dashboard or alert querying the old metric/label names.
+
+   One narrowing to be aware of: the deleted `toolhive_mcp_requests`/
+   `toolhive_mcp_request_duration` twins classified any HTTP status ≥400 as an
+   error. The new `http.server.request.duration` metric's `error.type` attribute
+   follows OTEL HTTP semconv and is only set for status ≥500 (see
+   [Known Limitations](#known-limitations)). Any dashboard or alert computing
+   "error rate" from `error.type` presence will stop counting 4xx client errors
+   (e.g. auth denials) after upgrade. Query `http_response_status_code=~"[45].."`
+   directly instead if 4xx should still count toward error rate.
 4. **D8 ownership labels hardened** — `stacklok_component`/`stacklok_product`
    are now reserved and cannot be overridden via `--otel-custom-attributes` or
    `OTEL_RESOURCE_ATTRIBUTES` (see [D8 Ownership Labels](./observability.md#d8-ownership-labels)).

@@ -4,8 +4,10 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -236,6 +238,53 @@ func TestReservedOwnershipAttributesNotOverridable(t *testing.T) {
 	// Non-reserved custom/env attributes are still applied.
 	assert.Contains(t, body, `deployment="prod"`,
 		"non-reserved custom attributes should still pass through")
+}
+
+// captureSlogWarn redirects slog's default logger to a bytes.Buffer for the
+// duration of f, then restores the original default. Returns the captured
+// output. This helper exists because slog.SetDefault is a process-global
+// side effect — tests that use it must NOT run in parallel.
+func captureSlogWarn(t *testing.T, f func()) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	f()
+
+	return buf.String()
+}
+
+// TestReservedOwnershipAttributeOverrideIsLogged verifies that an attempted
+// override of a reserved D8 key — via CustomAttributes or
+// OTEL_RESOURCE_ATTRIBUTES — produces a WARN log naming the rejected key, so
+// an operator debugging a missing custom value has a signal to find.
+//
+//nolint:paralleltest,tparallel // Subtest uses slog.SetDefault, which is process-global
+func TestReservedOwnershipAttributeOverrideIsLogged(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "stacklok.product=evil-product")
+
+	ctx := context.Background()
+	output := captureSlogWarn(t, func() {
+		_, err := NewCompositeProvider(ctx,
+			WithServiceName("test-service"),
+			WithServiceVersion("1.0.0"),
+			WithMetricsEnabled(false),
+			WithTracingEnabled(false),
+			WithCustomAttributes(map[string]string{
+				"stacklok.component": "evil-component",
+			}),
+		)
+		require.NoError(t, err)
+	})
+
+	assert.Contains(t, output, "stacklok.component",
+		"WARN log must name the rejected CustomAttributes key")
+	assert.Contains(t, output, "stacklok.product",
+		"WARN log must name the rejected OTEL_RESOURCE_ATTRIBUTES key")
 }
 
 func TestCompositeProvider_Accessors(t *testing.T) {

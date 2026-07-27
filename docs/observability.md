@@ -279,6 +279,13 @@ constant labels (`pkg/telemetry/providers/prometheus/prometheus.go`) — so in
 scraped Prometheus output they appear as per-series labels on every metric,
 not only on a separate `target_info`/`stacklok_build_info` line.
 
+The Go/process runtime metrics (`go_*`, `process_*`) are native Prometheus
+collectors registered directly on the raw registry rather than through the
+OTel SDK, so `WithResourceAsConstantLabels` does not reach them. They carry
+the same two labels via a separate `prometheus.WrapRegistererWith` applied
+only to the runtime-metrics registerer, so the D8 labels are consistently
+present on every series, including runtime/process metrics.
+
 ### Rate Limit Metrics
 
 These metrics are emitted for Redis-backed rate limit checks used by MCPServer

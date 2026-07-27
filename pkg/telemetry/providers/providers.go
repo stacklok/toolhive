@@ -211,6 +211,8 @@ func NewCompositeProvider(
 		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
 	}
 
+	warnIfOwnershipAttrsOverridden(ctx, baseAttrs)
+
 	// Create resource with base attributes and support for OTEL_RESOURCE_ATTRIBUTES env var
 	res, err := resource.New(ctx,
 		resource.WithAttributes(baseAttrs...),
@@ -234,6 +236,39 @@ func NewCompositeProvider(
 
 	// Build composite provider using strategies
 	return buildProviders(ctx, config, selector, res)
+}
+
+// warnIfOwnershipAttrsOverridden logs a warning for each reserved D8 key
+// (stacklok.component, stacklok.product) that a user attempted to set via
+// CustomAttributes or OTEL_RESOURCE_ATTRIBUTES. Both sources are silently
+// discarded in favor of the frozen ToolHive-owned value (see ownershipAttrs
+// in NewCompositeProvider) — this only makes that discard observable so an
+// operator debugging a missing custom value isn't left with no signal.
+func warnIfOwnershipAttrsOverridden(ctx context.Context, baseAttrs []attribute.KeyValue) {
+	reserved := map[attribute.Key]struct{}{
+		attribute.Key(coremetrics.AttrStacklokComponent): {},
+		attribute.Key(coremetrics.AttrStacklokProduct):   {},
+	}
+
+	for _, attr := range baseAttrs {
+		if _, ok := reserved[attr.Key]; ok {
+			slog.Warn("ignoring user-supplied custom attribute: reserved by ToolHive and cannot be overridden",
+				"key", string(attr.Key))
+		}
+	}
+
+	// OTEL_RESOURCE_ATTRIBUTES isn't part of baseAttrs (WithFromEnv reads it
+	// directly inside resource.New), so probe it independently.
+	envRes, err := resource.New(ctx, resource.WithFromEnv())
+	if err != nil {
+		return
+	}
+	for _, attr := range envRes.Attributes() {
+		if _, ok := reserved[attr.Key]; ok {
+			slog.Warn("ignoring OTEL_RESOURCE_ATTRIBUTES entry: reserved by ToolHive and cannot be overridden",
+				"key", string(attr.Key))
+		}
+	}
 }
 
 func createNoOpProvider() *CompositeProvider {

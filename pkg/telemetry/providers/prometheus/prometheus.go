@@ -24,6 +24,11 @@ type Config struct {
 	EnableMetricsPath bool
 	// IncludeRuntimeMetrics adds Go runtime metrics to the registry
 	IncludeRuntimeMetrics bool
+	// OwnershipLabels are the D8 stacklok.component/stacklok.product values. They are applied
+	// as Prometheus constant labels directly to the runtime-metrics registerer, since the Go/
+	// process collectors are registered on the raw registry and never pass through the OTel
+	// exporter's WithResourceAsConstantLabels promotion below.
+	OwnershipLabels map[string]string
 }
 
 // NewReader creates a Prometheus metric reader and HTTP handler for use in a unified meter provider
@@ -35,10 +40,14 @@ func NewReader(config Config) (sdkmetric.Reader, http.Handler, error) {
 	// Create a dedicated registry
 	registry := promclient.NewRegistry()
 
-	// Add runtime metrics if requested
+	// Add runtime metrics if requested. These are native prometheus.Collector
+	// implementations registered directly on the registry, so they never pass
+	// through the OTel exporter below — wrap the registerer with the same D8
+	// ownership labels so go_*/process_* series carry them too.
 	if config.IncludeRuntimeMetrics {
-		registry.MustRegister(collectors.NewGoCollector())
-		registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+		runtimeRegisterer := promclient.WrapRegistererWith(config.OwnershipLabels, registry)
+		runtimeRegisterer.MustRegister(collectors.NewGoCollector())
+		runtimeRegisterer.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	}
 
 	// Create the Prometheus exporter (which is also a Reader). Promote the

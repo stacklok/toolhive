@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/telemetry/providers/otlp"
 	"github.com/stacklok/toolhive/pkg/telemetry/providers/prometheus"
 )
@@ -146,6 +147,10 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 		promConfig := prometheus.Config{
 			EnableMetricsPath:     true,
 			IncludeRuntimeMetrics: true,
+			OwnershipLabels: map[string]string{
+				coremetrics.AttrStacklokComponent: ComponentName,
+				coremetrics.AttrStacklokProduct:   coremetrics.ProductStacklokPlatform,
+			},
 		}
 		reader, handler, err := prometheus.NewReader(promConfig)
 		if err != nil {

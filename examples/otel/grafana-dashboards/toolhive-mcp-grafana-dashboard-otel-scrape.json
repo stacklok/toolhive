@@ -497,6 +497,7 @@
           "refId": "A"
         }
       ],
+      "description": "Counts every HTTP request the middleware handles (including SSE-open GETs and session-terminate DELETEs), not only MCP-method-bearing requests. This baseline shifted with the metrics-standardization migration; see the telemetry migration guide.",
       "title": "Total Request Rate",
       "type": "stat"
     },

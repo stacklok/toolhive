@@ -172,26 +172,34 @@ func MonitorBackends(
 }
 
 // currentHealthStatus resolves a backend's health for the gauge callback, in the
-// same precedence order filterHealthyBackends uses for capability filtering: the
-// live health.StatusProvider first (so the gauge agrees with what's actually
-// driving capability aggregation and respects circuit-breaker state), then the
-// request-outcome map record() maintains, then the registry's discovery-time
-// snapshot. An empty/zero-value HealthStatus (no source has classified the
-// backend yet) is normalized to BackendHealthy, matching
-// filterHealthyBackends's "empty/zero-value: assume healthy" convention —
-// otherwise none of healthStates would match and the gauge would silently
-// report every state as 0 for that backend instead of a definite one.
+// same precedence order filterHealthyBackends uses for capability filtering: when
+// a live health.StatusProvider is set, its tracked status wins outright — and if
+// it doesn't track this backend, the registry's discovery-time snapshot is used
+// directly, exactly as filterHealthyBackends does, without consulting the
+// request-outcome map. The request-outcome map record() maintains is consulted
+// only when no provider is set at all (health monitoring disabled or not yet
+// wired up), giving the gauge a live-ish signal in that window instead of a
+// snapshot frozen at discovery time; filterHealthyBackends has no equivalent
+// signal available in that case and falls back to the registry outright, so the
+// gauge and filterHealthyBackends can only disagree while a provider exists but
+// doesn't yet track a given backend — a narrow, self-correcting window as the
+// health monitor picks the backend up.
+//
+// An empty/zero-value HealthStatus (no source has classified the backend yet) is
+// normalized to BackendHealthy, matching filterHealthyBackends's "empty/zero-value:
+// assume healthy" convention — otherwise none of healthStates would match and the
+// gauge would silently report every state as 0 for that backend instead of a
+// definite one.
 func currentHealthStatus(
 	backend vmcp.Backend, recorded map[string]vmcp.BackendHealthStatus, provider health.StatusProvider,
 ) vmcp.BackendHealthStatus {
 	status := backend.HealthStatus
-	if s, ok := recorded[backend.ID]; ok {
-		status = s
-	}
 	if provider != nil {
 		if s, tracked := provider.QueryBackendStatus(backend.ID); tracked {
 			status = s
 		}
+	} else if s, ok := recorded[backend.ID]; ok {
+		status = s
 	}
 	if status == "" {
 		return vmcp.BackendHealthy

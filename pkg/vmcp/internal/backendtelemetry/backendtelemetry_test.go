@@ -238,13 +238,12 @@ func (f *fakeStatusProvider) QueryBackendStatus(backendID string) (vmcp.BackendH
 	return status, tracked
 }
 
-func TestMonitorBackends_HealthGaugePrefersLiveProviderOverRegistryAndRecordedState(t *testing.T) {
+func TestMonitorBackends_HealthGaugeMatchesFilterHealthyBackendsPrecedence(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
 	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
-	// Registry snapshot says healthy; a request has also succeeded (record()
-	// would say healthy too). The live provider disagrees with both — it must win,
+	// Registry snapshot says healthy. The live provider disagrees — it must win,
 	// exactly as filterHealthyBackends prefers it over the registry snapshot.
 	registry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{
 		{ID: "be1", Name: "backend-1", HealthStatus: vmcp.BackendHealthy},
@@ -262,29 +261,38 @@ func TestMonitorBackends_HealthGaugePrefersLiveProviderOverRegistryAndRecordedSt
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
 
+	// record() sees a failure, so the request-outcome map disagrees with the
+	// registry: recorded=unhealthy, registry=healthy. This divergence is what
+	// makes the later "provider set but doesn't track" step unambiguous.
 	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(&vmcp.ToolCallResult{}, nil)
+		Return(nil, assert.AnError)
 	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil, nil)
-	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+	require.Error(t, err)
 
-	// The health monitor (built after MonitorBackends, per core.New's ordering)
-	// now reports this backend as unhealthy — e.g. the circuit breaker tripped
-	// after the last successful request. The gauge must reflect this immediately,
-	// not the stale registry snapshot or the last recorded request outcome.
-	setter.Set(&fakeStatusProvider{statuses: map[string]vmcp.BackendHealthStatus{
-		"be1": vmcp.BackendUnhealthy,
-	}})
+	// No provider set yet: falls back to the recorded (request-outcome) state,
+	// per currentHealthStatus's "no provider: use recorded" branch.
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendUnhealthy)}, healthPoints(t, reader))
 
-	// A backend the live provider doesn't track (tracked=false) falls back to
-	// record()-derived state, not straight to the registry snapshot.
+	// The health monitor (built after MonitorBackends, per core.New's ordering)
+	// now reports this backend as healthy — e.g. after a successful health check.
+	// The gauge must reflect the live provider immediately, not the recorded
+	// request-outcome state.
+	setter.Set(&fakeStatusProvider{statuses: map[string]vmcp.BackendHealthStatus{
+		"be1": vmcp.BackendHealthy,
+	}})
+	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+
+	// A provider is set but doesn't track this backend (tracked=false): falls
+	// straight to the registry snapshot, exactly as filterHealthyBackends does —
+	// NOT to the recorded state, which still disagrees (unhealthy) at this point.
+	// This is the precedence filterHealthyBackends itself uses, so the gauge and
+	// capability-filtering agree even in this fallback case.
 	setter.Set(&fakeStatusProvider{statuses: map[string]vmcp.BackendHealthStatus{}})
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
 
-	// A nil provider (monitoring disabled) restores the original fallback chain.
+	// A nil provider (monitoring disabled) falls back to the recorded state again.
 	setter.Set(nil)
-	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
+	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendUnhealthy)}, healthPoints(t, reader))
 }
 
 func TestMonitorBackends_HealthGaugeTransitionsOnRequestOutcome(t *testing.T) {

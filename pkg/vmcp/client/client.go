@@ -157,16 +157,16 @@ type httpBackendClient struct {
 	// (every probe agrees). A transient probe failure caches nothing
 	// (probeRevision returns uncached), so a blip cannot pin a revision.
 	//
-	// Self-healing is ASYMMETRIC under go-sdk v1.7: a mis-cached Modern backend
-	// that has actually negotiated down to Legacy self-heals via
+	// Self-healing now works both ways under go-sdk v1.7. A mis-cached Modern
+	// backend that has actually negotiated down to Legacy self-heals via
 	// dispatch->reclassify (errModernNegotiatedDown re-probes and flips it). A
-	// mis-cached Legacy backend that has actually become Modern does NOT: the
-	// SDK's own client transparently negotiates Modern on the Legacy dispatch
-	// path, so calls keep succeeding and no error ever reaches reclassify's
-	// trigger (see TestListCapabilities_MisCachedLegacy_StillSucceedsViaSDKNegotiation
-	// in reclassify_test.go). The stale Legacy value still surfaces externally
-	// via CachedRevision -> health status -> the mcpRevision CRD field. Tracked
-	// as #5992; until fixed, a TTL/periodic re-probe would close this gap.
+	// mis-cached Legacy backend that has actually become Modern self-heals
+	// in-band instead: the SDK's own client transparently negotiates Modern on
+	// the Legacy dispatch path, and legacyInit reads the genuinely-negotiated
+	// protocol version off every Initialize result and flips the cache directly
+	// when it is Modern — no error or reclassify round trip needed (see
+	// TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation in
+	// reclassify_test.go).
 	revisions sync.Map // map[string]mcpparser.Revision
 }
 
@@ -841,9 +841,12 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		vmcp.ErrBackendUnavailable, operation, backendID, err)
 }
 
-// initializeClient performs MCP protocol initialization handshake and returns server capabilities.
-// This allows the caller to determine which optional features the server supports.
-func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, error) {
+// initializeClient performs MCP protocol initialization handshake and returns
+// server capabilities plus the actually-negotiated protocol version. The
+// latter comes straight from the SDK's InitializeResult, so it reflects the
+// real negotiation outcome (e.g. a Modern-first Connect() that negotiated
+// down) even though ProtocolVersion is requested as mcp.LATEST_PROTOCOL_VERSION.
+func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, string, error) {
 	result, err := c.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -862,9 +865,9 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return &result.Capabilities, nil
+	return &result.Capabilities, result.ProtocolVersion, nil
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.
@@ -1439,12 +1442,23 @@ var errLegacyInitFailed = errors.New("legacy initialize step failed")
 // errLegacyInitFailed (in addition to wrapBackendError's classification) so the
 // revision-mismatch check can tell an initialize rejection apart from a
 // data-plane error later in the same call.
-func (*httpBackendClient) legacyInit(
+//
+// It also self-heals a mis-cached Legacy->Modern backend in-band: under go-sdk
+// v1.7 the SDK's own client transparently negotiates Modern on this path (see
+// the revisions field comment), so the call succeeds and dispatch's
+// reclassify-on-error trigger never fires. The negotiated protocol version
+// returned by initializeClient is genuine either way (discover or plain
+// initialize), so when it equals MCPVersionModern the cache is flipped here
+// instead of waiting for an error that will never come.
+func (h *httpBackendClient) legacyInit(
 	ctx context.Context, c *client.Client, backendID string,
 ) (*mcp.ServerCapabilities, error) {
-	caps, err := initializeClient(ctx, c)
+	caps, negotiatedVersion, err := initializeClient(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
+	}
+	if negotiatedVersion == mcpparser.MCPVersionModern {
+		h.setRevision(backendID, mcpparser.RevisionModern)
 	}
 	return caps, nil
 }

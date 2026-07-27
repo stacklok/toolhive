@@ -303,26 +303,24 @@ func TestReclassify_WarnsOnlyOnActualChange(t *testing.T) {
 	assert.Empty(t, buf.String(), "a no-op re-probe must not WARN")
 }
 
-// TestListCapabilities_MisCachedLegacy_StillSucceedsViaSDKNegotiation: a backend
+// TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation: a backend
 // pinned Legacy by a stale cache is still queried successfully, because the
 // underlying go-sdk v1.7 client (used by the Legacy/session-based code path,
 // legacyListCapabilities) is itself Modern-first (SEP-2575): its Connect() tries
 // server/discover before any legacy initialize, so a genuinely Modern backend
 // answers correctly even when dispatch hands it the stale Legacy revision. The
 // call succeeds on the first attempt, so dispatch's reclassify-on-mismatch path
-// (which only fires on error; see dispatch's doc comment) is never entered and
-// the cache stays Legacy.
+// (which only fires on error; see dispatch's doc comment) is never entered —
+// but legacyInit reads the genuinely-negotiated protocol version off the
+// Initialize result and flips the cache to Modern in-band regardless (see the
+// revisions field doc in client.go).
 //
-// The staleness is NOT purely internal bookkeeping: CachedRevision surfaces it
-// to health status (pkg/vmcp/health/status.go:260), which republishes it on
-// every health tick into the mcpRevision CRD status field — so an operator
-// reading that field sees "legacy" for a backend that is actually being driven
-// Modern on every call. The wire protocol itself is unaffected (the backend
-// always receives the correct, Modern request), and the loss is one-directional:
-// a mis-cached Modern->actually-Legacy backend still self-heals via
-// errModernNegotiatedDown (see the revisions field doc in client.go). Tracked
-// as #5992.
-func TestListCapabilities_MisCachedLegacy_StillSucceedsViaSDKNegotiation(t *testing.T) {
+// The staleness this closes is not purely internal bookkeeping: CachedRevision
+// surfaces it to health status (pkg/vmcp/health/status.go:260), which
+// republishes it on every health tick into the mcpRevision CRD status field —
+// so before this self-heal, an operator reading that field would see "legacy"
+// for a backend actually being driven Modern on every call.
+func TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation(t *testing.T) {
 	t.Parallel()
 
 	srv := modernDiscoverServer(t)
@@ -335,8 +333,31 @@ func TestListCapabilities_MisCachedLegacy_StillSucceedsViaSDKNegotiation(t *test
 	require.Len(t, caps.Tools, 1)
 	assert.Equal(t, "echo", caps.Tools[0].Name)
 
-	// The cache is unchanged: no error occurred to trigger dispatch's
-	// reclassify-on-mismatch path (see doc comment above).
+	// legacyInit flips the cache directly off the negotiated Initialize result,
+	// without needing an error to trigger dispatch's reclassify path.
 	rev, _ := h.cachedRevision(target.WorkloadID)
-	assert.Equal(t, mcpparser.RevisionLegacy, rev)
+	assert.Equal(t, mcpparser.RevisionModern, rev)
+}
+
+// TestLegacyInit_SelfHealsRevisionCache exercises legacyInit directly (rather
+// than through the full ListCapabilities/query pipeline) to isolate the
+// self-heal contract: a mis-cached Legacy backend that is genuinely Modern
+// ends up cached Modern after a single Legacy-path Initialize call.
+func TestLegacyInit_SelfHealsRevisionCache(t *testing.T) {
+	t.Parallel()
+
+	srv := modernDiscoverServer(t)
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy) // mis-cached
+
+	c, err := h.clientFactory(context.Background(), target, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = h.legacyInit(context.Background(), c, target.WorkloadID)
+	require.NoError(t, err, "the SDK client negotiates Modern transparently on the Legacy path")
+
+	rev, _ := h.cachedRevision(target.WorkloadID)
+	assert.Equal(t, mcpparser.RevisionModern, rev)
 }

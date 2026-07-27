@@ -91,6 +91,12 @@ operator:
   imageDiscovery:
     # -- Render the zero-replica image-discovery Deployment described above.
     enabled: false
+    # -- Resource requests/limits for the image-discovery Deployment's
+    # containers. Admission control (a LimitRange, an OPA/Kyverno policy
+    # requiring explicit requests) validates these at CREATE time even
+    # though replicas: 0 means nothing ever actually runs, so this is
+    # exposed separately from operator.resources for clusters that need it set.
+    resources: {}
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

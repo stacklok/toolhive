@@ -3,15 +3,20 @@ See operator.imageDiscovery in values.yaml for why this exists. This
 Deployment is always rendered at replicas: 0 — Kubernetes never schedules a
 pod from it, so toolhiveRunnerImage / vmcpImage / registryAPI.image are never
 pulled or run. Its only job is to put those refs behind an `image:` key so a
-static manifest scan (e.g. an air-gap vendor portal's image-list generator)
+static manifest scan (used by offline/air-gapped image-mirroring tooling)
 discovers them, since the operator otherwise only ever injects them into
 child workloads via env vars at runtime.
+
+Despite replicas: 0, admission control (PSA `restricted`, Kyverno, OPA
+Gatekeeper, a `LimitRange`) validates the PodTemplateSpec at CREATE time
+regardless of replica count, so this mirrors deployment.yaml's security
+context / resources / pull-secret handling rather than skipping it.
 */}}
 {{- if .Values.operator.imageDiscovery.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "toolhive-operator.fullname" . }}-image-discovery
+  name: {{ printf "%s-image-discovery" (include "toolhive-operator.fullname" .) | trunc 63 | trimSuffix "-" }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "toolhive-operator.labels" . | nindent 4 }}
@@ -28,11 +33,32 @@ spec:
         {{- include "toolhive-operator.labels" . | nindent 8 }}
         app.kubernetes.io/component: image-discovery
     spec:
+      {{- with .Values.operator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
       containers:
         - name: toolhive-runner
+          securityContext:
+            {{- toYaml .Values.operator.containerSecurityContext | nindent 12 }}
           image: "{{ .Values.operator.toolhiveRunnerImage }}"
+          imagePullPolicy: {{ .Values.operator.imagePullPolicy }}
+          resources:
+            {{- toYaml .Values.operator.imageDiscovery.resources | nindent 12 }}
         - name: vmcp
+          securityContext:
+            {{- toYaml .Values.operator.containerSecurityContext | nindent 12 }}
           image: "{{ .Values.operator.vmcpImage }}"
+          imagePullPolicy: {{ .Values.operator.imagePullPolicy }}
+          resources:
+            {{- toYaml .Values.operator.imageDiscovery.resources | nindent 12 }}
         - name: registry-api
+          securityContext:
+            {{- toYaml .Values.operator.containerSecurityContext | nindent 12 }}
           image: "{{ .Values.registryAPI.image }}"
+          imagePullPolicy: {{ .Values.operator.imagePullPolicy }}
+          resources:
+            {{- toYaml .Values.operator.imageDiscovery.resources | nindent 12 }}
 {{- end }}

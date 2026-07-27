@@ -2,18 +2,25 @@ suite: image discovery
 # operator.imageDiscovery.enabled renders a zero-replica Deployment whose only
 # purpose is to surface toolhiveRunnerImage / vmcpImage / registryAPI.image as
 # `image:` keys for static air-gap manifest scanning. Pinning: the Deployment
-# is absent by default, present with replicas:0 when enabled, and carries the
-# exact three image refs — a wrong ref here would silently defeat air-gap
-# discovery without any other test catching it.
+# is absent by default, present with replicas:0 when enabled, carries the
+# exact three image refs, and mirrors deployment.yaml's admission-relevant
+# fields (security contexts, resources, pull secrets) — admission control
+# validates the PodTemplateSpec at CREATE time regardless of replicas:0, so a
+# missing field here would silently break enabling this on a hardened
+# cluster. Also pins that enabling the flag doesn't disturb the real operator
+# Deployment.
 templates:
   - image-discovery.yaml
+  - deployment.yaml
 tests:
   - it: renders nothing by default
+    template: image-discovery.yaml
     asserts:
       - hasDocuments:
           count: 0
 
   - it: renders a zero-replica Deployment referencing all three runtime-injected images
+    template: image-discovery.yaml
     set:
       operator.imageDiscovery.enabled: true
       operator.toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v9.9.9
@@ -22,23 +29,101 @@ tests:
     asserts:
       - hasDocuments:
           count: 1
+      - isKind:
+          of: Deployment
+      - isAPIVersion:
+          of: apps/v1
       - equal:
           path: spec.replicas
           value: 0
-      - contains:
-          path: spec.template.spec.containers
-          content: { name: toolhive-runner, image: ghcr.io/stacklok/toolhive/proxyrunner:v9.9.9 }
-      - contains:
-          path: spec.template.spec.containers
-          content: { name: vmcp, image: ghcr.io/stacklok/toolhive/vmcp:v9.9.9 }
-      - contains:
-          path: spec.template.spec.containers
-          content: { name: registry-api, image: ghcr.io/stacklok/thv-registry-api:v9.9.9 }
+      - equal:
+          path: 'spec.template.spec.containers[0].name'
+          value: toolhive-runner
+      - equal:
+          path: 'spec.template.spec.containers[0].image'
+          value: ghcr.io/stacklok/toolhive/proxyrunner:v9.9.9
+      - equal:
+          path: 'spec.template.spec.containers[1].name'
+          value: vmcp
+      - equal:
+          path: 'spec.template.spec.containers[1].image'
+          value: ghcr.io/stacklok/toolhive/vmcp:v9.9.9
+      - equal:
+          path: 'spec.template.spec.containers[2].name'
+          value: registry-api
+      - equal:
+          path: 'spec.template.spec.containers[2].image'
+          value: ghcr.io/stacklok/thv-registry-api:v9.9.9
 
   - it: selector does not collide with the operator Deployment's own selector
+    template: image-discovery.yaml
     set:
       operator.imageDiscovery.enabled: true
     asserts:
       - equal:
           path: spec.selector.matchLabels["app.kubernetes.io/component"]
           value: image-discovery
+
+  - it: sets pod and container security contexts on every container so hardened-cluster admission (PSA/Kyverno/Gatekeeper) does not reject it
+    template: image-discovery.yaml
+    set:
+      operator.imageDiscovery.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: 'spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation'
+          value: false
+      - equal:
+          path: 'spec.template.spec.containers[1].securityContext.allowPrivilegeEscalation'
+          value: false
+      - equal:
+          path: 'spec.template.spec.containers[2].securityContext.allowPrivilegeEscalation'
+          value: false
+
+  - it: sets resources and imagePullPolicy on every container so a LimitRange requiring explicit requests does not reject it
+    template: image-discovery.yaml
+    set:
+      operator.imageDiscovery.enabled: true
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[0].resources'
+          value: {}
+      - equal:
+          path: 'spec.template.spec.containers[0].imagePullPolicy'
+          value: IfNotPresent
+
+  - it: inherits operator.imagePullSecrets
+    template: image-discovery.yaml
+    set:
+      operator.imageDiscovery.enabled: true
+      operator.imagePullSecrets:
+        - name: regcred
+    asserts:
+      - contains:
+          path: spec.template.spec.imagePullSecrets
+          content: { name: regcred }
+
+  - it: truncates the Deployment name at 63 characters for a long fullnameOverride
+    template: image-discovery.yaml
+    set:
+      operator.imageDiscovery.enabled: true
+      fullnameOverride: a-very-long-fullname-override-that-pushes-the-name-past-the-limit
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: '^.{1,63}$'
+
+  - it: still renders exactly one operator Deployment when imageDiscovery is enabled
+    template: deployment.yaml
+    set:
+      operator.imageDiscovery.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.replicas
+          value: 1

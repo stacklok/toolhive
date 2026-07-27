@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -220,9 +221,13 @@ func (s *Server) dispatchModernToolCall(
 		writeModernDenied(w, parsed.ID, vmcp.DenyMessageToolCall)
 		return
 	}
+	// The refusal recorder classifies a backend tool that demanded mid-call
+	// elicitation/sampling with no downstream session to forward it to — see
+	// modern_capability_refusal.go and writeModernCallFailure.
+	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.CallTool(ctx, identity, parsed.ResourceID, parsed.Arguments, parsed.Meta)
 	if err != nil {
-		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessageToolCall, err)
+		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageToolCall, err)
 		return
 	}
 	// Label the audit backend on the success path only. The stateless dispatcher
@@ -249,9 +254,10 @@ func (s *Server) dispatchModernResourceRead(
 		writeModernDenied(w, parsed.ID, vmcp.DenyMessageResourceRead)
 		return
 	}
+	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.ReadResource(ctx, identity, parsed.ResourceID)
 	if err != nil {
-		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessageResourceRead, err)
+		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageResourceRead, err)
 		return
 	}
 	if result.BackendID != "" {
@@ -281,9 +287,10 @@ func (s *Server) dispatchModernPromptGet(
 		writeModernDenied(w, parsed.ID, vmcp.DenyMessagePromptGet)
 		return
 	}
+	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.GetPrompt(ctx, identity, parsed.ResourceID, parsed.Arguments)
 	if err != nil {
-		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessagePromptGet, err)
+		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessagePromptGet, err)
 		return
 	}
 	if result.BackendID != "" {
@@ -424,6 +431,95 @@ func gateDenied(ctx context.Context, method string, checkErr error) bool {
 func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, method string, err error) {
 	slog.ErrorContext(ctx, "vmcp modern dispatch: list/discover failed", "method", method, "error", err)
 	writeModernError(w, id, jsonRPCCodeInternalError, "internal error")
+}
+
+// writeModernCallFailure classifies a POST-dispatch error from the three call
+// verbs (tools/call, resources/read, prompts/get), layering the mid-call
+// capability-refusal case on top of writeModernDispatchError's authz/generic
+// classification:
+//
+//   - Authorization denials keep absolute priority (403 + denyMsg, so the
+//     audit middleware still logs "denied") — a refusal can never mask one.
+//   - A recorded refusal with the capability NOT declared in the request's
+//     _meta clientCapabilities is the draft schema's
+//     MissingRequiredClientCapabilityError: code -32021 with
+//     data.requiredCapabilities naming what the server needed (an actionable
+//     code a client can surface, where -32603 is opaque) — served at HTTP
+//     200, a deliberate, documented deviation from the spec-mandated 400;
+//     see writeModernMissingCapability.
+//   - A recorded refusal with the capability DECLARED is deliberately NOT
+//     -32021: the client did declare it, so blaming the client would be
+//     wrong, and re-declaring cannot help. The spec's answer for a declared
+//     capability is resultType "input_required" (multi-round retrieval,
+//     SEP-2322), which this dispatcher does not implement — and the
+//     2026-07-28 error vocabulary has no "operation not supported" code, so
+//     there is no conformant code for this case at all (see the "unavailable
+//     to Modern clients" limitation in
+//     docs/arch/10-virtual-mcp-architecture.md). It stays -32603, with a
+//     vMCP-owned message that names the real cause instead of the backend's
+//     laundered error string.
+//
+// Do not fold this into writeModernDispatchError: completion/complete also
+// uses that helper but never installs a refusal recorder (SEP-2322 does not
+// extend to completion/complete, so an input_required-shaped failure there
+// has no spec-defined classification).
+func writeModernCallFailure(
+	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, refusal *capabilityRefusalRecorder,
+	denyMsg string, err error,
+) {
+	if capName := refusal.refused(); capName != "" && !errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		if !modernClientDeclaredCapability(parsed.Meta, capName) {
+			writeModernMissingCapability(w, parsed.ID, capName)
+			return
+		}
+		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, fmt.Sprintf(
+			"backend requires the %q client capability mid-call; serving it on protocol %s requires "+
+				"multi-round retrieval (SEP-2322), which this server does not implement",
+			capName, mcpparser.MCPVersionModern))
+		return
+	}
+	writeModernDispatchError(w, parsed.ID, denyMsg, err)
+}
+
+// writeModernMissingCapability writes the MissingRequiredClientCapabilityError
+// (-32021, data.requiredCapabilities typed as a ClientCapabilities object) at
+// HTTP 200.
+//
+// STATUS DEVIATION, deliberate and load-bearing: SEP-2575 MUSTs HTTP 400 for
+// this error, but go-sdk's streamable client (v1.7.0-pre.3) treats any
+// non-transient 4xx as a CONNECTION failure, not a call failure — its
+// transient set is only 500/502/503/504/429, so a 400 falls through
+// checkResponse to fail(), which closes the session permanently. One refused
+// elicitation would kill every subsequent request on the client. The JSON-RPC
+// body below stays fully conformant (which is what a non-go-sdk client
+// parses); only the transport status deviates. Tracked upstream as
+// go-sdk#1117 — revisit the 200 when that is fixed.
+//
+// This is written directly rather than through mcpparser.WriteClassificationError
+// on purpose: that helper hard-codes HTTP 400, which is correct for its other
+// callers (pre-dispatch classification rejections a client never retries on a
+// live session) and must not be changed for this one.
+//
+// The message names both the capability AND the gateway limitation, so a
+// caller that reacts to -32021 by re-declaring learns immediately that
+// re-declaring will not help here (the declared case is served by
+// writeModernCallFailure's -32603 branch, not by MRTR).
+func writeModernMissingCapability(w http.ResponseWriter, id any, capName string) {
+	writeModernEnvelope(w, http.StatusOK, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error": map[string]any{
+			"code": mcpparser.CodeMissingClientCapability,
+			"message": fmt.Sprintf(
+				"this tool requires the %q client capability mid-call, which the request did not declare; "+
+					"note that declaring it will not help on protocol %s — serving mid-call capability "+
+					"requests needs multi-round retrieval (SEP-2322), which this server does not implement",
+				capName, mcpparser.MCPVersionModern),
+			"data": map[string]any{
+				"requiredCapabilities": map[string]any{capName: map[string]any{}},
+			},
+		},
+	})
 }
 
 // writeModernDispatchError classifies a POST-dispatch error from

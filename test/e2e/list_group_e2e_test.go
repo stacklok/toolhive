@@ -70,8 +70,7 @@ var _ = Describe("List Group", Label("core", "groups", "e2e"), func() {
 				_, _ = e2e.NewTHVCommand(config, "run", "fetch", "--group", groupName, "--name", workloadName).ExpectSuccess()
 
 				// Wait for workload to be fully registered
-				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
-				Expect(err).ToNot(HaveOccurred())
+				e2e.ExpectMCPServersRunning(config, workloadName)
 			})
 
 			AfterEach(func() {
@@ -131,8 +130,7 @@ var _ = Describe("List Group", Label("core", "groups", "e2e"), func() {
 			_, _ = e2e.NewTHVCommand(config, "run", "fetch", "--group", groupName, "--name", workloadName, "--label", "test=value").ExpectSuccess()
 
 			// Wait for workload to be fully registered
-			err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
-			Expect(err).ToNot(HaveOccurred())
+			e2e.ExpectMCPServersRunning(config, workloadName)
 		})
 
 		AfterEach(func() {
@@ -194,10 +192,7 @@ var _ = Describe("List Group", Label("core", "groups", "e2e"), func() {
 			_, _ = e2e.NewTHVCommand(config, "run", "fetch", "--group", secondGroupName, "--name", workload2Name).ExpectSuccess()
 
 			// Wait for workloads to be fully registered
-			err := e2e.WaitForMCPServer(config, workload1Name, e2e.ServerReadyTimeout())
-			Expect(err).ToNot(HaveOccurred())
-			err = e2e.WaitForMCPServer(config, workload2Name, e2e.ServerReadyTimeout())
-			Expect(err).ToNot(HaveOccurred())
+			e2e.ExpectMCPServersRunning(config, workload1Name, workload2Name)
 		})
 
 		AfterEach(func() {

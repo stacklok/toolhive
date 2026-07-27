@@ -155,14 +155,13 @@ func startForwardingBackend(t *testing.T) string {
 //
 // WHY PIN: these fixtures assert the Legacy-only server-initiated surface;
 // see the file header above and the client-edge limitation in
-// docs/arch/10-virtual-mcp-architecture.md for the full disposition. While
-// Modern dispatch is disabled (ModernDispatchEnabled: false, today's
-// default), the server's own version-omitting discover answer pins these
-// clients to Legacy incidentally; once #6033 makes Modern dispatch
-// unconditional, the go-sdk-based client would negotiate Modern and this
-// surface would vanish mid-test — failing at connect, not at the behavior
-// under test. Pinning makes the tests' Legacy dependency explicit instead of
-// incidental.
+// docs/arch/10-virtual-mcp-architecture.md for the full disposition. Modern
+// dispatch is now unconditional (#5959 removed the kill-switch), so without
+// this pin the go-sdk-based client would negotiate Modern and the surface
+// under test would vanish mid-test — failing at connect rather than at the
+// behavior being asserted. Before that, the server's own version-omitting
+// discover answer pinned these clients to Legacy incidentally; the pin makes
+// the dependency explicit instead of relying on that accident.
 //
 // The pin lives in the transport because mcpcompat documents it cannot set a
 // protocol version (go-sdk's ClientSessionOptions.protocolVersion is

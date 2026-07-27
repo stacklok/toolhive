@@ -38,15 +38,13 @@ type classificationErrorBody struct {
 }
 
 // classifyingHandlerTestServer builds a minimal *Server for driving
-// classifyingHandler in isolation, carrying only the two fields the handler
-// reads beyond config scalars: the kill-switch and the core a switch-on
-// dispatch routes to.
-func classifyingHandlerTestServer(modernDispatchEnabled bool) *Server {
+// classifyingHandler in isolation, carrying only what the handler reads beyond
+// config scalars: the core a Modern dispatch routes to.
+func classifyingHandlerTestServer() *Server {
 	return &Server{
 		config: &Config{
-			Name:                  testServerName,
-			Version:               testServerVersion,
-			ModernDispatchEnabled: modernDispatchEnabled,
+			Name:    testServerName,
+			Version: testServerVersion,
 		},
 		core: &modernFakeCore{tools: []vmcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}},
 	}
@@ -56,13 +54,12 @@ func TestClassifyingHandler(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                  string
-		parsed                *mcpparser.ParsedMCPRequest
-		protocolHeader        string
-		modernDispatchEnabled bool
-		wantPassthrough       bool
-		wantDispatched        bool
-		wantCode              int64
+		name            string
+		parsed          *mcpparser.ParsedMCPRequest
+		protocolHeader  string
+		wantPassthrough bool
+		wantDispatched  bool
+		wantCode        int64
 	}{
 		{
 			name:            "nil parsed request passes through",
@@ -91,36 +88,23 @@ func TestClassifyingHandler(t *testing.T) {
 		{
 			// tools/list is deliberately not in the Mcp-Name-required set, so this
 			// case only needs Mcp-Method (required on every Modern request) to pass
-			// ValidateHeaderConsistency; with the kill-switch on, a well-formed
-			// Modern request then dispatches to the core instead of falling
-			// through to next.
-			name:                  "well-formed modern request dispatches to the core when the kill-switch is on",
-			parsed:                wellFormedModernToolsList(),
-			protocolHeader:        mcpparser.MCPVersionModern,
-			modernDispatchEnabled: true,
-			wantDispatched:        true,
-		},
-		{
-			// Same well-formed Modern request, but with the kill-switch at its
-			// default (off): vMCP does not serve the Modern revision, which the
-			// draft says must be answered with 400 + UnsupportedProtocolVersion
-			// listing the supported versions. It must NOT reach next: falling
-			// through lands on go-sdk's stateful rejection, a plain-text 400 no
-			// client can parse as a protocol error.
-			name:           "well-formed modern request is refused with -32022 when the kill-switch is off",
+			// ValidateHeaderConsistency. vMCP serves the Modern revision
+			// unconditionally (#5959), so a well-formed Modern request always
+			// dispatches to the core rather than falling through to next.
+			name:           "well-formed modern request dispatches to the core",
 			parsed:         wellFormedModernToolsList(),
 			protocolHeader: mcpparser.MCPVersionModern,
-			wantCode:       mcpparser.CodeUnsupportedProtocolVersion,
+			wantDispatched: true,
 		},
 		{
-			// server/discover is the one exemption: it is how a client learns
-			// which revisions the server supports, so refusing it on version
-			// grounds would leave the client unable to negotiate down. go-sdk's
-			// stateful path answers discover, so the fall-through is correct.
-			name:            "server/discover still falls through when the kill-switch is off",
-			parsed:          wellFormedModernDiscover(),
-			protocolHeader:  mcpparser.MCPVersionModern,
-			wantPassthrough: true,
+			// server/discover is dispatched like any other Modern method now that
+			// Modern is served unconditionally. It used to be exempted from a
+			// version refusal so a client could still negotiate down; with nothing
+			// refusing on version grounds, dispatchModern answers it directly.
+			name:           "server/discover dispatches to the core",
+			parsed:         wellFormedModernDiscover(),
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantDispatched: true,
 		},
 		{
 			// A body that is otherwise a well-formed Modern request (valid _meta
@@ -271,7 +255,7 @@ func TestClassifyingHandler(t *testing.T) {
 			})
 
 			rec := httptest.NewRecorder()
-			classifyingHandlerTestServer(tt.modernDispatchEnabled).classifyingHandler(next).ServeHTTP(rec, req)
+			classifyingHandlerTestServer().classifyingHandler(next).ServeHTTP(rec, req)
 
 			if tt.wantPassthrough {
 				assert.True(t, nextCalled, "expected the request to fall through to next")
@@ -312,8 +296,8 @@ func wellFormedModernToolsList() *mcpparser.ParsedMCPRequest {
 	}
 }
 
-// wellFormedModernDiscover is wellFormedModernToolsList for the one method the
-// kill-switch branch exempts from the unsupported-version refusal.
+// wellFormedModernDiscover is wellFormedModernToolsList for server/discover, the
+// Modern capability probe.
 func wellFormedModernDiscover() *mcpparser.ParsedMCPRequest {
 	return &mcpparser.ParsedMCPRequest{
 		Method:    methodServerDiscover,

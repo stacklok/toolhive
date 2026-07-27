@@ -106,9 +106,9 @@ import (
 // 1000-item first page). The Legacy side is not, because holding a client on
 // Legacy would need a negotiation-pinning mechanism that does not exist here --
 // mcpcompat cannot request a protocol version (#5911) -- and
-// test/integration/vmcp's Over1000Tools regression exercises the Legacy split
-// only incidentally today, becoming a Modern test once the kill-switch is
-// removed.
+// test/integration/vmcp's Over1000Tools regression now exercises the Modern
+// split rather than the Legacy one, since Modern dispatch became unconditional
+// (#5959).
 //
 // So: treat the equality claimed above as an invariant maintained by REVIEW, not
 // by CI, and re-check it on any go-sdk bump. This deliberately does not name a

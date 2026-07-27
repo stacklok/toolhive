@@ -304,7 +304,7 @@ func TestDispatchModern_PingRealParser(t *testing.T) {
 	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 	req.Header.Set("Mcp-Method", "ping")
 
-	s := classifyingHandlerTestServer(true)
+	s := classifyingHandlerTestServer()
 	nextCalled := false
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true })
 

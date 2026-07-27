@@ -49,7 +49,7 @@ import (
 // an SSE body whenever that header is present (see mcp_raw_client.go). So the
 // bridge is proven here only under a non-conformant Accept header.
 var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Serial, func() {
-	Context("Modern dispatcher enabled", func() {
+	Context("one Legacy and one Modern backend in the same group", func() {
 		var (
 			config            *e2e.TestConfig
 			groupName         string
@@ -98,8 +98,8 @@ var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Seria
 			initVMCPConfig(config, groupName, configFilePath)
 			appendHealthCheckConfig(configFilePath)
 
-			By("starting thv vmcp serve with the Modern dispatcher enabled")
-			vMCPCmd = startDualEraVMCP(config, groupName, configFilePath, vMCPPort, true)
+			By("starting thv vmcp serve")
+			vMCPCmd = startDualEraVMCP(config, groupName, configFilePath, vMCPPort)
 			err = e2e.WaitForMCPServerReady(config, vMCPURL, "streamable-http", 60*time.Second)
 			Expect(err).ToNot(HaveOccurred(), "vMCP server should become ready")
 
@@ -202,70 +202,6 @@ var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Seria
 				results := fireConcurrentBridgedBatch(rawClient, vMCPURL, sessionID, modernToolName, legacyToolName, perEra, round)
 				assertCorrelated(results, 2*perEra, label)
 			}
-		})
-	})
-
-	Context("Modern dispatcher disabled (kill switch off)", func() {
-		var (
-			config      *e2e.TestConfig
-			groupName   string
-			backendName string
-			toolName    string
-			vMCPCmd     *exec.Cmd
-			vMCPPort    int
-			vMCPURL     string
-			rawClient   *e2e.RawMCPClient
-		)
-
-		BeforeEach(func() {
-			config = e2e.NewTestConfig()
-			groupName = e2e.GenerateUniqueServerName("vmcp-dual-era-off-group")
-			backendName = e2e.GenerateUniqueServerName("vmcp-dual-era-off-backend")
-			toolName = backendName + "_echo"
-			vMCPCmd = nil
-			vMCPPort = allocateVMCPPort()
-			vMCPURL = vmcpEndpointURL(vMCPPort)
-
-			err := e2e.CheckTHVBinaryAvailable(config)
-			Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
-
-			rawClient, err = e2e.NewRawMCPClient(20 * time.Second)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("creating a group with one Modern-capable backend")
-			e2e.NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
-			startYardstickModernOnPort(config, groupName, backendName, allocateVMCPPort())
-
-			By("starting thv vmcp serve with the Modern dispatcher left at its default (off)")
-			vMCPCmd = startDualEraVMCP(config, groupName, "", vMCPPort, false)
-			err = e2e.WaitForMCPServerReady(config, vMCPURL, "streamable-http", 60*time.Second)
-			Expect(err).ToNot(HaveOccurred(), "vMCP server should become ready")
-		})
-
-		AfterEach(func() {
-			stopVMCPProcess(vMCPCmd)
-			vMCPCmd = nil
-
-			if config.CleanupAfter {
-				_ = e2e.StopAndRemoveMCPServer(config, backendName)
-				_ = e2e.RemoveGroup(config, groupName)
-			}
-		})
-
-		It("does not serve a well-formed Modern request via the Modern dispatcher", func() {
-			// Mirrors TestIntegration_Modern_RealBackend_KillSwitchOff
-			// (pkg/vmcp/server/modern_realbackend_integration_test.go): with the
-			// kill-switch at its default (off), a well-formed Modern tools/call
-			// falls through to the SDK path instead of dispatchModern, which
-			// (confirmed live) rejects the Modern protocol version outright on a
-			// non-stateless server -- a plain-text HTTP 400 carrying no
-			// "resultType" at all.
-			resp := modernToolCall(context.Background(), rawClient, vMCPURL, toolName, "killswitchoff")
-			Expect(resp.StatusCode).To(Equal(400), "body: %s", resp.Body)
-
-			var decoded map[string]any
-			_ = json.Unmarshal(resp.Body, &decoded)
-			Expect(decoded).ToNot(HaveKey("resultType"), "must not be served by dispatchModern: %s", resp.Body)
 		})
 	})
 })

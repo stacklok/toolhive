@@ -730,8 +730,18 @@ type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
 	// The meta parameter contains _meta fields from the client request that should be forwarded to the backend.
 	// Returns the complete tool result including _meta field from the backend response.
+	//
+	// paramHeaders carries the SEP-2243 Mcp-Param-* headers mirrored from the tool's
+	// x-mcp-header-designated arguments, keyed by full header name. It is supplied by
+	// the caller because deriving it needs the tool's inputSchema, which lives in the
+	// aggregated capability view rather than on BackendTarget; passing it explicitly
+	// keeps this client free of a schema cache and its staleness window. nil or empty
+	// means nothing to mirror, which is the common case. It applies only to a Modern
+	// (2026-07-28) backend hop -- SEP-2243 is part of that revision -- and is ignored
+	// for a Legacy backend.
 	CallTool(
-		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any,
+		meta map[string]any, paramHeaders map[string]string,
 	) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.

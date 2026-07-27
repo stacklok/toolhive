@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -467,11 +468,22 @@ func (e *workflowEngine) callToolWithRetry(
 	expBackoff.MaxInterval = 60 * initialDelay // Cap at 60x the initial delay
 	expBackoff.Reset()
 
+	// SEP-2243 Mcp-Param-* headers for this step's backend tool. A composite step
+	// calls a backend tool exactly as a direct call would, so an annotating backend
+	// must receive the same mirrored headers or it answers -32020. Derived once
+	// outside the retry loop: args do not change between attempts.
+	paramHeaders, headerErr := mcpparser.ParamHeadersForSchema(e.getToolInputSchema(ctx, step.Tool), args)
+	if headerErr != nil {
+		// Zero attempts: the step never reached the backend.
+		return nil, 0, fmt.Errorf(
+			"deriving parameter headers for step %q tool %q: %w", step.ID, step.Tool, headerErr)
+	}
+
 	attemptCount := 0
 	operation := func() (*vmcp.ToolCallResult, error) {
 		attemptCount++
 		// TODO: For composite tools, we may want to propagate metadata from the parent request
-		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil)
+		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil, paramHeaders)
 		if err != nil {
 			slog.Warn("tool call failed for step",
 				"step", step.ID, "attempt", attemptCount, "max_attempts", maxRetries+1, "error", err)

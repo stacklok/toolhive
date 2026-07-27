@@ -73,7 +73,7 @@ func TestHeaderForward_EndToEnd_ThroughHTTPBackendClient(t *testing.T) {
 	// CallTool drives the full Initialize → tools/list flow through the
 	// streamable-HTTP transport. We don't care about the call result — only
 	// that the request reached the test server with the configured headers.
-	_, _ = backendClient.CallTool(ctx, target, "anything", map[string]any{}, nil)
+	_, _ = backendClient.CallTool(ctx, target, "anything", map[string]any{}, nil, nil)
 
 	captured.mu.Lock()
 	defer captured.mu.Unlock()

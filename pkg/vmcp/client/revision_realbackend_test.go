@@ -148,7 +148,7 @@ func TestLegacyCallTool_StripsReservedMeta_RealBackend(t *testing.T) {
 		"custom-caller-key":                          "custom-value",
 	}
 
-	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello legacy"}, callerMeta)
+	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello legacy"}, callerMeta, nil)
 	require.NoError(t, err, "reserved Modern _meta must not leak onto the Legacy backend hop")
 	require.Len(t, res.Content, 1)
 	assert.Equal(t, "hello legacy", res.Content[0].Text)
@@ -212,7 +212,7 @@ func TestCallTool_MisCachedLegacy_ForwardingAgainstStatelessBackend(t *testing.T
 	}
 	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy) // mis-cached
 
-	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello forwarding"}, nil)
+	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello forwarding"}, nil, nil)
 	require.NoError(t, err,
 		"the negotiated-Modern version gate must suppress the standalone stream so the per-call forwarding path survives")
 	require.Len(t, res.Content, 1)

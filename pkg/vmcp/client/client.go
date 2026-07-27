@@ -1061,7 +1061,7 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 		Capabilities      mcp.ServerCapabilities `json:"capabilities"`
 		SupportedVersions []string               `json:"supportedVersions"`
 	}
-	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", &discover); err != nil {
+	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover); err != nil {
 		return nil, err
 	}
 	// Exact-match on MCPVersionModern (2026-07-28): vMCP's shim only speaks that
@@ -1243,7 +1243,7 @@ func modernListAll[T any](
 ) ([]T, error) {
 	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
 		var page map[string]json.RawMessage
-		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", &page); err != nil {
+		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", nil, &page); err != nil {
 			return nil, "", err
 		}
 		var items []T
@@ -1269,21 +1269,37 @@ func newCapabilityListFromMCP(
 	tools []mcp.Tool, resources []mcp.Resource, templates []mcp.ResourceTemplate, prompts []mcp.Prompt,
 ) *vmcp.CapabilityList {
 	capabilities := &vmcp.CapabilityList{
-		Tools:             make([]vmcp.Tool, len(tools)),
+		Tools:             make([]vmcp.Tool, 0, len(tools)),
 		Resources:         make([]vmcp.Resource, len(resources)),
 		ResourceTemplates: make([]vmcp.ResourceTemplate, len(templates)),
 		Prompts:           make([]vmcp.Prompt, len(prompts)),
 	}
 
-	for i, tool := range tools {
-		capabilities.Tools[i] = vmcp.Tool{
+	for _, tool := range tools {
+		inputSchema := conversion.ConvertToolInputSchema(tool.InputSchema)
+
+		// SEP-2243 requires a Streamable HTTP client to reject a tool definition
+		// whose x-mcp-header annotations violate the extension's constraints, and
+		// vMCP is this backend's client. Rejecting here — at the single ingestion
+		// seam both the Legacy and Modern paths share — also protects vMCP's own
+		// downstream clients: an invalid annotation republished in the aggregated
+		// tools/list would make a conformant downstream client reject the whole
+		// list, taking every other backend's tools down with it. Dropping the one
+		// offending tool is the narrower failure.
+		if err := mcpparser.ValidateParamHeaders(inputSchema); err != nil {
+			slog.Warn("rejecting backend tool with invalid x-mcp-header annotation",
+				"backend", backendID, "tool", tool.Name, "error", err)
+			continue
+		}
+
+		capabilities.Tools = append(capabilities.Tools, vmcp.Tool{
 			Name:         tool.Name,
 			Description:  tool.Description,
-			InputSchema:  conversion.ConvertToolInputSchema(tool.InputSchema),
+			InputSchema:  inputSchema,
 			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
 			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
 			BackendID:    backendID,
-		}
+		})
 	}
 
 	for i, resource := range resources {
@@ -1594,14 +1610,18 @@ func (h *httpBackendClient) CallTool(
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
+	paramHeaders map[string]string,
 ) (*vmcp.ToolCallResult, error) {
 	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
 	var out *vmcp.ToolCallResult
 	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
 		var err error
 		if rev == mcpparser.RevisionModern {
-			out, err = h.modernCallTool(ctx, target, toolName, arguments, meta)
+			out, err = h.modernCallTool(ctx, target, toolName, arguments, meta, paramHeaders)
 		} else {
+			// paramHeaders is deliberately dropped here: SEP-2243's Mcp-Param-*
+			// mirroring belongs to the 2026-07-28 revision, and a Legacy backend
+			// neither expects the headers nor rejects their absence.
 			out, err = h.legacyCallTool(ctx, target, toolName, arguments, meta)
 		}
 		return err
@@ -1614,8 +1634,14 @@ func (h *httpBackendClient) CallTool(
 // the body identifier and the Mcp-Name header — the server rejects a mismatch
 // (-32020). The caller's _meta is forwarded (modernCall strips reserved keys and
 // overlays vMCP's) and the result _meta is forwarded back to core.
+//
+// paramHeaders carries the SEP-2243 Mcp-Param-* headers derived from the tool's
+// x-mcp-header-designated arguments. A backend that designated a parameter and
+// does not receive its header rejects the call with -32020, so omitting them
+// makes any annotating Modern backend uncallable.
 func (h *httpBackendClient) modernCallTool(
 	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any,
+	paramHeaders map[string]string,
 ) (*vmcp.ToolCallResult, error) {
 	backendToolName := target.GetBackendCapabilityName(toolName)
 	if backendToolName != toolName {
@@ -1631,7 +1657,9 @@ func (h *httpBackendClient) modernCallTool(
 		params["_meta"] = meta
 	}
 	var result mcp.CallToolResult
-	if err := modernCall(ctx, hc, target.BaseURL, "tools/call", params, backendToolName, &result); err != nil {
+	if err := modernCall(
+		ctx, hc, target.BaseURL, "tools/call", params, backendToolName, paramHeaders, &result,
+	); err != nil {
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 	return toolResultFromMCP(&result, toolName, target.WorkloadID), nil
@@ -1815,7 +1843,7 @@ func (h *httpBackendClient) modernReadResource(
 		Meta map[string]any `json:"_meta"`
 	}
 	params := map[string]any{"uri": backendURI}
-	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, &res); err != nil {
+	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, nil, &res); err != nil {
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 	mcpContents := make([]mcp.ResourceContents, len(res.Contents))
@@ -1933,7 +1961,7 @@ func (h *httpBackendClient) modernGetPrompt(
 		} `json:"messages"`
 		Meta map[string]any `json:"_meta"`
 	}
-	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, &res); err != nil {
+	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, nil, &res); err != nil {
 		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 	messages := make([]vmcp.PromptMessage, 0, len(res.Messages))
@@ -2055,7 +2083,7 @@ func (h *httpBackendClient) modernComplete(
 			HasMore bool     `json:"hasMore"`
 		} `json:"completion"`
 	}
-	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", &res)
+	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", nil, &res)
 	if errors.Is(err, mcp.ErrMethodNotFound) {
 		return &vmcp.CompletionResult{Values: []string{}}, nil
 	}

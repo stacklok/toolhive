@@ -5,6 +5,7 @@ package transparent
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,89 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 	_ = resp.Body.Close()
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 	assert.Contains(t, string(body), `"code":-32001`)
+}
+
+// TestRoundTrip404EchoesRequestID pins #5945: the unknown-session 404 must echo
+// the incoming JSON-RPC id so a client correlating responses by id can match the
+// error to the request that caused it. Before the fix the transparent proxy
+// hardcoded a null id here, while the sibling classification-error path on the
+// same RoundTrip already echoed it.
+//
+// Note TestRoundTripReturns404ForUnknownSession above cannot catch this: its body
+// carries no "id", so it renders a null id either way.
+func TestRoundTrip404EchoesRequestID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		body   string
+		wantID string
+	}{
+		{
+			name:   "numeric id is echoed verbatim",
+			body:   `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`,
+			wantID: `"id":7`,
+		},
+		{
+			name:   "string id is echoed verbatim",
+			body:   `{"jsonrpc":"2.0","id":"abc-123","method":"tools/list"}`,
+			wantID: `"id":"abc-123"`,
+		},
+		{
+			// A notification has no id by definition, so JSON-RPC requires null.
+			name:   "notification renders a null id",
+			body:   `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			wantID: `"id":null`,
+		},
+		{
+			// An explicit null id is not a correlatable id either.
+			name:   "explicit null id stays null",
+			body:   `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
+			wantID: `"id":null`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// Reaching the backend would mean the guard did not fire; the
+				// assertions below would fail on the 200 that results.
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+
+			tt2 := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
+				"localhost", 0, backend.URL,
+				nil, nil, nil,
+				false, false, "sse",
+				nil, nil, "", false,
+				nil,
+			))
+
+			req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp", strings.NewReader(tt.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown to the store
+
+			resp, err := tt2.RoundTrip(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNotFound, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+
+			assert.Contains(t, string(body), `"code":-32001`)
+			assert.Contains(t, string(body), tt.wantID)
+
+			// The body must remain a single valid JSON-RPC error object -- echoing
+			// a raw id must not corrupt the envelope.
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(body, &decoded))
+			assert.Equal(t, "2.0", decoded["jsonrpc"])
+		})
+	}
 }
 
 // TestRoundTripAllowsInitializeWithUnknownSession verifies that an initialize

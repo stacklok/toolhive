@@ -24,8 +24,13 @@ const (
 
 // NotFoundBody returns the JSON-encoded body for a session-not-found
 // JSON-RPC error response. The requestID is the "id" from the incoming
-// JSON-RPC request; pass nil when the request ID is not available (e.g.,
-// DELETE requests, batch pre-parse, transparent proxy).
+// JSON-RPC request, echoed so a client correlating by id can match this error
+// to the request that caused it.
+//
+// Pass nil only when the request genuinely carries no id, in which case
+// JSON-RPC requires a null id: a bodiless GET (standalone SSE) or DELETE, a
+// notification, or a batch. Do NOT pass nil merely because threading the id to
+// the call site is inconvenient — that was the asymmetry fixed in #5945.
 func NotFoundBody(requestID any) []byte {
 	resp := map[string]any{
 		"jsonrpc": "2.0",
@@ -57,8 +62,12 @@ func WriteNotFound(w http.ResponseWriter, requestID any) {
 // NotFoundResponse constructs an *http.Response with HTTP 404 and a
 // JSON-RPC error body. Use this in httputil.ReverseProxy.ModifyResponse
 // (transparent proxy) where no http.ResponseWriter is available.
-func NotFoundResponse(req *http.Request) *http.Response {
-	body := NotFoundBody(nil)
+//
+// requestID follows NotFoundBody: pass the incoming request's JSON-RPC id so the
+// error echoes it, or nil when the request has none. Callers that reject a
+// request before parsing a body (GET/DELETE) pass nil.
+func NotFoundResponse(req *http.Request, requestID any) *http.Response {
+	body := NotFoundBody(requestID)
 	hdr := make(http.Header)
 	hdr.Set("Content-Type", "application/json")
 	return &http.Response{

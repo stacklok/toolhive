@@ -211,9 +211,9 @@ All proxy types integrate with the middleware chain:
 
 ```mermaid
 graph LR
-    Client[Client Request] --> MW1[Middleware 1<br/>Auth]
-    MW1 --> MW2[Middleware 2<br/>Parser]
-    MW2 --> MW3[Middleware 3<br/>Audit]
+    Client[Client Request] --> MW1[Middleware 1<br/>Audit]
+    MW1 --> MW2[Middleware 2<br/>Auth]
+    MW2 --> MW3[Middleware 3<br/>Parser]
     MW3 --> MW4[Middleware 4<br/>Authz]
     MW4 --> Proxy[Proxy Handler]
     Proxy --> Container[MCP Server]

@@ -9,13 +9,21 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
+// methodServerDiscover is the Modern (2026-07-28) capability-probe method. It is
+// special-cased in two places — the kill-switch branch below and dispatchModern's
+// method switch — because it is how a client learns which revisions a server
+// supports, so it must never be refused on version grounds.
+const methodServerDiscover = "server/discover"
+
 // classifyingHandler classifies a parsed MCP request as Legacy (2025-11-25) or
 // Modern (2026-07-28) at the decode seam, rejects a malformed Modern request
 // with the correct JSON-RPC error before it reaches dispatch, and — when
 // Config.ModernDispatchEnabled — routes a well-formed Modern request to
 // dispatchModern instead of the SDK. Legacy traffic always falls through to
-// next unchanged, as does a well-formed Modern request while the switch is
-// off (default), matching pre-Modern-dispatch wire behavior byte for byte.
+// next unchanged. While the switch is off (default), a well-formed Modern
+// request is refused with a conformant -32022 rather than falling through —
+// see the kill-switch branch for why, and for why server/discover is exempt
+// and does still fall through.
 //
 // ValidateHeaderConsistency (Mcp-Method/Mcp-Name) only applies to Modern
 // requests: a Legacy request carrying a stray Mcp-Method/Mcp-Name header
@@ -67,10 +75,34 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		}
 
 		// TEMPORARY kill-switch (default off): until Modern dispatch is
-		// conformance-validated, a well-formed Modern request falls through to
-		// the SDK path unless explicitly enabled. See issue #5959.
+		// conformance-validated, vMCP does not serve the Modern revision unless
+		// explicitly enabled. See issue #5959.
+		//
+		// Answer that conformantly here rather than letting the request reach the
+		// SDK. The draft's Streamable HTTP "Protocol Version Header" section
+		// requires a server that does not implement a requested version -- "whether
+		// the version is unknown to the server, or is a known version the server has
+		// chosen not to support" -- to reply 400 with an UnsupportedProtocolVersionError
+		// listing the versions it does support. A disabled kill switch is exactly the
+		// second case. Falling through instead yields go-sdk's stateful-server
+		// rejection, which is a 400 with a PLAIN-TEXT body whose text is Go-API advice
+		// for the server author ("set StreamableHTTPOptions.Stateless = true") -- not
+		// parseable as a protocol error and carrying no version list.
+		//
+		// server/discover is deliberately exempt: it is how a client learns which
+		// revisions a server supports, so rejecting it on version grounds would leave
+		// the client no way to negotiate down. go-sdk exempts it for the same reason,
+		// and its stateful path answers discover correctly, so the fall-through is
+		// still right for that one method.
 		if !s.config.ModernDispatchEnabled {
-			next.ServeHTTP(w, r)
+			if parsed.Method == methodServerDiscover {
+				next.ServeHTTP(w, r)
+				return
+			}
+			mcpparser.WriteClassificationError(w, parsed.ID, &mcpparser.UnsupportedVersionError{
+				Requested: mcpparser.MCPVersionModern,
+				Supported: []string{mcpparser.MCPVersionLegacy},
+			})
 			return
 		}
 

@@ -86,7 +86,7 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		s.dispatchModernResourceTemplatesList(ctx, w, parsed, identity)
 	case "prompts/list":
 		s.dispatchModernPromptsList(ctx, w, parsed, identity)
-	case "server/discover":
+	case methodServerDiscover:
 		s.dispatchModernDiscover(ctx, w, parsed, identity)
 	case "tools/call":
 		s.dispatchModernToolCall(ctx, w, parsed, identity)

@@ -102,11 +102,23 @@ func TestClassifyingHandler(t *testing.T) {
 		},
 		{
 			// Same well-formed Modern request, but with the kill-switch at its
-			// default (off): dispatch must not happen and the request falls
-			// through to the SDK path unchanged, byte-identical to pre-Modern-
-			// dispatch wire behavior.
-			name:            "well-formed modern request falls through to next when the kill-switch is off",
-			parsed:          wellFormedModernToolsList(),
+			// default (off): vMCP does not serve the Modern revision, which the
+			// draft says must be answered with 400 + UnsupportedProtocolVersion
+			// listing the supported versions. It must NOT reach next: falling
+			// through lands on go-sdk's stateful rejection, a plain-text 400 no
+			// client can parse as a protocol error.
+			name:           "well-formed modern request is refused with -32022 when the kill-switch is off",
+			parsed:         wellFormedModernToolsList(),
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantCode:       mcpparser.CodeUnsupportedProtocolVersion,
+		},
+		{
+			// server/discover is the one exemption: it is how a client learns
+			// which revisions the server supports, so refusing it on version
+			// grounds would leave the client unable to negotiate down. go-sdk's
+			// stateful path answers discover, so the fall-through is correct.
+			name:            "server/discover still falls through when the kill-switch is off",
+			parsed:          wellFormedModernDiscover(),
 			protocolHeader:  mcpparser.MCPVersionModern,
 			wantPassthrough: true,
 		},
@@ -297,5 +309,20 @@ func wellFormedModernToolsList() *mcpparser.ParsedMCPRequest {
 			metaKeyClientCapabilities: map[string]any{},
 		},
 		MCPMethodHeader: "tools/list",
+	}
+}
+
+// wellFormedModernDiscover is wellFormedModernToolsList for the one method the
+// kill-switch branch exempts from the unsupported-version refusal.
+func wellFormedModernDiscover() *mcpparser.ParsedMCPRequest {
+	return &mcpparser.ParsedMCPRequest{
+		Method:    methodServerDiscover,
+		ID:        "1",
+		IsRequest: true,
+		Meta: map[string]any{
+			metaKeyProtocolVersion:    mcpparser.MCPVersionModern,
+			metaKeyClientCapabilities: map[string]any{},
+		},
+		MCPMethodHeader: methodServerDiscover,
 	}
 }

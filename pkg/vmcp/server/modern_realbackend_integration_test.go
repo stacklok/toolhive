@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,8 +76,13 @@ func postModern(
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
 
-	req, err := http.NewRequestWithContext(
-		context.Background(), http.MethodPost, baseURL+"/mcp", bytes.NewReader(payload))
+	// Bounded: several callers assert "resolves promptly, never hangs", and
+	// without a deadline a hang would only be caught by go test's package
+	// timeout. 30s is generous for an in-process round-trip even under CI
+	// -race load.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/mcp", bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
@@ -307,13 +313,24 @@ func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 }
 
 // TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly pins the
-// Modern-client behavior for a backend tool that issues a mid-call
+// Modern-client CONTRACT for a backend tool that issues a mid-call
 // server-initiated request (elicitation/create, sampling/createMessage): the
-// call MUST resolve promptly to an explicit JSON-RPC error naming the refused
-// request — never a hang, never a fabricated success, and never a resultType
-// "input_required" envelope, which this dispatcher does not emit (client-polled
-// multi-round retrieval, SEP-2322, is unimplemented; modernResultTypeComplete
-// is the only resultType modern_envelope.go builds).
+// call MUST resolve promptly (postModern is deadline-bounded) to an explicit
+// JSON-RPC error naming the refused request — never a hang, never a
+// fabricated success, and never a resultType "input_required" envelope, which
+// this dispatcher does not emit (client-polled multi-round retrieval,
+// SEP-2322, is unimplemented; modernResultTypeComplete is the only resultType
+// modern_envelope.go builds).
+//
+// Deliberately NOT pinned: the specific error code. Today it is -32603, but
+// the spec MUSTs -32021 MissingRequiredClientCapability for the undeclared
+// case (at HTTP 400, which go-sdk's client escalates to permanent session
+// death — the follow-up therefore plans -32021 at HTTP 200 as a documented
+// deviation; see the "unavailable to Modern clients" section of
+// docs/arch/10-virtual-mcp-architecture.md). Pinning -32603 here would make
+// that spec-correcting follow-up look like a regression. TODO(follow-up):
+// once the two-path capability-error contract lands, assert -32021 +
+// data.requiredCapabilities for the undeclared case.
 //
 // This is the honest-unsupported contract for the surface the 2026-07-28
 // revision removed: server-initiated requests need a live session, Modern
@@ -341,18 +358,138 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{"name": tc.tool}, 1, tc.tool)
 			defer resp.Body.Close()
 
-			// A -32603 rides HTTP 200 per writeModernError's status mapping: the
-			// request was accepted and processed; the failure is application-level.
-			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
 			errObj, ok := decoded["error"].(map[string]any)
-			require.True(t, ok, "decoded: %+v", decoded)
-			assert.EqualValues(t, -32603, errObj["code"])
-			assert.Contains(t, errObj["message"], tc.want,
+			require.True(t, ok, "the failure must be an explicit JSON-RPC error: %+v", decoded)
+			msg, _ := errObj["message"].(string)
+			assert.Contains(t, msg, tc.want,
 				"the error must name the refused server-initiated request")
+
+			// KNOWN LEAK, deliberately characterized rather than endorsed: the
+			// -32603 message echoes err.Error() verbatim (writeModernDispatchError's
+			// documented posture), which today includes the backend workload ID —
+			// contradicting writeModernListError's leak policy 25 lines above it in
+			// the same file. The leak predates this test and affects both
+			// revisions; the follow-up capability-error contract replaces this
+			// message with a crafted one. When it does, FLIP this assertion to
+			// NotContains so the fix is a conscious, test-visible event.
+			assert.Contains(t, msg, "real-backend",
+				"characterizes the pre-existing backend-ID leak; flip to NotContains when the message is sanitized")
 		})
 	}
+}
+
+// TestIntegration_Modern_RealBackend_ProgressDropped pins today's Modern
+// behavior for a backend tool that emits notifications/progress mid-call: the
+// notification is silently dropped and the call still completes promptly with
+// its result. There is nowhere for it to go — a Modern response is a single
+// JSON body (writeModernResult), and request-scoped notifications would ride
+// a per-request SSE response stream (SEP-2260) that the single-shot
+// dispatcher does not produce. That is a vMCP streaming-dispatch gap, NOT a
+// spec absence — this test converts that prose claim (see
+// TestForwarding_Progress_RealBackend's pin comment and the arch doc) into an
+// executable one, and MUST be revisited when streaming Modern dispatch is
+// implemented: at that point the progress notification becomes deliverable
+// and this test's premise changes.
+//
+// Promptness matters here: on a Legacy session the same fixture relays the
+// notification; on Modern, a client waiting for it would hang to its own
+// deadline. postModern's bounded context is the hang guard.
+func TestIntegration_Modern_RealBackend_ProgressDropped(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startForwardingBackend(t)
+	ts := newRealModernTestServer(t, backendURL)
+
+	resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{
+		"name": fwdProgressTool,
+		// A progressToken is exactly what would solicit progress delivery if a
+		// channel existed; its presence makes "dropped" the strongest claim.
+		"_meta": map[string]any{"progressToken": fwdProgressToken},
+	}, 1, fwdProgressTool)
+	defer resp.Body.Close()
+
+	// The call completes with the tool's result; the mid-call progress
+	// notification had no channel and was dropped. A single JSON body can
+	// carry nothing else, so completing at all IS the drop assertion.
+	require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+	result, ok := decoded["result"].(map[string]any)
+	require.True(t, ok, "decoded: %+v", decoded)
+	assert.Equal(t, "complete", result["resultType"])
+	content, ok := result["content"].([]any)
+	require.True(t, ok && len(content) == 1, "decoded: %+v", decoded)
+	assert.Equal(t, "done", content[0].(map[string]any)["text"])
+}
+
+// TestIntegration_Modern_RealBackend_LoggingContract pins today's Modern
+// contract for logging/setLevel, which the 2026-07-28 revision removed (the
+// per-request logLevel _meta key replaces it):
+//
+//   - A WELL-FORMED Modern logging/setLevel is an unknown method to
+//     dispatchModern: 404 + -32601, matching go-sdk's own server ("method
+//     removed in the new protocol").
+//   - The request go-sdk v1.7.0-pre.3 ACTUALLY sends is malformed — its
+//     SetLoggingLevel omits the per-request _meta injection (upstream bug),
+//     producing a Modern header with no _meta protocolVersion — and vMCP's
+//     classifier CORRECTLY rejects that shape with 400 + -32020
+//     (HeaderMismatch). Loosening this to accept the malformed request would
+//     be worse than the failing upstream call.
+//
+// See TestForwarding_Logging_RealBackend's pin comment for the full
+// three-cause disposition (upstream bug, method removal/streaming gap,
+// SEP-2577 deprecation).
+func TestIntegration_Modern_RealBackend_LoggingContract(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startForwardingBackend(t)
+	ts := newRealModernTestServer(t, backendURL)
+
+	t.Run("well-formed setLevel is method-not-found", func(t *testing.T) {
+		t.Parallel()
+		resp, decoded := postModern(t, ts.URL, "logging/setLevel", map[string]any{"level": "debug"}, 1, "")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusNotFound, resp.StatusCode, "decoded: %+v", decoded)
+		errObj, ok := decoded["error"].(map[string]any)
+		require.True(t, ok, "decoded: %+v", decoded)
+		assert.EqualValues(t, -32601, errObj["code"])
+	})
+
+	t.Run("go-sdk's malformed setLevel is rejected -32020", func(t *testing.T) {
+		t.Parallel()
+		// Replicate the upstream bug's wire shape by hand: Modern header, but
+		// params carrying NO _meta protocolVersion (postModern would inject it,
+		// so build the request raw).
+		payload, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "logging/setLevel",
+			"params":  map[string]any{"level": "debug"},
+		})
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/mcp", bytes.NewReader(payload))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+		req.Header.Set("Mcp-Method", "logging/setLevel")
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(body, &decoded), "body: %s", body)
+		errObj, ok := decoded["error"].(map[string]any)
+		require.True(t, ok, "body: %s", body)
+		assert.EqualValues(t, -32020, errObj["code"],
+			"the malformed request must be rejected as a header/_meta mismatch")
+	})
 }
 
 // TestIntegration_Modern_RealBackend_MalformedArguments verifies a

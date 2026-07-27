@@ -141,11 +141,19 @@ func startForwardingBackend(t *testing.T) string {
 
 // legacyPinningRoundTripper pins a downstream mcpcompat client to the Legacy
 // (2025-11-25) revision by answering its Modern-first server/discover probe
-// with the same HTTP 400 / JSON-RPC -32022 UnsupportedProtocolVersionError
-// body vMCP's kill-switch produces (reusing the production
-// mcpparser.ClassificationErrorResponse builder), which drives go-sdk's
+// with an HTTP 400 / JSON-RPC -32022 UnsupportedProtocolVersionError body
+// (built with the production mcpparser.ClassificationErrorResponse so the
+// fake cannot drift from the real error shape), which drives go-sdk's
 // Connect down its documented fall-back-to-Legacy-initialize path. Every
 // other request passes through to base untouched.
+//
+// MECHANISM, precisely: this is NOT what vMCP itself does. vMCP never rejects
+// server/discover — the kill-switch (#5959) explicitly exempts it, so vMCP
+// answers HTTP 200 with a discover RESULT whose supportedVersions omits
+// 2026-07-28, and the go-sdk client negotiates down from that. The
+// RoundTripper substitutes a -32022 rejection to force the same Legacy
+// outcome deterministically, independent of what versions the server under
+// test advertises.
 //
 // WHY PIN: these fixtures assert the Legacy-only server-initiated surface —
 // mid-call elicitation/sampling requests and progress/logging notifications
@@ -153,12 +161,12 @@ func startForwardingBackend(t *testing.T) string {
 // initiated requests entirely (go-sdk's assertServerInitiatedRequestAllowed
 // refuses them by protocol version; the replacement is client-polled
 // multi-round retrieval, SEP-2322) and SEP-2577 deprecates sampling and
-// logging outright. While the Modern dispatch kill-switch (#5959) is on, vMCP
-// itself rejects the probe and these clients land on Legacy incidentally;
-// once it is removed (#6033) the go-sdk-based client would negotiate Modern
-// and this surface would vanish mid-test — failing at connect on
-// subscriptions/listen, not at the behavior under test. Pinning makes the
-// tests' Legacy dependency explicit instead of incidental.
+// logging outright. While the kill-switch is on, the version-omitting
+// discover result pins these clients to Legacy incidentally; once it is
+// removed (#6033) the go-sdk-based client would negotiate Modern and this
+// surface would vanish mid-test — failing at connect on subscriptions/listen,
+// not at the behavior under test. Pinning makes the tests' Legacy dependency
+// explicit instead of incidental.
 //
 // The pin lives in the transport because mcpcompat documents it cannot set a
 // protocol version (go-sdk's ClientSessionOptions.protocolVersion is
@@ -168,24 +176,40 @@ func startForwardingBackend(t *testing.T) string {
 // LOAD-BEARING after #6033: once the kill-switch is gone, this RoundTripper
 // is the ONLY thing keeping these downstream clients on Legacy. It is not
 // leftover kill-switch scaffolding — deleting it silently flips every test
-// in this file to Modern and voids what they assert.
-type legacyPinningRoundTripper struct{ base http.RoundTripper }
+// in this file to Modern and voids what they assert. The intercepted counter
+// (asserted after every connect) exists to catch exactly that: if go-sdk ever
+// stops probing server/discover first, the pin becomes dead code and the
+// counter assertion fails instead of the tests silently changing meaning.
+type legacyPinningRoundTripper struct {
+	base http.RoundTripper
+	// intercepted counts server/discover probes answered with the -32022
+	// rejection. Asserted > 0 after connect — proof the pin FIRED, not merely
+	// that it exists.
+	intercepted atomic.Int32
+}
 
 func (rt *legacyPinningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method != http.MethodPost || req.Body == nil {
 		return rt.base.RoundTrip(req)
 	}
+	// Clone before touching anything: RoundTrippers must not modify the
+	// caller's request beyond consuming the body (net/http contract; see also
+	// the copy-before-mutating rule). The body is the one thing a routing
+	// interceptor must read, so consume it from the original and give the
+	// clone a fresh reader.
 	body, err := io.ReadAll(req.Body)
 	_ = req.Body.Close()
 	if err != nil {
 		return nil, err
 	}
+	req = req.Clone(req.Context())
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	var probe struct {
 		ID     any    `json:"id"`
 		Method string `json:"method"`
 	}
 	if json.Unmarshal(body, &probe) == nil && probe.Method == "server/discover" {
+		rt.intercepted.Add(1)
 		return mcpparser.ClassificationErrorResponse(req, probe.ID, &mcpparser.UnsupportedVersionError{
 			Requested: mcpparser.MCPVersionModern,
 			Supported: []string{mcpparser.MCPVersionLegacy},
@@ -194,11 +218,26 @@ func (rt *legacyPinningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	return rt.base.RoundTrip(req)
 }
 
-// legacyPinnedHTTPClient returns an *http.Client for
-// transport.WithHTTPBasicClient that pins the mcpcompat client to Legacy —
+// newLegacyPinnedHTTPClient returns an *http.Client for
+// transport.WithHTTPBasicClient that pins the mcpcompat client to Legacy,
+// plus the RoundTripper itself so callers can assert the pin actually fired —
 // see legacyPinningRoundTripper.
-func legacyPinnedHTTPClient() *http.Client {
-	return &http.Client{Transport: &legacyPinningRoundTripper{base: http.DefaultTransport}}
+func newLegacyPinnedHTTPClient() (*http.Client, *legacyPinningRoundTripper) {
+	rt := &legacyPinningRoundTripper{base: http.DefaultTransport}
+	return &http.Client{Transport: rt}, rt
+}
+
+// requirePinFired asserts the Legacy pin intercepted at least one
+// server/discover probe during connect. Without this, the pin is
+// indistinguishable from dead code: on a kill-switch base the tests pass
+// even with the RoundTripper deleted (the server's own version-omitting
+// discover answer pins the client), and if go-sdk ever stopped probing
+// server/discover first the tests would silently stop testing what they
+// claim.
+func requirePinFired(t *testing.T, rt *legacyPinningRoundTripper) {
+	t.Helper()
+	require.Positive(t, rt.intercepted.Load(),
+		"Legacy pin never fired: the client did not probe server/discover; the pin may be dead code")
 }
 
 // downstreamClient builds a real mcpcompat client against the vMCP endpoint,
@@ -256,11 +295,12 @@ func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, with
 		)
 	}
 
+	hc, pinRT := newLegacyPinnedHTTPClient()
 	c, err := client.NewStreamableHttpClientWithOpts(
 		vmcpURL,
 		[]transport.StreamableHTTPCOption{
 			transport.WithContinuousListening(),
-			transport.WithHTTPBasicClient(legacyPinnedHTTPClient()),
+			transport.WithHTTPBasicClient(hc),
 		},
 		clientOpts,
 	)
@@ -284,6 +324,7 @@ func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, with
 		},
 	})
 	require.NoError(t, err)
+	requirePinFired(t, pinRT)
 
 	return dc
 }
@@ -418,9 +459,11 @@ func TestForwarding_Progress_RealBackend(t *testing.T) {
 //     header but no _meta.protocolVersion. vMCP's ClassifyRevision CORRECTLY
 //     rejects that with -32020; accepting the malformed request to make this
 //     test pass would be worse than the failure. Filed upstream separately.
-//  2. Even with (1) fixed, Modern log delivery is gated on the per-request
-//     logLevel _meta key (SEP-2575: absent means the server must not send log
-//     notifications for that request) and rides the same per-request SSE
+//  2. Even with (1) fixed, the RPC no longer exists on Modern: the per-request
+//     logLevel _meta key REPLACES logging/setLevel (draft schema; go-sdk's
+//     server answers methodSetLevel with -32601 under 2026-07-28, server.go
+//     "method removed in the new protocol"). Delivery of notifications/message
+//     for a request that does carry logLevel rides the per-request SSE
 //     response stream the single-shot dispatcher cannot produce — the same
 //     streaming gap as TestForwarding_Progress_RealBackend.
 //  3. SEP-2577 deprecates the logging feature itself as of 2026-07-28
@@ -474,12 +517,33 @@ func TestForwarding_Sampling_NoDownstreamCapability(t *testing.T) {
 		Params: mcpmcp.CallToolParams{Name: fwdSampleTool},
 	})
 
-	// The call must resolve (error or IsError), never hang until the deadline.
+	// The call must resolve (error or IsError), never hang until the deadline —
+	// and the failure must NAME the refused request, so this cannot go vacuous
+	// by passing on an unrelated failure (e.g. a connect error).
 	require.NotErrorIs(t, err, context.DeadlineExceeded,
 		"sampling without a downstream handler must fail cleanly, not time out")
-	if err == nil {
-		assert.True(t, res.IsError, "backend sampling must fail when downstream lacks the capability")
+	assert.Contains(t, callFailureText(t, res, err), "sampling/createMessage",
+		"the failure must name the refused sampling request, not an unrelated error")
+}
+
+// callFailureText extracts the human-readable failure text from a failed
+// CallTool: the error message when the call errored, otherwise the text
+// content of an IsError result. Fails the test if the call did not fail at
+// all — callers use it precisely to assert WHAT failed.
+func callFailureText(t *testing.T, res *mcpmcp.CallToolResult, err error) string {
+	t.Helper()
+	if err != nil {
+		return err.Error()
 	}
+	require.NotNil(t, res)
+	require.True(t, res.IsError, "the call must fail (error or IsError result)")
+	var text string
+	for _, c := range res.Content {
+		if tc, ok := mcpmcp.AsTextContent(c); ok {
+			text += tc.Text
+		}
+	}
+	return text
 }
 
 // TestForwarding_Elicitation_NoDownstreamCapability is the elicitation twin of
@@ -500,12 +564,12 @@ func TestForwarding_Elicitation_NoDownstreamCapability(t *testing.T) {
 		Params: mcpmcp.CallToolParams{Name: fwdElicitTool},
 	})
 
-	// The call must resolve (error or IsError), never hang until the deadline.
+	// Same shape as the sampling twin: resolve promptly AND name the refused
+	// request, closing the vacuous-pass route.
 	require.NotErrorIs(t, err, context.DeadlineExceeded,
 		"elicitation without a downstream handler must fail cleanly, not time out")
-	if err == nil {
-		assert.True(t, res.IsError, "backend elicitation must fail when downstream lacks the capability")
-	}
+	assert.Contains(t, callFailureText(t, res, err), "elicitation/create",
+		"the failure must name the refused elicitation request, not an unrelated error")
 }
 
 // samplingClient is a downstream client whose sampling handler returns a
@@ -525,11 +589,12 @@ func newSamplingClient(ctx context.Context, t *testing.T, vmcpURL, summary, mode
 	t.Helper()
 
 	sc := &samplingClient{}
+	hc, pinRT := newLegacyPinnedHTTPClient()
 	c, err := client.NewStreamableHttpClientWithOpts(
 		vmcpURL,
 		[]transport.StreamableHTTPCOption{
 			transport.WithContinuousListening(),
-			transport.WithHTTPBasicClient(legacyPinnedHTTPClient()),
+			transport.WithHTTPBasicClient(hc),
 		},
 		[]client.ClientOption{
 			client.WithSamplingHandler(client.SamplingHandlerFunc(
@@ -560,6 +625,7 @@ func newSamplingClient(ctx context.Context, t *testing.T, vmcpURL, summary, mode
 		},
 	})
 	require.NoError(t, err)
+	requirePinFired(t, pinRT)
 	return sc
 }
 

@@ -301,6 +301,34 @@ there is no client session to forward it to, so the call fails with an explicit
 `TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly`). This is a
 deliberate honest-unsupported error, not a gap left by accident:
 
+**The `-32603` is a documented deviation, not the spec's answer — and the
+spec's answer is unshippable today.** For a client that did NOT declare the
+needed capability in its per-request `clientCapabilities`, SEP-2575 MUSTs a
+`-32021` `MissingRequiredClientCapabilityError` at **HTTP 400**, with
+explicitly execution-time language ("if processing a request requires a
+capability…") — go-sdk's own doc comment on the error type tells handlers to
+return it mid-execution, so the mid-call timing is not the problem. The
+problem is the transport: go-sdk's streamable client treats any non-transient
+4xx (its transient set is only 500/502/503/504/429) as a **connection**
+failure — `checkResponse` → `fail()` → a one-shot, permanent session death —
+so a conformant 400 would tear down the entire client session to punish one
+call. And for a client that DID declare the capability, the 2026-07-28
+vocabulary has no conformant code at all: no "operation not supported", MRTR
+is not a server-advertised capability, and SEP-2322 has no decline mechanism.
+The planned follow-up therefore serves `-32021` (with
+`data.requiredCapabilities`, and a message naming both the capability and the
+gateway limitation) at **HTTP 200** for the undeclared case — deviating from
+the mandated 400 for exactly the reason above — and keeps `-32603` for the
+declared case as a documented spec gap. Until that lands, both cases surface
+as `-32603`.
+
+**A clean error does not mean nothing happened.** The refusal reaches the
+backend mid-call, so a real backend tool may have executed — including side
+effects — up to the point it demanded input. A Modern client receiving this
+error must not assume the call was side-effect-free. (The integration
+fixture's tools elicit as their first action, so the tests cannot exhibit
+this; production tools can.)
+
 - The 2026-07-28 revision **removed** server-initiated requests; go-sdk's
   `ServerSession.assertServerInitiatedRequestAllowed` refuses
   elicitation/sampling/roots purely by negotiated protocol version, so no
@@ -329,11 +357,13 @@ identity binding on a token that becomes a capability to resume someone else's
 in-flight call, and replica affinity with no `Mcp-Session-Id` to route on. That
 is a session in disguise: exactly the construct the 2026-07-28 revision
 removed. The spec's own sanctioned path for genuinely stateful
-`input_required` work is the **Tasks** extension (SEP-1686: `tools/call`
-returns a `taskId`; the client polls `tasks/get`/`tasks/result` and answers via
-`tasks/input_response`) — if Modern-client elicitation over Legacy backends is
-ever truly demanded, that is the machinery to reach for, not parked
-`tools/call`.
+`input_required` work is the **Tasks** extension (SEP-2663: `tools/call`
+returns `resultType: "task"` with a `taskId`; the client polls `tasks/get` and
+answers outstanding `inputRequests` via `inputResponses` on `tasks/update`;
+note SEP-2663 supersedes SEP-1686 and removed the blocking `tasks/result`
+method for the same reasons argued here) — if Modern-client elicitation over
+Legacy backends is ever truly demanded, that is the machinery to reach for,
+not parked `tools/call`.
 
 The coherent future MRTR shape for a re-aggregating gateway is
 **Modern-client ↔ Modern-backend pass-through** — relay a Modern backend's

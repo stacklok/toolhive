@@ -172,7 +172,8 @@ type Authorizer struct {
 	mu sync.RWMutex
 	// primaryUpstreamProvider names the upstream IDP provider whose access token
 	// is the source of JWT claims for Cedar evaluation, aside from the narrow
-	// user-profile supplement described in resolveClaims.
+	// user-profile supplement and the opaque-access-token case described in
+	// resolveClaims — both of which read the same provider's id_token.
 	// When empty, claims from the token on the original client request are used,
 	// which may be a ToolHive-issued token or any other bearer token.
 	primaryUpstreamProvider string
@@ -197,9 +198,10 @@ type Authorizer struct {
 	// the window, hiding the claim-key dump on exactly the deployments that need it.
 	supplementLog *syncutil.AtMost
 	// missingIDTokenLog rate-limits the warning that the primary provider has no
-	// usable stored id_token, so profile claims cannot be supplemented at all.
-	// Separate from supplementLog because the two are mutually exclusive per
-	// request and describe opposite conditions.
+	// usable stored id_token — meaning either that profile claims cannot be
+	// supplemented (JWT access token) or that there is no upstream claim source at
+	// all (opaque access token). Separate from supplementLog because the two are
+	// mutually exclusive per request and describe opposite conditions.
 	missingIDTokenLog *syncutil.AtMost
 	// multiValuedClaims lists JWT claim names normalized to a canonical unpadded
 	// space-delimited string, plus a companion Cedar Set, before Cedar evaluation.
@@ -223,10 +225,13 @@ type ConfigOptions struct {
 	// The profile claims in profileClaimsFromIDToken fall back to the SAME
 	// provider's id_token when its access token omits them (many OIDC providers
 	// assert `email` only in the id_token), so `principal has claim_email` keeps
-	// meaning "this upstream asserted an email". Every other claim, including all
-	// group/role/scope claims, comes from the upstream access token or not at all,
-	// and the ToolHive-issued token the client presented is never a claim source on
-	// this path. See resolveClaims for the full contract.
+	// meaning "this upstream asserted an email". An opaque access token has no
+	// claims at all, so that provider's id_token supplies the principal and those
+	// same profile claims instead. Every other claim, including all group/role/scope
+	// claims, comes from the upstream access token or not at all, and the
+	// ToolHive-issued token the client presented is a claim source only for an
+	// opaque-access-token provider with no stored id_token, which has no upstream
+	// claim source whatsoever. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -578,7 +583,32 @@ func (a *Authorizer) IsAuthorized(
 // The ToolHive-issued token the client presented is deliberately NOT a claim
 // source here, even though it mirrors a name/email — in a multi-upstream chain
 // those belong to the first configured upstream, which need not be the pinned
-// provider, so using them could attribute one IdP's email to another.
+// provider, so using them could attribute one IdP's email to another. The single
+// exception is the last-resort case at the end of this comment, where the pinned
+// provider offers no claim source at all.
+//
+// When the pinned provider's access token is OPAQUE rather than JWT-shaped
+// (Google's ya29.*, GitHub's gho_*) it carries no claims to read, so the same
+// provider's id_token stands in as the claim carrier: it supplies the Cedar
+// principal (`sub`) plus the profileClaimsFromIDToken it asserts, and nothing
+// else. This keeps the principal on the upstream subject and the profile claims
+// attributed to the pinned provider — what the two branches used to disagree
+// about (#6048). `sub` is not "supplemented" here in the sense the bullets below
+// forbid: it is the subject of the only claim source there is, for the same
+// provider and session, and no access-token `sub` exists to be overridden.
+//
+// A pinned provider whose access token is opaque AND that has no usable stored
+// id_token has no upstream claim source at all. That is a pure OAuth 2.0 upstream
+// (pkg/authserver/upstream/oauth2.go) never asked for the `openid` scope, whose
+// identity is resolved from a userinfo endpoint and never lands in an id_token;
+// an OIDC upstream always has one. For that configuration ALONE the claims of the
+// token on the original client request are used, exactly as they were before
+// #6048 — so the Cedar principal is ToolHive's internal user ID and the profile
+// claims are the auth server's mirror of the FIRST configured upstream. Failing
+// closed instead would deny every request on those deployments with nothing an
+// operator could configure to recover, which is the deny-all trap #5916 was; the
+// weaker attribution is the lesser harm, and a rate-limited WARN names the
+// provider so the condition is diagnosable from logs alone.
 //
 // The supplement is restricted to profileClaimsFromIDToken rather than merging
 // the two token bodies. Read this before widening it:
@@ -594,7 +624,9 @@ func (a *Authorizer) IsAuthorized(
 //   - `sub` is excluded because it becomes the Cedar principal entity ID rather
 //     than an attribute, and Cedar has no `has`-style guard in the principal
 //     position. An access token without `sub` violates RFC 9068; failing closed
-//     with ErrMissingPrincipal beats silently choosing a principal.
+//     with ErrMissingPrincipal beats silently choosing a principal. An opaque
+//     access token is a different case, not an exception to this one: it asserts
+//     nothing, so there is no access-token `sub` to override.
 //
 // An access-token value always wins, so a claim the access token does assert can
 // never be shadowed. A claim absent from both tokens stays absent, so `has`-guarded
@@ -634,14 +666,7 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 		// namespaced claims) see those attributes as absent on this branch and
 		// must be authored defensively (`principal has claim_groups && ...`).
 		if !looksLikeJWT(upstreamToken) {
-			// The Warn shares claimKeyLog with logClaimKeys below so a busy
-			// Google/GitHub deployment does not emit one line per tool call.
-			a.claimKeyLog.Do(func() {
-				slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
-					"provider", a.primaryUpstreamProvider)
-			})
-			a.logClaimKeys("token-fallback", requestClaims)
-			return requestClaims, nil
+			return a.claimsForOpaqueUpstreamToken(identity, requestClaims), nil
 		}
 		return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
 			a.primaryUpstreamProvider, err)
@@ -650,6 +675,69 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 	merged := a.supplementFromIDToken(identity, upstreamClaims)
 	a.logClaimKeys("upstream", merged)
 	return merged, nil
+}
+
+// errNoUpstreamIDToken reports that no id_token is stored for the pinned provider,
+// so that "nothing to read" and "stored but unparsable" reach one log line.
+var errNoUpstreamIDToken = errors.New("no ID token stored for provider")
+
+// claimsForOpaqueUpstreamToken returns the claim set to evaluate when the pinned
+// provider's access token is opaque, so it carries no claims of its own.
+//
+// The same provider's id_token stands in as the claim carrier. Only its `sub` and
+// the profileClaimsFromIDToken it asserts are admitted: `sub` because the Cedar
+// principal has to come from somewhere and this is the pinned provider's own
+// subject, and the profile claims through the same allowlist that governs the
+// JWT-access-token path, so both paths admit exactly the same claim names and
+// widening the allowlist (see #6049 for group claims) widens them together. The
+// id_token's remaining claims stay out: an `iss`/`aud`/`nonce`/`at_hash` describes
+// the token rather than the user, and admitting the rest here but not on the JWT
+// path would recreate the very inconsistency this resolves.
+//
+// `exp` is not checked, as elsewhere in this file — see Identity.UpstreamIDTokens.
+//
+// requestClaims (the ToolHive-issued token's claims) is the last resort for a
+// provider with no usable id_token, which is a pure OAuth 2.0 upstream; see
+// resolveClaims for why that keeps working rather than failing closed.
+func (a *Authorizer) claimsForOpaqueUpstreamToken(identity *auth.Identity, requestClaims jwt.MapClaims) jwt.MapClaims {
+	idToken := identity.UpstreamIDTokens[a.primaryUpstreamProvider] // nil map safe in Go
+
+	idTokenClaims, err := func() (jwt.MapClaims, error) {
+		if idToken == "" {
+			return nil, errNoUpstreamIDToken
+		}
+		return parseUpstreamJWTClaims(idToken)
+	}()
+	if err != nil {
+		// Shares missingIDTokenLog with supplementFromIDToken: both report that the
+		// provider has no usable id_token, and a request takes only one of the two
+		// paths, so neither starves the other.
+		a.missingIDTokenLog.Do(func() {
+			slog.Warn("no usable upstream ID token for provider with an opaque access token; "+
+				"falling back to the claims of the ToolHive-issued token, so the Cedar principal is "+
+				"ToolHive's internal user ID rather than the upstream subject",
+				"provider", a.primaryUpstreamProvider,
+				"error", err)
+		})
+		a.logClaimKeys("token-fallback", requestClaims)
+		return requestClaims
+	}
+
+	claims := make(jwt.MapClaims, len(profileClaimsFromIDToken)+1)
+	// An id_token without `sub` violates OIDC Core 1.0 §2, and leaving the key
+	// absent makes AuthorizeWithJWTClaims fail closed with ErrMissingPrincipal
+	// rather than pick a principal from the ToolHive-issued token.
+	if sub, ok := idTokenClaims[oidcSubjectClaim]; ok {
+		claims[oidcSubjectClaim] = sub
+	}
+	for _, name := range profileClaimsFromIDToken {
+		if v, ok := idTokenClaims[name]; ok {
+			claims[name] = v
+		}
+	}
+
+	a.logClaimKeys("upstream-id-token", claims)
+	return claims
 }
 
 // supplementFromIDToken returns upstreamClaims with the profileClaimsFromIDToken
@@ -704,16 +792,22 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	return merged
 }
 
-// OIDC Core 1.0 §5.1 standard claim names, declared here rather than borrowed
-// from another package. What this code reads is an upstream provider's id_token,
-// so these are wire names fixed by the OIDC spec — not names ToolHive chooses.
-// Anchoring them to a ToolHive constant would invert the dependency: renaming that
-// constant would silently change which claim Cedar reads out of a third party's
-// token. Two literals also do not justify pulling an authorization-server
-// dependency tree into the authorizer.
+// OIDC Core 1.0 claim names — `sub` from §2, the profile claims from §5.1 —
+// declared here rather than borrowed from another package. What this code reads is
+// an upstream provider's id_token, so these are wire names fixed by the OIDC spec,
+// not names ToolHive chooses. Anchoring them to a ToolHive constant would invert
+// the dependency: renaming that constant would silently change which claim Cedar
+// reads out of a third party's token. Three literals also do not justify pulling
+// an authorization-server dependency tree into the authorizer.
+//
+// oidcSubjectClaim is deliberately NOT in profileClaimsFromIDToken: it is never
+// supplemented into a claim set an access token already produced. It is read from
+// the id_token only when the access token is opaque and the id_token is therefore
+// the whole claim source — see claimsForOpaqueUpstreamToken.
 const (
-	oidcNameClaim  = "name"
-	oidcEmailClaim = "email"
+	oidcSubjectClaim = "sub"
+	oidcNameClaim    = "name"
+	oidcEmailClaim   = "email"
 )
 
 // profileClaimsFromIDToken are the OIDC Core §5.1 profile claims that may be read

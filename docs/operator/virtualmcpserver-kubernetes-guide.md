@@ -671,28 +671,55 @@ days, expiring it out of policy evaluation would let the same user be permitted
 early in a session and denied later, with no configuration change.
 
 The token the client presented — the one ToolHive's auth server issued — is
-never a claim source here, even though it mirrors a `name` and `email`. In a
-multi-upstream chain those mirrored values come from the **first** configured
-upstream (the identity provider), which need not be the provider
-`primaryUpstreamProvider` names, so using them could attribute one IdP's email to
-another.
+never a claim source here, even though it mirrors a `name` and `email`, with the
+single exception noted below. In a multi-upstream chain those mirrored values come
+from the **first** configured upstream (the identity provider), which need not be
+the provider `primaryUpstreamProvider` names, so using them could attribute one
+IdP's email to another.
+
+**Opaque upstream access tokens**: some providers (Google's `ya29.…`, GitHub's
+`gho_…`) issue access tokens that are not JWTs at all, so there are no claims in
+them to read. For those, that same provider's `id_token` is the claim source
+instead: it supplies the principal (`sub`) and the same `name`/`email` profile
+claims, so a rule keyed on `Client::"<upstream-subject>"` matches the upstream
+identity here exactly as it does for a JWT access token. Claims the `id_token`
+carries beyond those — `iss`, `aud`, `nonce`, groups, or provider-specific ones
+like Google's `hd` — are not admitted, the same restriction that applies when a
+JWT access token is supplemented.
+
+Earlier releases evaluated the ToolHive-issued token on this path instead, so a
+policy written against that token's values needs re-checking against the pinned
+provider's `id_token`: the principal is now the upstream subject rather than
+ToolHive's internal user ID, and in a multi-upstream chain `claim_email` now names
+the pinned provider's email rather than the first configured upstream's.
 
 An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
-`id_token`, so nothing is available to fall back to and the claim stays absent.
-The proxy says so once per 30s:
+`id_token`. With a JWT access token, nothing is available to fall back to and the
+profile claim stays absent. With an opaque access token there is no upstream claim
+source at all, and only in that case does Cedar evaluate the claims of the token
+the client presented — so the principal is ToolHive's internal user ID rather than
+the upstream subject, and a rule keyed on the upstream subject will not match.
+Requesting the `openid` scope for that upstream is what fixes it. Either way the
+proxy says so once per 30s:
 
 ```
 WARN no upstream ID token stored for provider; policies referencing profile
      claims the access token omits will deny provider=okta
+
+WARN no usable upstream ID token for provider with an opaque access token;
+     falling back to the claims of the ToolHive-issued token, so the Cedar
+     principal is ToolHive's internal user ID rather than the upstream subject
+     provider=github
 ```
 
-Every other claim is upstream-access-token-only. In particular, group, role and
-scope claims are not substituted from anywhere, so a policy such as `principal in
-THVGroup::"platform-eng"` only ever matches groups the upstream access token
-asserts. The same holds for the principal: `sub` is never substituted, so a rule
-keyed on `Client::"<upstream-subject>"` keeps matching the upstream identity, and
-an access token with no `sub` is rejected outright rather than having a principal
-chosen for it.
+Every other claim comes from the upstream access token or not at all. In
+particular, group, role and scope claims are not substituted from anywhere, so a
+policy such as `principal in THVGroup::"platform-eng"` only ever matches groups the
+pinned upstream asserts. The principal is always that upstream's subject too: a JWT
+access token's `sub` is never substituted, so a JWT that carries no `sub` is
+rejected outright rather than having a principal chosen for it, and an opaque access
+token takes the subject from the `id_token` of the same provider and session — never
+from the token the client presented.
 
 If a policy references a claim that neither the access token nor the `id_token`
 carries, `principal has claim_x` is false and the policy denies — author domain

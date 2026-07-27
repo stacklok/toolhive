@@ -411,11 +411,18 @@ func CreateFakeBrowserDir(tempDir string) (string, error) {
 	return dir, nil
 }
 
+// listTimeout bounds a single `thv list` call. It is well above how long a list
+// takes even on a loaded runner, and well below any readiness budget: callers
+// poll, so a list that overruns is retried rather than fatal. Run() would apply
+// TestConfig.TestTimeout instead, letting one hung list outlast the wait it is
+// being polled for.
+const listTimeout = 30 * time.Second
+
 // findWorkload returns the named workload's record, or nil if it is not listed.
 // --all is required so that workloads which have not reached running yet
 // (starting, error) are visible rather than filtered out.
 func findWorkload(config *TestConfig, serverName string) (*core.Workload, error) {
-	stdout, stderr, err := NewTHVCommand(config, "list", "--all", "--format", "json").Run()
+	stdout, stderr, err := NewTHVCommand(config, "list", "--all", "--format", "json").RunWithTimeout(listTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("thv list: %w (stderr: %s)", err, strings.TrimSpace(stderr))
 	}

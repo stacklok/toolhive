@@ -145,8 +145,8 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 
 	// Create a JSON-RPC error response
-	id, err := mcp.ConvertToJSONRPC2ID(msgID)
-	if err != nil {
+	id, convErr := mcp.ConvertToJSONRPC2ID(msgID)
+	if convErr != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails
 	}
 
@@ -155,15 +155,21 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 		Error: jsonrpc2.NewError(mcp.JSONRPCCodeDenied, errorMsg),
 	}
 
-	// Set the response headers
+	// Encode before writing any header, so a marshal failure never leaves a
+	// half-written response (e.g. a 403 header followed by a second 500 write).
+	body, encErr := jsonrpc2.EncodeMessage(errorResponse)
+	if encErr != nil {
+		// Unreachable in practice: errorResponse is always a well-formed
+		// jsonrpc2.Response built from strings/ints above. Fall back to a
+		// hardcoded valid JSON-RPC error body rather than writing nothing.
+		slog.Error("failed to encode JSON-RPC unauthorized response", "error", encErr)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Internal error"}}`, mcp.JSONRPCCodeDenied)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-
-	// Write the error response
-	if err := json.NewEncoder(w).Encode(errorResponse); err != nil {
-		// If we can't encode the error response, log it and return a simple error
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
+	//nolint:gosec // G104: writing the JSON-RPC denial body to an HTTP client; nothing to do on error
+	_, _ = w.Write(body)
 }
 
 // Middleware creates an HTTP middleware that authorizes MCP requests.

@@ -670,9 +670,10 @@ Group and role claims are included, under whatever name the provider uses — th
 well-known names, `spec.incomingAuth.authzConfig.groupClaimName`/`roleClaimName`,
 and URI-style names such as `https://example.com/groups` alike. So are `hd`,
 `email_verified`, and any other claim the provider asserts about the user or their
-login (`acr`, `amr`, `auth_time`).
+login (`acr`, `amr`, `auth_time`). Read the group-revocation callout below before
+relying on this.
 
-Two categories are never taken from the `id_token`, no matter what the access
+Three categories are never taken from the `id_token`, no matter what the access
 token carries:
 
 * Claims that describe the `id_token` itself rather than the user — `iss`, `aud`,
@@ -681,6 +682,14 @@ token carries:
   client, so a policy gating on the resource-server `aud`, on token lifetime, or
   on the requesting `client_id` would otherwise read a fact about a different
   token.
+* **`scope` and `scp`**, the delegated grant. A group is a fact about the *user*,
+  which either token can report; a scope is the authority *a particular token*
+  carries, and the only authority at issue is the access token's. Where a provider
+  emits `scope` in an `id_token` at all (it is not a standard `id_token` claim) it
+  may echo what the client *requested* rather than what the user *granted* — and
+  granular or incremental consent makes those differ routinely. So a
+  `claimset_scp` or `claim_scope` gate only ever matches what the access token
+  asserts. Put scopes policies depend on in the access token.
 * `sub`, the principal. A rule keyed on `Client::"<upstream-subject>"` keeps
   matching the upstream identity, and an access token with no `sub` is rejected
   outright rather than having a principal chosen for it.
@@ -695,17 +704,35 @@ resource server", and unioning in a list minted for a different audience would
 restore groups the provider chose to withhold. If policies need the fuller list,
 configure the upstream to assert it in the access token.
 
-The fallback uses the stored `id_token` even after it has expired, by design. It
-is read as a record of what the upstream asserted when the user logged in, not
-presented to anyone as a credential. Since a session can outlive an `id_token` by
-days, expiring it out of policy evaluation would let the same user be permitted
-early in a session and denied later, with no configuration change. The
-consequence to plan for: where a claim comes from the `id_token`, it is a
-login-time fact. Access tokens are refreshed, so claims read from them track the
-provider; a stored `id_token` is replaced only when a refresh rotates one. A group
-revoked upstream can therefore keep granting until the session ends — shorten
-`spec.authServerConfig.tokenLifespans.refreshTokenLifespan` (7d by default) if
-that window is too wide for your policies.
+> ### ⚠️ Group revocation latency is session-scoped for `id_token`-sourced claims
+>
+> **Read this if your provider asserts groups in the `id_token` only.** Where a
+> claim comes from the `id_token`, policies evaluate it as a **login-time fact**,
+> not current state:
+>
+> * Upstream **access tokens are refreshed**, so a group revoked upstream stops
+>   granting within an access-token lifetime (minutes to an hour).
+> * A stored **`id_token` is replaced only when a refresh rotates one**, and it is
+>   used even after it expires. So a group revoked upstream can keep granting
+>   until the ToolHive **session** ends — up to
+>   `spec.authServerConfig.tokenLifespans.refreshTokenLifespan`, **7 days by
+>   default**.
+>
+> This is deliberate. Rejecting an expired `id_token` is not the remedy: it would
+> flip policies from permit to deny mid-session for *every* user at once, not just
+> a revoked one, with no configuration change. Sessions routinely outlive
+> `id_token`s by days.
+>
+> **What to do**: if your authorization model needs group revocation to propagate
+> faster than the session, either have the upstream assert groups in its **access
+> token** (which restores refresh-rate propagation), or shorten
+> `refreshTokenLifespan` to bound the window. Deployments whose groups already
+> come from the access token are unaffected.
+>
+> Note this is not a regression: before ToolHive read the `id_token`, these
+> deployments had an empty group set and denied *every* request, so the change is
+> broken → works-with-login-time-groups. But the revocation window is new
+> information, and it is wider than the access-token path's.
 
 The token the client presented — the one ToolHive's auth server issued — is
 never a claim source here, even though it mirrors a `name` and `email`. A group,

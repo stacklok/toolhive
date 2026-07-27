@@ -233,9 +233,11 @@ type ConfigOptions struct {
 	// `groups` list keeps exactly that list and the id_token's fuller list is not
 	// unioned in. See resolveClaims for why that is the safe direction.
 	//
-	// The ToolHive-issued token the client presented is never a claim source on this
-	// path, so a group, role or scope claim on it grants nothing. See resolveClaims
-	// for the full contract.
+	// `scope`/`scp` are the exception: they assert the authority the presented access
+	// token carries, not a fact about the user, so they are read from that token or
+	// not at all. The ToolHive-issued token the client presented is never a claim
+	// source on this path either, so a group, role or scope claim on it grants
+	// nothing. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -598,7 +600,14 @@ func (a *Authorizer) IsAuthorized(
 // authorization-bearing claims (`groups`, `roles`, `scope`) were "left alone for
 // now" because admitting them would newly GRANT requests that denied, and so
 // belonged in its own change rather than riding along with a deny-all fix. That
-// change is #6049, and this is it. Two things settle the shape:
+// change is #6049, and this is it: `groups` and `roles` are now admitted, `scope`
+// deliberately still is not (see idTokenClaimsNeverSupplemented for that split).
+//
+// The shortest form of the argument is parity. The code above admits EVERY claim of
+// the upstream access token with no allow-list at all. An allow-list applied only
+// to the id_token was therefore an asymmetry between two tokens at the same trust
+// level from the same provider, not a trust boundary being held. Inverting to a
+// deny-list restores parity; it does not widen a boundary. Three further points:
 //
 //   - Provenance does not distinguish the two tokens. They are projections of one
 //     credential bundle from one authentication event at one provider (see above),
@@ -617,6 +626,11 @@ func (a *Authorizer) IsAuthorized(
 //     rule names instead the claims that must NEVER be read
 //     (idTokenClaimsNeverSupplemented, which is closed and spec-derived) and
 //     admits the rest.
+//   - Parity is between the two tokens' claims ABOUT THE USER, which is why the
+//     deny-list is not empty. A claim that asserts what a token may DO rather than
+//     who its bearer is — `scope`/`scp` — is not symmetric between them, because
+//     only the presented access token's authority is at issue. That is a different
+//     argument from "an allow-list can't work", and it survives it.
 //
 // # Precedence is fill-only, deliberately not union
 //
@@ -762,7 +776,7 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 // constant would let renaming it silently change which claim Cedar reads out of a
 // third party's token.
 //
-// Exactly two categories belong here, and the list is meant to stay closed:
+// Exactly three categories belong here, and the list is meant to stay closed:
 //
 //   - Claims describing the id_token itself, or the request that minted it, rather
 //     than the user or their login. Their subject is a token whose audience is
@@ -772,6 +786,22 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 //     audience, or on token lifetime, would silently read the id_token's — and
 //     `client_id`/`azp` the subtle ones, since they would report ToolHive's own
 //     client rather than the one that made the request.
+//   - The delegated grant: `scope` and `scp`. These are the one place where the
+//     deny-list is doing real work rather than avoiding confusion, so the
+//     distinction from a group claim matters. A group is a fact about the USER,
+//     which either token can report equally well. A scope is the AUTHORITY THIS
+//     TOKEN CARRIES, and the only token whose authority is at issue is the access
+//     token that was presented. Providers do not emit `scope` in an id_token per
+//     spec, but where one appears it can reflect what was REQUESTED rather than
+//     what was granted — and requested-minus-granted is routine, not theoretical,
+//     since granular/incremental consent lets a user approve a subset of the
+//     scopes the client asked for. Supplementing it would then match a
+//     `claimset_scp.containsAny(...)` gate on authority the access token does not
+//     actually carry. Never infer authority from a token that is not the one
+//     bearing it. Unlike a group claim name, these two are standardized names
+//     (RFC 8693/9068 `scope`, Entra `scp`), so excluding them by name is an
+//     effective control rather than a cosmetic one — the reason an allow-list had
+//     to go for groups does not transfer here.
 //   - `sub`, because it becomes the Cedar principal entity ID rather than an
 //     attribute, and Cedar has no `has`-style guard in the principal position. An
 //     access token without `sub` violates RFC 9068; failing closed with
@@ -780,11 +810,8 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 //
 // Claims describing the LOGIN rather than the token — `auth_time`, `acr`, `amr` —
 // are deliberately absent: both tokens come out of one authentication event, so
-// the id_token's values describe the same login the access token's would.
-// `scope`/`scp` are absent for the same reason: an id_token that carries one
-// carries the scope of the very grant that produced the access token beside it, so
-// there is nothing to diverge, and excluding them by name would be a cosmetic
-// control anyway when the claim name is provider-chosen.
+// the id_token's values describe the same login the access token's would, and none
+// of them asserts an authority the way a scope does.
 var idTokenClaimsNeverSupplemented = map[string]struct{}{
 	// RFC 7519 §4.1 registered claims.
 	"iss": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {},
@@ -792,6 +819,9 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 	// `client_id` and OIDC front/back-channel logout's `sid`.
 	"nonce": {}, "at_hash": {}, "c_hash": {}, "s_hash": {}, "azp": {},
 	"sid": {}, "client_id": {},
+	// The delegated grant, which belongs to the presented access token alone.
+	// RFC 8693/9068 spell it `scope`; Entra ID spells it `scp`.
+	"scope": {}, "scp": {},
 	// The Cedar principal, not an attribute.
 	"sub": {},
 }

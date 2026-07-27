@@ -1573,17 +1573,49 @@ func TestSupplementFromIDTokenClaims(t *testing.T) {
 			idTokenClaims: jwt.MapClaims{
 				"groups": []interface{}{"platform-eng"},
 				"roles":  []interface{}{"admin"},
-				"scope":  "tools:write",
 				"hd":     "example.com",
 			},
 			wantMerged: jwt.MapClaims{
 				"sub":    "okta|alice",
 				"groups": []interface{}{"platform-eng"},
 				"roles":  []interface{}{"admin"},
-				"scope":  "tools:write",
 				"hd":     "example.com",
 			},
-			wantFilled: []string{"groups", "hd", "roles", "scope"},
+			wantFilled: []string{"groups", "hd", "roles"},
+		},
+		{
+			// The deliberate split within "authorization-bearing": a group is a fact
+			// about the USER, which either token reports equally well, whereas a scope
+			// is the authority THIS TOKEN carries — and only the presented access
+			// token's authority is at issue. A provider emitting `scope` in an id_token
+			// (non-standard) may be echoing what was REQUESTED rather than granted, and
+			// granular consent makes requested-minus-granted routine, so supplementing
+			// it could satisfy a scope gate on authority the access token lacks.
+			// Unlike a group claim name, `scope`/`scp` are standardized names, so
+			// excluding them by name is effective rather than cosmetic.
+			name:              "delegated_scope_claims_are_never_filled_from_the_id_token",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice"},
+			idTokenClaims: jwt.MapClaims{
+				"scope": "tools:write tools:read",
+				"scp":   []interface{}{"Mail.ReadWrite"},
+			},
+			wantMerged: jwt.MapClaims{"sub": "okta|alice"},
+			wantFilled: nil,
+		},
+		{
+			// And an access token that does assert a scope keeps its own, so the
+			// id_token can neither supply nor broaden the delegated grant.
+			name: "access_token_scope_is_not_broadened_by_the_id_token",
+			accessTokenClaims: jwt.MapClaims{
+				"sub": "okta|alice", "scp": []interface{}{"Mail.Read"},
+			},
+			idTokenClaims: jwt.MapClaims{
+				"scp": []interface{}{"Mail.Read", "Mail.ReadWrite", "Files.ReadWrite.All"},
+			},
+			wantMerged: jwt.MapClaims{
+				"sub": "okta|alice", "scp": []interface{}{"Mail.Read"},
+			},
+			wantFilled: nil,
 		},
 		{
 			// A custom namespaced group claim, the shape GroupClaimName exists for.
@@ -1799,9 +1831,11 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 				"hd":                         "example.com",
 				"https://hub.example.com/ou": "infra",
 				// Token-describing claims are withheld even now that the id_token is
-				// a general claim source.
-				"aud": "toolhive-as-client",
-				"sid": "sess-abc",
+				// a general claim source, and so is the delegated grant.
+				"aud":   "toolhive-as-client",
+				"sid":   "sess-abc",
+				"scope": "tools:write",
+				"scp":   []interface{}{"Mail.ReadWrite"},
 			}),
 			requestClaims: asIssuedClaims,
 			wantClaims: jwt.MapClaims{
@@ -2007,6 +2041,113 @@ func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
 				},
 				UpstreamTokens:   map[string]string{providerName: upstreamToken},
 				UpstreamIDTokens: map[string]string{providerName: makeUnsignedJWT(tt.idTokenClaims)},
+			}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_ScopeStaysAccessTokenSourced pins the one claim
+// category #6049 deliberately did NOT open up. Group and role claims are facts
+// about the user, so either of the provider's tokens may report them; `scope`/`scp`
+// assert the authority a token carries, and only the presented access token's
+// authority is at issue. A provider that emits `scope` in an id_token (non-standard)
+// may be echoing what the client REQUESTED rather than what the user granted —
+// granular consent makes requested-minus-granted routine — so supplementing it
+// would let a scope gate match authority the access token does not carry.
+//
+// This is the sharpest available shape: an exact-element `claimset_scp` gate, which
+// is what the MultiValuedClaims documentation steers scope policies towards.
+func TestAuthorizeWithJWTClaims_ScopeStaysAccessTokenSourced(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "hub"
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource)
+			 when { context has claimset_scp && context.claimset_scp.contains("Mail.ReadWrite") };`,
+		},
+		EntitiesJSON:            `[]`,
+		PrimaryUpstreamProvider: providerName,
+		MultiValuedClaims:       []string{"scp"},
+	}, "")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name              string
+		accessTokenClaims jwt.MapClaims
+		idTokenClaims     jwt.MapClaims
+		wantAuthorize     bool
+	}{
+		{
+			// The access token carries the scope, so the gate matches. This is the
+			// only source that can ever satisfy it.
+			name: "access_token_scope_permits",
+			accessTokenClaims: jwt.MapClaims{
+				"sub": "hub|alice", "scp": []interface{}{"Mail.ReadWrite"},
+			},
+			idTokenClaims: jwt.MapClaims{"sub": "hub|alice"},
+			wantAuthorize: true,
+		},
+		{
+			// The guard. The access token asserts no scope at all and the id_token
+			// asserts the gated one; the request must still be denied rather than
+			// borrowing authority from the wrong token.
+			name:              "id_token_scope_does_not_permit",
+			accessTokenClaims: jwt.MapClaims{"sub": "hub|alice"},
+			idTokenClaims: jwt.MapClaims{
+				"sub": "hub|alice", "scp": []interface{}{"Mail.ReadWrite"},
+			},
+			wantAuthorize: false,
+		},
+		{
+			// The downscoped-consent shape: the client asked for Mail.ReadWrite and
+			// the user granted only Mail.Read, so the access token is narrower than
+			// whatever the id_token echoes. Fill-only precedence is not enough on its
+			// own here — `scp` is present, so nothing would be filled — but this pins
+			// that the narrower granted scope is what policy sees.
+			name: "access_token_scope_is_not_broadened_by_the_id_token",
+			accessTokenClaims: jwt.MapClaims{
+				"sub": "hub|alice", "scp": []interface{}{"Mail.Read"},
+			},
+			idTokenClaims: jwt.MapClaims{
+				"sub": "hub|alice", "scp": []interface{}{"Mail.Read", "Mail.ReadWrite"},
+			},
+			wantAuthorize: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					// The issued token names the gated scope too, and must likewise
+					// grant nothing.
+					Claims: map[string]any{
+						"sub": "thv-user",
+						"scp": []interface{}{"Mail.ReadWrite"},
+					},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(tt.accessTokenClaims),
+				},
+				UpstreamIDTokens: map[string]string{
+					providerName: makeUnsignedJWT(tt.idTokenClaims),
+				},
 			}
 			ctx := auth.WithIdentity(context.Background(), identity)
 

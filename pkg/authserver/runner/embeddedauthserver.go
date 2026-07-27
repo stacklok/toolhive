@@ -378,8 +378,12 @@ func loadHMACSecrets(files []string) (*servercrypto.HMACSecrets, error) {
 		return nil, fmt.Errorf("failed to read HMAC secret from %s: %w", files[0], err)
 	}
 
-	// Trim whitespace (Kubernetes Secret mounts may include trailing newlines)
-	current = bytes.TrimSpace(current)
+	// HMAC secrets are raw binary (see MCPExternalAuthConfig.HMACSecretRefs doc) — do not
+	// trim; any byte, including whitespace-valued ones, may be genuine key material.
+	if len(current) < servercrypto.MinSecretLength {
+		return nil, fmt.Errorf("HMAC secret in %s is %d bytes, but must be at least %d bytes",
+			files[0], len(current), servercrypto.MinSecretLength)
+	}
 
 	secrets := &servercrypto.HMACSecrets{
 		Current: current,
@@ -395,7 +399,11 @@ func loadHMACSecrets(files []string) (*servercrypto.HMACSecrets, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read rotated HMAC secret from %s: %w", file, err)
 		}
-		secrets.Rotated = append(secrets.Rotated, bytes.TrimSpace(secret))
+		if len(secret) < servercrypto.MinSecretLength {
+			return nil, fmt.Errorf("rotated HMAC secret in %s is %d bytes, but must be at least %d bytes",
+				file, len(secret), servercrypto.MinSecretLength)
+		}
+		secrets.Rotated = append(secrets.Rotated, secret)
 	}
 
 	return secrets, nil

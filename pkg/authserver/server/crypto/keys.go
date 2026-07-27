@@ -26,7 +26,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/go-jose/go-jose/v4"
 )
@@ -226,63 +225,4 @@ func DeriveSigningKeyParams(key crypto.Signer, keyID, algorithm string) (*Signin
 	}
 
 	return params, nil
-}
-
-// loadHMACSecretFile loads an HMAC secret from a file (internal helper).
-// Returns nil if path is empty (triggers random generation in toInternalConfig).
-// The secret must be at least 32 bytes after trimming whitespace.
-func loadHMACSecretFile(secretPath string) ([]byte, error) {
-	if secretPath == "" {
-		return nil, nil
-	}
-
-	data, err := os.ReadFile(secretPath) // #nosec G304 - secretPath is provided by user via CLI flag or config
-	if err != nil {
-		return nil, fmt.Errorf("failed to read HMAC secret file: %w", err)
-	}
-
-	// Trim whitespace (common in Kubernetes Secret mounts which often add trailing newlines)
-	secret := []byte(strings.TrimSpace(string(data)))
-
-	if len(secret) < MinSecretLength {
-		return nil, fmt.Errorf("HMAC secret must be at least %d bytes", MinSecretLength)
-	}
-
-	return secret, nil
-}
-
-// LoadHMACSecrets loads HMAC secrets from file paths for rotation support.
-// paths[0] is the current (signing) secret; paths[1:] are rotated (verification) secrets.
-// Returns nil if paths is empty (caller should generate random secret).
-func LoadHMACSecrets(paths []string) (*HMACSecrets, error) {
-	if len(paths) == 0 {
-		return nil, nil
-	}
-
-	// Load current secret (required, cannot be empty path)
-	if paths[0] == "" {
-		return nil, fmt.Errorf("current HMAC secret path cannot be empty")
-	}
-	current, err := loadHMACSecretFile(paths[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to load current HMAC secret: %w", err)
-	}
-
-	// Load rotated secrets (optional, skip empty paths)
-	var rotated [][]byte
-	for i, path := range paths[1:] {
-		if path == "" {
-			continue
-		}
-		secret, err := loadHMACSecretFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load rotated HMAC secret [%d]: %w", i+1, err)
-		}
-		rotated = append(rotated, secret)
-	}
-
-	return &HMACSecrets{
-		Current: current,
-		Rotated: rotated,
-	}, nil
 }

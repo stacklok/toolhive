@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
@@ -45,8 +46,9 @@ func findMetric(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics 
 	return nil
 }
 
-// counterValueForOutcome sums the data points of an int64 counter whose "outcome"
-// attribute equals want. Returns 0 if m is nil or no matching point exists.
+// counterValueForOutcome sums the data points of an int64 counter whose
+// coremetrics.LabelOutcome attribute equals want. Returns 0 if m is nil or no
+// matching point exists.
 func counterValueForOutcome(m *metricdata.Metrics, want string) int64 {
 	if m == nil {
 		return 0
@@ -57,7 +59,7 @@ func counterValueForOutcome(m *metricdata.Metrics, want string) int64 {
 	}
 	var total int64
 	for _, dp := range sum.DataPoints {
-		if v, present := dp.Attributes.Value("outcome"); present && v.AsString() == want {
+		if v, present := dp.Attributes.Value(coremetrics.LabelOutcome); present && v.AsString() == want {
 			total += dp.Value
 		}
 	}

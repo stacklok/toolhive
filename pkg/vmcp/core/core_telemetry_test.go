@@ -15,6 +15,7 @@ import (
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 )
 
@@ -64,9 +65,10 @@ func findMetricByName(rm metricdata.ResourceMetrics, name string) *metricdata.Me
 	return nil
 }
 
-// int64CounterValueForOutcome sums the data points of an int64 counter whose
-// "outcome" attribute equals want. Returns 0 if no matching point exists.
-func int64CounterValueForOutcome(m *metricdata.Metrics, want string) int64 {
+// counterValueForOutcome sums the data points of an int64 counter whose
+// coremetrics.LabelOutcome attribute equals want. Returns 0 if no matching
+// point exists.
+func counterValueForOutcome(m *metricdata.Metrics, want string) int64 {
 	if m == nil {
 		return 0
 	}
@@ -76,7 +78,7 @@ func int64CounterValueForOutcome(m *metricdata.Metrics, want string) int64 {
 	}
 	var total int64
 	for _, dp := range s.DataPoints {
-		if v, present := dp.Attributes.Value("outcome"); present && v.AsString() == want {
+		if v, present := dp.Attributes.Value(coremetrics.LabelOutcome); present && v.AsString() == want {
 			total += dp.Value
 		}
 	}
@@ -120,9 +122,9 @@ func TestTelemetryComposer_Success(t *testing.T) {
 
 	rm := collectMetrics(t, reader)
 	execs := findMetricByName(rm, "stacklok.vmcp.composite_tool.executions")
-	assert.Equal(t, int64(1), int64CounterValueForOutcome(execs, "success"),
+	assert.Equal(t, int64(1), counterValueForOutcome(execs, "success"),
 		`executions counter must increment with outcome="success"`)
-	assert.Equal(t, int64(0), int64CounterValueForOutcome(execs, "error"),
+	assert.Equal(t, int64(0), counterValueForOutcome(execs, "error"),
 		`executions counter must record nothing under outcome="error" on success`)
 	assert.Nil(t, findMetricByName(rm, "stacklok.vmcp.composite_tool.errors"),
 		"the split _errors counter must no longer exist")
@@ -151,9 +153,9 @@ func TestTelemetryComposer_Error(t *testing.T) {
 
 	rm := collectMetrics(t, reader)
 	execs := findMetricByName(rm, "stacklok.vmcp.composite_tool.executions")
-	assert.Equal(t, int64(1), int64CounterValueForOutcome(execs, "error"),
+	assert.Equal(t, int64(1), counterValueForOutcome(execs, "error"),
 		`executions counter must increment with outcome="error" on failure`)
-	assert.Equal(t, int64(0), int64CounterValueForOutcome(execs, "success"),
+	assert.Equal(t, int64(0), counterValueForOutcome(execs, "success"),
 		`executions counter must record nothing under outcome="success" on failure`)
 	assert.Nil(t, findMetricByName(rm, "stacklok.vmcp.composite_tool.errors"),
 		"the split _errors counter must no longer exist")

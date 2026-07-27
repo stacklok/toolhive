@@ -530,7 +530,7 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(500, fmt.Sprintf("Error filtering response: %v", err)),
+		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, fmt.Sprintf("Error filtering response: %v", err)),
 	}
 
 	// Encode before writing any header, so an encode failure never leaves a
@@ -541,7 +541,7 @@ func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error
 		// jsonrpc2.Response built from a valid ID and message above. Fall back
 		// to a hardcoded valid JSON-RPC error body rather than writing nothing.
 		slog.Error("failed to encode JSON-RPC error response", "error", encErr)
-		body = []byte(`{"jsonrpc":"2.0","error":{"code":500,"message":"Internal server error"}}`)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Internal server error"}}`, mcpparser.CodeInternalError)
 	}
 
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)

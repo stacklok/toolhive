@@ -320,11 +320,12 @@ func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, ms
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails.
 	}
+	code := mcp.JSONRPCCodeForStatus(statusCode)
 
 	// Return a JSON-RPC 2.0 error so MCP clients can parse the denial.
 	errResp := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(int64(statusCode), message),
+		Error: jsonrpc2.NewError(code, message),
 	}
 
 	// Encode before writing any header, so an encode failure never leaves a
@@ -335,7 +336,7 @@ func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, ms
 		// built from strings/ints above. Fall back to a hardcoded valid JSON-RPC
 		// error body rather than writing nothing.
 		slog.Error("failed to encode JSON-RPC error response", "error", encErr)
-		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Internal error"}}`, statusCode)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Internal error"}}`, code)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

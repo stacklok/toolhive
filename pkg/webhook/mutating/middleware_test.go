@@ -244,6 +244,14 @@ func TestMutatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
 			assert.False(t, nextCalled)
 			assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
 			assert.Contains(t, rr.Body.String(), "Request denied by webhook policy")
+
+			// An HTTP 422 always-deny must carry the same JSON-RPC denial code as
+			// every other denial (mcp.JSONRPCCodeDenied), not the raw 422 status.
+			var errResp map[string]interface{}
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+			errObj, ok := errResp["error"].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, float64(mcp.JSONRPCCodeDenied), errObj["code"])
 		})
 	}
 }
@@ -277,6 +285,12 @@ func TestMutatingMiddleware_ScopeViolation_FailPolicy(t *testing.T) {
 
 	assert.False(t, nextCalled)
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+	var errResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+	errObj, ok := errResp["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(mcp.CodeInternalError), errObj["code"])
 }
 
 func TestMutatingMiddleware_ScopeViolation_IgnorePolicy(t *testing.T) {
@@ -510,7 +524,7 @@ func TestMutatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
 		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
-		assert.Equal(t, float64(http.StatusRequestEntityTooLarge), errObj["code"])
+		assert.Equal(t, float64(mcp.CodeInvalidRequest), errObj["code"])
 		assert.Equal(t, "Request body exceeds maximum size", errObj["message"])
 	})
 

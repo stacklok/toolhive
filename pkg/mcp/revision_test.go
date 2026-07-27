@@ -212,6 +212,24 @@ func TestClassifyRevision(t *testing.T) {
 			},
 		},
 		{
+			// logLevel is a reserved key that must be STRIPPED on egress but is
+			// NOT a Modern signal (go-sdk's validateRequestMeta gates purely on
+			// protocolVersion; SEP-2577 deprecates logLevel). Guards the split
+			// between ReservedModernMetaKeys and modernSignalMetaKeys: if
+			// hasModernSignal ever iterated the strip set again, this request
+			// would be misdetected Modern and rejected instead of classified
+			// Legacy.
+			name:        "legacy: logLevel reserved key alone is not a Modern signal",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyLogLevel: "debug"},
+			protoHeader: "",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
 			name:        "modern signal: reserved protocolVersion key wrong-typed",
 			method:      "tools/call",
 			meta:        map[string]any{metaKeyProtocolVersion: 42},
@@ -677,6 +695,7 @@ func TestStripReservedModernMeta(t *testing.T) {
 			metaKeyProtocolVersion:    MCPVersionModern,
 			metaKeyClientInfo:         map[string]any{"name": "x"},
 			metaKeyClientCapabilities: map[string]any{},
+			metaKeyLogLevel:           "debug",
 			"progressToken":           "tok-1",
 			"traceparent":             "00-abc-def-01",
 			"custom":                  42,

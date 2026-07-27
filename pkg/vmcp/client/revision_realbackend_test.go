@@ -144,6 +144,7 @@ func TestLegacyCallTool_StripsReservedMeta_RealBackend(t *testing.T) {
 		"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
 		"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "downstream-modern-client", "version": "1.0.0"},
 		"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+		"io.modelcontextprotocol/logLevel":           "debug",
 		"custom-caller-key":                          "custom-value",
 	}
 

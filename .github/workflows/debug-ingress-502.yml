@@ -1,0 +1,78 @@
+# THROWAWAY diagnostic workflow — not part of CI gating.
+# Manually reproduces the ingress-proxy 502 / status "starting" flake on the
+# real runner and dumps state to pinpoint the trigger. Delete once diagnosed.
+name: Debug ingress 502
+
+on:
+  # push trigger scoped to this throwaway branch: workflow_dispatch only
+  # registers from the default branch, so a push trigger is what actually runs
+  # this on the diagnostic branch. Defaults below are used on push.
+  push:
+    branches: [debug-ingress-502-repro]
+  workflow_dispatch:
+    inputs:
+      concurrency:
+        description: "Concurrent isolated workloads per iteration"
+        default: "6"
+      iterations:
+        description: "Max iterations before giving up"
+        default: "30"
+      ready_timeout:
+        description: "Seconds to wait for a batch to all reach running"
+        default: "90"
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: Reproduce ingress 502
+    runs-on: ubuntu-8cores-32gb
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        with:
+          version: 3.44.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ToolHive binary
+        run: |
+          task build
+          chmod +x ./bin/thv
+
+      - name: Set up container runtime (Docker)
+        run: |
+          docker --version
+          sudo systemctl start docker
+
+      - name: Pre-pull images
+        run: |
+          fetch_image="$(./bin/thv registry info fetch --format json | jq -er '.image')"
+          for image in \
+            "$fetch_image" \
+            dockurr/dnsmasq:latest \
+            ghcr.io/stacklok/toolhive/egress-proxy:latest \
+            curlimages/curl:latest; do
+            docker pull -q "$image" &
+          done
+          wait
+
+      - name: Stress-reproduce ingress 502
+        env:
+          THV_BINARY: ./bin/thv
+          TOOLHIVE_EGRESS_IMAGE: ghcr.io/stacklok/toolhive/egress-proxy:latest
+          CONC: ${{ github.event.inputs.concurrency }}
+          ITERS: ${{ github.event.inputs.iterations }}
+          READY_TIMEOUT: ${{ github.event.inputs.ready_timeout }}
+        run: |
+          chmod +x ./hack/ingress-502-repro.sh
+          ./hack/ingress-502-repro.sh

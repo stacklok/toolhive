@@ -46,16 +46,17 @@ dump_stalled() { # $1=workload name
   echo "## thv status: $(status_of "$w")"
   echo "## containers:"; docker ps -a --filter "name=^/${w}" --format '   {{.Names}} | {{.Status}}'
   echo "## thv logs (tail 40):"; "$THV" logs "$w" 2>/dev/null | tail -40 | sed 's/^/   /'
+  echo "## detached supervisor log (why the workload errored / ingress failed):"
+  find "$HOME" /root /tmp -name "${w}.log" -path "*toolhive*" 2>/dev/null | head -1 | xargs -r tail -50 | sed 's/^/   /'
   echo "## ingress squid log (tail 40) — TCP_MISS_ABORTED/502 with HIER_NONE means a dead/unresolved peer:"
   docker logs "$ing" 2>&1 | tail -40 | sed 's/^/   /'
   echo "## ingress squid.conf (upstream peer + port):"
   docker exec "$ing" cat /etc/squid/squid.conf 2>/dev/null | grep -E "cache_peer|http_port|defaultsite" | sed 's/^/   /'
   # Probe from a throwaway container on the SAME internal network so we do not
   # depend on tools inside the squid image. curlimages/curl is pre-pulled.
-  echo "## DNS: is the mcp name resolvable on the internal network? (DNS-at-start hypothesis):"
-  docker run --rm --network "$net" curlimages/curl:latest \
-    sh -c "nslookup $w 2>&1 | tail -4 || echo UNRESOLVABLE" 2>&1 | sed 's/^/   /'
-  echo "## reachability: is the mcp reachable by name RIGHT NOW? (dead-peer-latch hypothesis — healthy here + 502 above == latch):"
+  # A 2xx/3xx/4xx here proves the mcp is resolvable AND reachable by name; the
+  # buggy path is nslookup, which appends the runner's DNS search domain.
+  echo "## reachability: is the mcp reachable by name RIGHT NOW? (healthy here + 502 in squid log == dead-peer latch):"
   docker run --rm --network "$net" curlimages/curl:latest \
     -s -o /dev/null -m 5 -w "   direct http://$w:8080/ -> %{http_code}\n" "http://$w:8080/" 2>&1 | sed 's/^/   /'
   echo "## networks — mcp vs ingress attachment (must share a network to route):"

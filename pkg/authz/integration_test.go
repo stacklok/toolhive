@@ -1201,9 +1201,10 @@ func TestIntegrationPrimaryUpstreamProviderClaimAttributeAccess(t *testing.T) {
 // Opaque-token upstreams (Google, GitHub) masked the bug because their tokens hit
 // that fallback and saw the AS-issued token's mirrored `email`.
 //
-// The AS-issued token carries the upstream `email` in both cases (the auth server
-// mirrors it from the upstream id_token), so the fix lets it stand in for the
-// claim the access token omits.
+// The provider does assert `email` — in its id_token, which the auth server stores
+// alongside the access token for the same provider. The fix reads the profile
+// claims the access token omits from that id_token, keeping the claim's provenance
+// with the pinned upstream.
 func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 	t.Parallel()
 
@@ -1222,26 +1223,38 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 	}, "")
 	require.NoError(t, err)
 
-	// Claims of the token the client actually presented, as minted by the
-	// embedded auth server: an internal ToolHive user ID (a UserResolver UUID,
-	// deliberately NOT the upstream subject) plus the mirrored id_token profile.
+	// Claims of the token the client actually presented, as minted by the embedded
+	// auth server: an internal ToolHive user ID (a UserResolver UUID, deliberately
+	// NOT the upstream subject) plus the profile it mirrored from the FIRST
+	// configured upstream. In a multi-upstream chain that is not necessarily the
+	// pinned provider, so these must never reach Cedar on this path — the
+	// distinctive email makes a leak visible as an unexpected deny.
 	asIssuedClaims := jwt.MapClaims{
 		"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
-		"email":     "alice@example.com",
-		"name":      "Alice",
+		"email":     "leaked-from-as-token@wrong-provider.example",
+		"name":      "Leaked From AS Token",
 		"iss":       "https://thv-as.example.com/",
 		"aud":       "toolhive",
 		"client_id": "vscode",
 	}
 
+	// The pinned provider's id_token, stored beside its access token at login.
+	// This is where this provider asserts the email.
+	upstreamIDToken := makeUnsignedJWT(t, jwt.MapClaims{
+		"sub":   "hub|alice",
+		"email": "alice@example.com",
+		"name":  "Alice",
+	})
+
 	tests := []struct {
 		name          string
 		upstreamToken string
+		requestClaims jwt.MapClaims
 		expectAllowed bool
 	}{
 		{
 			// The reported case: parses as a JWT, carries no `email`.
-			name: "jwt_upstream_token_without_email_uses_as_token_email",
+			name: "jwt_access_token_without_email_uses_id_token_email",
 			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
 				"sub": "hub|alice",
 				"iss": "https://hub.example.com",
@@ -1249,9 +1262,9 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 			expectAllowed: true,
 		},
 		{
-			// The upstream's own `email` still wins where it asserts one, and it
-			// is outside the gated domain here, so the gate must reject.
-			name: "upstream_email_wins_over_as_token_email",
+			// The access token's own `email` still wins where it asserts one, and
+			// it is outside the gated domain here, so the gate must reject.
+			name: "access_token_email_wins_over_id_token_email",
 			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
 				"sub":   "hub|alice",
 				"email": "alice@contractor.example",
@@ -1259,9 +1272,24 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 			expectAllowed: false,
 		},
 		{
-			// Regression guard for the #5147 path, which this change leaves intact.
+			// Regression guard for the #5147 path, which this change leaves intact:
+			// an opaque access token has no claims to read, so that branch still
+			// evaluates the ToolHive-issued token's claims. Those carry the
+			// upstream profile only because the auth server mirrors the FIRST
+			// configured upstream, so this case supplies a single-upstream
+			// AS token rather than the leak sentinel the JWT cases use.
+			//
+			// That leaves the two branches inconsistent about claim provenance
+			// (and about the principal: this branch's `sub` is ToolHive's internal
+			// user ID, not the upstream subject). Unifying them on the id_token is
+			// a follow-up — it changes behaviour on a shipped path.
 			name:          "opaque_upstream_token_still_falls_back",
 			upstreamToken: "ya29.opaque-google-style-token",
+			requestClaims: jwt.MapClaims{
+				"sub":   "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+				"email": "alice@example.com",
+				"name":  "Alice",
+			},
 			expectAllowed: true,
 		},
 		{
@@ -1292,12 +1320,18 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 			require.NoError(t, err)
 			httpReq.Header.Set("Content-Type", "application/json")
 
+			requestClaims := tt.requestClaims
+			if requestClaims == nil {
+				requestClaims = asIssuedClaims
+			}
+
 			identity := &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
-					Claims:  asIssuedClaims,
+					Claims:  requestClaims,
 				},
-				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
+				UpstreamTokens:   map[string]string{providerName: tt.upstreamToken},
+				UpstreamIDTokens: map[string]string{providerName: upstreamIDToken},
 			}
 			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
 

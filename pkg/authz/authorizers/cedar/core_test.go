@@ -1523,35 +1523,30 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 	}
 }
 
-// TestSupplementUpstreamClaims covers which request-token claims may stand in for
-// a missing upstream claim, and which may never do so.
-func TestSupplementUpstreamClaims(t *testing.T) {
+// TestSupplementProfileClaims covers which id_token claims may stand in for a
+// missing access-token claim, and which may never do so.
+func TestSupplementProfileClaims(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		upstreamClaims jwt.MapClaims
-		requestClaims  jwt.MapClaims
-		wantMerged     jwt.MapClaims
-		wantFilled     []string
+		name              string
+		accessTokenClaims jwt.MapClaims
+		idTokenClaims     jwt.MapClaims
+		wantMerged        jwt.MapClaims
+		wantFilled        []string
 	}{
 		{
-			name: "upstream_wins_on_shared_identity_claims",
-			upstreamClaims: jwt.MapClaims{
-				"sub": "okta|alice", "email": "alice@upstream.example", "name": "Upstream Alice",
-			},
-			requestClaims: jwt.MapClaims{
-				"sub": "7f3c1e64-uuid", "email": "alice@thv.example", "name": "THV Alice",
-			},
-			wantMerged: jwt.MapClaims{
-				"sub": "okta|alice", "email": "alice@upstream.example", "name": "Upstream Alice",
-			},
-			wantFilled: nil,
+			name:              "access_token_wins_on_shared_profile_claims",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice", "email": "at@example.com", "name": "AT Alice"},
+			idTokenClaims:     jwt.MapClaims{"sub": "okta|alice", "email": "idt@example.com", "name": "IDT Alice"},
+			wantMerged:        jwt.MapClaims{"sub": "okta|alice", "email": "at@example.com", "name": "AT Alice"},
+			wantFilled:        nil,
 		},
 		{
-			name:           "request_token_fills_missing_identity_claims",
-			upstreamClaims: jwt.MapClaims{"sub": "okta|alice", "iss": "https://idp.example.com"},
-			requestClaims:  jwt.MapClaims{"sub": "7f3c1e64-uuid", "email": "alice@example.com", "name": "Alice"},
+			// The #5916 shape: provider asserts email in the id_token only.
+			name:              "id_token_fills_missing_profile_claims",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice", "iss": "https://idp.example.com"},
+			idTokenClaims:     jwt.MapClaims{"sub": "okta|alice", "email": "alice@example.com", "name": "Alice"},
 			wantMerged: jwt.MapClaims{
 				"sub":   "okta|alice",
 				"iss":   "https://idp.example.com",
@@ -1562,26 +1557,12 @@ func TestSupplementUpstreamClaims(t *testing.T) {
 			wantFilled: []string{"email", "name"},
 		},
 		{
-			// `sub` is excluded from mirroredIdentityClaims: the AS-issued subject
-			// is an internal ToolHive user ID, not a copy of the upstream one, and
-			// it becomes the Cedar principal entity ID. Supplementing it would
-			// silently retarget the principal rather than fail closed.
-			name:           "subject_is_never_filled_from_the_request_token",
-			upstreamClaims: jwt.MapClaims{"iss": "https://idp.example.com"},
-			requestClaims:  jwt.MapClaims{"sub": "7f3c1e64-uuid", "email": "alice@example.com"},
-			wantMerged: jwt.MapClaims{
-				"iss":   "https://idp.example.com",
-				"email": "alice@example.com",
-			},
-			wantFilled: []string{"email"},
-		},
-		{
-			// The core security boundary: authorization-bearing claims are
-			// upstream-only. A group on the ToolHive-issued token must not reach
-			// Cedar when an upstream provider is configured.
-			name:           "authorization_bearing_claims_are_never_filled",
-			upstreamClaims: jwt.MapClaims{"sub": "okta|alice"},
-			requestClaims: jwt.MapClaims{
+			// Taking these from this provider's id_token would be provenance-correct,
+			// but it would newly grant requests that deny today, so it is out of scope
+			// here and pinned as unchanged behaviour.
+			name:              "authorization_bearing_claims_are_not_filled",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice"},
+			idTokenClaims: jwt.MapClaims{
 				"groups": []interface{}{"platform-eng"},
 				"roles":  []interface{}{"admin"},
 				"scope":  "tools:write",
@@ -1591,44 +1572,57 @@ func TestSupplementUpstreamClaims(t *testing.T) {
 			wantFilled: nil,
 		},
 		{
-			// The AS-issued token's own protocol claims describe that token, not
-			// the upstream identity, so they must not fill upstream gaps.
-			name:           "as_token_protocol_claims_are_never_filled",
-			upstreamClaims: jwt.MapClaims{"sub": "okta|alice"},
-			requestClaims: jwt.MapClaims{
-				"iss":       "https://thv-as.example.com/",
-				"aud":       "toolhive",
-				"exp":       1234567890,
-				"jti":       "abc",
-				"client_id": "vscode",
+			// An id_token's registered claims describe that token. Merging them would
+			// overwrite the access token's own aud/exp with different-meaning values.
+			name: "id_token_registered_claims_are_never_filled_or_overwritten",
+			accessTokenClaims: jwt.MapClaims{
+				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,
 			},
-			wantMerged: jwt.MapClaims{"sub": "okta|alice"},
+			idTokenClaims: jwt.MapClaims{
+				"aud": "toolhive-as-client", "exp": 1000000000,
+				"nonce": "n-abc", "at_hash": "h-abc", "azp": "client-x",
+			},
+			wantMerged: jwt.MapClaims{
+				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,
+			},
 			wantFilled: nil,
 		},
 		{
-			// Never fabricate: a claim absent from both sides stays absent so
+			// `sub` becomes the Cedar principal entity ID, where Cedar offers no
+			// `has`-style guard, so it fails closed rather than being chosen for us.
+			name:              "subject_is_never_filled_from_the_id_token",
+			accessTokenClaims: jwt.MapClaims{"iss": "https://idp.example.com"},
+			idTokenClaims:     jwt.MapClaims{"sub": "okta|alice", "email": "alice@example.com"},
+			wantMerged: jwt.MapClaims{
+				"iss":   "https://idp.example.com",
+				"email": "alice@example.com",
+			},
+			wantFilled: []string{"email"},
+		},
+		{
+			// Never fabricate: a claim absent from both tokens stays absent so
 			// `has`-guarded policies keep failing closed.
-			name:           "claim_absent_from_both_stays_absent",
-			upstreamClaims: jwt.MapClaims{"sub": "okta|alice"},
-			requestClaims:  jwt.MapClaims{"sub": "7f3c1e64-uuid"},
-			wantMerged:     jwt.MapClaims{"sub": "okta|alice"},
-			wantFilled:     nil,
+			name:              "claim_absent_from_both_stays_absent",
+			accessTokenClaims: jwt.MapClaims{"sub": "okta|alice"},
+			idTokenClaims:     jwt.MapClaims{"sub": "okta|alice"},
+			wantMerged:        jwt.MapClaims{"sub": "okta|alice"},
+			wantFilled:        nil,
 		},
 		{
-			// A key the upstream maps to nil is still "asserted by the upstream":
-			// presence, not truthiness, decides precedence.
-			name:           "explicit_nil_upstream_value_still_wins",
-			upstreamClaims: jwt.MapClaims{"email": nil},
-			requestClaims:  jwt.MapClaims{"email": "alice@example.com"},
-			wantMerged:     jwt.MapClaims{"email": nil},
-			wantFilled:     nil,
+			// A key the access token maps to nil is still "asserted by the access
+			// token": presence, not truthiness, decides precedence.
+			name:              "explicit_nil_access_token_value_still_wins",
+			accessTokenClaims: jwt.MapClaims{"email": nil},
+			idTokenClaims:     jwt.MapClaims{"email": "alice@example.com"},
+			wantMerged:        jwt.MapClaims{"email": nil},
+			wantFilled:        nil,
 		},
 		{
-			name:           "nil_inputs_yield_empty_result",
-			upstreamClaims: nil,
-			requestClaims:  nil,
-			wantMerged:     jwt.MapClaims{},
-			wantFilled:     nil,
+			name:              "nil_inputs_yield_empty_result",
+			accessTokenClaims: nil,
+			idTokenClaims:     nil,
+			wantMerged:        jwt.MapClaims{},
+			wantFilled:        nil,
 		},
 	}
 
@@ -1637,96 +1631,161 @@ func TestSupplementUpstreamClaims(t *testing.T) {
 			t.Parallel()
 
 			// Snapshot the inputs so the no-mutation contract can be asserted.
-			upstreamBefore := maps.Clone(tt.upstreamClaims)
-			requestBefore := maps.Clone(tt.requestClaims)
+			accessBefore := maps.Clone(tt.accessTokenClaims)
+			idTokenBefore := maps.Clone(tt.idTokenClaims)
 
-			merged, filled := supplementUpstreamClaims(tt.upstreamClaims, tt.requestClaims)
+			merged, filled := supplementProfileClaims(tt.accessTokenClaims, tt.idTokenClaims)
 
 			assert.Equal(t, tt.wantMerged, merged)
 			assert.Equal(t, tt.wantFilled, filled)
-			assert.Equal(t, upstreamBefore, tt.upstreamClaims, "upstream claims must not be mutated")
-			assert.Equal(t, requestBefore, tt.requestClaims, "request claims must not be mutated")
+			assert.Equal(t, accessBefore, tt.accessTokenClaims, "access token claims must not be mutated")
+			assert.Equal(t, idTokenBefore, tt.idTokenClaims, "id token claims must not be mutated")
 
 			// The result must not alias either input, since the caller adds
 			// synthetic keys to the claim set it receives.
 			merged["injected-by-caller"] = true
-			assert.NotContains(t, tt.upstreamClaims, "injected-by-caller")
-			assert.NotContains(t, tt.requestClaims, "injected-by-caller")
+			assert.NotContains(t, tt.accessTokenClaims, "injected-by-caller")
+			assert.NotContains(t, tt.idTokenClaims, "injected-by-caller")
 		})
 	}
 }
 
 // TestResolveClaimsUpstreamSupplement pins the claim-source contract of
-// resolveClaims on the embedded-auth-server path: the upstream token's claims
-// win, and the request token supplies only the mirrored identity claims the
-// upstream token omits. The email-filling case is the #5916 reproducer — an
-// upstream IdP (JetBrains Hub is the public example) whose access token is a
-// well-formed JWT that carries no `email`, which used to make every
-// `claim_email` policy deny.
+// resolveClaims on the embedded-auth-server path: the pinned provider's access
+// token wins, its id_token supplies only the profile claims the access token
+// omits, and the ToolHive-issued token is not a claim source at all.
+//
+// The email-filling case is the #5916 reproducer — an upstream IdP whose access
+// token is a well-formed JWT carrying no `email` (the provider asserts it in the
+// id_token only), which used to make every `claim_email` policy deny.
 func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 	t.Parallel()
 
 	const providerName = "hub"
+
+	// What the embedded auth server mirrors into the token it issues. In a
+	// multi-upstream chain these values come from the FIRST configured upstream,
+	// which need not be the pinned provider, so they must never reach Cedar on
+	// this path. Distinctive values make a leak obvious.
+	asIssuedClaims := map[string]any{
+		"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+		"email":     "leaked-from-as-token@example.com",
+		"name":      "Leaked From AS Token",
+		"client_id": "vscode",
+	}
 
 	tests := []struct {
 		name          string
 		provider      string
 		requestClaims map[string]any
 		upstreamToken string
+		idToken       string
 		wantClaims    jwt.MapClaims
 	}{
 		{
-			name:     "upstream_jwt_without_email_falls_back_to_as_token_email",
+			name:     "access_token_without_email_falls_back_to_id_token_email",
 			provider: providerName,
-			// What the embedded auth server mirrors into the token it issues. The
-			// AS subject is an internal ToolHive user ID (a UserResolver UUID),
-			// deliberately NOT the upstream subject.
-			requestClaims: map[string]any{
-				"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
-				"email":     "alice@example.com",
-				"name":      "Alice",
-				"client_id": "vscode",
-			},
 			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
 				"sub": "hub|alice",
 				"iss": "https://hub.example.com",
-				// No email: it lives in the id_token only.
+				// No email: the provider asserts it in the id_token only.
 			}),
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":   "hub|alice",
+				"email": "alice@example.com",
+				"name":  "Alice",
+				"aud":   "toolhive-as-client",
+				"nonce": "n-abc",
+			}),
+			requestClaims: asIssuedClaims,
 			wantClaims: jwt.MapClaims{
 				"sub":   "hub|alice",
 				"iss":   "https://hub.example.com",
 				"email": "alice@example.com",
 				"name":  "Alice",
-				// client_id is absent: it describes the AS-issued token, not the
-				// upstream identity, so it never fills an upstream gap.
+				// The id_token's own aud/nonce are absent: they describe that
+				// token, not the user.
 			},
 		},
 		{
-			name:     "upstream_claims_win_over_request_claims",
+			name:     "access_token_claims_win_over_id_token_claims",
 			provider: providerName,
-			requestClaims: map[string]any{
-				"sub":    "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
-				"email":  "alice@thv.example",
-				"groups": []interface{}{"admins"},
-			},
 			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
 				"sub":    "hub|alice",
-				"email":  "alice@upstream.example",
+				"email":  "alice@access-token.example",
 				"groups": []interface{}{"engineering"},
 			}),
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":    "hub|alice",
+				"email":  "alice@id-token.example",
+				"groups": []interface{}{"admins"},
+			}),
+			requestClaims: asIssuedClaims,
 			wantClaims: jwt.MapClaims{
 				"sub":    "hub|alice",
-				"email":  "alice@upstream.example",
+				"email":  "alice@access-token.example",
 				"groups": []interface{}{"engineering"},
 			},
+		},
+		{
+			// The multi-upstream misattribution guard. With no id_token stored for
+			// the pinned provider, `email` stays absent and the policy denies — the
+			// ToolHive-issued token's mirrored email must NOT stand in, because in a
+			// chain it belongs to the first configured upstream, not this one.
+			name:     "no_id_token_leaves_profile_claims_absent",
+			provider: providerName,
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub": "hub|alice",
+				"iss": "https://hub.example.com",
+			}),
+			idToken:       "",
+			requestClaims: asIssuedClaims,
+			wantClaims: jwt.MapClaims{
+				"sub": "hub|alice",
+				"iss": "https://hub.example.com",
+			},
+		},
+		{
+			// An id_token is read as a record of what the upstream asserted at
+			// login, not presented as a credential, so `exp` is deliberately not
+			// enforced. Enforcing it would make a policy permit early in a session
+			// and silently deny later, since sessions outlive id_tokens by days.
+			name:     "expired_id_token_is_still_used",
+			provider: providerName,
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub": "hub|alice",
+			}),
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":   "hub|alice",
+				"email": "alice@example.com",
+				"exp":   1000000000, // long past
+			}),
+			requestClaims: asIssuedClaims,
+			wantClaims: jwt.MapClaims{
+				"sub":   "hub|alice",
+				"email": "alice@example.com",
+			},
+		},
+		{
+			// A malformed id_token must not fail the request: the access token
+			// parsed, so policies referencing only its claims keep working.
+			name:     "unparsable_id_token_degrades_to_no_supplement",
+			provider: providerName,
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub": "hub|alice",
+			}),
+			idToken:       "not-base64.not-base64.not-base64",
+			requestClaims: asIssuedClaims,
+			wantClaims:    jwt.MapClaims{"sub": "hub|alice"},
 		},
 		{
 			name:          "no_provider_configured_uses_request_claims_verbatim",
 			provider:      "",
 			requestClaims: map[string]any{"sub": "7f3c1e64-uuid", "email": "alice@thv.example"},
-			// Present but irrelevant: without a configured provider the upstream
-			// token is never consulted.
+			// Present but irrelevant: without a configured provider neither upstream
+			// token is consulted.
 			upstreamToken: makeUnsignedJWT(jwt.MapClaims{"sub": "hub|alice"}),
+			idToken:       makeUnsignedJWT(jwt.MapClaims{"sub": "hub|alice"}),
 			wantClaims:    jwt.MapClaims{"sub": "7f3c1e64-uuid", "email": "alice@thv.example"},
 		},
 	}
@@ -1746,6 +1805,9 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 				PrincipalInfo:  auth.PrincipalInfo{Subject: "7f3c1e64-uuid", Claims: tt.requestClaims},
 				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
 			}
+			if tt.idToken != "" {
+				identity.UpstreamIDTokens = map[string]string{providerName: tt.idToken}
+			}
 			claimsBefore := maps.Clone(tt.requestClaims)
 
 			resolved, err := authorizer.(*Authorizer).resolveClaims(identity)
@@ -1763,7 +1825,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 // authorizer-level reproducer for #5916: the exact policy shape from the report
 // (a defensively-authored `has`-guarded domain gate plus a tool permit) evaluated
 // against an upstream access token that is a well-formed JWT without `email`.
-// Before the merge this denied every request for every user.
+// Before the fix this denied every request for every user.
 func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
 	t.Parallel()
 
@@ -1782,35 +1844,45 @@ func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
 
 	// A JWT-shaped upstream access token that parses cleanly but carries no
 	// identity claims beyond `sub`. looksLikeJWT is true here, so the #5147
-	// opaque-token fallback does not apply — merging is what recovers `email`.
+	// opaque-token fallback does not apply — the id_token supplement is what
+	// recovers `email`.
 	upstreamToken := makeUnsignedJWT(jwt.MapClaims{
 		"sub": "hub|alice",
 		"iss": "https://hub.example.com",
 	})
 
+	// The ToolHive-issued token mirrors an email too, but it must never be the
+	// source on this path; it is outside the gated domain so a leak would show up
+	// as an unexpected deny in the permitting cases.
+	asIssuedClaims := map[string]any{
+		"sub":   "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+		"email": "leaked-from-as-token@wrong-provider.example",
+	}
+
 	tests := []struct {
 		name          string
-		requestClaims map[string]any
+		idTokenClaims jwt.MapClaims
 		wantAuthorize bool
 	}{
 		{
-			// The AS-issued token mirrors the upstream id_token's email, so the
-			// domain gate can be satisfied even though the access token omits it.
-			name:          "as_token_email_in_gated_domain_permits",
-			requestClaims: map[string]any{"sub": "7f3c1e64-uuid", "email": "alice@example.com"},
+			// The upstream asserts the email in its id_token, so the domain gate
+			// can be satisfied even though the access token omits it.
+			name:          "id_token_email_in_gated_domain_permits",
+			idTokenClaims: jwt.MapClaims{"sub": "hub|alice", "email": "alice@example.com"},
 			wantAuthorize: true,
 		},
 		{
-			// Merging supplies the claim; it does not weaken the gate.
-			name:          "as_token_email_outside_gated_domain_denies",
-			requestClaims: map[string]any{"sub": "7f3c1e64-uuid", "email": "alice@evil.example"},
+			// The supplement supplies the claim; it does not weaken the gate.
+			name:          "id_token_email_outside_gated_domain_denies",
+			idTokenClaims: jwt.MapClaims{"sub": "hub|alice", "email": "alice@evil.example"},
 			wantAuthorize: false,
 		},
 		{
-			// Neither token carries `email`: the `has` guard fails and the
-			// forbid applies. Merging never fabricates a claim.
-			name:          "email_absent_from_both_tokens_denies",
-			requestClaims: map[string]any{"sub": "7f3c1e64-uuid"},
+			// Neither upstream token carries `email`: the `has` guard fails and the
+			// forbid applies. The supplement never fabricates a claim, and the
+			// ToolHive-issued token's mirrored email does not stand in.
+			name:          "email_absent_from_both_upstream_tokens_denies",
+			idTokenClaims: jwt.MapClaims{"sub": "hub|alice"},
 			wantAuthorize: false,
 		},
 	}
@@ -1820,8 +1892,12 @@ func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
 			t.Parallel()
 
 			identity := &auth.Identity{
-				PrincipalInfo:  auth.PrincipalInfo{Subject: "7f3c1e64-uuid", Claims: tt.requestClaims},
-				UpstreamTokens: map[string]string{providerName: upstreamToken},
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+					Claims:  asIssuedClaims,
+				},
+				UpstreamTokens:   map[string]string{providerName: upstreamToken},
+				UpstreamIDTokens: map[string]string{providerName: makeUnsignedJWT(tt.idTokenClaims)},
 			}
 			ctx := auth.WithIdentity(context.Background(), identity)
 
@@ -1904,6 +1980,16 @@ func TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced(t *testing.T) {
 				},
 				UpstreamTokens: map[string]string{
 					providerName: makeUnsignedJWT(tt.upstreamClaims),
+				},
+				// The id_token carries a subject too. It is the correct upstream
+				// subject, but `sub` is still excluded from the supplement so a
+				// missing access-token `sub` fails closed rather than having a
+				// principal chosen for it.
+				UpstreamIDTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"sub":   "hub|from-id-token",
+						"email": "alice@example.com",
+					}),
 				},
 			}
 			ctx := auth.WithIdentity(context.Background(), identity)

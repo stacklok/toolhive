@@ -722,6 +722,28 @@ func isAuthorizationRequired(err error) bool {
 		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
+// wrapConsentRequired maps upstream-token errors, returning nil when err
+// carries neither: a ConsentRequiredError (token missing and the error carries
+// consent context — provider + authorize URL) is joined with
+// ErrAuthenticationFailed so errors.As extracts the typed payload through the
+// wrap while errors.Is keeps the health-monitor sentinel contract; the bare
+// ErrUpstreamTokenNotFound sentinel (no consent context — the shape returned
+// by tokenexchange/aws_sts/xaa) maps to plain ErrAuthenticationFailed.
+// Extracted to keep wrapBackendError within the cyclomatic complexity limit.
+func wrapConsentRequired(err error, backendID string, operation string) error {
+	var consentErr *authtypes.ConsentRequiredError
+	if errors.As(err, &consentErr) {
+		return errors.Join(vmcp.ErrAuthenticationFailed,
+			fmt.Errorf("failed to %s for backend %s (upstream consent required): %w",
+				operation, backendID, err))
+	}
+	if errors.Is(err, authtypes.ErrUpstreamTokenNotFound) {
+		return fmt.Errorf("%w: failed to %s for backend %s (upstream token missing): %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	return nil
+}
+
 // wrapBackendError wraps an error with the appropriate sentinel error based on error type.
 // This enables type-safe error checking with errors.Is() instead of string matching.
 //
@@ -786,48 +808,23 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
 
-	// 5. ConsentRequiredError: upstream provider token missing and the error
-	// carries consent context (provider + authorize URL). Checked before the
-	// plain sentinel branch so errors.As can extract the typed payload through
-	// the wrap; errors.Join preserves both ErrAuthenticationFailed (health
-	// monitors) and the ConsentRequiredError chain (tool-result rendering).
-	var consentErr *authtypes.ConsentRequiredError
-	if errors.As(err, &consentErr) {
-		return errors.Join(vmcp.ErrAuthenticationFailed,
-			fmt.Errorf("failed to %s for backend %s (upstream consent required): %w",
-				operation, backendID, err))
-	}
-	// ErrLegacySSEServer is toolhive-core's sentinel for a 4xx (except 401) on
-	// initialize POST against the "sse" transport type, where the SDK client
-	// cannot distinguish an auth rejection from a legacy SSE-only server without
-	// the raw status code. Under the streamable-http transport this arm is dead:
-	// mcp-go's streamable-HTTP client surfaces a generic HTTP status error for a
-	// 403 on initialize (e.g. "request failed with status 403"), not this
-	// sentinel, so that case falls through to the string-based classification
-	// below and still maps to ErrBackendUnavailable (see
-	// TestRegression_403OnInitialize_LegacySSEFallback). This arm only fires for
-	// the sse transport type; it is kept for backend targets still configured
-	// with legacy SSE.
-	if errors.Is(err, transport.ErrLegacySSEServer) {
-		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
-		// Second %w preserves ErrLegacySSEServer in the chain so a revision
-		// mismatch (Legacy initialize against a Modern backend) is detectable via
-		// errors.Is; renders identically to %v.
-		return fmt.Errorf("%w: failed to %s for backend %s (%s): %w",
-			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
+	// 5. ConsentRequiredError: upstream provider token missing with consent
+	// context — errors.As-extractable through the wrap (see wrapConsentRequired).
+	// The same helper maps the bare ErrUpstreamTokenNotFound sentinel (no consent
+	// context), taking priority over the string-based "authentication failed"
+	// fallback below, which would also match (via the authRoundTripper error
+	// message) but is fragile.
+	if wrapped := wrapConsentRequired(err, backendID, operation); wrapped != nil {
+		return wrapped
 	}
 
-	// 5. ErrUpstreamTokenNotFound: upstream provider token missing from identity.
-	// Explicit sentinel check takes priority over the string-based "authentication failed"
-	// fallback below, which would also match (via the authRoundTripper error message)
-	// but is fragile. This maps to ErrAuthenticationFailed so the pre-check middleware
-	// and health monitors classify the error correctly.
-	if errors.Is(err, authtypes.ErrUpstreamTokenNotFound) {
-		return fmt.Errorf("%w: failed to %s for backend %s (upstream token missing): %v",
-			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	// 6. ErrLegacySSEServer (see wrapLegacySSERejection): fires only for the
+	// sse transport type.
+	if wrapped := wrapLegacySSERejection(err, backendID, operation); wrapped != nil {
+		return wrapped
 	}
 
-	// 6. String-based detection: Fall back to pattern matching for cases where
+	// 7. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -853,6 +850,31 @@ func wrapBackendError(err error, backendID string, operation string) error {
 	// so a revision mismatch is detectable via errors.Is; renders identically to %v.
 	return fmt.Errorf("%w: failed to %s for backend %s: %w",
 		vmcp.ErrBackendUnavailable, operation, backendID, err)
+}
+
+// wrapLegacySSERejection maps the ErrLegacySSEServer sentinel — toolhive-core's
+// marker for a 4xx (except 401) on initialize POST against the "sse" transport
+// type, where the SDK client cannot distinguish an auth rejection from a
+// legacy SSE-only server without the raw status code — returning nil when err
+// does not carry it. Under the streamable-http transport this arm is dead:
+// mcp-go's streamable-HTTP client surfaces a generic HTTP status error for a
+// 403 on initialize (e.g. "request failed with status 403"), not this
+// sentinel, so that case falls through to the string-based classification in
+// wrapBackendError and still maps to ErrBackendUnavailable (see
+// TestRegression_403OnInitialize_LegacySSEFallback). This arm only fires for
+// the sse transport type; it is kept for backend targets still configured
+// with legacy SSE. Extracted to keep wrapBackendError within the cyclomatic
+// complexity limit.
+func wrapLegacySSERejection(err error, backendID string, operation string) error {
+	if !errors.Is(err, transport.ErrLegacySSEServer) {
+		return nil
+	}
+	const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
+	// Second %w preserves ErrLegacySSEServer in the chain so a revision
+	// mismatch (Legacy initialize against a Modern backend) is detectable via
+	// errors.Is; renders identically to %v.
+	return fmt.Errorf("%w: failed to %s for backend %s (%s): %w",
+		vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
 }
 
 // initializeClient performs MCP protocol initialization handshake and returns

@@ -212,7 +212,7 @@ func buildTestServerWithOptions(
 	// own CallTool is bypassed on the Serve path). Return a deterministic result so call
 	// tests can assert on it.
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}, nil).
 		AnyTimes()
 

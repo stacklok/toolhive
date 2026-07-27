@@ -138,6 +138,11 @@ var modernRequestID atomic.Int64
 // header-forward/trace chain (see buildBackendRoundTripper); modernCall adds no
 // transport concerns of its own.
 //
+// paramHeaders are the SEP-2243 Mcp-Param-* headers (already keyed by full header
+// name and validated by pkg/mcp), set before the protocol headers below so a
+// caller-derived entry can never overwrite Mcp-Method, Mcp-Name, or
+// MCP-Protocol-Version. Only tools/call ever supplies them.
+//
 // Errors:
 //   - errWrongEra: the peer is not Modern (bare 4xx/5xx-free rejection, empty or
 //     non-JSON body, or neither result nor error).
@@ -156,6 +161,7 @@ func modernCall(
 	endpoint, method string,
 	params map[string]any,
 	name string,
+	paramHeaders map[string]string,
 	out any,
 ) error {
 	id := modernRequestID.Add(1)
@@ -179,6 +185,12 @@ func modernCall(
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building %s request: %w", method, err)
+	}
+	// SEP-2243 mirrored parameter headers go on FIRST, so the protocol headers
+	// below win on any collision. A backend cannot name a designated parameter
+	// "Method" and hijack Mcp-Method, since Set overwrites.
+	for hdrName, hdrValue := range paramHeaders {
+		req.Header.Set(hdrName, hdrValue)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

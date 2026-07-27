@@ -65,7 +65,7 @@ func TestModernCallTool(t *testing.T) {
 	h, target := modernClient(t, srv.URL)
 	target.OriginalCapabilityName = "backend_echo" // advertised "echo" -> backend "backend_echo"
 
-	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hi"}, map[string]any{"caller": "meta"})
+	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hi"}, map[string]any{"caller": "meta"}, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "tools/call", hdr.Get("Mcp-Method"))
@@ -190,7 +190,7 @@ func TestIntegration_ModernCallTool_NameRequired(t *testing.T) {
 		TransportType: "streamable-http",
 	}
 
-	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello modern"}, nil)
+	res, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hello modern"}, nil, nil)
 	require.NoError(t, err)
 
 	rev, ok := h.cachedRevision(target.WorkloadID)

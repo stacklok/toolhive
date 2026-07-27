@@ -1,0 +1,44 @@
+suite: image discovery
+# operator.imageDiscovery.enabled renders a zero-replica Deployment whose only
+# purpose is to surface toolhiveRunnerImage / vmcpImage / registryAPI.image as
+# `image:` keys for static air-gap manifest scanning. Pinning: the Deployment
+# is absent by default, present with replicas:0 when enabled, and carries the
+# exact three image refs — a wrong ref here would silently defeat air-gap
+# discovery without any other test catching it.
+templates:
+  - image-discovery.yaml
+tests:
+  - it: renders nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders a zero-replica Deployment referencing all three runtime-injected images
+    set:
+      operator.imageDiscovery.enabled: true
+      operator.toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v9.9.9
+      operator.vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v9.9.9
+      registryAPI.image: ghcr.io/stacklok/thv-registry-api:v9.9.9
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.replicas
+          value: 0
+      - contains:
+          path: spec.template.spec.containers
+          content: { name: toolhive-runner, image: ghcr.io/stacklok/toolhive/proxyrunner:v9.9.9 }
+      - contains:
+          path: spec.template.spec.containers
+          content: { name: vmcp, image: ghcr.io/stacklok/toolhive/vmcp:v9.9.9 }
+      - contains:
+          path: spec.template.spec.containers
+          content: { name: registry-api, image: ghcr.io/stacklok/thv-registry-api:v9.9.9 }
+
+  - it: selector does not collide with the operator Deployment's own selector
+    set:
+      operator.imageDiscovery.enabled: true
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/component"]
+          value: image-discovery

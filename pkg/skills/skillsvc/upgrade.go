@@ -199,43 +199,27 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 // the RFC's "preview is not side-effect-free" note; git sources resolve
 // without touching disk.
 func (s *service) resolveLatestState(ctx context.Context, source string) (resolvedRef, digestStr string, err error) {
-	if gitresolver.IsGitReference(source) {
-		return s.resolveGitLatest(ctx, source)
-	}
+	// resolvedState carries the two return values through the shared
+	// source-dispatch skeleton, which routes exactly like Install does
+	// (git, direct OCI with registry fallback, plain registry name) so the
+	// two can never drift again.
+	type resolvedState struct{ ref, digest string }
 
-	ref, isOCI, err := parseOCIReference(source)
-	if err != nil {
-		return "", "", httperr.WithCode(fmt.Errorf("invalid OCI reference %q: %w", source, err), http.StatusBadRequest)
-	}
-	if isOCI {
-		newRef, newDigest, ociErr := s.resolveOCILatest(ctx, ref)
-		if ociErr == nil {
-			return newRef, newDigest, nil
-		}
-		// Mirror Install's fallback: an ambiguous "namespace/name" that
-		// fails as a direct OCI pull may be a registry catalogue name — the
-		// path the skill was originally installed through. Without this
-		// branch, a skill that installs cleanly via the registry fallback
-		// could never be upgraded (its source fails the direct pull exactly
-		// as it did at install time).
-		if isUnambiguousOCIRef(source, ref) {
-			return "", "", ociErr
-		}
-		resolved, regErr := s.resolveFromRegistry(source)
-		if regErr != nil || resolved == nil {
-			return "", "", ociErr
-		}
-		return s.resolveRegistryLatest(ctx, source, resolved)
-	}
-
-	resolved, regErr := s.resolveFromRegistry(source)
-	if regErr != nil {
-		return "", "", regErr
-	}
-	if resolved == nil {
-		return "", "", httperr.WithCode(fmt.Errorf("skill %q not found in registry", source), http.StatusNotFound)
-	}
-	return s.resolveRegistryLatest(ctx, source, resolved)
+	state, err := dispatchSource(ctx, s, source, sourceOps[resolvedState]{
+		git: func(ctx context.Context, gitURL string) (resolvedState, error) {
+			r, d, gitErr := s.resolveGitLatest(ctx, gitURL)
+			return resolvedState{r, d}, gitErr
+		},
+		oci: func(ctx context.Context, ref nameref.Reference) (resolvedState, error) {
+			r, d, ociErr := s.resolveOCILatest(ctx, ref)
+			return resolvedState{r, d}, ociErr
+		},
+		registry: func(ctx context.Context, resolved *registryResolveResult) (resolvedState, error) {
+			r, d, regErr := s.resolveRegistryLatest(ctx, source, resolved)
+			return resolvedState{r, d}, regErr
+		},
+	})
+	return state.ref, state.digest, err
 }
 
 // resolveRegistryLatest resolves the latest state of a registry catalogue

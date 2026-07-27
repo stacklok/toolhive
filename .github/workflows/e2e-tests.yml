@@ -125,26 +125,52 @@ jobs:
 
       - name: Pre-pull container images
         run: |
-          # Pre-pull images used by E2E tests so that workload creation
-          # does not pay the image-pull cost inside the 60s API timeout.
-          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.3 &
-          docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
-          docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
+          # Pre-pull images used by E2E tests so that workload startup does not
+          # pay the image-pull cost inside a spec's readiness timeout.
+          #
+          # Images that tests reach through a registry server name (`thv run
+          # fetch`) are resolved from the binary under test instead of being
+          # hardcoded here. Renovate bumps github.com/stacklok/toolhive-catalog
+          # daily but has no manager for these docker pull lines, so hardcoded
+          # tags drift out of sync with the catalog silently and the pre-pull
+          # stops covering what the tests actually run.
+          servers="fetch osv"
+          images="ghcr.io/stacklok/toolhive/egress-proxy:latest"
           # yardstick is only needed for the vmcp test suite
           if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
-            docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
+            images="$images ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0"
           fi
-          # the time server is only used by the proxy test suite
+          # the time server and yardstick (dual-era barrier mode) are only
+          # used by the proxy (streamable-http) test suite
           if [ "${{ matrix.label_filter }}" = "proxy && !isolation" ]; then
-            docker pull ghcr.io/stacklok/dockyard/uvx/mcp-server-time:2026.1.26 &
+            servers="$servers time"
+            images="$images ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0"
           fi
           # Envoy is only used by the network-isolation test suite
           if [ "${{ matrix.title }}" = "network-isolation" ]; then
-            docker pull envoyproxy/envoy-distroless:v1.32.3 &
+            images="$images envoyproxy/envoy-distroless:v1.32.3"
           fi
+
+          for server in $servers; do
+            image="$(./bin/thv registry info "$server" --format json | jq -er '.image')"
+            echo "Resolved registry server '$server' -> $image"
+            images="$images $image"
+          done
+
+          for image in $images; do
+            docker pull -q "$image" &
+          done
           wait
+
+          # `wait` reports success even when a background pull failed, so check
+          # each image landed locally. Failing here is far cheaper to diagnose
+          # than a spec timing out later while it waits on a live pull.
           echo "Pre-pulled images:"
-          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy|yardstick|mcp-server-time'
+          for image in $images; do
+            docker image inspect "$image" >/dev/null \
+              || { echo "::error::failed to pre-pull $image"; exit 1; }
+            echo "  $image"
+          done
 
       - name: Run E2E tests (${{ matrix.title }})
         env:

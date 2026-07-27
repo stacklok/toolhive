@@ -19,9 +19,57 @@ import (
 	"go.uber.org/mock/gomock"
 
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
+
+// fakeRevClient embeds vmcp.BackendClient (nil — its methods are never called
+// here) and adds the optional CachedRevision accessor.
+type fakeRevClient struct {
+	vmcp.BackendClient
+	rev mcpparser.Revision
+	ok  bool
+}
+
+func (f fakeRevClient) CachedRevision(string) (mcpparser.Revision, bool) { return f.rev, f.ok }
+
+// fakeNoRevClient embeds vmcp.BackendClient but does NOT implement revisionReporter.
+type fakeNoRevClient struct{ vmcp.BackendClient }
+
+// TestTelemetryBackendClient_CachedRevisionForwarding verifies the decorator
+// forwards CachedRevision to a client that reports it, and reports nothing for a
+// client that doesn't.
+func TestTelemetryBackendClient_CachedRevisionForwarding(t *testing.T) {
+	t.Parallel()
+
+	d := telemetryBackendClient{backendClient: fakeRevClient{rev: mcpparser.RevisionModern, ok: true}}
+	rev, ok := d.CachedRevision("b")
+	if !ok || rev != mcpparser.RevisionModern {
+		t.Fatalf("CachedRevision = (%v, %v), want (Modern, true)", rev, ok)
+	}
+	if got := d.revisionLabel("b"); got != "2026-07-28" {
+		t.Errorf("revisionLabel = %q, want 2026-07-28", got)
+	}
+
+	dn := telemetryBackendClient{backendClient: fakeNoRevClient{}}
+	if _, ok := dn.CachedRevision("b"); ok {
+		t.Error("CachedRevision should report false for a client without the accessor")
+	}
+	if got := dn.revisionLabel("b"); got != "" {
+		t.Errorf("revisionLabel = %q, want empty for unprobed/unsupported", got)
+	}
+}
+
+// TestRecordRevisionReclassification is a smoke test: the counter lazily binds to
+// the global meter provider and increments without panicking (the noop provider
+// makes the value unobservable here — the WARN in the same reclassify branch is
+// asserted in the client package's reclassify test).
+func TestRecordRevisionReclassification(t *testing.T) {
+	t.Parallel()
+	RecordRevisionReclassification(context.Background())
+	RecordRevisionReclassification(context.Background())
+}
 
 func TestMapActionToMCPMethod(t *testing.T) {
 	t.Parallel()
@@ -214,9 +262,9 @@ func TestMonitorBackends_HealthGaugePrefersLiveProviderOverRegistryAndRecordedSt
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
 
-	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{}, nil)
-	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
 
@@ -263,15 +311,15 @@ func TestMonitorBackends_HealthGaugeTransitionsOnRequestOutcome(t *testing.T) {
 	// No request yet: falls back to the registry's discovery-time HealthStatus.
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
 
-	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(nil, errors.New("backend unreachable"))
-	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendUnhealthy)}, healthPoints(t, reader))
 
-	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{}, nil)
-	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"backend-1": string(vmcp.BackendHealthy)}, healthPoints(t, reader))
 }
@@ -357,14 +405,14 @@ func TestMonitorBackends_ClientOperationDurationCarriesBackendIdentity(t *testin
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
 
-	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{}, nil)
-	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil, nil)
 	require.NoError(t, err)
 
-	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any()).
+	baseClient.EXPECT().CallTool(gomock.Any(), target, "t", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(nil, errors.New("backend unreachable"))
-	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil)
+	_, err = decorated.CallTool(context.Background(), target, "t", nil, nil, nil)
 	require.Error(t, err)
 
 	// Both the success and error data points must carry the backend identity —

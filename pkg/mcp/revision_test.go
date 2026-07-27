@@ -212,6 +212,24 @@ func TestClassifyRevision(t *testing.T) {
 			},
 		},
 		{
+			// logLevel is a reserved key that must be STRIPPED on egress but is
+			// NOT a Modern signal (go-sdk's validateRequestMeta gates purely on
+			// protocolVersion; SEP-2577 deprecates logLevel). Guards the split
+			// between ReservedModernMetaKeys and modernSignalMetaKeys: if
+			// hasModernSignal ever iterated the strip set again, this request
+			// would be misdetected Modern and rejected instead of classified
+			// Legacy.
+			name:        "legacy: logLevel reserved key alone is not a Modern signal",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyLogLevel: "debug"},
+			protoHeader: "",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
 			name:        "modern signal: reserved protocolVersion key wrong-typed",
 			method:      "tools/call",
 			meta:        map[string]any{metaKeyProtocolVersion: 42},
@@ -617,4 +635,94 @@ func TestDecodeSentinelName(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestEncodeSentinelName pins EncodeSentinelName as the exact mirror of
+// decodeSentinelName: every case must round-trip back to the original value.
+func TestEncodeSentinelName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		wantSame bool // true if the value must pass through unchanged
+	}{
+		{name: "plain ASCII name unchanged", input: "my-tool", wantSame: true},
+		{name: "URI with colon and slash unchanged", input: "file:///tmp/foo.txt", wantSame: true},
+		{name: "accented character encoded", input: "café-résumé", wantSame: false},
+		{name: "CJK character encoded", input: "工具", wantSame: false},
+		{name: "CR in value encoded", input: "bad\rname", wantSame: false},
+		{name: "LF in value encoded", input: "bad\nname", wantSame: false},
+		{name: "value already shaped like a sentinel is escaped", input: sentinelEncode("my-tool"), wantSame: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := EncodeSentinelName(tt.input)
+			if tt.wantSame {
+				assert.Equal(t, tt.input, got)
+			} else {
+				assert.NotEqual(t, tt.input, got)
+			}
+
+			decoded, err := decodeSentinelName(got)
+			require.NoError(t, err)
+			assert.Equal(t, tt.input, decoded, "must round-trip through decodeSentinelName")
+		})
+	}
+}
+
+// TestStripReservedModernMeta pins the copy-before-mutate contract: it removes
+// exactly the reserved io.modelcontextprotocol/* keys, never mutates the
+// caller's map, and returns nil for empty input.
+func TestStripReservedModernMeta(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input returns nil", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, StripReservedModernMeta(nil))
+	})
+
+	t.Run("empty input returns nil", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, StripReservedModernMeta(map[string]any{}))
+	})
+
+	t.Run("removes reserved keys, preserves the rest", func(t *testing.T) {
+		t.Parallel()
+		in := map[string]any{
+			metaKeyProtocolVersion:    MCPVersionModern,
+			metaKeyClientInfo:         map[string]any{"name": "x"},
+			metaKeyClientCapabilities: map[string]any{},
+			metaKeyLogLevel:           "debug",
+			"progressToken":           "tok-1",
+			"traceparent":             "00-abc-def-01",
+			"custom":                  42,
+		}
+		got := StripReservedModernMeta(in)
+		for _, k := range ReservedModernMetaKeys {
+			assert.NotContains(t, got, k, "reserved key %q must be stripped", k)
+		}
+		assert.Equal(t, "tok-1", got["progressToken"])
+		assert.Equal(t, "00-abc-def-01", got["traceparent"])
+		assert.Equal(t, 42, got["custom"])
+	})
+
+	t.Run("does not mutate the caller's map", func(t *testing.T) {
+		t.Parallel()
+		in := map[string]any{metaKeyProtocolVersion: MCPVersionModern, "custom": 1}
+		_ = StripReservedModernMeta(in)
+		assert.Contains(t, in, metaKeyProtocolVersion, "caller's map must be untouched")
+		assert.Len(t, in, 2)
+	})
+
+	t.Run("no reserved keys returns a copy, not the original", func(t *testing.T) {
+		t.Parallel()
+		in := map[string]any{"custom": 1}
+		got := StripReservedModernMeta(in)
+		require.Equal(t, in, got)
+		got["custom"] = 2
+		assert.Equal(t, 1, in["custom"], "returned value must be a copy")
+	})
 }

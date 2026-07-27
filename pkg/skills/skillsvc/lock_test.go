@@ -6,6 +6,7 @@ package skillsvc
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
@@ -353,6 +355,8 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
 	})
 	require.Error(t, err, "install must fail when the lock file cannot be written")
+	assert.Equal(t, http.StatusInternalServerError, httperr.Code(err),
+		"a code-less lock-write failure still defaults to 500")
 
 	_, err = svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
 	require.Error(t, err, "the DB record must be rolled back so a retry starts fresh")
@@ -556,4 +560,27 @@ func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
 	skillMD := filepath.Join(projectRoot, ".claude", "skills", "my-skill", "SKILL.md")
 	_, statErr := os.Stat(skillMD)
 	require.NoError(t, statErr, "on-disk files must be untouched")
+}
+
+// TestInstallProjectScope_DependencyFailureCodePreserved: a dependency's
+// specific failure code must reach the API boundary as itself. Dependency
+// materialization runs inside recordLockState, whose failures used to be
+// blanket-wrapped as 500 — masking a git resolver's 502 (and turning the
+// typed sync failure reason into "unknown" instead of
+// "registry-unreachable").
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_DependencyFailureCodePreserved(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	missingDepRef, _ := gitRef("missing-dep") // never registered — Resolve fails with 502
+	fx.register("parent-skill", gitSkill("parent-skill", missingDepRef))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("parent-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadGateway, httperr.Code(err),
+		"the dependency's 502 must not be masked to 500 by the lock-state wrap")
 }

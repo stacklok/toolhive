@@ -35,7 +35,7 @@ func TestCallTool_RoutesToBackend(t *testing.T) {
 
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"result": "ok"}}
 	m.client.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(want, nil)
 
 	c, err := New(cfg)
@@ -74,8 +74,8 @@ func TestCallTool_CopyBeforeMutate(t *testing.T) {
 	// The backend client mutates the maps it receives; the caller's originals
 	// must be untouched because CallTool forwards clones.
 	m.client.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args, meta map[string]any) (*vmcp.ToolCallResult, error) {
+		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args, meta map[string]any, _ map[string]string) (*vmcp.ToolCallResult, error) {
 			args["injected"] = true
 			meta["injected"] = true
 			return &vmcp.ToolCallResult{}, nil
@@ -110,7 +110,7 @@ func TestCallTool_CompositeWorkflow(t *testing.T) {
 	// The composite workflow's single tool step routes to the backend through the
 	// per-call composer built from the aggregated routing table.
 	m.client.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "be1.echo", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}, nil)
 
 	c, err := New(cfg)
@@ -258,7 +258,7 @@ func TestCallTool_ResolvesRenamedTool(t *testing.T) {
 	})
 
 	m.client.EXPECT().
-		CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{}, nil)
 
 	c, err := New(cfg)
@@ -308,7 +308,7 @@ func TestCompositeNameConflict_AdvertisedEqualsExecuted(t *testing.T) {
 
 	// CallTool("shared") must route to the backend, not execute the composite.
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"from": "backend"}}
-	m.client.EXPECT().CallTool(gomock.Any(), beTarget, "shared", gomock.Any(), gomock.Any()).Return(want, nil)
+	m.client.EXPECT().CallTool(gomock.Any(), beTarget, "shared", gomock.Any(), gomock.Any(), gomock.Any()).Return(want, nil)
 
 	got, err := c.CallTool(context.Background(), nil, "shared", nil, nil)
 	require.NoError(t, err)

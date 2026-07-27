@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -26,6 +27,20 @@ const (
 // build understands.
 const MCPVersionModern = "2026-07-28"
 
+// MCPVersionLegacy is the single Legacy (session-based) protocol version this
+// build understands. It is what RevisionLegacy names on the wire and the one
+// version mcpcompat's initialize handshake negotiates.
+const MCPVersionLegacy = "2025-11-25"
+
+// String returns the wire protocol-version string for the revision:
+// MCPVersionModern for RevisionModern, MCPVersionLegacy otherwise.
+func (r Revision) String() string {
+	if r == RevisionModern {
+		return MCPVersionModern
+	}
+	return MCPVersionLegacy
+}
+
 // metaKeyProtocolVersion is the reserved _meta key that carries the per-request
 // protocol version on Modern (stateless) MCP requests, per the draft MCP schema's
 // RequestMetaObject.
@@ -41,12 +56,97 @@ const metaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 // schema's RequestMetaObject.
 const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 
-// reservedModernMetaKeys are the _meta keys a Legacy client never sets. The
-// presence of any one of them — independent of whether its value is
-// well-formed — is itself a claim of the Modern revision, and must not be
-// silently downgraded to Legacy. Only a malformed/absent protocolVersion
-// alongside one of these keys turns into a rejection, never a downgrade.
-var reservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities}
+// metaKeyLogLevel carries the per-request minimum log level on Modern
+// (2026-07-28) requests (draft schema RequestMetaObject; go-sdk protocol.go).
+// It is a reserved per-hop key that must be stripped before a Legacy backend
+// hop, but — unlike the other reserved keys — its mere presence is NOT a claim
+// of the Modern revision: go-sdk's validateRequestMeta gates Modern-ness purely
+// on protocolVersion, and SEP-2577 already deprecates logLevel. It therefore
+// belongs in the egress strip set (ReservedModernMetaKeys) but not the ingress
+// signal set (modernSignalMetaKeys).
+const metaKeyLogLevel = "io.modelcontextprotocol/logLevel"
+
+// ReservedModernMetaKeys is the EGRESS/strip set: every reserved per-hop
+// io.modelcontextprotocol/* control key that vMCP must remove before forwarding
+// a caller-supplied _meta onto a Legacy (session-based, stateful) backend hop,
+// where these keys are invalid — see StripReservedModernMeta.
+//
+// Exported so a Modern client (the mirror of the classifier that reads these
+// keys) can strip a caller's copies before overlaying its own authoritative
+// values — see ModernRequestMeta / mergeModernMeta.
+//
+// This is deliberately NOT the Modern-detection set: that is
+// modernSignalMetaKeys, a strict subset. "Strip this key on the way out" and
+// "this key means the request is Modern" are separate decisions, because a
+// reserved key can require the former without the latter (logLevel). Conflating
+// them would make a request rejectable merely for carrying a
+// strippable-but-not-signalling key.
+var ReservedModernMetaKeys = []string{
+	metaKeyProtocolVersion,
+	metaKeyClientInfo,
+	metaKeyClientCapabilities,
+	metaKeyLogLevel,
+}
+
+// modernSignalMetaKeys is the INGRESS/detection set consumed by hasModernSignal:
+// the reserved keys a Legacy client never sets, whose presence — independent of
+// whether the value is well-formed — is itself a claim of the Modern revision
+// and must not be silently downgraded to Legacy. Only a malformed/absent
+// protocolVersion alongside one of them turns into a rejection, never a
+// downgrade.
+//
+// It is a strict subset of ReservedModernMetaKeys: logLevel is intentionally
+// excluded so a request carrying only logLevel — which go-sdk's
+// validateRequestMeta accepts (gating purely on protocolVersion) and which
+// SEP-2577 deprecates — is classified Legacy rather than misdetected as Modern
+// and then rejected.
+var modernSignalMetaKeys = []string{
+	metaKeyProtocolVersion,
+	metaKeyClientInfo,
+	metaKeyClientCapabilities,
+}
+
+// StripReservedModernMeta returns a copy of meta with every ReservedModernMetaKeys
+// entry removed, leaving all other caller-supplied keys (including trace-context
+// keys) untouched. The input is never mutated (maps.Clone).
+//
+// Use this at every Legacy backend egress that forwards a caller-supplied _meta
+// map: a downstream Modern request's reserved io.modelcontextprotocol/* _meta
+// claims a per-request protocol version that is only valid on a stateless
+// Modern hop. If it leaks onto a Legacy (session-based, stateful) backend call,
+// go-sdk v1.7 rejects the request outright (HTTP 400: "protocol version ...
+// is only supported on stateless HTTP servers") because ANY _meta.protocolVersion
+// on a stateful streamable-HTTP server is invalid, regardless of its value. vMCP
+// is the backend's actual MCP peer on this hop, not the downstream caller, so
+// these reserved keys must never cross it.
+//
+// nil or empty input returns nil (matching mergeModernMeta's caller-tolerant
+// convention); a non-empty map with none of the reserved keys present is
+// returned as-is (via maps.Clone, so callers still get a copy, not the original).
+func StripReservedModernMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	stripped := maps.Clone(meta)
+	for _, k := range ReservedModernMetaKeys {
+		delete(stripped, k)
+	}
+	return stripped
+}
+
+// ModernRequestMeta builds the reserved _meta object every Modern (2026-07-28)
+// request must carry: protocolVersion, clientInfo, and (empty) clientCapabilities.
+// It is the single source of truth for the client side of the reserved
+// io.modelcontextprotocol/* keys, kept consistent with what ClassifyRevision and
+// ValidateHeaderConsistency require of the server side — protocolVersion equal to
+// MCPVersionModern and clientCapabilities present as a JSON object.
+func ModernRequestMeta(clientName, clientVersion string) map[string]any {
+	return map[string]any{
+		metaKeyProtocolVersion:    MCPVersionModern,
+		metaKeyClientInfo:         map[string]any{"name": clientName, "version": clientVersion},
+		metaKeyClientCapabilities: map[string]any{},
+	}
+}
 
 // The following JSON-RPC error codes are defined by the draft MCP spec
 // (schema/draft/schema.ts) for the stateless "Modern" revision. They are
@@ -325,6 +425,14 @@ var nameRequiredMethods = map[string]bool{
 	"prompts/get":    true,
 }
 
+// IsNameRequiredMethod reports whether the Modern (2026-07-28) method requires
+// an Mcp-Name request header naming the target tool/resource/prompt. It shares
+// nameRequiredMethods with ValidateHeaderConsistency so a Modern client sets the
+// header for exactly the methods the server validates it on.
+func IsNameRequiredMethod(method string) bool {
+	return nameRequiredMethods[method]
+}
+
 // ValidateHeaderConsistency enforces the Modern (2026-07-28) Mcp-Method and
 // Mcp-Name request headers against the corresponding parsed request body
 // fields (Method and ResourceID).
@@ -405,14 +513,15 @@ func metaFromParamsMap(paramsMap map[string]any) map[string]any {
 }
 
 // hasModernSignal reports whether the request signals the Modern revision:
-// either the header exactly names MCPVersionModern, or _meta carries any of
-// the reserved Modern-only keys (regardless of whether their values are
-// well-formed).
+// either the header exactly names MCPVersionModern, or _meta carries any of the
+// modernSignalMetaKeys (regardless of whether their values are well-formed).
+// It reads modernSignalMetaKeys, NOT ReservedModernMetaKeys — a key can be
+// reserved-for-stripping without signalling Modern (logLevel).
 func hasModernSignal(meta map[string]any, protoHeader string) bool {
 	if protoHeader == MCPVersionModern {
 		return true
 	}
-	for _, key := range reservedModernMetaKeys {
+	for _, key := range modernSignalMetaKeys {
 		if _, ok := meta[key]; ok {
 			return true
 		}
@@ -481,4 +590,38 @@ func decodeSentinelName(v string) (string, error) {
 		return "", fmt.Errorf("decoding base64 sentinel Mcp-Name payload: %w", err)
 	}
 	return string(decoded), nil
+}
+
+// EncodeSentinelName encodes v into the draft spec's base64 sentinel format
+// (=?base64?<payload>?=) when required — the mirror of decodeSentinelName.
+// Encoding is required when EITHER:
+//   - v is not safely representable as a plain ASCII header value: any byte
+//     falls outside printable ASCII 0x21-0x7E, which also covers leading/
+//     trailing whitespace and CR/LF (both fall below 0x21 and would
+//     otherwise make net/http reject the request outright), or
+//   - v already matches the sentinel pattern (has both sentinelPrefix and
+//     sentinelSuffix), which must be escaped so the server doesn't mistake a
+//     literal name for an encoded payload.
+//
+// Otherwise v is returned unchanged. The result always round-trips through
+// decodeSentinelName back to v.
+func EncodeSentinelName(v string) string {
+	if !needsSentinelEncoding(v) {
+		return v
+	}
+	return sentinelPrefix + base64.StdEncoding.EncodeToString([]byte(v)) + sentinelSuffix
+}
+
+// needsSentinelEncoding reports whether v requires sentinel encoding; see
+// EncodeSentinelName for the two conditions checked.
+func needsSentinelEncoding(v string) bool {
+	if strings.HasPrefix(v, sentinelPrefix) && strings.HasSuffix(v, sentinelSuffix) {
+		return true
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < 0x21 || v[i] > 0x7E {
+			return true
+		}
+	}
+	return false
 }

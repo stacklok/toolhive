@@ -171,6 +171,112 @@ Steps can be of three types:
 
 **Implementation**: `pkg/vmcp/composer/`
 
+## Backend MCP Revision Classification
+
+vMCP speaks both MCP revisions at once. The **client edge** is classified per
+request (see [Transport Architecture](03-transport-architecture.md)); each
+**backend edge** is classified independently, so a client on either revision can
+reach backends on either revision. This section covers the backend edge, in
+`pkg/vmcp/client`.
+
+Two names are used throughout the code: **Legacy** is 2025-11-25 (session-based,
+`initialize` handshake, `Mcp-Session-Id`) and **Modern** is 2026-07-28
+(stateless, no handshake, per-request `_meta`).
+
+### The probe: Modern-first `server/discover`
+
+`probeRevision` decides a backend's revision once, then caches it. It is
+Modern-first — it asks, rather than assuming Legacy:
+
+1. **SSE backends short-circuit to Legacy.** A `TransportType` of `sse` is the
+   2024-11-05 two-endpoint transport (`GET /sse` + `POST /messages`), which has
+   no Modern endpoint at `BaseURL` to discover. This gate is *ToolHive routing*,
+   not a protocol rule — HTTP+SSE is Deprecated in the spec, not removed.
+2. Otherwise vMCP POSTs `server/discover` (`discoverModernCapabilities`) and
+   reads `supportedVersions`.
+
+**`supportedVersions` is the authoritative signal — a clean `server/discover`
+response is not, by itself, proof of Modern.** A go-sdk v1.7 shim answers
+`server/discover` even when it is negotiating *down* to Legacy, so vMCP requires
+`supportedVersions` to actually contain `2026-07-28`; if it does not, the probe
+fails with `errModernNegotiatedDown` and the backend is classified Legacy. The
+containment check is an **exact match**, deliberately stricter than go-sdk's
+reference client (which accepts negotiated `>= 2026-07-28`), because vMCP's shim
+speaks exactly one Modern wire shape. That exactness is a tripwire: adding a
+newer Modern revision must widen this to a set/range check, or a newer-only
+backend is misclassified Legacy.
+
+Probe outcomes:
+
+| Discover result | Classification | Why |
+|---|---|---|
+| Success, `supportedVersions` contains `2026-07-28` | **Modern** | Backend affirmatively serves the revision |
+| A Modern-specific `-3202x` protocol error | **Modern** | The peer validated our Modern `_meta`, so it speaks the revision |
+| A valid Modern envelope with `resultType != "complete"` | **Modern** | Only a Modern peer produces that envelope (`errModernInputRequired`) |
+| Auth rejection (401/403/407) or transient (408/429/5xx, timeout) | **Inconclusive** | Says nothing about the revision; left unprobed so the next call re-probes |
+| Anything else, including negotiated-down | **Legacy** | `errModernNegotiatedDown`, `errWrongEra`, and every other genuine not-Modern signal |
+
+A probe that fails inconclusively falls back to Legacy for that one call
+**without caching it**, so a transient outage can never pin a backend to the
+wrong revision.
+
+### The cache, and its asymmetric self-healing
+
+`dispatch` wraps every backend verb: it resolves the revision (probing on a
+miss), runs the call, and on a revision-shaped failure (`isRevisionMismatch`)
+re-probes and retries. The two directions self-heal by different mechanisms,
+which is worth knowing when reading the code:
+
+- **Modern cached, backend is really Legacy** — `server/discover` no longer
+  advertises `2026-07-28`, producing `errModernNegotiatedDown`, which
+  `isRevisionMismatch` recognises on the Modern arm; the cache is reclassified.
+- **Legacy cached, backend is really Modern** — corrected **in band** rather
+  than by a mismatch: `legacyInit` reads the genuinely-negotiated protocol
+  version off every `InitializeResult` and flips the cache when it comes back
+  `2026-07-28`. The SDK's Modern-first client negotiates Modern unaided even on
+  vMCP's Legacy code path, so the call still succeeds while the label corrects
+  itself.
+
+Reclassification never re-runs a request that may already have executed. An
+`errLegacyResponseBody` (a lenient Legacy backend that answered a Modern-shaped
+request) corrects the cache for *future* calls but returns the error, because the
+backend may have performed the side effect.
+
+### Reserved `_meta` must not cross a Legacy hop
+
+Before any Legacy backend call, vMCP strips the reserved
+`io.modelcontextprotocol/*` keys from a caller-supplied `_meta`
+(`mcp.StripReservedModernMeta`, applied in `pkg/vmcp/client` and
+`pkg/vmcp/session/internal/backend`). This is not cosmetic: go-sdk v1.7 rejects
+**any** `_meta.protocolVersion` on a stateful streamable-HTTP server outright
+(HTTP 400), regardless of its value. vMCP — not the downstream caller — is the
+backend's MCP peer on that hop, so those keys are vMCP's to own. Non-reserved
+caller keys (progress tokens, W3C trace context) are preserved.
+
+### Observability
+
+Each backend's resolved revision is exposed as `mcpRevision` on the backend
+status read-model (`vmcp.BackendStatus.MCPRevision`, fed from the health
+monitor's `RecordRevision`), and surfaces on
+`VirtualMCPServer.status.discoveredBackends[]`. It is empty until the backend has
+been probed.
+
+### Limitation: elicitation and sampling are unavailable on Modern backends
+
+vMCP declares **empty** `clientCapabilities` on every Modern backend call
+(`mcp.ModernRequestMeta`). That is honest — the Modern shim performs single-shot
+dispatch and cannot drive multi-round retrieval — but it has a consequence worth
+naming explicitly rather than leaving to be inferred:
+
+**Mid-call elicitation and sampling forwarding, which vMCP *does* implement for
+Legacy backends (`forwardingClientOptions`), is structurally unavailable for
+Modern backends.** A spec-compliant Modern backend that needs caller input
+returns `-32021`, which surfaces as an opaque `errModernProtocolError`. The
+2026-07-28 revision replaces server-initiated requests with client-polled
+multi-round tool retrieval (MRTR), so the fix is shaped MRTR-first rather than by
+extending the SSE standalone-stream model — see the epic (#5743) and the
+mid-call forwarding section below for the Legacy behaviour this contrasts with.
+
 ## Served MCP Capabilities
 
 Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.
@@ -426,8 +532,8 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 1 | Recovery | Always | Catches panics, returns HTTP 500 |
 | 2 | WriteTimeout | Always | Clears the server `WriteTimeout` for qualifying SSE connections |
 | 3 | Header Validation | Always | Rejects GETs without `Accept: text/event-stream` before they reach the MCP handler |
-| 4 | Authentication (+ MCP parsing) | Optional | Validates incoming credentials (OIDC/local/anonymous); MCP parsing is composed inside so downstream layers see `ParsedMCPRequest` |
-| 5 | Audit | Optional | Logs request events for compliance |
+| 4 | Audit | Optional | Logs every request outcome, including 401s from the auth middleware it wraps; identity and parsed MCP data flow back via the `auth.IdentityHolder` / `mcp.ParsedRequestHolder` carriers |
+| 5 | Authentication (+ MCP parsing) | Optional | Validates incoming credentials (OIDC/local/anonymous); MCP parsing is composed inside so downstream layers see `ParsedMCPRequest` |
 | 6 | Discovery | Always | Aggregates backend capabilities per session |
 | 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
 | 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
@@ -474,7 +580,7 @@ This enriches audit events with the backend name for better observability.
 The server wires them around discovery/annotation-enrichment so the effective execution order is:
 
 ```
-Authentication → MCP Parsing → Audit → Discovery → Annotation Enrichment → Authorization → Next Handler
+Audit → Authentication → MCP Parsing → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
 
 **Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`

@@ -38,6 +38,12 @@ grafana:
     datasources:
       enabled: true
       defaultDatasourceEnabled: true
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      folder: /tmp/dashboards
+      searchNamespace: ALL
   
   # Additional data sources configuration
   additionalDataSources:

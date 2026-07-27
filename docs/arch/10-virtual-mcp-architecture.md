@@ -289,6 +289,68 @@ multi-round tool retrieval (MRTR), so the fix is shaped MRTR-first rather than b
 extending the SSE standalone-stream model — see the epic (#5743) and the
 mid-call forwarding section below for the Legacy behaviour this contrasts with.
 
+### Limitation: elicitation and sampling are unavailable to Modern clients
+
+The client edge mirrors the backend edge. The Modern dispatcher
+(`pkg/vmcp/server`'s `dispatchModern`) is single-shot: every result it builds is
+`resultType: "complete"`, and it never emits `"input_required"` — MRTR
+(SEP-2322) is unimplemented on this edge too. When a backend tool issues a
+mid-call server-initiated request during a **Modern** client's `tools/call`,
+there is no client session to forward it to, so the call fails with an explicit
+`-32603` whose message names the refused request (pinned by
+`TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly`). This is a
+deliberate honest-unsupported error, not a gap left by accident:
+
+- The 2026-07-28 revision **removed** server-initiated requests; go-sdk's
+  `ServerSession.assertServerInitiatedRequestAllowed` refuses
+  elicitation/sampling/roots purely by negotiated protocol version, so no
+  capability negotiation can restore the Legacy forwarding model for Modern
+  clients.
+- A server that never returns `input_required` is fully SEP-2575-conformant:
+  the per-request `clientCapabilities` a client declares are an offer the
+  server may use, not an obligation.
+- SEP-2577 deprecates sampling (and logging and roots) outright as of
+  2026-07-28, with direct LLM-provider integration as the sanctioned
+  replacement — so elicitation is the only durable consumer a future MRTR
+  implementation would serve.
+
+Legacy clients keep the full mid-call forwarding behaviour unchanged; the
+forwarding integration tests pin their downstream clients to Legacy explicitly
+(`legacyPinningRoundTripper` in `pkg/vmcp/server`) because that surface exists
+only on a Legacy session.
+
+**Bridging was considered, costed, and rejected — this is a design position,
+not a backlog item.** Serving MRTR to Modern clients on top of a *Legacy*
+backend would require parking the live, mid-flight backend call server-side
+(the blocked goroutine and its open session cannot be serialized into the
+opaque `requestState` the SEP designed for handler re-invocation) and keying
+the resume on an unguessable token — per-round server state with TTL/eviction,
+identity binding on a token that becomes a capability to resume someone else's
+in-flight call, and replica affinity with no `Mcp-Session-Id` to route on. That
+is a session in disguise: exactly the construct the 2026-07-28 revision
+removed. The spec's own sanctioned path for genuinely stateful
+`input_required` work is the **Tasks** extension (SEP-1686: `tools/call`
+returns a `taskId`; the client polls `tasks/get`/`tasks/result` and answers via
+`tasks/input_response`) — if Modern-client elicitation over Legacy backends is
+ever truly demanded, that is the machinery to reach for, not parked
+`tools/call`.
+
+The coherent future MRTR shape for a re-aggregating gateway is
+**Modern-client ↔ Modern-backend pass-through** — relay a Modern backend's
+`inputRequests`/`requestState` to the client and the client's
+`inputResponses` back, genuinely stateless at vMCP. It requires the egress
+half first (today a Modern backend's `input_required` surfaces as
+`errModernInputRequired`, the seam left in `pkg/vmcp/client`), and by the time
+Modern backends exist to relay from, SEP-2577's deprecations make elicitation
+its only durable consumer; see #5743.
+
+Progress and log notifications toward Modern clients are a separate concern
+from MRTR: they remain spec-legal as request-scoped notifications on the
+POST-initiated SSE response stream (SEP-2260 requires messages on that stream
+to relate to the originating request; `progressToken` is unchanged), which the
+single-shot dispatcher does not produce today — a vMCP streaming-dispatch gap,
+not a spec absence.
+
 ## Served MCP Capabilities
 
 Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.

@@ -306,6 +306,55 @@ func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 	assert.EqualValues(t, -32601, errObj["code"])
 }
 
+// TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly pins the
+// Modern-client behavior for a backend tool that issues a mid-call
+// server-initiated request (elicitation/create, sampling/createMessage): the
+// call MUST resolve promptly to an explicit JSON-RPC error naming the refused
+// request — never a hang, never a fabricated success, and never a resultType
+// "input_required" envelope, which this dispatcher does not emit (client-polled
+// multi-round retrieval, SEP-2322, is unimplemented; modernResultTypeComplete
+// is the only resultType modern_envelope.go builds).
+//
+// This is the honest-unsupported contract for the surface the 2026-07-28
+// revision removed: server-initiated requests need a live session, Modern
+// requests have none by design, and SEP-2577 additionally deprecates sampling
+// outright. The Legacy-session behavior for the same backend tools is covered
+// by the TestForwarding_* fixtures, whose downstream clients pin Legacy
+// explicitly (see legacyPinningRoundTripper).
+func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startForwardingBackend(t)
+	ts := newRealModernTestServer(t, backendURL)
+
+	tests := []struct {
+		name string
+		tool string
+		want string // substring naming the refused server-initiated request
+	}{
+		{name: "elicitation", tool: fwdElicitTool, want: "elicitation/create"},
+		{name: "sampling", tool: fwdSampleTool, want: "sampling/createMessage"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{"name": tc.tool}, 1, tc.tool)
+			defer resp.Body.Close()
+
+			// A -32603 rides HTTP 200 per writeModernError's status mapping: the
+			// request was accepted and processed; the failure is application-level.
+			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+			require.NotContains(t, decoded, "result",
+				"must not fabricate a success or an input_required envelope: %+v", decoded)
+			errObj, ok := decoded["error"].(map[string]any)
+			require.True(t, ok, "decoded: %+v", decoded)
+			assert.EqualValues(t, -32603, errObj["code"])
+			assert.Contains(t, errObj["message"], tc.want,
+				"the error must name the refused server-initiated request")
+		})
+	}
+}
+
 // TestIntegration_Modern_RealBackend_MalformedArguments verifies a
 // syntactically valid tools/call whose "arguments" is present but not a JSON
 // object is rejected with 400 + JSON-RPC -32602, per hasNonObjectArguments'

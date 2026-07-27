@@ -451,6 +451,126 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 		"tools/list must reuse the fixed-at-initialize set, not re-aggregate via the core")
 }
 
+// TestServeToolsListPagination_CompleteSet pins #5742 §5: when vMCP's aggregated
+// tool set exceeds a single page, a downstream client that follows the MCP
+// pagination cursor receives the COMPLETE set — every advertised tool reachable,
+// no duplicates, no omissions. That completeness is the real contract; how the
+// server chunks it is not.
+//
+// Background: go-sdk paginates server-side list responses at DefaultPageSize
+// (1000), emitting nextCursor; mcp-go (pre-migration) returned the whole set in
+// one page, so a naive reader issuing a single tools/list and ignoring
+// nextCursor silently drops the tail — the regression the migration risked.
+// §5 sanctions either branch ("either the server page size is raised OR the
+// test exercises cursor-following"), and mcpcompat's own WithPageSize doc tells
+// aggregators with >1000 tools to raise it. So this test deliberately does NOT
+// assert that pagination happened — asserting nextCursor would go red on
+// exactly that recommended fix even though downstream clients are strictly
+// better off and completeness still holds. It drives the cursor loop and
+// asserts only the recovered set, which is invariant under both branches.
+//
+// The set is generated deterministically (tool-0000 … tool-1499) so the
+// assertion checks exact membership, not just the count. totalTools is a local
+// constant rather than derived from go-sdk's DefaultPageSize: the mcpcompat
+// import doesn't re-export that constant and go-sdk is an indirect dependency,
+// so pinning 1500 > 1000 by hand is cheaper than promoting it for one test.
+func TestServeToolsListPagination_CompleteSet(t *testing.T) {
+	t.Parallel()
+
+	const totalTools = 1500 // > go-sdk DefaultPageSize (1000) today, so the server paginates
+
+	ctrl := gomock.NewController(t)
+	tools := make([]vmcp.Tool, totalTools)
+	for i := range tools {
+		tools[i] = vmcp.Tool{Name: fmt.Sprintf("tool-%04d", i), Description: "pagination test tool"}
+	}
+	factory, state := newToolSessionFactory(t, ctrl, tools)
+	fc := &fakeCore{tools: tools}
+
+	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	streamable := server.NewStreamableHTTPServer(
+		srv.mcpServer,
+		server.WithEndpointPath("/mcp"),
+		server.WithSessionIdManager(srv.vmcpSessionMgr),
+	)
+	ts := httptest.NewServer(streamable)
+	t.Cleanup(ts.Close)
+
+	initResp := postServeMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+	require.Eventually(t, state.makeWithIDCalled.Load, 2*time.Second, 10*time.Millisecond)
+
+	// Drive the cursor loop exactly as a real client does: the first request
+	// carries NO cursor (an empty string is only accepted by go-sdk leniency —
+	// mcp/server.go short-circuits "" before decodeCursor — not by any protocol
+	// guarantee, and the spec shows the initial call cursorless), then each
+	// non-empty nextCursor is echoed back until the server stops issuing one.
+	const maxPages = 10 // generous bound; 1500 tools at page size 1000 needs 2
+	var (
+		gotNames []string
+		cursor   string
+	)
+	for pages := 1; ; pages++ {
+		require.LessOrEqual(t, pages, maxPages, "pagination must terminate (no infinite cursor)")
+
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		listResp := postServeMCP(t, ts.URL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      pages + 100, // stay clear of the initialize id
+			"method":  "tools/list",
+			"params":  params,
+		}, sessionID)
+		require.Equal(t, http.StatusOK, listResp.StatusCode, "tools/list page %d should succeed", pages)
+
+		env, _ := readServeJSONRPC(t, listResp)
+		listResp.Body.Close()
+		require.Nil(t, env["error"], "tools/list must not return a JSON-RPC error: %v", env)
+
+		gotNames = append(gotNames, toolNamesFromListResult(t, env)...)
+		result, ok := env["result"].(map[string]any)
+		require.True(t, ok)
+		next, _ := result["nextCursor"].(string)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+
+	// The complete set must be reachable across the pages, with no duplicates
+	// and no omissions. require.Equal on the sorted slices dumps a single diff
+	// on mismatch — far more readable in CI than 1500 per-index assert failures
+	// when a dropped-and-duplicated pair shifts every later index.
+	want := make([]string, totalTools)
+	for i := range want {
+		want[i] = fmt.Sprintf("tool-%04d", i)
+	}
+	sort.Strings(gotNames)
+	require.Equal(t, want, gotNames,
+		"cursor-following must recover exactly the advertised set — no duplicates, no omissions")
+}
+
 // fakeSDKSession is a minimal server.ClientSession + server.SessionWithTools used to
 // drive lazyInjectSessionTools directly (the SDK's session-context plumbing is otherwise
 // only reachable over HTTP, via MCPServer.WithContext). Its tool store is the observable

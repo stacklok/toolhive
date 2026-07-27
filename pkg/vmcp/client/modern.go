@@ -267,7 +267,11 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 		// request. Distinct from errWrongEra so the caller does not auto-retry.
 		return errLegacyResponseBody
 	default:
-		return fmt.Errorf("%w: resultType=%q", errModernInputRequired, envelope.ResultType)
+		// Typed so an "input_required" round's SEP-2322 payload (inputRequests,
+		// requestState) survives for MRTR consumers (InputRequiredFromError);
+		// unwraps to errModernInputRequired with an identical message, so
+		// classification and behavior are unchanged for everyone else.
+		return newInputRequiredError(envelope.ResultType, result)
 	}
 
 	if out != nil {

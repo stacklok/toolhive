@@ -1249,8 +1249,8 @@ func TestMiddlewareOptimizerCallToolJSONRoundTrip(t *testing.T) {
 // authorization) for a denied request and asserts the 403 body is a spec-conformant
 // JSON-RPC error response: lowercase "jsonrpc"/"id"/"error" keys and, for notifications,
 // no "id" key at all. assert.JSONEq is case-sensitive, so it alone would catch "ID"/"Error"
-// substituted for "id"/"error" — the id-presence check is asserted separately since JSONEq
-// on a body that's missing "id" doesn't distinguish "absent" from "any other value".
+// substituted for "id"/"error" and would fail on an unexpected "id" key — the id-presence
+// check is asserted separately anyway, as a belt-and-braces, self-documenting assertion.
 func TestHandleUnauthorizedIsConformantJSONRPC(t *testing.T) {
 	t.Parallel()
 

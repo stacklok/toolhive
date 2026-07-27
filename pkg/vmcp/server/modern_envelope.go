@@ -19,14 +19,14 @@ import (
 // This file hand-rolls the MCP 2026-07-28 ("Modern") stateless response
 // envelope: the wire shape go-sdk@v1.7.0-pre.3 produces for a single-shot
 // tools/list, resources/list, resources/templates/list, prompts/list,
-// tools/call, resources/read, and prompts/get. ToolHive imports go-sdk
-// v1.6.1, whose Modern types don't exist (or are unexported), so this is a
-// durable parallel serializer, not a stopgap: resultType and _meta.serverInfo
-// are set by unexported SDK functions (setCompleteResultType,
-// annotateServerInfo) that run inside the exact ServerSession dispatch this
-// package bypasses for Modern stateless requests. A future go-sdk bump cannot
-// just delete these structs and marshal SDK result types directly -- the
-// Modern annotations would vanish with them.
+// tools/call, resources/read, and prompts/get. Even in that version -- the one
+// mcpcompat (ToolHive's go-sdk import path) now depends on -- these Modern
+// types remain unexported, so this is a durable parallel serializer, not a
+// stopgap: resultType and _meta.serverInfo are set by unexported SDK functions
+// (setCompleteResultType, annotateServerInfo) that run inside the exact
+// ServerSession dispatch this package bypasses for Modern stateless requests.
+// A future go-sdk bump cannot just delete these structs and marshal SDK result
+// types directly -- the Modern annotations would vanish with them.
 //
 // modernResultTypeComplete is the sole value dispatchModern ever needs: this
 // package only performs single-shot dispatch, never the elicitation retry
@@ -36,8 +36,9 @@ import (
 const modernResultTypeComplete = "complete"
 
 // modernServerInfoKey is the go-sdk's MetaKeyServerInfo
-// (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since v1.6.1
-// does not export it.
+// (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since
+// mcpcompat/mcp (ToolHive's mcp import) does not re-export it, even though
+// go-sdk itself does.
 const modernServerInfoKey = "io.modelcontextprotocol/serverInfo"
 
 // modernServerInfo mirrors the go-sdk's Implementation type.

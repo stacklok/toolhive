@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/client"
 	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -129,6 +130,11 @@ func TestRegression_ToolSchemaFidelity_PreservesCompositors(t *testing.T) {
 		BaseURL:       srv.URL,
 		TransportType: "streamable-http",
 	}
+	// This test is about schema ingestion, not revision probing: pin Legacy
+	// directly rather than relying on the fake's catch-all default arm
+	// (`case default: ... Result: "{}"`) to incidentally classify it that way,
+	// and skip the wasted server/discover probe round-trip.
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 	caps, err := h.ListCapabilities(context.Background(), target)
 	require.NoError(t, err)

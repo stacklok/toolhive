@@ -70,7 +70,7 @@ type fakeBackend struct {
 
 	// metaByMethod records the raw params._meta keyed by JSON-RPC method name.
 	// Tests asserting outbound W3C trace context propagation (SEP-414) use
-	// metaFor(method) to inspect the _meta a backend actually saw on the wire.
+	// toolCallMeta() to inspect the _meta a backend actually saw on the wire.
 	metaByMethod map[string]json.RawMessage
 }
 
@@ -122,13 +122,14 @@ func (f *fakeBackend) headersFor(method string) http.Header {
 	return h.Clone()
 }
 
-// metaFor returns the raw params._meta recorded for the most recent JSON-RPC
-// request with the given method, or nil if no such request was seen or it
-// carried no _meta field.
-func (f *fakeBackend) metaFor(method string) json.RawMessage {
+// toolCallMeta returns the raw params._meta recorded for the most recent
+// tools/call request, or nil if no such request was seen or it carried no
+// _meta field. metaByMethod is keyed by method, but every test so far only
+// inspects tools/call; add a sibling accessor if another method needs one.
+func (f *fakeBackend) toolCallMeta() json.RawMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.metaByMethod[method]
+	return f.metaByMethod[string(mcp.MethodToolsCall)]
 }
 
 // handle implements the JSON-RPC subset needed for backend init. The

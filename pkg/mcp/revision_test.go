@@ -619,6 +619,42 @@ func TestDecodeSentinelName(t *testing.T) {
 	}
 }
 
+// TestEncodeSentinelName pins EncodeSentinelName as the exact mirror of
+// decodeSentinelName: every case must round-trip back to the original value.
+func TestEncodeSentinelName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		wantSame bool // true if the value must pass through unchanged
+	}{
+		{name: "plain ASCII name unchanged", input: "my-tool", wantSame: true},
+		{name: "URI with colon and slash unchanged", input: "file:///tmp/foo.txt", wantSame: true},
+		{name: "accented character encoded", input: "café-résumé", wantSame: false},
+		{name: "CJK character encoded", input: "工具", wantSame: false},
+		{name: "CR in value encoded", input: "bad\rname", wantSame: false},
+		{name: "LF in value encoded", input: "bad\nname", wantSame: false},
+		{name: "value already shaped like a sentinel is escaped", input: sentinelEncode("my-tool"), wantSame: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := EncodeSentinelName(tt.input)
+			if tt.wantSame {
+				assert.Equal(t, tt.input, got)
+			} else {
+				assert.NotEqual(t, tt.input, got)
+			}
+
+			decoded, err := decodeSentinelName(got)
+			require.NoError(t, err)
+			assert.Equal(t, tt.input, decoded, "must round-trip through decodeSentinelName")
+		})
+	}
+}
+
 // TestStripReservedModernMeta pins the copy-before-mutate contract: it removes
 // exactly the reserved io.modelcontextprotocol/* keys, never mutates the
 // caller's map, and returns nil for empty input.

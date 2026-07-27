@@ -144,27 +144,26 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 			assert.NotEmpty(t, readResult.Contents)
 
 			// Verify that all requests were parsed by the middleware
-			assert.GreaterOrEqual(t, len(parsedRequests), 4, "Expected at least 4 parsed requests (initialize, list tools, call tool, list resources, read resource)")
+			assert.GreaterOrEqual(t, len(parsedRequests), 4, "Expected at least 4 parsed requests (session establishment, list tools, call tool, list resources, read resource)")
 
-			// Verify specific parsed requests. Session establishment is
-			// transport-aware under MCP 2026-07-28 (#5754): the mcpcompat/go-sdk
-			// v1.7 client is Modern-first (SEP-2575), so over SSE it sends
-			// server/discover first and gets no answer from this Legacy-only test
-			// server, falling back — but the fallback initialize handshake is
-			// itself carried over the SSE transport's message channel, which this
-			// harness does not capture as a distinct parsed "initialize" the way
-			// streamable-HTTP does. The streamable-HTTP arm is unaffected (no
-			// discover-first probe observed here) and still parses "initialize".
+			// Verify specific parsed requests. mcpcompat's client is Modern-first
+			// (SEP-2575) on every transport, so both arms send server/discover
+			// first. The SSE server transport advertises 2026-07-28 unconditionally
+			// (no ProtocolVersionSupporter gate), so discover succeeds and
+			// "initialize" is never sent there. The streamable-HTTP server here is
+			// stateful (no WithStateless), which gates 2026-07-28 on being
+			// stateless, so its discover negotiates down and it additionally sends
+			// "initialize".
 			foundSessionEstablished := false
 			foundToolCall := false
 			foundResourceRead := false
+			var methodsSeen []string
 			for _, parsed := range parsedRequests {
+				methodsSeen = append(methodsSeen, parsed.Method)
 				switch parsed.Method {
 				case "initialize":
-					if tc.transport != "sse" {
-						foundSessionEstablished = true
-						assert.Equal(t, "test-client", parsed.ResourceID)
-					}
+					foundSessionEstablished = true
+					assert.Equal(t, "test-client", parsed.ResourceID)
 				case "server/discover":
 					if tc.transport == "sse" {
 						// parser.go maps server/discover to the static ResourceID
@@ -180,10 +179,10 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 					assert.Equal(t, "test://resource", parsed.ResourceID)
 				}
 			}
+			assert.True(t, foundSessionEstablished, "session establishment request (initialize or server/discover) should have been parsed")
 			if tc.transport == "sse" {
-				assert.True(t, foundSessionEstablished, "server/discover request should have been parsed (2026-07-28 HTTP+SSE, #5754)")
-			} else {
-				assert.True(t, foundSessionEstablished, "Initialize request should have been parsed")
+				assert.Contains(t, methodsSeen, "server/discover", "SSE arm should negotiate via server/discover")
+				assert.NotContains(t, methodsSeen, "initialize", "SSE arm is Modern-first and should never fall back to initialize here")
 			}
 			assert.True(t, foundToolCall, "Tool call request should have been parsed")
 			assert.True(t, foundResourceRead, "Resource read request should have been parsed")

@@ -126,10 +126,28 @@ func TestProbeRevision_TruthTable(t *testing.T) {
 			wantRev: mcpparser.RevisionLegacy,
 		},
 		{
-			name: "recognized Modern protocol error (-32022) -> Modern",
+			// -32022 (CodeUnsupportedProtocolVersion) alone does NOT prove Modern —
+			// it means "I don't support the version you asked for", which a backend
+			// negotiating down to Legacy also returns. Only when `data.supported`
+			// still lists 2026-07-28 does it prove Modern (see the next case); an
+			// absent data payload must classify Legacy, mirroring go-sdk's own
+			// reference client falling back to a Legacy initialize here.
+			name: "-32022 with no data.supported -> Legacy",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"unsupported version"}}`))
+			},
+			wantRev: mcpparser.RevisionLegacy,
+		},
+		{
+			// -32022 whose data.supported still lists 2026-07-28 proves the peer is
+			// Modern (it validated our Modern _meta and is merely picky about the
+			// exact requested version), so it must classify Modern despite the error.
+			name: "-32022 with data.supported including 2026-07-28 -> Modern",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"unsupported version",` +
+					`"data":{"supported":["2026-07-28"],"requested":"2099-01-01"}}}`))
 			},
 			wantRev: mcpparser.RevisionModern,
 		},
@@ -207,6 +225,31 @@ func TestProbeRevision_TruthTable(t *testing.T) {
 			assert.Equal(t, tt.wantRev, cached)
 		})
 	}
+}
+
+// TestProbeRevision_SSEGate verifies an "sse" TransportType target classifies
+// Legacy without ever attempting the Modern server/discover probe: TransportType
+// == "sse" names the deprecated 2024-11-05 two-endpoint transport, which has no
+// Modern endpoint to discover at this BaseURL (see probeRevision's doc comment).
+// The handler fails the test if it is ever hit, proving no network call is made.
+func TestProbeRevision_SSEGate(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Errorf("probeRevision must not make a network call for an sse target")
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "sse-backend", BaseURL: srv.URL, TransportType: "sse"}
+
+	rev, err := h.probeRevision(context.Background(), target)
+	require.NoError(t, err)
+	assert.Equal(t, mcpparser.RevisionLegacy, rev)
+
+	cached, ok := h.cachedRevision(target.WorkloadID)
+	require.True(t, ok)
+	assert.Equal(t, mcpparser.RevisionLegacy, cached)
 }
 
 // TestProbeRevision_TransientLeavesUnprobed verifies a dead backend (connection

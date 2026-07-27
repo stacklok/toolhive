@@ -103,13 +103,30 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		// change that would require gating it.
 		s.dispatchModernSubscriptionsListen(ctx, w, parsed, identity)
 	case "ping":
-		// ping is deliberately ungated (unauthenticated liveness, same bucket
-		// as initialize -- no Check*) and carries NEITHER resultType NOR
-		// _meta.serverInfo on the wire: the SDK's ping handler returns
-		// emptyResult, and both annotateServerInfo and setCompleteResultType
-		// early-return/no-op for it (go-sdk server.go:1929-1945,1992). Do not
-		// route this through the envelope builders above -- a bare {} is the
-		// correct, spec-matching result.
+		// ping does NOT exist in 2026-07-28: `ping` appears nowhere in
+		// schema/draft/schema.ts, and go-sdk lists it among the methods removed
+		// for this revision (server.go:1880), answering -32601. So answering it
+		// at all is deliberate LENIENCY toward a client that pings anyway, not
+		// spec conformance -- an earlier version of this comment claimed the
+		// latter, which was wrong twice over: the method is gone, and the bare {}
+		// below omits `resultType`, which schema.ts's Result MUSTs on every
+		// result ("Servers implementing this protocol version MUST include this
+		// field").
+		//
+		// Kept as-is rather than switched to -32601 because that is a behavior
+		// change to a pre-existing path, out of scope for the change that
+		// introduced this comment fix. It is inert in practice: a go-sdk Modern
+		// client never pings (startKeepalive sits past an early return), so
+		// nothing observable depends on either answer today. If you are here to
+		// tighten it, -32601 is the conformant answer.
+		//
+		// It is ungated (unauthenticated liveness, same bucket as initialize --
+		// no Check*). Do not route it through the envelope builders above: they
+		// would stamp resultType and _meta.serverInfo, which the Legacy SDK path
+		// does not do for ping either (annotateServerInfo and
+		// setCompleteResultType both early-return for it, go-sdk
+		// server.go:1929-1945,1992), so the bare {} at least keeps the two paths
+		// answering alike.
 		writeModernResult(w, parsed.ID, struct{}{})
 	default:
 		writeModernError(w, parsed.ID, jsonRPCCodeMethodNotFound, "method not found")
@@ -117,19 +134,21 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 }
 
 // The four list-dispatch helpers below (tools/list, resources/list,
-// resources/templates/list, prompts/list) always return the full
-// admission-filtered set from the matching core.List* and do not emit a
-// nextCursor: the Modern list-result envelopes carry no cursor field at all
-// (PaginatedResult.nextCursor is optional, so omitting it is spec-valid),
-// client-facing cursor pagination is unimplemented, and any cursor a Modern
-// client sends is ignored. This is unrelated to the aggregator's UPSTREAM
+// resources/templates/list, prompts/list) each page the full
+// admission-filtered set from the matching core.List* through paginateModern,
+// emitting a nextCursor while items remain. The cursor is stateless keyset
+// pagination over the aggregated ordering -- see modern_pagination.go for the
+// wire contract and why a self-describing cursor is what a sessionless
+// revision requires. This is unrelated to the aggregator's UPSTREAM
 // cursor-following for internal discovery (#5851); that's a different layer.
 //
 // A List*/Discover failure logs the full error server-side and returns a
 // generic -32603 message to the client (writeModernListError below): unlike
 // the call/read/get verbs, these errors come from aggregation and routing
 // plumbing (backend IDs, upstream addressing), and security.md forbids
-// leaking that detail to callers.
+// leaking that detail to callers. An invalid CURSOR is the exception: it is
+// caller input rather than a server-side fault, so writeModernPageError maps
+// it to -32602 instead.
 func (s *Server) dispatchModernToolsList(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {
@@ -138,7 +157,18 @@ func (s *Server) dispatchModernToolsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	result, err := newModernToolsList(tools, s.config.Name, s.config.Version)
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(tools, func(t vmcp.Tool) string { return t.Name },
+		cursorKindTools, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	result, err := newModernToolsList(page, s.config.Name, s.config.Version, next)
 	if err != nil {
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
@@ -154,7 +184,18 @@ func (s *Server) dispatchModernResourcesList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernResourcesList(resources, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(resources, func(r vmcp.Resource) string { return r.URI },
+		cursorKindResources, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernResourcesList(page, s.config.Name, s.config.Version, next))
 }
 
 func (s *Server) dispatchModernResourceTemplatesList(
@@ -165,7 +206,18 @@ func (s *Server) dispatchModernResourceTemplatesList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(templates, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(templates, func(t vmcp.ResourceTemplate) string { return t.URITemplate },
+		cursorKindResourceTemplates, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(page, s.config.Name, s.config.Version, next))
 }
 
 func (s *Server) dispatchModernPromptsList(
@@ -176,7 +228,18 @@ func (s *Server) dispatchModernPromptsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernPromptsList(prompts, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(prompts, func(p vmcp.Prompt) string { return p.Name },
+		cursorKindPrompts, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernPromptsList(page, s.config.Name, s.config.Version, next))
 }
 
 // dispatchModernDiscover serves server/discover, Modern's replacement for
@@ -436,6 +499,21 @@ func gateDenied(ctx context.Context, method string, checkErr error) bool {
 func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, method string, err error) {
 	slog.ErrorContext(ctx, "vmcp modern dispatch: list/discover failed", "method", method, "error", err)
 	writeModernError(w, id, jsonRPCCodeInternalError, "internal error")
+}
+
+// writeModernPageError classifies a paginateModern failure. An invalid cursor is
+// bad caller input, so it gets -32602 -- matching the spec's "handle invalid
+// cursors gracefully" and go-sdk, which returns ErrInvalidParams for a cursor it
+// cannot decode. The message deliberately does not say WHY the cursor was
+// rejected: clients must treat cursors as opaque, so describing the internal
+// encoding would invite them to construct one. Anything else here is an encode
+// failure, i.e. a server-side fault, and falls through to -32603.
+func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, method string, err error) {
+	if errors.Is(err, errInvalidModernCursor) {
+		writeModernError(w, id, jsonRPCCodeInvalidParams, "invalid cursor")
+		return
+	}
+	writeModernListError(ctx, w, id, method, err)
 }
 
 // writeModernCallFailure classifies a POST-dispatch error from the three call

@@ -107,16 +107,18 @@ func newModernCacheable() modernCacheable {
 type modernToolsListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
-	Tools []mcp.Tool `json:"tools"`
-	Meta  modernMeta `json:"_meta"`
+	Tools      []mcp.Tool `json:"tools"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Meta       modernMeta `json:"_meta"`
 }
 
 // modernResourcesListResult is the resources/list wire result.
 type modernResourcesListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
-	Resources []mcp.Resource `json:"resources"`
-	Meta      modernMeta     `json:"_meta"`
+	Resources  []mcp.Resource `json:"resources"`
+	NextCursor string         `json:"nextCursor,omitempty"`
+	Meta       modernMeta     `json:"_meta"`
 }
 
 // modernResourceTemplatesListResult is the resources/templates/list wire result.
@@ -124,6 +126,7 @@ type modernResourceTemplatesListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
 	ResourceTemplates []mcp.ResourceTemplate `json:"resourceTemplates"`
+	NextCursor        string                 `json:"nextCursor,omitempty"`
 	Meta              modernMeta             `json:"_meta"`
 }
 
@@ -131,8 +134,9 @@ type modernResourceTemplatesListResult struct {
 type modernPromptsListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
-	Prompts []mcp.Prompt `json:"prompts"`
-	Meta    modernMeta   `json:"_meta"`
+	Prompts    []mcp.Prompt `json:"prompts"`
+	NextCursor string       `json:"nextCursor,omitempty"`
+	Meta       modernMeta   `json:"_meta"`
 }
 
 // modernCallToolResult is the tools/call wire result. Unlike the four list
@@ -314,7 +318,9 @@ func newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts bool
 
 // newModernToolsList builds the tools/list wire result from the core's
 // admission-filtered domain tools.
-func newModernToolsList(tools []vmcp.Tool, serverName, serverVersion string) (modernToolsListResult, error) {
+func newModernToolsList(
+	tools []vmcp.Tool, nextCursor, serverName, serverVersion string,
+) (modernToolsListResult, error) {
 	wireTools := make([]mcp.Tool, 0, len(tools))
 	for _, t := range tools {
 		wireTool, err := modernToolFromDomain(t)
@@ -327,13 +333,16 @@ func newModernToolsList(tools []vmcp.Tool, serverName, serverVersion string) (mo
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
 		Tools:           wireTools,
+		NextCursor:      nextCursor,
 		Meta:            newModernMeta(serverName, serverVersion),
 	}, nil
 }
 
 // newModernResourcesList builds the resources/list wire result from the
 // core's admission-filtered domain resources.
-func newModernResourcesList(resources []vmcp.Resource, serverName, serverVersion string) modernResourcesListResult {
+func newModernResourcesList(
+	resources []vmcp.Resource, nextCursor, serverName, serverVersion string,
+) modernResourcesListResult {
 	wireResources := make([]mcp.Resource, 0, len(resources))
 	for _, r := range resources {
 		wireResources = append(wireResources, modernResourceFromDomain(r))
@@ -342,6 +351,7 @@ func newModernResourcesList(resources []vmcp.Resource, serverName, serverVersion
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
 		Resources:       wireResources,
+		NextCursor:      nextCursor,
 		Meta:            newModernMeta(serverName, serverVersion),
 	}
 }
@@ -349,7 +359,7 @@ func newModernResourcesList(resources []vmcp.Resource, serverName, serverVersion
 // newModernResourceTemplatesList builds the resources/templates/list wire
 // result from the core's admission-filtered domain resource templates.
 func newModernResourceTemplatesList(
-	templates []vmcp.ResourceTemplate, serverName, serverVersion string,
+	templates []vmcp.ResourceTemplate, nextCursor, serverName, serverVersion string,
 ) modernResourceTemplatesListResult {
 	wireTemplates := make([]mcp.ResourceTemplate, 0, len(templates))
 	for _, t := range templates {
@@ -359,13 +369,16 @@ func newModernResourceTemplatesList(
 		ResultType:        modernResultTypeComplete,
 		modernCacheable:   newModernCacheable(),
 		ResourceTemplates: wireTemplates,
+		NextCursor:        nextCursor,
 		Meta:              newModernMeta(serverName, serverVersion),
 	}
 }
 
 // newModernPromptsList builds the prompts/list wire result from the core's
 // admission-filtered domain prompts.
-func newModernPromptsList(prompts []vmcp.Prompt, serverName, serverVersion string) modernPromptsListResult {
+func newModernPromptsList(
+	prompts []vmcp.Prompt, nextCursor, serverName, serverVersion string,
+) modernPromptsListResult {
 	wirePrompts := make([]mcp.Prompt, 0, len(prompts))
 	for _, p := range prompts {
 		wirePrompts = append(wirePrompts, modernPromptFromDomain(p))
@@ -374,6 +387,7 @@ func newModernPromptsList(prompts []vmcp.Prompt, serverName, serverVersion strin
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
 		Prompts:         wirePrompts,
+		NextCursor:      nextCursor,
 		Meta:            newModernMeta(serverName, serverVersion),
 	}
 }

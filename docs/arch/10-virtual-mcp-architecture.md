@@ -344,19 +344,19 @@ this; production tools can.)
 
 Legacy clients keep the full mid-call forwarding behaviour unchanged; the
 forwarding integration tests pin their downstream clients to Legacy explicitly
-(`legacyPinningRoundTripper` in `pkg/vmcp/server`) because that surface exists
-only on a Legacy session.
+(`legacyPinningRoundTripper` in `pkg/vmcp/server`'s external test package)
+because that surface exists only on a Legacy session.
 
-**Bridging was considered, costed, and rejected — this is a design position,
-not a backlog item.** Serving MRTR to Modern clients on top of a *Legacy*
+**Bridging was considered, costed, and rejected.** Serving MRTR to Modern
+clients on top of a *Legacy*
 backend would require parking the live, mid-flight backend call server-side
 (the blocked goroutine and its open session cannot be serialized into the
 opaque `requestState` the SEP designed for handler re-invocation) and keying
 the resume on an unguessable token — per-round server state with TTL/eviction,
 identity binding on a token that becomes a capability to resume someone else's
 in-flight call, and replica affinity with no `Mcp-Session-Id` to route on. That
-is a session in disguise: exactly the construct the 2026-07-28 revision
-removed. The spec's own sanctioned path for genuinely stateful
+would reintroduce, in different clothes, the per-request server state the
+2026-07-28 revision removed. The spec's own sanctioned path for genuinely stateful
 `input_required` work is the **Tasks** extension (SEP-2663: `tools/call`
 returns `resultType: "task"` with a `taskId`; the client polls `tasks/get` and
 answers outstanding `inputRequests` via `inputResponses` on `tasks/update`;
@@ -575,6 +575,13 @@ connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
 While a backend `tools/call` (or other request) is in flight, the backend may issue **server-initiated** requests and notifications back toward the client: elicitation, sampling, progress, and logging. vMCP forwards these mid-call in both directions through a per-call forwarder that bridges the backend connection to the originating client session, so a backend that needs user input (elicitation) or model completions (sampling), or that emits progress/log notifications, reaches the real client transparently. This is distinct from composite-tool elicitation (which the composer drives during a workflow); the mid-call forwarder handles the general request-scoped case for a single backend call.
 
 **Implementation**: `pkg/vmcp/forwarding.go`, `pkg/vmcp/client/forwarding.go`, `pkg/vmcp/server/serve_handlers.go`
+
+**Known limitation (Modern clients)**: everything in this section describes a
+**Legacy (2025-11-25) client session**. For Modern (2026-07-28) clients there
+is no session and no server-initiated request channel, so none of this
+forwarding applies — see
+[Limitation: elicitation and sampling are unavailable to Modern clients](#limitation-elicitation-and-sampling-are-unavailable-to-modern-clients)
+for what a Modern caller gets instead.
 
 **Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested `logging/setLevel`. vMCP requests debug-level logging from the backend so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own level preference is not applied to the relayed stream.
 

@@ -316,11 +316,10 @@ func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 // Modern-client CONTRACT for a backend tool that issues a mid-call
 // server-initiated request (elicitation/create, sampling/createMessage): the
 // call MUST resolve promptly (postModern is deadline-bounded) to an explicit
-// JSON-RPC error naming the refused request — never a hang, never a
-// fabricated success, and never a resultType "input_required" envelope, which
-// this dispatcher does not emit (client-polled multi-round retrieval,
-// SEP-2322, is unimplemented; modernResultTypeComplete is the only resultType
-// modern_envelope.go builds).
+// JSON-RPC error — never a hang, never a fabricated success, and never a
+// resultType "input_required" envelope, which this dispatcher does not emit
+// (client-polled multi-round retrieval, SEP-2322, is unimplemented;
+// modernResultTypeComplete is the only resultType modern_envelope.go builds).
 //
 // Deliberately NOT pinned: the specific error code. Today it is -32603, but
 // the spec MUSTs -32021 MissingRequiredClientCapability for the undeclared
@@ -347,10 +346,9 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 	tests := []struct {
 		name string
 		tool string
-		want string // substring naming the refused server-initiated request
 	}{
-		{name: "elicitation", tool: fwdElicitTool, want: "elicitation/create"},
-		{name: "sampling", tool: fwdSampleTool, want: "sampling/createMessage"},
+		{name: "elicitation", tool: fwdElicitTool},
+		{name: "sampling", tool: fwdSampleTool},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -363,17 +361,25 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 			errObj, ok := decoded["error"].(map[string]any)
 			require.True(t, ok, "the failure must be an explicit JSON-RPC error: %+v", decoded)
 			msg, _ := errObj["message"].(string)
-			assert.Contains(t, msg, tc.want,
-				"the error must name the refused server-initiated request")
 
+			// The refused request's NAME (elicitation/create etc.) is deliberately
+			// NOT asserted: today it appears in the message only via go-sdk's
+			// "calling %q" error wrapping — a dependency's string, which an
+			// upstream reword would break for no ToolHive reason (testing.md,
+			// test scope). The follow-up capability-error contract emits a
+			// vMCP-owned message; assert the named-request property THERE, on our
+			// own string.
+			//
 			// KNOWN LEAK, deliberately characterized rather than endorsed: the
 			// -32603 message echoes err.Error() verbatim (writeModernDispatchError's
 			// documented posture), which today includes the backend workload ID —
-			// contradicting writeModernListError's leak policy 25 lines above it in
-			// the same file. The leak predates this test and affects both
-			// revisions; the follow-up capability-error contract replaces this
-			// message with a crafted one. When it does, FLIP this assertion to
-			// NotContains so the fix is a conscious, test-visible event.
+			// contradicting writeModernListError's leak policy in the same file.
+			// The leak predates this test and affects both revisions; the
+			// follow-up replaces this message with a crafted one. When it does,
+			// FLIP this assertion to NotContains so the fix is a conscious,
+			// test-visible event. ("real-backend" IS a ToolHive string: the
+			// backend ID this fixture registers, echoed through vMCP's own
+			// "tool call failed on backend %s" wrapping.)
 			assert.Contains(t, msg, "real-backend",
 				"characterizes the pre-existing backend-ID leak; flip to NotContains when the message is sanitized")
 		})

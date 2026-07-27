@@ -38,6 +38,13 @@ type modernFakeCore struct {
 
 	discoverCaps core.DiscoverCapabilities
 	discoverErr  error
+	// discoverCalls counts Discover invocations, so a test can assert the
+	// subscriptions/listen pre-check skipped the backend fan-out entirely (the
+	// response is identical either way, so only the count is observable).
+	discoverCalls int
+	// discoverIdentity records the identity Discover was called with, so
+	// per-identity filtering of a computed set can be pinned rather than assumed.
+	discoverIdentity *auth.Identity
 
 	checkToolErr, checkResourceErr, checkPromptErr error
 	callToolErr, readResourceErr, getPromptErr     error
@@ -73,7 +80,9 @@ func (f *modernFakeCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Pr
 	return f.prompts, nil
 }
 
-func (f *modernFakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
+func (f *modernFakeCore) Discover(_ context.Context, identity *auth.Identity) (core.DiscoverCapabilities, error) {
+	f.discoverCalls++
+	f.discoverIdentity = identity
 	return f.discoverCaps, f.discoverErr
 }
 

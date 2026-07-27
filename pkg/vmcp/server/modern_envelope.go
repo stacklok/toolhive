@@ -233,21 +233,10 @@ type modernDiscoverResult struct {
 	Meta              modernMeta             `json:"_meta"`
 }
 
-// newModernDiscover builds the server/discover wire result. hasTools/
-// hasResources/hasPrompts are the caller's len(core.List*(ctx, identity))>0
-// admission-filtered presence checks -- this function only shapes them into
-// the wire capability flags, so a discover response reflects exclusively
-// what this identity may reach, same as the four list results. hasTemplates
-// folds into the "resources" capability: the wire protocol has no separate
-// resource-templates capability flag.
-//
-// Completions is set unconditionally, unlike the three identity-filtered
-// flags above: completion/complete has no per-identity admission of its own
-// (core.Complete authorizes the underlying prompt/resource ref at dispatch,
-// not the completions feature itself), and this dispatcher serves it for
-// every caller once Modern dispatch is enabled at all -- matching how the
-// Legacy/SDK path always wires server.WithCompletionHandler regardless of
-// identity (serve.go).
+// newModernDiscover builds the server/discover wire result. The capability
+// flags themselves are shaped by newModernCapabilities below -- see its doc
+// comment for what each flag means and why the push-related ones are false.
+// This function only assembles the envelope around them.
 //
 // SupportedVersions enumerates every protocol version this vMCP endpoint
 // actually serves, not just Modern: mcpparser.MCPVersionModern (this
@@ -269,8 +258,22 @@ func newModernDiscover(
 }
 
 // newModernCapabilities shapes the four admission-filtered presence checks into
-// the wire capability flags. It is the SINGLE source of truth for what this
-// dispatcher advertises: server/discover publishes it verbatim (above), and
+// the wire capability flags.
+//
+// hasTools/hasResources/hasTemplates/hasPrompts are the caller's
+// len(core.List*(ctx, identity))>0 checks, so an advertisement reflects
+// exclusively what this identity may reach, same as the four list results.
+// hasTemplates folds into the "resources" capability: the wire protocol has no
+// separate resource-templates flag.
+//
+// Completions is set unconditionally, unlike the identity-filtered flags:
+// completion/complete has no per-identity admission of its own (core.Complete
+// authorizes the underlying prompt/resource ref at dispatch, not the completions
+// feature itself), and this dispatcher serves it for every caller -- matching how
+// the Legacy/SDK path always wires server.WithCompletionHandler regardless of
+// identity (serve.go).
+//
+// It is the SINGLE source of truth for what this dispatcher advertises: server/discover publishes it verbatim (above), and
 // subscriptions/listen intersects a client's requested notification set against
 // it (honoredSubscriptions, modern_subscriptions.go). Keeping one builder is
 // what makes those two answers impossible to drift apart -- a client can never
@@ -318,8 +321,12 @@ func newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts bool
 
 // newModernToolsList builds the tools/list wire result from the core's
 // admission-filtered domain tools.
+// nextCursor is LAST on purpose: it sits among same-typed string parameters, and
+// when it was in the middle a transposition with serverName compiled silently and
+// put a server name in the cursor field. Keep new string params appended, not
+// inserted.
 func newModernToolsList(
-	tools []vmcp.Tool, nextCursor, serverName, serverVersion string,
+	tools []vmcp.Tool, serverName, serverVersion, nextCursor string,
 ) (modernToolsListResult, error) {
 	wireTools := make([]mcp.Tool, 0, len(tools))
 	for _, t := range tools {
@@ -341,7 +348,7 @@ func newModernToolsList(
 // newModernResourcesList builds the resources/list wire result from the
 // core's admission-filtered domain resources.
 func newModernResourcesList(
-	resources []vmcp.Resource, nextCursor, serverName, serverVersion string,
+	resources []vmcp.Resource, serverName, serverVersion, nextCursor string,
 ) modernResourcesListResult {
 	wireResources := make([]mcp.Resource, 0, len(resources))
 	for _, r := range resources {
@@ -359,7 +366,7 @@ func newModernResourcesList(
 // newModernResourceTemplatesList builds the resources/templates/list wire
 // result from the core's admission-filtered domain resource templates.
 func newModernResourceTemplatesList(
-	templates []vmcp.ResourceTemplate, nextCursor, serverName, serverVersion string,
+	templates []vmcp.ResourceTemplate, serverName, serverVersion, nextCursor string,
 ) modernResourceTemplatesListResult {
 	wireTemplates := make([]mcp.ResourceTemplate, 0, len(templates))
 	for _, t := range templates {
@@ -377,7 +384,7 @@ func newModernResourceTemplatesList(
 // newModernPromptsList builds the prompts/list wire result from the core's
 // admission-filtered domain prompts.
 func newModernPromptsList(
-	prompts []vmcp.Prompt, nextCursor, serverName, serverVersion string,
+	prompts []vmcp.Prompt, serverName, serverVersion, nextCursor string,
 ) modernPromptsListResult {
 	wirePrompts := make([]mcp.Prompt, 0, len(prompts))
 	for _, p := range prompts {

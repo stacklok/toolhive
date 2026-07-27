@@ -57,15 +57,27 @@ import (
 // Modern subscription method and notification names, plus the reserved _meta
 // key deliveries are tagged with.
 //
-// Provenance, since it differs per constant: the two method/notification names
-// and the per-type opt-in shape are specified in SEP-2575 prose. The
-// subscriptionId key and the convention of using the listen request's own
-// JSON-RPC id as the subscription identity are NOT in the spec text -- they are
-// taken from go-sdk@v1.7.0-pre.3 (MetaKeySubscriptionID at protocol.go:2377-2379;
-// server.go:1187-1250 keys subscriptions by the request id and stamps it into
-// both the acknowledgement and the final result). That is the reference
-// implementation rather than normative prose, so treat it as the de facto wire
-// contract and re-check it when the SEP lands.
+// All three are NORMATIVE in schema/draft/schema.ts -- do not weaken them to
+// "SDK convention". The relevant declarations:
+//
+//   - SubscriptionsListenResultMeta requires (non-optional)
+//     "io.modelcontextprotocol/subscriptionId", whose value is "the JSON-RPC ID
+//     of the subscriptions/listen request that opened the stream (and equals
+//     this response's id)" -- so request-id-as-subscription-identity is
+//     specified, not invented.
+//   - SubscriptionsAcknowledgedNotification: "This notification MUST be the
+//     first message the server sends carrying the subscription's ID ... The
+//     server MUST NOT send any notification on the subscription before
+//     acknowledging it."
+//   - NotificationMetaObject: "The server MUST include this key on every
+//     notification delivered via a subscriptions/listen stream." That third one
+//     binds a DELIVERY implementation rather than this handler (which delivers
+//     nothing); it is restated at the #5743 hand-off below so it is not lost.
+//
+// go-sdk agrees and can be read as a cross-check (MetaKeySubscriptionID at
+// protocol.go:2377-2379; server.go:1187-1250), but the schema is the authority.
+// An earlier version of this comment attributed these to the SDK because the
+// SEP-2575 prose does not restate them -- the schema does, and it governs.
 const (
 	methodSubscriptionsListen      = "subscriptions/listen"
 	notificationSubscriptionsAcked = "notifications/subscriptions/acknowledged"
@@ -149,25 +161,48 @@ func (s *Server) dispatchModernSubscriptionsListen(
 	}
 
 	// Resolve what this identity may reach, then shape it through the same
-	// capability builder server/discover publishes. Costs one backend fan-out,
-	// like dispatchModernDiscover; see its note on the absent cross-request cache.
-	caps, err := s.core.Discover(ctx, identity)
-	if err != nil {
-		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
-		return
+	// capability builder server/discover publishes.
+	//
+	// The pre-check first: core.Discover is an un-rate-limited backend fan-out
+	// (ratelimit/decorator.go meters CallTool only), and while no push capability
+	// is advertised its result cannot change the answer -- every possible
+	// DiscoverCapabilities combination yields the same empty honored set, because
+	// the has* booleans only decide whether a capability POINTER is non-nil, never
+	// the listChanged/subscribe flags inside it. Calling it anyway meant N no-op
+	// requests cost N fan-outs, and that got worse once list verbs began paging.
+	// So probe the ceiling -- everything present -- and skip the fan-out when even
+	// that honors nothing. This is a pure optimisation: it cannot change the
+	// response, only what it costs.
+	ceiling := honoredSubscriptions(*params.Notifications, newModernCapabilities(true, true, true, true))
+	honored := ceiling
+	if !ceiling.isEmpty() {
+		caps, err := s.core.Discover(ctx, identity)
+		if err != nil {
+			writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
+			return
+		}
+		advertised := newModernCapabilities(
+			caps.HasTools, caps.HasResources, caps.HasResourceTemplates, caps.HasPrompts)
+		honored = honoredSubscriptions(*params.Notifications, advertised)
 	}
-	advertised := newModernCapabilities(caps.HasTools, caps.HasResources, caps.HasResourceTemplates, caps.HasPrompts)
-	honored := honoredSubscriptions(*params.Notifications, advertised)
 
 	// The subscription id is the listen request's own JSON-RPC id. Modern has no
 	// sessions, so this -- not an Mcp-Session-Id -- is what a delivery
 	// implementation would key streams by.
 	subscriptionMeta := map[string]any{modernSubscriptionIDKey: parsed.ID}
 
-	if err := writeModernListenStream(w, parsed.ID, honored, subscriptionMeta); err != nil {
-		// The client hung up or the stream could not be flushed. Nothing is
-		// recoverable at this point (headers are already committed), so log and
-		// return rather than attempting an error envelope on a dead stream.
+	// Build first: a marshal failure here is still reportable as -32603, because
+	// nothing has been written yet.
+	frames, err := buildModernListenFrames(parsed.ID, honored, subscriptionMeta)
+	if err != nil {
+		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+
+	if err := writeModernListenStream(w, frames); err != nil {
+		// Only reachable mid-stream: the frames were built successfully and the
+		// status line is already sent, so there is no way to turn this into a
+		// JSON-RPC error. Log it and let the connection drop.
 		slog.DebugContext(ctx, "vmcp modern dispatch: subscriptions/listen stream ended early",
 			"error", err)
 		return
@@ -180,9 +215,25 @@ func (s *Server) dispatchModernSubscriptionsListen(
 		// Whoever flips a capability flag owns adding both (#5743) -- this WARN
 		// exists so that, if a flag is flipped without it, the gap is loud in the
 		// logs instead of presenting as a silently idle client subscription.
+		//
+		// Hand-off note for that work, since it is a MUST and easy to miss: per
+		// schema.ts's NotificationMetaObject, the server MUST include
+		// io.modelcontextprotocol/subscriptionId on EVERY notification delivered
+		// via a subscriptions/listen stream -- not just on the acknowledgement
+		// this handler already tags. A delivery implementation that pushes a bare
+		// notifications/tools/list_changed onto the stream is non-conformant even
+		// though the subscription itself was acknowledged correctly.
+		//
+		// Logged by COUNT, never by URI: resourceSubscriptions is client-supplied
+		// and only length-capped, so echoing the array into the log sink on an
+		// unmetered verb would let a caller choose how much it writes per request.
 		slog.WarnContext(ctx, "vmcp modern dispatch: subscriptions/listen honored a subscription "+
 			"but vMCP has no delivery mechanism; notifications will not arrive",
-			"subscription_id", parsed.ID, "honored", honored)
+			"subscription_id", parsed.ID,
+			"tools_list_changed", honored.ToolsListChanged,
+			"prompts_list_changed", honored.PromptsListChanged,
+			"resources_list_changed", honored.ResourcesListChanged,
+			"resource_subscription_count", len(honored.ResourceSubscriptions))
 	}
 }
 
@@ -220,15 +271,21 @@ func honoredSubscriptions(
 	return honored
 }
 
-// writeModernListenStream writes the two-frame SSE response: the mandatory
-// initial acknowledgement notification, then the terminating result.
+// buildModernListenFrames marshals the two frames the listen response carries:
+// the mandatory initial acknowledgement notification, then the terminating
+// result.
 //
-// Both frames are marshalled before any header is written, so a marshal failure
-// cannot leave a half-written response -- the same build-then-write ordering
-// writeModernEnvelope uses.
-func writeModernListenStream(
-	w http.ResponseWriter, id any, honored notificationSubscriptions, subscriptionMeta map[string]any,
-) error {
+// It is separate from writeModernListenStream so that everything which can fail
+// BEFORE any byte is written stays on a path that can still produce a proper
+// JSON-RPC error. Folding these into the writer meant a marshal failure returned
+// after headers were nominally "committed" when in fact nothing had been written
+// at all, so the client received a bare HTTP 200 with an empty body for a request
+// carrying an id. Now the caller maps a build failure to -32603, matching
+// writeModernEnvelope's own build-then-write ordering, and only a genuine
+// mid-stream write failure is unreportable.
+func buildModernListenFrames(
+	id any, honored notificationSubscriptions, subscriptionMeta map[string]any,
+) ([][]byte, error) {
 	ack, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  notificationSubscriptionsAcked,
@@ -238,7 +295,7 @@ func writeModernListenStream(
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("marshalling subscriptions acknowledgement: %w", err)
+		return nil, fmt.Errorf("marshalling subscriptions acknowledgement: %w", err)
 	}
 	result, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -249,27 +306,73 @@ func writeModernListenStream(
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("marshalling subscriptions listen result: %w", err)
+		return nil, fmt.Errorf("marshalling subscriptions listen result: %w", err)
 	}
+	return [][]byte{ack, result}, nil
+}
 
-	// A ResponseWriter that cannot flush would buffer both frames until the
-	// handler returned, which for a stream the client reads incrementally is
-	// indistinguishable from a hang. Fail before committing headers instead.
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return fmt.Errorf("response writer does not support streaming")
-	}
+// writeModernListenStream writes pre-marshalled frames as an SSE response and
+// closes it. Everything it can return is a mid-stream failure -- the frames are
+// already built and the status line is already gone -- so its error is only ever
+// loggable, never reportable to the client.
+func writeModernListenStream(w http.ResponseWriter, frames [][]byte) error {
+	// http.ResponseController rather than a w.(http.Flusher) type assertion.
+	//
+	// The assertion would not establish what it appears to. Every ResponseWriter
+	// wrapper in vMCP's middleware chain -- audit/auditor.go,
+	// telemetry/middleware.go, bodylimit/middleware.go, mcp/tool_filter.go --
+	// defines Flush() UNCONDITIONALLY and forwards only if the writer it wraps
+	// supports it. So the assertion succeeds whenever a wrapper is present,
+	// whatever the writer underneath can do, and says nothing about whether a
+	// flush will actually reach the socket. ResponseController unwraps the chain
+	// (via Unwrap) and reports a real answer.
+	//
+	// The tradeoff, stated because it costs something: there is no longer a
+	// PRE-write capability check. ResponseController exposes no "can you flush"
+	// predicate -- the only way to find out is to call Flush, which implicitly
+	// commits the header -- so an unflushable writer now surfaces as a mid-stream
+	// error rather than a -32603 before anything is written. That is deliberate:
+	// the old assertion answered early but WRONGLY, and an early wrong answer on a
+	// path no deployment can reach is worse than a correct late one. If Go ever
+	// grows a flushability predicate, move this back ahead of WriteHeader.
+	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	// no-store as well as no-cache: no-cache still permits a shared cache to
+	// STORE the response and revalidate, which for a per-identity stream is wrong.
+	w.Header().Set("Cache-Control", "no-cache, no-store, no-transform, private")
 	w.Header().Set("Connection", "keep-alive")
+	// Draft Streamable HTTP, "When initiating an SSE stream, servers SHOULD
+	// include the X-Accel-Buffering: no header", so a reverse proxy (nginx and
+	// friends) does not accumulate events before forwarding them. This is the
+	// only SSE-emitting path in the codebase, so there is nowhere else to copy
+	// the header from.
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	for _, frame := range [][]byte{ack, result} {
+	for _, frame := range frames {
+		// Frame format is load-bearing, not cosmetic: an SSE event is terminated
+		// by a BLANK line, so the trailing "\n\n" is what makes a parser dispatch
+		// the event. Emitting a single "\n" leaves both frames inside one
+		// never-dispatched event -- the client connects and then silently receives
+		// nothing, which is exactly the mutation that escaped both this package's
+		// tests and the real-client integration suite.
+		//
+		// The "event: message" line is NOT mandated: the draft Streamable HTTP
+		// page specifies the content type and the stream lifecycle but never an
+		// SSE event name, and it explicitly drops resumability ("Resumable SSE
+		// streams via Last-Event-ID are not supported"), which is why no "id:"
+		// field is emitted either. The name is kept for symmetry with go-sdk's
+		// framing; do not add an "id:" to match it.
 		if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", frame); err != nil {
 			return fmt.Errorf("writing subscriptions/listen frame: %w", err)
 		}
-		flusher.Flush()
+		// A writer that genuinely cannot flush would buffer both frames until the
+		// handler returned, which for a stream read incrementally is
+		// indistinguishable from a hang. Report it rather than hanging.
+		if err := rc.Flush(); err != nil {
+			return fmt.Errorf("flushing subscriptions/listen frame: %w", err)
+		}
 	}
 	return nil
 }

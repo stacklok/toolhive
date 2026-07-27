@@ -228,10 +228,15 @@ type initResult struct {
 // subscriptions/listen stream, because mcpcompat's Initialize unconditionally
 // installs the three list-changed notification handlers
 // (mcpcompat/client.installNotificationHandlers) and go-sdk opens that stream
-// whenever any of them is set. A stateless backend cannot serve it — it has no
-// Mcp-Session-Id, so it answers "session not found" — which fails Connect,
-// tears the connection down, and in turn fails the follow-up tools/list in
-// initAndQueryCapabilities. The connector therefore returns (nil, nil, err).
+// whenever any of them is set. The stateless server rejects it with
+// "session not found", which fails Connect, tears the connection down, and in
+// turn fails the follow-up tools/list in initAndQueryCapabilities. The connector
+// therefore returns (nil, nil, err).
+//
+// That rejection is a go-sdk v1.7.0-pre.3 artifact, NOT a spec requirement: the
+// Modern revision has no sessions, so nothing in it says subscriptions/listen
+// needs one. Do not read this as "Modern requires a session" — it is the SDK's
+// stateless server refusing a subscribe it has no session to hang the stream on.
 //
 // So the wasted work is a whole sequence (discover, a failed subscribe, a
 // failed tools/list, teardown), not one round-trip, and it ends in a WARN that
@@ -473,9 +478,12 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 
 	// Only warn when at least one backend was actually expected to hold a
 	// session — a set that skipped every backend as Modern is working as
-	// designed, not a failure.
+	// designed, not a failure. The message deliberately does NOT say the session
+	// has no capabilities: on the Serve path those come from the core, not from
+	// these connections, so a session with zero held connections still lists and
+	// calls tools normally. What is actually lost is list_changed propagation.
 	if len(results) == 0 && len(backends) > 0 && slices.Contains(modernSkipped, false) {
-		slog.Warn("All backends failed to initialise; session will have no capabilities",
+		slog.Warn("No backend held a session for this session; every non-Modern backend failed to initialise",
 			"backendCount", len(backends))
 	}
 

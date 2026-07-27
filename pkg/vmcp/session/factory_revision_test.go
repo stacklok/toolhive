@@ -156,7 +156,12 @@ func setupLogRecorder(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-const allBackendsFailedMsg = "All backends failed to initialise"
+// allBackendsFailedMsg pins the substring of makeBaseSession's no-session-held
+// warning. Kept as the stable prefix rather than the whole line so a wording
+// tweak does not silently turn the NotContains assertion below into a vacuous
+// pass — the assertion that no warning fired is only meaningful while this
+// substring still matches the message the code emits.
+const allBackendsFailedMsg = "No backend held a session for this session"
 
 // TestMakeSession_AllBackendsFailedWarning verifies that the "all backends
 // failed" warning fires only when a real failure is present — an all-Modern

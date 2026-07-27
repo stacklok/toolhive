@@ -31,7 +31,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -58,15 +57,6 @@ import (
 // see server.Config.ModernDispatchEnabled). Env-only ahead of any CLI-flag or
 // CRD wiring.
 const modernDispatchEnvVar = "TOOLHIVE_VMCP_MODERN_STATELESS"
-
-// revisionReporter is the optional accessor for a backend's cached MCP
-// revision. httpBackendClient implements it; it is NOT part of
-// vmcp.BackendClient (see pkg/vmcp/health's identical pattern), so it is
-// reached via a type assertion below and simply omitted from the session
-// factory's options when absent.
-type revisionReporter interface {
-	CachedRevision(workloadID string) (mcpparser.Revision, bool)
-}
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
@@ -368,7 +358,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
 	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
-	if revisions, ok := backendClient.(revisionReporter); ok {
+	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
 		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
 	}
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)

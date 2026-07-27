@@ -29,14 +29,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// revisionReporter is the optional accessor the concrete backend client exposes
-// for its cached MCP revision (see client.CachedRevision). It is NOT part of
-// vmcp.BackendClient, so it is reached via a type assertion — a client that does
-// not implement it simply reports no revision.
-type revisionReporter interface {
-	CachedRevision(workloadID string) (mcpparser.Revision, bool)
-}
-
 const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -141,12 +133,12 @@ type telemetryBackendClient struct {
 
 var _ vmcp.BackendClient = telemetryBackendClient{}
 
-// CachedRevision forwards to the wrapped client's optional revisionReporter so
+// CachedRevision forwards to the wrapped client's optional vmcp.RevisionReporter so
 // callers reaching the client THROUGH this decorator (e.g. the health monitor)
 // can still read the negotiated revision. Returns (0, false) when the wrapped
 // client does not report revisions.
 func (t telemetryBackendClient) CachedRevision(workloadID string) (mcpparser.Revision, bool) {
-	if r, ok := t.backendClient.(revisionReporter); ok {
+	if r, ok := t.backendClient.(vmcp.RevisionReporter); ok {
 		return r.CachedRevision(workloadID)
 	}
 	return 0, false

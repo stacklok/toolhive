@@ -41,10 +41,10 @@ import (
 // the suite's global timeout.
 const execTimeout = 90 * time.Second
 
-// yardstickClientVersion is derived from images.YardstickServerImage's tag
+// yardstickClientVersion is derived from images.YardstickServerImageDualEra's tag
 // (the part after ":") so a future image bump can't silently pair a
 // mismatched go-sdk version between yardstick-server and yardstick-client.
-var yardstickClientVersion = "v" + strings.SplitN(images.YardstickServerImage, ":", 2)[1]
+var yardstickClientVersion = "v" + strings.SplitN(images.YardstickServerImageDualEra, ":", 2)[1]
 
 var (
 	yardstickClientOnce sync.Once
@@ -137,7 +137,7 @@ var _ = Describe("Modern Functional Round-Trip — Streamable Proxy", Label("pro
 			"--name", serverName,
 			"--transport", "stdio",
 			"-e", "BACKEND_MODE=echo",
-			images.YardstickServerImage,
+			images.YardstickServerImageDualEra,
 		).ExpectSuccess()
 
 		err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -382,7 +382,7 @@ var _ = Describe("server/discover Authorization Guard", Label("proxy", "stateles
 			"--transport", "stdio",
 			"-e", "BACKEND_MODE=echo",
 			"--authz-config", authzConfigPath,
-			images.YardstickServerImage,
+			images.YardstickServerImageDualEra,
 		).ExpectSuccess()
 
 		err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

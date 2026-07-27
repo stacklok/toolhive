@@ -84,7 +84,7 @@ var _ = Describe("Dual-Era Cross-Delivery Proxy", Label("proxy", "stateless", "d
 			"-e", "BACKEND_MODE=barrier",
 			"-e", fmt.Sprintf("BARRIER_N=%d", barrierN),
 			"-e", fmt.Sprintf("BARRIER_TIMEOUT_SECONDS=%d", int(barrierTimeout.Seconds())),
-			images.YardstickServerImage,
+			images.YardstickServerImageDualEra,
 		).ExpectSuccess()
 
 		err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

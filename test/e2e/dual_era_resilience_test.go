@@ -104,7 +104,7 @@ var _ = Describe("Dual-Era Resilience — Fault Injection", Label("proxy", "stat
 		for _, e := range extraEnv {
 			args = append(args, "-e", e)
 		}
-		args = append(args, images.YardstickServerImage)
+		args = append(args, images.YardstickServerImageDualEra)
 
 		// Bound the request timeout so a hang fails fast in the test, not
 		// after the streamable proxy's 60s default.

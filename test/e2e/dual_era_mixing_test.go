@@ -92,7 +92,7 @@ var _ = Describe("Dual-Era Concurrent Mixing", Label("proxy", "stateless", "dual
 			"--name", serverName,
 			"--transport", "stdio",
 			"-e", "BACKEND_MODE=echo",
-			images.YardstickServerImage,
+			images.YardstickServerImageDualEra,
 		).ExpectSuccess()
 
 		err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

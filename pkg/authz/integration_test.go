@@ -1187,3 +1187,137 @@ func TestIntegrationPrimaryUpstreamProviderClaimAttributeAccess(t *testing.T) {
 		})
 	}
 }
+
+// TestIntegrationUpstreamJWTWithoutEmailClaim is the end-to-end reproducer for
+// stacklok/toolhive#5916, driven through the full authorization middleware with
+// the exact policy pair from the report.
+//
+// When the embedded auth server is active, the runner force-injects the first
+// upstream provider as Cedar's PrimaryUpstreamProvider, so Cedar sources claims
+// from the upstream IdP's access token. Providers that issue JWT-shaped access
+// tokens without `email` (JetBrains Hub is a public example) used to make every
+// request deny: the token parsed cleanly, so the opaque-token fallback added in
+// #5147 did not apply, and `principal has claim_email` was false for every user.
+// Opaque-token upstreams (Google, GitHub) masked the bug because their tokens hit
+// that fallback and saw the AS-issued token's mirrored `email`.
+//
+// The AS-issued token carries the upstream `email` in both cases (the auth server
+// mirrors it from the upstream id_token), so the fix lets it stand in for the
+// claim the access token omits.
+func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "hub"
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		// The report's policies verbatim: a defensively `has`-guarded domain
+		// gate plus a tool permit.
+		Policies: []string{
+			`forbid(principal, action, resource)
+			 unless { principal has claim_email && principal.claim_email like "*@example.com" };`,
+			`permit(principal, action == Action::"call_tool", resource);`,
+		},
+		EntitiesJSON:            "[]",
+		PrimaryUpstreamProvider: providerName,
+	}, "")
+	require.NoError(t, err)
+
+	// Claims of the token the client actually presented, as minted by the
+	// embedded auth server: upstream subject plus the mirrored id_token profile.
+	asIssuedClaims := jwt.MapClaims{
+		"sub":       "hub|alice",
+		"email":     "alice@example.com",
+		"name":      "Alice",
+		"iss":       "https://thv-as.example.com/",
+		"aud":       "toolhive",
+		"client_id": "vscode",
+	}
+
+	tests := []struct {
+		name          string
+		upstreamToken string
+		expectAllowed bool
+	}{
+		{
+			// The reported case: parses as a JWT, carries no `email`.
+			name: "jwt_upstream_token_without_email_uses_as_token_email",
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub": "hub|alice",
+				"iss": "https://hub.example.com",
+			}),
+			expectAllowed: true,
+		},
+		{
+			// The upstream's own `email` still wins where it asserts one, and it
+			// is outside the gated domain here, so the gate must reject.
+			name: "upstream_email_wins_over_as_token_email",
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub":   "hub|alice",
+				"email": "alice@contractor.example",
+			}),
+			expectAllowed: false,
+		},
+		{
+			// Regression guard for the #5147 path, which this change leaves intact.
+			name:          "opaque_upstream_token_still_falls_back",
+			upstreamToken: "ya29.opaque-google-style-token",
+			expectAllowed: true,
+		},
+		{
+			// A JWT-shaped but unparseable upstream token must stay a hard deny:
+			// silently degrading a tampered token to other claims would let it
+			// bypass policy.
+			name:          "tampered_upstream_jwt_still_denies",
+			upstreamToken: "not-base64.not-base64.not-base64",
+			expectAllowed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			params, err := json.Marshal(map[string]interface{}{
+				"name":      "deploy",
+				"arguments": map[string]interface{}{},
+			})
+			require.NoError(t, err)
+			callReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), string(mcp.MethodToolsCall), json.RawMessage(params))
+			require.NoError(t, err)
+			reqJSON, err := jsonrpc2.EncodeMessage(callReq)
+			require.NoError(t, err)
+
+			httpReq, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(reqJSON))
+			require.NoError(t, err)
+			httpReq.Header.Set("Content-Type", "application/json")
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "hub|alice",
+					Claims:  asIssuedClaims,
+				},
+				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
+			}
+			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			var handlerCalled bool
+			mockHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"result": "ok"}`))
+			})
+
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler, nil))
+			middleware.ServeHTTP(rr, httpReq)
+
+			if tt.expectAllowed {
+				assert.Equal(t, http.StatusOK, rr.Code)
+				assert.True(t, handlerCalled)
+			} else {
+				assert.Equal(t, http.StatusForbidden, rr.Code)
+				assert.False(t, handlerCalled)
+			}
+		})
+	}
+}

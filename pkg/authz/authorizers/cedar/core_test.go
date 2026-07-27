@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"testing"
 
 	cedar "github.com/cedar-policy/cedar-go"
@@ -1470,7 +1471,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "upstream token for provider",
 		},
 		{
-			name: "upstream_token_has_no_sub_claim",
+			name: "upstream_token_has_no_sub_claim_uses_request_subject",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "thv-user",
@@ -1483,6 +1484,29 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 					}),
 				},
 			},
+			// `sub` is one of the mirrored identity claims, so the request
+			// token's subject stands in and the principal resolves instead of
+			// failing with ErrMissingPrincipal (#5916). The policy requires
+			// claim_sub == "upstream-user", so this is still denied — but by
+			// policy evaluation, which is diagnosable, rather than by an
+			// authorization error on a request whose user is well known.
+			wantAuthorize: false,
+		},
+		{
+			name: "upstream_token_has_no_sub_claim_and_neither_does_request",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"email": "user@example.com"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{
+						"iss": "https://idp.example.com",
+					}),
+				},
+			},
+			// No subject on either side: nothing is fabricated, so the principal
+			// genuinely cannot be resolved.
 			wantErr:     true,
 			errContains: "missing principal",
 		},
@@ -1510,6 +1534,306 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				return
 			}
 
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestSupplementUpstreamClaims covers which request-token claims may stand in for
+// a missing upstream claim, and which may never do so.
+func TestSupplementUpstreamClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		upstreamClaims jwt.MapClaims
+		requestClaims  jwt.MapClaims
+		wantMerged     jwt.MapClaims
+		wantFilled     []string
+	}{
+		{
+			name:           "upstream_wins_on_shared_identity_claims",
+			upstreamClaims: jwt.MapClaims{"sub": "okta|alice", "email": "alice@upstream.example"},
+			requestClaims:  jwt.MapClaims{"sub": "thv|alice", "email": "alice@thv.example"},
+			wantMerged:     jwt.MapClaims{"sub": "okta|alice", "email": "alice@upstream.example"},
+			wantFilled:     nil,
+		},
+		{
+			name:           "request_token_fills_missing_identity_claims",
+			upstreamClaims: jwt.MapClaims{"sub": "okta|alice", "iss": "https://idp.example.com"},
+			requestClaims:  jwt.MapClaims{"sub": "thv|alice", "email": "alice@example.com", "name": "Alice"},
+			wantMerged: jwt.MapClaims{
+				"sub":   "okta|alice",
+				"iss":   "https://idp.example.com",
+				"email": "alice@example.com",
+				"name":  "Alice",
+			},
+			// Sorted, so the logged claim list is stable across runs.
+			wantFilled: []string{"email", "name"},
+		},
+		{
+			// The core security boundary: authorization-bearing claims are
+			// upstream-only. A group on the ToolHive-issued token must not reach
+			// Cedar when an upstream provider is configured.
+			name:           "authorization_bearing_claims_are_never_filled",
+			upstreamClaims: jwt.MapClaims{"sub": "okta|alice"},
+			requestClaims: jwt.MapClaims{
+				"groups": []interface{}{"platform-eng"},
+				"roles":  []interface{}{"admin"},
+				"scope":  "tools:write",
+				"hd":     "example.com",
+			},
+			wantMerged: jwt.MapClaims{"sub": "okta|alice"},
+			wantFilled: nil,
+		},
+		{
+			// The AS-issued token's own protocol claims describe that token, not
+			// the upstream identity, so they must not fill upstream gaps.
+			name:           "as_token_protocol_claims_are_never_filled",
+			upstreamClaims: jwt.MapClaims{"sub": "okta|alice"},
+			requestClaims: jwt.MapClaims{
+				"iss":       "https://thv-as.example.com/",
+				"aud":       "toolhive",
+				"exp":       1234567890,
+				"jti":       "abc",
+				"client_id": "vscode",
+			},
+			wantMerged: jwt.MapClaims{"sub": "okta|alice"},
+			wantFilled: nil,
+		},
+		{
+			name:           "subject_falls_back_when_upstream_token_has_no_sub",
+			upstreamClaims: jwt.MapClaims{"iss": "https://idp.example.com"},
+			requestClaims:  jwt.MapClaims{"sub": "thv|alice"},
+			wantMerged:     jwt.MapClaims{"iss": "https://idp.example.com", "sub": "thv|alice"},
+			wantFilled:     []string{"sub"},
+		},
+		{
+			// Never fabricate: a claim absent from both sides stays absent so
+			// `has`-guarded policies keep failing closed.
+			name:           "claim_absent_from_both_stays_absent",
+			upstreamClaims: jwt.MapClaims{"sub": "okta|alice"},
+			requestClaims:  jwt.MapClaims{"sub": "thv|alice"},
+			wantMerged:     jwt.MapClaims{"sub": "okta|alice"},
+			wantFilled:     nil,
+		},
+		{
+			// A key the upstream maps to nil is still "asserted by the upstream":
+			// presence, not truthiness, decides precedence.
+			name:           "explicit_nil_upstream_value_still_wins",
+			upstreamClaims: jwt.MapClaims{"email": nil},
+			requestClaims:  jwt.MapClaims{"email": "alice@example.com"},
+			wantMerged:     jwt.MapClaims{"email": nil},
+			wantFilled:     nil,
+		},
+		{
+			name:           "nil_inputs_yield_empty_result",
+			upstreamClaims: nil,
+			requestClaims:  nil,
+			wantMerged:     jwt.MapClaims{},
+			wantFilled:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Snapshot the inputs so the no-mutation contract can be asserted.
+			upstreamBefore := maps.Clone(tt.upstreamClaims)
+			requestBefore := maps.Clone(tt.requestClaims)
+
+			merged, filled := supplementUpstreamClaims(tt.upstreamClaims, tt.requestClaims)
+
+			assert.Equal(t, tt.wantMerged, merged)
+			assert.Equal(t, tt.wantFilled, filled)
+			assert.Equal(t, upstreamBefore, tt.upstreamClaims, "upstream claims must not be mutated")
+			assert.Equal(t, requestBefore, tt.requestClaims, "request claims must not be mutated")
+
+			// The result must not alias either input, since the caller adds
+			// synthetic keys to the claim set it receives.
+			merged["injected-by-caller"] = true
+			assert.NotContains(t, tt.upstreamClaims, "injected-by-caller")
+			assert.NotContains(t, tt.requestClaims, "injected-by-caller")
+		})
+	}
+}
+
+// TestResolveClaimsUpstreamSupplement pins the claim-source contract of
+// resolveClaims on the embedded-auth-server path: the upstream token's claims
+// win, and the request token supplies only the mirrored identity claims the
+// upstream token omits. The email-filling case is the #5916 reproducer — an
+// upstream IdP (JetBrains Hub is the public example) whose access token is a
+// well-formed JWT that carries no `email`, which used to make every
+// `claim_email` policy deny.
+func TestResolveClaimsUpstreamSupplement(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "hub"
+
+	tests := []struct {
+		name          string
+		provider      string
+		requestClaims map[string]any
+		upstreamToken string
+		wantClaims    jwt.MapClaims
+	}{
+		{
+			name:     "upstream_jwt_without_email_falls_back_to_as_token_email",
+			provider: providerName,
+			// What the embedded auth server mirrors into the token it issues.
+			requestClaims: map[string]any{
+				"sub":       "hub|alice",
+				"email":     "alice@example.com",
+				"name":      "Alice",
+				"client_id": "vscode",
+			},
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub": "hub|alice",
+				"iss": "https://hub.example.com",
+				// No email: it lives in the id_token only.
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":   "hub|alice",
+				"iss":   "https://hub.example.com",
+				"email": "alice@example.com",
+				"name":  "Alice",
+				// client_id is absent: it describes the AS-issued token, not the
+				// upstream identity, so it never fills an upstream gap.
+			},
+		},
+		{
+			name:     "upstream_claims_win_over_request_claims",
+			provider: providerName,
+			requestClaims: map[string]any{
+				"sub":    "thv|alice",
+				"email":  "alice@thv.example",
+				"groups": []interface{}{"admins"},
+			},
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":    "hub|alice",
+				"email":  "alice@upstream.example",
+				"groups": []interface{}{"engineering"},
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":    "hub|alice",
+				"email":  "alice@upstream.example",
+				"groups": []interface{}{"engineering"},
+			},
+		},
+		{
+			name:          "no_provider_configured_uses_request_claims_verbatim",
+			provider:      "",
+			requestClaims: map[string]any{"sub": "thv|alice", "email": "alice@thv.example"},
+			// Present but irrelevant: without a configured provider the upstream
+			// token is never consulted.
+			upstreamToken: makeUnsignedJWT(jwt.MapClaims{"sub": "hub|alice"}),
+			wantClaims:    jwt.MapClaims{"sub": "thv|alice", "email": "alice@thv.example"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:                []string{`permit(principal, action, resource);`},
+				EntitiesJSON:            `[]`,
+				PrimaryUpstreamProvider: tt.provider,
+			}, "")
+			require.NoError(t, err)
+
+			identity := &auth.Identity{
+				PrincipalInfo:  auth.PrincipalInfo{Subject: "thv|alice", Claims: tt.requestClaims},
+				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
+			}
+			claimsBefore := maps.Clone(tt.requestClaims)
+
+			resolved, err := authorizer.(*Authorizer).resolveClaims(identity)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantClaims, resolved)
+			// Identity MUST NOT be modified after it is placed in the request
+			// context, since it is read concurrently.
+			assert.Equal(t, claimsBefore, tt.requestClaims, "identity claims must not be mutated")
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim is the end-to-end
+// authorizer-level reproducer for #5916: the exact policy shape from the report
+// (a defensively-authored `has`-guarded domain gate plus a tool permit) evaluated
+// against an upstream access token that is a well-formed JWT without `email`.
+// Before the merge this denied every request for every user.
+func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "hub"
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies: []string{
+			`forbid(principal, action, resource)
+			 unless { principal has claim_email && principal.claim_email like "*@example.com" };`,
+			`permit(principal, action == Action::"call_tool", resource);`,
+		},
+		EntitiesJSON:            `[]`,
+		PrimaryUpstreamProvider: providerName,
+	}, "")
+	require.NoError(t, err)
+
+	// A JWT-shaped upstream access token that parses cleanly but carries no
+	// identity claims beyond `sub`. looksLikeJWT is true here, so the #5147
+	// opaque-token fallback does not apply — merging is what recovers `email`.
+	upstreamToken := makeUnsignedJWT(jwt.MapClaims{
+		"sub": "hub|alice",
+		"iss": "https://hub.example.com",
+	})
+
+	tests := []struct {
+		name          string
+		requestClaims map[string]any
+		wantAuthorize bool
+	}{
+		{
+			// The AS-issued token mirrors the upstream id_token's email, so the
+			// domain gate can be satisfied even though the access token omits it.
+			name:          "as_token_email_in_gated_domain_permits",
+			requestClaims: map[string]any{"sub": "hub|alice", "email": "alice@example.com"},
+			wantAuthorize: true,
+		},
+		{
+			// Merging supplies the claim; it does not weaken the gate.
+			name:          "as_token_email_outside_gated_domain_denies",
+			requestClaims: map[string]any{"sub": "hub|alice", "email": "alice@evil.example"},
+			wantAuthorize: false,
+		},
+		{
+			// Neither token carries `email`: the `has` guard fails and the
+			// forbid applies. Merging never fabricates a claim.
+			name:          "email_absent_from_both_tokens_denies",
+			requestClaims: map[string]any{"sub": "hub|alice"},
+			wantAuthorize: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			identity := &auth.Identity{
+				PrincipalInfo:  auth.PrincipalInfo{Subject: "thv|alice", Claims: tt.requestClaims},
+				UpstreamTokens: map[string]string{providerName: upstreamToken},
+			}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAuthorize, authorized)
 		})

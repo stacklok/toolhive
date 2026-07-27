@@ -1842,13 +1842,15 @@ func TestResolveClaimsOpaqueUpstreamToken(t *testing.T) {
 		opaqueToken = "ya29.opaque-google-style-token"
 	)
 
-	// The ToolHive-issued token's claims. Every value is a sentinel: any of them
-	// appearing in a resolved claim set is a leak, not a coincidence.
+	// The ToolHive-issued token's claims, in the shape claimsToIdentity produces:
+	// the internal user ID, the profile the auth server mirrored, and the
+	// `client_id` it embeds per RFC 9068 (session.New). Every value is a sentinel,
+	// so any of them appearing in a resolved claim set is a leak, not a coincidence.
 	asIssuedClaims := map[string]any{
-		"sub":   "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
-		"email": "leaked-from-as-token@wrong-provider.example",
-		"name":  "Leaked From AS Token",
-		"tsid":  "sess-abc123",
+		"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+		"email":     "leaked-from-as-token@wrong-provider.example",
+		"name":      "Leaked From AS Token",
+		"client_id": "leaked-from-as-token-vscode",
 	}
 
 	tests := []struct {
@@ -1884,6 +1886,26 @@ func TestResolveClaimsOpaqueUpstreamToken(t *testing.T) {
 				"aud":   "toolhive-as-client",
 				"nonce": "n-abc",
 				"hd":    "example.com",
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+			},
+		},
+		{
+			// The other direction of the allowlist, and a behaviour change worth
+			// pinning: `client_id` is the one claim the ToolHive-issued token
+			// contributed on this branch before #6048, so a policy gating on
+			// `claim_client_id` used to match here. It no longer does — which is
+			// the state the JWT branch was always in, since the auth server's
+			// client_id appears in neither upstream token. The value an upstream
+			// id_token may carry under that name is its own OAuth client
+			// registration, not the calling MCP client, so it stays out too.
+			name: "client_id_is_admitted_from_neither_token",
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":       "google|alice",
+				"email":     "alice@example.com",
+				"client_id": "toolhive-as-client-at-google",
 			}),
 			wantClaims: jwt.MapClaims{
 				"sub":   "google|alice",

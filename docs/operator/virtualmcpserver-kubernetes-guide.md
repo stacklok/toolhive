@@ -689,9 +689,19 @@ JWT access token is supplemented.
 
 Earlier releases evaluated the ToolHive-issued token on this path instead, so a
 policy written against that token's values needs re-checking against the pinned
-provider's `id_token`: the principal is now the upstream subject rather than
-ToolHive's internal user ID, and in a multi-upstream chain `claim_email` now names
-the pinned provider's email rather than the first configured upstream's.
+provider's `id_token`:
+
+* the principal is now the upstream subject rather than ToolHive's internal user
+  ID, so a rule keyed on `Client::"<internal-user-id>"` stops matching and one keyed
+  on `Client::"<upstream-subject>"` starts;
+* in a multi-upstream chain `claim_email` now names the pinned provider's email
+  rather than the first configured upstream's;
+* claims that only the ToolHive-issued token carried — `claim_client_id`, plus its
+  own `claim_iss`, `claim_aud` and `claim_exp` — are no longer visible, so a policy
+  gating tool access on a specific OAuth client via `claim_client_id` silently stops
+  matching. Those claims were never available when the pinned upstream issued a JWT
+  access token either, so this makes the two behave alike; gate on the upstream
+  subject or a claim the upstream asserts instead.
 
 An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
 `id_token`. With a JWT access token, nothing is available to fall back to and the

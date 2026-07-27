@@ -597,6 +597,16 @@ func (a *Authorizer) IsAuthorized(
 // forbid: it is the subject of the only claim source there is, for the same
 // provider and session, and no access-token `sub` exists to be overridden.
 //
+// A consequence worth stating: the claims the ToolHive-issued token carries in its
+// own right — `client_id` (see session.New in pkg/authserver/server/session) plus
+// fosite's `iss`/`aud`/`exp`/`iat`/`jti` — are no longer visible to policies on
+// this path, so a rule gating on `claim_client_id` stops matching. That removes an
+// asymmetry rather than creating one: the JWT branch never had those either, since
+// neither the upstream access token nor its id_token carries this auth server's
+// client_id, and any `client_id` an upstream access token does assert is the auth
+// server's own registration at that upstream, not the calling MCP client. The loss
+// also fails toward deny, since `principal has claim_client_id` becomes false.
+//
 // A pinned provider whose access token is opaque AND that has no usable stored
 // id_token has no upstream claim source at all. That is a pure OAuth 2.0 upstream
 // (pkg/authserver/upstream/oauth2.go) never asked for the `openid` scope, whose

@@ -60,19 +60,45 @@ type Entry struct {
 	// ContentDigest is a deterministic SHA-256 dirhash of the materialized
 	// skill file set, used for on-disk integrity verification.
 	ContentDigest string `yaml:"contentDigest,omitempty"`
+	// Provenance records the verified signer identity of the installed
+	// artifact — the trust-on-first-use anchor later installs, syncs, and
+	// upgrades are checked against. Nil for entries recorded before
+	// verification existed and for unsigned entries (see Unsigned); an
+	// entry never carries both.
+	Provenance *Provenance `yaml:"provenance,omitempty"`
+	// Unsigned is true when the artifact carried no signature and the user
+	// explicitly accepted that with --allow-unsigned. It is a recorded
+	// trust decision, not an omission: replacing an unsigned entry with a
+	// signed one clears it, and a signed entry never becomes unsigned
+	// without the same explicit flag.
+	Unsigned bool `yaml:"unsigned,omitempty"`
 	// RequiredBy lists parent skill names for transitively materialized
 	// dependencies (skills declared via toolhive.requires).
 	RequiredBy []string `yaml:"requiredBy,omitempty"`
 	// Explicit is true when the user directly installed this skill; explicit
 	// entries are exempt from cascade removal when RequiredBy becomes empty.
 	Explicit bool `yaml:"explicit,omitempty"`
-	// Extra round-trips fields this binary does not know about (e.g. the
-	// Sigstore provenance fields a future schema adds under version 1), so a
+	// Extra round-trips fields this binary does not know about, so a
 	// Load→modify→Save cycle by an older binary preserves rather than strips
 	// them. It applies per entry: an entry this binary rewrites (reinstall,
 	// upgrade) is built fresh, so its unknown fields — which described the
 	// previous install — are intentionally dropped along with it.
 	Extra map[string]any `yaml:",inline"`
+}
+
+// Provenance is the Sigstore signer identity recorded for a verified entry.
+type Provenance struct {
+	// SignerIdentity is the certificate subject identity: for GitHub
+	// Actions certificates, the workflow path relative to the repository;
+	// otherwise the certificate SAN verbatim (a URI, email, or SPIFFE ID).
+	SignerIdentity string `yaml:"signerIdentity"`
+	// CertIssuer is the OIDC issuer that authenticated the signer.
+	CertIssuer string `yaml:"certIssuer"`
+	// RepositoryURI is the source repository from the Fulcio certificate
+	// extensions, when present.
+	RepositoryURI string `yaml:"repositoryUri,omitempty"`
+	// SigstoreURL is the Sigstore instance the signature chains to.
+	SigstoreURL string `yaml:"sigstoreUrl,omitempty"`
 }
 
 // Lockfile is the parsed contents of a project's toolhive.lock.yaml.

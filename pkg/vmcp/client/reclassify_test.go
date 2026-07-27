@@ -49,6 +49,10 @@ func TestIsRevisionMismatch(t *testing.T) {
 			fmt.Errorf("wrap: %w", mcp.ErrMethodNotFound), false},
 		{"modern errLegacySSE (not a modern signal) -> NOT mismatch", mcpparser.RevisionModern,
 			fmt.Errorf("wrap: %w", transport.ErrLegacySSEServer), false},
+		{"modern negotiated-down -> mismatch", mcpparser.RevisionModern,
+			fmt.Errorf("wrap: %w", errModernNegotiatedDown), true},
+		{"legacy negotiated-down (not a legacy signal) -> NOT mismatch", mcpparser.RevisionLegacy,
+			fmt.Errorf("wrap: %w", errModernNegotiatedDown), false},
 		{"auth: ErrUnauthorized -> NOT mismatch", mcpparser.RevisionLegacy, transport.ErrUnauthorized, false},
 		{"auth: ErrAuthorizationRequired -> NOT mismatch", mcpparser.RevisionLegacy, transport.ErrAuthorizationRequired, false},
 		{"auth: ErrUpstreamTokenNotFound -> NOT mismatch", mcpparser.RevisionLegacy, authtypes.ErrUpstreamTokenNotFound, false},
@@ -64,9 +68,14 @@ func TestIsRevisionMismatch(t *testing.T) {
 	}
 }
 
-// modernDiscoverServer serves Modern server/discover (advertising tools) so a
-// re-probe classifies Modern, and rejects Legacy requests (no Mcp-Method header)
-// with 404 so a Legacy initialize surfaces transport.ErrLegacySSEServer.
+// modernDiscoverServer serves Modern server/discover (advertising tools and
+// supportedVersions containing 2026-07-28, the classification signal added by
+// Fix 1) so a re-probe classifies Modern, and rejects Legacy requests (no
+// Mcp-Method header) with 404 so a Legacy initialize surfaces
+// transport.ErrLegacySSEServer. It also acks subscriptions/listen (see the
+// case below) since go-sdk v1.7's own client — used by the Legacy code path,
+// not just this repo's raw shim — is itself Modern-first and would otherwise
+// die on that unconditional post-discover subscription.
 func modernDiscoverServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,11 +87,21 @@ func modernDiscoverServer(t *testing.T) *httptest.Server {
 		id, _ := modernReq(t, r)
 		switch method {
 		case "server/discover":
-			writeModernResult(t, w, id, map[string]any{"capabilities": map[string]any{"tools": map[string]any{}}})
+			writeModernResult(t, w, id, map[string]any{
+				"capabilities":      map[string]any{"tools": map[string]any{}},
+				"supportedVersions": []string{"2026-07-28"},
+			})
 		case "tools/list":
 			writeModernResult(t, w, id, map[string]any{
 				"tools": []any{map[string]any{"name": "echo", "inputSchema": map[string]any{"type": "object"}}},
 			})
+		case "subscriptions/listen":
+			// go-sdk v1.7's Connect() unconditionally subscribes to list-changed
+			// notifications once discover negotiates Modern (mcpcompat always
+			// installs a ToolListChangedHandler), independent of our own shim's
+			// raw discover probe. Ack it immediately so the real underlying
+			// client session used by legacyInit doesn't die.
+			writeModernResult(t, w, id, map[string]any{})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -190,7 +209,7 @@ func TestDispatch_NoDoubleExecOnLegacyBody(t *testing.T) {
 	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
 	h.setRevision(target.WorkloadID, mcpparser.RevisionModern) // mis-cached Modern
 
-	_, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "x"}, nil)
+	_, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "x"}, nil, nil)
 	require.Error(t, err, "a Legacy-shaped body must surface as an error, not a blank success")
 	assert.EqualValues(t, 1, toolCalls.Load(), "the side-effecting tool must run exactly once (no double-exec)")
 
@@ -284,9 +303,24 @@ func TestReclassify_WarnsOnlyOnActualChange(t *testing.T) {
 	assert.Empty(t, buf.String(), "a no-op re-probe must not WARN")
 }
 
-// TestListCapabilities_SelfCorrectsMisCachedBackend: a backend pinned Legacy by a
-// stale cache recovers on the next ListCapabilities via one re-probe.
-func TestListCapabilities_SelfCorrectsMisCachedBackend(t *testing.T) {
+// TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation: a backend
+// pinned Legacy by a stale cache is still queried successfully, because the
+// underlying go-sdk v1.7 client (used by the Legacy/session-based code path,
+// legacyListCapabilities) is itself Modern-first (SEP-2575): its Connect() tries
+// server/discover before any legacy initialize, so a genuinely Modern backend
+// answers correctly even when dispatch hands it the stale Legacy revision. The
+// call succeeds on the first attempt, so dispatch's reclassify-on-mismatch path
+// (which only fires on error; see dispatch's doc comment) is never entered —
+// but legacyInit reads the genuinely-negotiated protocol version off the
+// Initialize result and flips the cache to Modern in-band regardless (see the
+// revisions field doc in client.go).
+//
+// The staleness this closes is not purely internal bookkeeping: CachedRevision
+// surfaces it to health status (pkg/vmcp/health/status.go:260), which
+// republishes it on every health tick into the mcpRevision CRD status field —
+// so before this self-heal, an operator reading that field would see "legacy"
+// for a backend actually being driven Modern on every call.
+func TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation(t *testing.T) {
 	t.Parallel()
 
 	srv := modernDiscoverServer(t)
@@ -295,9 +329,34 @@ func TestListCapabilities_SelfCorrectsMisCachedBackend(t *testing.T) {
 	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy) // mis-cached
 
 	caps, err := h.ListCapabilities(context.Background(), target)
-	require.NoError(t, err)
-	require.Len(t, caps.Tools, 1, "Modern enumeration recovered after re-probe")
+	require.NoError(t, err, "the Legacy code path's go-sdk client negotiates Modern transparently")
+	require.Len(t, caps.Tools, 1)
 	assert.Equal(t, "echo", caps.Tools[0].Name)
+
+	// legacyInit flips the cache directly off the negotiated Initialize result,
+	// without needing an error to trigger dispatch's reclassify path.
+	rev, _ := h.cachedRevision(target.WorkloadID)
+	assert.Equal(t, mcpparser.RevisionModern, rev)
+}
+
+// TestLegacyInit_SelfHealsRevisionCache exercises legacyInit directly (rather
+// than through the full ListCapabilities/query pipeline) to isolate the
+// self-heal contract: a mis-cached Legacy backend that is genuinely Modern
+// ends up cached Modern after a single Legacy-path Initialize call.
+func TestLegacyInit_SelfHealsRevisionCache(t *testing.T) {
+	t.Parallel()
+
+	srv := modernDiscoverServer(t)
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy) // mis-cached
+
+	c, err := h.clientFactory(context.Background(), target, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = h.legacyInit(context.Background(), c, target.WorkloadID)
+	require.NoError(t, err, "the SDK client negotiates Modern transparently on the Legacy path")
 
 	rev, _ := h.cachedRevision(target.WorkloadID)
 	assert.Equal(t, mcpparser.RevisionModern, rev)

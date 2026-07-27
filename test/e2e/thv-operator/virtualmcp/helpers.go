@@ -1278,10 +1278,11 @@ type VMCPStatusResponse struct {
 // VMCPBackendStatus mirrors server.BackendStatus
 // (pkg/vmcp/server/status.go) for test deserialization.
 type VMCPBackendStatus struct {
-	Name      string `json:"name"`
-	Health    string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
-	Transport string `json:"transport"`
-	AuthType  string `json:"auth_type,omitempty"`
+	Name        string `json:"name"`
+	Health      string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
+	Transport   string `json:"transport"`
+	AuthType    string `json:"auth_type,omitempty"`
+	MCPRevision string `json:"mcp_revision,omitempty"`
 }
 
 // VMCPBackendsHealthResponse mirrors BackendHealthResponse

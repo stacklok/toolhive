@@ -7,11 +7,11 @@ package server
 
 import (
 	"context"
-	"maps"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 // sdkElicitationAdapter wraps mcpcompat MCPServer to implement vmcp.ElicitationRequester.
@@ -87,12 +87,19 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 			RequestedSchema: req.RequestedSchema,
 		},
 	}
-	// Only attach _meta when the caller actually set it. NewMetaFromMap mutates
-	// its argument (it deletes progressToken), so copy first to avoid mutating
-	// the caller's map.
-	if req.Meta != nil {
-		mcpReq.Params.Meta = mcp.NewMetaFromMap(maps.Clone(req.Meta))
-	}
+	// req.Meta came from the BACKEND's elicitation/create (forwarding.go's
+	// newElicitationForwarder), so it crosses the same trust boundary as a backend
+	// result: route it through conversion.ToMCPMeta, which strips the reserved
+	// io.modelcontextprotocol/* keys before they reach the downstream client. A
+	// leaked protocolVersion here is worse than on a result -- this is a
+	// server->client REQUEST, where a go-sdk client may validate it.
+	//
+	// ToMCPMeta also hoists progressToken and copies (never mutating the caller's
+	// map), and returns nil for empty input -- so _meta stays absent when the
+	// backend set none, or set only reserved keys. Do not swap in
+	// mcp.NewMetaFromMap: it returns a non-nil *Meta for nil input, which would
+	// start emitting an empty _meta.
+	mcpReq.Params.Meta = conversion.ToMCPMeta(req.Meta)
 
 	// Delegate to the mcpcompat SDK's RequestElicitation method.
 	// The SDK will:

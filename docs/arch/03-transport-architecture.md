@@ -211,9 +211,9 @@ All proxy types integrate with the middleware chain:
 
 ```mermaid
 graph LR
-    Client[Client Request] --> MW1[Middleware 1<br/>Auth]
-    MW1 --> MW2[Middleware 2<br/>Parser]
-    MW2 --> MW3[Middleware 3<br/>Audit]
+    Client[Client Request] --> MW1[Middleware 1<br/>Audit]
+    MW1 --> MW2[Middleware 2<br/>Auth]
+    MW2 --> MW3[Middleware 3<br/>Parser]
     MW3 --> MW4[Middleware 4<br/>Authz]
     MW4 --> Proxy[Proxy Handler]
     Proxy --> Container[MCP Server]
@@ -682,7 +682,7 @@ path for server->client messages.
 `subscriptions/listen`, a POST method whose response stream stays open for
 server-pushed subscription events. `serverStreamRegistry` is a reasonable
 decoupled fan-out seam to build a future Modern handler for this method on top
-of, but it is **not** a drop-in reuse. Per the draft spec, real adaptation is
+of, but it is **not** a drop-in reuse. Per the 2026-07-28 spec, real adaptation is
 required: `subscriptions/listen` is a long-lived POST, not a GET; Modern has no
 sessions, so streams must be keyed per-subscription-id rather than per session
 ID; delivery requires per-notification-type AND per-URI opt-in filtering, not

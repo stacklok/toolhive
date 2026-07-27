@@ -83,7 +83,7 @@ var _ = Describe("Group Remove E2E Tests", Label("core", "groups", "e2e"), func(
 
 			// Wait for the workloads to appear in thv list
 			for _, workloadName := range []string{groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2} {
-				err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
 				Expect(err).NotTo(HaveOccurred())
 			}
 

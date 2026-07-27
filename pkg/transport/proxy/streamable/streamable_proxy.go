@@ -1042,6 +1042,15 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		// ignore any client-supplied Mcp-Session-Id. Never fall through to the
 		// session-lookup path below with it -- see the confidentiality note
 		// in this function's doc comment.
+		//
+		// This is safe only because, in this proxy, Mcp-Session-Id has no
+		// downstream authority: it is purely an in-process response-correlation
+		// token (the backend is stateless stdio, unlike the transparent proxy,
+		// which maps it to a backend-assigned SID via session metadata). If this
+		// proxy ever gains a shared session store or a stateful backend mapping,
+		// "ignore the client SID on Modern" must stay true -- silently reusing or
+		// looking up a known client SID here would reopen a session-validation
+		// bypass. See TestModernNeverReusesClientSessionIDAsRoutingToken.
 		token, err := uuid.NewRandom()
 		if err != nil {
 			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))

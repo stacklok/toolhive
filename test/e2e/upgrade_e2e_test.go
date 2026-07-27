@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 	"github.com/stacklok/toolhive/test/e2e"
@@ -107,7 +107,7 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 				thvCmd("run", "--name", serverName, rawOSVImage).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				waitForIsolatedMCPServer(thvCmd, serverName, 60*time.Second)
+				waitForIsolatedMCPServer(thvCmd, serverName, e2e.ServerReadyTimeout())
 
 				By("Checking the workload for an available upgrade")
 				stdout, _ := thvCmd("upgrade", "check", serverName).ExpectSuccess()
@@ -123,7 +123,7 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 				thvCmd("run", "--name", serverName, rawOSVImage).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				waitForIsolatedMCPServer(thvCmd, serverName, 60*time.Second)
+				waitForIsolatedMCPServer(thvCmd, serverName, e2e.ServerReadyTimeout())
 
 				By("Checking the workload for an available upgrade in JSON format")
 				stdout, _ := thvCmd("upgrade", "check", serverName, "--format", "json").ExpectSuccess()
@@ -240,19 +240,20 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 	})
 })
 
-// waitForIsolatedMCPServer polls `thv list` (through the supplied isolated-env
-// command builder) until the named workload reports running, or fails the spec
-// on timeout. It mirrors e2e.WaitForMCPServer but runs every poll under the same
-// isolated config/home/data env as the rest of the spec, so it observes the
-// workload created in that isolated state rather than the real ToolHive config.
+// waitForIsolatedMCPServer polls until the named workload reports running, or
+// fails the spec on timeout. It exists alongside e2e.WaitForMCPServer because it
+// runs every poll through the supplied isolated-env command builder, so it
+// observes the workload created in that isolated config/home/data state rather
+// than the real ToolHive config. The lookup itself is shared, so the status is
+// read from the named workload's own record.
 func waitForIsolatedMCPServer(thvCmd func(args ...string) *e2e.THVCommand, serverName string, timeout time.Duration) {
 	GinkgoHelper()
 	Eventually(func() bool {
-		stdout, _, err := thvCmd("list").Run()
+		workload, err := e2e.FindWorkload(thvCmd, serverName)
 		if err != nil {
 			return false
 		}
-		return strings.Contains(stdout, serverName) && strings.Contains(stdout, "running")
+		return workload != nil && workload.Status == runtime.WorkloadStatusRunning
 	}, timeout, 1*time.Second).Should(BeTrue(),
 		"workload %q should be running within %s", serverName, timeout)
 }

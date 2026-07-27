@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
@@ -19,14 +18,14 @@ import (
 // This file hand-rolls the MCP 2026-07-28 ("Modern") stateless response
 // envelope: the wire shape go-sdk@v1.7.0-pre.3 produces for a single-shot
 // tools/list, resources/list, resources/templates/list, prompts/list,
-// tools/call, resources/read, and prompts/get. ToolHive imports go-sdk
-// v1.6.1, whose Modern types don't exist (or are unexported), so this is a
-// durable parallel serializer, not a stopgap: resultType and _meta.serverInfo
-// are set by unexported SDK functions (setCompleteResultType,
-// annotateServerInfo) that run inside the exact ServerSession dispatch this
-// package bypasses for Modern stateless requests. A future go-sdk bump cannot
-// just delete these structs and marshal SDK result types directly -- the
-// Modern annotations would vanish with them.
+// tools/call, resources/read, and prompts/get. Even in that version -- the one
+// mcpcompat (ToolHive's go-sdk import path) now depends on -- these Modern
+// types remain unexported, so this is a durable parallel serializer, not a
+// stopgap: resultType and _meta.serverInfo are set by unexported SDK functions
+// (setCompleteResultType, annotateServerInfo) that run inside the exact
+// ServerSession dispatch this package bypasses for Modern stateless requests.
+// A future go-sdk bump cannot just delete these structs and marshal SDK result
+// types directly -- the Modern annotations would vanish with them.
 //
 // modernResultTypeComplete is the sole value dispatchModern ever needs: this
 // package only performs single-shot dispatch, never the elicitation retry
@@ -36,8 +35,9 @@ import (
 const modernResultTypeComplete = "complete"
 
 // modernServerInfoKey is the go-sdk's MetaKeyServerInfo
-// (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since v1.6.1
-// does not export it.
+// (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since
+// mcpcompat/mcp (ToolHive's mcp import) does not re-export it, even though
+// go-sdk itself does.
 const modernServerInfoKey = "io.modelcontextprotocol/serverInfo"
 
 // modernServerInfo mirrors the go-sdk's Implementation type.
@@ -63,19 +63,19 @@ func newModernMeta(serverName, serverVersion string) modernMeta {
 // the serverInfo-only newModernMeta above. The SDK path preserves backend
 // meta via conversion.ToMCPMeta (serve_handlers.go); dropping it here would
 // silently discard whatever the backend attached (progress tokens, trace
-// ids, ...). backendMeta is cloned before the serverInfo key is added (copy
-// before mutating caller input) so the domain result's map is never touched.
-// A Modern backend could in principle return that same namespaced key; the
-// unconditional overwrite is still correct here because the client's actual
-// MCP peer is vMCP, not the backend, so vMCP's own serverInfo must win.
+// ids, ...).
 //
-// Every other backendMeta key -- including any other io.modelcontextprotocol/*
-// reserved key a backend happens to set -- is forwarded unfiltered, matching
-// the Legacy path's conversion.ToMCPMeta. Stripping reserved keys is a
-// tracked follow-up; it must land in a helper shared by both paths, not here
-// only, or Legacy and Modern would drift.
+// Every reserved io.modelcontextprotocol/* key a backend set is stripped first,
+// then vMCP's own serverInfo is stamped last so it always wins: the client's
+// actual MCP peer is vMCP, not the backend, so no backend may speak for it.
+// mcpparser.StripReservedMeta is the SAME helper the Legacy path reaches through
+// conversion.ToMCPMeta -- keep it that way, or the two revisions drift (which is
+// exactly what this function's previous forward-everything behavior caused).
+// It clones, so the domain result's map is never mutated, and returns nil
+// whenever nothing survives -- hence the fallback below, since this result
+// always carries at least serverInfo.
 func newModernResultMeta(backendMeta map[string]any, serverName, serverVersion string) map[string]any {
-	meta := maps.Clone(backendMeta)
+	meta := mcpparser.StripReservedMeta(backendMeta)
 	if meta == nil {
 		meta = make(map[string]any, 1)
 	}

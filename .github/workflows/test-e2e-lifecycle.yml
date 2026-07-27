@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-8cores-32gb
     timeout-minutes: 30
     env:
-      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0
     defaults:
       run:
         shell: bash

@@ -137,9 +137,9 @@ func TestUnknownFieldsSurviveLoadModifySave(t *testing.T) {
 		"  - name: signed-skill\n" +
 		"    source: ghcr.io/org/signed-skill:1.0.0\n" +
 		"    digest: " + ociDigest(1) + "\n" +
-		"    provenance:\n" +
-		"      signerIdentity: dev@example.com\n" +
-		"      certIssuer: https://accounts.example.com\n"
+		"    attestations:\n" +
+		"      - predicateType: https://slsa.dev/provenance/v1\n" +
+		"        digest: " + ociDigest(3) + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(futureLock), 0o644))
 
 	// Load, touch an unrelated entry, save — the classic older-binary write.
@@ -152,14 +152,14 @@ func TestUnknownFieldsSurviveLoadModifySave(t *testing.T) {
 	data, err := os.ReadFile(path) //nolint:gosec // fixed test path
 	require.NoError(t, err)
 	saved := string(data)
-	assert.Contains(t, saved, "signerIdentity: dev@example.com", "unknown entry fields must survive a Load->Save cycle")
+	assert.Contains(t, saved, "predicateType: https://slsa.dev/provenance/v1", "unknown entry fields must survive a Load->Save cycle")
 	assert.Contains(t, saved, "futureTopLevelField: keep-me", "unknown top-level fields must survive a Load->Save cycle")
 
 	loaded, err := Load(root)
 	require.NoError(t, err)
 	signed, ok := loaded.Get("signed-skill")
 	require.True(t, ok)
-	assert.Contains(t, signed.Extra, "provenance")
+	assert.Contains(t, signed.Extra, "attestations")
 }
 
 func TestSaveRejectsInvalidLockfile(t *testing.T) {
@@ -384,4 +384,93 @@ func TestConcurrentUpsertEntryDoesNotLoseUpdates(t *testing.T) {
 
 func skillNameForIndex(i int) string {
 	return "skill-" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+}
+
+// TestProvenanceRoundTrip covers the Stack-2 schema: a verified entry's
+// provenance block and an unsigned entry's exception flag both survive
+// Save -> Load intact under schema version 1.
+func TestProvenanceRoundTrip(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+
+	lf := &Lockfile{Version: CurrentVersion}
+	signed := Entry{
+		Name:              "signed-skill",
+		Source:            "ghcr.io/org/signed-skill",
+		ResolvedReference: "ghcr.io/org/signed-skill:latest",
+		Digest:            ociDigest(1),
+		Provenance: &Provenance{
+			SignerIdentity: "/.github/workflows/release.yml",
+			CertIssuer:     "https://token.actions.githubusercontent.com",
+			RepositoryURI:  "https://github.com/org/signed-skill",
+			SigstoreURL:    "https://rekor.sigstore.dev",
+		},
+		Explicit: true,
+	}
+	unsigned := Entry{
+		Name:     "unsigned-skill",
+		Source:   "unsigned-skill",
+		Digest:   ociDigest(2),
+		Unsigned: true,
+		Explicit: true,
+	}
+	lf.Upsert(signed)
+	lf.Upsert(unsigned)
+	require.NoError(t, lf.Save(root))
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+
+	gotSigned, ok := loaded.Get("signed-skill")
+	require.True(t, ok)
+	assert.Equal(t, signed.Provenance, gotSigned.Provenance)
+	assert.False(t, gotSigned.Unsigned)
+	assert.Empty(t, gotSigned.Extra, "a typed provenance block must not leak into the inline Extra map")
+
+	gotUnsigned, ok := loaded.Get("unsigned-skill")
+	require.True(t, ok)
+	assert.True(t, gotUnsigned.Unsigned)
+	assert.Nil(t, gotUnsigned.Provenance)
+}
+
+// TestProvenanceGraduatesFromExtraMap: before this schema change, a
+// provenance block written by a newer binary round-tripped through the
+// Extra inline map. Now that the field is typed, loading such a file must
+// parse it into Entry.Provenance — not duplicate it in Extra, which would
+// make Save produce a colliding key.
+func TestProvenanceGraduatesFromExtraMap(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	path, err := root.Path()
+	require.NoError(t, err)
+
+	handWritten := "" +
+		"version: 1\n" +
+		"skills:\n" +
+		"  - name: signed-skill\n" +
+		"    source: ghcr.io/org/signed-skill\n" +
+		"    digest: " + ociDigest(1) + "\n" +
+		"    provenance:\n" +
+		"      signerIdentity: dev@example.com\n" +
+		"      certIssuer: https://accounts.example.com\n" +
+		"    explicit: true\n"
+	require.NoError(t, os.WriteFile(path, []byte(handWritten), 0o644))
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+	entry, ok := loaded.Get("signed-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance, "provenance must parse into the typed field")
+	assert.Equal(t, "dev@example.com", entry.Provenance.SignerIdentity)
+	assert.NotContains(t, entry.Extra, "provenance", "the typed field must not also appear in Extra")
+
+	// A Save after modification must not produce duplicate keys.
+	require.NoError(t, UpsertEntry(root, Entry{
+		Name: "other-skill", Source: "other-skill", Digest: ociDigest(2),
+	}))
+	reloaded, err := Load(root)
+	require.NoError(t, err)
+	entry, ok = reloaded.Get("signed-skill")
+	require.True(t, ok)
+	assert.Equal(t, "dev@example.com", entry.Provenance.SignerIdentity)
 }

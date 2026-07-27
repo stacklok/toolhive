@@ -374,7 +374,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 		}
 
 		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
+		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -1670,6 +1670,28 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 					http.Error(w, "Bad request", http.StatusBadRequest)
 					return
 				}
+				if req.Method == "server/discover" {
+					// go-sdk v1.7's Connect() is Modern-first (SEP-2575): it always
+					// tries server/discover before falling back to legacy initialize.
+					// Answer -32601 (method not found) over the SSE message channel so
+					// the client falls back to initialize below (which this fake
+					// already handles), instead of hanging waiting for a response that
+					// never comes.
+					respBytes, _ := json.Marshal(map[string]any{
+						"jsonrpc": "2.0",
+						"id":      req.ID,
+						"error":   map[string]any{"code": -32601, "message": "method not found"},
+					})
+					w.WriteHeader(http.StatusAccepted)
+					select {
+					case events <- respBytes:
+					case <-time.After(5 * time.Second):
+						// t.Errorf, not t.Fatal: this runs on the server's own goroutine
+						// (Fatal's runtime.Goexit would kill the wrong one).
+						t.Errorf("timed out queuing server/discover fallback response for SSE delivery")
+					}
+					return
+				}
 				if req.Method != "initialize" {
 					// Notifications (initialized, cancelled) need no response body.
 					w.WriteHeader(http.StatusAccepted)
@@ -1696,6 +1718,8 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 				select {
 				case events <- respBytes:
 				case <-time.After(5 * time.Second):
+					// t.Errorf, not t.Fatal: this runs on the server's own goroutine.
+					t.Errorf("timed out queuing initialize response for SSE delivery")
 				}
 			})
 			mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
@@ -1752,7 +1776,7 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 			// corresponding handler is installed.
 			initCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-			_, err = initializeClient(initCtx, c)
+			_, _, err = initializeClient(initCtx, c)
 			require.NoError(t, err)
 
 			mu.Lock()

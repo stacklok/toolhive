@@ -184,6 +184,69 @@ func TestValidateLockfile(t *testing.T) {
 			wantErr: "requiredBy cycle",
 		},
 		{
+			name: "valid provenance",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity: "dev@example.com",
+					CertIssuer:     "https://accounts.example.com",
+				}},
+			}},
+		},
+		{
+			name: "provenance and unsigned are mutually exclusive",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "conflicted", Source: "s", Digest: validSHA256Digest, Unsigned: true, Provenance: &Provenance{
+					SignerIdentity: "dev@example.com",
+					CertIssuer:     "https://accounts.example.com",
+				}},
+			}},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "provenance missing signer identity",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					CertIssuer: "https://accounts.example.com",
+				}},
+			}},
+			wantErr: "signerIdentity is required",
+		},
+		{
+			name: "provenance missing cert issuer",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity: "dev@example.com",
+				}},
+			}},
+			wantErr: "certIssuer is required",
+		},
+		{
+			name: "provenance with control characters rejected",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity: "dev@example.com\x1b[31m",
+					CertIssuer:     "https://accounts.example.com",
+				}},
+			}},
+			wantErr: "non-graphic",
+		},
+		{
+			name: "provenance field too long rejected",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity: strings.Repeat("a", maxReferenceLength+1),
+					CertIssuer:     "https://accounts.example.com",
+				}},
+			}},
+			wantErr: "exceeds",
+		},
+		{
+			name: "unsigned exception alone is valid",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "unsigned", Source: "s", Digest: validSHA256Digest, Unsigned: true},
+			}},
+		},
+		{
 			name: "requiredBy diamond is not a cycle",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "shared-dep", Source: "d", Digest: validSHA256Digest, RequiredBy: []string{"parent-a", "parent-b"}},

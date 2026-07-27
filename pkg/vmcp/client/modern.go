@@ -13,6 +13,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -63,11 +64,13 @@ var errLegacyResponseBody = errors.New("backend returned a Legacy-shaped body (n
 var errModernInputRequired = errors.New("modern response requires additional input (multi-round retrieval unsupported)")
 
 // errModernProtocolError wraps a well-formed JSON-RPC error whose code is one of
-// the Modern-specific codes (-32020/-32021/-32022): the peer validated our
-// Modern headers/_meta and rejected them, so it IS Modern even though the call
-// failed. It is a positive Modern signal, distinct from errWrongEra and from a
-// generic JSON-RPC error (-32600/-32603, which do not prove Modern). probeRevision
-// classifies it as Modern.
+// the Modern-specific codes (-32020/-32021 unconditionally; -32022 only when
+// classifyUnsupportedProtocolVersion finds the peer still advertises
+// MCPVersionModern): the peer validated our Modern headers/_meta and rejected
+// them, so it IS Modern even though the call failed. It is a positive Modern
+// signal, distinct from errWrongEra and from a generic JSON-RPC error
+// (-32600/-32603, which do not prove Modern). probeRevision classifies it as
+// Modern.
 var errModernProtocolError = errors.New("modern backend rejected the request with a Modern protocol error")
 
 // errModernAuth is returned for an HTTP 401/403 to a Modern request (auth
@@ -83,6 +86,45 @@ var errModernAuth = errors.New("modern backend returned an auth status")
 // outage must not be mistaken for a not-Modern signal.
 var errModernTransient = errors.New("modern backend returned a transient error")
 
+// errModernNegotiatedDown has two sources, both carrying a valid Modern
+// envelope whose advertised versions do NOT include mcpparser.MCPVersionModern:
+//
+//  1. modernDiscover / discoverModernCapabilities: a well-formed server/discover
+//     response (err == nil from modernCall) whose supportedVersions omits it
+//     (including an absent or empty list).
+//  2. classifyUnsupportedProtocolVersion: a -32022 (CodeUnsupportedProtocolVersion)
+//     JSON-RPC error whose `data.supported` list omits it (including an absent
+//     or undecodable data payload).
+//
+// CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575, the advertised
+// version list — not a clean discover response or a bare -32022 alone — is the
+// authoritative signal of whether a peer actually speaks the Modern (2026-07-28)
+// revision: a go-sdk v1.7 shim answers both server/discover and protocol errors
+// even for a backend negotiating down to Legacy, so neither on its own is proof
+// of Modern. go-sdk's own reference client applies the same rule at both
+// sources above — mcp/client.go:428-444 for (1), the discover/supportedVersions
+// path, and mcp/client.go:360-369 for (2), the -32022/data.supported path.
+//
+// modernDiscover and probeRevision (client.go) both depend on this rule and
+// back-reference it here rather than restating it. Keep the explanation in one
+// place: it is the surface that has to be edited whenever the exact-match
+// tripwire in discoverModernCapabilities (client.go) fires for a newer Modern
+// revision. Note the tripwire is in discoverModernCapabilities, which does the
+// supportedVersions check; modernDiscover only builds the transport and
+// delegates to it.
+//
+// This is a definitive Legacy signal carried in a valid Modern envelope —
+// distinct from errWrongEra (peer does not speak Modern's wire shape at all)
+// and from the other Modern-positive/inconclusive sentinels. Retrying under
+// the corrected Legacy classification is always safe, for different reasons
+// per source: (1) is inherently safe, since server/discover has no side
+// effects; (2) is reached from interpretModernResult for ANY method, including
+// side-effecting ones like tools/call, but go-sdk's ServerSession.handle
+// (mcp/server.go) rejects an unsupported per-request protocol version BEFORE
+// the switch that dispatches to a method handler, so the backend provably
+// never executed the request regardless of which method was called.
+var errModernNegotiatedDown = errors.New("modern backend negotiated down: advertised versions lack 2026-07-28")
+
 // modernRequestID supplies monotonically increasing JSON-RPC request ids. Each
 // modernCall is a single request/response, so the id only has to be unique
 // enough to match a response within one SSE stream.
@@ -91,11 +133,12 @@ var modernRequestID atomic.Int64
 // modernCall issues a single MCP 2026-07-28 ("Modern") stateless JSON-RPC request
 // over HTTP POST and decodes the Modern response envelope into out.
 //
-// It hand-rolls the Modern wire shape that mcpcompat/go-sdk v1.6.1 cannot express
-// (its only no-initialize primitive is the private, Legacy-shaped resumeCall),
-// mirroring the server envelope in pkg/vmcp/server/modern_envelope.go: no
-// initialize handshake, no Mcp-Session-Id, protocol metadata carried per-request
-// in _meta, and a Mcp-Method header on every call.
+// It hand-rolls the Modern wire shape that mcpcompat's public Client API still
+// cannot express, even now that the underlying go-sdk is v1.7.0-pre.3 (its only
+// no-initialize primitive is the private, Legacy-shaped resumeCall), mirroring
+// the server envelope in pkg/vmcp/server/modern_envelope.go: no initialize
+// handshake, no Mcp-Session-Id, protocol metadata carried per-request in
+// _meta, and a Mcp-Method header on every call.
 //
 // params may carry a caller "_meta"; its three reserved io.modelcontextprotocol/*
 // keys are stripped and vMCP's authoritative values overlaid last (vMCP, not the
@@ -104,6 +147,11 @@ var modernRequestID atomic.Int64
 // non-empty. hc is the HTTP client whose transport carries the auth/identity/
 // header-forward/trace chain (see buildBackendRoundTripper); modernCall adds no
 // transport concerns of its own.
+//
+// paramHeaders are the SEP-2243 Mcp-Param-* headers (already keyed by full header
+// name and validated by pkg/mcp), set before the protocol headers below so a
+// caller-derived entry can never overwrite Mcp-Method, Mcp-Name, or
+// MCP-Protocol-Version. Only tools/call ever supplies them.
 //
 // Errors:
 //   - errWrongEra: the peer is not Modern (bare 4xx/5xx-free rejection, empty or
@@ -123,6 +171,7 @@ func modernCall(
 	endpoint, method string,
 	params map[string]any,
 	name string,
+	paramHeaders map[string]string,
 	out any,
 ) error {
 	id := modernRequestID.Add(1)
@@ -147,17 +196,19 @@ func modernCall(
 	if err != nil {
 		return fmt.Errorf("building %s request: %w", method, err)
 	}
+	// SEP-2243 mirrored parameter headers go on FIRST, so the protocol headers
+	// below win on any collision. A backend cannot name a designated parameter
+	// "Method" and hijack Mcp-Method, since Set overwrites.
+	for hdrName, hdrValue := range paramHeaders {
+		req.Header.Set(hdrName, hdrValue)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 	// Mcp-Method is required on EVERY Modern request (ValidateHeaderConsistency).
 	req.Header.Set("Mcp-Method", method)
 	if name != "" && mcpparser.IsNameRequiredMethod(method) {
-		// ponytail: sent raw; non-ASCII identifiers are not sentinel-encoded yet.
-		// URIs and ASCII names are safe; a non-ASCII name is unspecified behavior
-		// (a strict peer MAY reject or misinterpret the header). Add =?base64?..?=
-		// encoding if such names appear.
-		req.Header.Set("Mcp-Name", name)
+		req.Header.Set("Mcp-Name", mcpparser.EncodeSentinelName(name))
 	}
 	// Mcp-Session-Id is deliberately never set: Modern is stateless.
 
@@ -194,6 +245,9 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 		if isModernProtocolCode(rpcErr.Code) {
 			return fmt.Errorf("%w: %s (rpc code %d)", errModernProtocolError, rpcErr.Message, rpcErr.Code)
 		}
+		if int64(rpcErr.Code) == mcpparser.CodeUnsupportedProtocolVersion {
+			return classifyUnsupportedProtocolVersion(rpcErr)
+		}
 		return fmt.Errorf("modern %s: rpc error %d: %s", method, rpcErr.Code, rpcErr.Message)
 	}
 
@@ -226,14 +280,14 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 
 // mergeModernMeta strips the reserved io.modelcontextprotocol/* keys from a
 // caller-supplied _meta (if any) and overlays vMCP's authoritative values last.
-// The caller's _meta is never mutated (maps.Clone).
+// The caller's _meta is never mutated (StripReservedMeta clones it).
 func mergeModernMeta(callerMeta any) map[string]any {
-	meta := map[string]any{}
-	if m, ok := callerMeta.(map[string]any); ok {
-		meta = maps.Clone(m)
-		for _, k := range mcpparser.ReservedModernMetaKeys {
-			delete(meta, k)
-		}
+	m, _ := callerMeta.(map[string]any)
+	meta := mcpparser.StripReservedMeta(m)
+	if meta == nil {
+		// StripReservedMeta returns nil for empty/nil input; this needs a
+		// non-nil map to overlay vMCP's authoritative values onto below.
+		meta = map[string]any{}
 	}
 	for k, v := range mcpparser.ModernRequestMeta(modernClientName, versions.Version) {
 		meta[k] = v
@@ -241,10 +295,14 @@ func mergeModernMeta(callerMeta any) map[string]any {
 	return meta
 }
 
-// modernRPCError is the JSON-RPC error object.
+// modernRPCError is the JSON-RPC error object. Data carries the SEP-2575
+// error-specific payload (e.g. UnsupportedProtocolVersionData for -32022,
+// classified by classifyUnsupportedProtocolVersion); absent for the other
+// Modern-specific codes.
 type modernRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // modernRPCEnvelope is the outer JSON-RPC response envelope. Method is set only
@@ -347,17 +405,47 @@ func modernIDMatches(raw json.RawMessage, wantID int64) bool {
 	return json.Unmarshal(raw, &n) == nil && n == wantID
 }
 
-// isModernProtocolCode reports whether code is one of the Modern-specific
-// JSON-RPC error codes (header/meta validation, -3202x). Only these prove the
-// peer is Modern; generic JSON-RPC codes (-32600/-32601/-32603) do not, since a
-// Legacy backend also returns them.
+// isModernProtocolCode reports whether code is one of the two Modern-specific
+// JSON-RPC error codes that unconditionally prove the peer is Modern
+// (-32020/-32021: header/meta validation). Generic JSON-RPC codes
+// (-32600/-32601/-32603) do not, since a Legacy backend also returns them.
+//
+// CodeUnsupportedProtocolVersion (-32022) is deliberately excluded: unlike the
+// other two, it does not by itself prove Modern — it means "I don't support
+// the version you asked for" and can equally mean the peer negotiated down to
+// Legacy. See classifyUnsupportedProtocolVersion, which resolves it by
+// decoding the error's advertised supported-versions list.
 func isModernProtocolCode(code int) bool {
 	switch int64(code) {
-	case mcpparser.CodeHeaderMismatch,
-		mcpparser.CodeMissingClientCapability,
-		mcpparser.CodeUnsupportedProtocolVersion:
+	case mcpparser.CodeHeaderMismatch, mcpparser.CodeMissingClientCapability:
 		return true
 	default:
 		return false
 	}
+}
+
+// classifyUnsupportedProtocolVersion resolves a -32022
+// (CodeUnsupportedProtocolVersion) error into a Modern-positive or
+// negotiated-down signal. go-sdk v1.7's reference client (mcp/client.go:360-369)
+// decodes the error's `data.supported` list and retries Modern when it finds a
+// mutually-supported version >= 2026-07-28 (a range check), falling back to
+// Legacy initialize otherwise. This diverges from that: it exact-matches
+// MCPVersionModern instead of a range, same as discoverModernCapabilities'
+// exact-match (client.go) and safe for the same reason — vMCP's shim only
+// speaks that one Modern wire shape, and a dual-era peer offering a future
+// Modern revision also lists 2025-11-25 for us to fall back to. TRIPWIRE: when
+// a newer Modern revision is added, this must become a set/range check
+// alongside discoverModernCapabilities' — this is the second exact-match site.
+//
+// Otherwise — including an absent or undecodable data payload — it is
+// errModernNegotiatedDown.
+func classifyUnsupportedProtocolVersion(rpcErr *modernRPCError) error {
+	var data struct {
+		Supported []string `json:"supported"`
+	}
+	_ = json.Unmarshal(rpcErr.Data, &data) // best-effort; empty Supported on any decode failure
+	if slices.Contains(data.Supported, mcpparser.MCPVersionModern) {
+		return fmt.Errorf("%w: %s (rpc code %d)", errModernProtocolError, rpcErr.Message, rpcErr.Code)
+	}
+	return fmt.Errorf("%w: data.supported=%v", errModernNegotiatedDown, data.Supported)
 }

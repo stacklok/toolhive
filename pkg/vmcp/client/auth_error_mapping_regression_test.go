@@ -296,7 +296,7 @@ func TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := h.CallTool(ctx, target, "test-tool", map[string]any{"arg": "val"}, nil)
+	result, err := h.CallTool(ctx, target, "test-tool", map[string]any{"arg": "val"}, nil, nil)
 
 	if err != nil {
 		if errors.Is(err, vmcp.ErrAuthenticationFailed) {

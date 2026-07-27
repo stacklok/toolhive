@@ -86,7 +86,7 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		s.dispatchModernResourceTemplatesList(ctx, w, parsed, identity)
 	case "prompts/list":
 		s.dispatchModernPromptsList(ctx, w, parsed, identity)
-	case "server/discover":
+	case methodServerDiscover:
 		s.dispatchModernDiscover(ctx, w, parsed, identity)
 	case "tools/call":
 		s.dispatchModernToolCall(ctx, w, parsed, identity)
@@ -298,10 +298,12 @@ func (s *Server) dispatchModernPromptGet(
 // directly from parsed.Params. It mirrors go-sdk's CompleteParams/
 // CompleteReference/CompleteParamsArgument/CompleteContext field-for-field
 // (protocol.go:577-648 in go-sdk@v1.7.0-pre.3) rather than reusing an SDK
-// type: mcp-go v1.6.1 (ToolHive's import) predates the Modern completion
-// shapes, so there is nothing to reuse. It stays local rather than adding
-// JSON tags to vmcp.CompletionRef -- the domain type intentionally carries no
-// wire coupling (anti-pattern #5, no mcp-go types crossing the core boundary).
+// type: mcpcompat/mcp (ToolHive's import, now built on go-sdk v1.7.0-pre.3)
+// carries an equivalent CompleteParams, but its Ref field is untyped (any), so
+// there is no strongly-typed Modern reference shape to decode into directly.
+// It stays local rather than adding JSON tags to vmcp.CompletionRef -- the
+// domain type intentionally carries no wire coupling (anti-pattern #5, no
+// mcp-go types crossing the core boundary).
 type modernCompleteWireParams struct {
 	Ref *struct {
 		Type string `json:"type"`

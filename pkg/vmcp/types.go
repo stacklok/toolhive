@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stacklok/toolhive/pkg/mcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -730,8 +731,18 @@ type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
 	// The meta parameter contains _meta fields from the client request that should be forwarded to the backend.
 	// Returns the complete tool result including _meta field from the backend response.
+	//
+	// paramHeaders carries the SEP-2243 Mcp-Param-* headers mirrored from the tool's
+	// x-mcp-header-designated arguments, keyed by full header name. It is supplied by
+	// the caller because deriving it needs the tool's inputSchema, which lives in the
+	// aggregated capability view rather than on BackendTarget; passing it explicitly
+	// keeps this client free of a schema cache and its staleness window. nil or empty
+	// means nothing to mirror, which is the common case. It applies only to a Modern
+	// (2026-07-28) backend hop -- SEP-2243 is part of that revision -- and is ignored
+	// for a Legacy backend.
 	CallTool(
-		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any,
+		meta map[string]any, paramHeaders map[string]string,
 	) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.
@@ -760,6 +771,25 @@ type BackendClient interface {
 	// ListCapabilities queries a backend for its capabilities.
 	// Returns tools, resources, and prompts exposed by the backend.
 	ListCapabilities(ctx context.Context, target *BackendTarget) (*CapabilityList, error)
+}
+
+// RevisionReporter reports a backend's resolved MCP protocol revision, keyed by
+// workload ID. The second return distinguishes "known" from "not probed yet" —
+// callers must not read the Revision when it is false, since RevisionLegacy is
+// the zero value.
+//
+// Deliberately NOT part of [BackendClient]: it is a read-model for
+// status/telemetry and for deciding whether a Legacy session connect is worth
+// attempting, not a protocol operation, and every BackendClient implementation
+// (including the generated mocks) would otherwise have to satisfy it. Consumers
+// type-assert to it and degrade gracefully when the assertion fails.
+//
+// Because that assertion is the failure mode — a wrapper that forgets to forward
+// CachedRevision silently disables the behaviour with no compile error —
+// implementations should pin themselves with a compile-time assertion, e.g.
+// `var _ vmcp.RevisionReporter = (*httpBackendClient)(nil)`.
+type RevisionReporter interface {
+	CachedRevision(workloadID string) (mcp.Revision, bool)
 }
 
 // CapabilityList contains the capabilities from a backend's MCP server.

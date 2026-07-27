@@ -316,9 +316,6 @@ func readSourceIP(r *http.Request) string {
 }
 
 func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, msgID interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
 	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails.
@@ -329,5 +326,20 @@ func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, ms
 		ID:    id,
 		Error: jsonrpc2.NewError(int64(statusCode), message),
 	}
-	_ = json.NewEncoder(w).Encode(errResp)
+
+	// Encode before writing any header, so an encode failure never leaves a
+	// half-written response (e.g. a status header followed by a second write).
+	body, encErr := jsonrpc2.EncodeMessage(errResp)
+	if encErr != nil {
+		// Unreachable in practice: errResp is always a well-formed jsonrpc2.Response
+		// built from strings/ints above. Fall back to a hardcoded valid JSON-RPC
+		// error body rather than writing nothing.
+		slog.Error("failed to encode JSON-RPC error response", "error", encErr)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Internal error"}}`, statusCode)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	//nolint:gosec // G104: writing the JSON-RPC denial body to an HTTP client; nothing to do on error
+	_, _ = w.Write(body)
 }

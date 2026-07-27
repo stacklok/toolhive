@@ -186,11 +186,7 @@ func modernCall(
 	// Mcp-Method is required on EVERY Modern request (ValidateHeaderConsistency).
 	req.Header.Set("Mcp-Method", method)
 	if name != "" && mcpparser.IsNameRequiredMethod(method) {
-		// NOTE: sent raw; non-ASCII identifiers are not sentinel-encoded yet.
-		// URIs and ASCII names are safe; a non-ASCII name is unspecified behavior
-		// (a strict peer MAY reject or misinterpret the header). Add =?base64?..?=
-		// encoding if such names appear.
-		req.Header.Set("Mcp-Name", name)
+		req.Header.Set("Mcp-Name", mcpparser.EncodeSentinelName(name))
 	}
 	// Mcp-Session-Id is deliberately never set: Modern is stateless.
 
@@ -262,14 +258,14 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 
 // mergeModernMeta strips the reserved io.modelcontextprotocol/* keys from a
 // caller-supplied _meta (if any) and overlays vMCP's authoritative values last.
-// The caller's _meta is never mutated (maps.Clone).
+// The caller's _meta is never mutated (StripReservedModernMeta clones it).
 func mergeModernMeta(callerMeta any) map[string]any {
-	meta := map[string]any{}
-	if m, ok := callerMeta.(map[string]any); ok {
-		meta = maps.Clone(m)
-		for _, k := range mcpparser.ReservedModernMetaKeys {
-			delete(meta, k)
-		}
+	m, _ := callerMeta.(map[string]any)
+	meta := mcpparser.StripReservedModernMeta(m)
+	if meta == nil {
+		// StripReservedModernMeta returns nil for empty/nil input; this needs a
+		// non-nil map to overlay vMCP's authoritative values onto below.
+		meta = map[string]any{}
 	}
 	for k, v := range mcpparser.ModernRequestMeta(modernClientName, versions.Version) {
 		meta[k] = v

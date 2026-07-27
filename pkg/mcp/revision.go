@@ -551,3 +551,37 @@ func decodeSentinelName(v string) (string, error) {
 	}
 	return string(decoded), nil
 }
+
+// EncodeSentinelName encodes v into the draft spec's base64 sentinel format
+// (=?base64?<payload>?=) when required — the mirror of decodeSentinelName.
+// Encoding is required when EITHER:
+//   - v is not safely representable as a plain ASCII header value: any byte
+//     falls outside printable ASCII 0x21-0x7E, which also covers leading/
+//     trailing whitespace and CR/LF (both fall below 0x21 and would
+//     otherwise make net/http reject the request outright), or
+//   - v already matches the sentinel pattern (has both sentinelPrefix and
+//     sentinelSuffix), which must be escaped so the server doesn't mistake a
+//     literal name for an encoded payload.
+//
+// Otherwise v is returned unchanged. The result always round-trips through
+// decodeSentinelName back to v.
+func EncodeSentinelName(v string) string {
+	if !needsSentinelEncoding(v) {
+		return v
+	}
+	return sentinelPrefix + base64.StdEncoding.EncodeToString([]byte(v)) + sentinelSuffix
+}
+
+// needsSentinelEncoding reports whether v requires sentinel encoding; see
+// EncodeSentinelName for the two conditions checked.
+func needsSentinelEncoding(v string) bool {
+	if strings.HasPrefix(v, sentinelPrefix) && strings.HasSuffix(v, sentinelSuffix) {
+		return true
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < 0x21 || v[i] > 0x7E {
+			return true
+		}
+	}
+	return false
+}

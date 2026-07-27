@@ -51,7 +51,7 @@ being reported instead of leaving a stale series behind. Emits one point per
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `mcp_server` | string | Backend workload name |
-| `state` | string | `"healthy"` or `"unhealthy"` |
+| `state` | string | One of `"healthy"`, `"degraded"`, `"unhealthy"`, `"unknown"`, `"unauthenticated"` |
 
 #### `mcp.client.operation.duration` (Histogram, seconds)
 
@@ -95,18 +95,6 @@ Duration of composite tool workflow executions, recorded regardless of outcome.
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `composite_tool` | string | Composite tool (workflow) name |
-
-### Token Cache Metrics
-
-#### `stacklok.vmcp.token_cache.requests` (Counter)
-
-Total number of vMCP token cache lookups, split by hit/miss result
-(`pkg/vmcp/cache/telemetry.go`). Not yet emitted: no production `TokenCache`
-implementation is currently wired through `NewMeteredTokenCache`.
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `result` | string | `"hit"` or `"miss"` |
 
 ## Distributed Tracing
 

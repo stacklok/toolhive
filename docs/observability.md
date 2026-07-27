@@ -256,19 +256,28 @@ metadata as attributes.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `stacklok_component` | string | Always `"toolhive"` |
-| `stacklok_product` | string | Always `"stacklok-platform"` |
+| `component` | string | Always `"toolhive"`. A bare `component` label distinct from the promoted `stacklok_component` below — it exists so this metric's identity doesn't collide with the D8 constant label. |
 | `version` | string | ToolHive version |
 | `commit` | string | Build commit SHA |
+
+Like every other metric ToolHive emits, `stacklok.build_info` also carries
+`stacklok_component`/`stacklok_product` as constant labels — see
+[D8 Ownership Labels](#d8-ownership-labels). Those two are universal, not
+specific to this metric.
 
 ### D8 Ownership Labels
 
 Every metric emitted by ToolHive carries `stacklok_component="toolhive"` and
-`stacklok_product="stacklok-platform"` as OTel resource attributes (not
-per-series labels), applied as the last OTel resource detector so they cannot
-be overridden by `--otel-custom-attributes` or `OTEL_RESOURCE_ATTRIBUTES`
-(OTel resource merge is last-detector-wins). See
-`pkg/telemetry/providers/providers.go`.
+`stacklok_product="stacklok-platform"`. These are set as OTel resource
+attributes, applied as the last OTel resource detector so they cannot be
+overridden by `--otel-custom-attributes` or `OTEL_RESOURCE_ATTRIBUTES` (OTel
+resource merge is last-detector-wins). See `pkg/telemetry/providers/providers.go`.
+
+The Prometheus exporter is configured with `WithResourceAsConstantLabels` to
+promote exactly these two resource attributes onto every exported series as
+constant labels (`pkg/telemetry/providers/prometheus/prometheus.go`) — so in
+scraped Prometheus output they appear as per-series labels on every metric,
+not only on a separate `target_info`/`stacklok_build_info` line.
 
 ### Rate Limit Metrics
 
@@ -417,7 +426,9 @@ Only variables explicitly listed in the configuration are captured.
 
 **Custom resource attributes** (`--otel-custom-attributes` or
 `OTEL_RESOURCE_ATTRIBUTES`): Key-value pairs added as OTEL resource attributes
-to all telemetry signals.
+to all telemetry signals. `stacklok.component`/`stacklok.product` are
+reserved and cannot be set this way — see
+[D8 Ownership Labels](#d8-ownership-labels).
 
 ### SSE Connection Attributes
 

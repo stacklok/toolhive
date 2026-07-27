@@ -14,7 +14,7 @@ documentation.
 
 ## What Changed
 
-ToolHive's telemetry has been updated across three areas:
+ToolHive's telemetry has been updated across four areas:
 
 1. **Span attribute names** — Renamed to follow OTEL semantic conventions
    (HTTP, RPC, MCP/gen_ai namespaces).
@@ -24,10 +24,15 @@ ToolHive's telemetry has been updated across three areas:
    `toolhive_vmcp_*` metric names and their label vocabulary (`server`,
    `mcp_method`, `tool`, `workflow.name`, …) have been replaced by the shared
    `stacklok.*`/OTel-semconv vocabulary (`mcp_server`, `mcp_method_name`,
-   `tool_name`, `composite_tool`, …), and six legacy metric twins that
+   `gen_ai_tool_name`, `composite_tool`, …), and six legacy metric twins that
    duplicated an OTel-semconv equivalent have been deleted outright (see
    [Deleted Legacy Metrics](#deleted-legacy-metrics) below). This is a breaking
    change for any dashboard or alert querying the old metric/label names.
+4. **D8 ownership labels hardened** — `stacklok_component`/`stacklok_product`
+   are now reserved and cannot be overridden via `--otel-custom-attributes` or
+   `OTEL_RESOURCE_ATTRIBUTES` (see [D8 Ownership Labels](./observability.md#d8-ownership-labels)).
+   Any deployment previously setting a custom value for either key will see
+   that value silently replaced by the frozen ToolHive default.
 
 ### What Is New
 
@@ -41,7 +46,6 @@ ToolHive's telemetry has been updated across three areas:
 | `--otel-env-vars` flag | Include host environment variables in spans |
 | `--otel-use-legacy-attributes` flag | Control legacy attribute dual emission |
 | OTLP header credential redaction | `Config.String()` / `Config.GoString()` redact header values |
-| `stacklok.vmcp.token_cache.requests` metric | Hit/miss counter for the vMCP token cache; not yet emitted (no production `TokenCache` implementation wired in) |
 
 ---
 
@@ -249,8 +253,8 @@ regardless of that flag's setting.
 | Legacy Metric/Label | New Metric/Label | Notes |
 |----------------------|-------------------|-------|
 | `server` (label, proxy + rate limit metrics) | `mcp_server` | |
-| `mcp_method` (label) | `mcp_method_name` | |
-| `tool` (label, `toolhive_mcp_tool_calls`) | `tool_name` | |
+| `mcp_method` (label, deleted `toolhive_mcp_*` metrics) | `mcp.method.name` (`mcp_method_name`) | New attribute on `mcp.server.operation.duration`, not a same-metric label rename |
+| `tool` (label, deleted `toolhive_mcp_tool_calls`) | `gen_ai.tool.name` (`gen_ai_tool_name`) | New attribute on `mcp.server.operation.duration`; **not** `tool_name` — that label is used only by the unrelated vMCP optimizer `call_tool` metrics (see [vMCP Backend Client Attributes](#vmcp-backend-client-attributes)) |
 | `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | |
 | `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | Renamed, not deleted |
 | `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | Now split by `outcome` label instead of a separate errors counter |

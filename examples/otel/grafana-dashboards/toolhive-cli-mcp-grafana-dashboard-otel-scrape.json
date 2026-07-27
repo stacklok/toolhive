@@ -293,7 +293,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(mcp_server_operation_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
           "legendFormat": "Total RPS",
           "range": true,
           "refId": "A"

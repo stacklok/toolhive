@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
@@ -74,6 +75,7 @@ func NewHTTPMiddleware(
 	)
 	if err != nil {
 		slog.Debug("failed to create active connections metric", "error", err)
+		activeConnections = noop.Int64UpDownCounter{}
 	}
 
 	operationDuration, err := meter.Float64Histogram(
@@ -84,6 +86,7 @@ func NewHTTPMiddleware(
 	)
 	if err != nil {
 		slog.Debug("failed to create operation duration metric", "error", err)
+		operationDuration = noop.Float64Histogram{}
 	}
 
 	// OTEL HTTP semantic-convention metric. Name kept verbatim (no stacklok_
@@ -99,6 +102,7 @@ func NewHTTPMiddleware(
 	)
 	if err != nil {
 		slog.Debug("failed to create http server request duration metric", "error", err)
+		httpServerReqDuration = noop.Float64Histogram{}
 	}
 
 	registerBuildInfo(meter)

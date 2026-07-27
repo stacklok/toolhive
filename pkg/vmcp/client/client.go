@@ -1031,14 +1031,12 @@ func newBackendHTTPClient(rt http.RoundTripper, timeout time.Duration) *http.Cli
 // capability flags. Used both by probeRevision and, on a Modern cache hit, by
 // ListCapabilities to re-fetch the flags without re-running the fallback ladder.
 //
-// A clean discover response is not, by itself, proof the peer speaks the
-// Modern (2026-07-28) revision: a go-sdk v1.7 shim answers server/discover even
-// for a backend that negotiates down to Legacy. The authoritative signal is
-// supportedVersions (SEP-2575; mirroring go-sdk's own reference client at
-// mcp/client.go:428-444) — when it does not contain MCPVersionModern (including
-// when it is absent or empty), this returns errModernNegotiatedDown instead of
-// the capabilities, so callers do not mistake a negotiated-down Legacy backend
-// for Modern.
+// A clean discover response is not, by itself, proof the peer speaks Modern —
+// supportedVersions is the authoritative signal. See errModernNegotiatedDown
+// (modern.go) for why. Concretely: when supportedVersions does not contain
+// MCPVersionModern (including when it is absent or empty), this returns
+// errModernNegotiatedDown instead of the capabilities, so callers do not mistake
+// a negotiated-down Legacy backend for Modern.
 func (h *httpBackendClient) modernDiscover(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (*mcp.ServerCapabilities, error) {
@@ -1091,9 +1089,9 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 //     errWrongEra, a -32601 (discover is mandatory for Modern), a generic
 //     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, a
 //     200-with-Legacy-result, OR errModernNegotiatedDown (a clean discover
-//     envelope whose supportedVersions lacks 2026-07-28 — a go-sdk v1.7 shim
-//     answers server/discover even for a backend negotiating down to Legacy, so
-//     a clean response alone is not proof of Modern; see modernDiscover);
+//     envelope whose supportedVersions lacks 2026-07-28 — see
+//     errModernNegotiatedDown in modern.go for why a clean response alone is not
+//     proof of Modern);
 //   - returns the error UNCACHED (leaving the backend unprobed) on an
 //     INCONCLUSIVE outcome — an auth blip (errModernAuth, 401/403) or a transient
 //     failure (errModernTransient: 408/429/5xx, mid-read, or transport/timeout).

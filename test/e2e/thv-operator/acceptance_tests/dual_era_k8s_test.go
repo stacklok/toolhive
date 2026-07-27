@@ -104,8 +104,12 @@ import (
 // correct, not a bug.
 var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 	const (
-		testNamespace   = "dual-era-k8s"
-		serverName      = "dual-era-echo"
+		testNamespace = "dual-era-k8s"
+		serverName    = "dual-era-echo"
+		// Replicas drives the proxy runner Deployment, BackendReplicas the backend
+		// StatefulSet -- independent counts, and Status.ReadyReplicas reports the proxy
+		// one only ("number of ready proxy replicas", mcpserver_types.go).
+		proxyReplicas   = 2
 		backendReplicas = 2
 		timeout         = 3 * time.Minute
 		pollingInterval = 2 * time.Second
@@ -145,7 +149,7 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 				Transport:       "streamable-http",
 				ProxyPort:       8080,
 				MCPPort:         8080,
-				Replicas:        ptr.To(int32(2)),
+				Replicas:        ptr.To(int32(proxyReplicas)),
 				BackendReplicas: ptr.To(int32(backendReplicas)),
 				SessionAffinity: "None",
 				Env: []mcpv1beta1.EnvVar{
@@ -195,26 +199,43 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 	})
 
 	It("brings up both proxy and backend replicas ready, with Redis wired", func() {
-		By("proxy runner pods are ready")
+		// Gate on the full replica count, not just "something is up": CheckPodsReady
+		// passes on a single ready pod, so it would clear here with 1 of 2 replicas and
+		// leave the multi-replica premise of this whole suite unverified.
+		By(fmt.Sprintf("all %d proxy runner pods are ready", proxyReplicas))
 		Eventually(func() error {
-			return testutil.CheckPodsReady(ctx, k8sClient, testNamespace, map[string]string{
+			return testutil.CheckPodsReadyCount(ctx, k8sClient, testNamespace, map[string]string{
 				"app.kubernetes.io/name":     "mcpserver",
 				"app.kubernetes.io/instance": serverName,
-			})
+			}, proxyReplicas)
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("backend (yardstick) pods are ready")
+		By(fmt.Sprintf("all %d backend (yardstick) pods are ready", backendReplicas))
 		Eventually(func() error {
-			return testutil.CheckPodsReady(ctx, k8sClient, testNamespace, backendPodLabels)
+			return testutil.CheckPodsReadyCount(ctx, k8sClient, testNamespace, backendPodLabels, backendReplicas)
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Redis session storage is wired without a warning")
+		By("Redis session storage is wired without a warning, with both replicas ready in status")
+		// Status is written by the reconciler, so it trails the pods above by up to one
+		// reconcile even now that the gates wait for the full count. Poll rather than
+		// reading once.
 		server := &mcpv1beta1.MCPServer{}
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serverName, Namespace: testNamespace}, server)).To(Succeed())
-		cond := meta.FindStatusCondition(server.Status.Conditions, "SessionStorageWarning")
-		Expect(cond).ToNot(BeNil(), "expected a SessionStorageWarning condition once sessionStorage is set")
-		Expect(cond.Status).To(Equal(metav1.ConditionFalse), "Redis session storage should be configured cleanly: %s", cond.Message)
-		Expect(server.Status.ReadyReplicas).To(BeEquivalentTo(2))
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKey{Name: serverName, Namespace: testNamespace}, server); err != nil {
+				return err
+			}
+			cond := meta.FindStatusCondition(server.Status.Conditions, "SessionStorageWarning")
+			if cond == nil {
+				return fmt.Errorf("expected a SessionStorageWarning condition once sessionStorage is set")
+			}
+			if cond.Status != metav1.ConditionFalse {
+				return fmt.Errorf("Redis session storage should be configured cleanly: %s", cond.Message)
+			}
+			if server.Status.ReadyReplicas != proxyReplicas {
+				return fmt.Errorf("status.readyReplicas is %d, want %d", server.Status.ReadyReplicas, proxyReplicas)
+			}
+			return nil
+		}, timeout, pollingInterval).Should(Succeed())
 	})
 
 	It("configures SessionAffinity:None and serves many Modern requests across the multi-replica deployment", func() {
@@ -276,25 +297,12 @@ var _ = Describe("Dual-Era Multi-Replica Backend", Ordered, func() {
 			return resp.StatusCode, nil
 		}, timeout, pollingInterval).Should(Equal(http.StatusOK))
 
-		// CheckPodsReady only requires ONE ready pod, so it would pass the
-		// instant the surviving pod is observed -- it never proves the
-		// StatefulSet actually replaced the evicted one. Assert the full
-		// count is back AND all of them are Ready.
+		// CheckPodsReady only requires ONE ready pod, so it would pass the instant the
+		// surviving pod is observed -- it never proves the StatefulSet actually replaced
+		// the evicted one. Assert the full count is back AND all of them are Ready.
 		By("the StatefulSet replaces the evicted pod -- full replica count, all Ready")
-		Eventually(func() (int, error) {
-			pods := backendPods()
-			ready := 0
-			for _, p := range pods {
-				for _, c := range p.Status.Conditions {
-					if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-						ready++
-					}
-				}
-			}
-			if len(pods) != backendReplicas {
-				return 0, fmt.Errorf("expected %d backend pods, got %d", backendReplicas, len(pods))
-			}
-			return ready, nil
-		}, timeout, pollingInterval).Should(Equal(backendReplicas))
+		Eventually(func() error {
+			return testutil.CheckPodsReadyCount(ctx, k8sClient, testNamespace, backendPodLabels, backendReplicas)
+		}, timeout, pollingInterval).Should(Succeed())
 	})
 })

@@ -96,12 +96,17 @@ var errModernTransient = errors.New("modern backend returned a transient error")
 //     JSON-RPC error whose `data.supported` list omits it (including an absent
 //     or undecodable data payload).
 //
-// Per SEP-2575 (and go-sdk's own reference client, mcp/client.go:360-369),
-// the advertised version list — not a clean discover response or a bare
-// -32022 alone — is the authoritative signal of whether a peer actually
-// speaks the Modern (2026-07-28) revision: a go-sdk v1.7 shim answers both
-// server/discover and protocol errors even for a backend negotiating down to
-// Legacy, so neither on its own is proof of Modern.
+// CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575 (and go-sdk's
+// own reference client, mcp/client.go:360-369), the advertised version list —
+// not a clean discover response or a bare -32022 alone — is the authoritative
+// signal of whether a peer actually speaks the Modern (2026-07-28) revision: a
+// go-sdk v1.7 shim answers both server/discover and protocol errors even for a
+// backend negotiating down to Legacy, so neither on its own is proof of Modern.
+//
+// modernDiscover and probeRevision (client.go) both depend on this rule and
+// back-reference it here rather than restating it. Keep the explanation in one
+// place: it is the surface that has to be edited whenever the exact-match
+// tripwire in modernDiscover fires for a newer Modern revision.
 //
 // This is a definitive Legacy signal carried in a valid Modern envelope —
 // distinct from errWrongEra (peer does not speak Modern's wire shape at all)

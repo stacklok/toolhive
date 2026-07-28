@@ -4374,6 +4374,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "build_with": {
+                        "description": "BuildWith lists build-time dependency constraints, interpreted per\npackage ecosystem. For uvx:// builds these are PEP 508 requirement\nspecifiers passed to ` + "`" + `uv tool install --with` + "`" + `, used to constrain\ntransitive dependencies the package itself leaves unbounded\n(e.g. \"mcp\u003c2\"). Ecosystems without constraint support (npx://, go://)\nreject a non-empty BuildWith at build time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "builder_image": {
                         "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
@@ -4384,14 +4392,6 @@ const docTemplate = `{
                         },
                         "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
                         "type": "object"
-                    },
-                    "uv_with": {
-                        "description": "UVWith lists additional PEP 508 requirement specifiers passed to\n` + "`" + `uv tool install --with` + "`" + ` when building uvx:// packages. Use it to\nconstrain transitive dependencies that the package itself leaves\nunbounded (e.g. \"mcp\u003c2\"). Ignored by npx:// and go:// builds.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
                     }
                 },
                 "type": "object"

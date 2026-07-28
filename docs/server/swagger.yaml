@@ -3971,6 +3971,18 @@ components:
             type: string
           type: array
           uniqueItems: false
+        build_with:
+          description: |-
+            BuildWith lists build-time dependency constraints, interpreted per
+            package ecosystem. For uvx:// builds these are PEP 508 requirement
+            specifiers passed to `uv tool install --with`, used to constrain
+            transitive dependencies the package itself leaves unbounded
+            (e.g. "mcp<2"). Ecosystems without constraint support (npx://, go://)
+            reject a non-empty BuildWith at build time.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         builder_image:
           description: |-
             BuilderImage is the full image reference for the builder stage.
@@ -3990,16 +4002,6 @@ components:
             build-time package manager configuration.
             Keys must be uppercase with underscores, values are validated for safety.
           type: object
-        uv_with:
-          description: |-
-            UVWith lists additional PEP 508 requirement specifiers passed to
-            `uv tool install --with` when building uvx:// packages. Use it to
-            constrain transitive dependencies that the package itself leaves
-            unbounded (e.g. "mcp<2"). Ignored by npx:// and go:// builds.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
       type: object
     tokenexchange.Config:
       description: TokenExchangeConfig contains token exchange configuration for external

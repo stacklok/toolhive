@@ -140,8 +140,8 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 // "Unauthorized" message -- err (an authorizer failure) can carry policy detail that
 // security.md forbids returning to callers, so it is logged server-side instead.
 // Cedar's evaluation context can embed decoded JWT claim values (see the claim-keys-
-// only rule in authorizers/cedar/core.go), so err must never be promoted to a
-// structured field routed to an aggregator beyond this log line.
+// only rule in authorizers/cedar/core.go), so err must not be surfaced to the client,
+// nor copied into additional log lines or fields beyond the single Warn below.
 func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	if err != nil {
 		slog.Warn("authorization denied", "error", err)

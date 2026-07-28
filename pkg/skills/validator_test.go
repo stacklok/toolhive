@@ -359,3 +359,78 @@ func containsSubstring(strs []string, substr string) bool {
 	}
 	return false
 }
+
+func TestCheckInvisibleRunes(t *testing.T) {
+	t.Parallel()
+
+	// Unicode tag characters spelling "ignore" -- invisible in every renderer,
+	// but delivered to the model as text.
+	var tagged strings.Builder
+	for _, r := range "ignore" {
+		tagged.WriteRune(r + 0xE0000)
+	}
+
+	tests := []struct {
+		name    string
+		content string
+		want    string // substring the warning must contain; "" means no warning
+	}{
+		{
+			name:    "clean content produces no warning",
+			content: "# Skill\n\nA perfectly ordinary skill description.\n",
+			want:    "",
+		},
+		{
+			name:    "non-ASCII prose is not flagged",
+			content: "# Beceri\n\nTürkçe açıklama, Ελληνικά, 日本語, emoji 🔐.\n",
+			want:    "",
+		},
+		{
+			name:    "tag characters are reported",
+			content: "# Skill\n\nHarmless text." + tagged.String() + "\n",
+			want:    "Unicode tag characters",
+		},
+		{
+			name:    "zero-width characters are reported",
+			content: "# Skill\n\nHarmless​text.\n",
+			want:    "zero-width characters",
+		},
+		{
+			name:    "bidi overrides are reported",
+			content: "# Skill\n\nallowed-tools: read‮gnitirw‬\n",
+			want:    "bidirectional override characters",
+		},
+		{
+			name:    "variation selectors are reported",
+			content: "# Skill\n\nHarmless︁ text.\n",
+			want:    "variation selectors",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := checkInvisibleRunes([]byte(tt.content))
+			if tt.want == "" {
+				assert.Empty(t, got)
+				return
+			}
+			assert.Contains(t, got, tt.want)
+		})
+	}
+}
+
+func TestCheckInvisibleRunesReportsFirstLine(t *testing.T) {
+	t.Parallel()
+
+	got := checkInvisibleRunes([]byte("# Skill\n\nclean\nstill clean\nhere​it is\n"))
+	assert.Contains(t, got, "first at line 5")
+}
+
+func TestCollectWarningsFlagsInvisibleRunes(t *testing.T) {
+	t.Parallel()
+
+	warnings := collectWarnings(&ParseResult{}, []byte("# Skill\n\nHarmless​text.\n"))
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "zero-width characters")
+}

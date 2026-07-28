@@ -127,8 +127,76 @@ func collectWarnings(result *ParseResult, content []byte) []string {
 		warnings = append(warnings,
 			fmt.Sprintf("SKILL.md has %d lines (recommended max: %d)", lineCount, RecommendedMaxSkillMDLines))
 	}
+	if w := checkInvisibleRunes(content); w != "" {
+		warnings = append(warnings, w)
+	}
 
 	return warnings
+}
+
+// invisibleRuneName reports a human-readable name for runes that render as nothing
+// (or reorder what follows) while still reaching a model as instruction text. An
+// empty string means the rune is not of interest.
+//
+// A skill carrying these is not automatically malicious -- ZWJ occurs in ordinary
+// emoji sequences and RTL marks occur in ordinary Arabic and Hebrew prose -- so this
+// is reported as a warning for a human to look at, not as a validation error.
+func invisibleRuneName(r rune) string {
+	switch {
+	case r >= 0xE0000 && r <= 0xE007F:
+		// Unicode tag characters: a full ASCII alphabet that most renderers draw as
+		// nothing at all, which makes them the usual carrier for smuggled instructions.
+		return "Unicode tag characters (U+E0000-E007F)"
+	case r == 0x200B, r == 0x200C, r == 0x200D, r == 0x2060, r == 0xFEFF:
+		return "zero-width characters"
+	case r >= 0x2061 && r <= 0x2064:
+		return "invisible mathematical operators (U+2061-2064)"
+	case r == 0x200E, r == 0x200F, r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+		// Bidirectional overrides let the rendered order of a line differ from the
+		// byte order a model reads. See CVE-2021-42574 ("Trojan Source").
+		return "bidirectional override characters"
+	case r >= 0xFE00 && r <= 0xFE0F:
+		return "variation selectors (U+FE00-FE0F)"
+	default:
+		return ""
+	}
+}
+
+// checkInvisibleRunes reports whether SKILL.md contains characters that are invisible
+// when rendered but are still read by a model, which is how instructions get smuggled
+// past human review. Returns an empty string when the content is clean.
+func checkInvisibleRunes(content []byte) string {
+	// Preserve first-seen order so the message is stable across runs.
+	var kinds []string
+	seen := make(map[string]bool)
+	line := 1
+	firstLine := 0
+
+	for _, r := range string(content) {
+		if r == '\n' {
+			line++
+			continue
+		}
+		name := invisibleRuneName(r)
+		if name == "" {
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			kinds = append(kinds, name)
+		}
+		if firstLine == 0 {
+			firstLine = line
+		}
+	}
+
+	if len(kinds) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"SKILL.md contains %s, first at line %d; these are invisible when rendered but are "+
+			"still read by the model, so review the file for instructions a human reviewer cannot see",
+		strings.Join(kinds, " and "), firstLine)
 }
 
 // ValidateSkillName checks that a skill name conforms to the Agent Skills specification.

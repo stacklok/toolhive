@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	cms "github.com/github/smimesign/ietf-cms"
@@ -83,6 +84,13 @@ func verifyGitSignature(
 	payload, signature []byte,
 	roots, intermediates *x509.CertPool,
 ) (*x509.Certificate, error) {
+	// ietf-cms v0.2.0 mutates package-level state during BER decoding
+	// (protocol.encodeIndent), so concurrent ParseSignedData calls race.
+	// Verification is not hot-path — serialize instead of forking the
+	// library like gitsign did.
+	cmsMu.Lock()
+	defer cmsMu.Unlock()
+
 	der := signature
 	if blk, _ := pem.Decode(signature); blk != nil {
 		der = blk.Bytes
@@ -116,6 +124,9 @@ func verifyGitSignature(
 	}
 	return chains[0][0][0], nil
 }
+
+// cmsMu serializes ietf-cms parsing/verification; see verifyGitSignature.
+var cmsMu sync.Mutex
 
 // leafCertificate picks the end-entity certificate from a CMS certificate
 // bag (the one that is not a CA), falling back to the first entry.

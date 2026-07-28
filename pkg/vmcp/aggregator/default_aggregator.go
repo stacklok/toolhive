@@ -274,10 +274,7 @@ func (a *defaultAggregator) ResolveConflicts(
 	backendIDs := slices.Sorted(maps.Keys(capabilities))
 	resolved.Resources = resolveResourceConflicts(backendIDs, capabilities)
 	resolved.ResourceTemplates = resolveResourceTemplateConflicts(backendIDs, capabilities)
-	resolved.Prompts, err = resolvePromptConflicts(a.promptNaming, backendIDs, capabilities)
-	if err != nil {
-		return nil, fmt.Errorf("prompt conflict resolution failed: %w", err)
-	}
+	resolved.Prompts = resolvePromptConflicts(a.promptNaming, backendIDs, capabilities)
 
 	for _, caps := range capabilities {
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)

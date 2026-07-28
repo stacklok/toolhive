@@ -776,6 +776,12 @@ func ingressDomains(_ proxySpec) []string {
 // buildIngressCluster returns the STRICT_DNS upstream cluster for the ingress
 // listener, pointing at spec.WorkloadName:spec.UpstreamPort.
 func buildIngressCluster(spec proxySpec) envoyCluster {
+	// Prefer the resolved upstream IP (no DNS dependency); fall back to the
+	// workload name. See proxySpec.UpstreamHost.
+	upstreamHost := spec.UpstreamHost
+	if upstreamHost == "" {
+		upstreamHost = spec.WorkloadName
+	}
 	return envoyCluster{
 		Name:            ingressClusterName,
 		ConnectTimeout:  "10s",
@@ -790,7 +796,7 @@ func buildIngressCluster(spec proxySpec) envoyCluster {
 							Endpoint: envoyEndpointAddress{
 								Address: envoyAddress{
 									SocketAddress: envoySocketAddress{
-										Address:   spec.WorkloadName,
+										Address:   upstreamHost,
 										PortValue: spec.UpstreamPort,
 									},
 								},
@@ -886,7 +892,9 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 
 	var ingressPort int
 	if spec.TransportType != "stdio" && spec.UpstreamPort > 0 {
-		port, err := networking.FindOrUsePort(spec.UpstreamPort + 1)
+		// A random port avoids every same-image workload racing to bind the
+		// same preferred port when starting concurrently (see #6063).
+		port, err := networking.FindOrUsePort(0)
 		if err != nil {
 			return 0, fmt.Errorf("failed to find ingress port: %w", err)
 		}

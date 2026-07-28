@@ -136,17 +136,36 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | **priority** | First backend in priority order wins, others hidden |
 | **manual** | Explicit mapping for each conflict |
 
-**Conflict resolution covers tools only.** Resources, resource templates, and
-prompts are concatenated across backends with no de-duplication
-(`default_aggregator.go`, "no conflict resolution for these yet"), so
-`Resource.URI`, `ResourceTemplate.URITemplate` and `Prompt.Name` can each repeat
-in the aggregated view — two backends both exposing `file:///README.md` is
-enough. Only `Tool.Name` is unique, because tool resolution keys a map.
+The three strategies above cover **tools**. Resources, resource templates, and
+prompts are resolved separately (`aggregator/capability_conflicts.go`), with
+policies that deliberately differ by what the identity *is*:
 
-Anything that treats one of those fields as an identity must account for that.
-The Modern list paginator does: its cursor names a position within a run of equal
-keys rather than assuming keys are distinct, because a plain "resume after this
-key" scan silently dropped an item whenever a duplicate landed on a page boundary
+- **Prompt names are names**, like tool names: `prompts/get` is translated back
+  to the backend's own name via `BackendTarget.GetBackendCapabilityName`, so
+  renaming is lossless. A name advertised by exactly one backend passes through
+  unchanged; a name advertised by several is renamed to `{backendID}_{name}`
+  for **every** colliding backend, and the bare duplicated name is no longer
+  advertised.
+- **Resource URIs and template strings are locators, not names.** The client
+  passes them back verbatim (`resources/read`, `resources/subscribe`,
+  completion refs), backends emit them in notifications and embedded resource
+  contents, and template-matched reads forward the client's concrete URI
+  untranslated — so vMCP never rewrites them. A URI (or template string)
+  advertised by several backends is instead advertised **once**: the backend
+  earliest in sorted-backend-ID order wins, later duplicates are dropped with a
+  warning. Nothing reachable is lost — the routing table keys by URI, so only
+  one backend was ever served per URI; the fix makes that pick deterministic
+  and the advertised list agree with it.
+
+After aggregation, every capability identity (`Tool.Name`, `Resource.URI`,
+`ResourceTemplate.URITemplate`, `Prompt.Name`) is unique in the aggregated view,
+and backends are processed in sorted-ID order so collision outcomes are stable
+across runs.
+
+The Modern list paginator still does **not** rely on that uniqueness: its cursor
+names a position within a run of equal keys rather than assuming keys are
+distinct, because the paginator is generic and a plain "resume after this key"
+scan silently dropped an item whenever a duplicate landed on a page boundary
 (see [Client-facing list pagination](#client-facing-list-pagination)).
 
 ### Tool Filtering
@@ -435,11 +454,12 @@ Three properties worth knowing:
   aggregator's fan-out order is not stable between calls, so Modern list results
   are sorted by the item's key (`Tool.Name`, `Resource.URI`,
   `ResourceTemplate.URITemplate`, `Prompt.Name`). Legacy ordering is unchanged.
-- **Duplicate keys are tolerated, not assumed away.** Only tool names are unique
-  (see [Conflict Resolution](#conflict-resolution)); resource URIs, template
-  strings and prompt names can repeat. The cursor therefore resumes *within* a run
-  of equal keys, because a plain "resume after this key" scan skipped every copy
-  and permanently dropped items whose key collided at a page boundary.
+- **Duplicate keys are tolerated, not assumed away.** The aggregator makes all
+  four keys unique (see [Conflict Resolution](#conflict-resolution)), but the
+  paginator is generic and does not depend on that caller invariant. The cursor
+  resumes *within* a run of equal keys, because a plain "resume after this key"
+  scan skipped every copy and permanently dropped items whose key collided at a
+  page boundary.
 - **End of results omits `nextCursor` entirely.** The draft states that "an empty
   string is a valid cursor and thus MUST NOT be treated as the end of results", so
   emitting `""` would make a conformant client re-request and loop on page one.

@@ -88,20 +88,27 @@ type BackendCapabilities struct {
 }
 
 // ResolvedCapabilities contains capabilities after conflict resolution.
-// Tool names are now unique (after prefixing, priority, or manual resolution).
+// Every capability identity (tool name, resource URI, resource template
+// string, prompt name) is unique within its list.
 type ResolvedCapabilities struct {
 	// Tools are the conflict-resolved tools.
 	// Map key is the resolved tool name, value contains original name and backend.
 	Tools map[string]*ResolvedTool
 
-	// Resources are passed through (conflicts rare, namespaced by URI).
+	// Resources are de-duplicated by URI: a URI advertised by multiple backends
+	// appears once, from the backend earliest in sorted-backend-ID order. URIs
+	// are locators the client passes back verbatim, so they are never rewritten.
+	// See resolveResourceConflicts.
 	Resources []vmcp.Resource
 
-	// ResourceTemplates are passed through (conflicts rare, namespaced by URI template).
+	// ResourceTemplates are de-duplicated by URI template string, with the same
+	// locator-identity policy as Resources. See resolveResourceTemplateConflicts.
 	ResourceTemplates []vmcp.ResourceTemplate
 
-	// Prompts are passed through (conflicts rare, namespaced by name).
-	Prompts []vmcp.Prompt
+	// Prompts are conflict-resolved by name: unique names pass through, while a
+	// name advertised by multiple backends is renamed to "{backendID}_{name}"
+	// for every colliding backend. See resolvePromptConflicts.
+	Prompts []ResolvedPrompt
 
 	// SupportsLogging is true if any backend supports logging.
 	SupportsLogging bool
@@ -135,6 +142,19 @@ type ResolvedTool struct {
 
 	// ConflictResolutionApplied indicates which strategy was used.
 	ConflictResolutionApplied vmcp.ConflictResolutionStrategy
+}
+
+// ResolvedPrompt represents a prompt after conflict resolution. The embedded
+// Prompt is the advertised form: Name holds the resolved (client-visible)
+// name. OriginalName is the name the backend itself uses; prompts/get and
+// completion requests are translated back to it via
+// BackendTarget.GetBackendCapabilityName, exactly like renamed tools.
+type ResolvedPrompt struct {
+	vmcp.Prompt
+
+	// OriginalName is the prompt's name in the backend (equal to Name when no
+	// rename was needed).
+	OriginalName string
 }
 
 // AggregatedCapabilities is the final unified view of all backend capabilities.

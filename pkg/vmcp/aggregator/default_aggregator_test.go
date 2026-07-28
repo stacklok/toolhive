@@ -240,8 +240,8 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 			Resources: []vmcp.Resource{
 				{URI: "test://resource1", BackendID: "backend1"},
 			},
-			Prompts: []vmcp.Prompt{
-				{Name: "prompt1", BackendID: "backend1"},
+			Prompts: []ResolvedPrompt{
+				{Prompt: vmcp.Prompt{Name: "prompt1", BackendID: "backend1"}, OriginalName: "prompt1"},
 			},
 			SupportsLogging:  true,
 			SupportsSampling: false,

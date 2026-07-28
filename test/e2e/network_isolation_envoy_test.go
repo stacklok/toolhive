@@ -243,9 +243,27 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			server := startFetchServer("port", profile)
 
 			By("HTTPS request (port 443) must succeed")
-			httpsResult := fetchThrough(server, "https://example.com", 30*time.Second)
-			Expect(httpsResult.IsError).To(BeFalse(),
-				"https://example.com must be allowed (port 443 is in AllowPort)")
+			// The allowed leg needs a working DNS → TLS → example.com chain through
+			// Envoy's dynamic_forward_proxy. The very first egress request after
+			// startup can race the isolation stack's own warm-up (DFP DNS cache,
+			// the per-workload DNS container), failing instantly with a local 503
+			// long before anything has actually reached the network — observed in
+			// CI as an IsError result within ~40ms of readiness. The property this
+			// spec pins is steady-state reachability of an allowed port, not
+			// first-request-after-boot success (which Envoy does not promise), so
+			// retry until the deadline and surface the tool's error text — the one
+			// diagnostic that distinguishes a warm-up race from a broken AllowPort.
+			var lastHTTPSError string
+			Eventually(func() bool {
+				httpsResult := fetchThrough(server, "https://example.com", 30*time.Second)
+				if httpsResult.IsError {
+					lastHTTPSError = resultText(httpsResult)
+					return false
+				}
+				return true
+			}, 60*time.Second, 2*time.Second).Should(BeTrue(), func() string {
+				return "https://example.com must be allowed (port 443 is in AllowPort); last fetch error: " + lastHTTPSError
+			})
 
 			By("HTTP request (port 80) must be blocked")
 			httpResult := fetchThrough(server, "http://example.com", 30*time.Second)

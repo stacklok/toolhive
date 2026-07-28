@@ -5,6 +5,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -248,12 +249,35 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 // read from the named workload's own record.
 func waitForIsolatedMCPServer(thvCmd func(args ...string) *e2e.THVCommand, serverName string, timeout time.Duration) {
 	GinkgoHelper()
-	Eventually(func() bool {
+	var lastObserved string
+	ok := func() bool {
 		workload, err := e2e.FindWorkload(thvCmd, serverName)
-		if err != nil {
+		switch {
+		case err != nil:
+			lastObserved = fmt.Sprintf("thv list failed: %v", err)
+			return false
+		case workload == nil:
+			lastObserved = "not listed"
+			return false
+		case workload.Status == runtime.WorkloadStatusRunning:
+			return true
+		default:
+			lastObserved = fmt.Sprintf("status %q (%s)", workload.Status, workload.StatusContext)
 			return false
 		}
-		return workload != nil && workload.Status == runtime.WorkloadStatusRunning
-	}, timeout, 1*time.Second).Should(BeTrue(),
-		"workload %q should be running within %s", serverName, timeout)
+	}
+	// On timeout, dump state through the SAME isolated env before failing —
+	// e2e.DebugServerState would query the real ToolHive config and show
+	// nothing. Without this dump a CI failure here is undiagnosable: it reads
+	// as a bare "not running" with no way to tell a stuck startup from an
+	// errored workload (which is exactly what happened on main run 30335474873).
+	Eventually(ok, timeout, 1*time.Second).Should(BeTrue(), func() string {
+		stdout, stderr, err := thvCmd("list", "--all").Run()
+		GinkgoWriter.Printf("isolated thv list output:\nStdout: %s\nStderr: %s\nError: %v\n", stdout, stderr, err)
+		logs, stderr, err := thvCmd("logs", serverName).Run()
+		GinkgoWriter.Printf("Server logs:\n%s\nStderr: %s\nError: %v\n", logs, stderr, err)
+		proxyLogs, stderr, err := thvCmd("logs", serverName, "--proxy").Run()
+		GinkgoWriter.Printf("Proxy logs:\n%s\nStderr: %s\nError: %v\n", proxyLogs, stderr, err)
+		return fmt.Sprintf("workload %q should be running within %s; last observed: %s", serverName, timeout, lastObserved)
+	})
 }

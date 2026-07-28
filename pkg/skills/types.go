@@ -167,6 +167,10 @@ type InstalledSkill struct {
 	Clients []string `json:"clients,omitempty"`
 	// Dependencies is the list of external skill dependencies.
 	Dependencies []Dependency `json:"dependencies,omitempty"`
+	// Managed indicates this install is tracked in the project's
+	// toolhive.lock.yaml. Only ever true for project-scoped installs. No
+	// omitempty: false is an observable state (unmanaged), not an absence.
+	Managed bool `json:"managed"`
 }
 
 // SkillIndexEntry represents a single skill entry in a remote skill index.

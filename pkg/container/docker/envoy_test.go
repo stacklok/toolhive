@@ -6,10 +6,12 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -550,14 +552,6 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 	t.Parallel()
 
 	b := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{},
 	}
 
@@ -588,21 +582,13 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 		"bootstrap file must contain valid JSON")
 }
 
-// TestEnvoyAdmin_LoopbackOnly asserts that the admin block written by
-// writeEnvoyBootstrap binds only on the loopback address and never on
-// 0.0.0.0 or an empty address that would expose admin to all interfaces.
-func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
+// TestEnvoyAdmin_Absent asserts that the admin interface is entirely absent from
+// the generated bootstrap. Omitting the admin block causes Envoy to skip the
+// admin server, removing the attack surface without affecting proxy behaviour.
+func TestEnvoyAdmin_Absent(t *testing.T) {
 	t.Parallel()
 
 	b := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{},
 	}
 
@@ -613,12 +599,12 @@ func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	s := string(data)
 
-	assert.Contains(t, s, "127.0.0.1",
-		"admin address must be loopback 127.0.0.1")
-	assert.NotContains(t, s, "0.0.0.0",
-		"admin address must NOT bind on 0.0.0.0")
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m), "bootstrap must be valid JSON")
+
+	_, hasAdmin := m["admin"]
+	assert.False(t, hasAdmin, "bootstrap must not contain an admin block")
 }
 
 // TestGetEnvoyImage verifies that getEnvoyImage returns the default image when
@@ -752,7 +738,6 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 				clusters = append(clusters, buildIngressCluster(tc.spec))
 			}
 			b := envoyBootstrap{
-				Admin:           &envoyAdmin{Address: envoyAddress{SocketAddress: envoySocketAddress{Address: "127.0.0.1", PortValue: 9901}}},
 				StaticResources: envoyStaticResources{Listeners: listeners, Clusters: clusters},
 			}
 			cfg, err := json.Marshal(b)
@@ -835,6 +820,70 @@ func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 				assert.Zero(t, ingressPort, "stdio must not reserve an ingress port")
 			}
 		})
+	}
+}
+
+// TestEnvoyProxy_SetupIngress_ConcurrentSameUpstreamPort guards against a
+// deterministic ingress port collision: two workloads built from the same
+// image share the same fixed UpstreamPort, so deriving the ingress port from
+// UpstreamPort+1 made every concurrently-starting instance request the
+// identical host port. The fix picks a random port instead, so concurrent
+// SetupIngress calls sharing UpstreamPort must land on different ports.
+func TestEnvoyProxy_SetupIngress_ConcurrentSameUpstreamPort(t *testing.T) {
+	t.Parallel()
+
+	const upstreamPort = 8080
+	const workloadCount = 4
+
+	ports := make([]int, workloadCount)
+	errs := make([]error, workloadCount)
+
+	var wg sync.WaitGroup
+	for i := range workloadCount {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			api := &fakeDockerAPI{
+				createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig,
+					_ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
+					return container.CreateResponse{ID: "cid-envoy"}, nil
+				},
+				startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error { return nil },
+			}
+			e := &envoyProxy{client: &Client{
+				api:          api,
+				imageManager: &fakeImageManager{availableImages: map[string]struct{}{defaultEnvoyImage: {}}},
+			}}
+			spec := proxySpec{
+				WorkloadName:  fmt.Sprintf("app-%d", idx),
+				TransportType: "streamable-http",
+				UpstreamPort:  upstreamPort,
+				GatewayIP:     dockerDefaultBridgeGatewayIP,
+				Endpoints:     map[string]*network.EndpointSettings{},
+			}
+			port, err := e.SetupIngress(t.Context(), spec, egressResult{})
+			ports[idx] = port
+			errs[idx] = err
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent SetupIngress calls")
+	}
+
+	seen := make(map[int]bool, workloadCount)
+	for i, port := range ports {
+		require.NoError(t, errs[i])
+		assert.NotEqual(t, upstreamPort+1, port, "ingress port must not be derived from UpstreamPort+1")
+		assert.False(t, seen[port], "port %d was reserved by more than one concurrent workload", port)
+		seen[port] = true
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -26,6 +27,20 @@ const (
 // build understands.
 const MCPVersionModern = "2026-07-28"
 
+// MCPVersionLegacy is the single Legacy (session-based) protocol version this
+// build understands. It is what RevisionLegacy names on the wire and the one
+// version mcpcompat's initialize handshake negotiates.
+const MCPVersionLegacy = "2025-11-25"
+
+// String returns the wire protocol-version string for the revision:
+// MCPVersionModern for RevisionModern, MCPVersionLegacy otherwise.
+func (r Revision) String() string {
+	if r == RevisionModern {
+		return MCPVersionModern
+	}
+	return MCPVersionLegacy
+}
+
 // metaKeyProtocolVersion is the reserved _meta key that carries the per-request
 // protocol version on Modern (stateless) MCP requests, per the draft MCP schema's
 // RequestMetaObject.
@@ -41,23 +56,158 @@ const metaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 // schema's RequestMetaObject.
 const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 
-// reservedModernMetaKeys are the _meta keys a Legacy client never sets. The
-// presence of any one of them — independent of whether its value is
-// well-formed — is itself a claim of the Modern revision, and must not be
-// silently downgraded to Legacy. Only a malformed/absent protocolVersion
-// alongside one of these keys turns into a rejection, never a downgrade.
-var reservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities}
+// metaKeyLogLevel carries the per-request minimum log level on Modern
+// (2026-07-28) requests (draft schema RequestMetaObject; go-sdk protocol.go).
+// It is a reserved per-hop key that must be stripped before a Legacy backend
+// hop, but — unlike the other reserved keys — its mere presence is NOT a claim
+// of the Modern revision: go-sdk's validateRequestMeta gates Modern-ness purely
+// on protocolVersion, and SEP-2577 already deprecates logLevel. It therefore
+// belongs in the strip set (ReservedMetaPrefix, minus passthroughMetaKeys) but
+// not the ingress signal set (modernSignalMetaKeys).
+const metaKeyLogLevel = "io.modelcontextprotocol/logLevel"
+
+// ReservedMetaPrefix is the _meta key namespace the MCP spec reserves for the
+// protocol's own use. StripReservedMeta removes every key carrying it except
+// the passthroughMetaKeys below.
+//
+// The trailing slash is load-bearing. The registry's
+// "io.modelcontextprotocol.registry/publisher-provided" (docs/registry/schema.md)
+// is ALSO spec-reserved — per the 2025-11-25 _meta key-name rules any prefix
+// whose second label is "modelcontextprotocol" or "mcp" is reserved — but it is
+// server-descriptor provenance, not per-hop control, and never rides a
+// tools/call result. The slash is what keeps this predicate off it.
+//
+// Matching one literal prefix deliberately does not implement that full
+// second-label rule: "dev.mcp/", "org.modelcontextprotocol.api/" and friends are
+// equally reserved and sail through. Nothing in this repo emits them and no
+// threat model calls for parsing the general rule.
+const ReservedMetaPrefix = "io.modelcontextprotocol/"
+
+// passthroughMetaKeys are the reserved keys StripReservedMeta must NOT remove.
+//
+// The reserved namespace holds two different kinds of key, and only one of them
+// is a gateway's to terminate:
+//
+//   - per-hop protocol control (protocolVersion, clientInfo, clientCapabilities,
+//     logLevel, serverInfo, subscriptionId) — scoped to a single MCP connection.
+//     vMCP is its client's peer and its backends' peer on two different hops, so
+//     it must strip these and mint its own.
+//   - end-to-end semantic payload — meaningful to the ORIGINAL endpoints and
+//     merely carried by intermediaries. Stripping these breaks the feature.
+//
+// Both entries below are the second kind, from the 2025-11-25 task facility:
+// "related-task" is a MUST on every task-related request AND response
+// (tasks/result in particular carries the task id nowhere else), and
+// "model-immediate-response" rides CreateTaskResult._meta. vMCP does not route
+// tasks/* today, so these are inert — but this strip is what would silently
+// break them later, and silent broken correlation is expensive to debug.
+//
+// Extend this by category, not by string: ask whether the key names something
+// about THIS hop (strip) or about the two endpoints (pass through).
+// A set, not a lookup table: struct{} values make membership the only question
+// this map can answer. A map[string]bool would let a future "key": false entry
+// read as "in the set" while silently stripping.
+var passthroughMetaKeys = map[string]struct{}{
+	"io.modelcontextprotocol/related-task":             {},
+	"io.modelcontextprotocol/model-immediate-response": {},
+}
+
+// modernSignalMetaKeys is the INGRESS/detection set consumed by hasModernSignal:
+// the reserved keys a Legacy client never sets, whose presence — independent of
+// whether the value is well-formed — is itself a claim of the Modern revision
+// and must not be silently downgraded to Legacy. Only a malformed/absent
+// protocolVersion alongside one of them turns into a rejection, never a
+// downgrade.
+//
+// It is deliberately narrower than what StripReservedMeta removes: logLevel is
+// excluded so a request carrying only logLevel — which go-sdk's
+// validateRequestMeta accepts (gating purely on protocolVersion) and which
+// SEP-2577 deprecates — is classified Legacy rather than misdetected as Modern
+// and then rejected. "Strip this key on the way out" and "this key means the
+// request is Modern" are separate decisions; conflating them would make a
+// request rejectable merely for carrying a strippable-but-not-signalling key.
+var modernSignalMetaKeys = []string{
+	metaKeyProtocolVersion,
+	metaKeyClientInfo,
+	metaKeyClientCapabilities,
+}
+
+// StripReservedMeta returns a copy of meta with every ReservedMetaPrefix key
+// removed except the passthroughMetaKeys, leaving all other caller-supplied keys
+// (progressToken, trace context, backend-custom fields) untouched. The input is
+// never mutated (maps.Clone).
+//
+// Use it on BOTH hops, in both directions, wherever a _meta map crosses vMCP:
+//
+//   - Legacy backend egress (request): a downstream Modern caller's
+//     _meta.protocolVersion is only valid on a stateless Modern hop. go-sdk v1.7
+//     rejects the request outright (HTTP 400: "protocol version ... is only
+//     supported on stateless HTTP servers") for ANY _meta.protocolVersion on a
+//     stateful streamable-HTTP server, regardless of its value.
+//   - Modern backend egress (request): vMCP overlays its own authoritative
+//     values afterwards — see ModernRequestMeta / mergeModernMeta.
+//   - client egress (response, and server->client requests): a backend must not
+//     speak for vMCP. Only serverInfo is even schema-legal on a result
+//     (ResultMetaObject); the request-only keys arriving on one are a backend
+//     fabricating the client's own identity. The spec says nothing about what a
+//     gateway should forward, so this is derived rather than quoted: serverInfo
+//     identifies "the server software producing the response", vMCP is that
+//     software, therefore vMCP's value is the correct one.
+//
+// TRIPWIRE: if vMCP ever relays resource subscriptions it must MINT its own
+// io.modelcontextprotocol/subscriptionId from its own downstream listen request
+// — never forward a backend's, which names a request id on the vMCP<->backend
+// connection and collides across backends. That belongs in the notification
+// relay (pkg/vmcp/client/forwarding.go), not here; this helper only sees
+// requests and results. See pkg/transport/proxy/streamable/dispatcher_streams.go
+// for the same concern in the streamable proxy.
+//
+// Returns nil whenever the result would be empty -- for nil or empty input, and
+// also for a map whose keys were ALL reserved. Callers can therefore treat nil
+// as "no _meta to send" without a second length check (mergeModernMeta's
+// caller-tolerant convention, and what lets conversion.ToMCPMeta omit _meta
+// entirely rather than emit an empty object). A map with keys left over is
+// returned as a copy (maps.Clone), never the original.
+func StripReservedMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	stripped := maps.Clone(meta)
+	maps.DeleteFunc(stripped, func(k string, _ any) bool {
+		_, passthrough := passthroughMetaKeys[k]
+		return strings.HasPrefix(k, ReservedMetaPrefix) && !passthrough
+	})
+	if len(stripped) == 0 {
+		return nil
+	}
+	return stripped
+}
+
+// ModernRequestMeta builds the reserved _meta object every Modern (2026-07-28)
+// request must carry: protocolVersion, clientInfo, and (empty) clientCapabilities.
+// It is the single source of truth for the client side of the reserved
+// io.modelcontextprotocol/* keys, kept consistent with what ClassifyRevision and
+// ValidateHeaderConsistency require of the server side — protocolVersion equal to
+// MCPVersionModern and clientCapabilities present as a JSON object.
+func ModernRequestMeta(clientName, clientVersion string) map[string]any {
+	return map[string]any{
+		metaKeyProtocolVersion:    MCPVersionModern,
+		metaKeyClientInfo:         map[string]any{"name": clientName, "version": clientVersion},
+		metaKeyClientCapabilities: map[string]any{},
+	}
+}
 
 // The following JSON-RPC error codes are defined by the draft MCP spec
-// (schema/draft/schema.ts) for the stateless "Modern" revision. They are
-// declared as local literals, matching this repo's existing convention for
-// JSON-RPC codes (e.g. streamable_proxy.go's -32603). The only SDK with
-// equivalents, modelcontextprotocol/go-sdk, is reachable solely as a
-// transitive dependency (via toolhive-core's mcpcompat) and is pinned to an
-// older draft snapshot (2026-06-30, CodeHeaderMismatch = -32001) with no
-// equivalents at all for the other two codes below, so importing it would
-// risk wiring in stale values. Revisit once the go-sdk dependency is bumped
-// to a revision that matches MCPVersionModern.
+// (schema/draft/schema.ts) for the stateless "Modern" revision, except for the
+// last three, which are standard JSON-RPC 2.0 codes rather than draft-spec-
+// specific ones. They are declared as local literals, matching this repo's
+// existing convention for JSON-RPC codes (e.g. streamable_proxy.go's -32603).
+// The only SDK with equivalents, modelcontextprotocol/go-sdk, is reachable
+// solely as a transitive dependency (via toolhive-core's mcpcompat) and is
+// pinned to an older draft snapshot (2026-06-30, CodeHeaderMismatch = -32001)
+// with no equivalents at all for the other two codes below, so importing it
+// would risk wiring in stale values. Revisit once the go-sdk dependency is
+// bumped to a revision that matches MCPVersionModern.
 //
 // These are exported so other packages (e.g. the HTTP layer) can reference
 // the same wire values instead of hardcoding or redeclaring them.
@@ -79,8 +229,13 @@ const (
 	// CodeInvalidRequest is the standard JSON-RPC Invalid Request code. ToolHive
 	// uses it to reject a message whose shape is not a valid single request for
 	// the negotiated protocol version — currently a JSON-RPC batch, which was
-	// removed from MCP in the 2025-06-18 revision (see batch.go).
+	// removed from MCP in the 2025-06-18 revision (see batch.go) — and also for
+	// a request body over the configured size limit (HTTP 413, see
+	// JSONRPCCodeForStatus).
 	CodeInvalidRequest int64 = -32600
+	// CodeInternalError is the standard JSON-RPC Internal Error code, used for
+	// server-side failures that are not attributable to the request's shape.
+	CodeInternalError int64 = -32603
 )
 
 // HeaderMismatchError indicates the MCP-Protocol-Version HTTP header did not match
@@ -325,6 +480,14 @@ var nameRequiredMethods = map[string]bool{
 	"prompts/get":    true,
 }
 
+// IsNameRequiredMethod reports whether the Modern (2026-07-28) method requires
+// an Mcp-Name request header naming the target tool/resource/prompt. It shares
+// nameRequiredMethods with ValidateHeaderConsistency so a Modern client sets the
+// header for exactly the methods the server validates it on.
+func IsNameRequiredMethod(method string) bool {
+	return nameRequiredMethods[method]
+}
+
 // ValidateHeaderConsistency enforces the Modern (2026-07-28) Mcp-Method and
 // Mcp-Name request headers against the corresponding parsed request body
 // fields (Method and ResourceID).
@@ -405,14 +568,15 @@ func metaFromParamsMap(paramsMap map[string]any) map[string]any {
 }
 
 // hasModernSignal reports whether the request signals the Modern revision:
-// either the header exactly names MCPVersionModern, or _meta carries any of
-// the reserved Modern-only keys (regardless of whether their values are
-// well-formed).
+// either the header exactly names MCPVersionModern, or _meta carries any of the
+// modernSignalMetaKeys (regardless of whether their values are well-formed).
+// It reads modernSignalMetaKeys, NOT everything StripReservedMeta removes — a
+// key can be reserved-for-stripping without signalling Modern (logLevel).
 func hasModernSignal(meta map[string]any, protoHeader string) bool {
 	if protoHeader == MCPVersionModern {
 		return true
 	}
-	for _, key := range reservedModernMetaKeys {
+	for _, key := range modernSignalMetaKeys {
 		if _, ok := meta[key]; ok {
 			return true
 		}
@@ -481,4 +645,38 @@ func decodeSentinelName(v string) (string, error) {
 		return "", fmt.Errorf("decoding base64 sentinel Mcp-Name payload: %w", err)
 	}
 	return string(decoded), nil
+}
+
+// EncodeSentinelName encodes v into the draft spec's base64 sentinel format
+// (=?base64?<payload>?=) when required — the mirror of decodeSentinelName.
+// Encoding is required when EITHER:
+//   - v is not safely representable as a plain ASCII header value: any byte
+//     falls outside printable ASCII 0x21-0x7E, which also covers leading/
+//     trailing whitespace and CR/LF (both fall below 0x21 and would
+//     otherwise make net/http reject the request outright), or
+//   - v already matches the sentinel pattern (has both sentinelPrefix and
+//     sentinelSuffix), which must be escaped so the server doesn't mistake a
+//     literal name for an encoded payload.
+//
+// Otherwise v is returned unchanged. The result always round-trips through
+// decodeSentinelName back to v.
+func EncodeSentinelName(v string) string {
+	if !needsSentinelEncoding(v) {
+		return v
+	}
+	return sentinelPrefix + base64.StdEncoding.EncodeToString([]byte(v)) + sentinelSuffix
+}
+
+// needsSentinelEncoding reports whether v requires sentinel encoding; see
+// EncodeSentinelName for the two conditions checked.
+func needsSentinelEncoding(v string) bool {
+	if strings.HasPrefix(v, sentinelPrefix) && strings.HasSuffix(v, sentinelSuffix) {
+		return true
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < 0x21 || v[i] > 0x7E {
+			return true
+		}
+	}
+	return false
 }

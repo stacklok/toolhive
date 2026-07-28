@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-8cores-32gb
     timeout-minutes: 30
     env:
-      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0
     defaults:
       run:
         shell: bash
@@ -34,7 +34,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795

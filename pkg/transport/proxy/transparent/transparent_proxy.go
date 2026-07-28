@@ -598,6 +598,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
+	// requestID carries the incoming JSON-RPC id so an error response built below
+	// can echo it, letting a client correlate the error with its request. It is set
+	// only when parseRPCRequest reports a single request, which by construction
+	// means the id is present and non-null; it stays nil for a notification, a
+	// batch, or a bodiless GET/DELETE. session.NotFoundResponse (via NotFoundBody)
+	// omits the "id" key entirely for a nil requestID rather than emitting a null
+	// id — MCP narrows base JSON-RPC to make that omission the correct encoding
+	// of "no id" (see session.HasJSONRPCID).
+	var requestID any
 
 	if len(reqBody) > 0 &&
 		((isMCP && isJSON) ||
@@ -605,6 +614,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		method, params, id, singleRequest, isInit := t.parseRPCRequest(reqBody)
 		sawInitialize = isInit
 		if singleRequest {
+			requestID = id
 			meta := mcp.ExtractMeta(params)
 			rev, cerr := mcp.ClassifyRevision(method, meta, req.Header.Get("MCP-Protocol-Version"))
 			if cerr != nil {
@@ -628,7 +638,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 				slog.Error("session store lookup failed", "error", err)
 				return plainResponse(req, http.StatusServiceUnavailable, "session store unavailable"), nil
 			}
-			return session.NotFoundResponse(req), nil
+			return session.NotFoundResponse(req, requestID), nil
 		}
 	}
 

@@ -11,10 +11,13 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
       - name: Install swag
-        run: go install github.com/swaggo/swag/v2/cmd/swag@latest
+        # Pinned to match go.mod and Taskfile.yml — see the comment on the
+        # swagger-install task for why this alone doesn't make the check
+        # fully deterministic.
+        run: go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
       - run: ./cmd/help/verify.sh

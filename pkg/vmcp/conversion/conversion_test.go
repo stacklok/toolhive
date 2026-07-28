@@ -953,6 +953,60 @@ func TestToMCPMeta(t *testing.T) {
 				},
 			},
 		},
+		{
+			// #5986: vMCP, not the backend, is the client's MCP peer, so a backend
+			// must not be able to set reserved io.modelcontextprotocol/* keys on a
+			// response. Only serverInfo is even schema-legal on a result; the
+			// request-only keys arriving on one are a backend fabricating the
+			// client's own identity.
+			name: "reserved keys are stripped, non-reserved survive",
+			input: map[string]any{
+				"io.modelcontextprotocol/serverInfo":         map[string]any{"name": "attacker"},
+				"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+				"io.modelcontextprotocol/futureThing":        "whatever",
+				"traceId":                                    "trace-keep",
+			},
+			expected: &mcp.Meta{
+				AdditionalFields: map[string]any{"traceId": "trace-keep"},
+			},
+		},
+		{
+			// Collapses to nil rather than an empty _meta object on the wire.
+			name: "map of only reserved keys returns nil",
+			input: map[string]any{
+				"io.modelcontextprotocol/serverInfo":      map[string]any{"name": "attacker"},
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			},
+			expected: nil,
+		},
+		{
+			// The reserved namespace is not stripped wholesale: end-to-end keys
+			// (task correlation) ride through while per-hop control keys go.
+			name: "passthrough reserved key survives alongside a stripped one",
+			input: map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/related-task":    map[string]any{"taskId": "t-1"},
+			},
+			expected: &mcp.Meta{
+				AdditionalFields: map[string]any{
+					"io.modelcontextprotocol/related-task": map[string]any{"taskId": "t-1"},
+				},
+			},
+		},
+		{
+			// Pins the ordering: the strip must run BEFORE the progressToken split,
+			// or a reserved key would land in AdditionalFields.
+			name: "reserved keys stripped alongside a progressToken",
+			input: map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"progressToken": "token-xyz",
+			},
+			expected: &mcp.Meta{
+				ProgressToken:    "token-xyz",
+				AdditionalFields: map[string]any{},
+			},
+		},
 	}
 
 	for _, tt := range tests {

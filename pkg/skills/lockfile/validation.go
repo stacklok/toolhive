@@ -142,6 +142,52 @@ func validateEntry(entry Entry) error {
 			return fmt.Errorf("entry %q: resolvedReference: %w", entry.Name, err)
 		}
 	}
+	if entry.Provenance != nil && entry.Unsigned {
+		return fmt.Errorf("entry %q: provenance and unsigned are mutually exclusive"+
+			" — an entry is either a verified signature or a recorded unsigned exception", entry.Name)
+	}
+	if entry.Provenance != nil {
+		if err := validateProvenance(entry.Provenance); err != nil {
+			return fmt.Errorf("entry %q: provenance: %w", entry.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateProvenance syntactically constrains a provenance block. Like
+// resolvedReference, these values are hand-editable and feed the identity
+// policy that future verifications are checked against, so they must be
+// well-formed graphic strings of bounded length. Validation is purely
+// syntactic — whether the identity is trustworthy is the verifier's job.
+func validateProvenance(p *Provenance) error {
+	if p.SignerIdentity == "" {
+		return errors.New("signerIdentity is required")
+	}
+	if p.CertIssuer == "" {
+		return errors.New("certIssuer is required")
+	}
+	fields := map[string]string{
+		"signerIdentity": p.SignerIdentity,
+		"certIssuer":     p.CertIssuer,
+		"repositoryUri":  p.RepositoryURI,
+		"sigstoreUrl":    p.SigstoreURL,
+	}
+	for name, value := range fields {
+		if value == "" {
+			continue
+		}
+		if len(value) > maxReferenceLength {
+			return fmt.Errorf("%s exceeds %d characters", name, maxReferenceLength)
+		}
+		if strings.TrimSpace(value) != value {
+			return fmt.Errorf("%s has leading or trailing whitespace", name)
+		}
+		for _, r := range value {
+			if !unicode.IsGraphic(r) || unicode.IsSpace(r) {
+				return fmt.Errorf("%s contains non-graphic or whitespace character %q", name, r)
+			}
+		}
+	}
 	return nil
 }
 

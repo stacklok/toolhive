@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	// defaultEnvoyImage is pinned by tag. Digest pinning is tracked in #5903.
-	// Override with TOOLHIVE_ENVOY_IMAGE.
-	defaultEnvoyImage = "envoyproxy/envoy-distroless:v1.32.3"
+	// defaultEnvoyImage is pinned by tag+digest for supply-chain integrity.
+	// Override with TOOLHIVE_ENVOY_IMAGE (accepts any docker pull reference).
+	defaultEnvoyImage = "envoyproxy/envoy-distroless:v1.32.3@sha256:375aab0d80b3c0e1b42a776b4cb1743ed79012032051d2da19cbc93ea884fb81"
 
 	// Protobuf type URLs required by Envoy's protobuf-JSON bootstrap format.
 	// Every typed_config field must carry an @type URL or Envoy will reject the
@@ -56,14 +56,10 @@ func getEnvoyImage() string {
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
 // envoyBootstrap is the top-level Envoy bootstrap configuration.
+// The admin interface is intentionally omitted: Envoy does not start an admin
+// server when the field is absent, eliminating the attack surface at runtime.
 type envoyBootstrap struct {
-	Admin           *envoyAdmin          `json:"admin,omitempty"`
 	StaticResources envoyStaticResources `json:"static_resources"`
-}
-
-// envoyAdmin configures the Envoy admin API endpoint.
-type envoyAdmin struct {
-	Address envoyAddress `json:"address"`
 }
 
 // envoyStaticResources holds the static listeners and clusters.
@@ -780,6 +776,12 @@ func ingressDomains(_ proxySpec) []string {
 // buildIngressCluster returns the STRICT_DNS upstream cluster for the ingress
 // listener, pointing at spec.WorkloadName:spec.UpstreamPort.
 func buildIngressCluster(spec proxySpec) envoyCluster {
+	// Prefer the resolved upstream IP (no DNS dependency); fall back to the
+	// workload name. See proxySpec.UpstreamHost.
+	upstreamHost := spec.UpstreamHost
+	if upstreamHost == "" {
+		upstreamHost = spec.WorkloadName
+	}
 	return envoyCluster{
 		Name:            ingressClusterName,
 		ConnectTimeout:  "10s",
@@ -794,7 +796,7 @@ func buildIngressCluster(spec proxySpec) envoyCluster {
 							Endpoint: envoyEndpointAddress{
 								Address: envoyAddress{
 									SocketAddress: envoySocketAddress{
-										Address:   spec.WorkloadName,
+										Address:   upstreamHost,
 										PortValue: spec.UpstreamPort,
 									},
 								},
@@ -882,14 +884,6 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
 
 	bootstrap := envoyBootstrap{
-		Admin: &envoyAdmin{
-			Address: envoyAddress{
-				SocketAddress: envoySocketAddress{
-					Address:   "127.0.0.1", // loopback only — never 0.0.0.0
-					PortValue: 9901,
-				},
-			},
-		},
 		StaticResources: envoyStaticResources{
 			Listeners: []envoyListener{buildEgressListener(spec)},
 			Clusters:  []envoyCluster{buildEgressCluster()},
@@ -898,7 +892,9 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 
 	var ingressPort int
 	if spec.TransportType != "stdio" && spec.UpstreamPort > 0 {
-		port, err := networking.FindOrUsePort(spec.UpstreamPort + 1)
+		// A random port avoids every same-image workload racing to bind the
+		// same preferred port when starting concurrently (see #6063).
+		port, err := networking.FindOrUsePort(0)
 		if err != nil {
 			return 0, fmt.Errorf("failed to find ingress port: %w", err)
 		}

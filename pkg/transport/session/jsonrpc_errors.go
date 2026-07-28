@@ -24,8 +24,20 @@ const (
 
 // NotFoundBody returns the JSON-encoded body for a session-not-found
 // JSON-RPC error response. The requestID is the "id" from the incoming
-// JSON-RPC request; pass nil when the request ID is not available (e.g.,
-// DELETE requests, batch pre-parse, transparent proxy).
+// JSON-RPC request, echoed so a client correlating by id can match this error
+// to the request that caused it.
+//
+// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
+// response as `id?: RequestId` where RequestId = string | number, so an
+// absent id is encoded by omitting the "id" key entirely, never as null. The
+// reference TypeScript SDK enforces this with a .strict() schema and a
+// throwing parse(), so an "id":null response crashes a conformant client's
+// transport. See HasJSONRPCID.
+//
+// Pass nil only when the request genuinely carries no id: a bodiless GET
+// (standalone SSE) or DELETE, a notification, or a batch. Do NOT pass nil
+// merely because threading the id to the call site is inconvenient — that
+// was the asymmetry fixed in #5945.
 func NotFoundBody(requestID any) []byte {
 	resp := map[string]any{
 		"jsonrpc": "2.0",
@@ -33,15 +45,43 @@ func NotFoundBody(requestID any) []byte {
 			"code":    CodeSessionNotFound,
 			"message": MessageSessionNotFound,
 		},
-		"id": requestID,
+	}
+	if HasJSONRPCID(requestID) {
+		resp["id"] = requestID
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		// This should never happen with simple map types, but return a
 		// hand-crafted fallback to guarantee a valid JSON-RPC error.
-		return []byte(`{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":null}`)
+		return []byte(`{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"}}`)
 	}
 	return data
+}
+
+// HasJSONRPCID reports whether requestID is a usable JSON-RPC id, i.e. whether
+// callers should emit an "id" key at all.
+//
+// MCP narrows base JSON-RPC here: schema/2025-11-25 types the error response as
+// `id?: RequestId` where RequestId = string | number, so an absent id is encoded
+// by omitting the key, never as null. The reference TypeScript SDK enforces this
+// with a .strict() schema and a throwing parse(), so "id":null crashes a
+// conformant client's transport.
+//
+// The transparent proxy threads the incoming id through as raw bytes, so a
+// json.RawMessage holding literal null -- or nothing -- is an absent id even
+// though the interface value is non-nil.
+//
+// Do not pass a typed jsonrpc2.ID here: its zero value is a non-nil interface
+// holding an empty struct, so this predicate would (wrongly) report it as
+// present and callers would emit "id":{}. Use id.IsValid() instead.
+func HasJSONRPCID(requestID any) bool {
+	if requestID == nil {
+		return false
+	}
+	if raw, ok := requestID.(json.RawMessage); ok {
+		return len(raw) > 0 && string(raw) != "null"
+	}
+	return true
 }
 
 // WriteNotFound writes an HTTP 404 response with a JSON-RPC error body
@@ -57,8 +97,12 @@ func WriteNotFound(w http.ResponseWriter, requestID any) {
 // NotFoundResponse constructs an *http.Response with HTTP 404 and a
 // JSON-RPC error body. Use this in httputil.ReverseProxy.ModifyResponse
 // (transparent proxy) where no http.ResponseWriter is available.
-func NotFoundResponse(req *http.Request) *http.Response {
-	body := NotFoundBody(nil)
+//
+// requestID follows NotFoundBody: pass the incoming request's JSON-RPC id so the
+// error echoes it, or nil when the request has none. Callers that reject a
+// request before parsing a body (GET/DELETE) pass nil.
+func NotFoundResponse(req *http.Request, requestID any) *http.Response {
+	body := NotFoundBody(requestID)
 	hdr := make(http.Header)
 	hdr.Set("Content-Type", "application/json")
 	return &http.Response{

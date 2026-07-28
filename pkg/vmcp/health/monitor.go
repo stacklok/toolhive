@@ -119,6 +119,10 @@ type Monitor struct {
 	// checker performs health checks on backends.
 	checker vmcp.HealthChecker
 
+	// revisions reads each backend's negotiated MCP revision for the status
+	// read-model. Nil when the client does not implement vmcp.RevisionReporter.
+	revisions vmcp.RevisionReporter
+
 	// statusTracker tracks health status for all backends.
 	statusTracker *statusTracker
 
@@ -252,8 +256,13 @@ func NewMonitor(
 	// The status tracker will lazily initialize circuit breakers as needed
 	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
 
+	// The client (directly or via the telemetry decorator) optionally reports the
+	// negotiated MCP revision for the status read-model; nil when unsupported.
+	revisions, _ := client.(vmcp.RevisionReporter)
+
 	return &Monitor{
 		checker:       checker,
+		revisions:     revisions,
 		statusTracker: statusTracker,
 		checkInterval: config.CheckInterval,
 		backends:      backends,
@@ -486,6 +495,14 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 		// RecordSuccess will further check for recovering state (had recent failures)
 		slog.Debug("health check succeeded for backend", "backend", backend.Name, "status", status)
 		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+	}
+
+	// Refresh the MCP revision read-model from the client's cache (empty until the
+	// backend is probed). Read-only; a no-op when the client doesn't report it.
+	if m.revisions != nil {
+		if rev, ok := m.revisions.CachedRevision(backend.ID); ok {
+			m.statusTracker.RecordRevision(backend.ID, rev.String())
+		}
 	}
 }
 
@@ -735,6 +752,7 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 				CircuitBreakerState: string(state.CircuitState),
 				CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
 				ConsecutiveFailures: state.ConsecutiveFailures,
+				MCPRevision:         state.MCPRevision,
 			})
 			continue
 		}
@@ -752,6 +770,7 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 			CircuitBreakerState: string(state.CircuitState),
 			CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
 			ConsecutiveFailures: state.ConsecutiveFailures,
+			MCPRevision:         state.MCPRevision,
 		})
 	}
 

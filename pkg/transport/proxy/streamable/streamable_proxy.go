@@ -120,6 +120,15 @@ type HTTPProxy struct {
 	// WithStandaloneSSE(false) to opt out.
 	standaloneSSE bool
 
+	// strictProtocolValidation controls whether handlePost rejects a request
+	// whose MCP-Protocol-Version header names an unknown/unsupported MCP
+	// revision (see isSupportedMCPVersion) with HTTP 400. Default false: any
+	// version string is accepted, since this proxy is transport-level and does
+	// not depend on a specific MCP revision. An absent header is always
+	// accepted, in either mode, per the streamable HTTP spec's rule to assume
+	// 2025-03-26 when the header is missing. Set via WithStrictProtocolValidation.
+	strictProtocolValidation bool
+
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
 
@@ -188,6 +197,16 @@ func WithStandaloneSSE(enabled bool) Option {
 	return func(p *HTTPProxy) {
 		p.standaloneSSE = enabled
 	}
+}
+
+// WithStrictProtocolValidation enables strict MCP-Protocol-Version checking.
+// When enabled, a request whose MCP-Protocol-Version header names an
+// unsupported/unknown MCP revision is rejected with HTTP 400. An absent
+// header is still accepted (the streamable HTTP spec says to assume
+// 2025-03-26). Default (false) preserves the version-agnostic behavior:
+// any version string is accepted.
+func WithStrictProtocolValidation(enabled bool) Option {
+	return func(p *HTTPProxy) { p.strictProtocolValidation = enabled }
 }
 
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
@@ -495,9 +514,15 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Optionally validate MCP-Protocol-Version; accept missing for compatibility
+	// MCP-Protocol-Version validation is opt-in via strictProtocolValidation
+	// (WithStrictProtocolValidation). Default (false) is version-agnostic:
+	// any header value is accepted, since this proxy is transport-level and
+	// does not depend on a specific MCP revision. When strict mode is
+	// enabled, a present-but-unrecognized version is rejected with 400; an
+	// absent header is always accepted in either mode, per the streamable
+	// HTTP spec's rule to assume 2025-03-26 when the header is missing.
 	protoVer := r.Header.Get("MCP-Protocol-Version")
-	if protoVer != "" && !isSupportedMCPVersion(protoVer) {
+	if p.strictProtocolValidation && protoVer != "" && !isSupportedMCPVersion(protoVer) {
 		writeHTTPError(w, http.StatusBadRequest, "Unsupported MCP-Protocol-Version")
 		return
 	}
@@ -744,6 +769,11 @@ func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
 // data: frame, for a request whose response headers (200 + text/event-stream)
 // have already been sent -- an HTTP error status can no longer be set at this
 // point, so the error must be communicated in-band as the response payload.
+//
+// The "id" key is included only if id.IsValid(); MCP narrows base JSON-RPC
+// 2.0 here (schema/2025-11-25 types the error response id as optional,
+// string|number, no null), so an invalid/absent id must be encoded by
+// omitting the key, never as "id":null.
 func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, id jsonrpc2.ID, err error) {
 	errMsg := "Internal error"
 	code := -32603
@@ -753,11 +783,13 @@ func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, id jsonrpc2
 	}
 	errObj := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id.Raw(),
 		"error": map[string]any{
 			"code":    code,
 			"message": errMsg,
 		},
+	}
+	if id.IsValid() {
+		errObj["id"] = id.Raw()
 	}
 	data, mErr := json.Marshal(errObj)
 	if mErr != nil {
@@ -1017,6 +1049,15 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		// ignore any client-supplied Mcp-Session-Id. Never fall through to the
 		// session-lookup path below with it -- see the confidentiality note
 		// in this function's doc comment.
+		//
+		// This is safe only because, in this proxy, Mcp-Session-Id has no
+		// downstream authority: it is purely an in-process response-correlation
+		// token (the backend is stateless stdio, unlike the transparent proxy,
+		// which maps it to a backend-assigned SID via session metadata). If this
+		// proxy ever gains a shared session store or a stateful backend mapping,
+		// "ignore the client SID on Modern" must stay true -- silently reusing or
+		// looking up a known client SID here would reopen a session-validation
+		// bypass. See TestModernNeverReusesClientSessionIDAsRoutingToken.
 		token, err := uuid.NewRandom()
 		if err != nil {
 			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -388,6 +389,11 @@ func writeFilteredToolCallError(w http.ResponseWriter, id any) {
 // tool call, modeled on classificationErrorBody: the body is marshaled first
 // (with a hand-crafted fallback on marshal failure) so the caller only writes
 // headers/status once a valid body is ready.
+//
+// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
+// response as `id?: RequestId` where RequestId = string | number, so an
+// absent id is encoded by omitting the "id" key, never as null. See
+// session.HasJSONRPCID.
 func filteredToolCallErrorBody(id any) []byte {
 	resp := map[string]any{
 		"jsonrpc": "2.0",
@@ -395,14 +401,16 @@ func filteredToolCallErrorBody(id any) []byte {
 			"code":    CodeInvalidParams,
 			"message": filteredToolNotFoundMessage,
 		},
-		"id": id,
+	}
+	if session.HasJSONRPCID(id) {
+		resp["id"] = id
 	}
 
 	body, err := json.Marshal(resp)
 	if err != nil {
 		// This should never happen with simple map types, but return a
 		// hand-crafted fallback to guarantee a valid JSON-RPC error.
-		return []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"tool not found"},"id":null}`)
+		return []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"tool not found"}}`)
 	}
 	return body
 }
@@ -689,7 +697,9 @@ func processEventStream(
 	} else if len(buffer) >= 1 && buffer[len(buffer)-1] == '\r' {
 		linesep = []byte("\r")
 	} else {
-		return fmt.Errorf("unsupported separator: %s", string(buffer))
+		// Length only, not the buffer: buffer is the full pre-filter payload
+		// (e.g. the unfiltered tools/list), and this error is logged upstream.
+		return fmt.Errorf("unsupported SSE line separator in %d-byte buffer", len(buffer))
 	}
 
 	var linesepTotal, linesepCount int

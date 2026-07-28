@@ -211,9 +211,9 @@ All proxy types integrate with the middleware chain:
 
 ```mermaid
 graph LR
-    Client[Client Request] --> MW1[Middleware 1<br/>Auth]
-    MW1 --> MW2[Middleware 2<br/>Parser]
-    MW2 --> MW3[Middleware 3<br/>Audit]
+    Client[Client Request] --> MW1[Middleware 1<br/>Audit]
+    MW1 --> MW2[Middleware 2<br/>Auth]
+    MW2 --> MW3[Middleware 3<br/>Parser]
     MW3 --> MW4[Middleware 4<br/>Authz]
     MW4 --> Proxy[Proxy Handler]
     Proxy --> Container[MCP Server]
@@ -677,20 +677,31 @@ path for server->client messages.
   send-on-closed-channel panic if a concurrent broadcast/dispatch races
   eviction/shutdown.
 
-**Forward-compatibility note**: the 2026-07-28 (Modern) MCP revision (see
-`mcp.MCPVersionModern` and `pkg/mcp/revision.go`) introduces
-`subscriptions/listen`, a POST method whose response stream stays open for
-server-pushed subscription events. `serverStreamRegistry` is a reasonable
-decoupled fan-out seam to build a future Modern handler for this method on top
-of, but it is **not** a drop-in reuse. Per the draft spec, real adaptation is
-required: `subscriptions/listen` is a long-lived POST, not a GET; Modern has no
-sessions, so streams must be keyed per-subscription-id rather than per session
-ID; delivery requires per-notification-type AND per-URI opt-in filtering, not
-blanket fan-out; an initial `notifications/subscriptions/acknowledged` must be
-sent; and deliveries must be tagged with `io.modelcontextprotocol/subscriptionId`.
-`dispatcher_streams.go` is intentionally kept transport-agnostic (no HTTP
-types) so that this adaptation, when it happens, does not also require
-rewriting the underlying fan-out primitives.
+**Relationship to Modern `subscriptions/listen`**: the 2026-07-28 (Modern)
+revision (see `mcp.MCPVersionModern` and `pkg/mcp/revision.go`) replaces the
+standalone GET with `subscriptions/listen`, a POST method whose response stream
+stays open for server-pushed subscription events.
+
+vMCP now **serves** that method on its client edge
+(`pkg/vmcp/server/modern_subscriptions.go`), and deliberately does **not** use
+`serverStreamRegistry`. The reason is that the handler honors no subscriptions:
+the honored set is intersected against the capabilities `server/discover`
+advertises, every push flag there is false, so the acknowledged set is always
+empty and the stream terminates immediately. With nothing to fan out, wiring in a
+fan-out registry from another package would add an abstraction with zero
+consumers. What the handler does implement is the wire contract — a long-lived
+POST rather than a GET, keyed per-subscription-id (the listen request's own
+JSON-RPC id) rather than per session ID since Modern has no sessions, an initial
+`notifications/subscriptions/acknowledged`, and
+`io.modelcontextprotocol/subscriptionId` tagging.
+
+`serverStreamRegistry` remains the sensible seam for the piece still missing:
+actual **delivery** of notifications on a Modern listen stream (#5743). That work
+needs per-notification-type AND per-URI opt-in filtering rather than blanket
+fan-out, and per `schema/draft/schema.ts` must tag *every* notification with the
+subscription id, not just the acknowledgement. `dispatcher_streams.go` is
+therefore still intentionally kept transport-agnostic (no HTTP types), so that
+when delivery lands it does not also require rewriting the fan-out primitives.
 
 ## Error Handling
 
@@ -770,6 +781,25 @@ rewriting the underlying fan-out primitives.
 For deployment behind reverse proxy, proxies respect X-Forwarded headers (Host, Port, Proto, Prefix).
 
 **Security**: Only enable if ToolHive is behind trusted reverse proxy.
+
+### MCP-Protocol-Version Validation (Streamable HTTP)
+
+**Implementation**: `pkg/transport/proxy/streamable/streamable_proxy.go`, `pkg/transport/proxy/streamable/utils.go`
+
+By default, the streamable HTTP proxy is version-agnostic: it accepts any
+`MCP-Protocol-Version` header value (including an absent header, per the
+streamable HTTP spec's rule to assume `2025-03-26`). This is intentional --
+the proxy is transport-level and does not depend on a specific MCP revision,
+so it avoids being pedantic and breaking on new protocol dates.
+
+**Opt-in strict mode**: `thv run --strict-protocol-validation` rejects a
+request whose `MCP-Protocol-Version` header names an unknown/unsupported MCP
+revision with HTTP 400. An absent header is still accepted in strict mode.
+The set of recognized revisions is `supportedMCPVersions` in
+`pkg/transport/proxy/streamable/utils.go`. This is wired through
+`runner.WithStrictProtocolValidation` -> `RunConfig.StrictProtocolValidation`
+-> `types.Config.StrictProtocolValidation` -> `StdioTransport.SetStrictProtocolValidation`
+-> `streamable.WithStrictProtocolValidation`.
 
 ### SSE Endpoint URL Rewriting
 

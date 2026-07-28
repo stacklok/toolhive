@@ -419,58 +419,11 @@ func TestCategorizeError(t *testing.T) {
 	}
 }
 
-func TestIsAuthenticationError(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		err       error
-		expectErr bool
-	}{
-		// Positive cases
-		{name: "authentication failed", err: errors.New("authentication failed"), expectErr: true},
-		{name: "Authentication Failed (uppercase)", err: errors.New("Authentication Failed"), expectErr: true},
-		{name: "authentication error", err: errors.New("authentication error: bad token"), expectErr: true},
-		{name: "401 unauthorized", err: errors.New("401 unauthorized"), expectErr: true},
-		{name: "403 forbidden", err: errors.New("403 forbidden"), expectErr: true},
-		{name: "HTTP 401", err: errors.New("HTTP 401"), expectErr: true},
-		{name: "HTTP 403", err: errors.New("HTTP 403"), expectErr: true},
-		{name: "status code 401", err: errors.New("status code 401"), expectErr: true},
-		{name: "status code 403", err: errors.New("status code 403"), expectErr: true},
-		{name: "request unauthenticated", err: errors.New("request unauthenticated"), expectErr: true},
-		{name: "request unauthorized", err: errors.New("request unauthorized"), expectErr: true},
-		{name: "access denied", err: errors.New("access denied"), expectErr: true},
-
-		// mcp-go ErrUnauthorized format: "unauthorized (401)" (reversed order vs "401 unauthorized")
-		{name: "unauthorized (401) - mcp-go ErrUnauthorized format", err: errors.New("unauthorized (401)"), expectErr: true},
-
-		// Negative cases - should NOT be detected as auth errors
-		{name: "connection refused", err: errors.New("connection refused"), expectErr: false},
-		{name: "timeout", err: errors.New("request timeout"), expectErr: false},
-		{name: "generic error", err: errors.New("something went wrong"), expectErr: false},
-		{name: "404 not found", err: errors.New("404 not found"), expectErr: false},
-		{name: "500 internal server error", err: errors.New("500 internal server error"), expectErr: false},
-		{name: "hostname with 401", err: errors.New("http://backend401.example.com"), expectErr: false},
-		// Pin against accidental loosening of the "authorization required"
-		// substring matcher: a validation message of the form "field
-		// 'authorization' required" must not be misclassified as an auth
-		// failure. The current matcher uses the contiguous substring
-		// "authorization required" (one space, no punctuation), so this
-		// string does not match — but a future loosening (e.g. allowing
-		// any whitespace) would silently regress.
-		{name: "validation message containing 'authorization' and 'required'", err: errors.New("field 'authorization' required"), expectErr: false},
-		{name: "nil error", err: nil, expectErr: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			result := vmcp.IsAuthenticationError(tt.err)
-			assert.Equal(t, tt.expectErr, result)
-		})
-	}
-}
+// NOTE: IsAuthenticationError is exhaustively tested in its owning package at
+// pkg/vmcp/errors_test.go (TestIsAuthenticationError). It was previously
+// re-tested here, but a classifier owned by pkg/vmcp belongs under test there,
+// not in the health package that merely consumes it (see .claude/rules/testing.md
+// "Test Scope").
 
 func TestIsTimeoutError(t *testing.T) {
 	t.Parallel()

@@ -211,16 +211,17 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Create transport with runtime
 	transportConfig := types.Config{
-		Type:              r.Config.Transport,
-		ProxyPort:         r.Config.Port,
-		TargetPort:        r.Config.TargetPort,
-		Host:              r.Config.Host,
-		TargetHost:        r.Config.TargetHost,
-		Deployer:          r.Config.Deployer,
-		Debug:             r.Config.Debug,
-		TrustProxyHeaders: r.Config.TrustProxyHeaders,
-		EndpointPrefix:    r.Config.EndpointPrefix,
-		SessionTTL:        effectiveSessionTTL,
+		Type:                     r.Config.Transport,
+		ProxyPort:                r.Config.Port,
+		TargetPort:               r.Config.TargetPort,
+		Host:                     r.Config.Host,
+		TargetHost:               r.Config.TargetHost,
+		Deployer:                 r.Config.Deployer,
+		Debug:                    r.Config.Debug,
+		TrustProxyHeaders:        r.Config.TrustProxyHeaders,
+		StrictProtocolValidation: r.Config.StrictProtocolValidation,
+		EndpointPrefix:           r.Config.EndpointPrefix,
+		SessionTTL:               effectiveSessionTTL,
 	}
 
 	// Set proxy mode for stdio transport
@@ -1051,6 +1052,15 @@ func waitForInitializeSuccess(
 	delay := 100 * time.Millisecond
 	maxDelay := 2 * time.Second // Cap at 2 seconds between retries
 
+	// Per-attempt outcomes below log at DEBUG, which is invisible in a default
+	// deployment — a workload stuck in `starting` for minutes then shows no
+	// trace of WHY the probe kept failing. Surface a periodic INFO progress
+	// line (long-running operation) carrying the last observed outcome.
+	// Every loop iteration assigns lastObserved before it is read.
+	var lastObserved string
+	const progressInterval = 30 * time.Second
+	nextProgressLog := progressInterval
+
 	slog.Info("Waiting for MCP server to be ready", "endpoint", endpoint, "timeout", maxWaitTime)
 
 	// Create HTTP client with a reasonable timeout for requests
@@ -1072,6 +1082,7 @@ func waitForInitializeSuccess(
 
 		if err != nil {
 			slog.Debug("Failed to create request", "attempt", attempt, "error", err)
+			lastObserved = fmt.Sprintf("failed to create request: %v", err)
 		} else {
 			if method == "POST" {
 				req.Header.Set("Content-Type", "application/json")
@@ -1096,15 +1107,24 @@ func waitForInitializeSuccess(
 
 				slog.Debug("Server returned status", //nolint:gosec // G706: status code and attempt are integers
 					"status_code", resp.StatusCode, "attempt", attempt)
+				lastObserved = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			} else {
 				slog.Debug("Failed to reach endpoint", "attempt", attempt, "error", err)
+				lastObserved = fmt.Sprintf("unreachable: %v", err)
 			}
 		}
 
 		// Check if we've exceeded the maximum wait time
 		elapsed := time.Since(startTime)
 		if elapsed >= maxWaitTime {
-			return fmt.Errorf("initialize not successful after %v (%d attempts)", elapsed, attempt)
+			return fmt.Errorf("initialize not successful after %v (%d attempts, last observed: %s)",
+				elapsed, attempt, lastObserved)
+		}
+
+		if elapsed >= nextProgressLog {
+			slog.Info("Still waiting for MCP server to be ready", //nolint:gosec // G706: attempt is an integer
+				"endpoint", endpoint, "elapsed", elapsed.Round(time.Second), "attempt", attempt, "last_observed", lastObserved)
+			nextProgressLog += progressInterval
 		}
 
 		// Wait before retrying

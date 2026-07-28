@@ -545,7 +545,7 @@ func TestAdmission_ListCallLookupEnforceSameDecision(t *testing.T) {
 
 	// Only the permitted tool ever reaches the backend.
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}
-	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "weather", gomock.Any(), gomock.Any()).Return(want, nil)
+	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "weather", gomock.Any(), gomock.Any(), gomock.Any()).Return(want, nil)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -601,7 +601,7 @@ func TestAdmission_AnnotationGatedDecisionMatchesListAndCall(t *testing.T) {
 
 	// Only the read-only tool is callable, so only it reaches the backend.
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}
-	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "ro", gomock.Any(), gomock.Any()).Return(want, nil)
+	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "ro", gomock.Any(), gomock.Any(), gomock.Any()).Return(want, nil)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -684,7 +684,7 @@ func TestAdmission_CallToolForwardsArgsToAuthorizer(t *testing.T) {
 
 	// Only the args-satisfying call reaches the backend.
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}
-	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "deploy", gomock.Any(), gomock.Any()).Return(want, nil)
+	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "deploy", gomock.Any(), gomock.Any(), gomock.Any()).Return(want, nil)
 
 	c, err := New(cfg)
 	require.NoError(t, err)

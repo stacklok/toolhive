@@ -99,34 +99,34 @@ func validExtraClaims() map[string]any {
 	}
 }
 
-func TestSubjectTokenValidator_NewValidation(t *testing.T) {
+func TestSelfIssuedTokenValidator_NewValidation(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
 
 	t.Run("nil JWKS returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(nil, testIssuer, []string{testIssuer})
+		_, err := NewSelfIssuedTokenValidator(nil, testIssuer, []string{testIssuer})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "JWKS must not be nil")
 	})
 
 	t.Run("empty issuer returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(tj.publicJWKS(), "", []string{testIssuer})
+		_, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), "", []string{testIssuer})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "issuer must not be empty")
 	})
 
 	t.Run("valid params succeed", func(t *testing.T) {
 		t.Parallel()
-		v, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+		v, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 		assert.NotNil(t, v)
 	})
 }
 
-func TestSubjectTokenValidator_Validate(t *testing.T) {
+func TestSelfIssuedTokenValidator_Validate(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
@@ -302,7 +302,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+			validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 			require.NoError(t, err)
 			rawToken := tt.token(t)
 
@@ -324,7 +324,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 	}
 }
 
-func TestSubjectTokenValidator_AudienceValidation(t *testing.T) {
+func TestSelfIssuedTokenValidator_AudienceValidation(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
@@ -359,7 +359,7 @@ func TestSubjectTokenValidator_AudienceValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, tt.allowedAudiences)
+			validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, tt.allowedAudiences)
 			require.NoError(t, err)
 
 			claims := validClaims()
@@ -417,7 +417,7 @@ func signWithJWK(t *testing.T, signingKey jose.JSONWebKey, alg jose.SignatureAlg
 	return raw
 }
 
-func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
+func TestSelfIssuedTokenValidator_MultiKeyJWKS(t *testing.T) {
 	t.Parallel()
 
 	t.Run("token verified with kid-matched key", func(t *testing.T) {
@@ -427,7 +427,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk2 := newECDSAJWK(t, "test-key-2")
 		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		rawToken := signWithJWK(t, jwk2, jose.ES256, validClaims())
@@ -445,7 +445,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk2 := newECDSAJWK(t, "test-key-2")
 		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Sign with jwk1 (whose public half is in the JWKS) but omit the kid
@@ -467,7 +467,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk1 := newECDSAJWK(t, "test-key-1")
 		jwks := publicJWKSOf(jwk1)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Key B is not in the JWKS.
@@ -487,7 +487,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk2 := newECDSAJWK(t, "test-key-2")
 		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Sign with jwk2's key material but claim jwk1's kid in the header.
@@ -517,7 +517,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		}
 		jwks := publicJWKSOf(rsaJWK)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		rawToken := signWithJWK(t, rsaJWK, jose.RS256, validClaims())

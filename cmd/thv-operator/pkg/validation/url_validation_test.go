@@ -236,10 +236,11 @@ func TestValidateJWKSURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		rawURL      string
-		wantErr     bool
-		errContains string
+		name          string
+		rawURL        string
+		allowInsecure bool
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name:    "empty URL allowed",
@@ -255,13 +256,26 @@ func TestValidateJWKSURL(t *testing.T) {
 			name:        "http rejected",
 			rawURL:      "http://jwks.example.com",
 			wantErr:     true,
-			errContains: "HTTPS",
+			errContains: "insecureAllowHTTP",
+		},
+		{
+			name:          "http allowed with insecureAllowHTTP",
+			rawURL:        "http://jwks.example.com",
+			allowInsecure: true,
+			wantErr:       false,
 		},
 		{
 			name:        "unsupported scheme",
 			rawURL:      "ftp://jwks.example.com",
 			wantErr:     true,
 			errContains: "HTTPS",
+		},
+		{
+			name:          "unsupported scheme rejected even with insecureAllowHTTP",
+			rawURL:        "ftp://jwks.example.com",
+			allowInsecure: true,
+			wantErr:       true,
+			errContains:   "HTTPS",
 		},
 		{
 			name:        "missing host",
@@ -275,7 +289,7 @@ func TestValidateJWKSURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validation.ValidateJWKSURL(tt.rawURL)
+			err := validation.ValidateJWKSURL(tt.rawURL, tt.allowInsecure)
 
 			if tt.wantErr {
 				require.Error(t, err)

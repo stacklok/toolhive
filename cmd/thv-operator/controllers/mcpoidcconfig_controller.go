@@ -172,7 +172,7 @@ func validateOIDCConfigSpec(oidcConfig *mcpv1beta1.MCPOIDCConfig) error {
 	if err := validation.ValidateOIDCIssuerURL(oidcConfig.Spec.Inline.Issuer, oidcConfig.Spec.Inline.InsecureAllowHTTP); err != nil {
 		return err
 	}
-	return validation.ValidateJWKSURL(oidcConfig.Spec.Inline.JWKSURL)
+	return validation.ValidateJWKSURL(oidcConfig.Spec.Inline.JWKSURL, oidcConfig.Spec.Inline.InsecureAllowHTTP)
 }
 
 // handleValidationFailure records the Valid=False condition for a spec that

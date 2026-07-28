@@ -620,6 +620,21 @@ func TestValidateOIDCConfigSpec(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "valid inline config with HTTP JWKS URL and insecureAllowHTTP",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:            "http://keycloak:8080/realms/toolhive",
+						JWKSURL:           "http://keycloak:8080/realms/toolhive/protocol/openid-connect/certs",
+						ClientID:          "test-client",
+						InsecureAllowHTTP: true,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
 			name: "kubernetesServiceAccount config skips URL validation",
 			config: &mcpv1beta1.MCPOIDCConfig{
 				Spec: mcpv1beta1.MCPOIDCConfigSpec{
@@ -703,7 +718,8 @@ func TestMCPOIDCConfigReconciler_URLValidationFailureSetsCondition(t *testing.T)
 	require.NotNil(t, cond, "Should have a Valid condition")
 	assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
 	assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigInvalid, cond.Reason)
-	assert.Contains(t, cond.Message, "HTTP scheme", "Message should surface the URL validation error")
+	assert.Contains(t, cond.Message, "http://issuer.example.com",
+		"Message should surface the offending issuer URL")
 }
 
 func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T) {

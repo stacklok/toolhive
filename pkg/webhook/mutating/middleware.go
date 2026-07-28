@@ -140,7 +140,7 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 						mcp.WriteBatchUnsupportedError(w)
 						return
 					}
-					slog.Error("Mutating webhook produced an unparseable MCP request", "error", err)
+					slog.Error("Mutating webhook produced an unparsable MCP request", "error", err)
 					sendErrorResponse(w, http.StatusInternalServerError, "Webhook produced an invalid MCP request", parsedMCP.ID)
 					return
 				}

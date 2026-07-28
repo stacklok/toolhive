@@ -29,7 +29,11 @@ type defaultAggregator struct {
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 	excludeAllTools  bool                                  // Global flag to exclude all tools
-	tracer           trace.Tracer
+	// promptPrefixFormat is the prefix format every prompt is renamed with
+	// (see resolvePromptConflicts). Derived from
+	// conflictResolutionConfig.prefixFormat at construction.
+	promptPrefixFormat string
+	tracer             trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
@@ -64,11 +68,12 @@ func NewDefaultAggregator(
 	}
 
 	return &defaultAggregator{
-		backendClient:    backendClient,
-		conflictResolver: conflictResolver,
-		toolConfigMap:    toolConfigMap,
-		excludeAllTools:  excludeAllTools,
-		tracer:           tracer,
+		backendClient:      backendClient,
+		conflictResolver:   conflictResolver,
+		toolConfigMap:      toolConfigMap,
+		excludeAllTools:    excludeAllTools,
+		promptPrefixFormat: promptPrefixFormatFromConfig(aggregationConfig),
+		tracer:             tracer,
 	}
 }
 
@@ -233,11 +238,12 @@ func (a *defaultAggregator) ResolveConflicts(
 			return nil, fmt.Errorf("conflict resolution failed: %w", err)
 		}
 	} else {
-		// Fallback: no conflict resolution (first wins, log warnings)
+		// Fallback: no conflict resolution (first wins in sorted backend
+		// order, so the winner is deterministic; log warnings)
 		slog.Warn("no conflict resolver configured, using fallback (first wins)")
 		resolvedTools = make(map[string]*ResolvedTool)
-		for backendID, tools := range toolsByBackend {
-			for _, tool := range tools {
+		for _, backendID := range slices.Sorted(maps.Keys(toolsByBackend)) {
+			for _, tool := range toolsByBackend[backendID] {
 				if existing, exists := resolvedTools[tool.Name]; exists {
 					slog.Warn("tool name conflict, keeping first",
 						"tool", tool.Name, "existing_backend", existing.BackendID, "conflicting_backend", backendID)
@@ -268,7 +274,10 @@ func (a *defaultAggregator) ResolveConflicts(
 	backendIDs := slices.Sorted(maps.Keys(capabilities))
 	resolved.Resources = resolveResourceConflicts(backendIDs, capabilities)
 	resolved.ResourceTemplates = resolveResourceTemplateConflicts(backendIDs, capabilities)
-	resolved.Prompts = resolvePromptConflicts(backendIDs, capabilities)
+	resolved.Prompts, err = resolvePromptConflicts(a.promptPrefixFormat, backendIDs, capabilities)
+	if err != nil {
+		return nil, fmt.Errorf("prompt conflict resolution failed: %w", err)
+	}
 
 	for _, caps := range capabilities {
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)
@@ -366,10 +375,12 @@ func (a *defaultAggregator) MergeCapabilities(
 	})
 
 	// Add resources, resource templates, and prompts to the routing table.
-	// ResolveConflicts already makes their identities unique, but Merge is
-	// independently callable, so each merge helper keeps a duplicate out of
-	// both the routing table and the advertised list (first wins, loudly)
-	// rather than silently overwriting the earlier routing entry.
+	// ResolveConflicts is the enforcement point that makes their identities
+	// unique (see the capability_conflicts.go header), but Merge is
+	// independently callable, so as defence in depth each merge helper keeps
+	// a duplicate out of both the routing table and the advertised list
+	// (first wins, loudly) rather than silently overwriting the earlier
+	// routing entry.
 	resources := mergeResources(ctx, resolved.Resources, registry, routingTable)
 	templates := mergeResourceTemplates(ctx, resolved.ResourceTemplates, registry, routingTable)
 	prompts := mergePrompts(ctx, resolved.Prompts, registry, routingTable)

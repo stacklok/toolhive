@@ -466,7 +466,9 @@ type AggregationConfig struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type ConflictResolutionConfig struct {
-	// PrefixFormat defines the prefix format for the "prefix" strategy.
+	// PrefixFormat defines the prefix format for the "prefix" tool strategy
+	// and for prompt names, which are always backend-prefixed regardless of
+	// the tool strategy.
 	// Supports placeholders: {workload}, {workload}_, {workload}.
 	// +kubebuilder:default="{workload}_"
 	// +optional

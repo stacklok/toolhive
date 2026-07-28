@@ -175,19 +175,22 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
-		require.NoError(t, err)
-		assert.NotNil(t, resolved)
-		// In Phase 1, we just collect tools - conflict is detected but first one wins
-		assert.Contains(t, resolved.Tools, "tool1")
-		assert.Contains(t, resolved.Tools, "tool2")
-		assert.Contains(t, resolved.Tools, "shared_tool")
-		// Shared tool should have one backend (whichever was encountered first in map iteration)
-		// Map iteration order is non-deterministic, so accept either backend
-		sharedToolBackend := resolved.Tools["shared_tool"].BackendID
-		assert.True(t, sharedToolBackend == "backend1" || sharedToolBackend == "backend2",
-			"shared_tool should belong to either backend1 or backend2, got: %s", sharedToolBackend)
+		// Repeat: map iteration order is re-randomized per call, and the
+		// fallback winner must not depend on it.
+		for range 5 {
+			resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+
+			require.NoError(t, err)
+			assert.NotNil(t, resolved)
+			// The no-resolver fallback keeps the first tool per name in sorted
+			// backend order, so the conflict winner is deterministic.
+			assert.Contains(t, resolved.Tools, "tool1")
+			assert.Contains(t, resolved.Tools, "tool2")
+			assert.Contains(t, resolved.Tools, "shared_tool")
+			assert.Equal(t, "backend1", resolved.Tools["shared_tool"].BackendID,
+				"fallback must keep the first backend in sorted-ID order")
+		}
 	})
 
 	t.Run("no conflicts", func(t *testing.T) {
@@ -351,6 +354,31 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		assert.Equal(t, "file:///logs/2025-01-01.txt",
 			target.GetBackendCapabilityName("file:///logs/2025-01-01.txt"),
 			"a concrete expanded URI must pass through to the backend unchanged")
+	})
+
+	t.Run("registry miss still translates a renamed prompt", func(t *testing.T) {
+		t.Parallel()
+		// The minimal-target fallback (backend absent from the registry) must
+		// carry the backend's OWN prompt name, not the advertised one —
+		// otherwise prompts/get on the renamed prompt forwards a name the
+		// backend does not know.
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{},
+			Prompts: []ResolvedPrompt{
+				{Prompt: vmcp.Prompt{Name: "b1_review", BackendID: "b1"}, OriginalName: "review"},
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(nil)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+		require.NoError(t, err)
+
+		target := aggregated.RoutingTable.Prompts["b1_review"]
+		require.NotNil(t, target)
+		assert.Equal(t, "b1", target.WorkloadID)
+		assert.Equal(t, "review", target.GetBackendCapabilityName("b1_review"),
+			"prompts/get on the advertised name must forward the backend's own name")
 	})
 }
 

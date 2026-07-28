@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
@@ -150,18 +151,22 @@ func TestDefaultAggregator_ResolveConflicts_PromptConflicts(t *testing.T) {
 		wantAbsent []string
 	}{
 		{
-			name: "unique prompt names pass through unchanged",
+			// Prefixing is unconditional: the advertised name is a pure
+			// function of (backendID, name), so it cannot shift under a
+			// client (or a Cedar policy) when unrelated backends join.
+			name: "unique prompt names are prefixed too",
 			capabilities: map[string]*BackendCapabilities{
 				"b1": {BackendID: "b1", Prompts: []vmcp.Prompt{newTestPrompt("review", "b1")}},
 				"b2": {BackendID: "b2", Prompts: []vmcp.Prompt{newTestPrompt("summarize", "b2")}},
 			},
 			want: map[string][2]string{
-				"review":    {"b1", "review"},
-				"summarize": {"b2", "summarize"},
+				"b1_review":    {"b1", "review"},
+				"b2_summarize": {"b2", "summarize"},
 			},
+			wantAbsent: []string{"review", "summarize"},
 		},
 		{
-			name: "name shared by two backends is prefixed for both",
+			name: "name shared by two backends stays unambiguous",
 			capabilities: map[string]*BackendCapabilities{
 				"b2": {BackendID: "b2", Prompts: []vmcp.Prompt{newTestPrompt("review", "b2")}},
 				"b1": {
@@ -172,27 +177,30 @@ func TestDefaultAggregator_ResolveConflicts_PromptConflicts(t *testing.T) {
 			want: map[string][2]string{
 				"b1_review": {"b1", "review"},
 				"b2_review": {"b2", "review"},
-				"unique":    {"b1", "unique"},
+				"b1_unique": {"b1", "unique"},
 			},
-			wantAbsent: []string{"review"},
+			wantAbsent: []string{"review", "unique"},
 		},
 		{
-			name: "collision with a literal prefixed name keeps first in backend order",
+			// Under collision-only renaming this shape dropped a prompt: b2's
+			// literal "b1_review" collided with b1's renamed "review".
+			// Unconditional prefixing keeps all three reachable.
+			name: "literal prefixed name from another backend no longer collides",
 			capabilities: map[string]*BackendCapabilities{
-				// b1's and b3's "review" collide, so b1's is renamed to
-				// "b1_review" -- which b2 advertises literally. b1 sorts before
-				// b2, so b1's renamed prompt wins and b2's literal is dropped.
 				"b1": {BackendID: "b1", Prompts: []vmcp.Prompt{newTestPrompt("review", "b1")}},
 				"b2": {BackendID: "b2", Prompts: []vmcp.Prompt{newTestPrompt("b1_review", "b2")}},
 				"b3": {BackendID: "b3", Prompts: []vmcp.Prompt{newTestPrompt("review", "b3")}},
 			},
 			want: map[string][2]string{
-				"b1_review": {"b1", "review"},
-				"b3_review": {"b3", "review"},
+				"b1_review":    {"b1", "review"},
+				"b2_b1_review": {"b2", "b1_review"},
+				"b3_review":    {"b3", "review"},
 			},
 			wantAbsent: []string{"review"},
 		},
 		{
+			// An exact intra-backend duplicate advertises and routes
+			// identically, so the later occurrence is dropped, not an error.
 			name: "same backend advertises a prompt name twice",
 			capabilities: map[string]*BackendCapabilities{
 				"solo": {
@@ -200,7 +208,6 @@ func TestDefaultAggregator_ResolveConflicts_PromptConflicts(t *testing.T) {
 					Prompts:   []vmcp.Prompt{newTestPrompt("dup", "solo"), newTestPrompt("dup", "solo")},
 				},
 			},
-			// Both occurrences prefix to "solo_dup"; the second is dropped.
 			want:       map[string][2]string{"solo_dup": {"solo", "dup"}},
 			wantAbsent: []string{"dup"},
 		},
@@ -234,11 +241,55 @@ func TestDefaultAggregator_ResolveConflicts_PromptConflicts(t *testing.T) {
 	}
 }
 
+// TestDefaultAggregator_ResolveConflicts_PromptPrefixAmbiguity pins the one
+// residual collision unconditional prefixing cannot rule out: two distinct
+// (backendID, name) pairs composing to the same prefixed string. That name
+// would be ambiguous between backends, so aggregation must fail loudly
+// instead of silently dropping one of the prompts.
+func TestDefaultAggregator_ResolveConflicts_PromptPrefixAmbiguity(t *testing.T) {
+	t.Parallel()
+
+	capabilities := map[string]*BackendCapabilities{
+		// "b1" + "x_y" and "b1_x" + "y" both advertise as "b1_x_y".
+		"b1":   {BackendID: "b1", Prompts: []vmcp.Prompt{newTestPrompt("x_y", "b1")}},
+		"b1_x": {BackendID: "b1_x", Prompts: []vmcp.Prompt{newTestPrompt("y", "b1_x")}},
+	}
+
+	agg := NewDefaultAggregator(nil, nil, nil, nil)
+	resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+	require.ErrorIs(t, err, ErrUnresolvedConflicts)
+	assert.Contains(t, err.Error(), "b1_x_y")
+	assert.Nil(t, resolved)
+}
+
+// TestDefaultAggregator_ResolveConflicts_PromptPrefixFormat verifies prompt
+// renaming honours conflictResolutionConfig.prefixFormat — the same knob the
+// tool prefix strategy uses — rather than a hardcoded "_" separator.
+func TestDefaultAggregator_ResolveConflicts_PromptPrefixFormat(t *testing.T) {
+	t.Parallel()
+
+	capabilities := map[string]*BackendCapabilities{
+		"github": {BackendID: "github", Prompts: []vmcp.Prompt{newTestPrompt("review", "github")}},
+	}
+	aggCfg := &config.AggregationConfig{
+		ConflictResolutionConfig: &config.ConflictResolutionConfig{PrefixFormat: "{workload}."},
+	}
+
+	agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
+	resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+	require.NoError(t, err)
+
+	require.Len(t, resolved.Prompts, 1)
+	assert.Equal(t, "github.review", resolved.Prompts[0].Name)
+	assert.Equal(t, "review", resolved.Prompts[0].OriginalName)
+}
+
 // TestDefaultAggregator_AggregateCapabilities_CollisionRouting exercises the
 // full pipeline with colliding identities across two backends and asserts the
 // client-visible outcome: one advertised entry per resource URI routed to a
-// deterministic backend, and both colliding prompts advertised under prefixed
-// names whose routing translates back to the backend's own prompt name.
+// deterministic backend, and both prompts advertised under their (always
+// prefixed) names whose routing translates back to the backend's own prompt
+// name.
 func TestDefaultAggregator_AggregateCapabilities_CollisionRouting(t *testing.T) {
 	t.Parallel()
 

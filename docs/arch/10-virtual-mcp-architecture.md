@@ -141,11 +141,21 @@ prompts are resolved separately (`aggregator/capability_conflicts.go`), with
 policies that deliberately differ by what the identity *is*:
 
 - **Prompt names are names**, like tool names: `prompts/get` is translated back
-  to the backend's own name via `BackendTarget.GetBackendCapabilityName`, so
-  renaming is lossless. A name advertised by exactly one backend passes through
-  unchanged; a name advertised by several is renamed to `{backendID}_{name}`
-  for **every** colliding backend, and the bare duplicated name is no longer
-  advertised.
+  to the backend's own name via `BackendTarget.GetBackendCapabilityName`, so a
+  rename does not break invocation. Every prompt is renamed
+  **unconditionally** to its backend-prefixed form —
+  `conflictResolutionConfig.prefixFormat` applied to the backend ID (default
+  `{workload}_`), the same formatting path the tool prefix strategy uses. The
+  advertised name is therefore a pure function of (backendID, name) and never
+  shifts when unrelated backends join or leave the group. That stability
+  matters beyond naming: authorization matches on the advertised name (Cedar
+  builds `Prompt::"<advertised name>"` entities), so a membership-dependent
+  rename would detach `permit` and `forbid` policies from the prompt they were
+  written for. Prompts are prefixed under **every** strategy — a `priority` or
+  `manual` configuration changes tool resolution only. If two distinct
+  (backendID, name) pairs compose to the same prefixed string (backend `b1`
+  prompt `x_y` vs backend `b1_x` prompt `y`), the name would be ambiguous
+  between backends and aggregation fails loudly instead of dropping one.
 - **Resource URIs and template strings are locators, not names.** The client
   passes them back verbatim (`resources/read`, `resources/subscribe`,
   completion refs), backends emit them in notifications and embedded resource
@@ -153,14 +163,19 @@ policies that deliberately differ by what the identity *is*:
   untranslated — so vMCP never rewrites them. A URI (or template string)
   advertised by several backends is instead advertised **once**: the backend
   earliest in sorted-backend-ID order wins, later duplicates are dropped with a
-  warning. Nothing reachable is lost — the routing table keys by URI, so only
-  one backend was ever served per URI; the fix makes that pick deterministic
-  and the advertised list agree with it.
+  warning. Reads are unchanged — the routing table keys by URI, so only one
+  backend was ever served per URI; the fix makes that pick deterministic and
+  the advertised list agree with it. Only the winning backend's `name`,
+  `description` and `mimeType` are advertised for that URI, so a duplicate that
+  differed in those fields loses them along with its entry.
 
 After aggregation, every capability identity (`Tool.Name`, `Resource.URI`,
-`ResourceTemplate.URITemplate`, `Prompt.Name`) is unique in the aggregated view,
-and backends are processed in sorted-ID order so collision outcomes are stable
-across runs.
+`ResourceTemplate.URITemplate`, `Prompt.Name`) is unique in the aggregated view.
+Resources, resource templates and prompts are processed in sorted-backend-ID
+order, so their outcomes are stable across runs; tool resolution
+(`prefix_resolver.go`, `manual_resolver.go`) still iterates backends in map
+order, so a tool collision *after* prefixing or a manual override picks a
+nondeterministic winner.
 
 The Modern list paginator still does **not** rely on that uniqueness: its cursor
 names a position within a run of equal keys rather than assuming keys are

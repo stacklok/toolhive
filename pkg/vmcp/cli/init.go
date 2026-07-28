@@ -73,6 +73,8 @@ outgoingAuth:
 
 # aggregation: controls how tools from multiple backends are combined.
 # conflictResolution: prefix prepends the backend name to each tool name.
+# Prompt names are always backend-prefixed with prefixFormat, regardless
+# of the strategy chosen here.
 aggregation:
   conflictResolution: prefix
   conflictResolutionConfig:

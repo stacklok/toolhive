@@ -57,6 +57,13 @@ type networkProxy interface {
 type proxySpec struct {
 	// WorkloadName is the base name of the MCP container (e.g. "myserver").
 	WorkloadName string
+	// UpstreamHost is the address the ingress reverse proxy connects to for the
+	// MCP container. It is the container's resolved IP on the internal network
+	// (not its name) so the ingress proxy has no DNS dependency: under
+	// concurrent startup the container's DNS record can lag, and a hostname-based
+	// Squid cache_peer caches the failed lookup and never recovers within the
+	// readiness window (see #6063). Empty falls back to WorkloadName.
+	UpstreamHost string
 	// Permissions holds the network permission profile from the workload's
 	// permission profile, governing what outbound traffic is allowed.
 	Permissions *permissions.NetworkPermissions

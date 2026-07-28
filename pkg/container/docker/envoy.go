@@ -776,6 +776,12 @@ func ingressDomains(_ proxySpec) []string {
 // buildIngressCluster returns the STRICT_DNS upstream cluster for the ingress
 // listener, pointing at spec.WorkloadName:spec.UpstreamPort.
 func buildIngressCluster(spec proxySpec) envoyCluster {
+	// Prefer the resolved upstream IP (no DNS dependency); fall back to the
+	// workload name. See proxySpec.UpstreamHost.
+	upstreamHost := spec.UpstreamHost
+	if upstreamHost == "" {
+		upstreamHost = spec.WorkloadName
+	}
 	return envoyCluster{
 		Name:            ingressClusterName,
 		ConnectTimeout:  "10s",
@@ -790,7 +796,7 @@ func buildIngressCluster(spec proxySpec) envoyCluster {
 							Endpoint: envoyEndpointAddress{
 								Address: envoyAddress{
 									SocketAddress: envoySocketAddress{
-										Address:   spec.WorkloadName,
+										Address:   upstreamHost,
 										PortValue: spec.UpstreamPort,
 									},
 								},

@@ -107,7 +107,15 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 // Close closes the underlying log writer if it implements io.Closer.
 // This should be called when the auditor is no longer needed to properly release resources.
 func (a *Auditor) Close() error {
-	if closer, ok := a.logWriter.(io.Closer); ok {
+	return closeLogWriter(a.logWriter)
+}
+
+func closeLogWriter(logWriter io.Writer) error {
+	if logWriter == os.Stdout || logWriter == os.Stderr {
+		return nil
+	}
+
+	if closer, ok := logWriter.(io.Closer); ok {
 		return closer.Close()
 	}
 	return nil

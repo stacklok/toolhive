@@ -719,3 +719,20 @@ func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
 	assert.Equal(t, customImage, got.BuilderImage)
 	assert.Equal(t, base.AdditionalPackages, got.AdditionalPackages)
 }
+
+func TestMergeRuntimeConfigCarriesUVWith(t *testing.T) {
+	t.Parallel()
+
+	got := mergeRuntimeConfig(templates.TransportTypeUVX, &templates.RuntimeConfig{
+		UVWith: []string{"mcp<2"},
+	})
+	if len(got.UVWith) != 1 || got.UVWith[0] != "mcp<2" {
+		t.Errorf("UVWith = %v, want [mcp<2]", got.UVWith)
+	}
+
+	// No override specifiers: merged config must not invent any.
+	got = mergeRuntimeConfig(templates.TransportTypeUVX, &templates.RuntimeConfig{})
+	if len(got.UVWith) != 0 {
+		t.Errorf("UVWith = %v, want empty", got.UVWith)
+	}
+}

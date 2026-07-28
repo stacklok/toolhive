@@ -81,9 +81,21 @@ func defaultFormValues(t *testing.T, tj *testJWKS) url.Values {
 	}
 }
 
+// actFormValues returns valid token exchange form values whose subject token
+// carries the given "act" claim.
+func actFormValues(t *testing.T, tj *testJWKS, act any) url.Values {
+	t.Helper()
+
+	extra := validExtraClaims()
+	extra["act"] = act
+	form := defaultFormValues(t, tj)
+	form.Set("subject_token", tj.signToken(t, validClaims(), extra))
+	return form
+}
+
 // nestedActChain builds a chain of depth nested "act" maps, each holding a
-// distinct "sub", for exercising actChainDepth boundary behavior. depth must
-// be at least 1.
+// distinct "sub", for exercising the delegation-depth cap. depth must be at
+// least 1.
 func nestedActChain(depth int) map[string]any {
 	chain := map[string]any{"sub": fmt.Sprintf("agent-%d", depth-1)}
 	for i := depth - 2; i >= 0; i-- {
@@ -709,6 +721,95 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 					"the prior act chain should be nested unchanged under the new act claim")
 			},
 		},
+		{
+			// RFC 8693 Section 4.1 requires act to be a JSON object. Rejecting keeps
+			// us from re-minting the violation. A non-object array or scalar reaches
+			// the same parser branch, so the string case covers both.
+			name:   "non-object act rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, "some-agent")
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "act_not_object",
+		},
+		{
+			name:   "non-object nested act rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, map[string]any{"sub": "agent-0", "act": "agent-1"})
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "nested_act_not_object",
+		},
+		{
+			// RFC 7519 Section 4.1.2 fixes sub as a string, so a hop carrying a
+			// non-string sub is non-conformant even though the chain is an object.
+			name:   "non-string sub in act hop rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, map[string]any{"sub": 42})
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "sub_not_string",
+		},
+		{
+			// A JSON-null nested act ends the chain; it asserts no further
+			// delegation and must not read as malformed.
+			name:   "null nested act is accepted and nested unchanged",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, map[string]any{"sub": "agent-0", "act": nil})
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+				actMap, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, testAgentClientID, actMap["sub"])
+				assert.Equal(t, map[string]any{"sub": "agent-0", "act": nil}, actMap["act"],
+					"the prior act claim should be nested verbatim, null member included")
+			},
+		},
+		{
+			// Tolerated by design: RFC 8693 Section 4.1 only requires an object, and
+			// sub is conventional rather than mandatory, so an empty hop is
+			// conformant. Pinned so a future tightening of the shared parser breaks
+			// a test rather than a caller.
+			name:   "empty act object is accepted",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, map[string]any{})
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+				actMap, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, testAgentClientID, actMap["sub"])
+				assert.Equal(t, map[string]any{}, actMap["act"])
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -837,29 +938,6 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Contains(t, req.GetGrantedAudience(), tt.wantAudience)
-		})
-	}
-}
-
-func TestActChainDepth(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		act  any
-		want int
-	}{
-		{name: "nil is depth 0", act: nil, want: 0},
-		{name: "non-map is depth 0", act: "not-a-map", want: 0},
-		{name: "single act entry is depth 1", act: nestedActChain(1), want: 1},
-		{name: "nested chain reports its full depth", act: nestedActChain(5), want: 5},
-		{name: "map without a nested act claim stops at depth 1", act: map[string]any{"sub": "agent"}, want: 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, actChainDepth(tt.act))
 		})
 	}
 }

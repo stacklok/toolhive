@@ -16,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -445,6 +447,31 @@ func TestGetLogWriter_WithActualFile(t *testing.T) {
 			closer.Close()
 		}
 	})
+}
+
+func TestMaxDelegationDepthOrDefault(t *testing.T) {
+	t.Parallel()
+
+	depth := func(d int) *int { return &d }
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want int
+	}{
+		{name: "nil receiver", cfg: nil, want: auth.DefaultMaxDelegationDepth},
+		{name: "nil MaxDelegationDepth field", cfg: &Config{}, want: auth.DefaultMaxDelegationDepth},
+		{name: "zero MaxDelegationDepth", cfg: &Config{MaxDelegationDepth: depth(0)}, want: auth.DefaultMaxDelegationDepth},
+		{name: "negative MaxDelegationDepth", cfg: &Config{MaxDelegationDepth: depth(-3)}, want: auth.DefaultMaxDelegationDepth},
+		{name: "positive MaxDelegationDepth is honored", cfg: &Config{MaxDelegationDepth: depth(5)}, want: 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.cfg.MaxDelegationDepthOrDefault())
+		})
+	}
 }
 
 // waitForAuditLog polls the audit log file until content is available or timeout is reached.

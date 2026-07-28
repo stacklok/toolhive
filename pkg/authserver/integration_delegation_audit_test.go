@@ -103,6 +103,17 @@ func exchangeForDelegatedToken(t *testing.T, serverURL, clientID, clientSecret, 
 // to the audit holder via the IdentityHolder read-back.
 func auditEventForToken(t *testing.T, key *rsa.PrivateKey, token, validationMsg string) map[string]any {
 	t.Helper()
+	return auditEventForTokenWithConfig(t, key, token, validationMsg, audit.Config{})
+}
+
+// auditEventForTokenWithConfig is auditEventForToken for tests that need a
+// non-default audit.Config (e.g. MaxDelegationDepth). cfg is taken by value
+// and its LogFile field is set on the local copy, so the caller's config is
+// never mutated.
+func auditEventForTokenWithConfig(
+	t *testing.T, key *rsa.PrivateKey, token, validationMsg string, cfg audit.Config,
+) map[string]any {
+	t.Helper()
 
 	// Build a validator that trusts the server's issuer and keys, exactly like
 	// the middleware in front of a protected resource server. The in-process
@@ -113,8 +124,8 @@ func auditEventForToken(t *testing.T, key *rsa.PrivateKey, token, validationMsg 
 	}, auth.WithKeyProvider(&testKeyProvider{key: key}))
 	require.NoError(t, err)
 
-	auditLog := filepath.Join(t.TempDir(), "audit.log")
-	auditor, err := audit.NewAuditorWithTransport(&audit.Config{LogFile: auditLog}, "streamable-http")
+	cfg.LogFile = filepath.Join(t.TempDir(), "audit.log")
+	auditor, err := audit.NewAuditorWithTransport(&cfg, "streamable-http")
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		assert.NoError(t, auditor.Close())
@@ -131,7 +142,7 @@ func auditEventForToken(t *testing.T, key *rsa.PrivateKey, token, validationMsg 
 
 	require.Equal(t, http.StatusOK, rr.Code, validationMsg)
 
-	return readSingleAuditEvent(t, auditLog)
+	return readSingleAuditEvent(t, cfg.LogFile)
 }
 
 // TestIntegration_TokenExchange_AuditDelegationChain proves the end-to-end
@@ -215,4 +226,114 @@ func TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain(t *te
 	_, exists := event["delegation_chain"]
 	assert.False(t, exists,
 		"a non-delegated token must not produce a delegation_chain member")
+}
+
+// mintTwoHopDelegatedToken produces a token whose second hop is genuine
+// production output of a real RFC 8693 token-exchange call — firstAgentClientID
+// "delegates" to secondAgentClientID — while the first hop is a hand-signed
+// stand-in for an earlier exchange this test never performs. What this pins
+// is the handler's nesting direction: the second (real) actor must land at
+// actors[0], outermost, with the hand-signed first actor at actors[1].
+//
+// This AS can honour an RFC 8693 §4.4 may_act claim — checkDelegationConsent
+// (handler.go) treats it as the authoritative consent signal and skips the
+// client_id binding entirely when present — but no code path anywhere writes
+// may_act, and the exchange does not propagate an inbound one:
+// pkg/authserver/server/tokenexchange/validator.go:276-281 routes may_act
+// into the structured MayAct field so it never lands in Extra, and
+// handler.go:160 only ever copies Extra["act"]. So the subject token here
+// hand-signs the one claim a may_act-emitting issuer would have written
+// (plus a prior "act" entry standing in for that earlier hop); everything
+// downstream of it — the consent check, the act-claim nesting, the issued
+// token — is genuine production output of a single real exchange.
+func mintTwoHopDelegatedToken(t *testing.T) (ts *testServerWithUpstream, delegated, firstAgentClientID, secondAgentClientID string) {
+	t.Helper()
+
+	const (
+		firstAgent        = "test-first-agent-client"
+		secondAgent       = "test-second-agent-client"
+		secondAgentSecret = "test-second-agent-secret" //nolint:gosec // test fixture, not a real credential
+		delegatedUserSub  = "audit-multi-actor-user-sub"
+	)
+
+	secondAgentClient, err := registration.New(registration.Config{
+		ID:         secondAgent,
+		Secret:     secondAgentSecret,
+		Public:     false,
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     registration.DefaultScopes,
+		Audience:   []string{testAudience},
+	})
+	require.NoError(t, err)
+
+	m := startMockOIDC(t)
+	ts = setupTestServerWithMockOIDC(t, m, withExtraClient(secondAgentClient))
+
+	subjectToken := signTestJWT(t, ts.PrivateKey, delegatedUserSub, map[string]any{
+		"client_id": firstAgent,                         // ignored: may_act wins
+		"act":       map[string]any{"sub": firstAgent},  // prior hop
+		"may_act":   map[string]any{"sub": secondAgent}, // RFC 8693 §4.4 consent
+	})
+
+	delegated = exchangeForDelegatedToken(t, ts.Server.URL, secondAgent, secondAgentSecret, subjectToken)
+	return ts, delegated, firstAgent, secondAgent
+}
+
+// TestIntegration_TokenExchange_MultiActorDelegationChain proves the
+// handler's nesting direction end to end: hop 2 (secondAgentClientID) is
+// real handler output from an actual token-exchange call, hop 1
+// (firstAgentClientID) is the hand-signed stand-in described on
+// mintTwoHopDelegatedToken, and the audit event for the resulting token
+// orders the two actors outermost (most recent) first.
+func TestIntegration_TokenExchange_MultiActorDelegationChain(t *testing.T) {
+	t.Parallel()
+
+	ts, delegated, firstAgentClientID, secondAgentClientID := mintTwoHopDelegatedToken(t)
+
+	event := auditEventForToken(t, ts.PrivateKey, delegated,
+		"re-delegated token must validate through the auth middleware")
+
+	chain, ok := event["delegation_chain"].(map[string]any)
+	require.True(t, ok, "delegation_chain must be present in the audit event")
+	assert.Equal(t, false, chain["truncated"])
+	actors, ok := chain["actors"].([]any)
+	require.True(t, ok, "actors should be an array")
+	require.Len(t, actors, 2, "a re-delegated token yields two actors")
+
+	actor0, ok := actors[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, secondAgentClientID, actor0["sub"],
+		"actors[0] (outermost) must be the client that performed the second exchange")
+	actor1, ok := actors[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, firstAgentClientID, actor1["sub"],
+		"actors[1] (innermost) must be the earlier, first-hop actor")
+}
+
+// TestIntegration_TokenExchange_TruncatedDelegationChainAuditEvent proves
+// that an auditor configured with MaxDelegationDepth: 1 truncates a genuine
+// 2-actor delegation chain down to its outermost (most recent) actor.
+func TestIntegration_TokenExchange_TruncatedDelegationChainAuditEvent(t *testing.T) {
+	t.Parallel()
+
+	ts, delegated, _, secondAgentClientID := mintTwoHopDelegatedToken(t)
+
+	maxDepth := 1
+	event := auditEventForTokenWithConfig(t, ts.PrivateKey, delegated,
+		"re-delegated token must validate through the auth middleware",
+		audit.Config{MaxDelegationDepth: &maxDepth})
+
+	chain, ok := event["delegation_chain"].(map[string]any)
+	require.True(t, ok, "delegation_chain must be present in the audit event")
+	assert.Equal(t, true, chain["truncated"])
+	assert.Equal(t, float64(1), chain["dropped_count"],
+		"one of the two actors must be reported dropped")
+
+	actors, ok := chain["actors"].([]any)
+	require.True(t, ok, "actors should be an array")
+	require.Len(t, actors, 1, "MaxDelegationDepth=1 must leave exactly one surviving actor")
+	actor0, ok := actors[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, secondAgentClientID, actor0["sub"],
+		"the surviving actor must be the outermost one")
 }

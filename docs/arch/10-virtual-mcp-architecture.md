@@ -434,7 +434,15 @@ the feature promises — not merely that the feature is session-flavored.
 Redis-backed session sharing, for example, does **not** gate Modern: Legacy
 clients keep their shared, reconstructible sessions while Modern clients are
 sessionless by design and store nothing, a coexistence asserted end-to-end by
-`test/e2e/thv-operator/virtualmcp/virtualmcp_dual_era_redis_test.go`.
+`test/e2e/thv-operator/virtualmcp/virtualmcp_dual_era_redis_test.go`. Rate
+limiting does not gate Modern either: the limiter is a core decorator
+(`pkg/vmcp/ratelimit`), so both eras meter the same `CallTool` seam, and the
+Modern dispatcher preserves the limiter's coded error on the wire — a real
+JSON-RPC error object, `-32029` with `data.retryAfterSeconds`
+(`writeModernCodedError`, at HTTP 200 because 429 sits in go-sdk's transient
+retry set) — where the Legacy SDK seam can only smuggle the same code and data
+into an `IsError` tool result's `structuredContent`
+(`conversion.ErrorToToolResult`).
 
 Wire behavior when the gate is closed:
 

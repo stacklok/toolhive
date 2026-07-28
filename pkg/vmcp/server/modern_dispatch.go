@@ -615,6 +615,18 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // therefore tested FIRST, before falling through to the generic internal
 // error.
 //
+// A domain error that carries its own stable JSON-RPC code and data
+// (mcpparser.CodedError — e.g. the rate limiter's -32029 with
+// data.retryAfterSeconds) is written with that code rather than laundered
+// into -32603. This is the Modern counterpart of the SDK path's
+// conversion.ErrorToToolResult, whose CodedError branch preserves the same
+// code/data in an IsError tool result's structuredContent because the SDK
+// tool-handler seam cannot emit a custom JSON-RPC error object. This
+// dispatcher owns the envelope, so it emits the real thing (mirroring how
+// #6061 classified mid-call capability refusals as -32021 instead of
+// -32603). Authorization denials are still tested first: a coded error can
+// never mask a denial's 403.
+//
 // The -32603 message reuses err.Error() verbatim. This matches the SDK path's
 // existing posture rather than inventing a new one: conversion.ErrorToToolResult's
 // generic branch, and the resources/read/prompts/get Serve handlers
@@ -624,6 +636,11 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err error) {
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernDenied(w, id, denyMsg)
+		return
+	}
+	var coded mcpparser.CodedError
+	if errors.As(err, &coded) {
+		writeModernCodedError(w, id, err, coded)
 		return
 	}
 	writeModernError(w, id, jsonRPCCodeInternalError, err.Error())

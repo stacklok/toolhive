@@ -584,6 +584,45 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 	writeModernEnvelope(w, status, envelope)
 }
 
+// writeModernCodedError writes a JSON-RPC error envelope for a domain error
+// carrying its own stable code and data (mcpparser.CodedError), preserving
+// both on the wire: {"code":coded.Code(),"message":err.Error(),"data":...}.
+// message uses err.Error() rather than a canned string so callers can wrap a
+// coded error with context via %w without losing it (mirrors
+// conversion.CodedErrorResult, the Legacy seam's rendering of the same
+// errors).
+//
+// Status is HTTP 200 deliberately, for the same client-survival reason as
+// writeModernMissingCapability's documented deviation (modern_dispatch.go):
+// ToolHive's coded errors live in the implementation-defined -3202x space, so
+// no spec MUSTs a 4xx for them, and the natural mapping for the rate
+// limiter's -32029 (HTTP 429 + Retry-After, what pkg/ratelimit's HTTP
+// middleware writes) is in go-sdk v1.7.0-pre.3's TRANSIENT retry set — a
+// go-sdk client would silently retry the POST instead of surfacing the error
+// with its retryAfterSeconds to the caller. The request was accepted and
+// processed; the failure is an application-level JSON-RPC error riding the
+// transport.
+//
+// id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
+// encoded by omitting the "id" key, never as null.
+func writeModernCodedError(w http.ResponseWriter, id any, err error, coded mcpparser.CodedError) {
+	errObj := map[string]any{
+		"code":    coded.Code(),
+		"message": err.Error(),
+	}
+	if data := coded.Data(); data != nil {
+		errObj["data"] = data
+	}
+	envelope := map[string]any{
+		"jsonrpc": "2.0",
+		"error":   errObj,
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
+}
+
 // writeModernDenied writes a JSON-RPC error envelope at HTTP 403 with
 // mcpparser.JSONRPCCodeDenied, mirroring the Legacy call gate
 // (call_gate.go) and pkg/authz.handleUnauthorized: the 403 status is what

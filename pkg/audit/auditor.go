@@ -564,11 +564,12 @@ func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *
 	}
 	if rawAct != nil && (chain == nil || len(chain.Actors) == 0 ||
 		(chain.Truncated && maxDepth > len(chain.Actors))) {
-		if parsed := auth.ParseDelegationChain(rawAct, maxDepth); len(parsed.Actors) > 0 && len(parsed.Actors) >= existingActors {
+		if parsed := auth.ParseDelegationChain(rawAct, maxDepth); (len(parsed.Actors) > 0 || parsed.Malformed) &&
+			len(parsed.Actors) >= existingActors {
 			return &parsed
 		}
 	}
-	if chain != nil && len(chain.Actors) > 0 {
+	if chain != nil && (len(chain.Actors) > 0 || chain.Malformed) {
 		return rebindDelegationChain(chain, maxDepth)
 	}
 	return nil

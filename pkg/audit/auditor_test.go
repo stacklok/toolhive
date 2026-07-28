@@ -739,6 +739,46 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		assert.Nil(t, extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth))
 	})
 
+	t.Run("malformed act with zero actors is not discarded (re-parse guard)", func(t *testing.T) {
+		t.Parallel()
+		// No pre-parsed DelegationChain, so the ONLY path that can produce a
+		// result is the raw-act re-parse guard
+		// (auth.ParseDelegationChain(rawAct, maxDepth)); the trailing
+		// "chain != nil" branch is unreachable here (chain is nil), so this
+		// isolates the re-parse guard's own Malformed handling.
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims:  map[string]any{"act": "not-an-object"},
+			},
+		}
+		chain := extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth)
+		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface, not be swallowed by the len(Actors) > 0 guards")
+		assert.True(t, chain.Malformed)
+		assert.Empty(t, chain.Actors)
+	})
+
+	t.Run("malformed act with zero actors is not discarded (trailing raw-claim branch)", func(t *testing.T) {
+		t.Parallel()
+		// No raw "act" claim is present (e.g. Claims not carrying the raw
+		// value, or already stripped), so the re-parse guard's rawAct != nil
+		// check is skipped entirely: this exercises the OTHER guard, the
+		// trailing "chain != nil && ..." branch that rebinds an
+		// already-parsed chain.
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				DelegationChain: &auth.DelegationChain{
+					Malformed: true,
+				},
+			},
+		}
+		chain := extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth)
+		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface via the trailing rebind branch")
+		assert.True(t, chain.Malformed)
+		assert.Empty(t, chain.Actors)
+	})
+
 	// The following two cases share an identity shaped exactly like what
 	// auth.claimsToIdentity produces for a 14-hop token: the identity-layer
 	// parse always caps at auth.DefaultMaxDelegationDepth (10), so
@@ -1533,6 +1573,34 @@ func TestLogAuditEventDelegationChain(t *testing.T) {
 		_, exists := events[0]["delegation_chain"]
 		assert.False(t, exists,
 			"a non-delegated identity must not produce a delegation_chain member on the POST path")
+	})
+
+	t.Run("malformed act claim is pinned as malformed:true with zero actors", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+		act := "not-an-object"
+		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+			Subject:         "user-123",
+			Claims:          map[string]any{"act": act},
+			DelegationChain: &chain,
+		}}
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = auth.WithIdentity(r.Context(), identity)
+			w.WriteHeader(http.StatusOK)
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+
+		logged, ok := events[0]["delegation_chain"].(map[string]any)
+		require.True(t, ok, "a malformed act claim must still produce a delegation_chain member")
+		assert.Equal(t, true, logged["malformed"])
+		actors, ok := logged["actors"].([]any)
+		require.True(t, ok, "actors must marshal as a JSON array, not null")
+		assert.Len(t, actors, 0)
 	})
 }
 

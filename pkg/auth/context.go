@@ -208,7 +208,7 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 	// parties acting on behalf of the subject.
 	if act, ok := claims["act"]; ok && act != nil {
 		chain := ParseDelegationChain(act, DefaultMaxDelegationDepth)
-		if len(chain.Actors) > 0 {
+		if len(chain.Actors) > 0 || chain.Malformed {
 			identity.DelegationChain = &chain
 		}
 	}

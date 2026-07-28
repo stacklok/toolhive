@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 )
 
@@ -597,7 +598,7 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 func TestWorkflowAuditor_DelegationChain(t *testing.T) {
 	t.Parallel()
 
-	delegatedChain := auth.ParseDelegationChain(
+	delegatedChain := coreaudit.ParseDelegationChain(
 		map[string]any{
 			"sub": "agent-1",
 			"act": map[string]any{"sub": "agent-2"},
@@ -612,7 +613,7 @@ func TestWorkflowAuditor_DelegationChain(t *testing.T) {
 					"act": map[string]any{"sub": "agent-2"},
 				},
 			},
-			DelegationChain: &delegatedChain,
+			DelegationChain: delegatedChain,
 		},
 	}
 
@@ -682,16 +683,16 @@ func TestWorkflowAuditor_DelegationChain(t *testing.T) {
 			require.NotEmpty(t, writer.logs, "expected log entry")
 			entry := parseLogEntry(t, writer.getLastLog())
 
-			chain, ok := entry["delegation_chain"].(map[string]any)
-			require.True(t, ok, "delegation_chain should be present in the log output")
+			chain, ok := entry["delegation"].(map[string]any)
+			require.True(t, ok, "delegation should be present in the log output")
 			assert.Equal(t, false, chain["truncated"])
-			actors, ok := chain["actors"].([]any)
+			hops, ok := chain["chain"].([]any)
 			require.True(t, ok)
-			require.Len(t, actors, 2)
-			first, ok := actors[0].(map[string]any)
+			require.Len(t, hops, 2)
+			first, ok := hops[0].(map[string]any)
 			require.True(t, ok)
 			assert.Equal(t, "agent-1", first["sub"])
-			second, ok := actors[1].(map[string]any)
+			second, ok := hops[1].(map[string]any)
 			require.True(t, ok)
 			assert.Equal(t, "agent-2", second["sub"])
 		})
@@ -706,8 +707,8 @@ func TestWorkflowAuditor_DelegationChain(t *testing.T) {
 		require.NotEmpty(t, writer.logs, "expected log entry")
 		entry := parseLogEntry(t, writer.getLastLog())
 
-		_, exists := entry["delegation_chain"]
-		assert.False(t, exists, "delegation_chain should be omitted without an identity")
+		_, exists := entry["delegation"]
+		assert.False(t, exists, "delegation should be omitted without an identity")
 	})
 
 	t.Run("configured max depth truncates chain", func(t *testing.T) {
@@ -721,16 +722,16 @@ func TestWorkflowAuditor_DelegationChain(t *testing.T) {
 		require.NotEmpty(t, writer.logs, "expected log entry")
 		entry := parseLogEntry(t, writer.getLastLog())
 
-		chain, ok := entry["delegation_chain"].(map[string]any)
+		chain, ok := entry["delegation"].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, true, chain["truncated"])
-		actors, ok := chain["actors"].([]any)
+		hops, ok := chain["chain"].([]any)
 		require.True(t, ok)
-		require.Len(t, actors, 1)
-		first, ok := actors[0].(map[string]any)
+		require.Len(t, hops, 1)
+		first, ok := hops[0].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "agent-1", first["sub"])
-		assert.Equal(t, float64(1), chain["dropped_count"])
+		assert.Equal(t, float64(1), chain["omitted"])
 	})
 }
 

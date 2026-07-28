@@ -55,7 +55,7 @@ type Config struct {
 	// +optional
 	MaxDataSize int `json:"maxDataSize,omitempty" yaml:"maxDataSize,omitempty"`
 	// MaxDelegationDepth caps how many nested RFC 8693 "act" entries are
-	// recorded in an audit event's delegationChain. Deeper chains are
+	// recorded in an audit event's delegation chain. Deeper chains are
 	// truncated (marked with truncated=true). Defaults to 10 when unset.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=10
@@ -104,8 +104,13 @@ func (c *Config) ShouldDetectApplicationErrors() bool {
 }
 
 // MaxDelegationDepthOrDefault returns the configured cap on RFC 8693
-// delegation chain depth, or auth.DefaultMaxDelegationDepth when unset or
-// non-positive.
+// delegation chain depth, or auth.DefaultMaxDelegationDepth (10) when unset
+// or non-positive.
+//
+// The default is deliberately ToolHive's minting cap (10), NOT toolhive-core's
+// audit.DefaultMaxDelegationDepth (16): core's value is a library-wide parse
+// ceiling, while passing the mint cap here preserves the signal that a chain
+// with truncated=true could not have come from ToolHive's own issuance path.
 func (c *Config) MaxDelegationDepthOrDefault() int {
 	if c == nil || c.MaxDelegationDepth == nil || *c.MaxDelegationDepth <= 0 {
 		return auth.DefaultMaxDelegationDepth

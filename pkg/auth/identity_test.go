@@ -10,6 +10,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/audit"
 )
 
 func TestClaimsToIdentity(t *testing.T) {
@@ -516,12 +518,11 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			identity: &Identity{
 				PrincipalInfo: PrincipalInfo{
 					Subject: "user123",
-					DelegationChain: &DelegationChain{
-						Actors: []DelegatedActor{
-							{Subject: "agent-1", Claims: map[string]any{"iss": "https://issuer.example"}},
-							{Subject: "agent-2"},
-						},
-					},
+					DelegationChain: audit.ParseDelegationChain(map[string]any{
+						"sub": "agent-1",
+						"iss": "https://issuer.example",
+						"act": map[string]any{"sub": "agent-2"},
+					}, DefaultMaxDelegationDepth),
 				},
 			},
 			wantErr: false,
@@ -531,22 +532,22 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 				var result map[string]any
 				require.NoError(t, json.Unmarshal(data, &result))
 
-				chain, ok := result["delegationChain"].(map[string]any)
-				require.True(t, ok, "delegationChain should be a map")
+				chain, ok := result["delegation"].(map[string]any)
+				require.True(t, ok, "delegation should be a map")
 				assert.Equal(t, false, chain["truncated"])
+				assert.Equal(t, float64(0), chain["omitted"])
+				assert.Equal(t, false, chain["malformed"])
 
-				actors, ok := chain["actors"].([]any)
-				require.True(t, ok, "actors should be an array")
-				require.Len(t, actors, 2)
+				hops, ok := chain["chain"].([]any)
+				require.True(t, ok, "chain should be an array")
+				require.Len(t, hops, 2)
 
-				first, ok := actors[0].(map[string]any)
+				first, ok := hops[0].(map[string]any)
 				require.True(t, ok)
 				assert.Equal(t, "agent-1", first["sub"])
-				claims, ok := first["act_claims"].(map[string]any)
-				require.True(t, ok, "actor extra claims should be preserved under act_claims")
-				assert.Equal(t, "https://issuer.example", claims["iss"])
+				assert.Equal(t, "https://issuer.example", first["iss"])
 
-				second, ok := actors[1].(map[string]any)
+				second, ok := hops[1].(map[string]any)
 				require.True(t, ok)
 				assert.Equal(t, "agent-2", second["sub"])
 			},
@@ -563,8 +564,8 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 				var result map[string]any
 				require.NoError(t, json.Unmarshal(data, &result))
 
-				_, exists := result["delegationChain"]
-				assert.False(t, exists, "delegationChain key should be omitted when no chain is present")
+				_, exists := result["delegation"]
+				assert.False(t, exists, "delegation key should be omitted when no chain is present")
 			},
 		},
 		{

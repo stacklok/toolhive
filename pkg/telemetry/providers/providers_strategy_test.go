@@ -6,6 +6,8 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -457,6 +459,42 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnifiedMeterStrategy_PrometheusOwnershipLabels verifies that the D8 ownership
+// labels (stacklok_component/stacklok_product) reach runtime/process series through
+// UnifiedMeterStrategy's own OwnershipLabels map construction, not just through
+// prometheus.NewReader called directly with hardcoded labels (see prometheus_test.go).
+// A key/value swap or wrong-form key (e.g. an OTel dotted attribute key instead of a
+// Prometheus label name) in that construction would otherwise go undetected.
+func TestUnifiedMeterStrategy_PrometheusOwnershipLabels(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	res := createTestResource(t)
+
+	strategy := &UnifiedMeterStrategy{EnablePrometheus: true}
+	result, err := strategy.CreateMeterProvider(ctx, Config{}, res)
+	require.NoError(t, err)
+	require.NotNil(t, result.PrometheusHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	result.PrometheusHandler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	body := rec.Body.String()
+	require.Contains(t, body, "go_goroutines")
+
+	foundRuntimeSeries := false
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(line, "go_goroutines") || strings.HasPrefix(line, "process_cpu_seconds_total") {
+			foundRuntimeSeries = true
+			assert.Contains(t, line, `stacklok_component="toolhive"`)
+			assert.Contains(t, line, `stacklok_product="stacklok-platform"`)
+		}
+	}
+	assert.True(t, foundRuntimeSeries, "expected to find go_/process_ runtime series in scrape output")
 }
 
 // TestUnifiedMeterStrategyConfiguration tests the unified meter strategy configuration

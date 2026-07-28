@@ -297,6 +297,7 @@ regardless of that flag's setting.
 | `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | |
 | `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
 | `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | |
+| `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | Renamed, not deleted |
 
 The new `mcp.server.operation.duration` and `mcp.client.operation.duration`
 metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,
@@ -347,9 +348,11 @@ regardless of `useLegacyAttributes` since they serve different purposes:
 | `resource_uri` | `mcp.resource.uri` | Resource URI (for `read_resource`) |
 | `prompt_name` | `gen_ai.prompt.name` | Prompt name (for `get_prompt`) |
 
-The `mcp.client.operation.duration` metric uses only `mcp.method.name` and
-`network.transport` as labels (plus `error.type` on error), following the OTEL
-MCP semantic conventions.
+The `mcp.client.operation.duration` metric uses `mcp.method.name`,
+`network.transport`, and `mcp_server` (the backend workload name) as labels
+(plus `error.type` on error), following the OTEL MCP semantic conventions.
+`mcp_server` preserves the per-backend breakdown the deleted
+`toolhive_vmcp_backend_requests_duration` twin had.
 
 ---
 

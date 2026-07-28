@@ -42,8 +42,14 @@ grafana:
       enabled: true
       label: grafana_dashboard
       labelValue: "1"
+      # folder is the in-pod path the sidecar writes discovered dashboards to
+      # before Grafana's provisioner picks them up — not a host path.
       folder: /tmp/dashboards
-      searchNamespace: ALL
+      # Scoped to this release's namespace (matches the `-n monitoring` install
+      # below) rather than "ALL", which would require the sidecar's
+      # ServiceAccount to have cluster-wide ConfigMap list/watch RBAC. See
+      # "Importing Dashboards" in README.md for the ConfigMap this depends on.
+      searchNamespace: monitoring
   
   # Additional data sources configuration
   additionalDataSources:

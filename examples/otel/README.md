@@ -106,3 +106,19 @@ You can import these dashboards through:
 1. Grafana UI: Configuration → Data Sources → Import
 2. Automatic sidecar discovery (if enabled)
 3. Grafana provisioning configuration
+
+For option 2, `prometheus-stack-values.yaml` enables the Grafana sidecar to
+auto-provision any ConfigMap labeled `grafana_dashboard=1` in the `monitoring`
+namespace. Create one per dashboard file:
+
+```bash
+for f in grafana-dashboards/*.json; do
+  name="dashboard-$(basename "$f" .json)"
+  kubectl create configmap "$name" --from-file="$f" -n monitoring
+  kubectl label configmap "$name" grafana_dashboard=1 -n monitoring
+done
+```
+
+The sidecar watches only the `monitoring` namespace (`searchNamespace:
+monitoring`) — widening this to `ALL` would require granting the sidecar's
+ServiceAccount cluster-wide ConfigMap list/watch RBAC.

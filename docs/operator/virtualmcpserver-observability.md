@@ -63,6 +63,7 @@ Duration of MCP client operations per the
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|
 | `mcp.method.name` | string | Always | MCP method name |
+| `mcp_server` | string | Always | Backend workload name |
 | `network.transport` | string | Always | `"tcp"` or `"pipe"` |
 | `error.type` | string | On error | Go error type (e.g., `*url.Error`) |
 

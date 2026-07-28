@@ -42,6 +42,7 @@ func createIngressSquidContainer(
 	ctx context.Context,
 	c *Client,
 	containerName string,
+	upstreamHost string,
 	squidContainerName string,
 	attachStdio bool,
 	upstreamPort int,
@@ -51,7 +52,7 @@ func createIngressSquidContainer(
 	portBindings map[string][]runtime.PortBinding,
 	networkPermissions *permissions.NetworkPermissions,
 ) (string, error) {
-	squidConfPath, err := createTempIngressSquidConf(containerName, upstreamPort, squidPort, networkPermissions)
+	squidConfPath, err := createTempIngressSquidConf(containerName, upstreamHost, upstreamPort, squidPort, networkPermissions)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary squid.conf: %w", err)
 	}
@@ -385,8 +386,14 @@ func (s *squidProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 	if spec.TransportType == "stdio" || spec.UpstreamPort == 0 {
 		return 0, nil
 	}
+	// Prefer the resolved upstream IP so the cache_peer has no DNS dependency;
+	// fall back to the workload name when unset (see proxySpec.UpstreamHost).
+	upstreamHost := spec.UpstreamHost
+	if upstreamHost == "" {
+		upstreamHost = spec.WorkloadName
+	}
 	ingressPort, err := s.client.setupIngressContainer(
-		ctx, spec.WorkloadName, spec.UpstreamPort, spec.AttachStdio, spec.Endpoints, spec.Permissions,
+		ctx, spec.WorkloadName, upstreamHost, spec.UpstreamPort, spec.AttachStdio, spec.Endpoints, spec.Permissions,
 	)
 	if err != nil {
 		return 0, err
@@ -396,6 +403,7 @@ func (s *squidProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 
 func createTempIngressSquidConf(
 	serverHostname string,
+	upstreamHost string,
 	upstreamPort int,
 	squidPort int,
 	networkPermissions *permissions.NetworkPermissions,
@@ -404,7 +412,7 @@ func createTempIngressSquidConf(
 
 	writeCommonConfig(&sb, serverHostname, proxyIngress)
 
-	writeIngressProxyConfig(&sb, serverHostname, upstreamPort, squidPort, networkPermissions)
+	writeIngressProxyConfig(&sb, serverHostname, upstreamHost, upstreamPort, squidPort, networkPermissions)
 	sb.WriteString("http_access deny all\n")
 
 	tmpFile, err := os.CreateTemp("", "squid-*.conf")
@@ -433,21 +441,25 @@ func createTempIngressSquidConf(
 func writeIngressProxyConfig(
 	sb *strings.Builder,
 	serverHostname string,
+	upstreamHost string,
 	upstreamPort int,
 	squidPort int,
 	networkPermissions *permissions.NetworkPermissions,
 ) {
 	portNum := strconv.Itoa(upstreamPort)
 	squidPortNum := strconv.Itoa(squidPort)
-	// standby=2 keeps warm idle connections open to the upstream so the first
-	// request after a cold start (notably a long-lived GET SSE stream that a
-	// server-initiated request rides on) is forwarded without paying inline DNS
-	// + TCP connect latency. Without it, the cold first GET races behind a
-	// later POST that reuses a warmed path, reordering server->client streams.
+	// cache_peer targets upstreamHost (the MCP container's IP), not its name, so
+	// the peer has no DNS lookup to cache-and-latch on a cold-start miss (#6063).
+	// defaultsite keeps the name for the origin Host header. standby=2 keeps warm
+	// idle connections open to the upstream so the first request after a cold
+	// start (notably a long-lived GET SSE stream that a server-initiated request
+	// rides on) is forwarded without paying inline TCP connect latency. Without
+	// it, the cold first GET races behind a later POST that reuses a warmed path,
+	// reordering server->client streams.
 	sb.WriteString(
 		"\n# Reverse proxy setup for port " + portNum + "\n" +
 			"http_port 0.0.0.0:" + squidPortNum + " accel defaultsite=" + serverHostname + "\n" +
-			"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
+			"cache_peer " + upstreamHost + " parent " + portNum + " 0 no-query originserver name=origin_" +
 			portNum + " connect-timeout=5 connect-fail-limit=5 standby=2\n")
 
 	// Check if inbound network permissions are configured

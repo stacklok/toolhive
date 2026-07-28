@@ -766,6 +766,23 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			hintContains: "sub_not_string",
 		},
 		{
+			// RFC 7519 Section 4.1.1 fixes iss as a string too. sub is kept valid
+			// here to isolate the reason: the parser reports the first violation it
+			// finds and checks iss before sub, so a hop with both would report only
+			// iss_not_string and leave this branch unpinned.
+			name:   "non-string iss in act hop rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, map[string]any{"iss": 42, "sub": "agent-0"})
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "iss_not_string",
+		},
+		{
 			// A JSON-null nested act ends the chain; it asserts no further
 			// delegation and must not read as malformed.
 			name:   "null nested act is accepted and nested unchanged",

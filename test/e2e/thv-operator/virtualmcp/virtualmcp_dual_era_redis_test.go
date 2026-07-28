@@ -636,77 +636,20 @@ func dualEraLegacyInit(mcpClient *e2e.RawMCPClient, url string) string {
 }
 
 // dualEraLegacyInitErr is the error-returning variant of dualEraLegacyInit,
-// for use inside an Eventually retry loop.
+// for use inside an Eventually retry loop. It delegates to the shared
+// legacySessionInit primitive (legacy_session_helpers_test.go).
 func dualEraLegacyInitErr(mcpClient *e2e.RawMCPClient, url string) (string, error) {
-	ctx := context.Background()
-	req := e2e.NewLegacyInitializeRequest("dual-era-redis-legacy-client", "1.0")
-	resp, err := mcpClient.Send(ctx, url, req)
-	if err != nil {
-		return "", fmt.Errorf("initialize: %w", err)
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("initialize: status %d, body: %s", resp.StatusCode, resp.Body)
-	}
-	sessionID := resp.Headers.Get(e2e.HeaderMCPSessionID)
-	if sessionID == "" {
-		return "", fmt.Errorf("initialize did not assign a session id")
-	}
-
-	notifyReq, err := e2e.NewLegacyRequest("notifications/initialized", nil)
-	if err != nil {
-		return "", fmt.Errorf("build notifications/initialized: %w", err)
-	}
-	// WithID(nil) omits "id" entirely, making this a true JSON-RPC notification.
-	notifyReq.WithID(nil).WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, coremcp.MCPVersionLegacy)
-	notifyResp, err := mcpClient.Send(ctx, url, notifyReq)
-	if err != nil {
-		return "", fmt.Errorf("notifications/initialized: %w", err)
-	}
-	if notifyResp.StatusCode != 202 {
-		return "", fmt.Errorf("notifications/initialized: status %d, body: %s", notifyResp.StatusCode, notifyResp.Body)
-	}
-
-	return sessionID, nil
+	return legacySessionInit(mcpClient, url, "dual-era-redis-legacy-client", nil)
 }
 
 // dualEraLegacyListTools sends a Legacy tools/list on sessionID and returns
-// the aggregated tool names.
+// the aggregated tool names. It delegates to the shared legacySessionListTools
+// primitive (legacy_session_helpers_test.go).
 //
 // Returns an error rather than using Expect/Ginkgo assertions so it is safe
 // to call from inside an Eventually retry loop (e.g. the BeforeAll warm-up).
 func dualEraLegacyListTools(mcpClient *e2e.RawMCPClient, url, sessionID string) ([]string, error) {
-	req, err := e2e.NewLegacyRequest("tools/list", nil)
-	if err != nil {
-		return nil, fmt.Errorf("build tools/list: %w", err)
-	}
-	req.WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, coremcp.MCPVersionLegacy)
-	resp, err := mcpClient.Send(context.Background(), url, req)
-	if err != nil {
-		return nil, fmt.Errorf("tools/list: %w", err)
-	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("tools/list: status %d, body: %s", resp.StatusCode, resp.Body)
-	}
-	// A schema-rejected tools/list would come back as a JSON-RPC error here (unlike
-	// tools/call, which yardstick answers with isError:true inside a 200 -- see the
-	// dualEraLegacyCall/dualEraModernCall doc comment), so this check is meaningful.
-	if resp.Error != nil {
-		return nil, fmt.Errorf("tools/list: JSON-RPC error: %+v", resp.Error)
-	}
-
-	var result struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, fmt.Errorf("tools/list: unmarshal result: %w, raw: %s", err, resp.Result)
-	}
-	names := make([]string, len(result.Tools))
-	for i, t := range result.Tools {
-		names[i] = t.Name
-	}
-	return names, nil
+	return legacySessionListTools(mcpClient, url, sessionID, nil)
 }
 
 // dualEraLegacyCall sends a Legacy tools/call for toolName on sessionID,
@@ -743,15 +686,7 @@ func dualEraLegacyCall(mcpClient *e2e.RawMCPClient, url, sessionID, toolName, in
 // error; only an actual transport failure from Send (e.g. connection
 // refused) is surfaced as the returned error.
 func dualEraLegacyCallErr(mcpClient *e2e.RawMCPClient, url, sessionID, toolName, input string) (*e2e.RawResponse, error) {
-	req, err := e2e.NewLegacyRequest("tools/call", map[string]any{
-		"name":      toolName,
-		"arguments": map[string]any{"input": input},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build tools/call: %w", err)
-	}
-	req.WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, coremcp.MCPVersionLegacy)
-	return mcpClient.Send(context.Background(), url, req)
+	return legacySessionCallTool(mcpClient, url, sessionID, toolName, map[string]any{"input": input}, nil)
 }
 
 // dualEraModernCall sends a stateless Modern tools/call for toolName. Mirrors

@@ -347,7 +347,7 @@ func TestModernDispatchBlockers(t *testing.T) {
 //   - A well-formed Modern request is refused with a conformant 400 + -32022
 //     UnsupportedProtocolVersionError whose data lists the Legacy version, so a
 //     Modern-first client (go-sdk v1.7+ probes before initialize) negotiates
-//     down cleanly instead of hitting go-sdk's unparseable plain-text
+//     down cleanly instead of hitting go-sdk's unparsable plain-text
 //     stateful rejection.
 //   - server/discover is exempt and falls through to the SDK path, whose
 //     stateful transport advertises the Legacy-only version list — the one

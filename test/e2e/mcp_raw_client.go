@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -316,11 +317,18 @@ func NewRawMCPClient(timeout time.Duration) (*RawMCPClient, error) {
 }
 
 // Send marshals req and POSTs it to url. No Accept header is set by default:
-// the ToolHive proxy returns a plain JSON body without it (which this client's
-// populateEnvelope parses) and switches to an unparsable SSE response body
-// whenever Accept lists text/event-stream. A request bound for a REAL
-// streamable-HTTP MCP backend -- which rejects a POST lacking that Accept with
-// HTTP 400 -- should opt in via req.WithStreamableAccept().
+// the ToolHive proxy returns a plain JSON body without it, and switches to an
+// SSE response body whenever Accept lists text/event-stream. A request bound
+// for a REAL streamable-HTTP MCP backend -- which rejects a POST lacking that
+// Accept with HTTP 400 -- should opt in via req.WithStreamableAccept().
+//
+// Either way the JSON-RPC envelope is parsed into the RawResponse: a
+// Content-Type: text/event-stream body has its response event extracted first
+// (see sseResponsePayload). Some servers answer a POST as SSE regardless of
+// the request's Accept header -- mcpcompat's cross-replica rehydration path
+// does, because go-sdk v1.7.0-pre.3 does not export the transport-level
+// JSONResponse knob (StreamableServerTransport.jsonResponse) that its
+// top-level handler options set -- so this parsing cannot be opt-in.
 func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*RawResponse, error) {
 	body, err := req.marshal()
 	if err != nil {
@@ -361,7 +369,11 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 		Headers:    resp.Header.Clone(),
 		Body:       respBody,
 	}
-	populateEnvelope(respBody, result)
+	envelope := respBody
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		envelope = sseResponsePayload(respBody)
+	}
+	populateEnvelope(envelope, result)
 	return result, nil
 }
 
@@ -402,6 +414,51 @@ func populateEnvelope(body []byte, out *RawResponse) {
 	if w.Error != nil {
 		out.Error = &RawRPCError{Code: w.Error.Code, Message: w.Error.Message, Data: w.Error.Data}
 	}
+}
+
+// sseResponsePayload extracts the JSON-RPC response object from an SSE-framed
+// (text/event-stream) POST response body. A streamable-HTTP server may
+// interleave notifications on the same stream before the response, so the
+// payload returned is the LAST event whose data is a JSON object carrying a
+// top-level "result" or "error" key -- the one JSON-RPC response terminating
+// the stream -- not simply the last event. Multi-line data fields are joined
+// with newlines per the SSE spec. Returns nil when no event carries a
+// response, leaving the envelope unpopulated (Body still holds the raw
+// stream for the caller to inspect).
+func sseResponsePayload(body []byte) []byte {
+	var response []byte
+	var data [][]byte
+	flush := func() {
+		if len(data) == 0 {
+			return
+		}
+		payload := bytes.Join(data, []byte("\n"))
+		data = nil
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &obj); err != nil {
+			return
+		}
+		if _, ok := obj["result"]; ok {
+			response = payload
+			return
+		}
+		if _, ok := obj["error"]; ok {
+			response = payload
+		}
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 { // blank line: event boundary
+			flush()
+			continue
+		}
+		if value, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			data = append(data, bytes.TrimPrefix(value, []byte(" ")))
+		}
+		// Other fields (event:, id:, retry:, comments) don't carry payload.
+	}
+	flush() // stream may end without a trailing blank line
+	return response
 }
 
 // decodeID decodes a raw JSON-RPC id, returning a json.Number for numeric

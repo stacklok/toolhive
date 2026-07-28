@@ -345,6 +345,100 @@ func TestRawClientSend(t *testing.T) {
 	})
 }
 
+// newSSEServer serves body verbatim as a text/event-stream POST response —
+// the shape mcpcompat's cross-replica rehydration path produces regardless of
+// the request's Accept header (go-sdk v1.7.0-pre.3 does not export the
+// transport-level JSONResponse knob its top-level handler options set).
+func newSSEServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestRawClientSSEResponse pins that an SSE-framed POST response body has its
+// JSON-RPC response event parsed into the envelope, so era-pinned raw-client
+// specs work against a server that answers SSE unasked (the rehydrated
+// cross-pod session path) exactly as they do against a plain-JSON one.
+func TestRawClientSSEResponse(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewRawMCPClient(5 * time.Second)
+	require.NoError(t, err)
+
+	t.Run("parses the response event, skipping preceding notifications", func(t *testing.T) {
+		t.Parallel()
+		server := newSSEServer(t, "event: message\n"+
+			`data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}`+"\n\n"+
+			"event: message\n"+
+			`data: {"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"echo"}]}}`+"\n\n")
+
+		req, err := NewLegacyRequest("tools/list", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Equal(t, "2.0", resp.JSONRPC)
+		require.Equal(t, json.Number("7"), resp.ID)
+		require.JSONEq(t, `{"tools":[{"name":"echo"}]}`, string(resp.Result))
+		require.Nil(t, resp.Error)
+	})
+
+	t.Run("parses an error response event, including multi-line data", func(t *testing.T) {
+		t.Parallel()
+		// The SSE spec joins consecutive data: lines with \n; a JSON payload
+		// split across them must still parse.
+		server := newSSEServer(t, "event: message\n"+
+			`data: {"jsonrpc":"2.0","id":3,`+"\n"+
+			`data:  "error":{"code":-32029,"message":"Rate limit exceeded"}}`+"\n\n")
+
+		req, err := NewLegacyRequest("tools/call", map[string]any{"name": "echo"})
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.NotNil(t, resp.Error)
+		require.EqualValues(t, -32029, resp.Error.Code)
+		require.Equal(t, "Rate limit exceeded", resp.Error.Message)
+	})
+
+	t.Run("a stream with no response event leaves the envelope empty, Body raw", func(t *testing.T) {
+		t.Parallel()
+		body := "event: message\n" +
+			`data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}` + "\n\n"
+		server := newSSEServer(t, body)
+
+		req, err := NewLegacyRequest("tools/list", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Empty(t, resp.JSONRPC)
+		require.Nil(t, resp.Result)
+		require.Nil(t, resp.Error)
+		require.Equal(t, body, string(resp.Body), "Body must keep the raw stream for the caller")
+	})
+
+	t.Run("a stream without a trailing blank line still yields the response", func(t *testing.T) {
+		t.Parallel()
+		server := newSSEServer(t, "event: message\n"+
+			`data: {"jsonrpc":"2.0","id":1,"result":{}}`)
+
+		req, err := NewLegacyRequest("ping", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Equal(t, json.Number("1"), resp.ID)
+		require.JSONEq(t, `{}`, string(resp.Result))
+	})
+}
+
 func TestNewRawMCPClientRejectsNonPositiveTimeout(t *testing.T) {
 	t.Parallel()
 	_, err := NewRawMCPClient(0)

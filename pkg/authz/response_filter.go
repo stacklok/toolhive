@@ -211,10 +211,10 @@ func (rfw *ResponseFilteringWriter) filterAndEncode(response *jsonrpc2.Response)
 }
 
 // sseLine pairs one scanned SSE line with the terminator that followed it in
-// the raw body: "\r\n", "\n", "\r", or nil for a final line with none. SSE
-// permits mixing all three within one stream, so each line keeps the
-// terminator it actually had rather than the body being forced onto one
-// stream-wide convention.
+// the raw body: "\n", or nil for a final line with none. Lines are split on
+// LF only (see processSSEResponse), so a line that was actually terminated by
+// "\r\n" keeps its trailing "\r" as the last byte of text -- text+term always
+// reproduces exactly the bytes that were scanned.
 type sseLine struct {
 	text []byte
 	term []byte
@@ -226,10 +226,22 @@ type sseLine struct {
 // single payload, and a blank line is structural — it dispatches the event
 // rather than being emittable content in its own right.
 //
-// Lines are scanned one terminator at a time instead of sniffing a single
-// separator convention for the whole body: sniffing disagrees with a client
-// that (per spec) may see CR, LF, and CRLF mixed within one stream, and that
-// disagreement is exactly the class of bug this rewrite exists to close.
+// Lines are split on LF only, matching the client that actually consumes
+// these streams (github.com/modelcontextprotocol/go-sdk's mcp/event.go,
+// which ReadBytes('\n')s and never treats a lone CR as a line terminator) --
+// not the WHATWG EventSource grammar, which additionally splits on a bare CR.
+// The two disagree on a body containing an interior "\r" (e.g. inside a
+// data: payload): WHATWG would cut the line there, but the client reads it as
+// one line and parses through. Following the WHATWG grammar here decoded a
+// SUPERSET of what the client would treat as one line, letting the shorter,
+// wrongly-split pieces slip past filtering undetected -- a real regression,
+// not a hypothetical one. Splitting on LF only means we parse a superset of
+// what a stricter reader would call one line, so we decode and filter *more*
+// than before, never less: worst case for a client that does honor a lone CR
+// (e.g. a browser EventSource) is a payload it mis-frames identically to how
+// it would mis-frame the backend's raw bytes directly, since output stays
+// byte-preserving -- denial, never disclosure.
+//
 // Every line is re-emitted with the same terminator it was scanned with, so
 // the output is structurally identical to the input (minus a leading UTF-8
 // BOM, stripped below); only `data:` payloads are rewritten.
@@ -248,33 +260,34 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	var outputLines []sseLine
 	var event []sseLine
 	for len(rawResponse) > 0 {
-		idx := bytes.IndexAny(rawResponse, "\r\n")
+		idx := bytes.IndexByte(rawResponse, '\n')
 		var line, term []byte
-		switch {
-		case idx == -1:
+		if idx == -1 {
 			line, term, rawResponse = rawResponse, nil, nil
-		case rawResponse[idx] == '\r' && idx+1 < len(rawResponse) && rawResponse[idx+1] == '\n':
-			line, term, rawResponse = rawResponse[:idx], rawResponse[idx:idx+2], rawResponse[idx+2:]
-		default:
+		} else {
 			line, term, rawResponse = rawResponse[:idx], rawResponse[idx:idx+1], rawResponse[idx+1:]
 		}
 
-		if len(line) == 0 {
+		// A line is structurally blank once its trailing CR (left over from
+		// a "\r\n" terminator the LF-only split doesn't consume) is ignored;
+		// without this a CRLF-terminated blank line would scan as the
+		// single byte "\r" and never be recognised as the event separator.
+		// The blank line's own bytes (that "\r", if present) are preserved
+		// in the output below rather than dropped, so structure stays
+		// byte-identical to the input.
+		if len(bytes.TrimRight(line, "\r")) == 0 {
 			outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
-			outputLines = append(outputLines, sseLine{term: term})
+			outputLines = append(outputLines, sseLine{text: line, term: term})
 			event = nil
 			continue
 		}
 		event = append(event, sseLine{text: line, term: term})
 	}
-	// A trailing event with no closing blank line is never dispatched by a
-	// spec-compliant client, but the backend did send these bytes, so write
-	// them (filtered) rather than drop them — without fabricating a
-	// terminator the backend didn't send. Consequence: if that event needed
-	// filtering, the error envelope substituted here is never dispatched
-	// either, so the client hangs on its own timeout instead of seeing the
-	// error. Real backends terminate their events, so this is accepted, not
-	// fixed.
+	// A trailing event with no closing blank line: the go-sdk client (see
+	// mcp/event.go's yieldEvent, called once more after its read loop hits
+	// EOF) does still dispatch whatever is buffered at that point, so this
+	// is filtered like any other event, not dropped. We write these bytes
+	// (filtered) without fabricating a terminator the backend didn't send.
 	outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
 
 	for _, l := range outputLines {
@@ -298,8 +311,40 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 		return nil
 	}
 
+	dataValues := eventDataValues(event)
+	if len(dataValues) == 0 {
+		return event
+	}
+
+	// No whole-buffer trim needed here: the per-value trim in eventDataValues
+	// already leaves nothing but JSON-significant bytes at either edge of the join.
+	assembled := bytes.Join(dataValues, []byte("\n"))
+	if len(assembled) == 0 {
+		// A client never dispatches an empty data buffer, so there's nothing
+		// to classify or fail closed on.
+		return event
+	}
+
+	replacement, failedClosed := rfw.filterSSEEventData(assembled)
+	if replacement == nil {
+		replacement, failedClosed = rfw.probeValuesForSmuggledResult(dataValues)
+	}
+	if replacement == nil {
+		return event
+	}
+	return rebuildEventWithPayload(event, replacement, failedClosed)
+}
+
+// eventDataValues extracts one event's `data:` field values, in order, each
+// trimmed exactly as the client trims it.
+func eventDataValues(event []sseLine) [][]byte {
 	var dataValues [][]byte
 	for _, l := range event {
+		// A line ending in "\r\n" keeps that "\r" as the trailing byte of
+		// l.text (see sseLine), so trim it before matching the "data:"
+		// prefix -- mirroring the client, which strips trailing "\r\n" from
+		// every line before inspecting it (mcp/event.go).
+		trimmed := bytes.TrimRight(l.text, "\r")
 		// A bare "data" line with no colon, or one with a space before the
 		// colon ("data :foo"), doesn't match the "data:" prefix below, so both
 		// are excluded from assembly here, unlike strict WHATWG grammar (which
@@ -311,7 +356,7 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 		// "data :foo", bytes.Cut on the raw line yields before == "data " (not
 		// "data"), so the go-sdk's own line parser ignores it too, exactly
 		// like us and strict WHATWG.
-		data, ok := bytes.CutPrefix(l.text, []byte("data:"))
+		data, ok := bytes.CutPrefix(trimmed, []byte("data:"))
 		if !ok {
 			continue
 		}
@@ -320,76 +365,96 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 		// more (or a differently-positioned space) would corrupt a payload
 		// split mid-string-literal across lines.
 		data, _ = bytes.CutPrefix(data, []byte(" "))
+		// TrimSpace each value independently, before joining, not on the
+		// assembled buffer afterward. Go's JSON scanner treats only SP, TAB,
+		// CR and LF as whitespace, but unicode.IsSpace also covers U+000B,
+		// U+000C, U+0085, U+00A0, U+1680 and U+3000 -- and the go-sdk client
+		// trims each data value with exactly this function before joining
+		// (mcp/event.go), not the whole buffer once at the end. A
+		// whole-buffer trim only catches one of those bytes sitting at the
+		// very front or back of the assembled payload; one sitting at an
+		// interior boundary between two data: lines of the SAME event
+		// survived undetected, because it was never at either edge of the
+		// joined buffer. Trimming here catches it regardless of position.
+		data = bytes.TrimSpace(data)
 		dataValues = append(dataValues, data)
 	}
-	if len(dataValues) == 0 {
-		return event
-	}
+	return dataValues
+}
 
-	// TrimSpace here, not inside the decoders. Go's JSON scanner treats only
-	// SP, TAB, CR and LF as whitespace, but unicode.IsSpace also covers U+000B,
-	// U+000C, U+0085, U+00A0, U+1680 and U+3000 — and the go-sdk client trims
-	// its data buffer with exactly this function (mcp/event.go). Leaving those
-	// bytes on meant DecodeMessage and carriesResult both rejected the payload
-	// while the client happily parsed it, so the event fell through to the
-	// undecodable branch and the unfiltered list went out (#5257).
-	assembled := bytes.TrimSpace(bytes.Join(dataValues, []byte("\n")))
-	if len(assembled) == 0 {
-		// A client never dispatches an empty data buffer, so there's nothing
-		// to classify or fail closed on.
-		return event
-	}
-	replacement := rfw.filterSSEEventData(assembled)
-	if replacement == nil {
-		// filterSSEEventData's own carriesResult scan stops at the first
-		// undecodable JSON value in the assembled (joined) payload, so a
-		// well-formed result-bearing value sitting right after a malformed
-		// one within the SAME event would otherwise ride through as
-		// "undecodable, nothing to filter" -- reopening the split-payload
-		// bypass this rewrite exists to close (#5257), just one line lower
-		// than before. Probe each data: value independently before
-		// conceding the event needs no filtering: this only ever turns a
-		// pass-through into a fail-closed error envelope, never the
-		// reverse, so it cannot itself reintroduce a bypass.
-		for _, v := range dataValues {
-			if carriesResult(v) {
-				slog.Warn("SSE event's assembled payload was undecodable but an individual data value carries a result; failing closed",
-					"method", rfw.method)
-				replacement = rfw.errorResponseBody(rfw.requestID(),
-					errors.New("dropped a frame carrying a result outside a clean Response"))
-				break
-			}
-		}
-		if replacement == nil {
-			return event
+// probeValuesForSmuggledResult is the fallback for an event whose assembled
+// payload was undecodable as a whole. filterSSEEventData's carriesResult scan
+// stops at the first undecodable JSON value in the joined payload, so a
+// well-formed result-bearing value sitting right after a malformed one within
+// the SAME event would otherwise ride through as "undecodable, nothing to
+// filter" -- reopening the split-payload bypass this rewrite exists to close
+// (#5257), just one line lower than before. Probing each value independently
+// only ever turns a pass-through into a fail-closed error envelope, never the
+// reverse, so it cannot itself reintroduce a bypass. A nil replacement means
+// no value carried a result and the event genuinely needs no filtering.
+func (rfw *ResponseFilteringWriter) probeValuesForSmuggledResult(dataValues [][]byte) (replacement []byte, failedClosed bool) {
+	for _, v := range dataValues {
+		if carriesResult(v) {
+			slog.Warn("SSE event's assembled payload was undecodable but an individual data value carries a result; failing closed",
+				"method", rfw.method)
+			return rfw.errorResponseBody(rfw.requestID(),
+				errors.New("dropped a frame carrying a result outside a clean Response")), true
 		}
 	}
+	return nil, false
+}
 
+// rebuildEventWithPayload re-emits one event's lines with replacement standing
+// in for the first `data:` line's value, dropping the later `data:` lines whose
+// content is already folded into it.
+func rebuildEventWithPayload(event []sseLine, replacement []byte, failedClosed bool) []sseLine {
 	out := make([]sseLine, 0, len(event))
 	replaced := false
 	for _, l := range event {
-		if _, ok := bytes.CutPrefix(l.text, []byte("data:")); ok {
-			if replaced {
-				// Subsequent data: lines are already folded into the
-				// assembled payload above; only the first line carries it.
-				continue
-			}
-			// jsonrpc2.EncodeMessage and json.Marshal both escape newlines,
-			// so replacement can never contain a raw line separator and is
-			// always safe to emit as a single data: line.
-			out = append(out, sseLine{text: append([]byte("data: "), replacement...), term: l.term})
-			replaced = true
+		trimmed := bytes.TrimRight(l.text, "\r")
+		// The go-sdk streamable client only dispatches unnamed ("message")
+		// events, so a named event's own "event:" field would silently
+		// swallow the fail-closed envelope substituted below, reproducing
+		// the #6037 hang. Drop it: the substituted payload is either the
+		// error envelope itself or a freshly filtered result, neither of
+		// which the original event name describes any more.
+		if failedClosed && bytes.HasPrefix(trimmed, []byte("event:")) {
 			continue
 		}
-		out = append(out, l)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			out = append(out, l)
+			continue
+		}
+		if replaced {
+			// Subsequent data: lines are already folded into the assembled
+			// payload; only the first line carries it.
+			continue
+		}
+		// A "\r\n"-terminated line keeps that "\r" as l.text's trailing
+		// byte (see sseLine), not as part of l.term. Since the replacement
+		// text discards l.text entirely, re-attach any such trailing "\r" to
+		// the terminator here -- otherwise a CRLF-terminated data line would
+		// silently downgrade to bare LF once filtered, while an untouched
+		// (pass-through) line keeps its CRLF because it reuses l.text verbatim.
+		term := l.term
+		if cr := l.text[len(trimmed):]; len(cr) > 0 {
+			term = append(append([]byte{}, cr...), term...)
+		}
+		// jsonrpc2.EncodeMessage and json.Marshal both escape newlines, so
+		// replacement can never contain a raw line separator and is always
+		// safe to emit as a single data: line.
+		out = append(out, sseLine{text: append([]byte("data: "), replacement...), term: term})
+		replaced = true
 	}
 	return out
 }
 
 // filterSSEEventData classifies an event's assembled data payload and returns
-// the payload to emit in its place. A nil replacement means the event's lines
-// pass through unchanged.
-func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) []byte {
+// the payload to emit in its place, plus whether that payload is a fail-closed
+// error envelope (as opposed to a successfully filtered result). A nil
+// replacement means the event's lines pass through unchanged, and failedClosed
+// is meaningless in that case.
+func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) (replacement []byte, failedClosed bool) {
 	message, decodeErr := jsonrpc2.DecodeMessage(data)
 	response, isResponse := message.(*jsonrpc2.Response)
 	switch {
@@ -399,9 +464,9 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) []byte {
 			// errorResponseBody logs ferr itself, so don't repeat it here.
 			slog.Warn("emitting a JSON-RPC error in place of an SSE frame that failed to filter",
 				"method", rfw.method)
-			return rfw.errorResponseBody(response.ID, ferr)
+			return rfw.errorResponseBody(response.ID, ferr), true
 		}
-		return filteredData
+		return filteredData, false
 	case carriesResult(data):
 		// The frame is not a clean Response but still carries a result. This
 		// covers a non-Response type (a request/notification frame smuggling a
@@ -416,19 +481,19 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) []byte {
 		slog.Warn("SSE event carried a result outside a clean Response frame; failing closed as a protocol violation",
 			"method", rfw.method)
 		return rfw.errorResponseBody(rfw.requestID(),
-			errors.New("dropped a frame carrying a result outside a clean Response"))
+			errors.New("dropped a frame carrying a result outside a clean Response")), true
 	case decodeErr != nil:
 		// Genuinely undecodable and no smuggled result. Pass through unfiltered.
 		slog.Warn("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
 			"method", rfw.method, "error", decodeErr)
-		return nil
+		return nil, false
 	default:
 		// Genuine non-Response frame (e.g. an interleaved notifications/*
 		// message) with no result payload. Routine SSE traffic, so log at
 		// Debug to keep the suspicious branches above from being buried.
 		slog.Debug("SSE event data was not a JSON-RPC Response; passing through unfiltered",
 			"method", rfw.method)
-		return nil
+		return nil, false
 	}
 }
 
@@ -507,7 +572,7 @@ func valueCarriesResult(value json.RawMessage) bool {
 // sseCarriesResult reports whether rawResponse contains an SSE "data:" line
 // whose payload carries a JSON-RPC result. It is a lightweight detector, used
 // only to decide whether a 2xx body with an unrecognized media type needs the
-// full SSE processing path (which applies its own per-line filtering and
+// full SSE processing path (which applies its own event-based filtering and
 // fail-closed rules); it mirrors sniffSSEToolsList in pkg/mcp/tool_filter.go.
 func sseCarriesResult(rawResponse []byte) bool {
 	normalized := bytes.ReplaceAll(rawResponse, []byte("\r\n"), []byte("\n"))
@@ -541,10 +606,17 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 		// unexpected "error" key and treat it as a successful result. Fail
 		// closed rather than passing the smuggled list through under cover
 		// of the error field. See #5257.
-		if response.Result != nil {
+		// A literal `"result":null` is exempted: DecodeMessage sets Result to
+		// the non-nil 4 bytes "null" whenever the key is present at all (see
+		// objectCarriesResult), so without this a legitimate upstream error
+		// that happens to carry an explicit null result would lose its own
+		// code (e.g. -32601) to our generic internal-error envelope for no
+		// security benefit -- a null result can never carry a list, so
+		// failing closed on it buys nothing.
+		if response.Result != nil && !bytes.Equal(bytes.TrimSpace(response.Result), []byte("null")) {
 			return nil, errors.New("response carried both error and result")
 		}
-		// If there's an error and no result, don't filter
+		// If there's an error and no result (or an explicit null result), don't filter
 		return response, nil
 	}
 

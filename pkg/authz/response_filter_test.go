@@ -1308,6 +1308,54 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 	}
 }
 
+// TestResponseFilteringWriter_SSE_FailClosedDropsEventName is a regression
+// test for #6037: the go-sdk streamable client only dispatches unnamed
+// ("message"-typed) events to its MCP request handler, so substituting a
+// fail-closed error envelope in place of a NAMED event's data (while leaving
+// its "event:" field untouched) meant the envelope was never delivered and
+// the caller hung on its own timeout -- the very hang the #6037 envelope was
+// meant to prevent. This asserts what parseSSEStream (the go-sdk client
+// model, not the WHATWG grammar) actually dispatches, since that's what
+// determines delivery.
+func TestResponseFilteringWriter_SSE_FailClosedDropsEventName(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	// A method+result frame that fails closed (see
+	// TestResponseFilteringWriter_SSE_DisguisedResponseFrame), framed under a
+	// custom event name the way a real backend might tag a tool-list push.
+	body := "event: toolsUpdate\n" +
+		`data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,` +
+		`"result":{"tools":[{"name":"admin_tool"}]}}` + "\n\n"
+	_, err := rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool", "smuggled result leaked past the filter")
+	assert.NotContains(t, out, "event:",
+		"the offending event's event: field must be dropped, or the go-sdk client never dispatches the fail-closed envelope")
+
+	events := parseSSEStream(t, rr.Body.Bytes())
+	require.Len(t, events, 1, "body: %q", out)
+	assert.Empty(t, events[0].eventType,
+		"the go-sdk client only dispatches unnamed/'message' events to its MCP handler; a named event here reproduces the #6037 hang")
+
+	msg, err := jsonrpc2.DecodeMessage([]byte(events[0].data))
+	require.NoError(t, err, "the dispatched envelope must itself be valid JSON-RPC")
+	resp, ok := msg.(*jsonrpc2.Response)
+	require.True(t, ok, "the dispatched envelope must be a clean Response")
+	require.NotNil(t, resp.Error, "the event must fail closed into an error envelope")
+	assert.Equal(t, jsonrpc2.Int64ID(99), resp.ID,
+		"the error envelope must carry the request's id so the client can correlate it")
+}
+
 // TestResponseFilteringWriter_SSE_ConcatenatedEventBypass is a regression test
 // for a #5257-class leak the event-based rewrite itself introduced: two
 // data: fields in ONE event (a notification followed by a result-bearing
@@ -1476,6 +1524,16 @@ func TestResponseFilteringWriter_SSE_ErrorAndResultBypass(t *testing.T) {
 			name:          "error alone passes through unfiltered",
 			body:          `data: {"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x"}}` + "\n\n",
 			wantErrorCode: 1, // the upstream's own error, untouched
+		},
+		{
+			// A literal `"result":null` is exempted from the both-error-
+			// and-result fail-closed rule (see filterListResponse): a null
+			// result can never carry a list, so failing closed on it only
+			// destroys the upstream's real error code for no security
+			// benefit. Regression for that exemption.
+			name:          "error with explicit null result passes through unfiltered",
+			body:          `data: {"jsonrpc":"2.0","id":1,"error":{"code":404,"message":"not found"},"result":null}` + "\n\n",
+			wantErrorCode: 404, // the upstream's own error, untouched
 		},
 	}
 
@@ -2099,6 +2157,13 @@ func TestResponseFilteringWriter_SSE_LeadingNonJSONWhitespaceStillFiltered(t *te
 // carriesResult on the whole joined payload does too, so both lines went out
 // unfiltered. The fix probes each data: value independently before
 // conceding the event needs no filtering.
+//
+// NotContains(admin_tool) alone would also be satisfied by the event being
+// dropped silently (the #6037 hang), so this also requires the fail-closed
+// error envelope to actually go out, correlated to the request's real id via
+// newParsedUser1Request -- an unparsed request would let requestID() fall
+// back to the zero ID and this test would accept an envelope no client could
+// actually correlate.
 func TestResponseFilteringWriter_SSE_PerValueProbeCatchesConcatenatedGarbage(t *testing.T) {
 	t.Parallel()
 
@@ -2138,9 +2203,9 @@ func TestResponseFilteringWriter_SSE_PerValueProbeCatchesConcatenatedGarbage(t *
 				"test fixture assumption broken: the whole-payload scan must not itself catch the smuggled result "+
 					"-- otherwise this test would not exercise the per-value probe at all")
 
-			req := newUser1Request(t)
+			parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 			// One event, two data: lines with no blank line between them, so
@@ -2154,6 +2219,116 @@ func TestResponseFilteringWriter_SSE_PerValueProbeCatchesConcatenatedGarbage(t *
 			out := rr.Body.String()
 			assert.NotContains(t, out, "admin_tool",
 				"a result-bearing data: line following a malformed one in the same event must not bypass the filter")
+
+			firstLine := strings.TrimSuffix(strings.SplitN(out, "\n", 2)[0], "\r")
+			payload := strings.TrimPrefix(firstLine, "data: ")
+			msg, decErr := jsonrpc2.DecodeMessage([]byte(payload))
+			require.NoError(t, decErr, "the fail-closed envelope must itself be valid JSON-RPC")
+			resp, ok := msg.(*jsonrpc2.Response)
+			require.True(t, ok, "the fail-closed envelope must be a clean Response")
+			require.NotNil(t, resp.Error, "the event must fail closed into an error envelope, not vanish silently")
+			assert.Equal(t, jsonrpc2.Int64ID(99), resp.ID,
+				"the error envelope must carry the request's id so the client can correlate it, or the #6037 hang reproduces")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_SSE_InteriorBareCRNotALineBreak is a regression
+// test for a client-divergence bypass: the client that actually consumes
+// these streams (github.com/modelcontextprotocol/go-sdk's mcp/event.go)
+// splits lines on LF only, so a bare "\r" sitting inside a single data:
+// payload is insignificant JSON whitespace to it, not a line break. Splitting
+// on "\r" as well (as strict WHATWG grammar does) cuts the line there
+// instead, leaving a "data:"-less second half that contributes nothing to
+// the assembled payload -- so the first half (truncated, undecodable) is
+// classified as carrying no result and re-emitted verbatim, leaking
+// admin_tool. NotContains(admin_tool) alone would also pass if the whole
+// event were merely dropped, so this also requires weather to survive,
+// proving the event was filtered rather than eaten.
+func TestResponseFilteringWriter_SSE_InteriorBareCRNotALineBreak(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	// A bare "\r" sits between "id":1, and "result", inside what a
+	// non-conformant-to-WHATWG (but client-accurate) reader treats as ONE
+	// data: line. "\r" is legal JSON whitespace between a comma and the next
+	// key, so the client parses this payload intact.
+	body := "data: {\"jsonrpc\":\"2.0\",\"id\":1,\r\"result\":" +
+		`{"tools":[{"name":"weather"},{"name":"admin_tool"}]}}` + "\n\n"
+
+	_, err := rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool",
+		"a bare CR inside a single data: payload must not split the line and truncate it past the filter")
+	assert.Contains(t, out, "weather",
+		"the authorized tool must survive filtering, proving the event was filtered rather than dropped")
+}
+
+// TestResponseFilteringWriter_SSE_InteriorExoticWhitespaceAcrossDataLines is a
+// regression test for a client-divergence bypass distinct from the leading-
+// whitespace case above: the go-sdk client TrimSpaces each data: value
+// independently before joining them with LF (mcp/event.go), but a single
+// whole-buffer trim (applied once, after joining) only reaches the very
+// front and back of the assembled payload. An exotic unicode.IsSpace byte
+// (one of U+000B, U+000C, U+0085, U+00A0, U+1680, U+3000 -- whitespace to the
+// client's trim but not to Go's own JSON scanner) sitting at the boundary
+// BETWEEN two data: lines of the same event survives a whole-buffer trim,
+// because it's never at either edge of the joined result. That leaves an
+// illegal byte mid-token for our decoder while the client's own per-value
+// trim removes it before joining, so the client parses fine while ours
+// rejects the payload as undecodable and (pre-fix) re-emitted it raw.
+func TestResponseFilteringWriter_SSE_InteriorExoticWhitespaceAcrossDataLines(t *testing.T) {
+	t.Parallel()
+
+	exoticBytes := []struct {
+		name   string
+		suffix string
+	}{
+		{name: "U+000B line tabulation", suffix: "\u000B"},
+		{name: "U+000C form feed", suffix: "\u000C"},
+		{name: "U+0085 next line", suffix: "\u0085"},
+		{name: "U+00A0 no-break space", suffix: "\u00A0"},
+		{name: "U+1680 ogham space mark", suffix: "\u1680"},
+		{name: "U+3000 ideographic space", suffix: "\u3000"},
+	}
+
+	for _, tc := range exoticBytes {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer := newWeatherOnlyAuthorizer(t)
+			req := newUser1Request(t)
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+			// Two data: lines, no blank line between them, so they belong to
+			// the SAME event and their values concatenate. The exotic byte
+			// trails the first value, sitting exactly at the interior join
+			// boundary once assembled -- never at the front or back of the
+			// whole buffer.
+			body := `data: {"jsonrpc":"2.0","id":1,` + tc.suffix + "\n" +
+				`data: "result":{"tools":[{"name":"weather"},{"name":"admin_tool"}]}}` + "\n\n"
+
+			_, err := rfw.Write([]byte(body))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			out := rr.Body.String()
+			assert.NotContains(t, out, "admin_tool",
+				"exotic whitespace at an interior data: value boundary must not bypass the filter")
+			assert.Contains(t, out, "weather",
+				"the authorized tool must survive filtering, proving the event was filtered rather than dropped")
 		})
 	}
 }

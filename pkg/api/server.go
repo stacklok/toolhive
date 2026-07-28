@@ -37,6 +37,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
@@ -49,6 +50,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/plugins/adapters"
+	"github.com/stacklok/toolhive/pkg/plugins/pluginsvc"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
@@ -78,21 +82,23 @@ const (
 
 // ServerBuilder provides a fluent interface for building and configuring the API server
 type ServerBuilder struct {
-	address          string
-	isUnixSocket     bool
-	debugMode        bool
-	enableDocs       bool
-	nonce            string
-	oidcConfig       *auth.TokenValidatorConfig
-	otelEnabled      bool
-	middlewares      []func(http.Handler) http.Handler
-	customRoutes     map[string]http.Handler
-	containerRuntime runtime.Runtime
-	clientManager    client.Manager
-	workloadManager  workloads.Manager
-	groupManager     groups.Manager
-	skillManager     skills.SkillService
-	skillStoreCloser io.Closer
+	address           string
+	isUnixSocket      bool
+	debugMode         bool
+	enableDocs        bool
+	nonce             string
+	oidcConfig        *auth.TokenValidatorConfig
+	otelEnabled       bool
+	middlewares       []func(http.Handler) http.Handler
+	customRoutes      map[string]http.Handler
+	containerRuntime  runtime.Runtime
+	clientManager     client.Manager
+	workloadManager   workloads.Manager
+	groupManager      groups.Manager
+	skillManager      skills.SkillService
+	skillStoreCloser  io.Closer
+	pluginManager     plugins.PluginService
+	pluginStoreCloser io.Closer
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -283,46 +289,111 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 	}
 
 	if b.skillManager == nil {
-		store, storeErr := sqlite.NewDefaultSkillStore()
-		if storeErr != nil {
-			return fmt.Errorf("failed to create skill store: %w", storeErr)
+		if err := b.createDefaultSkillManager(); err != nil {
+			return err
 		}
-		b.skillStoreCloser = store
-		cm, cmErr := client.NewClientManager()
-		if cmErr != nil {
-			_ = store.Close()
-			return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
-		}
-
-		ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
-		if ociErr != nil {
-			_ = store.Close()
-			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
-		}
-		ociRegistry, regErr := newOCIRegistryClient()
-		if regErr != nil {
-			_ = store.Close()
-			// ociStore is directory-backed with no open handles; no cleanup needed.
-			return fmt.Errorf("failed to create OCI registry client: %w", regErr)
-		}
-		packager := ociskills.NewPackager(ociStore)
-
-		skillOpts := []skillsvc.Option{
-			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
-			skillsvc.WithOCIStore(ociStore),
-			skillsvc.WithPackager(packager),
-			skillsvc.WithRegistryClient(ociRegistry),
-			skillsvc.WithGroupManager(b.groupManager),
-		}
-
-		skillOpts = append(skillOpts,
-			skillsvc.WithSkillLookup(lazySkillLookup{}),
-			skillsvc.WithGitResolver(gitresolver.NewResolver()),
-		)
-
-		b.skillManager = skillsvc.New(store, skillOpts...)
 	}
 
+	if b.pluginManager == nil {
+		if err := b.createDefaultPluginManager(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// createDefaultSkillManager builds the default skill service (skillsvc.New)
+// wired with a SQLite skill store, the OCI skill store/packager/registry,
+// a path resolver backed by the client manager, the group manager, the
+// lazy registry lookup, and the git resolver.
+func (b *ServerBuilder) createDefaultSkillManager() error {
+	store, storeErr := sqlite.NewDefaultSkillStore()
+	if storeErr != nil {
+		return fmt.Errorf("failed to create skill store: %w", storeErr)
+	}
+	b.skillStoreCloser = store
+	cm, cmErr := client.NewClientManager()
+	if cmErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
+	}
+
+	ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
+	if ociErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
+	}
+	ociRegistry, regErr := newOCIRegistryClient()
+	if regErr != nil {
+		_ = store.Close()
+		// ociStore is directory-backed with no open handles; no cleanup needed.
+		return fmt.Errorf("failed to create OCI registry client: %w", regErr)
+	}
+	packager := ociskills.NewPackager(ociStore)
+
+	skillOpts := []skillsvc.Option{
+		skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
+		skillsvc.WithOCIStore(ociStore),
+		skillsvc.WithPackager(packager),
+		skillsvc.WithRegistryClient(ociRegistry),
+		skillsvc.WithGroupManager(b.groupManager),
+	}
+
+	skillOpts = append(skillOpts,
+		skillsvc.WithSkillLookup(lazySkillLookup{}),
+		skillsvc.WithGitResolver(gitresolver.NewResolver()),
+	)
+
+	b.skillManager = skillsvc.New(store, skillOpts...)
+	return nil
+}
+
+// createDefaultPluginManager builds the default plugin service (pluginsvc.New)
+// wired with a SQLite plugin store, the OCI plugin store/packager/registry,
+// per-client materialization adapters, and the group manager. Mirrors the
+// skill-manager block in createDefaultManagers.
+func (b *ServerBuilder) createDefaultPluginManager() error {
+	store, storeErr := sqlite.NewDefaultPluginStore()
+	if storeErr != nil {
+		return fmt.Errorf("failed to create plugin store: %w", storeErr)
+	}
+	b.pluginStoreCloser = store
+	cm, cmErr := client.NewClientManager()
+	if cmErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create client manager for plugins: %w", cmErr)
+	}
+
+	ociStore, ociErr := ociplugins.NewStore(ociplugins.DefaultStoreRoot())
+	if ociErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create OCI plugin store: %w", ociErr)
+	}
+	ociRegistry, regErr := newPluginOCIRegistryClient()
+	if regErr != nil {
+		_ = store.Close()
+		// ociStore is directory-backed with no open handles; no cleanup needed.
+		return fmt.Errorf("failed to create plugin OCI registry client: %w", regErr)
+	}
+	packager := ociplugins.NewPackager(ociStore)
+
+	materializers := map[string]plugins.MaterializationAdapter{
+		string(client.ClaudeCode): adapters.NewClaudeCodeAdapter(cm),
+		string(client.Codex):      adapters.NewCodexAdapter(cm),
+	}
+
+	pluginOpts := []pluginsvc.Option{
+		pluginsvc.WithStore(store),
+		pluginsvc.WithOCIStore(ociStore),
+		pluginsvc.WithPackager(packager),
+		pluginsvc.WithRegistryClient(ociRegistry),
+		pluginsvc.WithGroupManager(b.groupManager),
+		pluginsvc.WithMaterializers(materializers),
+		pluginsvc.WithClientManager(cm),
+	}
+
+	b.pluginManager = pluginsvc.New(pluginOpts...)
 	return nil
 }
 
@@ -348,6 +419,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
+		"/api/v1beta/plugins":   v1.PluginsRouter(b.pluginManager),
 		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {
@@ -437,13 +509,14 @@ func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 
 // Server represents a configured HTTP server
 type Server struct {
-	httpServer   *http.Server
-	listener     net.Listener
-	address      string
-	isUnixSocket bool
-	addrType     string
-	nonce        string
-	storeCloser  io.Closer
+	httpServer        *http.Server
+	listener          net.Listener
+	address           string
+	isUnixSocket      bool
+	addrType          string
+	nonce             string
+	skillStoreCloser  io.Closer
+	pluginStoreCloser io.Closer
 }
 
 // NewServer creates a new Server instance from a pre-configured builder
@@ -475,13 +548,14 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 	}
 
 	return &Server{
-		httpServer:   httpServer,
-		listener:     listener,
-		address:      builder.address,
-		isUnixSocket: builder.isUnixSocket,
-		addrType:     addrType,
-		nonce:        builder.nonce,
-		storeCloser:  builder.skillStoreCloser,
+		httpServer:        httpServer,
+		listener:          listener,
+		address:           builder.address,
+		isUnixSocket:      builder.isUnixSocket,
+		addrType:          addrType,
+		nonce:             builder.nonce,
+		skillStoreCloser:  builder.skillStoreCloser,
+		pluginStoreCloser: builder.pluginStoreCloser,
 	}, nil
 }
 
@@ -602,9 +676,14 @@ func (s *Server) cleanup() {
 			slog.Warn("failed to remove discovery file", "error", err)
 		}
 	}
-	if s.storeCloser != nil {
-		if err := s.storeCloser.Close(); err != nil {
+	if s.skillStoreCloser != nil {
+		if err := s.skillStoreCloser.Close(); err != nil {
 			slog.Warn("failed to close skill store", "error", err)
+		}
+	}
+	if s.pluginStoreCloser != nil {
+		if err := s.pluginStoreCloser.Close(); err != nil {
+			slog.Warn("failed to close plugin store", "error", err)
 		}
 	}
 	if s.isUnixSocket {
@@ -700,6 +779,53 @@ func ociRefHost(ref string) string {
 		return ref[:idx]
 	}
 	return ref
+}
+
+// newPluginOCIRegistryClient creates an OCI registry client for plugin
+// artifacts. In dev mode (TOOLHIVE_DEV=true), plain HTTP is used for loopback
+// registries only via devModePluginRegistryClient. Mirrors
+// newOCIRegistryClient (which is the skills analogue) but typed for the
+// toolhive-core oci/plugins package.
+func newPluginOCIRegistryClient() (ociplugins.RegistryClient, error) {
+	secure, err := ociplugins.NewRegistry()
+	if err != nil {
+		return nil, err
+	}
+	if os.Getenv("TOOLHIVE_DEV") != "true" {
+		return secure, nil
+	}
+	plain, err := ociplugins.NewRegistry(ociplugins.WithPlainHTTP(true))
+	if err != nil {
+		return nil, err
+	}
+	return &devModePluginRegistryClient{secure: secure, plain: plain}, nil
+}
+
+// devModePluginRegistryClient dispatches each Pull/Push to a plain-HTTP client
+// when the target reference's host is loopback (a local test registry), and to
+// a normal TLS client otherwise. Mirrors devModeOCIRegistryClient.
+type devModePluginRegistryClient struct {
+	secure ociplugins.RegistryClient
+	plain  ociplugins.RegistryClient
+}
+
+func (c *devModePluginRegistryClient) Pull(
+	ctx context.Context, store *ociplugins.Store, ref string,
+) (digest.Digest, error) {
+	return c.clientFor(ref).Pull(ctx, store, ref)
+}
+
+func (c *devModePluginRegistryClient) Push(
+	ctx context.Context, store *ociplugins.Store, manifestDigest digest.Digest, ref string,
+) error {
+	return c.clientFor(ref).Push(ctx, store, manifestDigest, ref)
+}
+
+func (c *devModePluginRegistryClient) clientFor(ref string) ociplugins.RegistryClient {
+	if networking.IsLocalhost(ociRefHost(ref)) {
+		return c.plain
+	}
+	return c.secure
 }
 
 // lazySkillLookup implements skillsvc.SkillLookup by resolving the registry

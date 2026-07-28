@@ -217,6 +217,9 @@ func mergeRuntimeConfig(transportType templates.TransportType, override *templat
 
 	merged.RuntimeEnv = mergeEnvMaps(defaults.RuntimeEnv, override.RuntimeEnv)
 
+	// UVWith has no defaults; the override's specifiers are used as-is.
+	merged.UVWith = override.UVWith
+
 	return merged
 }
 

@@ -154,6 +154,7 @@ type RunFlags struct {
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
+	UVWith             []string
 
 	// WebhookConfigs is a list of paths to webhook configuration files.
 	// Each file may define validating and/or mutating webhooks.
@@ -222,6 +223,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)")
 	cmd.Flags().StringArrayVar(&config.RuntimeAddPackages, "runtime-add-package", []string{},
 		"Add additional packages to install in the builder and runtime stages (can be repeated)")
+	cmd.Flags().StringArrayVar(&config.UVWith, "uv-with", []string{},
+		"Additional PEP 508 requirement specifier passed to 'uv tool install --with' for uvx:// builds, "+
+			"e.g. --uv-with 'mcp<2' to constrain a transitive dependency (can be specified multiple times)")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
 			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
@@ -495,10 +499,11 @@ func handleImageResolution(
 	// Validation here is intentionally duplicated with configureRuntimeOptions
 	// so that invalid input is caught early before registry lookups.
 	var runtimeOverride *templates.RuntimeConfig
-	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 {
+	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 || len(runFlags.UVWith) > 0 {
 		runtimeOverride = &templates.RuntimeConfig{
 			BuilderImage:       runFlags.RuntimeImage,
 			AdditionalPackages: runFlags.RuntimeAddPackages,
+			UVWith:             runFlags.UVWith,
 		}
 		if err := runtimeOverride.Validate(); err != nil {
 			return "", nil, fmt.Errorf("invalid runtime configuration: %w", err)
@@ -630,13 +635,14 @@ func configureRemoteHeaderOptions(runFlags *RunFlags) ([]runner.RunConfigBuilder
 // It validates the configuration to prevent shell injection when values
 // are interpolated into Dockerfile templates.
 func configureRuntimeOptions(runFlags *RunFlags) ([]runner.RunConfigBuilderOption, error) {
-	if runFlags.RuntimeImage == "" && len(runFlags.RuntimeAddPackages) == 0 {
+	if runFlags.RuntimeImage == "" && len(runFlags.RuntimeAddPackages) == 0 && len(runFlags.UVWith) == 0 {
 		return nil, nil
 	}
 
 	runtimeConfig := &templates.RuntimeConfig{
 		BuilderImage:       runFlags.RuntimeImage,
 		AdditionalPackages: runFlags.RuntimeAddPackages,
+		UVWith:             runFlags.UVWith,
 	}
 	if err := runtimeConfig.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid runtime configuration: %w", err)

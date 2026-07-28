@@ -197,6 +197,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --tools-override string                       Path to a JSON file containing overrides for MCP server tools names and descriptions
       --transport string                            Transport mode (sse, streamable-http or stdio)
       --trust-proxy-headers                         Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default false)
+      --uv-with stringArray                         Additional PEP 508 requirement specifier passed to 'uv tool install --with' for uvx:// builds, e.g. --uv-with 'mcp<2' to constrain a transitive dependency (can be specified multiple times)
   -v, --volume stringArray                          Mount a volume into the container (format: host-path:container-path[:ro])
       --webhook-config stringArray                  Path to webhook configuration file (can be specified multiple times to merge configs)
 ```

@@ -20,6 +20,15 @@ const maxPackageNameLength = 128
 // dots, underscores, plus signs, or hyphens.
 var packageNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+\-]*$`)
 
+// uvWithPattern matches a safe subset of PEP 508 requirement specifiers for
+// UVWith entries: a package name (optionally with extras) followed by version
+// specifiers, e.g. "mcp<2", "mcp>=1.27,<2", "pkg[extra]==1.2.*", "foo~=1.4".
+// The allowlist deliberately excludes quotes, backticks, dollar signs,
+// semicolons, parentheses, and backslashes: entries are interpolated into a
+// single-quoted shell word inside a Dockerfile RUN instruction, so anything
+// that could close the quote or expand in shell context is rejected.
+var uvWithPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+\[\],<>=!~* -]*$`)
+
 // envKeyPattern matches valid environment variable names for RuntimeEnv.
 // Must start with an uppercase letter, followed by uppercase letters, numbers, or underscores.
 var envKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
@@ -53,6 +62,12 @@ type RuntimeConfig struct {
 	// Examples for Alpine: ["git", "make", "gcc"]
 	// Examples for Debian: ["git", "build-essential"]
 	AdditionalPackages []string `json:"additional_packages,omitempty" yaml:"additional_packages,omitempty"`
+
+	// UVWith lists additional PEP 508 requirement specifiers passed to
+	// `uv tool install --with` when building uvx:// packages. Use it to
+	// constrain transitive dependencies that the package itself leaves
+	// unbounded (e.g. "mcp<2"). Ignored by npx:// and go:// builds.
+	UVWith []string `json:"uv_with,omitempty" yaml:"uv_with,omitempty"`
 
 	// RuntimeEnv contains environment variables to inject into the Dockerfile's
 	// final runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),
@@ -96,6 +111,22 @@ func (rc *RuntimeConfig) Validate() error {
 			errs = append(errs, fmt.Errorf(
 				"invalid package name %q: must match %s",
 				pkg, packageNamePattern.String(),
+			))
+		}
+	}
+
+	// Validate each UVWith entry against a strict allowlist so specifiers
+	// cannot escape the single-quoted --with argument in the uvx Dockerfile.
+	for _, spec := range rc.UVWith {
+		if len(spec) > maxPackageNameLength {
+			errs = append(errs, fmt.Errorf(
+				"uv_with specifier %q exceeds maximum length of %d characters",
+				spec, maxPackageNameLength,
+			))
+		} else if !uvWithPattern.MatchString(spec) {
+			errs = append(errs, fmt.Errorf(
+				"invalid uv_with specifier %q: must match %s",
+				spec, uvWithPattern.String(),
 			))
 		}
 	}

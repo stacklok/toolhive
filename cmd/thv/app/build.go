@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container/images"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -62,6 +63,7 @@ type BuildFlags struct {
 	Tag    string
 	Output string
 	DryRun bool
+	UVWith []string
 }
 
 func init() {
@@ -77,6 +79,9 @@ func AddBuildFlags(cmd *cobra.Command, config *BuildFlags) {
 		"(default builds an image instead of generating a Dockerfile)")
 	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "Generate Dockerfile without building (stdout output unless -o is set) "+
 		"(default false)")
+	cmd.Flags().StringArrayVar(&config.UVWith, "uv-with", []string{},
+		"Additional PEP 508 requirement specifier passed to 'uv tool install --with' for uvx:// builds, "+
+			"e.g. --uv-with 'mcp<2' to constrain a transitive dependency (can be specified multiple times)")
 }
 
 func buildCmdFunc(cmd *cobra.Command, args []string) error {
@@ -92,13 +97,22 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	buildArgs := parseCommandArguments(os.Args)
 	slog.Debug(fmt.Sprintf("Build args: %v", buildArgs)) // #nosec G706 -- buildArgs are CLI arguments we control
 
+	// Build runtime config override from flags (if any) and validate it early.
+	var runtimeOverride *templates.RuntimeConfig
+	if len(buildFlags.UVWith) > 0 {
+		runtimeOverride = &templates.RuntimeConfig{UVWith: buildFlags.UVWith}
+		if err := runtimeOverride.Validate(); err != nil {
+			return fmt.Errorf("invalid runtime configuration: %w", err)
+		}
+	}
+
 	// Create image manager (even for dry-run, we pass it but it won't be used)
 	imageManager := images.NewImageManager(ctx)
 
 	// If dry-run or output is specified, just generate the Dockerfile
 	if buildFlags.DryRun || buildFlags.Output != "" {
 		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(
-			ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, nil, true)
+			ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, runtimeOverride, true)
 		if err != nil {
 			return fmt.Errorf("failed to generate Dockerfile for %s: %w", protocolScheme, err)
 		}
@@ -121,7 +135,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Build the image using the new protocol handler with custom name
 	imageName, err := runner.BuildFromProtocolSchemeWithName(
-		ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, nil, false)
+		ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, runtimeOverride, false)
 	if err != nil {
 		return fmt.Errorf("failed to build container for %s: %w", protocolScheme, err)
 	}

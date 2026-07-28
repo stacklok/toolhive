@@ -395,7 +395,7 @@ func TestRawClientSSEResponse(t *testing.T) {
 		// split across them must still parse.
 		server := newSSEServer(t, "event: message\n"+
 			`data: {"jsonrpc":"2.0","id":3,`+"\n"+
-			`data:  "error":{"code":-32029,"message":"Rate limit exceeded"}}`+"\n\n")
+			`data:  "error":{"code":-32829,"message":"Rate limit exceeded"}}`+"\n\n")
 
 		req, err := NewLegacyRequest("tools/call", map[string]any{"name": "echo"})
 		require.NoError(t, err)
@@ -403,7 +403,7 @@ func TestRawClientSSEResponse(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotNil(t, resp.Error)
-		require.EqualValues(t, -32029, resp.Error.Code)
+		require.EqualValues(t, -32829, resp.Error.Code)
 		require.Equal(t, "Rate limit exceeded", resp.Error.Message)
 	})
 

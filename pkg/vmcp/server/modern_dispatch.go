@@ -624,7 +624,7 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // error.
 //
 // A domain error that carries its own stable JSON-RPC code and data
-// (mcpparser.CodedError — e.g. the rate limiter's -32029 with
+// (mcpparser.CodedError — e.g. the rate limiter's application-defined -32829 with
 // data.retryAfterSeconds) is written with that code rather than laundered
 // into -32603. This is the Modern counterpart of the SDK path's
 // conversion.ErrorToToolResult, whose CodedError branch preserves the same

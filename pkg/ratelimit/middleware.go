@@ -186,7 +186,7 @@ func rateLimitedBody(requestID any, retryAfter time.Duration) []byte {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return []byte(fmt.Sprintf(
-			`{"jsonrpc":"2.0","error":{"code":-32029,"message":"Rate limit exceeded","data":{"retryAfterSeconds":%.0f}}}`,
+			`{"jsonrpc":"2.0","error":{"code":-32829,"message":"Rate limit exceeded","data":{"retryAfterSeconds":%.0f}}}`,
 			retrySeconds,
 		))
 	}

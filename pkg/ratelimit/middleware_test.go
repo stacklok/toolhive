@@ -108,7 +108,7 @@ func TestRateLimitHandler_ToolCallRejected(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(body, &resp))
 	errObj := resp["error"].(map[string]any)
-	assert.Equal(t, float64(-32029), errObj["code"])
+	assert.Equal(t, float64(-32829), errObj["code"])
 	assert.Equal(t, "Rate limit exceeded", errObj["message"])
 	data := errObj["data"].(map[string]any)
 	assert.Equal(t, float64(5), data["retryAfterSeconds"])
@@ -201,7 +201,7 @@ func TestRateLimitedBody(t *testing.T) {
 func TestRateLimitedBodyMarshalFallback(t *testing.T) {
 	t.Parallel()
 
-	const want = `{"jsonrpc":"2.0","error":{"code":-32029,"message":"Rate limit exceeded","data":{"retryAfterSeconds":5}}}`
+	const want = `{"jsonrpc":"2.0","error":{"code":-32829,"message":"Rate limit exceeded","data":{"retryAfterSeconds":5}}}`
 	got := rateLimitedBody(make(chan int), 5*time.Second)
 	assert.Equal(t, want, string(got))
 	assert.NotContains(t, string(got), `"id"`)

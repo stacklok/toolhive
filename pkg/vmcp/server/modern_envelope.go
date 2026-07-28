@@ -604,12 +604,12 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 // Status is HTTP 200 deliberately: go-sdk's streamable client
 // (v1.7.0-pre.3) rejects a non-200 POST response in checkResponse BEFORE
 // decoding its body, so on any 4xx the JSON-RPC error object below —
-// including data.retryAfterSeconds on the rate limiter's -32029 — would be
+// including data.retryAfterSeconds on the rate limiter's application-defined -32829 — would be
 // discarded unread. 200 is the only status on which the client surfaces the
 // coded error to the caller. The request was accepted and processed; the
 // failure is an application-level JSON-RPC error riding the transport.
 // (writeModernMissingCapability in modern_dispatch.go documents a related
-// but distinct 200-over-4xx deviation for -32021.) Separately, -32029 sits
+// but distinct 200-over-4xx deviation for -32021.) Separately, -32829 sits
 // in the -32020..-32099 band the draft MCP spec reserves exclusively for
 // spec-defined codes; it predates that partition and its reallocation is
 // tracked in #6101.

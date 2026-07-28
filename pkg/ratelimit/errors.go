@@ -12,12 +12,10 @@ import (
 
 const (
 	// CodeRateLimited is the JSON-RPC error code for rate-limited requests.
-	// It was chosen (RFC THV-0057) when -32000..-32099 was uniformly
-	// implementation-defined, but the draft MCP spec now reserves
-	// -32020..-32099 exclusively for spec-defined codes, which this is not.
-	// The value is retained for wire compatibility; reallocation outside
-	// -32768..-32000 is tracked in #6101.
-	CodeRateLimited int64 = -32029
+	// Keep this outside JSON-RPC's reserved range (-32768..-32000) and the
+	// draft MCP spec's reserved sub-range (-32020..-32099). MCP defines no
+	// rate-limit code, so ToolHive emits this as an application-defined error.
+	CodeRateLimited int64 = -32829
 
 	// MessageRateLimited is the error message for rate-limited requests.
 	MessageRateLimited = "Rate limit exceeded"

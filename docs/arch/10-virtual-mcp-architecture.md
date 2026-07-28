@@ -514,14 +514,14 @@ sessionless by design and store nothing, a coexistence asserted end-to-end by
 limiting does not gate Modern either: the limiter is a core decorator
 (`pkg/vmcp/ratelimit`), so both eras meter the same `CallTool` seam, and the
 Modern dispatcher preserves the limiter's coded error on the wire — a real
-JSON-RPC error object, `-32029` with `data.retryAfterSeconds`
-(`writeModernCodedError`, at HTTP 200 because go-sdk rejects a non-200
-response before decoding the body, so on a 429 the error object — and its
-`retryAfterSeconds` — would be discarded unread) — where the Legacy SDK seam
-can only smuggle the same code and data into an `IsError` tool result's
-`structuredContent` (`conversion.ErrorToToolResult`). Note that `-32029` sits
-inside the draft spec's reserved band (`-32020`..`-32099`, reserved for
-spec-defined codes); reallocating it is tracked in #6101.
+JSON-RPC error object, application-defined `-32829` with
+`data.retryAfterSeconds` (`writeModernCodedError`, at HTTP 200 because go-sdk
+rejects a non-200 response before decoding the body, so on a 429 the error
+object — and its `retryAfterSeconds` — would be discarded unread) — where the
+Legacy SDK seam can only smuggle the same code and data into an `IsError` tool
+result's `structuredContent` (`conversion.ErrorToToolResult`). The code stays
+outside JSON-RPC's reserved range (`-32768`..`-32000`) and MCP's reserved
+sub-range (`-32020`..`-32099`).
 
 "Does not gate Modern" is not "costs the same", though. The limiter wraps only
 the `CallTool` seam, so the list verbs and `server/discover` are unmetered on

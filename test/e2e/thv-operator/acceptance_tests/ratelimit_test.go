@@ -122,13 +122,13 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 			Expect(status).To(Equal(http.StatusTooManyRequests),
 				"4th request should be rate limited, body: %s", string(body))
 
-			By("Verifying JSON-RPC error code -32029")
+			By("Verifying application-defined JSON-RPC error code -32829")
 			var resp map[string]any
 			Expect(json.Unmarshal(body, &resp)).To(Succeed())
 
 			errObj, ok := resp["error"].(map[string]any)
 			Expect(ok).To(BeTrue(), "response should have error object")
-			Expect(errObj["code"]).To(BeEquivalentTo(-32029))
+			Expect(errObj["code"]).To(BeEquivalentTo(-32829))
 			Expect(errObj["message"]).To(Equal("Rate limit exceeded"))
 
 			data, ok := errObj["data"].(map[string]any)
@@ -314,13 +314,13 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 			By("Verifying Retry-After header is present (AC12)")
 			Expect(retryAfter).ToNot(BeEmpty(), "Retry-After header should be set on 429 response")
 
-			By("Verifying JSON-RPC error code -32029 with retryAfterSeconds")
+			By("Verifying application-defined JSON-RPC error code -32829 with retryAfterSeconds")
 			var resp map[string]any
 			Expect(json.Unmarshal(body, &resp)).To(Succeed())
 
 			errObj, ok := resp["error"].(map[string]any)
 			Expect(ok).To(BeTrue(), "response should have error object")
-			Expect(errObj["code"]).To(BeEquivalentTo(-32029))
+			Expect(errObj["code"]).To(BeEquivalentTo(-32829))
 
 			data, ok := errObj["data"].(map[string]any)
 			Expect(ok).To(BeTrue(), "error should have data object")

@@ -6,6 +6,7 @@ package toolstore
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -113,7 +114,7 @@ func TestSQLiteToolStore_UpsertTools(t *testing.T) {
 			}
 			require.NoError(t, store.UpsertTools(ctx, tc.upsert))
 
-			results, err := store.Search(ctx, tc.searchQuery, tc.allowedTools)
+			results, err := store.Search(ctx, types.SearchQuery{Description: tc.searchQuery}, tc.allowedTools)
 			require.NoError(t, err)
 			require.Len(t, results, tc.wantLen)
 			if tc.wantDesc != "" && len(results) > 0 {
@@ -149,6 +150,7 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 		name         string
 		tools        []server.ServerTool
 		query        string
+		keywords     []string
 		allowedTools []string
 		wantNames    []string
 		wantNonEmpty bool // just assert results are non-empty (when exact names vary)
@@ -241,6 +243,39 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 			allowedTools: []string{"generic_tool", "search_tool"},
 			wantNonEmpty: true,
 		},
+		{
+			name: "keywords surface a tool the description alone misses",
+			tools: makeTools(
+				mcp.NewTool("run_query", mcp.WithDescription("Executes arbitrary commands against a Postgres datastore")),
+			),
+			query:        "do something with data",
+			keywords:     []string{"postgres"},
+			allowedTools: []string{"run_query"},
+			wantNames:    []string{"run_query"},
+		},
+		{
+			// Negative twin of the case above. Without it, that case would keep
+			// passing if keywords were ignored but the description happened to
+			// start matching (say, if "data" left problematicWords).
+			name: "same description without keywords finds nothing",
+			tools: makeTools(
+				mcp.NewTool("run_query", mcp.WithDescription("Executes arbitrary commands against a Postgres datastore")),
+			),
+			query:        "do something with data",
+			keywords:     nil,
+			allowedTools: []string{"run_query"},
+			wantNames:    nil,
+		},
+		{
+			name: "keywords all problematic falls back to description",
+			tools: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
+			),
+			query:        "read disk",
+			keywords:     []string{"table", "schema"},
+			allowedTools: []string{"read_file"},
+			wantNames:    []string{"read_file"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -251,7 +286,7 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 
 			require.NoError(t, store.UpsertTools(ctx, tc.tools))
 
-			results, err := store.Search(ctx, tc.query, tc.allowedTools)
+			results, err := store.Search(ctx, types.SearchQuery{Description: tc.query, Keywords: tc.keywords}, tc.allowedTools)
 			require.NoError(t, err)
 
 			if tc.wantNonEmpty {
@@ -307,7 +342,7 @@ func TestSQLiteToolStore_Search_ResultsCapped(t *testing.T) {
 			)
 			require.NoError(t, store.UpsertTools(ctx, tools))
 
-			results, err := store.Search(ctx, "file", toolNames(tools))
+			results, err := store.Search(ctx, types.SearchQuery{Description: "file"}, toolNames(tools))
 			require.NoError(t, err)
 			require.LessOrEqual(t, len(results), tc.wantMax,
 				"results should be capped at %d", tc.wantMax)
@@ -372,7 +407,7 @@ func TestSQLiteToolStore_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			// Pass a known tool name so we don't hit the empty-allowedTools shortcut
-			_, err := store.Search(ctx, "tool", []string{"tool_0"})
+			_, err := store.Search(ctx, types.SearchQuery{Description: "tool"}, []string{"tool_0"})
 			if err != nil {
 				t.Errorf("concurrent search failed for goroutine %d: %v", idx, err)
 			}
@@ -415,10 +450,82 @@ func TestSQLiteToolStore_HybridSearch(t *testing.T) {
 	require.NoError(t, store.UpsertTools(ctx, tools))
 
 	// Hybrid search should return results from both FTS5 and semantic
-	results, err := store.Search(ctx, "file", toolNames(tools))
+	results, err := store.Search(ctx, types.SearchQuery{Description: "file"}, toolNames(tools))
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 	require.LessOrEqual(t, len(results), DefaultMaxToolsToReturn)
+}
+
+// TestSQLiteToolStore_SemanticArmEmbedsDescriptionOnly pins half of the hybrid
+// design: whatever the keywords are, the semantic arm embeds Description and
+// nothing else. A regression that embedded the keywords, or a concatenation of
+// both fields, would go unnoticed through result assertions alone, because the
+// merged set can look identical either way.
+//
+// The other half, keywords driving the lexical arm, is covered by the
+// "keywords surface a tool the description alone misses" case in
+// TestSQLiteToolStore_Search, which runs FTS5-only so the semantic arm cannot
+// mask the result.
+func TestSQLiteToolStore_SemanticArmEmbedsDescriptionOnly(t *testing.T) {
+	t.Parallel()
+	client := newFakeEmbeddingClient(384)
+	store := newTestStore(t, client, nil)
+	ctx := context.Background()
+
+	tools := makeTools(
+		mcp.NewTool("run_query", mcp.WithDescription("Executes arbitrary commands against a Postgres datastore")),
+		mcp.NewTool("send_email", mcp.WithDescription("Send an email message")),
+	)
+	require.NoError(t, store.UpsertTools(ctx, tools))
+
+	_, err := store.Search(ctx, types.SearchQuery{
+		Description: "do something with data",
+		Keywords:    []string{"postgres", "sql"},
+	}, toolNames(tools))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"do something with data"}, client.embeddedTexts(),
+		"semantic arm must embed Description verbatim, never the keywords")
+}
+
+// TestSQLiteToolStore_KeywordsOnly covers a SearchQuery with no description.
+// FindTool rejects that upstream, but the store is a separate unit.
+func TestSQLiteToolStore_KeywordsOnly(t *testing.T) {
+	t.Parallel()
+
+	tools := makeTools(
+		mcp.NewTool("github_create_issue", mcp.WithDescription("Create a GitHub issue")),
+		mcp.NewTool("slack_send_message", mcp.WithDescription("Send a Slack message")),
+	)
+
+	t.Run("keywords alone drive the lexical arm", func(t *testing.T) {
+		t.Parallel()
+		// FTS5-only, so the semantic arm cannot supply the match.
+		store := newTestStore(t, nil, nil)
+		ctx := context.Background()
+		require.NoError(t, store.UpsertTools(ctx, tools))
+
+		results, err := store.Search(ctx, types.SearchQuery{
+			Keywords: []string{"github"},
+		}, toolNames(tools))
+		require.NoError(t, err)
+		require.Equal(t, []string{"github_create_issue"}, matchNames(results))
+	})
+
+	t.Run("hybrid tolerates an empty description", func(t *testing.T) {
+		t.Parallel()
+		client := newFakeEmbeddingClient(384)
+		store := newTestStore(t, client, nil)
+		ctx := context.Background()
+		require.NoError(t, store.UpsertTools(ctx, tools))
+
+		_, err := store.Search(ctx, types.SearchQuery{
+			Keywords: []string{"github"},
+		}, toolNames(tools))
+		require.NoError(t, err)
+		// The semantic arm still runs and embeds the empty description.
+		require.Equal(t, []string{""}, client.embeddedTexts())
+	})
 }
 
 func TestSQLiteToolStore_ConcurrentSemantic(t *testing.T) {
@@ -440,7 +547,7 @@ func TestSQLiteToolStore_ConcurrentSemantic(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			_, err := store.Search(ctx, "file", toolNames(tools))
+			_, err := store.Search(ctx, types.SearchQuery{Description: "file"}, toolNames(tools))
 			if err != nil {
 				t.Errorf("concurrent semantic search failed for goroutine %d: %v", idx, err)
 			}
@@ -460,41 +567,55 @@ func TestSQLiteToolStore_EmbeddingRoundTrip(t *testing.T) {
 	require.Equal(t, original, decoded)
 }
 
-func TestSanitizeFTS5Query(t *testing.T) {
+// TestSanitizeFTS5Terms covers both callers of the sanitizer: an explicit
+// keyword list, and the words of a description. Both converge on the same
+// function, so a single-element slice containing spaces exercises the same
+// whitespace split that strings.Fields(description) produces.
+func TestSanitizeFTS5Terms(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		input    string
+		name     string
+		terms    []string
 		wantExpr string
 	}{
-		{input: "simple", wantExpr: `"simple"`},
-		{input: "two words", wantExpr: `"two" OR "words"`},
-		{input: "hello world foo", wantExpr: `"hello" OR "world" OR "foo"`},
-		{input: "", wantExpr: ""},
-		{input: "   ", wantExpr: ""},
+		{name: "single term", terms: []string{"simple"}, wantExpr: `"simple"`},
+		{name: "two terms", terms: []string{"two", "words"}, wantExpr: `"two" OR "words"`},
+		{name: "three terms", terms: []string{"hello", "world", "foo"}, wantExpr: `"hello" OR "world" OR "foo"`},
+		{name: "nil list", terms: nil, wantExpr: ""},
+		{name: "whitespace-only entry", terms: []string{"   "}, wantExpr: ""},
+		{name: "empty string entry", terms: []string{""}, wantExpr: ""},
 
-		// Special chars are NOT stripped (unlike previous behavior)
-		{input: "key:value", wantExpr: `"key:value"`},
-		{input: `"quoted"`, wantExpr: `"""quoted"""`},
-		{input: "read*", wantExpr: `"read*"`},
-		{input: "***", wantExpr: `"***"`},
-		{input: "read + file", wantExpr: `"read" OR "+" OR "file"`},
+		// Special chars are NOT stripped; quoting makes them inert to FTS5.
+		{name: "colon", terms: []string{"key:value"}, wantExpr: `"key:value"`},
+		{name: "embedded quotes", terms: []string{`"quoted"`}, wantExpr: `"""quoted"""`},
+		{name: "trailing star", terms: []string{"read*"}, wantExpr: `"read*"`},
+		{name: "all stars", terms: []string{"***"}, wantExpr: `"***"`},
+		{name: "plus operator", terms: []string{"read", "+", "file"}, wantExpr: `"read" OR "+" OR "file"`},
 
-		// Problematic words trigger phrase search
-		{input: "name value", wantExpr: `"name value"`},
-		{input: "search description fast", wantExpr: `"search description fast"`},
-		{input: "read tool write", wantExpr: `"read tool write"`},
-		{input: "schema definition", wantExpr: `"schema definition"`},
+		// Problematic words are dropped, not phrase-searched. A phrase search
+		// would demand exact adjacency and reliably match nothing.
+		{name: "problematic word dropped", terms: []string{"name", "lookup"}, wantExpr: `"lookup"`},
+		{name: "problematic word in middle", terms: []string{"search", "description", "fast"}, wantExpr: `"search" OR "fast"`},
+		{name: "problematic word leaves two", terms: []string{"read", "tool", "write"}, wantExpr: `"read" OR "write"`},
+		{name: "problematic word leaves one", terms: []string{"schema", "definition"}, wantExpr: `"definition"`},
+		{name: "all problematic", terms: []string{"table", "schema"}, wantExpr: ""},
+		{name: "mixed problematic and valid", terms: []string{"table", "postgres"}, wantExpr: `"postgres"`},
 
-		// Non-problematic multi-word queries use OR
-		{input: "read write", wantExpr: `"read" OR "write"`},
-		{input: "github slack", wantExpr: `"github" OR "slack"`},
+		// A single entry containing spaces splits, matching the description path.
+		{name: "multi-word entry splits", terms: []string{"list issues"}, wantExpr: `"list" OR "issues"`},
+		{name: "multi-word entry drops problematic", terms: []string{"name lookup"}, wantExpr: `"lookup"`},
+		{name: "every word problematic yields empty", terms: []string{"name value"}, wantExpr: ""},
+
+		{name: "duplicates deduped", terms: []string{"github", "github"}, wantExpr: `"github"`},
+		{name: "dedup is case-insensitive", terms: []string{"GitHub", "github"}, wantExpr: `"GitHub"`},
+		{name: "escapes embedded quote", terms: []string{`db"name`}, wantExpr: `"db""name"`},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			gotExpr := sanitizeFTS5Query(tt.input)
+			gotExpr := sanitizeFTS5Terms(tt.terms)
 			require.Equal(t, tt.wantExpr, gotExpr)
 		})
 	}
@@ -713,14 +834,45 @@ func TestSQLiteToolStore_SemanticDistanceThreshold(t *testing.T) {
 // import cycles.
 type fakeEmbeddingClient struct {
 	dim int
+
+	// mu guards embedded, which Search writes from an errgroup goroutine.
+	mu sync.Mutex
+	// embedded records every text passed to Embed, so tests can assert which
+	// SearchQuery field reaches the semantic arm.
+	embedded []string
 }
 
 func newFakeEmbeddingClient(dim int) *fakeEmbeddingClient {
 	return &fakeEmbeddingClient{dim: dim}
 }
 
+// embeddedTexts returns the texts passed to Embed so far. EmbedBatch, used on
+// the write path by UpsertTools, is deliberately not recorded.
+func (f *fakeEmbeddingClient) embeddedTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.embedded)
+}
+
 func (f *fakeEmbeddingClient) Embed(_ context.Context, text string) ([]float32, error) {
-	// Simple deterministic hash: use string bytes as seed
+	f.mu.Lock()
+	f.embedded = append(f.embedded, text)
+	f.mu.Unlock()
+
+	return f.embedVector(text), nil
+}
+
+func (f *fakeEmbeddingClient) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i, text := range texts {
+		result[i] = f.embedVector(text)
+	}
+	return result, nil
+}
+
+// embedVector produces the deterministic vector without recording the text,
+// keeping embeddedTexts limited to the read path.
+func (f *fakeEmbeddingClient) embedVector(text string) []float32 {
 	vec := make([]float32, f.dim)
 	for i := range vec {
 		// Use text bytes to generate deterministic values
@@ -730,19 +882,7 @@ func (f *fakeEmbeddingClient) Embed(_ context.Context, text string) ([]float32, 
 		}
 		vec[i] = float32(b)/128.0 - 1.0 + float32(i)*0.001
 	}
-	return vec, nil
-}
-
-func (f *fakeEmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	result := make([][]float32, len(texts))
-	for i, text := range texts {
-		vec, err := f.Embed(ctx, text)
-		if err != nil {
-			return nil, err
-		}
-		result[i] = vec
-	}
-	return result, nil
+	return vec
 }
 
 func (*fakeEmbeddingClient) Close() error { return nil }

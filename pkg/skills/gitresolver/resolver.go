@@ -45,6 +45,11 @@ type ResolveResult struct {
 	Files []FileEntry
 	// CommitHash is the git commit hash (for digest/upgrade detection)
 	CommitHash string
+	// CommitSignature is the armored signature attached to the resolved
+	// commit, empty when the commit is unsigned. It is UNVERIFIED here —
+	// the install-time verifier checks it cryptographically before it is
+	// trusted or recorded as provenance.
+	CommitSignature string
 }
 
 // FileEntry represents a single file from the cloned repository.
@@ -136,10 +141,11 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	}
 	defer client.Cleanup(ctx, repoInfo) //nolint:errcheck // best-effort cleanup
 
-	// Get commit hash for digest tracking
-	commitHash, err := client.HeadCommitHash(repoInfo)
+	// Get the commit hash (for digest tracking) and its signature in one
+	// lookup, so both describe the same commit.
+	head, err := client.HeadCommit(repoInfo)
 	if err != nil {
-		return nil, fmt.Errorf("getting commit hash: %w", err)
+		return nil, fmt.Errorf("getting HEAD commit: %w", err)
 	}
 
 	// Read SKILL.md from the skill path
@@ -173,9 +179,10 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	}
 
 	return &ResolveResult{
-		SkillConfig: parsed,
-		Files:       files,
-		CommitHash:  commitHash,
+		SkillConfig:     parsed,
+		Files:           files,
+		CommitHash:      head.Hash,
+		CommitSignature: head.Signature,
 	}, nil
 }
 

@@ -37,11 +37,22 @@ type Client interface {
 	// GetFileContent retrieves the content of a file from the repository
 	GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error)
 
-	// HeadCommitHash returns the commit hash of the HEAD reference.
-	HeadCommitHash(repoInfo *RepositoryInfo) (string, error)
+	// HeadCommit returns the hash and signature of the HEAD commit.
+	HeadCommit(repoInfo *RepositoryInfo) (HeadCommit, error)
 
 	// Cleanup removes local repository directory
 	Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error
+}
+
+// HeadCommit describes the HEAD commit of a cloned repository.
+type HeadCommit struct {
+	// Hash is the commit hash.
+	Hash string
+	// Signature is the armored signature attached to the commit, empty
+	// when the commit is unsigned. The signature is UNVERIFIED — it is
+	// whatever bytes the commit carries; callers must cryptographically
+	// verify it before treating it as provenance.
+	Signature string
 }
 
 // DefaultGitClient implements Client using go-git
@@ -251,16 +262,23 @@ func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 	return nil
 }
 
-// HeadCommitHash returns the commit hash of the HEAD reference.
-func (*DefaultGitClient) HeadCommitHash(repoInfo *RepositoryInfo) (string, error) {
+// HeadCommit returns the hash and (unverified) signature of the HEAD
+// commit in a single lookup, so both describe the same commit.
+func (*DefaultGitClient) HeadCommit(repoInfo *RepositoryInfo) (HeadCommit, error) {
 	if repoInfo == nil || repoInfo.Repository == nil {
-		return "", ErrNilRepository
+		return HeadCommit{}, ErrNilRepository
 	}
 
 	ref, err := repoInfo.Repository.Head()
 	if err != nil {
-		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
+		return HeadCommit{}, fmt.Errorf("failed to get HEAD reference: %w", err)
 	}
-
-	return ref.Hash().String(), nil
+	commit, err := repoInfo.Repository.CommitObject(ref.Hash())
+	if err != nil {
+		return HeadCommit{}, fmt.Errorf("failed to read HEAD commit: %w", err)
+	}
+	return HeadCommit{
+		Hash:      ref.Hash().String(),
+		Signature: commit.PGPSignature,
+	}, nil
 }

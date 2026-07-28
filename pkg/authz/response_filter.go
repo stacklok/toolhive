@@ -326,7 +326,14 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 		return event
 	}
 
-	assembled := bytes.Join(dataValues, []byte("\n"))
+	// TrimSpace here, not inside the decoders. Go's JSON scanner treats only
+	// SP, TAB, CR and LF as whitespace, but unicode.IsSpace also covers U+000B,
+	// U+000C, U+0085, U+00A0, U+1680 and U+3000 — and the go-sdk client trims
+	// its data buffer with exactly this function (mcp/event.go). Leaving those
+	// bytes on meant DecodeMessage and carriesResult both rejected the payload
+	// while the client happily parsed it, so the event fell through to the
+	// undecodable branch and the unfiltered list went out (#5257).
+	assembled := bytes.TrimSpace(bytes.Join(dataValues, []byte("\n")))
 	if len(assembled) == 0 {
 		// A client never dispatches an empty data buffer, so there's nothing
 		// to classify or fail closed on.
@@ -334,7 +341,28 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 	}
 	replacement := rfw.filterSSEEventData(assembled)
 	if replacement == nil {
-		return event
+		// filterSSEEventData's own carriesResult scan stops at the first
+		// undecodable JSON value in the assembled (joined) payload, so a
+		// well-formed result-bearing value sitting right after a malformed
+		// one within the SAME event would otherwise ride through as
+		// "undecodable, nothing to filter" -- reopening the split-payload
+		// bypass this rewrite exists to close (#5257), just one line lower
+		// than before. Probe each data: value independently before
+		// conceding the event needs no filtering: this only ever turns a
+		// pass-through into a fail-closed error envelope, never the
+		// reverse, so it cannot itself reintroduce a bypass.
+		for _, v := range dataValues {
+			if carriesResult(v) {
+				slog.Warn("SSE event's assembled payload was undecodable but an individual data value carries a result; failing closed",
+					"method", rfw.method)
+				replacement = rfw.errorResponseBody(rfw.requestID(),
+					errors.New("dropped a frame carrying a result outside a clean Response"))
+				break
+			}
+		}
+		if replacement == nil {
+			return event
+		}
 	}
 
 	out := make([]sseLine, 0, len(event))

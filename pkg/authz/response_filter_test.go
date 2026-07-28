@@ -2022,3 +2022,317 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 		})
 	}
 }
+
+// TestResponseFilteringWriter_SSE_LeadingNonJSONWhitespaceStillFiltered is a
+// regression test for the assembled-payload TrimSpace fix: Go's JSON scanner
+// only treats SP/TAB/CR/LF as whitespace, but unicode.IsSpace (and the
+// go-sdk client's own buffer trim, mcp/event.go) also covers U+000B, U+000C,
+// U+0085, U+00A0, U+1680 and U+3000. Any of those left on the front of the
+// assembled payload made DecodeMessage and carriesResult both reject it while
+// the client parsed it fine, so the event fell to the undecodable-passthrough
+// branch and the unfiltered list went out (#5257).
+//
+// NotContains on admin_tool alone would also be satisfied by the event
+// failing closed, which would silently degrade every legitimate response
+// that happens to carry leading whitespace -- so each case also requires the
+// permitted tool to survive, proving the event was filtered, not dropped.
+func TestResponseFilteringWriter_SSE_LeadingNonJSONWhitespaceStillFiltered(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	encoded, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultJSON),
+	})
+	require.NoError(t, err)
+
+	testCases := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "no prefix (baseline)", prefix: ""},
+		{name: "U+000B line tabulation", prefix: "\u000B"},
+		{name: "U+000C form feed", prefix: "\u000C"},
+		{name: "U+0085 next line", prefix: "\u0085"},
+		{name: "U+00A0 no-break space", prefix: "\u00A0"},
+		{name: "U+1680 ogham space mark", prefix: "\u1680"},
+		{name: "U+3000 ideographic space", prefix: "\u3000"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := newUser1Request(t)
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+			body := "data: " + tc.prefix + string(encoded) + "\n\n"
+			_, err := rfw.Write([]byte(body))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			out := rr.Body.String()
+			assert.NotContains(t, out, "admin_tool",
+				"a leading non-JSON-whitespace byte before the payload must not bypass the filter")
+			assert.Contains(t, out, "weather",
+				"the permitted tool must survive filtering, proving the event was filtered rather than dropped")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_SSE_PerValueProbeCatchesConcatenatedGarbage is a
+// regression test for the per-value probe added to resolveSSEEvent: one
+// malformed data: value anywhere in an event used to give up filtering for
+// the WHOLE event. Concretely, "garbage" followed (no blank line, so same
+// event) by a genuine result-bearing frame assembles into
+// "garbage\n{...result...}"; jsonrpc2.DecodeMessage stops at "garbage" and
+// carriesResult on the whole joined payload does too, so both lines went out
+// unfiltered. The fix probes each data: value independently before
+// conceding the event needs no filtering.
+func TestResponseFilteringWriter_SSE_PerValueProbeCatchesConcatenatedGarbage(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	encoded, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultJSON),
+	})
+	require.NoError(t, err)
+
+	testCases := []struct {
+		name    string
+		garbage string
+	}{
+		{name: "plain garbage prefix", garbage: "garbage"},
+		{name: "comment-like prefix", garbage: "//comment"},
+		{name: "bare NaN prefix", garbage: "NaN"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			joined := tc.garbage + "\n" + string(encoded)
+			_, decErr := jsonrpc2.DecodeMessage([]byte(joined))
+			require.Error(t, decErr,
+				"test fixture assumption broken: assembled payload must not decode as a single Response")
+			require.False(t, carriesResult([]byte(joined)),
+				"test fixture assumption broken: the whole-payload scan must not itself catch the smuggled result "+
+					"-- otherwise this test would not exercise the per-value probe at all")
+
+			req := newUser1Request(t)
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+			// One event, two data: lines with no blank line between them, so
+			// WHATWG assembly joins them with LF into one payload the
+			// decoder gives up on at the first byte.
+			body := "data: " + tc.garbage + "\n" + "data: " + string(encoded) + "\n\n"
+			_, err := rfw.Write([]byte(body))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			out := rr.Body.String()
+			assert.NotContains(t, out, "admin_tool",
+				"a result-bearing data: line following a malformed one in the same event must not bypass the filter")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_SSE_FailClosedDoesNotLeakSubsequentEvents pins
+// the #6037 fail-closed property that neither the event-based rewrite nor the
+// TrimSpace fix's tests cover: after a mid-stream event fails to filter and
+// is replaced with an error envelope, the loop must keep filtering every
+// event that follows, not fall back to passing the remainder of the stream
+// through raw. failingFrame is a Response carrying both "error" and "result"
+// (see TestResponseFilteringWriter_SSE_ErrorAndResultBypass), a real
+// reachable trigger for the fail-closed branch on this path.
+func TestResponseFilteringWriter_SSE_FailClosedDoesNotLeakSubsequentEvents(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+
+	failingFrame := `{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x"},` +
+		`"result":{"tools":[{"name":"admin_tool"}]}}`
+
+	// The second event carries an authorized tool alongside the denied one on
+	// purpose. A NotContains check alone would also be satisfied by the loop
+	// TRUNCATING the stream after the failure — writing nothing downstream — so
+	// it would pass under exactly the regression this test exists to catch.
+	// Asserting the authorized tool survives is what proves the loop kept
+	// filtering rather than giving up. Do not reduce this to one assertion.
+	stream := "data: " + failingFrame + "\n\n" +
+		"data: " + `{"jsonrpc":"2.0","id":9,"result":{"tools":[{"name":"weather"},{"name":"admin_tool"}]}}` + "\n\n"
+
+	req := newUser1Request(t)
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	_, err := rfw.Write([]byte(stream))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool",
+		"a smuggled-result event after a mid-stream filter failure must still be filtered, not passed through raw")
+	assert.Contains(t, out, "weather",
+		"the authorized tool proves the loop kept filtering after the failure instead of truncating the stream")
+	assert.Contains(t, out, `"error"`,
+		"the failing event must still emit its correlatable error envelope")
+}
+
+// sseEvent is one event dispatched by parseSSEStream.
+type sseEvent struct {
+	eventType string
+	data      string
+}
+
+// parseSSEStream implements the WHATWG EventSource parsing grammar strictly,
+// so tests assert actual client-visible delivery rather than merely
+// conformant-looking bytes: after #6066 the error payload can look correct
+// on the wire while never being dispatched to a client at all (e.g. a bare
+// JSON object with no "data:" prefix). Only what this dispatches counts as
+// delivered.
+//
+// Per the grammar: lines end at CRLF, LF, or CR; a leading ':' marks a
+// comment line with no effect; a "name:value" line strips exactly one
+// leading space from the value; a line with no colon is a field with an
+// empty value; only "data" and "event" have any effect, every other field
+// name is ignored outright; a blank line dispatches the event only if the
+// data buffer is non-empty (and is reset either way); any data left
+// buffered at EOF is discarded, never dispatched.
+func parseSSEStream(t *testing.T, body []byte) []sseEvent {
+	t.Helper()
+
+	var events []sseEvent
+	var eventType string
+	var dataLines []string
+
+	dispatch := func() {
+		if len(dataLines) > 0 {
+			events = append(events, sseEvent{eventType: eventType, data: strings.Join(dataLines, "\n")})
+		}
+		eventType = ""
+		dataLines = nil
+	}
+
+	for len(body) > 0 {
+		idx := bytes.IndexAny(body, "\r\n")
+		var line []byte
+		switch {
+		case idx == -1:
+			line, body = body, nil
+		case body[idx] == '\r' && idx+1 < len(body) && body[idx+1] == '\n':
+			line, body = body[:idx], body[idx+2:]
+		default:
+			line, body = body[:idx], body[idx+1:]
+		}
+
+		if len(line) == 0 {
+			dispatch()
+			continue
+		}
+		if line[0] == ':' {
+			continue
+		}
+
+		field, value, hasColon := bytes.Cut(line, []byte(":"))
+		if !hasColon {
+			field, value = line, nil
+		}
+		value = bytes.TrimPrefix(value, []byte(" "))
+
+		switch string(field) {
+		case "data":
+			dataLines = append(dataLines, string(value))
+		case "event":
+			eventType = string(value)
+		}
+		// Every other field name is ignored outright.
+	}
+	// Pending data at EOF is never dispatched.
+
+	return events
+}
+
+// TestParseSSEStream_DeliversOnlyDispatchedEvents guards the SSE error path
+// with the strict grammar parser rather than a raw byte/substring check: it
+// asserts the fail-closed envelope is actually dispatched as a single
+// default-typed event, which is what an MCP client (default/"message" event
+// handler only) will actually see.
+func TestParseSSEStream_DeliversOnlyDispatchedEvents(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	body := `data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,` +
+		`"result":{"tools":[{"name":"admin_tool"}]}}` + "\n\n"
+	_, err := rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	wantErrorJSON := string(rfw.errorResponseBody(jsonrpc2.Int64ID(99),
+		errors.New("dropped a frame carrying a result outside a clean Response")))
+
+	events := parseSSEStream(t, rr.Body.Bytes())
+	require.Len(t, events, 1, "body: %q", rr.Body.String())
+	assert.Empty(t, events[0].eventType, "MCP clients only process default/'message' events")
+	assert.JSONEq(t, wantErrorJSON, events[0].data)
+}
+
+// TestParseSSEStream_RejectsBareJSONWithoutDataPrefix guards the guard: a
+// bare JSON-RPC envelope with no "data:" prefix -- exactly what the pre-#6066
+// code wrote directly to the response body -- must never be recognized as a
+// dispatched SSE event, with or without a trailing newline. If
+// parseSSEStream ever loosened enough to accept bare JSON, this fails first.
+func TestParseSSEStream_RejectsBareJSONWithoutDataPrefix(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+	rfw := NewResponseFilteringWriter(httptest.NewRecorder(), authorizer, req, string(mcp.MethodToolsList), nil, nil)
+
+	bareBody := rfw.errorResponseBody(jsonrpc2.Int64ID(1), errors.New("x"))
+
+	testCases := []struct {
+		name string
+		body []byte
+	}{
+		{name: "no trailing newline", body: bareBody},
+		{name: "with trailing newline", body: append(append([]byte{}, bareBody...), '\n')},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			events := parseSSEStream(t, tc.body)
+			assert.Empty(t, events, "a bare JSON envelope with no data: prefix must never dispatch as an SSE event")
+		})
+	}
+}

@@ -538,6 +538,62 @@ func TestModernWriters(t *testing.T) {
 		require.Equal(t, true, decoded.Result["ok"])
 	})
 
+	// writeModernResult must ALWAYS emit "id", unlike writeModernError/
+	// writeModernDenied below -- a result response's id is required by the
+	// MCP schema, not optional. This pins that a future refactor doesn't
+	// "helpfully" make it conditional to match its error-writing siblings.
+	t.Run("writeModernResult always emits id, even absent", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		writeModernResult(rec, nil, map[string]any{"ok": true})
+
+		var asMap map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &asMap))
+		_, hasID := asMap["id"]
+		require.True(t, hasID, `"id" key must be present on a result response even when id is nil`)
+	})
+
+	// writeModernError's "id" key follows transportsession.HasJSONRPCID: MCP
+	// narrows base JSON-RPC 2.0 so an absent id is encoded by omitting the
+	// key, never as "id":null (schema/2025-11-25 types the error response id
+	// as optional string|number). A map decode (not a tagged struct) is the
+	// only way to tell an absent key apart from a present null.
+	t.Run("writeModernError id presence", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name       string
+			id         any
+			wantIDKey  bool
+			wantIDEcho string // substring the body must contain, verbatim, when wantIDKey
+		}{
+			{name: "nil id is omitted", id: nil, wantIDKey: false},
+			{name: "zero id is still present", id: int64(0), wantIDKey: true, wantIDEcho: `"id":0`},
+			{name: "present id is present", id: "req-2", wantIDKey: true, wantIDEcho: `"id":"req-2"`},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				writeModernError(rec, tt.id, jsonRPCCodeInternalError, "some message")
+
+				var asMap map[string]any
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &asMap))
+				_, hasID := asMap["id"]
+				require.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
+				if tt.wantIDKey {
+					// A map decode would coerce a numeric id to float64,
+					// losing the verbatim-echo guarantee -- check the raw
+					// wire bytes instead.
+					require.Contains(t, rec.Body.String(), tt.wantIDEcho)
+				}
+			})
+		}
+	})
+
 	t.Run("writeModernError", func(t *testing.T) {
 		t.Parallel()
 
@@ -591,6 +647,54 @@ func TestModernWriters(t *testing.T) {
 		require.Equal(t, int(mcpparser.JSONRPCCodeDenied), decoded.Error.Code)
 		require.Equal(t, "denied by policy", decoded.Error.Message)
 	})
+
+	// writeModernDenied's "id" key follows the same HasJSONRPCID rule as
+	// writeModernError above.
+	t.Run("writeModernDenied id presence", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name       string
+			id         any
+			wantIDKey  bool
+			wantIDEcho string
+		}{
+			{name: "nil id is omitted", id: nil, wantIDKey: false},
+			{name: "zero id is still present", id: int64(0), wantIDKey: true, wantIDEcho: `"id":0`},
+			{name: "present id is present", id: "req-3", wantIDKey: true, wantIDEcho: `"id":"req-3"`},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				writeModernDenied(rec, tt.id, "denied by policy")
+
+				var asMap map[string]any
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &asMap))
+				_, hasID := asMap["id"]
+				require.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
+				if tt.wantIDKey {
+					require.Contains(t, rec.Body.String(), tt.wantIDEcho)
+				}
+			})
+		}
+	})
+}
+
+// TestWriteModernEnvelopeMarshalFallback verifies the defensive fallback
+// drops the "id" key (never "id":null) when the envelope fails to marshal.
+// A channel is not JSON-marshalable, forcing json.Marshal to fail.
+func TestWriteModernEnvelopeMarshalFallback(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	writeModernEnvelope(rec, http.StatusOK, map[string]any{"bad": make(chan int)})
+
+	const want = `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`
+	require.Equal(t, want, rec.Body.String())
+	require.NotContains(t, rec.Body.String(), `"id"`)
 }
 
 // TestModernDiscover asserts server/discover's capability-flags shape: a

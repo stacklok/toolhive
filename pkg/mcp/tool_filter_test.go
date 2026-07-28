@@ -1946,6 +1946,16 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			expectJSONRPC: true,
 		},
 		{
+			// Zero is a valid JSON-RPC id and must stay present, not be
+			// mistaken for absent.
+			name:          "Accept: application/json - zero id is still present",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            0,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
 			name:          "Accept: application/json, text/event-stream",
 			accept:        "application/json, text/event-stream",
 			setAccept:     true,
@@ -1968,7 +1978,11 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			expectJSONRPC: true,
 		},
 		{
-			name:          "null id is echoed as null",
+			// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the
+			// error response id as optional, not nullable, so a request with
+			// no usable id gets an error body that omits the "id" key
+			// entirely rather than echoing "id":null (session.HasJSONRPCID).
+			name:          "null id omits the id key",
 			accept:        "application/json",
 			setAccept:     true,
 			id:            nil,
@@ -2024,6 +2038,16 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			assert.Equal(t, "tool not found", errObj["message"])
 			assert.NotContains(t, errObj["message"], "filter",
 				"a filtered tool must look the same as a nonexistent one")
+
+			// Map decode is the only way to tell an absent "id" key apart
+			// from a present null -- response["id"] reads back as the same
+			// nil interface value either way.
+			_, hasID := response["id"]
+			if tt.id == nil {
+				assert.False(t, hasID, `"id" key must be omitted for a nil request id, not present as null`)
+				return
+			}
+			assert.True(t, hasID, `"id" key must be present`)
 
 			expectedID, err := json.Marshal(tt.id)
 			require.NoError(t, err)

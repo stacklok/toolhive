@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
@@ -483,6 +484,13 @@ func modernPromptFromDomain(p vmcp.Prompt) mcp.Prompt {
 // {"jsonrpc":"2.0","id":<id>,"result":<result>} as a single HTTP 200
 // application/json response -- never SSE, no Mcp-Session-Id -- matching the
 // Modern stateless wire contract.
+//
+// Unlike writeModernError/writeModernDenied below, id is ALWAYS emitted here,
+// never conditionally omitted: MCP's JSONRPCResultResponse schema keeps id
+// required (only the error response narrows it to optional), and dispatchModern
+// never reaches this builder for a notification -- it returns 202 before
+// dispatch when parsed.ID is nil (modern_dispatch.go). Making this conditional
+// would be as wrong as emitting "id":null on an error response.
 func writeModernResult(w http.ResponseWriter, id, result any) {
 	writeModernEnvelope(w, http.StatusOK, map[string]any{
 		"jsonrpc": "2.0",
@@ -504,6 +512,11 @@ func writeModernResult(w http.ResponseWriter, id, result any) {
 //
 // This is a protocol-level mapping, unrelated to authorization: only
 // writeModernDenied changes status for a POLICY reason (403).
+//
+// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
+// response as `id?: RequestId` where RequestId = string | number, so an
+// absent id is encoded by omitting the "id" key, never as null. See
+// transportsession.HasJSONRPCID.
 func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 	status := http.StatusOK
 	switch code {
@@ -512,29 +525,38 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 	case jsonRPCCodeInvalidParams:
 		status = http.StatusBadRequest
 	}
-	writeModernEnvelope(w, status, map[string]any{
+	envelope := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id,
 		"error": map[string]any{
 			"code":    code,
 			"message": msg,
 		},
-	})
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, status, envelope)
 }
 
 // writeModernDenied writes a JSON-RPC error envelope at HTTP 403 with
 // mcpparser.JSONRPCCodeDenied, mirroring the Legacy call gate
 // (call_gate.go) and pkg/authz.handleUnauthorized: the 403 status is what
 // makes the audit middleware log the request as denied rather than failed.
+//
+// id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
+// encoded by omitting the "id" key, never as null.
 func writeModernDenied(w http.ResponseWriter, id any, msg string) {
-	writeModernEnvelope(w, http.StatusForbidden, map[string]any{
+	envelope := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id,
 		"error": map[string]any{
 			"code":    mcpparser.JSONRPCCodeDenied,
 			"message": msg,
 		},
-	})
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusForbidden, envelope)
 }
 
 // writeModernEnvelope marshals envelope before writing headers/status, so a
@@ -548,7 +570,7 @@ func writeModernEnvelope(w http.ResponseWriter, status int, envelope map[string]
 		// all JSON-marshalable. Fall back to a valid JSON-RPC error body
 		// rather than writing nothing.
 		slog.Error("failed to marshal Modern JSON-RPC envelope", "error", err)
-		body = []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}`)
+		body = []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	// Belt-and-suspenders behind the JSON-level cacheScope:"private" hint:

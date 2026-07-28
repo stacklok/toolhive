@@ -115,6 +115,98 @@ func TestRateLimitHandler_ToolCallRejected(t *testing.T) {
 	assert.Equal(t, float64(42), resp["id"])
 }
 
+// TestRateLimitHandler_NotificationRejected is the live regression case:
+// rateLimitHandler has no notification guard (unlike dispatchModern), so a
+// well-formed tools/call notification (no id) that gets rate-limited reaches
+// writeRateLimited with a nil requestID. Before the fix this emitted
+// "id":null at HTTP 429; it must now omit the key entirely.
+func TestRateLimitHandler_NotificationRejected(t *testing.T) {
+	t.Parallel()
+
+	limiter := &dummyLimiter{decision: &Decision{Allowed: false, RetryAfter: 5 * time.Second}}
+	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called when rate limited")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = withParsedMCPRequest(req, "tools/call", "echo", nil) // no id: a notification
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+
+	body, err := io.ReadAll(w.Body)
+	require.NoError(t, err)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(body, &resp))
+	_, hasID := resp["id"]
+	assert.False(t, hasID, `"id" key must be absent for a notification, never "id":null`)
+}
+
+// TestRateLimitedBody covers the "id" key's presence/absence per
+// session.HasJSONRPCID: MCP narrows base JSON-RPC 2.0 so an absent id is
+// encoded by omitting the key entirely, never as "id":null (schema/2025-11-25
+// types the error response id as optional string|number).
+func TestRateLimitedBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		requestID  any
+		wantIDKey  bool
+		wantIDEcho string // substring the body must contain, verbatim, when wantIDKey
+	}{
+		{name: "nil id is omitted", requestID: nil, wantIDKey: false},
+		{name: "null RawMessage id is omitted", requestID: json.RawMessage("null"), wantIDKey: false},
+		{name: "nil RawMessage id is omitted", requestID: json.RawMessage(nil), wantIDKey: false},
+		// int64 matches the real wire type: parsed.ID comes from jsonrpc2.ID.Raw(),
+		// which yields nil | int64 | string, never float64.
+		{name: "zero id is still present", requestID: int64(0), wantIDKey: true, wantIDEcho: `"id":0`},
+		{name: "present id is present", requestID: int64(42), wantIDKey: true, wantIDEcho: `"id":42`},
+		{name: "string id is present", requestID: "req-1", wantIDKey: true, wantIDEcho: `"id":"req-1"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := rateLimitedBody(tt.requestID, 5*time.Second)
+
+			// Decoding into map[string]any (rather than a tagged struct) is
+			// the only way to tell an absent "id" key apart from a present
+			// null: a struct field would read as the zero value either way.
+			var asMap map[string]any
+			require.NoError(t, json.Unmarshal(body, &asMap))
+			_, hasID := asMap["id"]
+			assert.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
+			if tt.wantIDKey {
+				// A map decode would coerce a numeric id to float64, losing
+				// the verbatim-echo guarantee -- so check the raw wire bytes
+				// instead.
+				assert.Contains(t, string(body), tt.wantIDEcho)
+			}
+		})
+	}
+}
+
+// TestRateLimitedBodyMarshalFallback verifies the defensive fallback: if the
+// response fails to marshal (unreachable in production, where requestID is
+// always a simple value), rateLimitedBody still returns a valid JSON-RPC
+// error with no "id" key (never "id":null) and the retryAfterSeconds value
+// correctly interpolated. A channel is not JSON-marshalable and, being
+// non-nil, satisfies session.HasJSONRPCID -- forcing the map's marshal to
+// fail after "id" was already added.
+func TestRateLimitedBodyMarshalFallback(t *testing.T) {
+	t.Parallel()
+
+	const want = `{"jsonrpc":"2.0","error":{"code":-32029,"message":"Rate limit exceeded","data":{"retryAfterSeconds":5}}}`
+	got := rateLimitedBody(make(chan int), 5*time.Second)
+	assert.Equal(t, want, string(got))
+	assert.NotContains(t, string(got), `"id"`)
+}
+
 func TestRateLimitHandler_RedisErrorFailOpen(t *testing.T) {
 	t.Parallel()
 

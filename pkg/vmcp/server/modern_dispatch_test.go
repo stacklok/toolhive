@@ -180,18 +180,41 @@ func TestDispatchModern_ControlFlow(t *testing.T) {
 		parsed     *mcpparser.ParsedMCPRequest
 		wantStatus int
 		wantCode   float64
+		wantIDKey  bool
 	}{
 		{
 			name:       "batch request returns -32600 invalid request",
 			parsed:     &mcpparser.ParsedMCPRequest{Method: "tools/call", IsRequest: true, IsBatch: true, ID: "1"},
 			wantStatus: http.StatusOK,
 			wantCode:   -32600,
+			wantIDKey:  true,
+		},
+		{
+			// A batch with a raw-null id exercises writeModernError's
+			// absent-id path through the real dispatch route, not just the
+			// unit-level writer tests in modern_envelope_test.go:
+			// schema/2025-11-25 types the error id as optional string|number,
+			// so MCP omits the "id" key entirely here, never "id":null.
+			//
+			// The real parser can never actually produce this state: it sets ID
+			// from jsonrpc2.ID.Raw(), which yields only nil, int64, or string
+			// (parser.go), and a plain Go nil id can't reach this branch either --
+			// dispatchModern's earlier `parsed.ID == nil` notification guard (an
+			// interface nil check, :54) would short-circuit it to 202 first.
+			// json.RawMessage("null") is constructed directly here solely to drive
+			// the writer's defensive absent-id backstop through this route.
+			name:       "batch request with raw-null id omits the id key",
+			parsed:     &mcpparser.ParsedMCPRequest{Method: "tools/call", IsRequest: true, IsBatch: true, ID: json.RawMessage("null")},
+			wantStatus: http.StatusOK,
+			wantCode:   -32600,
+			wantIDKey:  false,
 		},
 		{
 			name:       "unknown method returns -32601 method not found",
 			parsed:     &mcpparser.ParsedMCPRequest{Method: "roots/list", IsRequest: true, ID: "1"},
 			wantStatus: http.StatusNotFound,
 			wantCode:   -32601,
+			wantIDKey:  true,
 		},
 	}
 
@@ -205,6 +228,9 @@ func TestDispatchModern_ControlFlow(t *testing.T) {
 			errObj, ok := body["error"].(map[string]any)
 			require.True(t, ok, "expected a JSON-RPC error envelope")
 			assert.Equal(t, tt.wantCode, errObj["code"])
+
+			_, hasID := body["id"]
+			assert.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
 		})
 	}
 }

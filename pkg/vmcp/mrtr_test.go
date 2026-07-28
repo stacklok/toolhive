@@ -5,10 +5,59 @@ package vmcp
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestInputRequiredError pins the carrier's contract for consumers that
+// construct it directly (e.g. tests against mocks.MockBackendClient, which
+// cannot reach the backend client's unexported sentinel): it unwraps to
+// whatever Sentinel it was built with, renders the sentinel-prefixed message,
+// and InputRequiredFromError extracts the round only when Result is non-nil.
+func TestInputRequiredError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("some classification")
+	state := "s1"
+	withRound := &InputRequiredError{
+		ResultType: "input_required",
+		Result:     &InputRequiredResult{RequestState: &state},
+		Sentinel:   sentinel,
+	}
+	require.ErrorIs(t, withRound, sentinel)
+	assert.Equal(t, `some classification: resultType="input_required"`, withRound.Error())
+
+	round, ok := InputRequiredFromError(fmt.Errorf("wrapped: %w", withRound))
+	require.True(t, ok)
+	assert.Equal(t, &state, round.RequestState)
+
+	// Result nil (unrecognized resultType, disallowed method, invalid
+	// payload): classification survives, extraction reports false.
+	sentinelOnly := &InputRequiredError{ResultType: "task", Sentinel: sentinel}
+	require.ErrorIs(t, sentinelOnly, sentinel)
+	round, ok = InputRequiredFromError(sentinelOnly)
+	assert.False(t, ok)
+	assert.Nil(t, round)
+}
+
+// TestInputRequiredErrorBoundsResultType pins that Error() never interpolates
+// more than 64 bytes of the backend-controlled resultType.
+func TestInputRequiredErrorBoundsResultType(t *testing.T) {
+	t.Parallel()
+
+	e := &InputRequiredError{
+		ResultType: strings.Repeat("x", 200),
+		Sentinel:   errors.New("sentinel"),
+	}
+	assert.Equal(t,
+		fmt.Sprintf("sentinel: resultType=%q... (200 bytes)", strings.Repeat("x", 64)),
+		e.Error())
+}
 
 func TestInputRequiredResultMethods(t *testing.T) {
 	t.Parallel()

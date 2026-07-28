@@ -5,74 +5,66 @@ package client
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// inputRequiredError is the typed form of errModernInputRequired: a Modern
-// envelope decoded with a non-"complete" resultType. For
-// resultType:"input_required" it carries the decoded SEP-2322 payload so
-// upper layers can drive a Multi Round-Trip Request round (relay to a Modern
-// downstream client, or fulfill in-request for a Legacy one — see
-// docs/arch/16-vmcp-mrtr.md); for any other unrecognized resultType the
-// payload is nil and only the sentinel classification remains.
+// mrtrMethods are the only client requests that may carry an input_required
+// round: "Servers MUST NOT send InputRequiredResult responses on any other
+// client requests" (spec, basic/patterns/mrtr). The set coincides with
+// pkg/mcp's nameRequiredMethods today, but the concepts are independent —
+// Mcp-Name validation is a header rule, this is the MRTR method allow-list,
+// and the final 2026-07-28 cut may grow this one alone (SEP-2322 Final also
+// allowed GetTaskPayloadRequest before tasks moved to an extension; see the
+// drift list in docs/arch/16-vmcp-mrtr.md) — so they are deliberately not
+// shared.
+var mrtrMethods = map[string]bool{
+	"tools/call":     true,
+	"resources/read": true,
+	"prompts/get":    true,
+}
+
+// newInputRequiredError builds the typed error (vmcp.InputRequiredError,
+// unwrapping to errModernInputRequired) for a non-"complete" Modern result
+// envelope. The error always classifies and renders identically to the
+// previous fmt.Errorf wrapping; whether it also carries an extractable round
+// (vmcp.InputRequiredFromError reporting ok=true) is gated fail-closed:
 //
-// It unwraps to errModernInputRequired so every existing errors.Is check —
-// notably probeRevision's Modern-positive classification (client.go) — keeps
-// working unchanged, and Error() renders byte-identically to the previous
-// fmt.Errorf wrapping so no client-visible message shifts.
-type inputRequiredError struct {
-	resultType string
-	result     *vmcp.InputRequiredResult
-}
-
-func (e *inputRequiredError) Error() string {
-	return fmt.Sprintf("%s: resultType=%q", errModernInputRequired, e.resultType)
-}
-
-func (*inputRequiredError) Unwrap() error { return errModernInputRequired }
-
-// newInputRequiredError builds the typed error for a non-"complete" Modern
-// result envelope. Only resultType:"input_required" carries a payload: the
-// spec says clients "SHOULD treat unrecognized values as invalid protocol
-// responses", so other resultTypes keep pure sentinel semantics. The payload
-// decode is tolerant — a malformed inputRequests/requestState still yields
-// the typed error with whatever decoded (the round is undrivable either way,
-// and the caller's error handling must not depend on backend well-formedness).
-func newInputRequiredError(resultType string, result json.RawMessage) error {
-	e := &inputRequiredError{resultType: resultType}
-	if resultType != "input_required" {
+//   - resultType must be exactly "input_required" — the spec says an
+//     unrecognized resultType "MUST be considered invalid", so anything else
+//     (including the Tasks extension's "task", which vMCP never solicits —
+//     it advertises no extensions) keeps pure sentinel semantics;
+//   - method must be one of mrtrMethods — a round on any other request is a
+//     backend protocol violation, and relaying it would make vMCP the
+//     non-conformant server;
+//   - the payload must decode strictly and be drivable: server requirement 6
+//     mandates at least one of inputRequests or requestState, and an envelope
+//     violating it (or one with a wrong-typed field) must not surface as a
+//     round — a consumer following client requirement 1 would retry it having
+//     gathered nothing, which the backend may answer with the same envelope
+//     again, a loop with no exit. Fail closed to the sentinel instead.
+func newInputRequiredError(method, resultType string, result json.RawMessage) error {
+	e := &vmcp.InputRequiredError{ResultType: resultType, Sentinel: errModernInputRequired}
+	if resultType != modernResultTypeInputRequired || !mrtrMethods[method] {
 		return e
 	}
 	var payload struct {
 		InputRequests map[string]json.RawMessage `json:"inputRequests"`
-		RequestState  string                     `json:"requestState"`
+		RequestState  *string                    `json:"requestState"`
 	}
-	// Tolerant decode: see the doc comment.
-	_ = json.Unmarshal(result, &payload)
-	e.result = &vmcp.InputRequiredResult{
+	if err := json.Unmarshal(result, &payload); err != nil {
+		// Wrong-typed inputRequests/requestState: a schema violation, not a
+		// drivable round. The sentinel classification survives.
+		return e
+	}
+	if len(payload.InputRequests) == 0 && payload.RequestState == nil {
+		// Server requirement 6 violation ("at least one of inputRequests or
+		// requestState"): nothing to fulfill and nothing to echo.
+		return e
+	}
+	e.Result = &vmcp.InputRequiredResult{
 		InputRequests: payload.InputRequests,
 		RequestState:  payload.RequestState,
 	}
 	return e
-}
-
-// InputRequiredFromError extracts the SEP-2322 input_required payload from an
-// error chain, however deeply the backend client wrapped it. It reports false
-// for errors that are not an input_required round — including the
-// unrecognized-resultType variant of the same sentinel — so callers can use
-// it as the single MRTR branch point:
-//
-//	if round, ok := client.InputRequiredFromError(err); ok { ... relay round ... }
-//
-// This is the seam the ingress half (dispatchModern's input_required envelope
-// and the Legacy-client bridge; docs/arch/16-vmcp-mrtr.md slices 2-4) consumes.
-func InputRequiredFromError(err error) (*vmcp.InputRequiredResult, bool) {
-	var ire *inputRequiredError
-	if errors.As(err, &ire) && ire.result != nil {
-		return ire.result, true
-	}
-	return nil, false
 }

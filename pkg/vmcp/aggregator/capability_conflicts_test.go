@@ -241,25 +241,115 @@ func TestDefaultAggregator_ResolveConflicts_PromptConflicts(t *testing.T) {
 	}
 }
 
-// TestDefaultAggregator_ResolveConflicts_PromptPrefixAmbiguity pins the one
-// residual collision unconditional prefixing cannot rule out: two distinct
-// (backendID, name) pairs composing to the same prefixed string. That name
-// would be ambiguous between backends, so aggregation must fail loudly
-// instead of silently dropping one of the prompts.
-func TestDefaultAggregator_ResolveConflicts_PromptPrefixAmbiguity(t *testing.T) {
+// TestDefaultAggregator_PromptAmbiguityDropsEveryClaimant pins the drop-all
+// policy for the one residual collision unconditional prefixing cannot rule
+// out: distinct (backendID, name) pairs whose advertised names compose to the
+// same string. Two properties matter and both are asserted below. Aggregation
+// must NOT fail — an error here would take down the group's whole aggregated
+// view (tools, resources, templates, prompts, backend visibility) over one
+// prompt name reachable without any conflict-resolution config. And no
+// claimant may keep the name: Cedar authorizes on the advertised name alone,
+// so a survivor would inherit every policy written for the prompt it collided
+// with. Dropping all of them leaves the name advertised by nobody.
+func TestDefaultAggregator_PromptAmbiguityDropsEveryClaimant(t *testing.T) {
 	t.Parallel()
 
-	capabilities := map[string]*BackendCapabilities{
-		// "b1" + "x_y" and "b1_x" + "y" both advertise as "b1_x_y".
-		"b1":   {BackendID: "b1", Prompts: []vmcp.Prompt{newTestPrompt("x_y", "b1")}},
-		"b1_x": {BackendID: "b1_x", Prompts: []vmcp.Prompt{newTestPrompt("y", "b1_x")}},
+	priorityCfg := &config.AggregationConfig{
+		ConflictResolution: vmcp.ConflictStrategyPriority,
+		ConflictResolutionConfig: &config.ConflictResolutionConfig{
+			PriorityOrder: []string{"b1"},
+		},
 	}
 
-	agg := NewDefaultAggregator(nil, nil, nil, nil)
-	resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
-	require.ErrorIs(t, err, ErrUnresolvedConflicts)
-	assert.Contains(t, err.Error(), "b1_x_y")
-	assert.Nil(t, resolved)
+	tests := []struct {
+		name   string
+		aggCfg *config.AggregationConfig
+		// promptsByBackend maps backend ID -> the prompt names it serves.
+		promptsByBackend map[string][]string
+		// wantAdvertised maps every SURVIVING advertised name -> {owning
+		// backend, original name}. Compared for exact equality, so a claimant
+		// that wrongly survives the ambiguity shows up here.
+		wantAdvertised map[string][2]string
+		// wantAmbiguous is the name no backend may advertise or route.
+		wantAmbiguous string
+	}{
+		{
+			// "b1" + "x_y" and "b1_x" + "y" both compose to "b1_x_y".
+			name: "two backends compose to the same prefixed name",
+			promptsByBackend: map[string][]string{
+				"b1":   {"x_y", "safe"},
+				"b1_x": {"y"},
+			},
+			wantAdvertised: map[string][2]string{"b1_safe": {"b1", "safe"}},
+			wantAmbiguous:  "b1_x_y",
+		},
+		{
+			// Three-way: "b1"+"x_y_z", "b1_x"+"y_z" and "b1_x_y"+"z" all
+			// compose to "b1_x_y_z". Dropping "the other one" is not enough.
+			name: "three backends compose to the same prefixed name",
+			promptsByBackend: map[string][]string{
+				"b1":     {"x_y_z"},
+				"b1_x":   {"y_z"},
+				"b1_x_y": {"z", "safe"},
+			},
+			wantAdvertised: map[string][2]string{"b1_x_y_safe": {"b1_x_y", "safe"}},
+			wantAmbiguous:  "b1_x_y_z",
+		},
+		{
+			// Priority-listed b1 advertises the literal name "ext_helper";
+			// unlisted ext's "helper" prefixes to the same string. Listed
+			// status does not make a composition collision resolvable, so both
+			// go, while b1's other bare name is untouched.
+			name:   "prefixed name hits a listed backend's literal bare name",
+			aggCfg: priorityCfg,
+			promptsByBackend: map[string][]string{
+				"b1":  {"ext_helper", "kept"},
+				"ext": {"helper"},
+			},
+			wantAdvertised: map[string][2]string{"kept": {"b1", "kept"}},
+			wantAmbiguous:  "ext_helper",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backends := make([]vmcp.Backend, 0, len(tt.promptsByBackend))
+			capsByID := make(map[string]*vmcp.CapabilityList, len(tt.promptsByBackend))
+			for backendID, names := range tt.promptsByBackend {
+				backends = append(backends, newTestBackend(backendID))
+				prompts := make([]vmcp.Prompt, 0, len(names))
+				for _, name := range names {
+					prompts = append(prompts, newTestPrompt(name, backendID))
+				}
+				capsByID[backendID] = newTestCapabilityList(withPrompts(prompts...))
+			}
+
+			ctrl := gomock.NewController(t)
+			mockClient := mocks.NewMockBackendClient(ctrl)
+			expectListCapabilities(mockClient, capsByID)
+
+			agg := NewDefaultAggregator(mockClient, nil, tt.aggCfg, nil)
+			result, err := agg.AggregateCapabilities(context.Background(), backends)
+			require.NoError(t, err, "one ambiguous prompt name must not fail the group's aggregation")
+
+			// Survivors are read back through the routing table so the case
+			// also pins that each still translates to its backend's own name.
+			got := make(map[string][2]string, len(result.Prompts))
+			for _, prompt := range result.Prompts {
+				target := result.RoutingTable.Prompts[prompt.Name]
+				require.NotNilf(t, target, "advertised prompt %q must be routable", prompt.Name)
+				got[prompt.Name] = [2]string{prompt.BackendID, target.GetBackendCapabilityName(prompt.Name)}
+			}
+			assert.Equal(t, tt.wantAdvertised, got)
+			assert.NotContains(t, result.RoutingTable.Prompts, tt.wantAmbiguous,
+				"an ambiguous prompt name must not be routable either")
+			assert.Equal(t, len(tt.wantAdvertised), result.Metadata.PromptCount)
+			ctrl.Finish()
+		})
+	}
 }
 
 // TestDefaultAggregator_ResolveConflicts_PromptPriority pins the priority
@@ -280,56 +370,42 @@ func TestDefaultAggregator_ResolveConflicts_PromptPriority(t *testing.T) {
 		},
 	}
 
-	t.Run("listed backends keep bare names, rank resolves collisions", func(t *testing.T) {
-		t.Parallel()
-		capabilities := map[string]*BackendCapabilities{
-			"b1": {BackendID: "b1", Prompts: []vmcp.Prompt{
-				newTestPrompt("review", "b1"), newTestPrompt("unique", "b1"),
-			}},
-			"b2":  {BackendID: "b2", Prompts: []vmcp.Prompt{newTestPrompt("review", "b2")}},
-			"ext": {BackendID: "ext", Prompts: []vmcp.Prompt{newTestPrompt("helper", "ext")}},
-		}
+	capabilities := map[string]*BackendCapabilities{
+		"b1": {BackendID: "b1", Prompts: []vmcp.Prompt{
+			newTestPrompt("review", "b1"), newTestPrompt("unique", "b1"),
+		}},
+		"b2":  {BackendID: "b2", Prompts: []vmcp.Prompt{newTestPrompt("review", "b2")}},
+		"ext": {BackendID: "ext", Prompts: []vmcp.Prompt{newTestPrompt("helper", "ext")}},
+	}
 
-		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
-		for range 5 {
-			resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
-			require.NoError(t, err)
-
-			got := make(map[string][2]string, len(resolved.Prompts))
-			for _, prompt := range resolved.Prompts {
-				got[prompt.Name] = [2]string{prompt.BackendID, prompt.OriginalName}
-			}
-			assert.Equal(t, map[string][2]string{
-				// "review" goes to b2: first in priorityOrder, even though b1
-				// sorts first. b1's colliding prompt is dropped.
-				"review": {"b2", "review"},
-				// Listed backends keep bare names even for unique prompts.
-				"unique": {"b1", "unique"},
-				// Unlisted backends are ALWAYS prefixed, collision or not:
-				// exempting them would let a later join shift the name.
-				"ext_helper": {"ext", "helper"},
-			}, got)
-			assert.NotContains(t, got, "helper")
-			assert.NotContains(t, got, "b1_review")
-		}
-	})
-
-	t.Run("prefixed name hitting a listed backend's literal name errors", func(t *testing.T) {
-		t.Parallel()
-		capabilities := map[string]*BackendCapabilities{
-			// Listed b1 advertises the literal name "ext_helper"; unlisted
-			// ext's "helper" prefixes to the same string. Ambiguous between
-			// backends -> loud failure, not a silent drop.
-			"b1":  {BackendID: "b1", Prompts: []vmcp.Prompt{newTestPrompt("ext_helper", "b1")}},
-			"ext": {BackendID: "ext", Prompts: []vmcp.Prompt{newTestPrompt("helper", "ext")}},
-		}
-
-		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
+	agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
+	for range 5 {
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
-		require.ErrorIs(t, err, ErrUnresolvedConflicts)
-		assert.Contains(t, err.Error(), "ext_helper")
-		assert.Nil(t, resolved)
-	})
+		require.NoError(t, err)
+
+		got := make(map[string][2]string, len(resolved.Prompts))
+		for _, prompt := range resolved.Prompts {
+			got[prompt.Name] = [2]string{prompt.BackendID, prompt.OriginalName}
+		}
+		assert.Equal(t, map[string][2]string{
+			// "review" goes to b2: first in priorityOrder, even though b1
+			// sorts first. b1's colliding prompt is dropped.
+			"review": {"b2", "review"},
+			// Listed backends keep bare names even for unique prompts.
+			"unique": {"b1", "unique"},
+			// Unlisted backends are ALWAYS prefixed, collision or not:
+			// exempting them would let a later join shift the name.
+			"ext_helper": {"ext", "helper"},
+		}, got)
+		assert.NotContains(t, got, "helper")
+		// The priority loser is dropped, not re-prefixed: re-advertising it as
+		// "b1_review" would put it beyond any forbid written on "review".
+		assert.NotContains(t, got, "b1_review")
+	}
+
+	// A prefixed name colliding with a listed backend's literal bare name is
+	// covered by TestDefaultAggregator_PromptAmbiguityDropsEveryClaimant,
+	// alongside the other composition collisions.
 }
 
 // TestDefaultAggregator_ResolveConflicts_PromptPrefixFormat verifies prompt

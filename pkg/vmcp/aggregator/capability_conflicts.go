@@ -4,7 +4,6 @@
 package aggregator
 
 import (
-	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -56,16 +55,52 @@ import (
 //     than the tool priority resolver, which lets a conflict-free unlisted
 //     tool keep its bare name.
 //
-//     The invariant both modes preserve: an advertised prompt name is a pure
-//     function of the aggregation config and (backendID, prompt name) — it
-//     NEVER shifts because an unrelated backend joined or left the group.
-//     That stability is a security property, not cosmetics: the advertised
-//     name is what authorization matches on (Cedar builds
-//     Prompt::"<advertised name>" entities — see pkg/vmcp/core/admission.go),
-//     so a membership-dependent rename would silently detach permit AND
-//     forbid policies from the prompt they were written for, the forbid case
-//     failing open. Names move only on an explicit config edit — the moment
-//     an operator reviews policy anyway.
+//     Under priority the losing prompt is DROPPED, never re-prefixed. That is
+//     deliberate and must stay that way: re-prefixing the loser to "save" it
+//     would re-advertise the same prompt under a name no policy mentions, so
+//     a forbid written against the bare name would stop matching it — a
+//     fail-open. Do not "improve" this by prefixing the loser instead of
+//     dropping it.
+//
+//     The invariant both modes preserve, scoped precisely: the advertised
+//     name of a given (backendID, prompt name) PAIR is a pure function of the
+//     aggregation config and that pair — it NEVER shifts because an unrelated
+//     backend joined or left the group. That stability is a security property,
+//     not cosmetics: the advertised name is what authorization matches on
+//     (Cedar builds Prompt::"<advertised name>" entities — see
+//     pkg/vmcp/core/admission.go), so a membership-dependent rename would
+//     silently detach permit AND forbid policies from the prompt they were
+//     written for, the forbid case failing open. Names move only on an
+//     explicit config edit — the moment an operator reviews policy anyway.
+//
+//     What the invariant does NOT promise is that a given advertised STRING
+//     keeps naming the same prompt. Under priority two listed backends can
+//     claim the same bare name, and the higher-ranked one takes it: a
+//     permit(... resource == Prompt::"review") written while b1 owned "review"
+//     silently begins authorizing b2's DIFFERENT prompt once a higher-ranked
+//     b2 advertising that name deploys, with no config edit. Cedar's resource
+//     identity is Prompt::<advertised name> and nothing else — it carries no
+//     backend attribute — so whoever wins a shared name inherits every policy
+//     written for it. forbid still fails closed, because the loser is dropped
+//     rather than aliased; it is permit that gets redirected. Operators who
+//     write name-scoped permits must therefore review priorityOrder and their
+//     policy set together.
+//
+//     A name no single backend can own is advertised by NOBODY. When two
+//     distinct (backendID, name) pairs compose to the same advertised string
+//     (backend "b1" prompt "x_y" and backend "b1_x" prompt "y" both compose to
+//     "b1_x_y"), EVERY colliding prompt is dropped and the collision is logged
+//     at ERROR. Failing the aggregation instead would take out tools/list,
+//     resources/list, resource-templates/list, prompts/list, Discover's
+//     presence flags and backend visibility for the whole group over one
+//     ambiguous prompt name — and that name needs no conflict-resolution
+//     config to reach, just an unlucky combination of operator-chosen workload
+//     names and backend-chosen prompt names. Dropping every claimant is the
+//     safe outcome rather than the convenient one: keeping a survivor would
+//     hand it the ambiguous name and with it any policy written for the other
+//     prompt, whereas an unadvertised name makes every permit and forbid on it
+//     vacuous, so nothing is reachable under an ambiguous identity and the
+//     rest of the group keeps serving.
 //
 //     Prompt-set changes on a live backend propagate to connected sessions
 //     through the list_changed resync path
@@ -115,17 +150,20 @@ func resolveResourceTemplateConflicts(
 // identically, so nothing reachable is lost. A bare-name collision among
 // priority-listed backends resolves to the highest-priority one (lowest
 // rank), dropping the others with a warning, mirroring the tool priority
-// strategy. Any other collision — two prefixed names composing to the same
+// strategy. Any other collision — two advertised names composing to the same
 // string (backend "b1" prompt "x_y" vs backend "b1_x" prompt "y"), or a
-// prefixed name hitting a listed backend's literal bare name — is ambiguous
-// between backends and returns ErrUnresolvedConflicts rather than silently
-// dropping a prompt. backendIDs supplies the deterministic (sorted) iteration
+// prefixed name hitting a listed backend's literal bare name — has no defined
+// owner, so EVERY prompt claiming that name is dropped and the collision is
+// logged at ERROR. This never fails: the group keeps serving the prompts it
+// can name unambiguously, and the ambiguous name is advertised by nobody. See
+// the file header for why dropping all claimants beats both erroring and
+// keeping a survivor. backendIDs supplies the deterministic (sorted) iteration
 // order; the result is sorted by resolved name.
 func resolvePromptConflicts(
 	naming promptNaming,
 	backendIDs []string,
 	capabilities map[string]*BackendCapabilities,
-) ([]ResolvedPrompt, error) {
+) []ResolvedPrompt {
 	// candidate is one backend's claim on an advertised prompt name.
 	type candidate struct {
 		prompt    vmcp.Prompt
@@ -162,23 +200,39 @@ func resolvePromptConflicts(
 	resolved := make([]ResolvedPrompt, 0, len(byName))
 	for _, resolvedName := range slices.Sorted(maps.Keys(byName)) {
 		candidates := byName[resolvedName]
+
+		// Distinct backends claiming one advertised name is resolvable only
+		// when every claimant is priority-listed: then all claims are the same
+		// bare name and rank decides. Anything else — prefix composition
+		// ambiguity, or a prefixed name hitting a listed backend's literal
+		// name — has no defined owner, so no claimant may keep the name.
+		// Promoting one would give it whatever policy was written for the
+		// others, since Cedar authorizes on the advertised name alone.
+		if len(candidates) > 1 && slices.ContainsFunc(candidates, func(c candidate) bool { return !c.listed }) {
+			// Index-aligned with droppedPrompts: entry i names the backend that
+			// claimed original prompt name i.
+			droppedBackends := make([]string, 0, len(candidates))
+			droppedPrompts := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				droppedBackends = append(droppedBackends, c.backendID)
+				droppedPrompts = append(droppedPrompts, c.prompt.Name)
+			}
+			slog.Error("advertised prompt name is ambiguous between backends, dropping every colliding prompt; "+
+				"rename one of them to make the name reachable again",
+				"prompt", resolvedName,
+				"dropped_backends", droppedBackends,
+				"dropped_prompts", droppedPrompts)
+			continue
+		}
+
 		winner := candidates[0]
 		for _, contender := range candidates[1:] {
-			// Distinct backends claim the same advertised name. Resolvable
-			// only when both are priority-listed (then both claims are the
-			// same bare name and rank decides); anything else — prefix
-			// composition ambiguity, or a prefixed name hitting a listed
-			// backend's literal name — has no defined owner.
-			if !winner.listed || !contender.listed {
-				return nil, fmt.Errorf(
-					"%w: prompt %q from backend %q and prompt %q from backend %q are both advertised as %q; rename one of them",
-					ErrUnresolvedConflicts,
-					winner.prompt.Name, winner.backendID, contender.prompt.Name, contender.backendID, resolvedName)
-			}
 			loser := contender
 			if contender.rank < winner.rank {
 				loser, winner = winner, contender
 			}
+			// The loser is dropped, not re-prefixed; see the file header for
+			// why re-prefixing it would fail policy open.
 			slog.Warn("prompt name advertised by multiple priority-listed backends, keeping highest priority",
 				"prompt", resolvedName, "kept_backend", winner.backendID, "dropped_backend", loser.backendID)
 		}
@@ -187,7 +241,7 @@ func resolvePromptConflicts(
 		resolvedPrompt.Name = resolvedName
 		resolved = append(resolved, resolvedPrompt)
 	}
-	return resolved, nil
+	return resolved
 }
 
 // dedupeByKey collects items of one capability kind across backends in the

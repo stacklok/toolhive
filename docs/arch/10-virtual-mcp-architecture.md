@@ -150,19 +150,48 @@ policies that deliberately differ by what the identity *is*:
   in `priorityOrder` keep their bare prompt names, a bare-name collision among
   listed backends resolves to the highest-priority one, and unlisted backends
   stay always-prefixed — deliberately stricter than tool priority resolution,
-  which lets a conflict-free unlisted tool keep its bare name. The invariant
-  both modes preserve: the advertised name is a pure function of the
-  aggregation config and (backendID, name), so it never shifts because an
-  unrelated backend joined or left the group. That stability matters beyond
-  naming: authorization matches on the advertised name (Cedar builds
-  `Prompt::"<advertised name>"` entities), so a membership-dependent rename
-  would detach `permit` and `forbid` policies from the prompt they were
-  written for — names move only on an explicit config edit. A `manual`
-  configuration changes tool resolution only. If two backends' advertised
-  names compose to the same string (backend `b1` prompt `x_y` vs backend
-  `b1_x` prompt `y`, or a prefixed name hitting a listed backend's literal
-  name), the name would be ambiguous between backends and aggregation fails
-  loudly instead of dropping one.
+  which lets a conflict-free unlisted tool keep its bare name. A `manual`
+  configuration changes tool resolution only.
+
+  The invariant both modes preserve, scoped precisely: the advertised name of a
+  given (backendID, name) **pair** is a pure function of the aggregation config
+  and that pair, so it never shifts because an unrelated backend joined or left
+  the group. That stability matters beyond naming: authorization matches on the
+  advertised name (Cedar builds `Prompt::"<advertised name>"` entities), so a
+  membership-dependent rename would detach `permit` and `forbid` policies from
+  the prompt they were written for — names move only on an explicit config
+  edit.
+
+  The invariant does **not** promise that an advertised *string* keeps naming
+  the same prompt. Under `priority`, two listed backends can claim the same
+  bare name and the higher-ranked one takes it, so a
+  `permit(... resource == Prompt::"review")` written while `b1` owned `review`
+  silently begins authorizing `b2`'s **different** prompt once a higher-ranked
+  `b2` advertising that name deploys — no config edit involved. Cedar's
+  resource identity is the advertised name and nothing else (it carries no
+  backend attribute), so whoever wins a shared name inherits every policy
+  written for it. `forbid` still fails closed, because the priority loser is
+  **dropped rather than aliased**; it is `permit` that gets redirected. Keep
+  `priorityOrder` and name-scoped `permit` policies under review together.
+
+  The loser being dropped instead of re-prefixed is deliberate: prefixing it so
+  "nothing is lost" would re-advertise that prompt under a name no policy
+  mentions, putting it beyond any `forbid` written on the bare name — the
+  fail-open this design exists to avoid.
+
+  When two advertised names compose to the same string and no backend owns it —
+  backend `b1` prompt `x_y` vs backend `b1_x` prompt `y`, or a prefixed name
+  hitting a listed backend's literal name — the name is **ambiguous**, and
+  **every** colliding prompt is dropped with the collision logged at `ERROR`.
+  Aggregation does not fail:
+  erroring would take the group's entire aggregated view down (tools,
+  resources, templates, prompts, backend visibility) over one prompt name that
+  needs no conflict-resolution config to reach — just an unlucky combination of
+  operator-chosen workload names and backend-chosen prompt names. Keeping one
+  claimant is not an option either, since the survivor would inherit whatever
+  policy was written for the prompt it collided with. With the name advertised
+  by nobody, every `permit` and `forbid` on it is vacuous and the rest of the
+  group keeps serving.
 - **Resource URIs and template strings are locators, not names.** The client
   passes them back verbatim (`resources/read`, `resources/subscribe`,
   completion refs), backends emit them in notifications and embedded resource

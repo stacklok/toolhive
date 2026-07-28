@@ -70,8 +70,15 @@ func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 // FlushAndFilter processes the captured response and applies filtering if needed.
 // Returns an error if filtering or writing fails.
 func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
-	// If it's not a successful response, just pass it through
-	if rfw.statusCode != http.StatusOK && rfw.statusCode != http.StatusAccepted {
+	// Only successful responses can deliver a list result to a client, so
+	// non-2xx responses pass through unfiltered: an error body isn't a list,
+	// and rewriting it would only hurt debuggability. This deliberately
+	// covers the whole 2xx range, not just 200/202: fetch-based MCP clients
+	// (including the reference TypeScript transport) gate on response.ok,
+	// which accepts 200-299, so a backend answering tools/list with e.g. 201
+	// could otherwise smuggle an unfiltered list past the filter. A 204 has
+	// no body and is passed through by the empty-response check below.
+	if rfw.statusCode < http.StatusOK || rfw.statusCode >= http.StatusMultipleChoices {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
@@ -93,7 +100,13 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		return err
 	}
 
-	mimeType := strings.Split(rfw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
+	// Media type names are case-insensitive and parameters may be preceded by
+	// whitespace (RFC 9110 section 8.3.1), so normalize before matching.
+	// Without this, "Application/JSON" or "application/json ; charset=utf-8"
+	// -- both valid labels for a JSON body that clients happily parse -- would
+	// fall through to the default branch and skip filtering entirely.
+	contentType := rfw.ResponseWriter.Header().Get("Content-Type")
+	mimeType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 
 	switch mimeType {
 	case "application/json":
@@ -108,6 +121,28 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		rfw.ResponseWriter.Header().Del("Content-Length")
 		return rfw.processSSEResponse(rawResponse)
 	default:
+		// A successful response to a method whose result must be filtered,
+		// yet labeled with neither MCP-supported media type. That could be an
+		// accident, or a backend deliberately mislabeling the response to
+		// smuggle an unfiltered list past the filter -- the same
+		// disguised-result concern as #5257, handled for the tool filter in
+		// pkg/mcp/tool_filter.go's processUnrecognizedMimeType. Sniff the
+		// body under both supported shapes and, when it carries a JSON-RPC
+		// result, process it exactly as if it had been labeled correctly
+		// (which filters clean frames and fails closed on dirty ones). Only a
+		// body carrying no result under either shape passes through.
+		if carriesResult(rawResponse) {
+			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as JSON",
+				"method", rfw.method, "contentType", contentType)
+			rfw.ResponseWriter.Header().Del("Content-Length")
+			return rfw.processJSONResponse(rawResponse)
+		}
+		if sseCarriesResult(rawResponse) {
+			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as SSE",
+				"method", rfw.method, "contentType", contentType)
+			rfw.ResponseWriter.Header().Del("Content-Length")
+			return rfw.processSSEResponse(rawResponse)
+		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
@@ -313,6 +348,22 @@ func carriesResult(data []byte) bool {
 			if batch[i].Result != nil {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// sseCarriesResult reports whether rawResponse contains an SSE "data:" line
+// whose payload carries a JSON-RPC result. It is a lightweight detector, used
+// only to decide whether a 2xx body with an unrecognized media type needs the
+// full SSE processing path (which applies its own per-line filtering and
+// fail-closed rules); it mirrors sniffSSEToolsList in pkg/mcp/tool_filter.go.
+func sseCarriesResult(rawResponse []byte) bool {
+	normalized := bytes.ReplaceAll(rawResponse, []byte("\r\n"), []byte("\n"))
+	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
+	for _, line := range bytes.Split(normalized, []byte("\n")) {
+		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok && carriesResult(data) {
+			return true
 		}
 	}
 	return false

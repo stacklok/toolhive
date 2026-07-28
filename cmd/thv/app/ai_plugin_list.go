@@ -16,50 +16,50 @@ import (
 )
 
 var (
-	pluginListScope       string
-	pluginListClient      string
-	pluginListFormat      string
-	pluginListProjectRoot string
-	pluginListGroup       string
+	aiPluginListScope       string
+	aiPluginListClient      string
+	aiPluginListFormat      string
+	aiPluginListProjectRoot string
+	aiPluginListGroup       string
 )
 
-var pluginListCmd = &cobra.Command{
+var aiPluginListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List installed plugins",
 	Long:    `List all currently installed plugins and their status.`,
 	PreRunE: chainPreRunE(
-		validatePluginScope(&pluginListScope),
-		ValidateFormat(&pluginListFormat),
+		validateAIPluginScope(&aiPluginListScope),
+		ValidateFormat(&aiPluginListFormat),
 		validateGroupFlag(),
 	),
-	RunE: pluginListCmdFunc,
+	RunE: aiPluginListCmdFunc,
 }
 
 func init() {
-	pluginCmd.AddCommand(pluginListCmd)
+	aiPluginCmd.AddCommand(aiPluginListCmd)
 
-	pluginListCmd.Flags().StringVar(&pluginListScope, "scope", "", "Filter by scope (user, project)")
-	pluginListCmd.Flags().StringVar(&pluginListClient, "client", "", "Filter by client application")
-	AddFormatFlag(pluginListCmd, &pluginListFormat)
-	AddGroupFlag(pluginListCmd, &pluginListGroup, false)
-	pluginListCmd.Flags().StringVar(&pluginListProjectRoot, "project-root", "", "Project root path for project-scoped plugins")
+	aiPluginListCmd.Flags().StringVar(&aiPluginListScope, "scope", "", "Filter by scope (user, project)")
+	aiPluginListCmd.Flags().StringVar(&aiPluginListClient, "client", "", "Filter by client application")
+	AddFormatFlag(aiPluginListCmd, &aiPluginListFormat)
+	AddGroupFlag(aiPluginListCmd, &aiPluginListGroup, false)
+	aiPluginListCmd.Flags().StringVar(&aiPluginListProjectRoot, "project-root", "", "Project root path for project-scoped plugins")
 }
 
-func pluginListCmdFunc(cmd *cobra.Command, _ []string) error {
-	c := newPluginClient(cmd.Context())
+func aiPluginListCmdFunc(cmd *cobra.Command, _ []string) error {
+	c := newAIPluginClient(cmd.Context())
 
 	installed, err := c.List(cmd.Context(), plugins.ListOptions{
-		Scope:       plugins.Scope(pluginListScope),
-		ClientApp:   pluginListClient,
-		ProjectRoot: pluginListProjectRoot,
-		Group:       pluginListGroup,
+		Scope:       plugins.Scope(aiPluginListScope),
+		ClientApp:   aiPluginListClient,
+		ProjectRoot: aiPluginListProjectRoot,
+		Group:       aiPluginListGroup,
 	})
 	if err != nil {
-		return formatPluginError("list plugins", err)
+		return formatAIPluginError("list plugins", err)
 	}
 
-	switch pluginListFormat {
+	switch aiPluginListFormat {
 	case FormatJSON:
 		if installed == nil {
 			installed = []plugins.InstalledPlugin{}
@@ -71,20 +71,20 @@ func pluginListCmdFunc(cmd *cobra.Command, _ []string) error {
 		fmt.Println(string(data))
 	default:
 		if len(installed) == 0 {
-			if pluginListScope != "" || pluginListClient != "" {
+			if aiPluginListScope != "" || aiPluginListClient != "" {
 				fmt.Println("No plugins found matching filters")
 			} else {
 				fmt.Println("No plugins installed")
 			}
 			return nil
 		}
-		printPluginListText(installed)
+		printAIPluginListText(installed)
 	}
 
 	return nil
 }
 
-func printPluginListText(installed []plugins.InstalledPlugin) {
+func printAIPluginListText(installed []plugins.InstalledPlugin) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	_, _ = fmt.Fprintln(w, "NAME\tVERSION\tSCOPE\tSTATUS\tCLIENTS\tREFERENCE")
 

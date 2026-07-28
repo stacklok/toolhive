@@ -14,33 +14,33 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
-var pluginBuildsFormat string
+var aiPluginBuildsFormat string
 
-var pluginBuildsCmd = &cobra.Command{
+var aiPluginBuildsCmd = &cobra.Command{
 	Use:   "builds",
 	Short: "List locally-built plugin artifacts",
 	Long:  `List all locally-built OCI plugin artifacts stored in the local OCI store.`,
 	PreRunE: chainPreRunE(
-		ValidateFormat(&pluginBuildsFormat),
+		ValidateFormat(&aiPluginBuildsFormat),
 	),
-	RunE: pluginBuildsCmdFunc,
+	RunE: aiPluginBuildsCmdFunc,
 }
 
 func init() {
-	pluginCmd.AddCommand(pluginBuildsCmd)
+	aiPluginCmd.AddCommand(aiPluginBuildsCmd)
 
-	AddFormatFlag(pluginBuildsCmd, &pluginBuildsFormat)
+	AddFormatFlag(aiPluginBuildsCmd, &aiPluginBuildsFormat)
 }
 
-func pluginBuildsCmdFunc(cmd *cobra.Command, _ []string) error {
-	c := newPluginClient(cmd.Context())
+func aiPluginBuildsCmdFunc(cmd *cobra.Command, _ []string) error {
+	c := newAIPluginClient(cmd.Context())
 
 	builds, err := c.ListBuilds(cmd.Context())
 	if err != nil {
-		return formatPluginError("list builds", err)
+		return formatAIPluginError("list builds", err)
 	}
 
-	switch pluginBuildsFormat {
+	switch aiPluginBuildsFormat {
 	case FormatJSON:
 		if builds == nil {
 			builds = []plugins.LocalBuild{}
@@ -55,13 +55,13 @@ func pluginBuildsCmdFunc(cmd *cobra.Command, _ []string) error {
 			fmt.Println("No locally-built plugin artifacts found")
 			return nil
 		}
-		printPluginBuildsText(builds)
+		printAIPluginBuildsText(builds)
 	}
 
 	return nil
 }
 
-func printPluginBuildsText(builds []plugins.LocalBuild) {
+func printAIPluginBuildsText(builds []plugins.LocalBuild) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	_, _ = fmt.Fprintln(w, "TAG\tDIGEST\tNAME\tVERSION")
 

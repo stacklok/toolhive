@@ -19,45 +19,45 @@ import (
 )
 
 var (
-	pluginInfoScope       string
-	pluginInfoFormat      string
-	pluginInfoProjectRoot string
+	aiPluginInfoScope       string
+	aiPluginInfoFormat      string
+	aiPluginInfoProjectRoot string
 )
 
-var pluginInfoCmd = &cobra.Command{
+var aiPluginInfoCmd = &cobra.Command{
 	Use:               "info [plugin-name]",
 	Short:             "Show plugin details",
 	Long:              `Display detailed information about a plugin, including metadata, version, and installation status.`,
 	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completePluginNames,
+	ValidArgsFunction: completeAIPluginNames,
 	PreRunE: chainPreRunE(
-		validatePluginScope(&pluginInfoScope),
-		ValidateFormat(&pluginInfoFormat),
+		validateAIPluginScope(&aiPluginInfoScope),
+		ValidateFormat(&aiPluginInfoFormat),
 	),
-	RunE: pluginInfoCmdFunc,
+	RunE: aiPluginInfoCmdFunc,
 }
 
 func init() {
-	pluginCmd.AddCommand(pluginInfoCmd)
+	aiPluginCmd.AddCommand(aiPluginInfoCmd)
 
-	pluginInfoCmd.Flags().StringVar(&pluginInfoScope, "scope", "", "Filter by scope (user, project)")
-	AddFormatFlag(pluginInfoCmd, &pluginInfoFormat)
-	pluginInfoCmd.Flags().StringVar(&pluginInfoProjectRoot, "project-root", "", "Project root path for project-scoped plugins")
+	aiPluginInfoCmd.Flags().StringVar(&aiPluginInfoScope, "scope", "", "Filter by scope (user, project)")
+	AddFormatFlag(aiPluginInfoCmd, &aiPluginInfoFormat)
+	aiPluginInfoCmd.Flags().StringVar(&aiPluginInfoProjectRoot, "project-root", "", "Project root path for project-scoped plugins")
 }
 
-func pluginInfoCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newPluginClient(cmd.Context())
+func aiPluginInfoCmdFunc(cmd *cobra.Command, args []string) error {
+	c := newAIPluginClient(cmd.Context())
 
 	info, err := c.Info(cmd.Context(), plugins.InfoOptions{
 		Name:        args[0],
-		Scope:       plugins.Scope(pluginInfoScope),
-		ProjectRoot: pluginInfoProjectRoot,
+		Scope:       plugins.Scope(aiPluginInfoScope),
+		ProjectRoot: aiPluginInfoProjectRoot,
 	})
 	if err != nil {
-		return formatPluginError("get plugin info", err)
+		return formatAIPluginError("get plugin info", err)
 	}
 
-	switch pluginInfoFormat {
+	switch aiPluginInfoFormat {
 	case FormatJSON:
 		data, err := json.MarshalIndent(info, "", "  ")
 		if err != nil {
@@ -65,13 +65,13 @@ func pluginInfoCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println(string(data))
 	default:
-		printPluginInfoText(info)
+		printAIPluginInfoText(info)
 	}
 
 	return nil
 }
 
-func printPluginInfoText(info *plugins.PluginInfo) {
+func printAIPluginInfoText(info *plugins.PluginInfo) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	_, _ = fmt.Fprintf(w, "Name:\t%s\n", info.Metadata.Name)

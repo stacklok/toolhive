@@ -12,9 +12,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
-var pluginBuildTag string
+var aiPluginBuildTag string
 
-var pluginBuildCmd = &cobra.Command{
+var aiPluginBuildCmd = &cobra.Command{
 	Use:   "build [path]",
 	Short: "Build a plugin",
 	Long: `Build a plugin from a local directory into an OCI artifact that can be pushed to a registry.
@@ -24,29 +24,29 @@ On success, prints the OCI reference of the built artifact to stdout.`,
 	ValidArgsFunction: func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveFilterDirs
 	},
-	RunE: pluginBuildCmdFunc,
+	RunE: aiPluginBuildCmdFunc,
 }
 
 func init() {
-	pluginCmd.AddCommand(pluginBuildCmd)
+	aiPluginCmd.AddCommand(aiPluginBuildCmd)
 
-	pluginBuildCmd.Flags().StringVarP(&pluginBuildTag, "tag", "t", "", "OCI tag for the built artifact")
+	aiPluginBuildCmd.Flags().StringVarP(&aiPluginBuildTag, "tag", "t", "", "OCI tag for the built artifact")
 }
 
-func pluginBuildCmdFunc(cmd *cobra.Command, args []string) error {
+func aiPluginBuildCmdFunc(cmd *cobra.Command, args []string) error {
 	absPath, err := filepath.Abs(args[0])
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	c := newPluginClient(cmd.Context())
+	c := newAIPluginClient(cmd.Context())
 
 	result, err := c.Build(cmd.Context(), plugins.BuildOptions{
 		Path: absPath,
-		Tag:  pluginBuildTag,
+		Tag:  aiPluginBuildTag,
 	})
 	if err != nil {
-		return formatPluginError("build plugin", err)
+		return formatAIPluginError("build plugin", err)
 	}
 
 	fmt.Println(result.Reference)

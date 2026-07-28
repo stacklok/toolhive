@@ -46,7 +46,7 @@ different component subsets.
   + SQLite storage + migration 002.
 - **Phase 3** (this doc): install/list/info/uninstall + MaterializationAdapter
   (Claude Code + Codex) + groups integration.
-- **Phase 4** (planned, #5528): REST API + `thv plugin` CLI + app wiring.
+- **Phase 4** (planned, #5528): REST API + `thv ai-plugin` CLI + app wiring.
 
 ## Core Concepts
 

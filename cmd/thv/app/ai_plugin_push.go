@@ -9,26 +9,26 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
-var pluginPushCmd = &cobra.Command{
+var aiPluginPushCmd = &cobra.Command{
 	Use:   "push [reference]",
 	Short: "Push a built plugin",
 	Long:  `Push a previously built plugin artifact to a remote OCI registry.`,
 	Args:  cobra.ExactArgs(1),
-	RunE:  pluginPushCmdFunc,
+	RunE:  aiPluginPushCmdFunc,
 }
 
 func init() {
-	pluginCmd.AddCommand(pluginPushCmd)
+	aiPluginCmd.AddCommand(aiPluginPushCmd)
 }
 
-func pluginPushCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newPluginClient(cmd.Context())
+func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
+	c := newAIPluginClient(cmd.Context())
 
 	err := c.Push(cmd.Context(), plugins.PushOptions{
 		Reference: args[0],
 	})
 	if err != nil {
-		return formatPluginError("push plugin", err)
+		return formatAIPluginError("push plugin", err)
 	}
 
 	return nil

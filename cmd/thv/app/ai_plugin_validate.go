@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var pluginValidateFormat string
+var aiPluginValidateFormat string
 
-var pluginValidateCmd = &cobra.Command{
+var aiPluginValidateCmd = &cobra.Command{
 	Use:   "validate [path]",
 	Short: "Validate a plugin definition",
 	Long:  `Check that a plugin definition in the given directory is valid and well-formed.`,
@@ -21,30 +21,30 @@ var pluginValidateCmd = &cobra.Command{
 	ValidArgsFunction: func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveFilterDirs
 	},
-	PreRunE: ValidateFormat(&pluginValidateFormat),
-	RunE:    pluginValidateCmdFunc,
+	PreRunE: ValidateFormat(&aiPluginValidateFormat),
+	RunE:    aiPluginValidateCmdFunc,
 }
 
 func init() {
-	pluginCmd.AddCommand(pluginValidateCmd)
+	aiPluginCmd.AddCommand(aiPluginValidateCmd)
 
-	AddFormatFlag(pluginValidateCmd, &pluginValidateFormat)
+	AddFormatFlag(aiPluginValidateCmd, &aiPluginValidateFormat)
 }
 
-func pluginValidateCmdFunc(cmd *cobra.Command, args []string) error {
+func aiPluginValidateCmdFunc(cmd *cobra.Command, args []string) error {
 	absPath, err := filepath.Abs(args[0])
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	c := newPluginClient(cmd.Context())
+	c := newAIPluginClient(cmd.Context())
 
 	result, err := c.Validate(cmd.Context(), absPath)
 	if err != nil {
-		return formatPluginError("validate plugin", err)
+		return formatAIPluginError("validate plugin", err)
 	}
 
-	switch pluginValidateFormat {
+	switch aiPluginValidateFormat {
 	case FormatJSON:
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {

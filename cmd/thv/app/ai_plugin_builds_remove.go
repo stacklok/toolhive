@@ -9,22 +9,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var pluginBuildsRemoveCmd = &cobra.Command{
+var aiPluginBuildsRemoveCmd = &cobra.Command{
 	Use:   "remove <tag>",
 	Short: "Remove a locally-built plugin artifact",
 	Long:  `Remove a locally-built OCI plugin artifact and its blobs from the local OCI store.`,
 	Args:  cobra.ExactArgs(1),
-	RunE:  pluginBuildsRemoveCmdFunc,
+	RunE:  aiPluginBuildsRemoveCmdFunc,
 }
 
 func init() {
-	pluginBuildsCmd.AddCommand(pluginBuildsRemoveCmd)
+	aiPluginBuildsCmd.AddCommand(aiPluginBuildsRemoveCmd)
 }
 
-func pluginBuildsRemoveCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newPluginClient(cmd.Context())
+func aiPluginBuildsRemoveCmdFunc(cmd *cobra.Command, args []string) error {
+	c := newAIPluginClient(cmd.Context())
 	if err := c.DeleteBuild(cmd.Context(), args[0]); err != nil {
-		return formatPluginError("remove build", err)
+		return formatAIPluginError("remove build", err)
 	}
 	fmt.Printf("Removed build %q\n", args[0])
 	return nil

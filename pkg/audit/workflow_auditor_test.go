@@ -566,6 +566,31 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 			},
 		},
 		{
+			name: "identity_with_delegation_chain",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-delegated",
+					Name:    "Delegated User",
+					Claims: map[string]any{
+						"act": map[string]any{
+							"sub": "agent-1",
+							"act": map[string]any{"sub": "agent-2"},
+						},
+					},
+					DelegationChain: &auth.DelegationChain{
+						Actors: []auth.DelegatedActor{
+							{Subject: "agent-1"},
+							{Subject: "agent-2"},
+						},
+					},
+				},
+			},
+			wantSubjects: map[string]string{
+				SubjectKeyUserID: "user-delegated",
+				SubjectKeyUser:   "Delegated User",
+			},
+		},
+		{
 			name:     "anonymous_user",
 			identity: nil,
 			wantSubjects: map[string]string{
@@ -592,6 +617,102 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkflowAuditor_DelegationChain(t *testing.T) {
+	t.Parallel()
+
+	delegatedChain := auth.ParseDelegationChain(
+		map[string]any{
+			"sub": "agent-1",
+			"act": map[string]any{"sub": "agent-2"},
+		}, auth.DefaultMaxDelegationDepth)
+	delegatedIdentity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user-delegated",
+			Name:    "Delegated User",
+			Claims: map[string]any{
+				"act": map[string]any{
+					"sub": "agent-1",
+					"act": map[string]any{"sub": "agent-2"},
+				},
+			},
+			DelegationChain: &delegatedChain,
+		},
+	}
+
+	t.Run("workflow event carries delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, writer := createTestAuditor(t, DefaultConfig())
+
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+		auditor.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		chain, ok := entry["delegation_chain"].(map[string]any)
+		require.True(t, ok, "delegation_chain should be present in the log output")
+		assert.Equal(t, false, chain["truncated"])
+		actors, ok := chain["actors"].([]any)
+		require.True(t, ok)
+		require.Len(t, actors, 2)
+		first, ok := actors[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-1", first["sub"])
+		second, ok := actors[1].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-2", second["sub"])
+	})
+
+	t.Run("step event carries delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, writer := createTestAuditor(t, DefaultConfig())
+
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+		auditor.LogStepStarted(ctx, "wf-1", "step-1", "tool", "some-tool")
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		chain, ok := entry["delegation_chain"].(map[string]any)
+		require.True(t, ok, "delegation_chain should be present in the log output")
+		actors, ok := chain["actors"].([]any)
+		require.True(t, ok)
+		assert.Len(t, actors, 2)
+	})
+
+	t.Run("no identity omits delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, writer := createTestAuditor(t, DefaultConfig())
+
+		auditor.LogWorkflowStarted(context.Background(), "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		_, exists := entry["delegation_chain"]
+		assert.False(t, exists, "delegation_chain should be omitted without an identity")
+	})
+
+	t.Run("configured max depth truncates chain", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 1
+		auditor, writer := createTestAuditor(t, &Config{MaxDelegationDepth: &maxDepth})
+
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+		auditor.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		chain, ok := entry["delegation_chain"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, true, chain["truncated"])
+		actors, ok := chain["actors"].([]any)
+		require.True(t, ok)
+		assert.Len(t, actors, 1)
+	})
 }
 
 func TestWorkflowAuditor_ExtractSource(t *testing.T) {

@@ -1835,6 +1835,10 @@ spec:
                       When enabled, vMCP exposes only find_tool and call_tool operations to clients
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+                      Enabling the optimizer currently pins this instance to MCP 2025-11-25: the
+                      find_tool/call_tool meta-tools are session-scoped, so Modern-capable (2026-07-28)
+                      clients are negotiated down to the Legacy revision (see
+                      pkg/vmcp/server/modern_gate.go; Modern parity is tracked in stacklok/toolhive#6089).
                     properties:
                       embeddingHeaders:
                         additionalProperties:
@@ -5295,6 +5299,10 @@ spec:
                       When enabled, vMCP exposes only find_tool and call_tool operations to clients
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+                      Enabling the optimizer currently pins this instance to MCP 2025-11-25: the
+                      find_tool/call_tool meta-tools are session-scoped, so Modern-capable (2026-07-28)
+                      clients are negotiated down to the Legacy revision (see
+                      pkg/vmcp/server/modern_gate.go; Modern parity is tracked in stacklok/toolhive#6089).
                     properties:
                       embeddingHeaders:
                         additionalProperties:

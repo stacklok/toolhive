@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -24,11 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
-	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
-	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	coremcp "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/test/e2e"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -278,18 +276,22 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			defer cleanupB()
 
-			ginkgo.By("Initializing session on pod A")
-			clientA, err := CreateInitializedMCPClient(int32(localPortA), "e2e-redis-test", 30*time.Second)
+			// Era-pinned raw client: this spec asserts Legacy-session semantics, so
+			// it must pin 2025-11-25 per request (see legacy_session_helpers_test.go
+			// for why the mcpcompat client cannot be used here).
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			defer clientA.Close()
+			serverURLA := fmt.Sprintf("http://localhost:%d/mcp", localPortA)
+			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
 
-			sessionID := clientA.Client.GetSessionId()
-			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
+			ginkgo.By("Initializing a Legacy session on pod A")
+			sessionID, err := legacySessionInit(rawClient, serverURLA, "e2e-redis-test", nil)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "session ID must be assigned after Initialize")
 
 			ginkgo.By("Listing tools on pod A")
-			toolsA, err := clientA.Client.ListTools(clientA.Ctx, mcp.ListToolsRequest{})
+			toolsA, err := legacySessionListTools(rawClient, serverURLA, sessionID, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty(), "pod A must return tools")
+			gomega.Expect(toolsA).NotTo(gomega.BeEmpty(), "pod A must return tools")
 
 			ginkgo.By("Verifying pod A stored backend session IDs in Redis")
 			backendIDsBeforeRestore, err := readRedisSessionBackendIDs(redisName, "thv:vmcp:e2e:", sessionID)
@@ -297,22 +299,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(backendIDsBeforeRestore).NotTo(gomega.BeEmpty(),
 				"pod A must have written per-backend session IDs to Redis so pod B can use them as hints")
 
-			ginkgo.By(fmt.Sprintf("Connecting to pod B (%s) with the same session ID", podB.Name))
-			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
-			clientB, err := mcpclient.NewStreamableHttpClient(serverURLB, transport.WithSession(sessionID))
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			defer func() { _ = clientB.Close() }()
-
-			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer startCancel()
-			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
-
-			ginkgo.By("Listing tools on pod B using the session from pod A")
-			listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer listCancel()
-			toolsB, err := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(), "pod B must return tools via Redis-reconstructed session")
+			ginkgo.By(fmt.Sprintf("Listing tools on pod B (%s) with the session from pod A", podB.Name))
+			toolsB, err := legacySessionListTools(rawClient, serverURLB, sessionID, nil)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(),
+				"pod B must serve the session it has never seen by reconstructing it from Redis")
+			gomega.Expect(toolsB).NotTo(gomega.BeEmpty(), "pod B must return tools via Redis-reconstructed session")
 
 			ginkgo.By("Verifying backend session IDs in Redis are the same hints pod B received")
 			backendIDsAfterRestore, err := readRedisSessionBackendIDs(redisName, "thv:vmcp:e2e:", sessionID)
@@ -322,7 +313,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 					"pod B used them as hints and the IDs must be stable")
 
 			ginkgo.By("Verifying both pods return the same tool count")
-			gomega.Expect(toolsB.Tools).To(gomega.HaveLen(len(toolsA.Tools)),
+			gomega.Expect(toolsB).To(gomega.HaveLen(len(toolsA)),
 				"pod B must see same session state as pod A")
 		})
 	})
@@ -419,25 +410,25 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			ginkgo.By("Getting the NodePort for the VirtualMCPServer")
 			vmcpNodePort := GetVMCPNodePort(ctx, k8sClient, vmcpName, defaultNamespace, timeout, pollInterval)
 
-			ginkgo.By("Initializing an MCP session")
-			mcpClientA, err := CreateInitializedMCPClient(vmcpNodePort, "e2e-redis-restart-test", 30*time.Second)
+			// Era-pinned raw client: this spec asserts Legacy-session semantics, so
+			// it must pin 2025-11-25 per request (see legacy_session_helpers_test.go).
+			// The raw client is also what makes the "pod killed, not clean client
+			// disconnect" simulation below trivial: it holds no connection state and
+			// never sends the DELETE /mcp a real client's Close() would, which would
+			// terminate the session in Redis before the pod restart and defeat the
+			// purpose of this test. Simply not sending anything models the kill.
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			sessionID := mcpClientA.Client.GetSessionId()
-			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+
+			ginkgo.By("Initializing a Legacy MCP session")
+			sessionID, err := legacySessionInit(rawClient, serverURL, "e2e-redis-restart-test", nil)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "session ID must be assigned after Initialize")
 
 			ginkgo.By("Verifying tools are available before pod restart")
-			toolsBefore, err := mcpClientA.Client.ListTools(mcpClientA.Ctx, mcp.ListToolsRequest{})
+			toolsBefore, err := legacySessionListTools(rawClient, serverURL, sessionID, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsBefore.Tools).NotTo(gomega.BeEmpty())
-
-			// Cancel context to stop in-flight requests without sending DELETE.
-			// This simulates the pod being killed, not a clean client disconnect.
-			// We intentionally skip Client.Close() here because Close() sends a
-			// DELETE /mcp request that would terminate the session in Redis before
-			// the pod is restarted — defeating the purpose of this test.
-			// The transport's background goroutine (started by Start()) selects on
-			// ctx.Done(), so Cancel() is sufficient to stop it without leaking.
-			mcpClientA.Cancel()
+			gomega.Expect(toolsBefore).NotTo(gomega.BeEmpty())
 
 			ginkgo.By("Getting the running pod name before restart")
 			var pods []corev1.Pod
@@ -489,27 +480,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				return checkHTTPHealthReady(vmcpNodePort)
 			}, timeout, pollInterval).Should(gomega.Succeed())
 
-			ginkgo.By("Creating a new client with the SAME session ID")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			newClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithSession(sessionID))
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			defer func() { _ = newClient.Close() }()
-
-			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer startCancel()
-			gomega.Expect(newClient.Start(startCtx)).To(gomega.Succeed())
-
-			// Send 5 requests to give confidence the fix holds: without Redis-backed
-			// session reconstruction, each request would fail because the new pod's
-			// in-memory cache is cold.
+			// Send 5 requests with the SAME session ID to give confidence the fix
+			// holds: without Redis-backed session reconstruction, each request would
+			// fail because the new pod's in-memory cache is cold.
 			ginkgo.By("Sending 5 requests to verify the session is recovered from Redis on the new pod")
 			for i := range 5 {
-				listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				toolsAfter, listErr := newClient.ListTools(listCtx, mcp.ListToolsRequest{})
-				listCancel()
+				toolsAfter, listErr := legacySessionListTools(rawClient, serverURL, sessionID, nil)
 				gomega.Expect(listErr).NotTo(gomega.HaveOccurred(),
 					"Request %d/5 should succeed after pod restart — session must be recovered from Redis", i+1)
-				gomega.Expect(toolsAfter.Tools).To(gomega.HaveLen(len(toolsBefore.Tools)),
+				gomega.Expect(toolsAfter).To(gomega.HaveLen(len(toolsBefore)),
 					"Request %d/5 should return the same tools as before restart", i+1)
 			}
 		})
@@ -644,51 +623,40 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			defer cleanupB()
 
-			ginkgo.By("Initializing a session on pod A")
-			var clientA *InitializedMCPClient
+			// Era-pinned raw client: this spec asserts Legacy-session semantics, so
+			// it must pin 2025-11-25 per request (see legacy_session_helpers_test.go).
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			serverURLA := fmt.Sprintf("http://localhost:%d/mcp", localPortA)
+			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
+
+			ginkgo.By("Initializing a Legacy session on pod A")
+			var sessionID string
 			gomega.Eventually(func() error {
-				if clientA != nil {
-					clientA.Cancel()
-					clientA = nil
-				}
 				var initErr error
-				clientA, initErr = CreateInitializedMCPClient(int32(localPortA), "e2e-redis-term-test", 30*time.Second)
+				sessionID, initErr = legacySessionInit(rawClient, serverURLA, "e2e-redis-term-test", nil)
 				return initErr
 			}, timeout, pollInterval).Should(gomega.Succeed(),
 				"pod A should accept session initialization once backend routing is ready")
-			sessionID := clientA.Client.GetSessionId()
-			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
 
 			ginkgo.By("Verifying the session is usable on pod A")
-			toolsA, err := clientA.Client.ListTools(clientA.Ctx, mcp.ListToolsRequest{})
+			toolsA, err := legacySessionListTools(rawClient, serverURLA, sessionID, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty())
+			gomega.Expect(toolsA).NotTo(gomega.BeEmpty())
 
 			ginkgo.By(fmt.Sprintf("Reconstructing the session on pod B (%s) via Redis", podB.Name))
-			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
-			clientB, err := mcpclient.NewStreamableHttpClient(serverURLB, transport.WithSession(sessionID))
+			toolsB, err := legacySessionListTools(rawClient, serverURLB, sessionID, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			defer func() { _ = clientB.Close() }()
-
-			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer startCancel()
-			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
-
-			listCtxB, listCancelB := context.WithTimeout(context.Background(), 30*time.Second)
-			toolsB, err := clientB.ListTools(listCtxB, mcp.ListToolsRequest{})
-			listCancelB()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(),
+			gomega.Expect(toolsB).NotTo(gomega.BeEmpty(),
 				"pod B should serve the session before termination")
 
-			// Terminate the session on pod A by sending DELETE /mcp directly.
-			// We do this via raw HTTP rather than clientA.Close() to avoid the
-			// context-cancellation ordering in InitializedMCPClient.Close().
+			// Terminate the session on pod A by sending DELETE /mcp directly (the
+			// raw client only speaks POST JSON-RPC, and DELETE is a plain HTTP
+			// method, not a JSON-RPC request).
 			ginkgo.By("Terminating the session on pod A via DELETE /mcp")
-			deleteURL := fmt.Sprintf("http://localhost:%d/mcp", localPortA)
 			deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer deleteCancel()
-			req, err := http.NewRequestWithContext(deleteCtx, http.MethodDelete, deleteURL, nil)
+			req, err := http.NewRequestWithContext(deleteCtx, http.MethodDelete, serverURLA, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			req.Header.Set("Mcp-Session-Id", sessionID)
 			resp, err := http.DefaultClient.Do(req)
@@ -696,22 +664,29 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			_ = resp.Body.Close()
 			gomega.Expect(resp.StatusCode).To(gomega.BeElementOf(http.StatusOK, http.StatusNoContent),
 				"DELETE /mcp should return 200 or 204")
-			clientA.Cancel()
 
 			// Pod B's in-memory cache still holds the session, but the ValidatingCache's
 			// checkSession callback will find the key absent in Redis (deleted by the
 			// Terminate call above) and return ErrExpired, triggering lazy eviction.
-			// The next request from pod B should therefore fail with a session-not-found error.
+			// The next request from pod B should therefore fail with HTTP 404
+			// (session not found — what mcpcompat surfaces as ErrSessionTerminated).
 			ginkgo.By("Verifying pod B rejects subsequent requests for the terminated session")
 			gomega.Eventually(func() error {
-				listCtx, listCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer listCancel()
-				_, listErr := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
-				if listErr == nil {
+				listReq, buildErr := e2e.NewLegacyRequest("tools/list", nil)
+				if buildErr != nil {
+					return fmt.Errorf("build tools/list: %w", buildErr)
+				}
+				listReq.WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, coremcp.MCPVersionLegacy)
+				listResp, listErr := rawClient.Send(context.Background(), serverURLB, listReq)
+				if listErr != nil {
+					return fmt.Errorf("tools/list: %w", listErr)
+				}
+				if listResp.StatusCode == http.StatusOK {
 					return fmt.Errorf("expected pod B to reject the terminated session, but request succeeded")
 				}
-				if !errors.Is(listErr, transport.ErrSessionTerminated) {
-					return fmt.Errorf("expected ErrSessionTerminated (404), got: %w", listErr)
+				if listResp.StatusCode != http.StatusNotFound {
+					return fmt.Errorf("expected 404 (session not found) for the terminated session, got %d, body: %s",
+						listResp.StatusCode, listResp.Body)
 				}
 				return nil
 			}, timeout, pollInterval).Should(gomega.Succeed(),
@@ -1084,36 +1059,23 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				"Authorization": fmt.Sprintf("Bearer %s", asToken),
 			}
 
-			ginkgo.By("Initializing MCP session on pod A with embedded AS token")
-			serverURLPodA := fmt.Sprintf("http://localhost:%d/mcp", localPortA)
-			clientA, err := mcpclient.NewStreamableHttpClient(serverURLPodA,
-				transport.WithHTTPHeaders(authHeader))
+			// Era-pinned raw client: this spec asserts Legacy-session semantics, so
+			// it must pin 2025-11-25 per request (see legacy_session_helpers_test.go).
+			// The embedded AS JWT rides along as an extra header on every request.
+			rawClient, err := e2e.NewRawMCPClient(60 * time.Second)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			defer func() { _ = clientA.Close() }()
+			serverURLPodA := fmt.Sprintf("http://localhost:%d/mcp", localPortA)
 
-			initCtxA, initCancelA := context.WithTimeout(context.Background(), 60*time.Second)
-			defer initCancelA()
-			gomega.Expect(clientA.Start(initCtxA)).To(gomega.Succeed(),
-				"MCP client should start on pod A — check embedded AS JWT validity and OIDC config")
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "e2e-upstreamInject-test",
-				Version: "1.0.0",
-			}
-			_, err = clientA.Initialize(initCtxA, initRequest)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Initialize on pod A should succeed")
-
-			sessionID := clientA.GetSessionId()
-			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
+			ginkgo.By("Initializing a Legacy MCP session on pod A with embedded AS token")
+			sessionID, err := legacySessionInit(rawClient, serverURLPodA, "e2e-upstreamInject-test", authHeader)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(),
+				"Initialize on pod A should succeed and assign a session ID — "+
+					"check embedded AS JWT validity and OIDC config")
 
 			ginkgo.By("Listing tools on pod A to verify the session is functional")
-			toolsCtxA, toolsCancelA := context.WithTimeout(context.Background(), 30*time.Second)
-			defer toolsCancelA()
-			toolsA, err := clientA.ListTools(toolsCtxA, mcp.ListToolsRequest{})
+			toolsA, err := legacySessionListTools(rawClient, serverURLPodA, sessionID, authHeader)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty(),
+			gomega.Expect(toolsA).NotTo(gomega.BeEmpty(),
 				"pod A must return tools after Initialize")
 
 			ginkgo.By("Verifying backend received a Bearer token on pod A's Initialize (upstreamInject fired)")
@@ -1131,27 +1093,14 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			}, 30*time.Second, 2*time.Second).Should(gomega.BeNumerically(">=", 1),
 				"backend must have received at least one Initialize call from pod A")
 
-			ginkgo.By(fmt.Sprintf("Connecting to pod B (%s) with the same session ID (triggers RestoreSession)", podB.Name))
+			ginkgo.By(fmt.Sprintf("Listing tools on pod B (%s) with the same session ID (triggers RestoreSession)", podB.Name))
 			serverURLPodB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
-			clientB, err := mcpclient.NewStreamableHttpClient(serverURLPodB,
-				transport.WithSession(sessionID),
-				transport.WithHTTPHeaders(authHeader))
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			defer func() { _ = clientB.Close() }()
-
-			startCtxB, startCancelB := context.WithTimeout(context.Background(), 60*time.Second)
-			defer startCancelB()
-			gomega.Expect(clientB.Start(startCtxB)).To(gomega.Succeed())
-
-			ginkgo.By("Listing tools on pod B using the restored session")
-			listCtxB, listCancelB := context.WithTimeout(context.Background(), 30*time.Second)
-			defer listCancelB()
-			toolsB, err := clientB.ListTools(listCtxB, mcp.ListToolsRequest{})
+			toolsB, err := legacySessionListTools(rawClient, serverURLPodB, sessionID, authHeader)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred(),
 				"pod B must not return an error — with the context fix, the identity "+
 					"(including UpstreamTokens) is propagated to RestoreSession so the "+
 					"backend Initialize is authenticated; without the fix this 401s")
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(),
+			gomega.Expect(toolsB).NotTo(gomega.BeEmpty(),
 				"pod B must return tools via the Redis-reconstructed session")
 
 			ginkgo.By("Verifying backend received a second Initialize call from pod B's RestoreSession")

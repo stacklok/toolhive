@@ -245,6 +245,15 @@ type modernDiscoverResult struct {
 // LATEST_PROTOCOL_VERSION regardless of what a client requests -- it does
 // not support older Legacy revisions either). A discover-first client uses
 // this list to decide whether it can skip the Legacy initialize handshake.
+//
+// CONSTRAINT: this function must only be reached with the Modern capability
+// gate open. It hardcodes MCPVersionModern into SupportedVersions and never
+// consults the gate; that is truthful only because classifyingHandler
+// (classification.go) routes server/discover to the SDK when the gate is
+// closed, and the SDK's stateful transport computes the truthful Legacy-only
+// list there. Do NOT plumb the gate in here — that would create a second
+// source of the version list. Anyone re-routing gated discover to
+// dispatchModern must revisit this.
 func newModernDiscover(
 	hasTools, hasResources, hasTemplates, hasPrompts bool, serverName, serverVersion string,
 ) modernDiscoverResult {
@@ -582,6 +591,47 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 		envelope["id"] = id
 	}
 	writeModernEnvelope(w, status, envelope)
+}
+
+// writeModernCodedError writes a JSON-RPC error envelope for a domain error
+// carrying its own stable code and data (mcpparser.CodedError), preserving
+// both on the wire: {"code":coded.Code(),"message":err.Error(),"data":...}.
+// message uses err.Error() rather than a canned string so callers can wrap a
+// coded error with context via %w without losing it (mirrors
+// conversion.CodedErrorResult, the Legacy seam's rendering of the same
+// errors).
+//
+// Status is HTTP 200 deliberately: go-sdk's streamable client
+// (v1.7.0-pre.3) rejects a non-200 POST response in checkResponse BEFORE
+// decoding its body, so on any 4xx the JSON-RPC error object below —
+// including data.retryAfterSeconds on the rate limiter's -32029 — would be
+// discarded unread. 200 is the only status on which the client surfaces the
+// coded error to the caller. The request was accepted and processed; the
+// failure is an application-level JSON-RPC error riding the transport.
+// (writeModernMissingCapability in modern_dispatch.go documents a related
+// but distinct 200-over-4xx deviation for -32021.) Separately, -32029 sits
+// in the -32020..-32099 band the draft MCP spec reserves exclusively for
+// spec-defined codes; it predates that partition and its reallocation is
+// tracked in #6101.
+//
+// id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
+// encoded by omitting the "id" key, never as null.
+func writeModernCodedError(w http.ResponseWriter, id any, err error, coded mcpparser.CodedError) {
+	errObj := map[string]any{
+		"code":    coded.Code(),
+		"message": err.Error(),
+	}
+	if data := coded.Data(); len(data) > 0 {
+		errObj["data"] = data
+	}
+	envelope := map[string]any{
+		"jsonrpc": "2.0",
+		"error":   errObj,
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
 }
 
 // writeModernDenied writes a JSON-RPC error envelope at HTTP 403 with

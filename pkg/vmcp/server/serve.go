@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -27,14 +28,12 @@ import (
 // It carries the subset of the legacy server.Config that configures the HTTP/SDK
 // runtime, plus the cross-cutting TelemetryProvider/AuditConfig that are consumed
 // by both the core (core.New) and the transport (Serve) — not a clean partition.
-// The fields the core exclusively owns (Aggregator, Router, BackendClient, Authz)
-// live on core.Config instead and are absent here. Two collaborators are shared
-// rather than core-owned, so they appear on both configs: BackendRegistry (the
-// Serve session layer also enumerates backends when creating a session) and the
-// composite-tool WorkflowDefs (carried indirectly via SessionManagerConfig, whose
-// ComposerFactory closes over the core-owned router/backend client). The
-// composition root passes the same BackendRegistry instance to both core.New and
-// Serve and assembles SessionManagerConfig.
+// The fields the core exclusively owns (Aggregator, Router, BackendClient, Authz,
+// composite-tool WorkflowDefs) live on core.Config instead and are absent here.
+// One collaborator is shared rather than core-owned, so it appears on both
+// configs: BackendRegistry (the Serve session layer also enumerates backends when
+// creating a session). The composition root passes the same BackendRegistry
+// instance to both core.New and Serve and assembles SessionManagerConfig.
 //
 // The name intentionally stutters as server.ServerConfig: it is mandated by the
 // New/Serve split, and the package's existing Config is the legacy transport
@@ -65,11 +64,6 @@ type ServerConfig struct {
 	// HeartbeatInterval configures the SSE keep-alive ping interval on GET
 	// connections (default: 30s when zero).
 	HeartbeatInterval time.Duration
-
-	// ModernDispatchEnabled turns on direct dispatch of well-formed MCP
-	// 2026-07-28 ("Modern") stateless requests to the vMCP core, bypassing the
-	// SDK Serve/session layer (default false; see Config.ModernDispatchEnabled).
-	ModernDispatchEnabled bool
 
 	// AuthMiddleware is the optional authentication middleware applied to MCP routes.
 	// If nil, no authentication is required.
@@ -114,17 +108,11 @@ type ServerConfig struct {
 
 	// SessionManagerConfig is the pre-built construction config for the vMCP session
 	// manager (sessionmanager.New). FactoryConfig.Base is the required underlying
-	// MultiSessionFactory; the config also carries the composite-tool WorkflowDefs and
-	// ComposerFactory, the optimizer factory/config, and the telemetry provider.
-	// Required; Serve returns an error when it is nil. The composition root assembles
-	// it because the ComposerFactory closes over the core-owned router and backend
-	// client.
-	//
-	// Caller responsibility: unlike server.New, Serve does NOT run validateWorkflows on
-	// FactoryConfig.WorkflowDefs — the composition root must validate composite-tool
-	// definitions before assembling this config (sessionmanager.New only checks the
-	// WorkflowDefs/ComposerFactory pairing). This responsibility moves here with the
-	// relocation and matters when server.New is routed through Serve in Phase 3.
+	// MultiSessionFactory; the config also carries the optimizer factory/config, the
+	// telemetry provider, the session-cache capacity, and the AdvertiseFromCore flag.
+	// Required; Serve returns an error when it is nil. Composite-tool workflows are
+	// NOT carried here — they are core-owned (core.Config.WorkflowDefs, validated in
+	// core.New).
 	//
 	// Caller responsibility (AC2, the single-aggregation contract): FactoryConfig.Base
 	// MUST be constructed WITHOUT a session.WithAggregator option on the Serve path. On
@@ -139,9 +127,10 @@ type ServerConfig struct {
 	//
 	// Caller responsibility (optimizer): to enable the optimizer on the Serve path, set
 	// FactoryConfig.OptimizerConfig/OptimizerFactory AND FactoryConfig.AdvertiseFromCore.
-	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go);
-	// AdvertiseFromCore suppresses the factory's own optimizer decorator so the shared FTS5
-	// store is not double-indexed (see FactoryConfig.AdvertiseFromCore).
+	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go).
+	// sessionmanager.New rejects an optimizer without AdvertiseFromCore, so a composition
+	// root that forgets the flag fails at startup instead of double-indexing the shared
+	// FTS5 store (see FactoryConfig.AdvertiseFromCore).
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
@@ -382,6 +371,15 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		srv.lazyInjectSessionTools(hookCtx)
 	})
 
+	// Surface the capability gate's verdict once at startup: the blocker list is
+	// derived from construction-time configuration and cannot change afterwards,
+	// so this single line is the operator-visible record of why Modern-capable
+	// clients of this instance negotiate down to Legacy (see modern_gate.go).
+	if blocked := srv.modernDispatchBlockers(); len(blocked) > 0 {
+		slog.Warn("MCP 2026-07-28 (Modern) dispatch disabled: enabled features require the session (Legacy) path",
+			"features", blocked)
+	}
+
 	// Disarm the close-on-error guard: the Server is fully constructed.
 	closeStorageOnErr = false
 	return srv, nil
@@ -419,7 +417,6 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		EndpointPath:            cfg.EndpointPath,
 		SessionTTL:              cfg.SessionTTL,
 		HeartbeatInterval:       cfg.HeartbeatInterval,
-		ModernDispatchEnabled:   cfg.ModernDispatchEnabled,
 		AuthMiddleware:          cfg.AuthMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,

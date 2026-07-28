@@ -103,6 +103,8 @@ thv vmcp serve --config vmcp.yaml
 | 2 | `--optimizer-embedding` | FTS5 + TEI semantic | Managed TEI container | `find_tool`, `call_tool` only |
 | 3 | `optimizer.embeddingService` in config YAML | FTS5 + external embedding service | User-managed | `find_tool`, `call_tool` only |
 
+Any tier >= 1 keeps clients on MCP 2025-11-25 (Legacy): the `find_tool`/`call_tool` meta-tools are session-scoped, so Modern-capable (2026-07-28) clients are negotiated down to Legacy by the capability gate (`pkg/vmcp/server/modern_gate.go`; Modern parity is tracked in #6089).
+
 Tier 2 (`--optimizer-embedding`) implies `--optimizer`. The TEI container is started automatically and stopped on server shutdown.
 
 **Implementation**: `pkg/vmcp/optimizer/optimizer.go`, `pkg/vmcp/cli/embedding_manager.go`

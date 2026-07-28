@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,8 +15,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
 // Reserved Modern _meta keys, mirrored from pkg/mcp/revision.go's unexported
@@ -38,15 +41,13 @@ type classificationErrorBody struct {
 }
 
 // classifyingHandlerTestServer builds a minimal *Server for driving
-// classifyingHandler in isolation, carrying only the two fields the handler
-// reads beyond config scalars: the kill-switch and the core a switch-on
-// dispatch routes to.
-func classifyingHandlerTestServer(modernDispatchEnabled bool) *Server {
+// classifyingHandler in isolation, carrying only what the handler reads beyond
+// config scalars: the core a Modern dispatch routes to.
+func classifyingHandlerTestServer() *Server {
 	return &Server{
 		config: &Config{
-			Name:                  testServerName,
-			Version:               testServerVersion,
-			ModernDispatchEnabled: modernDispatchEnabled,
+			Name:    testServerName,
+			Version: testServerVersion,
 		},
 		core: &modernFakeCore{tools: []vmcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}},
 	}
@@ -56,13 +57,12 @@ func TestClassifyingHandler(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                  string
-		parsed                *mcpparser.ParsedMCPRequest
-		protocolHeader        string
-		modernDispatchEnabled bool
-		wantPassthrough       bool
-		wantDispatched        bool
-		wantCode              int64
+		name            string
+		parsed          *mcpparser.ParsedMCPRequest
+		protocolHeader  string
+		wantPassthrough bool
+		wantDispatched  bool
+		wantCode        int64
 	}{
 		{
 			name:            "nil parsed request passes through",
@@ -91,36 +91,25 @@ func TestClassifyingHandler(t *testing.T) {
 		{
 			// tools/list is deliberately not in the Mcp-Name-required set, so this
 			// case only needs Mcp-Method (required on every Modern request) to pass
-			// ValidateHeaderConsistency; with the kill-switch on, a well-formed
-			// Modern request then dispatches to the core instead of falling
-			// through to next.
-			name:                  "well-formed modern request dispatches to the core when the kill-switch is on",
-			parsed:                wellFormedModernToolsList(),
-			protocolHeader:        mcpparser.MCPVersionModern,
-			modernDispatchEnabled: true,
-			wantDispatched:        true,
-		},
-		{
-			// Same well-formed Modern request, but with the kill-switch at its
-			// default (off): vMCP does not serve the Modern revision, which the
-			// draft says must be answered with 400 + UnsupportedProtocolVersion
-			// listing the supported versions. It must NOT reach next: falling
-			// through lands on go-sdk's stateful rejection, a plain-text 400 no
-			// client can parse as a protocol error.
-			name:           "well-formed modern request is refused with -32022 when the kill-switch is off",
+			// ValidateHeaderConsistency. This test server has no enabled feature
+			// the stateless path cannot serve (modernDispatchBlockers is empty),
+			// so a well-formed Modern request dispatches to the core rather than
+			// falling through to next. The gated counterpart is
+			// TestClassifyingHandler_ModernCapabilityGate.
+			name:           "well-formed modern request dispatches to the core",
 			parsed:         wellFormedModernToolsList(),
 			protocolHeader: mcpparser.MCPVersionModern,
-			wantCode:       mcpparser.CodeUnsupportedProtocolVersion,
+			wantDispatched: true,
 		},
 		{
-			// server/discover is the one exemption: it is how a client learns
-			// which revisions the server supports, so refusing it on version
-			// grounds would leave the client unable to negotiate down. go-sdk's
-			// stateful path answers discover, so the fall-through is correct.
-			name:            "server/discover still falls through when the kill-switch is off",
-			parsed:          wellFormedModernDiscover(),
-			protocolHeader:  mcpparser.MCPVersionModern,
-			wantPassthrough: true,
+			// With no capability-gate blockers, server/discover is dispatched like
+			// any other Modern method: dispatchModern answers it directly. When
+			// the gate is active it instead falls through to the SDK so the client
+			// can negotiate down — see TestClassifyingHandler_ModernCapabilityGate.
+			name:           "server/discover dispatches to the core",
+			parsed:         wellFormedModernDiscover(),
+			protocolHeader: mcpparser.MCPVersionModern,
+			wantDispatched: true,
 		},
 		{
 			// A body that is otherwise a well-formed Modern request (valid _meta
@@ -271,7 +260,7 @@ func TestClassifyingHandler(t *testing.T) {
 			})
 
 			rec := httptest.NewRecorder()
-			classifyingHandlerTestServer(tt.modernDispatchEnabled).classifyingHandler(next).ServeHTTP(rec, req)
+			classifyingHandlerTestServer().classifyingHandler(next).ServeHTTP(rec, req)
 
 			if tt.wantPassthrough {
 				assert.True(t, nextCalled, "expected the request to fall through to next")
@@ -312,8 +301,8 @@ func wellFormedModernToolsList() *mcpparser.ParsedMCPRequest {
 	}
 }
 
-// wellFormedModernDiscover is wellFormedModernToolsList for the one method the
-// kill-switch branch exempts from the unsupported-version refusal.
+// wellFormedModernDiscover is wellFormedModernToolsList for server/discover, the
+// Modern capability probe.
 func wellFormedModernDiscover() *mcpparser.ParsedMCPRequest {
 	return &mcpparser.ParsedMCPRequest{
 		Method:    methodServerDiscover,
@@ -324,5 +313,124 @@ func wellFormedModernDiscover() *mcpparser.ParsedMCPRequest {
 			metaKeyClientCapabilities: map[string]any{},
 		},
 		MCPMethodHeader: methodServerDiscover,
+	}
+}
+
+// stubOptimizerFactory marks the optimizer as enabled for gate tests. The gate
+// (modernDispatchBlockers) only checks the factory for nil-ness — no gated
+// request ever builds an optimizer — so returning an error is safe and keeps
+// the stub honest about never being invoked.
+func stubOptimizerFactory(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error) {
+	return nil, errors.New("stub optimizer factory must not be invoked by the capability gate")
+}
+
+// TestModernDispatchBlockers pins the gate's contents: exactly which enabled
+// features keep an instance off the Modern revision, by name. A parity change
+// (deleting an entry in modern_gate.go) must flip a case here.
+func TestModernDispatchBlockers(t *testing.T) {
+	t.Parallel()
+
+	plain := classifyingHandlerTestServer()
+	assert.Empty(t, plain.modernDispatchBlockers(),
+		"an instance with no Serve-layer-only features must serve Modern")
+
+	withOptimizer := classifyingHandlerTestServer()
+	withOptimizer.optimizerFactory = stubOptimizerFactory
+	assert.Equal(t, []string{blockerOptimizer}, withOptimizer.modernDispatchBlockers(),
+		"the session-scoped optimizer is not servable by the stateless Modern path")
+}
+
+// TestClassifyingHandler_ModernCapabilityGate pins the wire behavior of the
+// capability gate for an instance with a feature the stateless Modern path
+// cannot serve (the optimizer):
+//
+//   - A well-formed Modern request is refused with a conformant 400 + -32022
+//     UnsupportedProtocolVersionError whose data lists the Legacy version, so a
+//     Modern-first client (go-sdk v1.7+ probes before initialize) negotiates
+//     down cleanly instead of hitting go-sdk's unparsable plain-text
+//     stateful rejection.
+//   - server/discover is exempt and falls through to the SDK path, whose
+//     stateful transport advertises the Legacy-only version list — the one
+//     request a client needs answered to negotiate down.
+//   - Legacy traffic falls through untouched: the gate only ever refuses
+//     requests that classified Modern.
+//
+// The ungated counterparts (same requests dispatching to the core) live in
+// TestClassifyingHandler; together the two pin that the gate cannot be
+// "simplified" away in either direction.
+func TestClassifyingHandler_ModernCapabilityGate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		parsed          *mcpparser.ParsedMCPRequest
+		protocolHeader  string
+		wantPassthrough bool
+	}{
+		{
+			name:           "modern tools/list is refused with -32022 listing Legacy",
+			parsed:         wellFormedModernToolsList(),
+			protocolHeader: mcpparser.MCPVersionModern,
+		},
+		{
+			name:            "server/discover falls through to the SDK so the client can negotiate down",
+			parsed:          wellFormedModernDiscover(),
+			protocolHeader:  mcpparser.MCPVersionModern,
+			wantPassthrough: true,
+		},
+		{
+			name: "legacy request falls through untouched",
+			parsed: &mcpparser.ParsedMCPRequest{
+				Method:    "tools/list",
+				ID:        "1",
+				IsRequest: true,
+			},
+			protocolHeader:  mcpparser.MCPVersionLegacy,
+			wantPassthrough: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := classifyingHandlerTestServer()
+			srv.optimizerFactory = stubOptimizerFactory
+
+			ctx := context.WithValue(t.Context(), mcpparser.MCPRequestContextKey, tt.parsed)
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
+			req.Header.Set("MCP-Protocol-Version", tt.protocolHeader)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rec := httptest.NewRecorder()
+			srv.classifyingHandler(next).ServeHTTP(rec, req)
+
+			if tt.wantPassthrough {
+				assert.True(t, nextCalled, "expected the request to fall through to next")
+				return
+			}
+			assert.False(t, nextCalled, "expected the gate to short-circuit before next")
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+			var body struct {
+				Error struct {
+					Code int64 `json:"code"`
+					Data struct {
+						Requested string   `json:"requested"`
+						Supported []string `json:"supported"`
+					} `json:"data"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			assert.Equal(t, mcpparser.CodeUnsupportedProtocolVersion, body.Error.Code)
+			assert.Equal(t, mcpparser.MCPVersionModern, body.Error.Data.Requested)
+			assert.Equal(t, []string{mcpparser.MCPVersionLegacy}, body.Error.Data.Supported,
+				"the refusal must list the Legacy version so the client can negotiate down")
+		})
 	}
 }

@@ -102,19 +102,20 @@ import (
 // does not, silently falsifying the equality claimed above.
 //
 // KNOWN GAP, stated rather than papered over: nothing currently detects that
-// drift. The Modern side IS pinned behaviourally (a 1001-item corpus must yield a
-// 1000-item first page). The Legacy side is not, because holding a client on
-// Legacy would need a negotiation-pinning mechanism that does not exist here --
-// mcpcompat cannot request a protocol version (#5911) -- and
+// drift. The Modern side IS pinned behaviourally in-package (a 1001-item corpus
+// must yield a 1000-item first page), but not end-to-end:
 // test/integration/vmcp's Over1000Tools regression exercises the Legacy split
-// only incidentally today, becoming a Modern test once the kill-switch is
-// removed.
+// only -- its helpers are mcpcompat-backed, and mcpcompat cannot request
+// 2026-07-28 (#5911) -- so no in-tree integration test pins the Modern split
+// end-to-end. (A per-request Legacy/Modern pinning mechanism now exists in
+// test/e2e's RawMCPClient, but the integration-tier helpers are still
+// mcpcompat-backed.)
 //
 // So: treat the equality claimed above as an invariant maintained by REVIEW, not
 // by CI, and re-check it on any go-sdk bump. This deliberately does not name a
-// mechanism the Legacy twin should use; whether that is a pinning harness, a
-// loud failure at negotiation, or something else is undecided, and this comment
-// must not go stale by presuming one.
+// mechanism the missing Modern end-to-end coverage should use; whether that is a
+// pinning harness, a loud failure at negotiation, or something else is
+// undecided, and this comment must not go stale by presuming one.
 const modernPageSize = 1000
 
 // modernCursorMaxLen caps an inbound cursor before it is decoded.

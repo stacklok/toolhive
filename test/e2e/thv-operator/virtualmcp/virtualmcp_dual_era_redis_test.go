@@ -73,11 +73,7 @@ const dualEraRedisKeyPrefix = "thv:vmcp:dualera:"
 // classifyingHandler routes server/discover to dispatchModern instead of the
 // SDK's stateful fallback (pkg/vmcp/server/classification.go), and such a client
 // always negotiates Modern and gets no session -- there is no way to make it open
-// a Legacy session against this vMCP. The observed failure is mcpcompat's
-// Initialize unconditionally installing list-changed handlers, which makes go-sdk
-// open a "subscriptions/listen" stream vMCP does not implement, answered with
-// HTTP 404 and surfaced as go-sdk's ErrSessionMissing ("session not found")
-// despite Initialize having "succeeded". Use *e2e.RawMCPClient instead: it pins
+// a Legacy session against this vMCP. Use *e2e.RawMCPClient instead: it pins
 // the era explicitly per request (Legacy via e2e.NewLegacyRequest + the
 // MCP-Protocol-Version header), which is what actually gets a Legacy session
 // from a Modern-serving vMCP.

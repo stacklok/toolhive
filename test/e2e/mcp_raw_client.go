@@ -176,9 +176,10 @@ func (r *RawRequest) WithClientInfo(name, version string) *RawRequest {
 // WithStreamableAccept sets "Accept: application/json, text/event-stream".
 // A real go-sdk streamable-HTTP server rejects a POST without this header
 // (HTTP 400), so requests bound for a real backend (e.g. the k8s tier) must
-// set it. Do NOT set it for requests to the ToolHive proxy: the proxy does not
-// require it and switches to an SSE response body when it is present, which
-// this client's plain-JSON parser cannot read.
+// set it. Requests to the ToolHive proxy still omit it by convention: the
+// proxy does not require it, and omitting it keeps responses plain JSON (the
+// client parses SSE responses too -- see sseResponsePayload -- and flipping
+// proxy-bound requests to the conformant Accept is tracked in #6104).
 func (r *RawRequest) WithStreamableAccept() *RawRequest {
 	return r.SetHeader("Accept", "application/json, text/event-stream")
 }
@@ -370,7 +371,7 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 		Body:       respBody,
 	}
 	envelope := respBody
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		envelope = sseResponsePayload(respBody)
 	}
 	populateEnvelope(envelope, result)

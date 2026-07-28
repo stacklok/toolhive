@@ -333,7 +333,7 @@ func TestRawClientSend(t *testing.T) {
 		_, err = client.Send(context.Background(), server.URL, req)
 		require.NoError(t, err)
 		require.Empty(t, captured.headers.Get("Accept"),
-			"no Accept by default: it makes the ToolHive proxy emit an SSE body this client can't parse")
+			"no Accept by default: keeps proxy responses plain JSON; conformant-Accept flip tracked in #6104")
 
 		withAccept, err := NewModernRequest("tools/list", nil)
 		require.NoError(t, err)
@@ -436,6 +436,56 @@ func TestRawClientSSEResponse(t *testing.T) {
 
 		require.Equal(t, json.Number("1"), resp.ID)
 		require.JSONEq(t, `{}`, string(resp.Result))
+	})
+
+	t.Run("CRLF line endings parse identically to LF", func(t *testing.T) {
+		t.Parallel()
+		server := newSSEServer(t, "event: message\r\n"+
+			`data: {"jsonrpc":"2.0","id":5,"result":{"tools":[{"name":"echo"}]}}`+"\r\n\r\n")
+
+		req, err := NewLegacyRequest("tools/list", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Equal(t, "2.0", resp.JSONRPC)
+		require.Equal(t, json.Number("5"), resp.ID)
+		require.JSONEq(t, `{"tools":[{"name":"echo"}]}`, string(resp.Result))
+		require.Nil(t, resp.Error)
+	})
+
+	t.Run("data: with no leading space still parses", func(t *testing.T) {
+		t.Parallel()
+		server := newSSEServer(t, "event: message\n"+
+			`data:{"jsonrpc":"2.0","id":9,"result":{}}`+"\n\n")
+
+		req, err := NewLegacyRequest("ping", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Equal(t, json.Number("9"), resp.ID)
+		require.JSONEq(t, `{}`, string(resp.Result))
+	})
+
+	t.Run("a batch (array) data payload leaves the envelope empty, Body raw", func(t *testing.T) {
+		t.Parallel()
+		// A JSON array is not a single response object, so it never populates
+		// the envelope — matching RawResponse's batch contract (inspect Body).
+		body := "event: message\n" +
+			`data: [{"jsonrpc":"2.0","id":1,"result":{}},{"jsonrpc":"2.0","id":2,"result":{}}]` + "\n\n"
+		server := newSSEServer(t, body)
+
+		req, err := NewLegacyRequest("tools/list", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Empty(t, resp.JSONRPC)
+		require.Nil(t, resp.ID)
+		require.Nil(t, resp.Result)
+		require.Nil(t, resp.Error)
+		require.Equal(t, body, string(resp.Body), "Body must keep the raw stream for the caller")
 	})
 }
 

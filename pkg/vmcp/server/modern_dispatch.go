@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -587,10 +588,13 @@ func writeModernCallFailure(
 // caller that reacts to -32021 by declaring the capability on a retry
 // learns immediately that doing so will not help here (the declared case is served by
 // writeModernCallFailure's -32603 branch, not by MRTR).
+//
+// id follows writeModernError (modern_envelope.go): absent (via
+// transportsession.HasJSONRPCID) is encoded by omitting the "id" key, never
+// as null.
 func writeModernMissingCapability(w http.ResponseWriter, id any, capName string) {
-	writeModernEnvelope(w, http.StatusOK, map[string]any{
+	envelope := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id,
 		"error": map[string]any{
 			"code": mcpparser.CodeMissingClientCapability,
 			"message": fmt.Sprintf(
@@ -602,7 +606,11 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 				"requiredCapabilities": map[string]any{capName: map[string]any{}},
 			},
 		},
-	})
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
 }
 
 // writeModernDispatchError classifies a POST-dispatch error from
@@ -634,6 +642,10 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // non-authz error. Re-sanitizing here would just diverge from what the SDK
 // path already exposes for the identical failure.
 func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err error) {
+	// Denial first (matches conversion.ErrorToToolResult): an error that is
+	// both a CodedError and wraps ErrAuthorizationFailed must render as the
+	// denial, never as retry-shaped coded data (the sets are disjoint today;
+	// this ordering is the invariant).
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernDenied(w, id, denyMsg)
 		return

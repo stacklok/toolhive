@@ -439,21 +439,43 @@ limiting does not gate Modern either: the limiter is a core decorator
 (`pkg/vmcp/ratelimit`), so both eras meter the same `CallTool` seam, and the
 Modern dispatcher preserves the limiter's coded error on the wire — a real
 JSON-RPC error object, `-32029` with `data.retryAfterSeconds`
-(`writeModernCodedError`, at HTTP 200 because 429 sits in go-sdk's transient
-retry set) — where the Legacy SDK seam can only smuggle the same code and data
-into an `IsError` tool result's `structuredContent`
-(`conversion.ErrorToToolResult`).
+(`writeModernCodedError`, at HTTP 200 because go-sdk rejects a non-200
+response before decoding the body, so on a 429 the error object — and its
+`retryAfterSeconds` — would be discarded unread) — where the Legacy SDK seam
+can only smuggle the same code and data into an `IsError` tool result's
+`structuredContent` (`conversion.ErrorToToolResult`). Note that `-32029` sits
+inside the draft spec's reserved band (`-32020`..`-32099`, reserved for
+spec-defined codes); reallocating it is tracked in #6101.
+
+"Does not gate Modern" is not "costs the same", though. The limiter wraps only
+the `CallTool` seam, so the list verbs and `server/discover` are unmetered on
+both eras — but Legacy aggregates once per session registration, while Modern
+re-runs the full backend fan-out on every request with no cache, by design
+(`core_vmcp.go`'s `aggregatedView`). A Modern client can therefore loop
+unmetered, uncached fan-outs — reachable unauthenticated when incoming auth is
+anonymous. Rate-limiting the list/discover verbs, or a short-TTL per-identity
+capability cache, is deferred until profiling shows the per-request fan-out
+cost matters (#5761 — the same deferral recorded in `dispatchModernDiscover`'s
+doc comment).
 
 Wire behavior when the gate is closed:
 
 - **`server/discover` falls through to the SDK** instead of dispatching. go-sdk's
-  stateful transport filters 2026-07-28 out of its `supportedVersions`
-  (`SupportsProtocolVersion` requires `Stateless`), so the probe answer
-  advertises Legacy only. This matters because go-sdk v1.7+ clients are
-  Modern-first: `Connect` probes `server/discover` **before** `initialize` and
-  upgrades to whatever the server advertises. The fall-through answer is what
-  lands them on the Legacy handshake — where sessions, and every gated feature,
-  work.
+  `filterSupportedVersions` keeps every version the transport's
+  `SupportsProtocolVersion` accepts, and the stateful transport excludes only
+  >= 2026-07-28 (those require `Stateless`), so the probe answer is the
+  transport-filtered list — everything except Modern: `[2025-11-25,
+  2025-06-18, 2025-03-26, 2024-11-05]`. This matters because go-sdk v1.7+
+  clients are Modern-first: `Connect` probes `server/discover` **before**
+  `initialize` and upgrades to whatever the server advertises. The
+  fall-through answer is what lands them on the Legacy handshake — where
+  sessions, and every gated feature, work. That answer over-advertises,
+  though: the `-32022` refusal below lists only 2025-11-25, and the refusal is
+  the accurate one — `mcpcompat`'s `handleInitialize` always responds with
+  `LATEST_PROTOCOL_VERSION` regardless of what the client requests, so the
+  three older revisions in the discover answer are not actually servable. The
+  mismatch is the SDK's discover answer to narrow, not the `-32022` list to
+  widen.
 - **Every other well-formed Modern request** is refused with a conformant
   400 + `-32022 UnsupportedProtocolVersionError` whose data lists the Legacy
   version, the shape a client negotiates down from. It is answered in

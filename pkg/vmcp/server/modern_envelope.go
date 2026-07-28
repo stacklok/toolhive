@@ -245,6 +245,15 @@ type modernDiscoverResult struct {
 // LATEST_PROTOCOL_VERSION regardless of what a client requests -- it does
 // not support older Legacy revisions either). A discover-first client uses
 // this list to decide whether it can skip the Legacy initialize handshake.
+//
+// CONSTRAINT: this function must only be reached with the Modern capability
+// gate open. It hardcodes MCPVersionModern into SupportedVersions and never
+// consults the gate; that is truthful only because classifyingHandler
+// (classification.go) routes server/discover to the SDK when the gate is
+// closed, and the SDK's stateful transport computes the truthful Legacy-only
+// list there. Do NOT plumb the gate in here — that would create a second
+// source of the version list. Anyone re-routing gated discover to
+// dispatchModern must revisit this.
 func newModernDiscover(
 	hasTools, hasResources, hasTemplates, hasPrompts bool, serverName, serverVersion string,
 ) modernDiscoverResult {
@@ -592,16 +601,18 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 // conversion.CodedErrorResult, the Legacy seam's rendering of the same
 // errors).
 //
-// Status is HTTP 200 deliberately, for the same client-survival reason as
-// writeModernMissingCapability's documented deviation (modern_dispatch.go):
-// ToolHive's coded errors live in the implementation-defined -3202x space, so
-// no spec MUSTs a 4xx for them, and the natural mapping for the rate
-// limiter's -32029 (HTTP 429 + Retry-After, what pkg/ratelimit's HTTP
-// middleware writes) is in go-sdk v1.7.0-pre.3's TRANSIENT retry set — a
-// go-sdk client would silently retry the POST instead of surfacing the error
-// with its retryAfterSeconds to the caller. The request was accepted and
-// processed; the failure is an application-level JSON-RPC error riding the
-// transport.
+// Status is HTTP 200 deliberately: go-sdk's streamable client
+// (v1.7.0-pre.3) rejects a non-200 POST response in checkResponse BEFORE
+// decoding its body, so on any 4xx the JSON-RPC error object below —
+// including data.retryAfterSeconds on the rate limiter's -32029 — would be
+// discarded unread. 200 is the only status on which the client surfaces the
+// coded error to the caller. The request was accepted and processed; the
+// failure is an application-level JSON-RPC error riding the transport.
+// (writeModernMissingCapability in modern_dispatch.go documents a related
+// but distinct 200-over-4xx deviation for -32021.) Separately, -32029 sits
+// in the -32020..-32099 band the draft MCP spec reserves exclusively for
+// spec-defined codes; it predates that partition and its reallocation is
+// tracked in #6101.
 //
 // id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
 // encoded by omitting the "id" key, never as null.
@@ -610,7 +621,7 @@ func writeModernCodedError(w http.ResponseWriter, id any, err error, coded mcppa
 		"code":    coded.Code(),
 		"message": err.Error(),
 	}
-	if data := coded.Data(); data != nil {
+	if data := coded.Data(); len(data) > 0 {
 		errObj["data"] = data
 	}
 	envelope := map[string]any{

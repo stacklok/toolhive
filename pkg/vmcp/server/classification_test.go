@@ -336,7 +336,7 @@ func TestModernDispatchBlockers(t *testing.T) {
 
 	withOptimizer := classifyingHandlerTestServer()
 	withOptimizer.optimizerFactory = stubOptimizerFactory
-	assert.Equal(t, []string{"optimizer"}, withOptimizer.modernDispatchBlockers(),
+	assert.Equal(t, []string{blockerOptimizer}, withOptimizer.modernDispatchBlockers(),
 		"the session-scoped optimizer is not servable by the stateless Modern path")
 }
 

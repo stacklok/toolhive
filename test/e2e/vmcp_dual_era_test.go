@@ -43,11 +43,13 @@ import (
 // (mirrors the same finding already documented in dual_era_mixing_test.go
 // for the single-server transparent proxy).
 //
-// Known harness limitation: no request in this file sets
-// "Accept: application/json, text/event-stream" (a MUST on both revisions),
-// since e2e.RawMCPClient has no SSE response parser and the proxy switches to
-// an SSE body whenever that header is present (see mcp_raw_client.go). So the
-// bridge is proven here only under a non-conformant Accept header.
+// Deliberate harness choice: no request in this file sets
+// "Accept: application/json, text/event-stream" (a MUST on both revisions).
+// e2e.RawMCPClient now parses SSE-framed POST responses (sseResponsePayload,
+// mcp_raw_client.go), but these specs still omit the header so Legacy
+// responses stay plain JSON; flipping them to the conformant Accept is
+// tracked in #6104. Until then the bridge is proven here only under a
+// non-conformant Accept header.
 var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Serial, func() {
 	Context("one Legacy and one Modern backend in the same group", func() {
 		var (

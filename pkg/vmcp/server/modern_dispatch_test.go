@@ -728,9 +728,9 @@ func TestDispatchModern_AuthzGate(t *testing.T) {
 // must reach the Modern client with that code and data intact, not be
 // laundered into an opaque -32603 — parity with the SDK path, where
 // conversion.ErrorToToolResult preserves the same code/data in
-// structuredContent. HTTP status stays 200: -32029's natural 429 is in
-// go-sdk's transient retry set and would be silently retried instead of
-// surfaced (see writeModernCodedError).
+// structuredContent. HTTP status stays 200: go-sdk rejects a non-200 POST
+// response before decoding its body, so a 429 would discard the error object
+// -- and data.retryAfterSeconds -- unread (see writeModernCodedError).
 func TestDispatchModern_CodedErrorPreservesCodeAndData(t *testing.T) {
 	t.Parallel()
 

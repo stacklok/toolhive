@@ -23,12 +23,26 @@ package server
 //     design and store nothing) does NOT belong here; coexistence of that kind
 //     is asserted by test/e2e/thv-operator/virtualmcp/virtualmcp_dual_era_redis_test.go.
 //
+//   - Every entry's comment must cite the issue tracking its Modern parity, so
+//     a stale entry (parity shipped, entry forgotten) surfaces in issue triage
+//     rather than silently keeping the instance off Modern.
+//
 //   - When Modern parity lands for a feature, delete its entry. The gate's
 //     behavior is pinned by TestModernDispatchBlockers and
 //     TestClassifyingHandler_ModernCapabilityGate (classification_test.go) plus
 //     the full-handler pair in modern_gate_integration_test.go; deleting an
 //     entry must flip cases there, so parity work cannot silently ship without
 //     updating them.
+//
+//   - Loud refusals are deliberately out of scope. A composite workflow with an
+//     elicitation step (config.WorkflowStepConfig type "elicitation") works over
+//     Legacy sessions and fails Modern clients with an explicit -32021
+//     MissingRequiredClientCapabilityError (or -32603 when the client declared
+//     the capability) — see writeModernCallFailure. That is an honest error the
+//     client can act on, not silently different behavior, so it does not gate
+//     the whole instance off Modern for one workflow definition. Distinct from
+//     #6059, which covers a Modern BACKEND returning input_required; here vMCP
+//     itself is the elicitor.
 //
 // The result is derived from construction-time configuration only, so it is
 // constant for the life of the Server; Serve logs it once at startup.
@@ -45,13 +59,19 @@ func (s *Server) modernDispatchBlockers() []string {
 	// `tools/call find_tool` would fail -32603 "not found" — the optimizer
 	// feature would be invisibly disabled for exactly the newest clients.
 	// Modern parity needs an identity- or instance-scoped index to replace the
-	// session-scoped one; until that lands, an optimizer-enabled instance is
-	// Legacy-only. s.optimizerFactory is the resolved factory and is non-nil on
-	// both composition paths (New and direct Serve) exactly when the optimizer
-	// is enabled.
+	// session-scoped one; that work is tracked in #6089, and deleting this entry
+	// is its definition of done. Until it lands, an optimizer-enabled instance
+	// is Legacy-only. A non-nil s.optimizerFactory is a faithful "optimizer
+	// enabled" signal: sessionmanager.New's constructor guard rejects an
+	// optimizer without AdvertiseFromCore at startup, so the factory can never
+	// be enabled yet invisible here.
 	if s.optimizerFactory != nil {
-		blocked = append(blocked, "optimizer")
+		blocked = append(blocked, blockerOptimizer)
 	}
 
 	return blocked
 }
+
+// blockerOptimizer names the optimizer's entry in the blocker list;
+// TestModernDispatchBlockers asserts on it by name.
+const blockerOptimizer = "optimizer"

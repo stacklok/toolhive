@@ -137,7 +137,8 @@ func appendHealthCheckConfig(path string) {
 
 // startDualEraVMCP starts `thv vmcp serve`, using --config configPath when
 // configPath is non-empty, else quick mode (--group groupName). vMCP serves both
-// MCP revisions unconditionally (#5959), so this only assembles the arguments —
+// MCP revisions whenever the capability gate is open (modern_gate.go), and these
+// specs configure no blockers, so this only assembles the arguments —
 // it no longer overrides the inherited environment, and so delegates the process
 // start to e2e.StartLongRunningTHVCommand.
 func startDualEraVMCP(config *e2e.TestConfig, groupName, configPath string, port int) *exec.Cmd {

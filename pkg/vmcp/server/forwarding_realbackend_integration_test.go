@@ -156,7 +156,9 @@ func startForwardingBackend(t *testing.T) string {
 // WHY PIN: these fixtures assert the Legacy-only server-initiated surface;
 // see the file header above and the client-edge limitation in
 // docs/arch/10-virtual-mcp-architecture.md for the full disposition. Modern
-// dispatch is now unconditional (#5959 removed the kill-switch), so without
+// dispatch is served whenever the capability gate is open
+// (modernDispatchBlockers, modern_gate.go; #5959 removed the kill-switch), and
+// these fixtures configure no blockers, so without
 // this pin the go-sdk-based client would negotiate Modern and the surface
 // under test would vanish mid-test — failing at connect rather than at the
 // behavior being asserted. Before that, the server's own version-omitting
@@ -168,7 +170,8 @@ func startForwardingBackend(t *testing.T) string {
 // unexported — see the LIMITATION note in mcpcompat/client and #5911).
 // Replace this with a real client option if #5911 lands.
 //
-// LOAD-BEARING after #6033: once Modern dispatch is unconditional, this
+// LOAD-BEARING after #6033: with the capability gate open (modern_gate.go) --
+// and these fixtures configure no blockers -- this
 // RoundTripper is the ONLY thing keeping these downstream clients on Legacy.
 // It is not leftover scaffolding — deleting it silently flips every test in
 // this file to Modern and voids what they assert. The intercepted counter

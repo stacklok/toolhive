@@ -47,12 +47,32 @@ func launchYardstickLegacyOnPort(config *e2e.TestConfig, groupName, backendName 
 	).ExpectSuccess()
 }
 
+// startEraBackendOnPort launches a backend via launch and waits for it to
+// become ready, retrying once with a freshly allocated port if the container
+// lost a race binding its host port. allocateVMCPPort only probes that a port
+// is free at call time and closes its own listener immediately -- the actual
+// bind happens later, asynchronously, inside the container Docker starts for
+// the detached `thv run` process, so another workload's container can grab
+// the same ephemeral port in between (observed as "address already in use").
+func startEraBackendOnPort(config *e2e.TestConfig, backendName string, port int, launch func(port int)) {
+	launch(port)
+	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
+	if err != nil && strings.Contains(err.Error(), "address already in use") {
+		GinkgoWriter.Printf("%s lost a port-bind race on %d, retrying with a fresh port: %v\n", backendName, port, err)
+		e2e.NewTHVCommand(config, "rm", backendName).ExpectSuccess()
+		port = allocateVMCPPort()
+		launch(port)
+		err = e2e.WaitForMCPServer(config, backendName, 120*time.Second)
+	}
+	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("yardstick backend %q should become running", backendName))
+}
+
 // startYardstickLegacyOnPort runs launchYardstickLegacyOnPort and waits for
 // the backend to become ready.
 func startYardstickLegacyOnPort(config *e2e.TestConfig, groupName, backendName string, port int) {
-	launchYardstickLegacyOnPort(config, groupName, backendName, port)
-	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("legacy yardstick backend %q should become running", backendName))
+	startEraBackendOnPort(config, backendName, port, func(p int) {
+		launchYardstickLegacyOnPort(config, groupName, backendName, p)
+	})
 }
 
 // launchYardstickModernOnPort starts a stateless (Modern-capable) yardstick
@@ -87,9 +107,9 @@ func launchYardstickModernOnPort(config *e2e.TestConfig, groupName, backendName 
 // startYardstickModernOnPort runs launchYardstickModernOnPort and waits for
 // the backend to become ready.
 func startYardstickModernOnPort(config *e2e.TestConfig, groupName, backendName string, port int) {
-	launchYardstickModernOnPort(config, groupName, backendName, port)
-	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("modern yardstick backend %q should become running", backendName))
+	startEraBackendOnPort(config, backendName, port, func(p int) {
+		launchYardstickModernOnPort(config, groupName, backendName, p)
+	})
 }
 
 // healthCheckConfigYAML is appended to a `thv vmcp init`-generated config file

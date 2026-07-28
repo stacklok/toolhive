@@ -349,6 +349,18 @@ func DebugServerState(config *TestConfig, serverName string) {
 		GinkgoWriter.Printf("Server logs:\n%s\n", logs)
 	}
 
+	// The container log alone has repeatedly been useless for readiness
+	// timeouts: a workload stuck in `starting` or flipped to `error` fails
+	// inside the detached supervisor (transport start, readiness probe,
+	// restart loop), whose output goes to the proxy log file — not to the
+	// container. Dump it too so a CI failure names the actual blocker.
+	proxyLogs, stderr, err := NewTHVCommand(config, "logs", serverName, "--proxy").Run()
+	if err != nil {
+		GinkgoWriter.Printf("Failed to get proxy logs: %v\nStderr: %s\n", err, stderr)
+	} else {
+		GinkgoWriter.Printf("Proxy logs:\n%s\n", proxyLogs)
+	}
+
 	GinkgoWriter.Printf("=== End debugging for %s ===\n", serverName)
 }
 

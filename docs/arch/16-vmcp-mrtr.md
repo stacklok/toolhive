@@ -21,6 +21,12 @@ the revision's finalization date, when it still lived at `schema/draft`
 should be re-verified against the final text once cut; the MRTR SEP and schema
 types were already Final at time of writing.
 
+*Re-checked 2026-07-28 (the nominal finalization date): the revision is
+still not cut — no `schema/2026-07-28` directory exists,
+`/specification/2026-07-28/` pages 404, and `schema/draft/schema.ts` is
+byte-identical to the copy this design was written against. The checklist
+below therefore remains pending the final cut.*
+
 **Draft-only dependencies (re-verify against the final cut).** The schema
 types and the SEPs are Final and low-risk. Four load-bearing points in this
 design rest on the draft *spec page's* text, which refines (or diverges from)
@@ -99,7 +105,7 @@ halves of these cells were built in #6006; this table is the MRTR overlay.
 | Downstream client | Backend | MRTR shape |
 |---|---|---|
 | Modern | Modern | **Stateless pass-through** (the core design, below) |
-| Modern | Legacy | **No MRTR bridge — deliberate.** Parking a live Legacy backend call server-side to synthesize `input_required` rounds is per-round server state with token-capability and replica-affinity costs: the session the revision removed, in different clothes. Costed and rejected in the client-edge limitation section of doc 10; the sanctioned stateful path is the Tasks extension (SEP-2663). The call fails with the honest explicit error that section documents. |
+| Modern | Legacy | **No MRTR bridge — deliberate.** Parking a live Legacy backend call server-side to synthesize `input_required` rounds is per-round server state with token-capability and replica-affinity costs: the session the revision removed, in different clothes. Costed and rejected in the client-edge limitation section of doc 10; the sanctioned stateful path is the Tasks extension (SEP-2663). The call fails with the two-path contract #6061 (merged) implements in `writeModernCallFailure`: `-32021` + `data.requiredCapabilities` when the client did not declare the capability, an explicit `-32603` naming SEP-2322 when it did. That contract is **permanent for this cell** — MRTR slices supersede it only where the backend is Modern. |
 | Legacy | Modern | **In-request bridge**: vMCP fulfills the backend's `inputRequests` through the existing Legacy forwarding seams and retries the backend call itself (below) |
 | Legacy | Legacy | Today's server-initiated forwarding, unchanged |
 
@@ -306,9 +312,10 @@ Verified against go-sdk `v1.7.0-pre.3` (the transitive pin via
 5. **`-32021` at HTTP 400 is unshippable** with current go-sdk clients (their
    transient set is 500/502/503/504/429; any other 4xx is permanent session
    death), which is why the undeclared-capability error lands at HTTP 200 as
-   a documented deviation — analysis in doc 10's client-edge limitation
-   section; MRTR does not change it, it *removes the case* for capabilities
-   the client does declare.
+   a documented deviation — implemented by #6061
+   (`writeModernMissingCapability`), tracked upstream as go-sdk#1117; MRTR
+   does not change it, it *removes the case* for capabilities the client
+   does declare against Modern backends.
 
 ## Sequencing (collision-aware)
 
@@ -331,12 +338,22 @@ its predecessors merge:
 2. **Ingress envelope + retry params (after #6050/#6033).** `dispatchModern`
    accepts `inputResponses`/`requestState`, threads them through
    `core.CallTool`→`BackendClient`, and renders `input_required` envelopes;
-   parser vocabulary for the two params.
+   parser vocabulary for the two params. Post-#6061, the rendering branch
+   hooks into `writeModernCallFailure` via `InputRequiredFromError`,
+   alongside (never instead of) its authz-priority and capability-refusal
+   branches — the two cannot co-occur: the refusal recorder fires only on
+   the Legacy-backend forwarding seams, `input_required` only from a Modern
+   backend's envelope.
 3. **Capability mirroring (activates cell 1).** `ModernRequestMeta` gains a
    capabilities argument; dispatch threads the downstream declaration to the
-   egress call; the relay goes live end-to-end. The `-32021`-shaped
-   undeclared-capability error contract from doc 10's follow-up lands with or
-   before this.
+   egress call (reusing #6061's `modernClientDeclaredCapability` reading of
+   `_meta`); the relay goes live end-to-end. The `-32021`-shaped
+   undeclared-capability error contract landed ahead of this in #6061
+   (merged 2026-07-28; `-32021` at HTTP 200 as the documented deviation,
+   upstream go-sdk#1117). When this slice lands, #6061's declared-capability
+   `-32603` message ("multi-round retrieval … which this server does not
+   implement") stops being true for Modern backends and needs rescoping to
+   the Legacy-backend cell it permanently serves.
 4. **Cell-3 bridge.** The in-request fulfillment loop over
    `ElicitationRequester`/`SamplingRequester` with go-sdk-mirrored round caps.
 5. **Composite suspend/resume.** Durable `WorkflowStateStore` (Redis) behind

@@ -64,7 +64,10 @@ type InputRequiredError struct {
 
 	// Sentinel is the error Unwrap returns; required. It leads the Error()
 	// message, so the rendered text stays byte-identical to a plain
-	// fmt.Errorf("%w: ...", Sentinel, ...) wrapping.
+	// fmt.Errorf("%w: ...", Sentinel, ...) wrapping. Because the field is
+	// exported for direct construction, nothing enforces "required" at compile
+	// time: a literal that omits it unwraps to nil and renders
+	// missingSentinelText in place of the classification.
 	Sentinel error
 }
 
@@ -76,12 +79,24 @@ type InputRequiredError struct {
 // #6066 rule).
 const maxResultTypeInError = 64
 
+// missingSentinelText leads Error() when Sentinel is nil, which a direct
+// construction that omits the required field can produce. Naming the mistake
+// beats letting fmt splice "%!s(<nil>)" into a message that reaches the
+// downstream client.
+const missingSentinelText = "input_required error with no classification sentinel"
+
 func (e *InputRequiredError) Error() string {
+	sentinel := func() string {
+		if e.Sentinel == nil {
+			return missingSentinelText
+		}
+		return e.Sentinel.Error()
+	}()
 	if len(e.ResultType) > maxResultTypeInError {
 		return fmt.Sprintf("%s: resultType=%q... (%d bytes)",
-			e.Sentinel, e.ResultType[:maxResultTypeInError], len(e.ResultType))
+			sentinel, e.ResultType[:maxResultTypeInError], len(e.ResultType))
 	}
-	return fmt.Sprintf("%s: resultType=%q", e.Sentinel, e.ResultType)
+	return fmt.Sprintf("%s: resultType=%q", sentinel, e.ResultType)
 }
 
 // Unwrap returns the classification sentinel, keeping every existing

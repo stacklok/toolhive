@@ -59,6 +59,28 @@ func TestInputRequiredErrorBoundsResultType(t *testing.T) {
 		e.Error())
 }
 
+// TestInputRequiredErrorNilSentinel pins what a construction that omits the
+// required Sentinel renders: nothing enforces the field, so Error() must name
+// the missing classification rather than splicing fmt's "%!s(<nil>)" into text
+// that reaches the downstream client. Unwrap still reports nil — the guard
+// makes the mistake legible, it does not invent a classification.
+func TestInputRequiredErrorNilSentinel(t *testing.T) {
+	t.Parallel()
+
+	e := &InputRequiredError{ResultType: "input_required"}
+	assert.Equal(t,
+		missingSentinelText+`: resultType="input_required"`,
+		e.Error())
+	assert.NotContains(t, e.Error(), "%!s")
+	assert.NoError(t, e.Unwrap())
+
+	// The bounded branch guards the sentinel too.
+	long := &InputRequiredError{ResultType: strings.Repeat("x", 200)}
+	assert.Equal(t,
+		fmt.Sprintf("%s: resultType=%q... (200 bytes)", missingSentinelText, strings.Repeat("x", 64)),
+		long.Error())
+}
+
 func TestInputRequiredResultMethods(t *testing.T) {
 	t.Parallel()
 

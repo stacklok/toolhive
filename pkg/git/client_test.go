@@ -140,6 +140,7 @@ func TestDefaultGitClient_HeadCommit_UnsignedCommit(t *testing.T) {
 	assert.Len(t, head.Hash, 40, "commit hash should be 40 hex chars")
 	assert.True(t, isAllHex(head.Hash), "commit hash should be all hex")
 	assert.Empty(t, head.Signature, "an unsigned commit must yield an empty signature, not an error")
+	assert.Contains(t, string(head.Payload), "tree ", "the payload is present even for unsigned commits")
 }
 
 // isAllHex checks if s is a non-empty lowercase hex string.

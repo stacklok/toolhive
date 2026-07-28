@@ -32,6 +32,11 @@ type fakeDeployOps struct {
 	dnsID     string
 	dnsIP     string
 
+	// mcpIP is returned by getContainerNetworkIP as the MCP container's IP that
+	// the ingress proxy targets. errMcpIP injects a lookup failure.
+	mcpIP    string
+	errMcpIP error
+
 	mcpCalled        bool
 	mcpName          string
 	mcpNetworkName   string
@@ -73,6 +78,10 @@ func (f *fakeDeployOps) createNetwork(_ context.Context, name string, labels map
 func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, _ string, _ map[string]*network.EndpointSettings) (string, string, error) {
 	f.dnsCalled = true
 	return f.dnsID, f.dnsIP, f.errDNS
+}
+
+func (f *fakeDeployOps) getContainerNetworkIP(_ context.Context, _, _ string) (string, error) {
+	return f.mcpIP, f.errMcpIP
 }
 
 func (f *fakeDeployOps) createMcpContainer(
@@ -234,6 +243,7 @@ func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *te
 
 	fops := &fakeDeployOps{
 		dnsIP: "172.18.0.20",
+		mcpIP: "172.18.0.21",
 	}
 	fproxy := &fakeNetworkProxy{
 		ingressPort: 18081,
@@ -269,6 +279,9 @@ func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *te
 	assert.True(t, fproxy.setupCalled)
 	// The upstream port should be the first exposed port (8080).
 	assert.Equal(t, 8080, fproxy.capturedSpec.UpstreamPort)
+	// The ingress proxy must target the MCP container's IP (not its name) so it
+	// has no DNS dependency to latch on under concurrent startup (see #6063).
+	assert.Equal(t, "172.18.0.21", fproxy.capturedSpec.UpstreamHost)
 	require.True(t, fops.mcpCalled)
 	assert.Equal(t, "172.18.0.20", fops.mcpAdditionalDNS, "additionalDNS passed to MCP container should come from DNS container IP")
 }

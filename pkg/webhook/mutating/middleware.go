@@ -129,8 +129,30 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 				return
 			}
 
+			// A mutating webhook rewrote the body, so the parse cached by ParsingMiddleware
+			// now describes a request the backend will not execute. Refresh it before any
+			// downstream consumer (authorization, audit, telemetry) reads it.
+			if !bytes.Equal(bodyBytes, mutatedBody) {
+				republished, err := mcp.RepublishParsedMCPRequest(r, mutatedBody)
+				if err != nil {
+					var batchErr *mcp.BatchUnsupportedError
+					if errors.As(err, &batchErr) {
+						mcp.WriteBatchUnsupportedError(w)
+						return
+					}
+					slog.Error("Mutating webhook produced an unparseable MCP request", "error", err)
+					sendErrorResponse(w, http.StatusInternalServerError, "Webhook produced an invalid MCP request", parsedMCP.ID)
+					return
+				}
+				r = republished
+			}
+
 			// Replace the request body with the (potentially mutated) MCP body for downstream handlers.
+			// ContentLength must be updated alongside it: a patch almost always changes the body
+			// length, and the reverse proxy rejects a forwarded request whose declared length
+			// disagrees with the body it can actually read.
 			r.Body = io.NopCloser(bytes.NewBuffer(mutatedBody))
+			r.ContentLength = int64(len(mutatedBody))
 			next.ServeHTTP(w, r)
 		})
 	}

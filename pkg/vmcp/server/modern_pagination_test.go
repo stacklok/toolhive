@@ -40,10 +40,10 @@ func makeKeys(n int) []string {
 }
 
 // makeKeysWithDuplicates builds an adversarial corpus of n items whose keys
-// deliberately collide at positions that matter. Resources, resource templates
-// and prompts are plain-appended across backends with no conflict resolution, so
-// this is the realistic shape rather than a synthetic edge case: two backends
-// exposing the same URI produce exactly this.
+// deliberately collide at positions that matter. The aggregator now resolves
+// resource/template/prompt conflicts (#6060), but paginateModern is generic and
+// deliberately does not depend on that caller invariant, so collisions remain
+// the shape these completeness properties must be proven against.
 //
 // The collisions are placed by SORTED position, which is the subtle part and the
 // reason a first attempt at this fixture was useless. paginateModern sorts before
@@ -174,11 +174,11 @@ func TestPaginateModern_StaticSetDeliveredExactlyOnce(t *testing.T) {
 // key at a page boundary caused BOTH to be skipped, so an item appeared on no
 // page at all. A 1100-item resource corpus with one duplicated URI delivered 1099.
 //
-// Key uniqueness holds only for tools (ResolveToolConflicts keys a map). Resource
-// URIs, resource-template URI templates and prompt names are plain-appended
-// across backends with no conflict resolution, so collisions are ordinary -- two
-// backends exposing file:///README.md is enough. The paginator therefore must not
-// depend on uniqueness, and this test is what holds it to that.
+// When this defect shipped, key uniqueness held only for tools; resource URIs,
+// resource-template URI templates and prompt names were plain-appended across
+// backends with no conflict resolution. The aggregator now resolves those too
+// (#6060), but the paginator is generic and must not depend on any caller's
+// uniqueness invariant, and this test is what holds it to that.
 //
 // The corpus is adversarial by construction (see makeKeysWithDuplicates): a pair
 // straddling the page-1 boundary, a run spanning it, and a three-way tie. Total

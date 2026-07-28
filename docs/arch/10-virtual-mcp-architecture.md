@@ -136,17 +136,58 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | **priority** | First backend in priority order wins, others hidden |
 | **manual** | Explicit mapping for each conflict |
 
-**Conflict resolution covers tools only.** Resources, resource templates, and
-prompts are concatenated across backends with no de-duplication
-(`default_aggregator.go`, "no conflict resolution for these yet"), so
-`Resource.URI`, `ResourceTemplate.URITemplate` and `Prompt.Name` can each repeat
-in the aggregated view — two backends both exposing `file:///README.md` is
-enough. Only `Tool.Name` is unique, because tool resolution keys a map.
+The three strategies above cover **tools**. Resources, resource templates, and
+prompts are resolved separately (`aggregator/capability_conflicts.go`), with
+policies that deliberately differ by what the identity *is*:
 
-Anything that treats one of those fields as an identity must account for that.
-The Modern list paginator does: its cursor names a position within a run of equal
-keys rather than assuming keys are distinct, because a plain "resume after this
-key" scan silently dropped an item whenever a duplicate landed on a page boundary
+- **Prompt names are names**, like tool names: `prompts/get` is translated back
+  to the backend's own name via `BackendTarget.GetBackendCapabilityName`, so a
+  rename does not break invocation. By **default** every prompt is renamed to
+  its backend-prefixed form — `conflictResolutionConfig.prefixFormat` applied
+  to the backend ID (default `{workload}_`), the same formatting path the tool
+  prefix strategy uses. The **priority** strategy is the escape hatch for
+  clients that pin prompt names, exactly as it is for tools: backends listed
+  in `priorityOrder` keep their bare prompt names, a bare-name collision among
+  listed backends resolves to the highest-priority one, and unlisted backends
+  stay always-prefixed — deliberately stricter than tool priority resolution,
+  which lets a conflict-free unlisted tool keep its bare name. The invariant
+  both modes preserve: the advertised name is a pure function of the
+  aggregation config and (backendID, name), so it never shifts because an
+  unrelated backend joined or left the group. That stability matters beyond
+  naming: authorization matches on the advertised name (Cedar builds
+  `Prompt::"<advertised name>"` entities), so a membership-dependent rename
+  would detach `permit` and `forbid` policies from the prompt they were
+  written for — names move only on an explicit config edit. A `manual`
+  configuration changes tool resolution only. If two backends' advertised
+  names compose to the same string (backend `b1` prompt `x_y` vs backend
+  `b1_x` prompt `y`, or a prefixed name hitting a listed backend's literal
+  name), the name would be ambiguous between backends and aggregation fails
+  loudly instead of dropping one.
+- **Resource URIs and template strings are locators, not names.** The client
+  passes them back verbatim (`resources/read`, `resources/subscribe`,
+  completion refs), backends emit them in notifications and embedded resource
+  contents, and template-matched reads forward the client's concrete URI
+  untranslated — so vMCP never rewrites them. A URI (or template string)
+  advertised by several backends is instead advertised **once**: the backend
+  earliest in sorted-backend-ID order wins, later duplicates are dropped with a
+  warning. Reads are unchanged — the routing table keys by URI, so only one
+  backend was ever served per URI; the fix makes that pick deterministic and
+  the advertised list agree with it. Only the winning backend's `name`,
+  `description` and `mimeType` are advertised for that URI, so a duplicate that
+  differed in those fields loses them along with its entry.
+
+After aggregation, every capability identity (`Tool.Name`, `Resource.URI`,
+`ResourceTemplate.URITemplate`, `Prompt.Name`) is unique in the aggregated view.
+Resources, resource templates and prompts are processed in sorted-backend-ID
+order, so their outcomes are stable across runs; tool resolution
+(`prefix_resolver.go`, `manual_resolver.go`) still iterates backends in map
+order, so a tool collision *after* prefixing or a manual override picks a
+nondeterministic winner.
+
+The Modern list paginator still does **not** rely on that uniqueness: its cursor
+names a position within a run of equal keys rather than assuming keys are
+distinct, because the paginator is generic and a plain "resume after this key"
+scan silently dropped an item whenever a duplicate landed on a page boundary
 (see [Client-facing list pagination](#client-facing-list-pagination)).
 
 ### Tool Filtering
@@ -435,11 +476,12 @@ Three properties worth knowing:
   aggregator's fan-out order is not stable between calls, so Modern list results
   are sorted by the item's key (`Tool.Name`, `Resource.URI`,
   `ResourceTemplate.URITemplate`, `Prompt.Name`). Legacy ordering is unchanged.
-- **Duplicate keys are tolerated, not assumed away.** Only tool names are unique
-  (see [Conflict Resolution](#conflict-resolution)); resource URIs, template
-  strings and prompt names can repeat. The cursor therefore resumes *within* a run
-  of equal keys, because a plain "resume after this key" scan skipped every copy
-  and permanently dropped items whose key collided at a page boundary.
+- **Duplicate keys are tolerated, not assumed away.** The aggregator makes all
+  four keys unique (see [Conflict Resolution](#conflict-resolution)), but the
+  paginator is generic and does not depend on that caller invariant. The cursor
+  resumes *within* a run of equal keys, because a plain "resume after this key"
+  scan skipped every copy and permanently dropped items whose key collided at a
+  page boundary.
 - **End of results omits `nextCursor` entirely.** The draft states that "an empty
   string is a valid cursor and thus MUST NOT be treated as the end of results", so
   emitting `""` would make a conformant client re-request and loop on page one.

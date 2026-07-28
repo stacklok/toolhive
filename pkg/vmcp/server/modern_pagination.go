@@ -215,15 +215,13 @@ func decodeModernCursor(wantKind, cursor string) (string, int, error) {
 // KEY UNIQUENESS IS NOT ASSUMED, and this is the subtle part. An earlier version
 // documented these keys as globally unique "since the aggregator's conflict
 // resolver has already de-duplicated them across backends", and skipped forward
-// with a bare `key > lastKey`. That precondition holds for exactly ONE of the
-// four callers:
-//
-//   - Tool.Name IS unique: ResolveToolConflicts returns map[string]*ResolvedTool,
-//     and the no-resolver fallback also keys a map (aggregator/default_aggregator.go).
-//   - Resource.URI, ResourceTemplate.URITemplate and Prompt.Name are NOT: they
-//     are plain-appended across backends under the comment "no conflict
-//     resolution for these yet", and nothing dedups them downstream (FilterResources
-//     only filters). Two honest backends both exposing file:///README.md collide.
+// with a bare `key > lastKey`. At the time that precondition held for exactly
+// ONE of the four callers (Tool.Name; resource URIs, template strings and
+// prompt names were plain-appended across backends with no de-duplication).
+// The aggregator has since been fixed to resolve all four (#6060:
+// aggregator/capability_conflicts.go), but this paginator is generic and MUST
+// NOT depend on that caller invariant — its signature cannot enforce it, and a
+// future caller may not uphold it. The collision-safety below stays.
 //
 // With a bare `>` scan, a collision at a page boundary permanently DROPS an item:
 // the page ends on the first copy, the cursor names that key, and the scan then

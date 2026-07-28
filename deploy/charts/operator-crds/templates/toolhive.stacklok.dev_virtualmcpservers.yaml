@@ -1020,12 +1020,17 @@ spec:
                           prefixFormat:
                             default: '{workload}_'
                             description: |-
-                              PrefixFormat defines the prefix format for the "prefix" strategy.
+                              PrefixFormat defines the prefix format for the "prefix" tool strategy
+                              and for backend-prefixed prompt names (the default for every prompt;
+                              under the "priority" strategy, backends listed in priorityOrder keep
+                              their own prompt names).
                               Supports placeholders: {workload}, {workload}_, {workload}.
                             type: string
                           priorityOrder:
-                            description: PriorityOrder defines the workload priority
-                              order for the "priority" strategy.
+                            description: |-
+                              PriorityOrder defines the workload priority order for the "priority" strategy.
+                              Listed workloads also keep their own prompt names (unlisted workloads'
+                              prompts stay backend-prefixed).
                             items:
                               type: string
                             type: array
@@ -4474,12 +4479,17 @@ spec:
                           prefixFormat:
                             default: '{workload}_'
                             description: |-
-                              PrefixFormat defines the prefix format for the "prefix" strategy.
+                              PrefixFormat defines the prefix format for the "prefix" tool strategy
+                              and for backend-prefixed prompt names (the default for every prompt;
+                              under the "priority" strategy, backends listed in priorityOrder keep
+                              their own prompt names).
                               Supports placeholders: {workload}, {workload}_, {workload}.
                             type: string
                           priorityOrder:
-                            description: PriorityOrder defines the workload priority
-                              order for the "priority" strategy.
+                            description: |-
+                              PriorityOrder defines the workload priority order for the "priority" strategy.
+                              Listed workloads also keep their own prompt names (unlisted workloads'
+                              prompts stay backend-prefixed).
                             items:
                               type: string
                             type: array

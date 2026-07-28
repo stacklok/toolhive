@@ -193,7 +193,7 @@ func TestCreateTempEgressSquidConf_WithACLs(t *testing.T) {
 func TestCreateTempIngressSquidConf_Basics(t *testing.T) {
 	t.Parallel()
 
-	fp, err := createTempIngressSquidConf("svc-example", 8080, 18080, nil)
+	fp, err := createTempIngressSquidConf("svc-example", "10.89.0.7", 8080, 18080, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -203,8 +203,13 @@ func TestCreateTempIngressSquidConf_Basics(t *testing.T) {
 
 	assert.Contains(t, s, "visible_hostname svc-example-ingress")
 	assert.Contains(t, s, "\n# Reverse proxy setup for port 8080\n")
+	// defaultsite keeps the name; cache_peer targets the resolved upstream IP so
+	// the peer has no DNS lookup to latch on (see #6063).
 	assert.Contains(t, s, "http_port 0.0.0.0:18080 accel defaultsite=svc-example")
-	assert.Contains(t, s, "cache_peer svc-example parent 8080 0 no-query originserver name=origin_8080")
+	assert.Contains(t, s, "cache_peer 10.89.0.7 parent 8080 0 no-query originserver name=origin_8080")
+	// standby=2 pre-warms upstream connections so a cold first GET SSE stream is
+	// not reordered behind a later POST (fixes the sampling conformance flake).
+	assert.Contains(t, s, "connect-timeout=5 connect-fail-limit=5 standby=2")
 	assert.Contains(t, s, "acl site_8080 dstdomain svc-example")
 	assert.Contains(t, s, "http_access allow site_8080")
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))
@@ -223,7 +228,7 @@ func TestCreateTempIngressSquidConf_WithOverrideHosts(t *testing.T) {
 		},
 	}
 
-	fp, err := createTempIngressSquidConf("svc-example", 8080, 18080, networkPermissions)
+	fp, err := createTempIngressSquidConf("svc-example", "10.89.0.7", 8080, 18080, networkPermissions)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -234,7 +239,7 @@ func TestCreateTempIngressSquidConf_WithOverrideHosts(t *testing.T) {
 	assert.Contains(t, s, "visible_hostname svc-example-ingress")
 	assert.Contains(t, s, "\n# Reverse proxy setup for port 8080\n")
 	assert.Contains(t, s, "http_port 0.0.0.0:18080 accel defaultsite=svc-example")
-	assert.Contains(t, s, "cache_peer svc-example parent 8080 0 no-query originserver name=origin_8080")
+	assert.Contains(t, s, "cache_peer 10.89.0.7 parent 8080 0 no-query originserver name=origin_8080")
 
 	// Test that override mode is used - no default ACLs
 	assert.NotContains(t, s, "acl site_8080 dstdomain svc-example")
@@ -266,7 +271,7 @@ func TestCreateTempIngressSquidConf_EmptyInboundHosts(t *testing.T) {
 		},
 	}
 
-	fp, err := createTempIngressSquidConf("svc-example", 8080, 18080, networkPermissions)
+	fp, err := createTempIngressSquidConf("svc-example", "10.89.0.7", 8080, 18080, networkPermissions)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -496,7 +501,7 @@ func TestTempFilesWrittenToSystemTempDir(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp1) })
 
-	fp2, err := createTempIngressSquidConf("s2", 8081, 18081, nil)
+	fp2, err := createTempIngressSquidConf("s2", "10.89.0.8", 8081, 18081, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp2) })
 

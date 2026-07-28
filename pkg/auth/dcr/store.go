@@ -30,8 +30,8 @@ const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 type Key = storage.DCRKey
 
 // CredentialStore caches RFC 7591 Dynamic Client Registration resolutions
-// keyed by the (Issuer, RedirectURI, ScopesHash) tuple. Implementations must
-// be safe for concurrent use.
+// keyed by the (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple.
+// Implementations must be safe for concurrent use.
 //
 // This is the runner-facing interface used by the DCR resolver. It is a
 // narrow re-projection of storage.DCRCredentialStore that exchanges

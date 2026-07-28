@@ -11,11 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -103,6 +102,19 @@ func (b *StdioBridge) run(ctx context.Context) {
 		} else if err := json.Unmarshal(buf, &params); err != nil {
 			slog.Warn("failed to unmarshal to map", "error", err)
 			params = map[string]any{}
+		}
+
+		// On a *_list_changed notification, re-fetch the upstream capability set
+		// before forwarding the notification. forwardAll is additive only:
+		// AddTool/AddResource/AddPrompt upsert by name/URI, so re-running it adds
+		// or updates capabilities but does NOT prune ones the upstream removed —
+		// a stale capability stays advertised locally after an upstream removal.
+		// (SetTools exists if pruning is needed later.)
+		switch n.Method {
+		case "notifications/tools/list_changed",
+			"notifications/resources/list_changed",
+			"notifications/prompts/list_changed":
+			b.forwardAll(context.Background())
 		}
 
 		b.srv.SendNotificationToAllClients(n.Method, params)

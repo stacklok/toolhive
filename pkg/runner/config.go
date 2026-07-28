@@ -207,6 +207,12 @@ type RunConfig struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
+	// StrictProtocolValidation enables strict MCP-Protocol-Version validation
+	// on the streamable HTTP proxy: a request whose header names an unknown
+	// MCP revision is rejected with HTTP 400. Default false accepts any
+	// version string (an absent header is always accepted in either mode).
+	StrictProtocolValidation bool `json:"strict_protocol_validation,omitempty" yaml:"strict_protocol_validation,omitempty"`
+
 	// Stateless indicates the server only supports POST (no SSE/GET).
 	// When true, the proxy returns 405 for incoming GET requests and uses a
 	// POST-based health check instead of the default GET probe.
@@ -394,7 +400,41 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
 	config.NormalizeProxyMode()
 
+	// Self-heal legacy on-disk configs that persisted isolate_network=true with a
+	// non-bridge network mode. Isolation is only enforceable in bridge mode, so
+	// reflect reality in memory for status/list. See issue #5775.
+	degradeNetworkIsolation(&config)
+
 	return &config, nil
+}
+
+// degradeNetworkIsolation drops network isolation from a loaded config when its
+// resolved network mode cannot enforce it, so status/list reflect reality.
+//
+// ReadJSON is reached from read-only paths (thv list, status, export, API GETs)
+// as well as deploy. The "none" case logs at DEBUG since it's merely redundant
+// (already maximally confined) and would otherwise fire on every read of a
+// static, already-known condition. The host/custom case stays at WARN even on
+// read paths: it means the user's --isolate-network request is being silently
+// ignored, which they should keep seeing until they either drop the flag or
+// switch network modes. See #5775.
+func degradeNetworkIsolation(config *RunConfig) {
+	if !config.IsolateNetwork {
+		return
+	}
+	mode := ""
+	if config.PermissionProfile != nil && config.PermissionProfile.Network != nil {
+		mode = config.PermissionProfile.Network.Mode
+	}
+	if networking.IsBridgeMode(mode) {
+		return
+	}
+	config.IsolateNetwork = false
+	if mode == "none" {
+		slog.Debug(networking.NetworkIsolationNoneRedundantMsg, "network_mode", mode)
+		return
+	}
+	slog.Warn(networking.NetworkIsolationHostDroppedMsg, "network_mode", mode)
 }
 
 // migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format

@@ -26,32 +26,40 @@ import (
 )
 
 // CheckPodsReady checks that at least one pod matching the given labels is running and ready.
+//
+// It passes the instant a single pod is observed ready, so it cannot gate on a multi-replica
+// rollout -- use CheckPodsReadyCount when the workload has a known replica count.
 func CheckPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(namespace),
-		client.MatchingLabels(labels)); err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
+	ready, total, err := countReadyPods(ctx, c, namespace, labels)
+	if err != nil {
+		return err
 	}
-
-	if len(podList.Items) == 0 {
+	if total == 0 {
 		return fmt.Errorf("no pods found with labels %v", labels)
 	}
-
-	runningPods := 0
-	for _, pod := range podList.Items {
-		if pod.Status.Phase != corev1.PodRunning {
-			continue
-		}
-		for _, cond := range pod.Status.Conditions {
-			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-				runningPods++
-				break
-			}
-		}
-	}
-	if runningPods == 0 {
+	if ready == 0 {
 		return fmt.Errorf("no running and ready pods found with labels %v", labels)
+	}
+	return nil
+}
+
+// CheckPodsReadyCount checks that exactly want pods matching the given labels are running and
+// ready. Use this over CheckPodsReady whenever the expected replica count is known, so a gate
+// on "the workload is up" cannot be satisfied by a partial rollout.
+func CheckPodsReadyCount(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	labels map[string]string,
+	want int,
+) error {
+	ready, total, err := countReadyPods(ctx, c, namespace, labels)
+	if err != nil {
+		return err
+	}
+	if ready != want {
+		return fmt.Errorf("expected %d running and ready pods with labels %v, got %d ready of %d",
+			want, labels, ready, total)
 	}
 	return nil
 }
@@ -169,4 +177,36 @@ func GetNodePort(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 
 	return nodePort
+}
+
+// countReadyPods returns how many pods matching labels are both Running and Ready, alongside the
+// total number matched. Terminating pods count towards the total but never towards ready: they can
+// still report Ready while shutting down, and the operator excludes them from its own status counts
+// for that reason (categorizePodStatus in mcpserver_controller.go, issue #4498), so counting them
+// would let a gate pass on a pod that is going away.
+func countReadyPods(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	labels map[string]string,
+) (ready, total int, err error) {
+	podList := &corev1.PodList{}
+	if err := c.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(labels)); err != nil {
+		return 0, 0, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	for _, pod := range podList.Items {
+		if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				ready++
+				break
+			}
+		}
+	}
+	return ready, len(podList.Items), nil
 }

@@ -1246,6 +1246,7 @@ type storedDCRCredentials struct {
 	// Embed the canonical key so a row recovered without its lookup key
 	// (e.g. via SCAN during diagnostics) still self-identifies.
 	KeyIssuer      string `json:"key_issuer"`
+	KeyUpstreamID  string `json:"key_upstream_id"`
 	KeyRedirectURI string `json:"key_redirect_uri"`
 	KeyScopesHash  string `json:"key_scopes_hash"`
 
@@ -1282,6 +1283,7 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 	return &DCRCredentials{
 		Key: DCRKey{
 			Issuer:      s.KeyIssuer,
+			UpstreamID:  s.KeyUpstreamID,
 			RedirectURI: s.KeyRedirectURI,
 			ScopesHash:  s.KeyScopesHash,
 		},
@@ -1328,6 +1330,7 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 
 	stored := storedDCRCredentials{
 		KeyIssuer:               creds.Key.Issuer,
+		KeyUpstreamID:           creds.Key.UpstreamID,
 		KeyRedirectURI:          creds.Key.RedirectURI,
 		KeyScopesHash:           creds.Key.ScopesHash,
 		ProviderName:            creds.ProviderName,
@@ -1375,7 +1378,7 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.
 //
-// An unpopulated key (empty Issuer, RedirectURI, or ScopesHash) cannot match
+// An unpopulated key (empty Issuer, UpstreamID, RedirectURI, or ScopesHash) cannot match
 // any stored row because StoreDCRCredentials rejects such keys, so a Get
 // against one is a normal miss — ErrNotFound — matching
 // MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.

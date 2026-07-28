@@ -85,6 +85,11 @@ RUN package="{{.MCPPackage}}"; \
 # Final stage - runtime image with pre-installed packages
 FROM {{.RuntimeConfig.BuilderImage}}
 
+{{if .RuntimeConfig.RuntimeEnv}}
+# Custom runtime environment variables
+{{range $key, $value := .RuntimeConfig.RuntimeEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate for runtime
 COPY ca-cert.crt /tmp/custom-ca.crt

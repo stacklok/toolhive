@@ -18,6 +18,10 @@ import (
 // decorator wraps a [core.VMCP] to rate-limit tool calls. Every method except
 // CallTool is promoted from the embedded inner core unchanged. The decorator sits
 // below the session optimizer, so name is already the resolved backend tool name.
+//
+// CheckToolCall is deliberately NOT overridden: promoting it to inner is correct
+// because a pre-flight admission check must not consume a rate-limit token — the
+// limiter applies only when the call is actually dispatched via CallTool.
 type decorator struct {
 	core.VMCP
 	limiter baseratelimit.Limiter

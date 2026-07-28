@@ -1512,7 +1512,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
 		if newDeployment.Spec.Replicas != nil {
 			deployment.Spec.Replicas = newDeployment.Spec.Replicas
 		}
@@ -1782,10 +1782,12 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
-// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed.
-// Instead of comparing full rendered templates (which always differ due to Kubernetes-defaulted
-// fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
-// the raw PodTemplateSpec input stored as a deployment annotation.
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed, by
+// comparing a SHA256 hash of the raw input against the stored annotation rather than the
+// full rendered template (which always differs due to Kubernetes-defaulted fields).
+// Symmetric by design (#5818): an absent PodTemplateSpec expects an empty hash, so a stale
+// annotation left over after the field is cleared is treated as drift and gets pruned by
+// mergeDeploymentAnnotations on the next write, instead of being flagged forever.
 func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -1796,23 +1798,30 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 		return true
 	}
 
-	// If no PodTemplateSpec is provided, update is only needed if one was previously applied
-	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
-		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
-		return hadPrevious
-	}
-
-	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
-	// Avoids comparing full rendered templates which always differ due to
-	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
-	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
-	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
-	if err != nil {
-		// If we can't hash, assume update is needed
-		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
-		return true
+	expectedHash := ""
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
+			return true
+		}
+		expectedHash = hash
 	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
+}
+
+// mergeDeploymentAnnotations merges desired annotations onto the live ones via
+// ctrlutil.MergeAnnotations, then prunes the operator-owned hash annotations
+// (imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation) that desired no longer wants —
+// MergeAnnotations otherwise preserves them forever once their source field goes empty (#5817, #5818).
+func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
+	merged := ctrlutil.MergeAnnotations(desired, live)
+	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation} {
+		if _, want := desired[key]; !want {
+			delete(merged, key)
+		}
+	}
+	return merged
 }
 
 // imagePullSecretsNeedsUpdate detects drift on the desired imagePullSecrets
@@ -1825,6 +1834,12 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // would either flag spurious drift or miss real changes depending on
 // PodTemplateSpec content. PodTemplateSpec drift is covered separately by
 // podTemplateSpecNeedsUpdate.
+//
+// A missing annotation reads as "" via map indexing, which equals an empty
+// expected hash — so an absent annotation with an empty desired list is
+// correctly the steady state. The write path in ensureDeployment is
+// responsible for actually deleting the annotation once it is no longer
+// wanted; without that, this comparison would flag drift every reconcile.
 func (r *VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -1838,12 +1853,6 @@ func (r *VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to hash imagePullSecrets, assuming update needed")
 		return true
-	}
-	// An empty desired list means the annotation should be absent; an absent annotation
-	// with an empty desired list is the steady state and must not trigger an update.
-	_, present := deployment.Annotations[imagePullRefsHashAnnotation]
-	if expectedHash == "" {
-		return present
 	}
 	return deployment.Annotations[imagePullRefsHashAnnotation] != expectedHash
 }

@@ -45,6 +45,10 @@ fi
 TEST_TIMEOUT="${TEST_TIMEOUT:-20m}"
 echo -e "${GREEN}✓${NC} Test timeout: $TEST_TIMEOUT"
 
+# Set number of parallel Ginkgo processes (default 1 = sequential)
+PROCS="${PROCS:-1}"
+echo -e "${GREEN}✓${NC} Ginkgo procs: $PROCS"
+
 # Export environment variables for tests
 export THV_BINARY
 export TEST_TIMEOUT
@@ -57,8 +61,9 @@ echo ""
 cd "$(dirname "$0")"
 
 # Build ginkgo command with conditional GitHub output flag
-GINKGO_CMD="ginkgo run --timeout=\"$TEST_TIMEOUT\""
+GINKGO_CMD="ginkgo run --timeout=\"$TEST_TIMEOUT\" --procs=$PROCS"
 GINKGO_CMD="$GINKGO_CMD --junit-report=junit-report.xml --output-dir=."
+GINKGO_CMD="$GINKGO_CMD --silence-skips"
 if [ -n "$GITHUB_ACTIONS" ]; then
     echo -e "${GREEN}✓${NC} GitHub Actions detected, enabling GitHub output format"
     GINKGO_CMD="$GINKGO_CMD --github-output --vv"

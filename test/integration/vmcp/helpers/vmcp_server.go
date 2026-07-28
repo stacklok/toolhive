@@ -5,7 +5,6 @@ package helpers
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -75,6 +74,7 @@ type vmcpServerConfig struct {
 	workflowDefs       map[string]*composer.WorkflowDefinition
 	telemetryProvider  *telemetry.Provider
 	passthroughHeaders []string
+	sessionTTL         time.Duration
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -112,24 +112,26 @@ func WithPassthroughHeaders(headers ...string) VMCPServerOption {
 	}
 }
 
-// getFreePort returns an available TCP port on localhost.
-func getFreePort(tb testing.TB) int {
-	tb.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(tb, err, "failed to get free port")
-	defer func() { _ = listener.Close() }()
-
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		tb.Fatalf("failed to get TCP address from listener")
+// WithSessionTTL overrides the server's session time-to-live (default 30m).
+// A short TTL is useful for sliding-TTL / eviction regression tests. A zero
+// value leaves the default in place.
+func WithSessionTTL(ttl time.Duration) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.sessionTTL = ttl
 	}
-	return addr.Port
 }
 
 // NewVMCPServer creates a vMCP server for testing using the Serve path (core.New +
 // Serve). The server is automatically started and ready when this function returns.
 // Use functional options to customize behavior.
+//
+// The server binds an OS-assigned port (ServerConfig.Port is 0) and holds that
+// listener for its lifetime, so callers MUST read the address back from the
+// returned server's Address() rather than assuming a port. Address() reports the
+// bound port only once the server is ready, which this function waits for before
+// returning. Do not pre-select a port here by binding and closing a probe
+// listener: that releases the port, and any of the parallel tests in this suite
+// can claim it before the server rebinds (#6034).
 //
 // The Serve path is used (rather than the legacy server.New path) so that
 // integration tests exercise the production code path that routes tool/resource
@@ -187,7 +189,7 @@ func NewVMCPServer(
 		Name:               "test-vmcp",
 		Version:            "1.0.0",
 		Host:               "127.0.0.1",
-		Port:               getFreePort(tb),
+		Port:               0, // OS-assigned; see the note on NewVMCPServer
 		EndpointPath:       "/mcp",
 		SessionTTL:         30 * time.Minute,
 		AuthMiddleware:     auth.AnonymousMiddleware,
@@ -197,6 +199,9 @@ func NewVMCPServer(
 		SessionManagerConfig: &sessionmanager.FactoryConfig{
 			Base: sessionFactory,
 		},
+	}
+	if config.sessionTTL > 0 {
+		serverCfg.SessionTTL = config.sessionTTL
 	}
 
 	vmcpServer, err := vmcpserver.Serve(ctx, coreVMCP, serverCfg)

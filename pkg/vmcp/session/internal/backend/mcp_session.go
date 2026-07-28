@@ -12,18 +12,21 @@ import (
 	"net/http"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
 const (
@@ -37,6 +40,75 @@ const (
 	// (defense-in-depth). Not used for SSE, whose stream lifetime is unbounded.
 	defaultBackendRequestTimeout = 30 * time.Second
 )
+
+// ChangeKind identifies which capability class a backend reported changed via
+// ListChangedSink. Using a typed constant (rather than a bare string) means a
+// typo is a compile error at the producer and consumer instead of a silent
+// no-op.
+type ChangeKind string
+
+const (
+	// KindTools is reported when a backend emits notifications/tools/list_changed.
+	KindTools ChangeKind = "tools"
+
+	// KindResources is reported when a backend emits
+	// notifications/resources/list_changed. Per MCP 2025-11-25 there is no
+	// separate wire method for resource TEMPLATE changes, so this kind also
+	// covers a resync of the backend's resource templates (see
+	// resyncSessionResources in pkg/vmcp/server).
+	KindResources ChangeKind = "resources"
+
+	// KindPrompts is reported when a backend emits
+	// notifications/prompts/list_changed.
+	KindPrompts ChangeKind = "prompts"
+)
+
+// ListChangedSink is invoked when a persistent backend connection observes a
+// notification this package consumes asynchronously (outside any in-flight
+// call): notifications/tools/list_changed (kind=KindTools),
+// notifications/resources/list_changed (kind=KindResources, which also covers
+// resource templates — MCP 2025-11-25 has no separate wire method for those),
+// and notifications/prompts/list_changed (kind=KindPrompts).
+//
+// The sink is invoked on the mcpcompat client's receive-loop goroutine (see
+// Client.dispatch in toolhive-core), so implementations MUST be non-blocking:
+// they must hand the work off (e.g. set a dirty flag / signal a worker) and
+// return immediately. A sink that does real work (network I/O, cache purges)
+// inline stalls that backend's entire notification delivery and lets a
+// misbehaving backend amplify one notification into unbounded work. The ctx
+// passed here is only for the hand-off; long-lived resync work must run under
+// a caller-owned, cancellable context, not this one.
+type ListChangedSink func(ctx context.Context, backendWorkloadID string, kind ChangeKind)
+
+// newListChangedNotificationHandler builds the OnNotification handler
+// registered by createMCPClient when sink is non-nil. It dispatches
+// notifications/tools/list_changed (kind=KindTools),
+// notifications/resources/list_changed (kind=KindResources, also covering
+// resource templates), and notifications/prompts/list_changed
+// (kind=KindPrompts) to sink, and log-only handles notifications/message;
+// every other notification method is ignored — this handler is not the
+// mid-call server->client relay (that is pkg/vmcp/client's per-call
+// notification forwarder), it only feeds the session-registration resync path.
+func newListChangedNotificationHandler(workloadID string, sink ListChangedSink) func(mcp.JSONRPCNotification) {
+	return func(n mcp.JSONRPCNotification) {
+		switch n.Method {
+		case vmcp.MethodToolsListChangedNotification:
+			sink(context.Background(), workloadID, KindTools)
+		case vmcp.MethodResourcesListChangedNotification:
+			sink(context.Background(), workloadID, KindResources)
+		case vmcp.MethodPromptsListChangedNotification:
+			sink(context.Background(), workloadID, KindPrompts)
+		case vmcp.MethodLogNotification:
+			// Out-of-call backend log messages are not relayed to the downstream
+			// client on this path; log so the signal is visible rather than
+			// silently dropped.
+			slog.Debug("backend log notification received outside call", "backendID", workloadID)
+		default:
+			// Other notification types (resource subscription updates, ...) are
+			// out of scope here.
+		}
+	}
+}
 
 // httpRoundTripperFunc adapts a plain function to http.RoundTripper.
 type httpRoundTripperFunc func(*http.Request) (*http.Response, error)
@@ -98,7 +170,7 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
 
-// mcpSession wraps a persistent mark3labs MCP client for one backend.
+// mcpSession wraps a persistent mcpcompat MCP client for one backend.
 // It is created once per backend during MakeSession and closed when the session ends.
 //
 // Phase 1 limitation — no reconnection: if the underlying transport drops
@@ -131,11 +203,18 @@ func (c *mcpSession) CallTool(
 		slog.Debug("Translating tool name", "clientName", toolName, "backendName", backendName)
 	}
 
+	// Strip the reserved io.modelcontextprotocol/* keys before forwarding to this
+	// Legacy (session-based, stateful) backend: a downstream Modern caller's
+	// _meta.protocolVersion is only valid on a stateless Modern hop, and go-sdk
+	// v1.7 hard-rejects ANY _meta.protocolVersion on a stateful server (HTTP 400)
+	// regardless of its value — see mcpparser.StripReservedMeta. conversion.ToMCPMeta
+	// below strips too; this stays as the guard at the site that knows the hazard.
+	meta = mcpparser.StripReservedMeta(meta)
 	result, err := c.client.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendName,
 			Arguments: arguments,
-			Meta:      conversion.ToMCPMeta(meta),
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, meta)),
 		},
 	})
 	if err != nil {
@@ -172,8 +251,14 @@ func (c *mcpSession) ReadResource(
 		slog.Debug("Translating resource URI", "clientURI", uri, "backendURI", backendURI)
 	}
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See pkg/vmcp/client's TestOutboundMetaTraceContext for
+	// details/tripwire.
 	result, err := c.client.ReadResource(ctx, mcp.ReadResourceRequest{
-		Params: mcp.ReadResourceParams{URI: backendURI},
+		Params: mcp.ReadResourceParams{
+			URI:  backendURI,
+			Meta: conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resource %q read failed on backend %s: %w", uri, c.target.WorkloadID, err)
@@ -198,10 +283,14 @@ func (c *mcpSession) GetPrompt(
 
 	stringArgs := conversion.ConvertPromptArguments(arguments)
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See pkg/vmcp/client's TestOutboundMetaTraceContext for
+	// details/tripwire.
 	result, err := c.client.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
 			Name:      backendName,
 			Arguments: stringArgs,
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {
@@ -225,11 +314,18 @@ func (c *mcpSession) GetPrompt(
 // shared across every session it creates; its lifetime matches the connector's.
 // It is consumed by BuildHeaderForwardTripper to resolve secret-backed entries
 // in target.HeaderForward.
+//
+// The returned function's sink parameter, when non-nil, enables persistent
+// backend-notification consumption for this backend connection — see
+// createMCPClient for what that does and does not enable (nil-sink callers are
+// completely unaffected: no OnNotification handler is registered and no
+// standalone GET stream is opened).
 func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
+	sink ListChangedSink,
 ) (Session, *vmcp.CapabilityList, error) {
 	provider := secrets.NewEnvironmentProvider()
 	return func(
@@ -237,8 +333,9 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
 		sessionHint string,
+		sink ListChangedSink,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider)
+		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider, sink)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -251,7 +348,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 
 		// Extract the backend-assigned session ID when the transport supports it.
 		// Streamable-HTTP servers send an Mcp-Session-Id response header during
-		// Initialize; the mark3labs transport captures it internally and exposes
+		// Initialize; the mcpcompat transport captures it internally and exposes
 		// it via GetSessionId(). SSE transports do not assign a session ID, so
 		// the field remains empty for those backends.
 		var backendSessionID string
@@ -263,7 +360,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	}
 }
 
-// createMCPClient builds and starts a mark3labs MCP client for target.
+// createMCPClient builds and starts a mcpcompat MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
 // sessionHint, when non-empty, is passed as the initial Mcp-Session-Id for
@@ -272,6 +369,19 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // ctx is used only to resolve secret-backed entries in target.HeaderForward at
 // client-creation time; the transport itself is started with context.Background()
 // as described above. provider supplies values for those secret-backed headers.
+//
+// sink is gated STRICTLY on non-nil: when nil, this function's behavior is
+// byte-for-byte identical to before sink existed (no OnNotification handler is
+// registered, and the streamable-HTTP branch does not enable continuous
+// listening). When non-nil, an OnNotification handler is registered (before
+// c.Start, per the mcpcompat client's registration contract) that invokes sink
+// on notifications/tools/list_changed, notifications/resources/list_changed
+// (which also covers resource templates), and notifications/prompts/list_changed,
+// and log-only handles notifications/message. For the streamable-HTTP transport,
+// a non-nil sink also enables mcptransport.WithContinuousListening() — required
+// for the backend's asynchronous (outside any in-flight call) notifications to
+// reach this client at all — since some backends hang when a standalone GET
+// stream is opened against them, this must stay opt-in (#5748 R3).
 func createMCPClient(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -279,6 +389,7 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
+	sink ListChangedSink,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -340,7 +451,7 @@ func createMCPClient(
 		// request/response pair, so a per-response body size limit is safe and
 		// correct. http.Client.Timeout provides a hard wall-clock deadline;
 		// WithHTTPTimeout additionally wraps each SDK request in a
-		// context.WithTimeout so the mark3labs transport surfaces a descriptive
+		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
 		// error before the stdlib deadline fires. Both are set to
 		// defaultBackendRequestTimeout: defense-in-depth.
 		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -357,9 +468,13 @@ func createMCPClient(
 			}
 			return resp, nil
 		})
+		// CheckRedirect: keep in sync with pkg/vmcp/client.newBackendHTTPClient — a
+		// cross-host 30x would otherwise re-inject (via the RoundTripper chain) the
+		// auth/identity/header-forward credentials at the attacker host.
 		httpClient := &http.Client{
-			Transport: sizeLimited,
-			Timeout:   defaultBackendRequestTimeout,
+			Transport:     sizeLimited,
+			Timeout:       defaultBackendRequestTimeout,
+			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 		streamableOpts := []mcptransport.StreamableHTTPCOption{
 			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
@@ -367,6 +482,14 @@ func createMCPClient(
 		}
 		if sessionHint != "" {
 			streamableOpts = append(streamableOpts, mcptransport.WithSession(sessionHint))
+		}
+		if sink != nil {
+			// A standalone GET stream is the only way this client can receive a
+			// notification the backend emits outside an in-flight call (e.g.
+			// tools/list_changed after a registration-time capability change).
+			// Gated strictly on sink != nil: some backends hang when this stream
+			// is opened against them (#5748 R3), so it must stay opt-in.
+			streamableOpts = append(streamableOpts, mcptransport.WithContinuousListening())
 		}
 		c, err = mcpclient.NewStreamableHttpClient(target.BaseURL, streamableOpts...)
 	case "sse":
@@ -378,7 +501,9 @@ func createMCPClient(
 		//
 		// http.Client.Timeout is also omitted: it caps the full round-trip
 		// including body reads, which would kill the stream after the timeout.
-		httpClient := &http.Client{Transport: base}
+		// CheckRedirect: keep in sync with pkg/vmcp/client.newBackendHTTPClient (see
+		// the streamable case above). No Timeout: long-lived SSE stream.
+		httpClient := &http.Client{Transport: base, CheckRedirect: networking.SameHostRedirectPolicy()}
 		c, err = mcpclient.NewSSEMCPClient(
 			target.BaseURL,
 			mcptransport.WithHTTPClient(httpClient),
@@ -389,6 +514,18 @@ func createMCPClient(
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create %s client: %w", target.TransportType, err)
+	}
+
+	// Register the notification handler before Start (mirrors the per-call
+	// client in pkg/vmcp/client, and matches the mcpcompat client's own
+	// registration contract): the handler dispatches
+	// notifications/tools/list_changed, notifications/resources/list_changed,
+	// and notifications/prompts/list_changed to sink and logs
+	// notifications/message. Strictly gated on sink != nil so a nil-sink caller
+	// registers no handler at all — this function's behavior for that caller is
+	// unchanged.
+	if sink != nil {
+		c.OnNotification(newListChangedNotificationHandler(target.WorkloadID, sink))
 	}
 
 	// Start the transport with context.Background() so that the transport's
@@ -429,85 +566,27 @@ func initAndQueryCapabilities(
 	caps := &vmcp.CapabilityList{}
 
 	if serverCaps.Tools != nil {
-		toolsResult, listErr := c.ListTools(ctx, mcp.ListToolsRequest{})
-		if listErr != nil {
-			return nil, fmt.Errorf("list tools failed: %w", listErr)
+		tools, err := queryBackendTools(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
-		for _, t := range toolsResult.Tools {
-			caps.Tools = append(caps.Tools, vmcp.Tool{
-				Name:         t.Name,
-				Description:  t.Description,
-				InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
-				OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
-				Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
-				BackendID:    target.WorkloadID,
-			})
-		}
+		caps.Tools = tools
 	}
 
 	if serverCaps.Resources != nil {
-		resResult, listErr := c.ListResources(ctx, mcp.ListResourcesRequest{})
-		switch {
-		case errors.Is(listErr, mcp.ErrMethodNotFound):
-			// Tolerate JSON-RPC -32601 here so a backend that advertises the
-			// resources capability but does not implement resources/list (e.g.
-			// Atlassian Rovo, see #5231) still contributes its tools instead of
-			// being dropped. HTTP-level method absence is intentionally fatal.
-			slog.Warn("backend advertised resources capability but does not implement resources/list",
-				"backendID", target.WorkloadID,
-				"name", target.WorkloadName,
-				"baseURL", target.BaseURL,
-				"method", "resources/list",
-			)
-		case listErr != nil:
-			return nil, fmt.Errorf("list resources failed: %w", listErr)
-		default:
-			for _, r := range resResult.Resources {
-				caps.Resources = append(caps.Resources, vmcp.Resource{
-					URI:         r.URI,
-					Name:        r.Name,
-					Description: r.Description,
-					MimeType:    r.MIMEType,
-					BackendID:   target.WorkloadID,
-				})
-			}
+		resources, err := queryBackendResources(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
+		caps.Resources = resources
 	}
 
 	if serverCaps.Prompts != nil {
-		promptsResult, listErr := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
-		switch {
-		case errors.Is(listErr, mcp.ErrMethodNotFound):
-			// Tolerate JSON-RPC -32601 here so a backend that advertises the
-			// prompts capability but does not implement prompts/list (e.g.
-			// Atlassian Rovo, see #5231) still contributes its tools instead of
-			// being dropped. HTTP-level method absence is intentionally fatal.
-			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
-				"backendID", target.WorkloadID,
-				"name", target.WorkloadName,
-				"baseURL", target.BaseURL,
-				"method", "prompts/list",
-			)
-		case listErr != nil:
-			return nil, fmt.Errorf("list prompts failed: %w", listErr)
-		default:
-			for _, p := range promptsResult.Prompts {
-				args := make([]vmcp.PromptArgument, len(p.Arguments))
-				for j, a := range p.Arguments {
-					args[j] = vmcp.PromptArgument{
-						Name:        a.Name,
-						Description: a.Description,
-						Required:    a.Required,
-					}
-				}
-				caps.Prompts = append(caps.Prompts, vmcp.Prompt{
-					Name:        p.Name,
-					Description: p.Description,
-					Arguments:   args,
-					BackendID:   target.WorkloadID,
-				})
-			}
+		prompts, err := queryBackendPrompts(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
+		caps.Prompts = prompts
 	}
 
 	slog.Debug("Backend capabilities",
@@ -518,6 +597,113 @@ func initAndQueryCapabilities(
 	)
 
 	return caps, nil
+}
+
+// queryBackendTools lists the backend's tools, following MCP pagination cursors so a
+// backend that paginates (mcpcompat paginates at DefaultPageSize=1000) contributes its
+// complete tool set rather than only the first page.
+func queryBackendTools(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Tool, error) {
+	tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+		req := mcp.ListToolsRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListTools(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Tools, result.NextCursor, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list tools failed: %w", err)
+	}
+	out := make([]vmcp.Tool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, vmcp.Tool{
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
+			OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
+			Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
+			BackendID:    target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// queryBackendResources lists the backend's resources with cursor-following pagination.
+// A backend that advertises the resources capability but does not implement
+// resources/list (JSON-RPC -32601, e.g. Atlassian Rovo, see #5231) is tolerated: it
+// returns no resources instead of failing the whole discovery. HTTP-level method absence
+// remains fatal.
+func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Resource, error) {
+	resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+		req := mcp.ListResourcesRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListResources(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Resources, result.NextCursor, nil
+	})
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		slog.Warn("backend advertised resources capability but does not implement resources/list",
+			"backendID", target.WorkloadID, "name", target.WorkloadName, "baseURL", target.BaseURL, "method", "resources/list")
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list resources failed: %w", err)
+	}
+	out := make([]vmcp.Resource, 0, len(resources))
+	for _, r := range resources {
+		out = append(out, vmcp.Resource{
+			URI:         r.URI,
+			Name:        r.Name,
+			Description: r.Description,
+			MimeType:    r.MIMEType,
+			BackendID:   target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// queryBackendPrompts lists the backend's prompts with cursor-following pagination.
+// Like queryBackendResources, it tolerates a -32601 from a backend that advertises the
+// prompts capability without implementing prompts/list.
+func queryBackendPrompts(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Prompt, error) {
+	prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+		req := mcp.ListPromptsRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListPrompts(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Prompts, result.NextCursor, nil
+	})
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+			"backendID", target.WorkloadID, "name", target.WorkloadName, "baseURL", target.BaseURL, "method", "prompts/list")
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list prompts failed: %w", err)
+	}
+	out := make([]vmcp.Prompt, 0, len(prompts))
+	for _, p := range prompts {
+		args := make([]vmcp.PromptArgument, len(p.Arguments))
+		for j, a := range p.Arguments {
+			args[j] = vmcp.PromptArgument{
+				Name:        a.Name,
+				Description: a.Description,
+				Required:    a.Required,
+			}
+		}
+		out = append(out, vmcp.Prompt{
+			Name:        p.Name,
+			Description: p.Description,
+			Arguments:   args,
+			BackendID:   target.WorkloadID,
+		})
+	}
+	return out, nil
 }
 
 // mergeForwardedHeaders returns a HeaderForwardConfig that combines the static

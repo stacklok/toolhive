@@ -25,6 +25,7 @@ func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 
 	key := Key{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
@@ -73,23 +74,37 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 
 	keyA := Key{
 		Issuer:      "https://idp-a.example.com",
+		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyB := Key{
 		Issuer:      "https://idp-b.example.com",
+		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyC := Key{
 		Issuer:      "https://idp-a.example.com",
+		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://other.example.com/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyD := Key{
 		Issuer:      "https://idp-a.example.com",
+		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
+	}
+	// keyE shares Issuer, RedirectURI, and scopes with keyA and differs only
+	// by UpstreamID — the exact shape of two OAuth2 upstreams inside one
+	// embedded authserver. Before UpstreamID was part of the key these two
+	// collided (issue #5823); keyE must resolve to its own entry.
+	keyE := Key{
+		Issuer:      "https://idp-a.example.com",
+		UpstreamID:  "https://upstream-b.example.com",
+		RedirectURI: "https://toolhive.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 
 	// The persisted *storage.DCRCredentials shape requires non-empty
@@ -108,6 +123,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	require.NoError(t, store.Put(ctx, keyB, resolution("b")))
 	require.NoError(t, store.Put(ctx, keyC, resolution("c")))
 	require.NoError(t, store.Put(ctx, keyD, resolution("d")))
+	require.NoError(t, store.Put(ctx, keyE, resolution("e")))
 
 	for _, tc := range []struct {
 		key      Key
@@ -117,6 +133,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		{keyB, "b"},
 		{keyC, "c"},
 		{keyD, "d"},
+		{keyE, "e"},
 	} {
 		got, ok, err := store.Get(ctx, tc.key)
 		require.NoError(t, err)
@@ -133,6 +150,7 @@ func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
 
 	key := Key{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://x.example.com/cb",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
@@ -189,6 +207,7 @@ func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 
 	key := Key{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://x.example.com/cb",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
@@ -241,6 +260,7 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 	overlappingKey := func(i int) Key {
 		return Key{
 			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  fmt.Sprintf("overlap-%d", i%4),
 		}
@@ -248,6 +268,7 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 	disjointKey := func(worker, i int) Key {
 		return Key{
 			Issuer:      fmt.Sprintf("https://idp-%d.example.com", worker),
+			UpstreamID:  "https://upstream.example.com",
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  fmt.Sprintf("disjoint-%d", i),
 		}
@@ -329,6 +350,7 @@ func TestResolutionCredentialsRoundTrip(t *testing.T) {
 
 	key := Key{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
@@ -476,6 +498,7 @@ func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
 	ctx := context.Background()
 	key := Key{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}

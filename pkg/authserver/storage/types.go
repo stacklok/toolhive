@@ -130,9 +130,9 @@ type DCRKey struct {
 	//     issuer, because the CLI has no separate local issuer of its own.
 	// The cache is keyed by this value because two different consumers
 	// registering against the same upstream are distinct OAuth clients and
-	// must not share credentials. The (Issuer, RedirectURI, ScopesHash)
-	// tuple keeps the two consumer profiles' entries apart via the
-	// RedirectURI component (the embedded authserver registers an
+	// must not share credentials. The (Issuer, UpstreamID, RedirectURI,
+	// ScopesHash) tuple keeps the two consumer profiles' entries apart via
+	// the RedirectURI component (the embedded authserver registers an
 	// AS-origin callback while the CLI registers a loopback callback per
 	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
 	// between profiles is impossible by construction even when the
@@ -145,6 +145,31 @@ type DCRKey struct {
 	// format must gain a consumer-identifier component alongside an
 	// explicit migration story.
 	Issuer string
+
+	// UpstreamID identifies the upstream authorization server this
+	// registration is bound to, disambiguating upstreams that share the
+	// consumer's Issuer, RedirectURI, and scope set. Within a single
+	// embedded authserver every OAuth2 upstream shares the authserver's own
+	// Issuer and the one defaulted {issuer}/oauth/callback RedirectURI, so
+	// before this component existed two upstreams configured with equal
+	// scopes collided on one cache entry — the second read back the first's
+	// dynamically-registered client_id / client_secret and never registered
+	// with its own authorization server (issue #5823).
+	//
+	// The value is the upstream's registration identity: the upstream issuer
+	// recovered from the consumer's discovery URL, or the registration
+	// endpoint URL when the consumer configured one directly. It is derived
+	// by the dcr resolver from the Request; do not hand-build it at call
+	// sites.
+	//
+	// On the discovery-URL path this is the derived issuer, so it identifies
+	// the authorization server rather than the exact discovery URL: two
+	// configs that resolve to the same issuer intentionally share one
+	// registration. It does not fully disambiguate the nonstandard case of a
+	// single issuer exposing distinct registration endpoints under custom
+	// (non-well-known) discovery paths — see resolveUpstreamKeyIdentity in
+	// pkg/auth/dcr for the full rationale.
+	UpstreamID string
 
 	// RedirectURI is the redirect URI registered with the upstream
 	// authorization server. Embedded-authserver callers register an
@@ -198,19 +223,25 @@ func ScopesHash(scopes []string) string {
 // from drifting across implementations: a record that fails loud against one
 // backend cannot silently persist against another.
 //
-// Rejected inputs: nil creds, an unpopulated Key (empty Issuer, RedirectURI,
-// or ScopesHash), and missing RFC 7591 mandatory response fields (ClientID,
-// AuthorizationEndpoint, TokenEndpoint). An empty ScopesHash is rejected
-// because the canonical digest of any scope set — including the empty-scope
-// set via ScopesHash(nil) — is non-empty, so an empty string can only be a
-// caller bug. ClientSecret is left permissive because RFC 7591 §2 public
-// clients (auth method "none") legitimately register without a secret.
+// Rejected inputs: nil creds, an unpopulated Key (empty Issuer, UpstreamID,
+// RedirectURI, or ScopesHash), and missing RFC 7591 mandatory response fields
+// (ClientID, AuthorizationEndpoint, TokenEndpoint). An empty ScopesHash is
+// rejected because the canonical digest of any scope set — including the
+// empty-scope set via ScopesHash(nil) — is non-empty, so an empty string can
+// only be a caller bug. An empty UpstreamID is rejected because the resolver
+// always derives it from the Request (issue #5823); an empty value here would
+// re-open the cross-upstream collision it was added to close. ClientSecret is
+// left permissive because RFC 7591 §2 public clients (auth method "none")
+// legitimately register without a secret.
 func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 	if creds == nil {
 		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
 	}
 	if creds.Key.Issuer == "" {
 		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
+	}
+	if creds.Key.UpstreamID == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key upstream_id cannot be empty")
 	}
 	if creds.Key.RedirectURI == "" {
 		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
@@ -263,7 +294,7 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 // TestResolutionCredentialsRoundTrip in
 // pkg/auth/dcr/store_test.go.
 type DCRCredentials struct {
-	// Key is the canonical cache key: (Issuer, RedirectURI, ScopesHash).
+	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI, ScopesHash).
 	Key DCRKey
 
 	// ProviderName is the upstream's UpstreamRunConfig.Name. Debug / audit
@@ -340,7 +371,7 @@ type DCRCredentials struct {
 // DCRKey is embedded as DCRCredentials.Key so the persisted blob is
 // self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
 // reconciliation path can identify a record's logical cache slot
-// (Issuer, RedirectURI, ScopesHash) from the value alone, without
+// (Issuer, UpstreamID, RedirectURI, ScopesHash) from the value alone, without
 // reconstructing it from a separately-passed key. This is a deliberate
 // asymmetry with the rest of the package — callers must populate creds.Key
 // before Store, and implementations validate it (see MemoryStorage docs

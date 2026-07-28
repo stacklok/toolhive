@@ -6,6 +6,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -261,7 +262,8 @@ func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
 	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
 }
 
-// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
+// LLMGatewayModeFor returns the client's configured gateway integration mode,
+// or "" when the client is unknown or does not support an LLM gateway.
 func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 	cfg := cm.lookupClientAppConfig(clientType)
 	if cfg == nil {
@@ -271,12 +273,14 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 }
 
 // DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
-// that are installed on this machine. A client is considered installed when:
-//  1. Its settings directory exists on disk.
-//  2. If LLMBinaryName is set, the binary is also present on $PATH.
+// that are installed on this machine. Most clients require their settings
+// directory and, when configured, their binary on $PATH. A client with an
+// LLMInstalledDetector hook (e.g. Codex's desktop app) is also detected when
+// the hook returns true; CLI and desktop evidence still produce one canonical
+// result.
 //
-// The binary check prevents false positives from leftover config directories
-// (e.g. ~/.claude or ~/.gemini) that remain after a tool is uninstalled.
+// Requiring both CLI signals prevents false positives from leftover config
+// directories (e.g. ~/.claude or ~/.gemini) after a tool is uninstalled.
 func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 	var result []ClientApp
 	for i := range cm.clientIntegrations {
@@ -284,27 +288,61 @@ func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 		if cfg.LLMGatewayMode == "" {
 			continue
 		}
-		// Detection directory: for GUI apps whose settings directory does not
-		// exist until first configured (e.g. Claude Desktop's configLibrary),
-		// LLMDetectRelPath points at a directory that exists once the app is
-		// installed. Otherwise fall back to the settings directory.
-		detectDir := func() string {
-			if cfg.LLMDetectRelPath != nil {
-				return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
-			}
-			return filepath.Dir(cm.buildLLMSettingsPath(cfg))
-		}()
-		if _, err := os.Stat(detectDir); err != nil {
-			continue
+		if cm.isClientInstalled(cfg) {
+			result = append(result, cfg.ClientType)
 		}
-		if cfg.LLMBinaryName != "" {
-			if _, err := cm.lookPath(cfg.LLMBinaryName); err != nil {
-				continue
-			}
-		}
-		result = append(result, cfg.ClientType)
 	}
 	return result
+}
+
+// isClientInstalled reports whether a single LLM-gateway-capable client appears
+// to be installed. The shared check (settings/detection directory exists and,
+// when configured, the binary is on $PATH) is augmented by an optional
+// per-client LLMInstalledDetector hook (e.g. Codex desktop app detection).
+func (cm *ClientManager) isClientInstalled(cfg *clientAppConfig) bool {
+	if cm.sharedCLIDetection(cfg) {
+		return true
+	}
+	if cfg.LLMInstalledDetector == nil {
+		return false
+	}
+	installed, err := cfg.LLMInstalledDetector()
+	if err != nil {
+		// Log the detector failure so it's distinguishable from "not installed"
+		// rather than silently treating a detection error as absence.
+		slog.Warn("LLM client detection hook failed",
+			"client", cfg.ClientType, "error", err)
+		return false
+	}
+	return installed
+}
+
+// sharedCLIDetection implements the generic CLI detection shared by all
+// LLM-gateway-capable clients: the detection directory (or settings directory)
+// must exist, and when LLMBinaryName is set the binary must be found on $PATH.
+func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
+	// Detection directory: for GUI apps whose settings directory does not
+	// exist until first configured (e.g. Claude Desktop's configLibrary),
+	// LLMDetectRelPath points at a directory that exists once the app is
+	// installed. Otherwise fall back to the settings directory.
+	detectDir := func() string {
+		if cfg.LLMDetectRelPath != nil {
+			return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+		}
+		return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+	}()
+	if _, err := os.Stat(detectDir); err != nil {
+		return false
+	}
+	if cfg.LLMBinaryName != "" {
+		if cm.lookPath == nil {
+			return false
+		}
+		if _, err := cm.lookPath(cfg.LLMBinaryName); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file
@@ -352,8 +390,32 @@ func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (str
 		}
 		return "", true
 	default:
+		return resolveBedrockField(valueField, cfg)
+	}
+}
+
+// resolveBedrockField resolves the Claude Code bedrock-compat ValueFields. The
+// values are written only in bedrock-compat mode; otherwise they resolve to ""
+// so their ClearWhenEmpty key specs remove the key. Returns (_, false) for any
+// non-bedrock field so the caller can report an unknown ValueField.
+func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string, bool) {
+	var v string
+	switch valueField {
+	case "BedrockDisableExperimentalBetas":
+		v = "1"
+	case "BedrockHaikuModel":
+		v = cfg.BedrockHaikuModel
+	case "BedrockOpusModel":
+		v = cfg.BedrockOpusModel
+	case "BedrockSonnetModel":
+		v = cfg.BedrockSonnetModel
+	default:
 		return "", false
 	}
+	if !cfg.BedrockCompat {
+		return "", true
+	}
+	return v, true
 }
 
 // llmValueForSpec returns the config value for a settings-file key spec.

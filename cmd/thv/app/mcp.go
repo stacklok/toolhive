@@ -13,9 +13,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thclient "github.com/stacklok/toolhive/pkg/mcp/client"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )

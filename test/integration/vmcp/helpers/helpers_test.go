@@ -6,8 +6,9 @@ package helpers
 import (
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // TestGetToolNames tests the GetToolNames helper function.

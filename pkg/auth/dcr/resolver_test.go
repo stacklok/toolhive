@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -58,6 +59,11 @@ type dcrTestHandlerConfig struct {
 	// does not expire".
 	clientIDIssuedAt      int64
 	clientSecretExpiresAt int64
+
+	// clientID overrides the client_id returned by the registration
+	// endpoint. Defaults to "test-client-id". Distinct values let a test
+	// prove two upstreams received distinct dynamically-registered clients.
+	clientID string
 }
 
 // newDCRTestServer mounts RFC 8414 metadata and a DCR endpoint on a single
@@ -107,11 +113,15 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		clientID := cfg.clientID
+		if clientID == "" {
+			clientID = "test-client-id"
+		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
-			ClientID:                "test-client-id",
+			ClientID:                clientID,
 			ClientSecret:            "test-client-secret",
 			RegistrationAccessToken: "test-reg-token",
-			RegistrationClientURI:   server.URL + "/register/test-client-id",
+			RegistrationClientURI:   server.URL + "/register/" + clientID,
 			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 			ClientIDIssuedAt:        cfg.clientIDIssuedAt,
 			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
@@ -145,8 +155,12 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	// Pre-populate the cache with a resolution matching the key we will
 	// look up.
 	redirectURI := issuer + "/oauth/callback"
+	// UpstreamID is the upstream issuer the resolver derives from the
+	// DiscoveryURL below; for a well-known discovery URL that is the issuer
+	// origin itself. The preloaded key must match it for the cache to hit.
 	key := Key{
 		Issuer:      issuer,
+		UpstreamID:  issuer,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
@@ -213,12 +227,227 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 	assert.Equal(t, []string{issuer + "/oauth/callback"}, dcrReq.RedirectURIs)
 	assert.ElementsMatch(t, []string{"openid", "profile"}, []string(dcrReq.Scopes))
 
-	// Cache was populated.
+	// Cache was populated. UpstreamID is the issuer origin the resolver
+	// derives from the oauth-authorization-server discovery URL.
 	cached, ok, err := cache.Get(context.Background(),
-		Key{Issuer: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
+		Key{Issuer: issuer, UpstreamID: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "test-client-id", cached.ClientID)
+}
+
+// TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide is the
+// regression test for issue #5823. Within one embedded authserver every
+// OAuth2 upstream shares the authserver's own Issuer and the single defaulted
+// {issuer}/oauth/callback RedirectURI, so the cache key differed only by the
+// scopes hash. Two upstreams configured with equal scopes therefore collided:
+// the second read back the first's dynamically-registered client and never
+// registered with its own authorization server. The UpstreamID key component
+// disambiguates them.
+func TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	var regCountA, regCountB int32
+	serverA := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:                          "client-a",
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		scopesSupported:                   []string{"openid", "profile"},
+		observeRegistration:               func(*http.Request, []byte) { atomic.AddInt32(&regCountA, 1) },
+	})
+	serverB := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:                          "client-b",
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		scopesSupported:                   []string{"openid", "profile"},
+		observeRegistration:               func(*http.Request, []byte) { atomic.AddInt32(&regCountB, 1) },
+	})
+
+	// One shared cache, one shared local issuer, one shared scope set — the
+	// embedded-authserver shape. Only the upstream (DiscoveryURL) differs.
+	cache := newMemoryDCRStore(t)
+	const localIssuer = "https://authserver.example.com"
+	ctx := context.Background()
+	reqFor := func(discoveryHost string) *Request {
+		return &Request{
+			Issuer:       localIssuer,
+			Scopes:       []string{"openid", "profile"},
+			DiscoveryURL: discoveryHost + "/.well-known/oauth-authorization-server",
+		}
+	}
+
+	resA, err := ResolveCredentials(ctx, reqFor(serverA.URL), cache)
+	require.NoError(t, err)
+	resB, err := ResolveCredentials(ctx, reqFor(serverB.URL), cache)
+	require.NoError(t, err)
+
+	// The crux: the second upstream registered with its OWN authorization
+	// server and received its own client, rather than reading back the
+	// first's cached credentials.
+	assert.Equal(t, "client-a", resA.ClientID)
+	assert.Equal(t, "client-b", resB.ClientID,
+		"second upstream must register with its own AS, not reuse the first's cached client (#5823)")
+	assert.Equal(t, serverA.URL+"/token", resA.TokenEndpoint)
+	assert.Equal(t, serverB.URL+"/token", resB.TokenEndpoint,
+		"second upstream's endpoints must come from its own AS metadata")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountA), "upstream A must register exactly once")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountB),
+		"upstream B must register exactly once; a cache collision would leave this at zero")
+
+	// Both resolutions coexist in the cache under keys that differ only by
+	// UpstreamID (shared Issuer, RedirectURI, and scopes hash).
+	redirectURI := localIssuer + "/oauth/callback"
+	scopesHash := storage.ScopesHash([]string{"openid", "profile"})
+	cachedA, okA, err := cache.Get(ctx,
+		Key{Issuer: localIssuer, UpstreamID: serverA.URL, RedirectURI: redirectURI, ScopesHash: scopesHash})
+	require.NoError(t, err)
+	require.True(t, okA)
+	assert.Equal(t, "client-a", cachedA.ClientID)
+	cachedB, okB, err := cache.Get(ctx,
+		Key{Issuer: localIssuer, UpstreamID: serverB.URL, RedirectURI: redirectURI, ScopesHash: scopesHash})
+	require.NoError(t, err)
+	require.True(t, okB)
+	assert.Equal(t, "client-b", cachedB.ClientID)
+}
+
+// TestResolveDCRCredentials_ConcurrentDistinctUpstreamsBothRegister guards the
+// singleflight (flight-key) split, complementing the sequential
+// TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide which only
+// proves the persistent cache-key split. Two upstreams that share the caller's
+// Issuer, RedirectURI, and scopes but differ by UpstreamID must not coalesce
+// into one dcrFlight — each must register with its own AS. A barrier in the
+// registration handlers forces both calls to be in-flight simultaneously, so a
+// flight-key collision would surface as one call becoming the other's follower
+// (its registration count staying at zero).
+func TestResolveDCRCredentials_ConcurrentDistinctUpstreamsBothRegister(t *testing.T) {
+	t.Parallel()
+
+	// Barrier: release both registration handlers only once both have been
+	// entered, forcing genuine in-flight overlap. The timeout keeps the test
+	// fail-fast — if the two calls coalesced there would be only one handler
+	// to enter, so the sole handler proceeds after the wait and the reg-count
+	// assertions below catch the collision instead of the test hanging.
+	var regCountA, regCountB, arrivals int32
+	bothArrived := make(chan struct{})
+	barrier := func() {
+		if atomic.AddInt32(&arrivals, 1) == 2 {
+			close(bothArrived)
+		}
+		select {
+		case <-bothArrived:
+		case <-time.After(3 * time.Second):
+		}
+	}
+
+	serverA := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:                          "client-a",
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		scopesSupported:                   []string{"openid", "profile"},
+		observeRegistration:               func(*http.Request, []byte) { atomic.AddInt32(&regCountA, 1); barrier() },
+	})
+	serverB := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:                          "client-b",
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		scopesSupported:                   []string{"openid", "profile"},
+		observeRegistration:               func(*http.Request, []byte) { atomic.AddInt32(&regCountB, 1); barrier() },
+	})
+
+	cache := newMemoryDCRStore(t)
+	const localIssuer = "https://authserver.example.com"
+	reqFor := func(discoveryHost string) *Request {
+		return &Request{
+			Issuer:       localIssuer,
+			Scopes:       []string{"openid", "profile"},
+			DiscoveryURL: discoveryHost + "/.well-known/oauth-authorization-server",
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	results := make([]*Resolution, 2)
+	errs := make([]error, 2)
+	go func() {
+		defer wg.Done()
+		results[0], errs[0] = ResolveCredentials(context.Background(), reqFor(serverA.URL), cache)
+	}()
+	go func() {
+		defer wg.Done()
+		results[1], errs[1] = ResolveCredentials(context.Background(), reqFor(serverB.URL), cache)
+	}()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent ResolveCredentials calls; possible flight-key deadlock")
+	}
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	assert.Equal(t, "client-a", results[0].ClientID)
+	assert.Equal(t, "client-b", results[1].ClientID,
+		"each concurrent upstream must receive its own client, not the other flight's leader result")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountA), "upstream A must register exactly once")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountB),
+		"upstream B must register exactly once; a flight-key collision would coalesce the two calls and leave this at zero")
+}
+
+// TestResolveDCRCredentials_DistinctRegistrationEndpointsDoNotCollide covers
+// the RegistrationEndpoint branch of resolveUpstreamKeyIdentity: two upstreams
+// configured with explicit (distinct) registration endpoints but the same
+// caller Issuer, RedirectURI, and scopes must still register separately. The
+// UpstreamID is the registration endpoint URL on this branch.
+func TestResolveDCRCredentials_DistinctRegistrationEndpointsDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	var regCountA, regCountB int32
+	serverA := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:            "client-a",
+		observeRegistration: func(*http.Request, []byte) { atomic.AddInt32(&regCountA, 1) },
+	})
+	serverB := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:            "client-b",
+		observeRegistration: func(*http.Request, []byte) { atomic.AddInt32(&regCountB, 1) },
+	})
+
+	cache := newMemoryDCRStore(t)
+	const localIssuer = "https://authserver.example.com"
+	ctx := context.Background()
+	// The RegistrationEndpoint branch performs no discovery, so the caller
+	// must supply authorization/token endpoints explicitly.
+	reqFor := func(server *httptest.Server) *Request {
+		return &Request{
+			Issuer:                localIssuer,
+			Scopes:                []string{"openid", "profile"},
+			RegistrationEndpoint:  server.URL + "/register",
+			AuthorizationEndpoint: server.URL + "/authorize",
+			TokenEndpoint:         server.URL + "/token",
+		}
+	}
+
+	resA, err := ResolveCredentials(ctx, reqFor(serverA), cache)
+	require.NoError(t, err)
+	resB, err := ResolveCredentials(ctx, reqFor(serverB), cache)
+	require.NoError(t, err)
+
+	assert.Equal(t, "client-a", resA.ClientID)
+	assert.Equal(t, "client-b", resB.ClientID,
+		"second upstream must register with its own registration endpoint, not reuse the first's cached client (#5823)")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountA), "upstream A must register exactly once")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountB),
+		"upstream B must register exactly once; a cache collision would leave this at zero")
+
+	// The two entries coexist under keys whose only differing component is
+	// UpstreamID (the registration endpoint URL).
+	redirectURI := localIssuer + "/oauth/callback"
+	scopesHash := storage.ScopesHash([]string{"openid", "profile"})
+	_, okA, err := cache.Get(ctx,
+		Key{Issuer: localIssuer, UpstreamID: serverA.URL + "/register", RedirectURI: redirectURI, ScopesHash: scopesHash})
+	require.NoError(t, err)
+	assert.True(t, okA, "upstream A entry must be keyed by its registration endpoint")
+	_, okB, err := cache.Get(ctx,
+		Key{Issuer: localIssuer, UpstreamID: serverB.URL + "/register", RedirectURI: redirectURI, ScopesHash: scopesHash})
+	require.NoError(t, err)
+	assert.True(t, okB, "upstream B entry must be keyed by its registration endpoint")
 }
 
 func TestResolveDCRCredentials_ExplicitEndpointsOverride(t *testing.T) {
@@ -341,6 +570,235 @@ func TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect(t *testing.T) {
 	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
 		"foreign origin must receive zero requests; got %v Authorization headers: %v",
 		atomic.LoadInt32(&foreignHits), foreignAuthHeaders)
+}
+
+// TestResolveDCRCredentials_BlocksPrivateIPTargets pins the CWE-918 SSRF guard
+// added for issue #5825: both of the resolver's outbound calls — the discovery
+// fetch and the registration POST — are dialed through a private-IP-guarded
+// client, so a registration endpoint that resolves to a private or link-local
+// address is refused at connect time. The guard fires before any bytes leave
+// the host, so these cases need no live server behind the private target.
+// AllowPrivateIPs defaults to false; loopback stays permitted for development.
+func TestResolveDCRCredentials_BlocksPrivateIPTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		newReq func(t *testing.T) *Request
+	}{
+		{
+			// Direct RegistrationEndpoint branch: an operator-configured
+			// endpoint that resolves (or rebinds) to an RFC-1918 address.
+			name: "direct registration endpoint on a private IP",
+			newReq: func(_ *testing.T) *Request {
+				// Issuer is unique per test: the process-global dcrFlight
+				// singleflight keys on (Issuer, RedirectURI, ScopesHash), so a
+				// shared synthetic issuer would coalesce this call with another
+				// parallel test and return that test's result.
+				return &Request{
+					Issuer:               "https://block-direct.example.test",
+					Scopes:               []string{"openid"},
+					RegistrationEndpoint: "https://10.255.255.1/register",
+				}
+			},
+		},
+		{
+			// Discovery-indirection branch: the discovery document is served
+			// from an allowed (loopback) host, but it points
+			// registration_endpoint at a link-local metadata address the
+			// metadata itself controls. HTTPS so it clears scheme validation
+			// and reaches the guarded dial.
+			name: "registration endpoint from discovery on a link-local IP",
+			newReq: func(t *testing.T) *Request {
+				t.Helper()
+				mux := http.NewServeMux()
+				var server *httptest.Server
+				mux.HandleFunc("/.well-known/oauth-authorization-server",
+					func(w http.ResponseWriter, _ *http.Request) {
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+							Issuer:                server.URL,
+							AuthorizationEndpoint: server.URL + "/authorize",
+							TokenEndpoint:         server.URL + "/token",
+							JWKSURI:               server.URL + "/jwks",
+							RegistrationEndpoint:  "https://169.254.169.254/register",
+						})
+					})
+				server = httptest.NewServer(mux)
+				t.Cleanup(server.Close)
+				return &Request{
+					Issuer:       server.URL,
+					Scopes:       []string{"openid"},
+					DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+				}
+			},
+		},
+		{
+			// Discovery-fetch branch itself: DiscoveryURL points directly at a
+			// private IP, so the *discovery* client's own dial guard
+			// (newGuardedDCRClient(discoveryHost, ...) in resolveDCREndpoints)
+			// must refuse it. The two cases above only prove the guard on the
+			// registration client; this proves it on the discovery client. No
+			// live server is needed — the guard fires before any request is
+			// sent, and deriveExpectedIssuerFromDiscoveryURL resolves the
+			// issuer from the URL string alone.
+			name: "discovery URL itself on a private IP",
+			newReq: func(_ *testing.T) *Request {
+				return &Request{
+					Issuer:       "https://block-discovery.example.test",
+					Scopes:       []string{"openid"},
+					DiscoveryURL: "https://10.255.255.1/.well-known/oauth-authorization-server",
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ResolveCredentials(context.Background(), tc.newReq(t), newMemoryDCRStore(t))
+			require.Error(t, err)
+			assert.ErrorContains(t, err, networking.ErrPrivateIpAddress,
+				"a private/link-local registration target must be refused at connect time")
+		})
+	}
+}
+
+// TestResolveDCRCredentials_AllowPrivateIPsHonored proves req.AllowPrivateIPs
+// is threaded through to the guarded client: with it set, the resolver dials
+// the private target instead of refusing it at the guard. The target is a
+// non-routable RFC 5737 documentation address (TEST-NET-1), so the dial fails
+// with a network error rather than the guard error — and can never reach a
+// real host.
+func TestResolveDCRCredentials_AllowPrivateIPsHonored(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Issuer is unique per test so the process-global dcrFlight singleflight
+	// (keyed on Issuer, RedirectURI, ScopesHash) cannot coalesce this call
+	// with another parallel test and hand back that test's result.
+	req := &Request{
+		Issuer:               "https://allow-private.example.test",
+		Scopes:               []string{"openid"},
+		RegistrationEndpoint: "https://192.0.2.1/register",
+		AllowPrivateIPs:      true,
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard so the dial is attempted, not refused")
+}
+
+// TestResolveDCRCredentials_AllowPrivateIPsHonoredViaDiscovery proves
+// req.AllowPrivateIPs also lifts the guard on the discovery-indirection
+// path — not just the direct RegistrationEndpoint branch covered by
+// TestResolveDCRCredentials_AllowPrivateIPsHonored above: with it set, a
+// registration_endpoint the discovery document points at a private IP is
+// dialed instead of refused at the guard.
+func TestResolveDCRCredentials_AllowPrivateIPsHonoredViaDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+				Issuer:                server.URL,
+				AuthorizationEndpoint: server.URL + "/authorize",
+				TokenEndpoint:         server.URL + "/token",
+				JWKSURI:               server.URL + "/jwks",
+				// Non-routable RFC 5737 documentation address (TEST-NET-1): the
+				// dial fails with a network error rather than reaching a real
+				// host, same as TestResolveDCRCredentials_AllowPrivateIPsHonored.
+				RegistrationEndpoint: "https://192.0.2.1/register",
+			})
+		})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:          server.URL,
+		Scopes:          []string{"openid"},
+		DiscoveryURL:    server.URL + "/.well-known/oauth-authorization-server",
+		AllowPrivateIPs: true,
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard on the discovery-indirection path too")
+}
+
+// TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect pins that the
+// discovery fetch installs SameHostRedirectPolicy: a discovery endpoint that
+// 30x-redirects to a different host must not be followed, so a malicious
+// upstream cannot walk the metadata fetch onto an unintended origin (CWE-918).
+// A different port counts as a different host, so two loopback httptest servers
+// suffice.
+func TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	var foreignHits int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&foreignHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/.well-known/oauth-authorization-server", http.StatusFound)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	_, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+	require.Error(t, err, "discovery must fail when the endpoint redirects cross-host")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
+		"the discovery client must not follow a cross-host redirect")
+}
+
+func TestHostFromURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rawURL  string
+		want    string
+		wantErr bool
+	}{
+		{name: "https with port", rawURL: "https://idp.example.com:8443/register", want: "idp.example.com:8443"},
+		{name: "https without port", rawURL: "https://idp.example.com/register", want: "idp.example.com"},
+		{name: "loopback with port", rawURL: "http://127.0.0.1:5000/register", want: "127.0.0.1:5000"},
+		{name: "missing host", rawURL: "/register", wantErr: true},
+		{name: "malformed url", rawURL: "://bad", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := hostFromURL(tc.rawURL)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
@@ -1681,6 +2139,28 @@ func TestDcrStepError(t *testing.T) {
 		var stepErr *dcrStepError
 		require.True(t, errors.As(err, &stepErr))
 		assert.Equal(t, dcrStepValidate, stepErr.Step)
+	})
+
+	t.Run("malformed DiscoveryURL fails at dcrStepResolveUpstream", func(t *testing.T) {
+		t.Parallel()
+
+		// A DiscoveryURL with no scheme/host passes validateResolveInputs
+		// (which only checks non-emptiness) and the Issuer-based redirect
+		// derivation, then fails in resolveUpstreamKeyIdentity —
+		// deriveExpectedIssuerFromDiscoveryURL rejects the missing origin.
+		// This is a new failure mode introduced with UpstreamID: a malformed
+		// DiscoveryURL now surfaces here rather than later in
+		// resolveDCREndpoints, so the step must be dcrStepResolveUpstream.
+		req := &Request{
+			Issuer:       "https://authserver.example.com",
+			Scopes:       []string{"openid"},
+			DiscoveryURL: "not-a-url",
+		}
+		_, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+		require.Error(t, err)
+		var stepErr *dcrStepError
+		require.True(t, errors.As(err, &stepErr))
+		assert.Equal(t, dcrStepResolveUpstream, stepErr.Step)
 	})
 }
 

@@ -6,8 +6,7 @@ package conversion
 import (
 	"errors"
 
-	sdkmcp "github.com/mark3labs/mcp-go/mcp"
-
+	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -18,12 +17,16 @@ import (
 // Go errors: the SDK maps them to generic internal errors. For domain errors
 // that opt into CodedError, preserve the code/data in StructuredContent instead.
 func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
+	// Denial first (matches writeModernDispatchError): an error that is both a
+	// CodedError and wraps ErrAuthorizationFailed must render as the denial,
+	// never as retry-shaped coded data (the sets are disjoint today; this
+	// ordering is the invariant).
+	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		return sdkmcp.NewToolResultError(vmcp.DenyMessageToolCall)
+	}
 	var coded thvmcp.CodedError
 	if errors.As(err, &coded) {
 		return CodedErrorResult(err, coded)
-	}
-	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-		return sdkmcp.NewToolResultError("call denied by authorization policy")
 	}
 	return sdkmcp.NewToolResultError(err.Error())
 }
@@ -37,7 +40,7 @@ func CodedErrorResult(err error, coded thvmcp.CodedError) *sdkmcp.CallToolResult
 		"code":    coded.Code(),
 		"message": err.Error(),
 	}
-	if data := coded.Data(); data != nil {
+	if data := coded.Data(); len(data) > 0 {
 		structured["data"] = data
 	}
 	result.StructuredContent = structured

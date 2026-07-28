@@ -13,9 +13,6 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,6 +24,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/test/e2e"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -222,61 +220,84 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Expect(hmacSecretEnvVar.ValueFrom.SecretKeyRef.Key).To(gomega.Equal("hmac-secret"))
 		})
 
+		// These specs assert Legacy-session semantics, so they pin 2025-11-25 per
+		// request via the raw client (see legacy_session_helpers_test.go for why
+		// the mcpcompat client cannot be used for session specs).
 		ginkgo.It("Should allow multiple clients to connect with independent sessions", func() {
-			ginkgo.By("Creating first client")
-			firstClient, err := CreateInitializedMCPClient(vmcpNodePort, "client-first", 30*time.Second)
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			defer firstClient.Close()
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
 
-			sessionIDFirst := firstClient.Client.GetSessionId()
-			gomega.Expect(sessionIDFirst).NotTo(gomega.BeEmpty(), "first client should have a session ID")
+			ginkgo.By("Establishing the first Legacy session")
+			sessionIDFirst, err := legacySessionInit(rawClient, serverURL, "client-first", nil)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred(), "first client should get a session ID")
 
-			ginkgo.By("Creating second client")
-			secondClient, err := CreateInitializedMCPClient(vmcpNodePort, "client-second", 30*time.Second)
-			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			defer secondClient.Close()
-
-			sessionIDSecond := secondClient.Client.GetSessionId()
-			gomega.Expect(sessionIDSecond).NotTo(gomega.BeEmpty(), "second client should have a session ID")
+			ginkgo.By("Establishing the second Legacy session")
+			sessionIDSecond, err := legacySessionInit(rawClient, serverURL, "client-second", nil)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred(), "second client should get a session ID")
 
 			ginkgo.By("Verifying sessions are independent (different IDs)")
 			gomega.Expect(sessionIDFirst).NotTo(gomega.Equal(sessionIDSecond))
 
-			ginkgo.By("Both clients can list tools from the backend")
-			toolsFirst, err := firstClient.Client.ListTools(firstClient.Ctx, mcp.ListToolsRequest{})
+			ginkgo.By("Both sessions can list tools from the backend")
+			toolsFirst, err := legacySessionListTools(rawClient, serverURL, sessionIDFirst, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(toolsFirst.Tools).NotTo(gomega.BeEmpty())
+			gomega.Expect(toolsFirst).NotTo(gomega.BeEmpty())
 
-			toolsSecond, err := secondClient.Client.ListTools(secondClient.Ctx, mcp.ListToolsRequest{})
+			toolsSecond, err := legacySessionListTools(rawClient, serverURL, sessionIDSecond, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(toolsSecond.Tools).NotTo(gomega.BeEmpty())
+			gomega.Expect(toolsSecond).NotTo(gomega.BeEmpty())
 
-			ginkgo.By("Both clients see the same tool catalog")
-			gomega.Expect(toolsFirst.Tools).To(gomega.HaveLen(len(toolsSecond.Tools)))
+			ginkgo.By("Both sessions see the same tool catalog")
+			gomega.Expect(toolsFirst).To(gomega.HaveLen(len(toolsSecond)))
 		})
 
 		ginkgo.It("Should allow a client to make multiple calls on the same session", func() {
-			client, err := CreateInitializedMCPClient(vmcpNodePort, "multi-call-client", 30*time.Second)
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			defer client.Close()
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
 
-			sessionID := client.Client.GetSessionId()
-			gomega.Expect(sessionID).NotTo(gomega.BeEmpty())
+			sessionID, err := legacySessionInit(rawClient, serverURL, "multi-call-client", nil)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
+			// Every request below pins the SAME session ID explicitly, so "the
+			// session stays stable across calls" is asserted by each call being
+			// served (a dead or rotated session would 404).
 			ginkgo.By("Listing tools multiple times on the same session")
 			for i := range 3 {
-				tools, err := client.Client.ListTools(client.Ctx, mcp.ListToolsRequest{})
+				tools, err := legacySessionListTools(rawClient, serverURL, sessionID, nil)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred(), "call %d should succeed", i+1)
-				gomega.Expect(tools.Tools).NotTo(gomega.BeEmpty())
-				// Session ID must remain stable across calls
-				gomega.Expect(client.Client.GetSessionId()).To(gomega.Equal(sessionID))
+				gomega.Expect(tools).NotTo(gomega.BeEmpty())
 			}
 		})
 
 		ginkgo.It("Should route tool calls through the session to the backend", func() {
-			// TestToolListingAndCall discovers the actual (possibly-prefixed) tool name via
-			// ListTools and calls it with alphanumeric-only input (yardstick requirement).
-			TestToolListingAndCall(vmcpNodePort, "tool-call-client", "echo", "sessiontest")
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+
+			sessionID, err := legacySessionInit(rawClient, serverURL, "tool-call-client", nil)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// Discover the actual (possibly-prefixed) echo tool name via tools/list,
+			// then call it on the session with alphanumeric-only input (yardstick
+			// requirement).
+			tools, err := legacySessionListTools(rawClient, serverURL, sessionID, nil)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			var echoToolName string
+			for _, name := range tools {
+				if strings.Contains(name, "echo") {
+					echoToolName = name
+					break
+				}
+			}
+			gomega.Expect(echoToolName).NotTo(gomega.BeEmpty(), "should find an echo tool in the tool list")
+
+			resp, err := legacySessionCallTool(rawClient, serverURL, sessionID, echoToolName,
+				map[string]any{"input": "sessiontest"}, nil)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(dualEraEchoErr(resp, "sessiontest", "")).To(gomega.Succeed(),
+				"the session-routed tools/call must echo the input back")
 		})
 	})
 
@@ -395,21 +416,27 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			return tokenResp.AccessToken
 		}
 
-		// newAuthHTTPClient wraps an HTTP client that adds Bearer token to every request.
-		newAuthHTTPClient := func(token string) *http.Client {
-			return &http.Client{
-				Transport: &authRoundTripper{token: token, transport: http.DefaultTransport},
-				Timeout:   30 * time.Second,
-			}
+		// bearerHeader builds the extra-header map that carries a JWT on every
+		// raw Legacy request. Session token binding is Legacy-session semantics,
+		// so these specs pin 2025-11-25 per request via the raw client (see
+		// legacy_session_helpers_test.go for why the mcpcompat client cannot be
+		// used for session specs).
+		bearerHeader := func(token string) map[string]string {
+			return map[string]string{"Authorization": "Bearer " + token}
 		}
 
-		// connectWithToken initialises an MCP client authenticated with the given JWT.
-		connectWithToken := func(serverURL, token string) *mcpclient.Client {
-			httpClient := newAuthHTTPClient(token)
-			mc := InitializeMCPClientWithRetries(serverURL, 2*time.Minute,
-				transport.WithHTTPBasicClient(httpClient),
-			)
-			return mc
+		// legacySessionInitWithRetries establishes a Legacy session, retrying
+		// while the OIDC middleware and backend routing warm up (the role
+		// InitializeMCPClientWithRetries played for the mcpcompat client).
+		legacySessionInitWithRetries := func(rawClient *e2e.RawMCPClient, serverURL, clientName, token string) string {
+			var sessionID string
+			gomega.Eventually(func() error {
+				var initErr error
+				sessionID, initErr = legacySessionInit(rawClient, serverURL, clientName, bearerHeader(token))
+				return initErr
+			}, 2*time.Minute, pollInterval).Should(gomega.Succeed(),
+				"vMCP should accept an authenticated session initialization once ready")
+			return sessionID
 		}
 
 		ginkgo.BeforeAll(func() {
@@ -503,13 +530,12 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 		ginkgo.It("Client using another client's session ID with a different token is rejected", func() {
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 			ginkgo.By("Alice establishes a session")
 			aliceToken := getJWTForSubject("alice")
-			aliceClient := connectWithToken(serverURL, aliceToken)
-			defer aliceClient.Close()
-
-			aliceSessionID := aliceClient.GetSessionId()
+			aliceSessionID := legacySessionInitWithRetries(rawClient, serverURL, "alice-client", aliceToken)
 			gomega.Expect(aliceSessionID).NotTo(gomega.BeEmpty())
 
 			ginkgo.By("Bob gets a different JWT")
@@ -565,56 +591,51 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 		ginkgo.It("Each client gets their own independent session", func() {
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-			ginkgo.By("Alice and Bob each connect with their own token")
+			ginkgo.By("Alice and Bob each establish a session with their own token")
 			aliceToken := getJWTForSubject("alice")
 			bobToken := getJWTForSubject("bob")
 
-			aliceClient := connectWithToken(serverURL, aliceToken)
-			defer aliceClient.Close()
-
-			bobClient := connectWithToken(serverURL, bobToken)
-			defer bobClient.Close()
+			aliceSessionID := legacySessionInitWithRetries(rawClient, serverURL, "alice-client", aliceToken)
+			bobSessionID := legacySessionInitWithRetries(rawClient, serverURL, "bob-client", bobToken)
 
 			ginkgo.By("Verifying they have distinct session IDs")
-			aliceSessionID := aliceClient.GetSessionId()
-			bobSessionID := bobClient.GetSessionId()
 			gomega.Expect(aliceSessionID).NotTo(gomega.BeEmpty())
 			gomega.Expect(bobSessionID).NotTo(gomega.BeEmpty())
 			gomega.Expect(aliceSessionID).NotTo(gomega.Equal(bobSessionID))
 
-			ginkgo.By("Both clients can independently list tools")
-			toolsA, err := aliceClient.ListTools(ctx, mcp.ListToolsRequest{})
+			ginkgo.By("Both sessions can independently list tools")
+			toolsA, err := legacySessionListTools(rawClient, serverURL, aliceSessionID, bearerHeader(aliceToken))
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty())
+			gomega.Expect(toolsA).NotTo(gomega.BeEmpty())
 
-			toolsB, err := bobClient.ListTools(ctx, mcp.ListToolsRequest{})
+			toolsB, err := legacySessionListTools(rawClient, serverURL, bobSessionID, bearerHeader(bobToken))
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty())
+			gomega.Expect(toolsB).NotTo(gomega.BeEmpty())
 
-			ginkgo.By("Both clients can independently call tools on their own sessions")
+			ginkgo.By("Both sessions can independently call tools")
 			// Discover the real tool name (may be prefixed as backendName_echo).
 			// Use alphanumeric-only input — yardstick rejects values with hyphens.
 			var echoToolName string
-			for _, tool := range toolsA.Tools {
-				if strings.Contains(tool.Name, "echo") {
-					echoToolName = tool.Name
+			for _, name := range toolsA {
+				if strings.Contains(name, "echo") {
+					echoToolName = name
 					break
 				}
 			}
 			gomega.Expect(echoToolName).NotTo(gomega.BeEmpty(), "should find an echo tool in the tool list")
 
-			callReq := mcp.CallToolRequest{}
-			callReq.Params.Name = echoToolName
-			callReq.Params.Arguments = map[string]any{"input": "aliceindependentcall"}
-			aliceResult, err := aliceClient.CallTool(ctx, callReq)
+			aliceResp, err := legacySessionCallTool(rawClient, serverURL, aliceSessionID, echoToolName,
+				map[string]any{"input": "aliceindependentcall"}, bearerHeader(aliceToken))
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(aliceResult.IsError).To(gomega.BeFalse())
+			gomega.Expect(dualEraEchoErr(aliceResp, "aliceindependentcall", "")).To(gomega.Succeed())
 
-			callReq.Params.Arguments = map[string]any{"input": "bobindependentcall"}
-			bobResult, err := bobClient.CallTool(ctx, callReq)
+			bobResp, err := legacySessionCallTool(rawClient, serverURL, bobSessionID, echoToolName,
+				map[string]any{"input": "bobindependentcall"}, bearerHeader(bobToken))
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(bobResult.IsError).To(gomega.BeFalse())
+			gomega.Expect(dualEraEchoErr(bobResp, "bobindependentcall", "")).To(gomega.Succeed())
 		})
 	})
 

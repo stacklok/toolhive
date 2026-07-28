@@ -200,3 +200,18 @@ Before implementing any non-trivial functionality from scratch:
 3. **Look for existing Go packages** — search for well-maintained OSS libraries that solve the problem before writing custom implementations.
 
 Implementing from scratch should be a last resort, justified by a specific gap no existing solution fills.
+
+## JSON-RPC Envelopes
+
+Never `json.Marshal` (or `json.NewEncoder().Encode`) a `jsonrpc2` type.
+`jsonrpc2.Response` carries no json tags and `jsonrpc2.ID`'s only field is
+unexported, so reflection emits Go-capitalized keys, drops the mandatory
+`"jsonrpc":"2.0"` tag, and renders every id — valid or not — as `{}` (#5950).
+Serialize through `jsonrpc2.EncodeMessage`; for HTTP error responses use
+`pkg/mcp.EncodeJSONRPCError` / `pkg/mcp.WriteJSONRPCError`, which add
+encode-before-header ordering and a conformant fallback body.
+
+When an envelope must be hand-built as a map (only where no `jsonrpc2.ID` is
+in hand), omit the `"id"` key when the id is absent — never emit `"id":null`.
+MCP's `RequestId` is `string | number`, so null is not representable, and the
+reference TypeScript SDK client throws on it inside its transport (#6038).

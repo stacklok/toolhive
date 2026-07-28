@@ -39,13 +39,19 @@ func (l *recordingLimiter) Allow(_ context.Context, toolName, userID string) (*b
 
 type recordingCore struct {
 	core.VMCP
-	called   bool
-	identity *auth.Identity
-	name     string
-	args     map[string]any
-	meta     map[string]any
-	result   *vmcp.ToolCallResult
-	err      error
+	called      bool
+	checkCalled bool
+	identity    *auth.Identity
+	name        string
+	args        map[string]any
+	meta        map[string]any
+	result      *vmcp.ToolCallResult
+	err         error
+}
+
+func (c *recordingCore) CheckToolCall(_ context.Context, _ *auth.Identity, _ string, _ map[string]any) error {
+	c.checkCalled = true
+	return nil
 }
 
 func (c *recordingCore) CallTool(
@@ -156,4 +162,22 @@ func TestCallToolNilIdentityUsesEmptyUserID(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, inner.called)
 	assert.Empty(t, limiter.userID)
+}
+
+// TestCheckToolCallConsumesNoTokens verifies the deliberate non-override of
+// CheckToolCall: a pre-flight admission check promotes straight to inner without
+// touching the limiter, so it never consumes a rate-limit token (the limiter
+// applies only at CallTool dispatch).
+func TestCheckToolCallConsumesNoTokens(t *testing.T) {
+	t.Parallel()
+
+	limiter := &recordingLimiter{}
+	inner := &recordingCore{}
+	decorated := NewDecorator(inner, limiter)
+
+	err := decorated.CheckToolCall(t.Context(), nil, "backend_a_echo", nil)
+
+	require.NoError(t, err)
+	assert.True(t, inner.checkCalled, "the check must promote to inner")
+	assert.Empty(t, limiter.toolName, "a pre-flight check must not consume a rate-limit token")
 }

@@ -21,9 +21,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,6 +32,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
@@ -112,6 +112,18 @@ func (c *InitializedMCPClient) Close() {
 // CreateInitializedMCPClient creates an MCP client, starts the transport, and initializes
 // the connection with the given client name. Returns an InitializedMCPClient that should
 // be closed when done using defer client.Close().
+//
+// DO NOT use this (or any mcpcompat-built client) in a spec that asserts
+// SESSION semantics against a vMCP. The underlying go-sdk client is
+// Modern-first — it probes server/discover before initialize and upgrades to
+// 2026-07-28 whenever the server advertises it — and cannot be pinned to
+// Legacy (#5911). Against a Modern-serving vMCP it gets no session, and
+// GetSessionId() is empty. Session specs must pin the era explicitly with the
+// raw Legacy primitives in legacy_session_helpers_test.go instead. (Specs that
+// only assert tool/resource behavior are era-agnostic and may use this freely;
+// clients of the thv-proxyrunner transparent proxy negotiate against the
+// BACKEND, so MCPServer/MCPRemoteProxy session specs are unaffected as long as
+// the backend itself is Legacy.)
 func CreateInitializedMCPClient(nodePort int32, clientName string, timeout time.Duration) (*InitializedMCPClient, error) {
 	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
 	mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL)
@@ -1278,10 +1290,11 @@ type VMCPStatusResponse struct {
 // VMCPBackendStatus mirrors server.BackendStatus
 // (pkg/vmcp/server/status.go) for test deserialization.
 type VMCPBackendStatus struct {
-	Name      string `json:"name"`
-	Health    string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
-	Transport string `json:"transport"`
-	AuthType  string `json:"auth_type,omitempty"`
+	Name        string `json:"name"`
+	Health      string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
+	Transport   string `json:"transport"`
+	AuthType    string `json:"auth_type,omitempty"`
+	MCPRevision string `json:"mcp_revision,omitempty"`
 }
 
 // VMCPBackendsHealthResponse mirrors BackendHealthResponse

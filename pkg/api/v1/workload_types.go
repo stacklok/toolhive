@@ -80,6 +80,11 @@ type updateRequest struct {
 	NetworkIsolation *bool `json:"network_isolation,omitempty"`
 	// Whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
+	// Whether to permit outbound connections to Docker gateway addresses
+	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// blocked by default in the egress proxy even when network isolation is on.
+	// Only applicable to Docker deployments with network isolation enabled.
+	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
 	// Tools override
@@ -357,29 +362,30 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 
 	return &createRequest{
 		updateRequest: updateRequest{
-			Image:             runConfig.Image,
-			RuntimeConfig:     runtimeConfigForResponse(runConfig),
-			Host:              runConfig.Host,
-			CmdArguments:      runConfig.CmdArgs,
-			TargetPort:        runConfig.TargetPort,
-			ProxyPort:         runConfig.Port,
-			EnvVars:           runConfig.EnvVars,
-			Secrets:           secretParams,
-			Volumes:           runConfig.Volumes,
-			Transport:         string(runConfig.Transport),
-			AuthzConfig:       authzConfigPath,
-			OIDC:              oidcConfig,
-			PermissionProfile: runConfig.PermissionProfile,
-			ProxyMode:         string(runConfig.ProxyMode),
-			NetworkIsolation:  &runConfig.IsolateNetwork,
-			TrustProxyHeaders: runConfig.TrustProxyHeaders,
-			ToolsFilter:       runConfig.ToolsFilter,
-			ToolsOverride:     toolsOverride,
-			Group:             runConfig.Group,
-			URL:               runConfig.RemoteURL,
-			OAuthConfig:       oAuthConfig,
-			Headers:           headers,
-			HeaderForward:     headerForward,
+			Image:              runConfig.Image,
+			RuntimeConfig:      runtimeConfigForResponse(runConfig),
+			Host:               runConfig.Host,
+			CmdArguments:       runConfig.CmdArgs,
+			TargetPort:         runConfig.TargetPort,
+			ProxyPort:          runConfig.Port,
+			EnvVars:            runConfig.EnvVars,
+			Secrets:            secretParams,
+			Volumes:            runConfig.Volumes,
+			Transport:          string(runConfig.Transport),
+			AuthzConfig:        authzConfigPath,
+			OIDC:               oidcConfig,
+			PermissionProfile:  runConfig.PermissionProfile,
+			ProxyMode:          string(runConfig.ProxyMode),
+			NetworkIsolation:   &runConfig.IsolateNetwork,
+			TrustProxyHeaders:  runConfig.TrustProxyHeaders,
+			AllowDockerGateway: runConfig.AllowDockerGateway,
+			ToolsFilter:        runConfig.ToolsFilter,
+			ToolsOverride:      toolsOverride,
+			Group:              runConfig.Group,
+			URL:                runConfig.RemoteURL,
+			OAuthConfig:        oAuthConfig,
+			Headers:            headers,
+			HeaderForward:      headerForward,
 		},
 		Name: runConfig.Name,
 	}

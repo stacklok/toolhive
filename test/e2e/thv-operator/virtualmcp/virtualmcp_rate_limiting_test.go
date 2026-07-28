@@ -12,9 +12,6 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	dto "github.com/prometheus/client_model/go"
@@ -23,10 +20,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/test/e2e"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -214,18 +215,42 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		_, err = mcpClient.CallTool(ctx, req)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-		result, err := mcpClient.CallTool(ctx, req)
+		// The mcpcompat client is go-sdk-backed and Modern-first: against a
+		// Modern-serving vMCP it negotiates 2026-07-28, where a rate-limited
+		// call surfaces as a real JSON-RPC error object carrying the domain
+		// code (writeModernCodedError) — not as the Legacy SDK seam's IsError
+		// tool result with the code smuggled into structuredContent
+		// (conversion.CodedErrorResult).
+		_, err = mcpClient.CallTool(ctx, req)
+		gomega.Expect(err).To(gomega.HaveOccurred(), "second tools/call must be rejected by the per-user limit")
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(ratelimit.MessageRateLimited))
+
+		// Pin the full Modern envelope with an era-pinned raw request (the
+		// #6051 convention): RFC THV-0057's -32029 with data.retryAfterSeconds
+		// must survive the Modern dispatch path, which the go-sdk client above
+		// can only surface as an error string.
+		ginkgo.By("Verifying the Modern rate-limit error envelope")
+		rawClient, err := e2e.NewRawMCPClient(30 * time.Second)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-		gomega.Expect(result.IsError).To(gomega.BeTrue())
-
-		structured, ok := result.StructuredContent.(map[string]any)
-		gomega.Expect(ok).To(gomega.BeTrue())
-		gomega.Expect(structured["code"]).To(gomega.BeNumerically("==", ratelimit.CodeRateLimited))
-		gomega.Expect(structured["message"]).To(gomega.Equal(ratelimit.MessageRateLimited))
-
-		data, ok := structured["data"].(map[string]any)
-		gomega.Expect(ok).To(gomega.BeTrue())
-		gomega.Expect(data["retryAfterSeconds"]).To(gomega.BeNumerically(">", 0))
+		rawReq, err := e2e.NewModernRequest("tools/call", map[string]any{
+			"name":      toolName,
+			"arguments": map[string]any{"input": "ratelimittest"},
+		})
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		rawReq.SetHeader("Authorization", "Bearer "+token)
+		rawResp, err := rawClient.Send(ctx, fmt.Sprintf("http://localhost:%d/mcp", vmcpLocalPort), rawReq)
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		gomega.Expect(rawResp.StatusCode).To(gomega.Equal(http.StatusOK),
+			"a rate-limited Modern call rides HTTP 200 (429 is in go-sdk's transient retry set), body: %s", rawResp.Body)
+		gomega.Expect(rawResp.Error).ToNot(gomega.BeNil(), "body: %s", rawResp.Body)
+		gomega.Expect(rawResp.Error.Code).To(gomega.Equal(ratelimit.CodeRateLimited))
+		gomega.Expect(rawResp.Error.Message).To(gomega.Equal(ratelimit.MessageRateLimited))
+		var retryData struct {
+			RetryAfterSeconds float64 `json:"retryAfterSeconds"`
+		}
+		gomega.Expect(json.Unmarshal(rawResp.Error.Data, &retryData)).To(gomega.Succeed(),
+			"error data: %s", rawResp.Error.Data)
+		gomega.Expect(retryData.RetryAfterSeconds).To(gomega.BeNumerically(">", 0))
 
 		ginkgo.By("Scraping non-zero rate limit metrics")
 		gomega.Eventually(func() error {

@@ -1354,6 +1354,51 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	assert.True(t, typeIndex[audit.MiddlewareType])
 }
 
+// TestPopulateMiddlewareConfigs_AuditWrapsChain pins the ordering invariant
+// that the audit middleware sits directly inside body-limit, wrapping the
+// REST of the chain. Earlier entries wrap later ones at request time, so this
+// placement is what guarantees every request that passes the size cap
+// produces an audit event no matter which middleware rejects it —
+// authentication 401s, webhook denials, and authorization 403s included.
+// Identity and parsed MCP data flow back to audit from the inner auth/parser
+// middlewares via the holder carriers, so audit no longer needs to run inside
+// them.
+func TestPopulateMiddlewareConfigs_AuditWrapsChain(t *testing.T) {
+	t.Parallel()
+
+	config := &RunConfig{
+		AuthzConfig: &authz.Config{},
+		AuditConfig: &audit.Config{Component: "test-component"},
+	}
+
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	typeIndex := make(map[string]int, len(config.MiddlewareConfigs))
+	for i, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	auditIdx, ok := typeIndex[audit.MiddlewareType]
+	require.True(t, ok, "audit middleware must be present")
+	authzIdx, ok := typeIndex[authz.MiddlewareType]
+	require.True(t, ok, "authz middleware must be present")
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware must be present")
+	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
+	require.True(t, ok, "MCP parser middleware must be present")
+	bodyLimitIdx, ok := typeIndex[bodylimit.MiddlewareType]
+	require.True(t, ok, "body limit middleware must be present")
+
+	assert.Less(t, bodyLimitIdx, auditIdx,
+		"body limit must stay outside audit so oversized bodies are rejected before audit buffers them")
+	assert.Less(t, auditIdx, authIdx,
+		"audit must wrap auth so authentication failures (401) are audited")
+	assert.Less(t, auditIdx, parserIdx,
+		"audit wraps the parser; parsed MCP data flows back via mcp.ParsedRequestHolder")
+	assert.Less(t, auditIdx, authzIdx,
+		"audit must wrap authz so authorization denials (403) are audited")
+}
+
 // TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant
 // for strip-auth: the auth middleware must precede it in the chain so the
 // client JWT is fully validated (and the identity stored in the request

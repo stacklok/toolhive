@@ -130,6 +130,51 @@ func newGooseProvider(t *testing.T, db *sql.DB) *goose.Provider {
 	return provider
 }
 
+// TestMigrations_ManagedFlagAppliesOverPriorState verifies migration 003 adds
+// installed_skills.managed with a default of 0 (false) so rows created by an
+// earlier version of the schema (001/002) are not implicitly "managed" once
+// the column appears.
+func TestMigrations_ManagedFlagAppliesOverPriorState(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	db, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	provider := newGooseProvider(t, db.DB())
+
+	// Roll back to just after migration 002, before "managed" existed.
+	_, err = provider.DownTo(ctx, 2)
+	require.NoError(t, err)
+
+	_, err = db.DB().Exec(`INSERT INTO entries (entry_type, name) VALUES ('skill', 'pre-migration-skill')`)
+	require.NoError(t, err)
+	_, err = db.DB().Exec(`INSERT INTO installed_skills (entry_id, scope) VALUES (1, 'user')`)
+	require.NoError(t, err)
+
+	// Re-apply Up: migration 003 adds the column to the pre-existing row.
+	_, err = provider.Up(ctx)
+	require.NoError(t, err)
+
+	var managed int
+	err = db.DB().QueryRow(`SELECT managed FROM installed_skills WHERE entry_id = 1`).Scan(&managed)
+	require.NoError(t, err)
+	assert.Equal(t, 0, managed, "a row created before migration 003 must default to unmanaged")
+
+	// Down for 003 removes the column without disturbing 001/002 tables.
+	_, err = provider.DownTo(ctx, 2)
+	require.NoError(t, err)
+	var count int
+	err = db.DB().QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('installed_skills') WHERE name = 'managed'`,
+	).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "managed column should be dropped by 003 Down")
+	assert.True(t, tableExists(t, db.DB(), "installed_skills"), "installed_skills table itself must remain")
+}
+
 // TestMigrations_DownDropsPluginTables verifies that goose's Down for migration
 // 002 drops the plugin tables (installed_plugins, plugin_dependencies) while
 // leaving migration 001's tables (entries, installed_skills, skill_dependencies,

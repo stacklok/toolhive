@@ -9,8 +9,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 func TestExecutor(t *testing.T) {

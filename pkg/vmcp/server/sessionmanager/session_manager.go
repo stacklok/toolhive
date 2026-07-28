@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -43,7 +43,7 @@ const (
 )
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
-// to the mark3labs SDK's SessionIdManager interface.
+// to the mcpcompat SDK's SessionIdManager interface.
 //
 // It implements a two-phase session-creation pattern:
 //
@@ -95,6 +95,12 @@ type Manager struct {
 // registry. It builds the decorating session factory from cfg, wiring the
 // optimizer and composite tool layers internally.
 //
+// An optimizer (FactoryConfig.OptimizerFactory or OptimizerConfig) requires
+// FactoryConfig.AdvertiseFromCore; New rejects the combination otherwise. The
+// guard makes a non-nil OptimizerFactory() a faithful "optimizer enabled"
+// signal, which the Modern capability gate in pkg/vmcp/server/modern_gate.go
+// depends on.
+//
 // The returned cleanup function releases any resources allocated during
 // construction (e.g. the optimizer's SQLite store). Callers must invoke it
 // on shutdown. If no cleanup is needed, a no-op function is returned.
@@ -108,6 +114,10 @@ func New(
 	}
 	if cfg.CacheCapacity < 0 {
 		return nil, nil, fmt.Errorf("sessionmanager.New: CacheCapacity must be >= 0 (got %d)", cfg.CacheCapacity)
+	}
+	if (cfg.OptimizerFactory != nil || cfg.OptimizerConfig != nil) && !cfg.AdvertiseFromCore {
+		return nil, nil, fmt.Errorf("sessionmanager.New: the optimizer requires " +
+			"FactoryConfig.AdvertiseFromCore (the Serve layer builds it over the core's tools)")
 	}
 	capacity := cfg.CacheCapacity
 	if capacity == 0 {
@@ -126,14 +136,13 @@ func New(
 		backendReg: backendRegistry,
 	}
 
-	// Surface the resolved optimizer factory to the Serve path ONLY when
-	// AdvertiseFromCore is set. That makes the two store writers mutually exclusive:
-	// the session-factory decorator runs iff !AdvertiseFromCore (buildDecoratingFactory
-	// below), and OptimizerFactory() returns a non-nil factory iff AdvertiseFromCore —
-	// so a Serve composition root that enables the optimizer but forgets the flag gets a
-	// nil factory (no Serve-layer optimizer) rather than a silent double-index of the
-	// shared FTS5 store. The legacy server.New path leaves AdvertiseFromCore false and
-	// never calls OptimizerFactory(), so its decorator is unaffected.
+	// Surface the resolved optimizer factory to the Serve path. The constructor
+	// guard above rejects an optimizer without AdvertiseFromCore, so the shared
+	// FTS5 store has exactly one writer (the Serve layer) and OptimizerFactory()
+	// is non-nil exactly when the optimizer is enabled. server.New sets
+	// AdvertiseFromCore unconditionally (server.go), so every in-tree composition
+	// takes this branch; the flag exists for direct-Serve embedders, which New
+	// rejects when they configure an optimizer without setting it.
 	if cfg.AdvertiseFromCore {
 		sm.optimizerFactory = optimizerFactory
 	}
@@ -160,16 +169,17 @@ func New(
 	return sm, cleanup, nil
 }
 
-// OptimizerFactory returns the resolved (telemetry-wrapped) optimizer factory, or
-// nil when the optimizer is disabled OR FactoryConfig.AdvertiseFromCore is false.
+// OptimizerFactory returns the resolved (telemetry-wrapped) optimizer factory,
+// or nil exactly when the optimizer is disabled: New rejects an optimizer
+// without FactoryConfig.AdvertiseFromCore, so nil-ness here is a faithful
+// "optimizer enabled" signal (the Modern capability gate in
+// pkg/vmcp/server/modern_gate.go depends on it).
 //
-// It is consumed by the Serve path (FactoryConfig.AdvertiseFromCore), which builds
-// a per-session optimizer over the core's advertised tool set rather than via the
-// session decorator. Gating on AdvertiseFromCore makes the decorator and this getter
-// mutually exclusive store writers, so the shared FTS5 store can never be double-indexed
-// (see New). The optimizer's shared store and its cleanup remain owned by this Manager
-// (the cleanup function returned from New). On the legacy server.New path the factory is
-// applied internally via the session decorator and this getter is unused.
+// It is consumed by the Serve path, which builds a per-session optimizer over
+// the core's advertised tool set. The optimizer's shared store and its cleanup
+// remain owned by this Manager (the cleanup function returned from New).
+// server.New sets AdvertiseFromCore unconditionally, so this getter is live on
+// every composition path.
 func (m *Manager) OptimizerFactory() func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error) {
 	return m.optimizerFactory
 }
@@ -277,10 +287,15 @@ func (sm *Manager) Generate() string {
 //  4. Persists session metadata to storage and caches the live MultiSession
 //     in the node-local map.
 //
+// sink, when non-nil, is threaded to MultiSessionFactory.MakeSessionWithID so
+// every backend connector opened for this session can report an asynchronous
+// backend notification (#5748); pass nil to disable that consumption.
+//
 // The returned MultiSession can be retrieved later via GetMultiSession().
 func (sm *Manager) CreateSession(
 	ctx context.Context,
 	sessionID string,
+	sink vmcpsession.ListChangedSink,
 ) (vmcpsession.MultiSession, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("Manager.CreateSession: session ID must not be empty")
@@ -318,7 +333,7 @@ func (sm *Manager) CreateSession(
 	backends := sm.listAllBackends(ctx)
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
-	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends)
+	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends, sink)
 	if err != nil {
 		sm.cleanupFailedPlaceholder(sessionID, placeholder)
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)
@@ -417,10 +432,25 @@ func (sm *Manager) cleanupFailedPlaceholder(sessionID string, metadata map[strin
 
 // Validate implements the SDK's SessionIdManager.Validate().
 //
-// Returns (isTerminated=true, nil) for explicitly terminated sessions.
-// Returns (false, error) for unknown sessions — per the SDK interface contract,
-// a lookup failure is signalled via err, not via isTerminated.
+// Returns (isTerminated=true, nil) for a session that is definitively gone:
+// explicitly terminated (placeholder marked terminated=true) OR absent from
+// storage (a full MultiSession is deleted on Terminate, TTL-expired, or never
+// existed). All of these must reject the request as a hard termination so the
+// client re-initializes rather than retrying a dead session.
+//
+// Returns (false, error) only for a genuine, transient storage error (e.g. the
+// backing store is unreachable) — the caller should treat this as retryable and
+// NOT drop session state.
+//
 // Returns (false, nil) for valid, active sessions.
+//
+// This distinction is load-bearing: the streamable transport maps
+// (isTerminated=true) to HTTP 404 (-> client ErrSessionTerminated -> re-init)
+// and a non-terminated error to HTTP 503 (retryable). Reporting a genuinely-gone
+// session as an error would surface as 503 and make a client whose session was
+// terminated on another replica retry the dead session forever. Terminate still
+// DELETES the key (unchanged), so the resurrection-race guarantee is preserved;
+// only the way an absent key is reported here changes.
 func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	if sessionID == "" {
 		return false, fmt.Errorf("Manager.Validate: empty session ID")
@@ -431,8 +461,12 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 
 	metadata, err := sm.storage.Load(ctx, sessionID)
 	if errors.Is(err, transportsession.ErrSessionNotFound) {
-		slog.Debug("Manager.Validate: session not found", "session_id", sessionID)
-		return false, fmt.Errorf("session not found")
+		// The session is gone (terminated + deleted, TTL-expired, or never
+		// existed). Report it as terminated so the transport answers 404 and the
+		// client re-initializes, rather than as an error (which the transport
+		// would treat as a transient 503 and the client would retry indefinitely).
+		slog.Debug("Manager.Validate: session not found; reporting as terminated", "session_id", sessionID)
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("Manager.Validate: storage error for session %q: %w", sessionID, err)
@@ -455,15 +489,16 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 //   - MultiSession (Phase 2): the storage key is deleted. The node-local cache
 //     self-heals on the next Get: checkSession detects ErrSessionNotFound,
 //     evicts the entry, and onEvict closes backend connections. After deletion
-//     Validate() returns (false, error) — the same response as "never existed".
+//     Validate() reports the absent key as (isTerminated=true, nil), so the next
+//     request — on this or any other replica — is rejected with a definitive 404
+//     and the client re-initializes instead of retrying the dead session.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
 //     for TTL cleanup. This prevents CreateSession() from opening backend
 //     connections for an already-terminated session (see fast-fail check in
 //     CreateSession). The terminated flag also lets Validate() return
 //     (isTerminated=true, nil) during the window between termination and TTL
-//     expiry, allowing the SDK to distinguish "actively terminated" from
-//     "never existed".
+//     expiry — the same terminated response the deleted case now gives.
 //
 // Returns (isNotAllowed=false, nil) on success; client termination is always permitted.
 func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {

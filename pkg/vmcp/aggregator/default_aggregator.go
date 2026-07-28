@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 
@@ -27,7 +29,11 @@ type defaultAggregator struct {
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 	excludeAllTools  bool                                  // Global flag to exclude all tools
-	tracer           trace.Tracer
+	// promptNaming controls how advertised prompt names are formed (see
+	// resolvePromptConflicts). Derived from the aggregation config at
+	// construction.
+	promptNaming promptNaming
+	tracer       trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
@@ -66,6 +72,7 @@ func NewDefaultAggregator(
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
 		excludeAllTools:  excludeAllTools,
+		promptNaming:     promptNamingFromConfig(aggregationConfig),
 		tracer:           tracer,
 	}
 }
@@ -107,12 +114,13 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 
 	// Convert to BackendCapabilities
 	result := &BackendCapabilities{
-		BackendID:        backend.ID,
-		Tools:            processedTools,
-		Resources:        capabilities.Resources,
-		Prompts:          capabilities.Prompts,
-		SupportsLogging:  capabilities.SupportsLogging,
-		SupportsSampling: capabilities.SupportsSampling,
+		BackendID:         backend.ID,
+		Tools:             processedTools,
+		Resources:         capabilities.Resources,
+		ResourceTemplates: capabilities.ResourceTemplates,
+		Prompts:           capabilities.Prompts,
+		SupportsLogging:   capabilities.SupportsLogging,
+		SupportsSampling:  capabilities.SupportsSampling,
 	}
 
 	span.SetAttributes(
@@ -230,11 +238,12 @@ func (a *defaultAggregator) ResolveConflicts(
 			return nil, fmt.Errorf("conflict resolution failed: %w", err)
 		}
 	} else {
-		// Fallback: no conflict resolution (first wins, log warnings)
+		// Fallback: no conflict resolution (first wins in sorted backend
+		// order, so the winner is deterministic; log warnings)
 		slog.Warn("no conflict resolver configured, using fallback (first wins)")
 		resolvedTools = make(map[string]*ResolvedTool)
-		for backendID, tools := range toolsByBackend {
-			for _, tool := range tools {
+		for _, backendID := range slices.Sorted(maps.Keys(toolsByBackend)) {
+			for _, tool := range toolsByBackend[backendID] {
 				if existing, exists := resolvedTools[tool.Name]; exists {
 					slog.Warn("tool name conflict, keeping first",
 						"tool", tool.Name, "existing_backend", existing.BackendID, "conflicting_backend", backendID)
@@ -255,16 +264,19 @@ func (a *defaultAggregator) ResolveConflicts(
 
 	// Build resolved capabilities
 	resolved := &ResolvedCapabilities{
-		Tools:     resolvedTools,
-		Resources: []vmcp.Resource{},
-		Prompts:   []vmcp.Prompt{},
+		Tools: resolvedTools,
 	}
 
-	// Collect resources and prompts (no conflict resolution for these yet)
-	for _, caps := range capabilities {
-		resolved.Resources = append(resolved.Resources, caps.Resources...)
-		resolved.Prompts = append(resolved.Prompts, caps.Prompts...)
+	// Resolve conflicts for resources, resource templates, and prompts.
+	// Backends are iterated in sorted-ID order so that collision outcomes are
+	// deterministic across runs (map iteration order is not). See
+	// capability_conflicts.go for the per-type policies.
+	backendIDs := slices.Sorted(maps.Keys(capabilities))
+	resolved.Resources = resolveResourceConflicts(backendIDs, capabilities)
+	resolved.ResourceTemplates = resolveResourceTemplateConflicts(backendIDs, capabilities)
+	resolved.Prompts = resolvePromptConflicts(a.promptNaming, backendIDs, capabilities)
 
+	for _, caps := range capabilities {
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)
 		resolved.SupportsLogging = resolved.SupportsLogging || caps.SupportsLogging
 		resolved.SupportsSampling = resolved.SupportsSampling || caps.SupportsSampling
@@ -308,9 +320,10 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
-		Tools:     make(map[string]*vmcp.BackendTarget),
-		Resources: make(map[string]*vmcp.BackendTarget),
-		Prompts:   make(map[string]*vmcp.BackendTarget),
+		Tools:             make(map[string]*vmcp.BackendTarget),
+		Resources:         make(map[string]*vmcp.BackendTarget),
+		ResourceTemplates: make(map[string]*vmcp.BackendTarget),
+		Prompts:           make(map[string]*vmcp.BackendTarget),
 	}
 
 	// Convert resolved tools to final vmcp.Tool format
@@ -358,41 +371,16 @@ func (a *defaultAggregator) MergeCapabilities(
 		return tools[i].Name < tools[j].Name
 	})
 
-	// Add resources to routing table
-	for _, resource := range resolved.Resources {
-		backend := registry.Get(ctx, resource.BackendID)
-		if backend == nil {
-			slog.Warn("backend not found in registry for resource, creating minimal target",
-				"backend", resource.BackendID, "resource", resource.URI)
-			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
-				WorkloadID:             resource.BackendID,
-				OriginalCapabilityName: resource.URI,
-			}
-		} else {
-			target := vmcp.BackendToTarget(backend)
-			// Store the original resource URI for forwarding to backend
-			target.OriginalCapabilityName = resource.URI
-			routingTable.Resources[resource.URI] = target
-		}
-	}
-
-	// Add prompts to routing table
-	for _, prompt := range resolved.Prompts {
-		backend := registry.Get(ctx, prompt.BackendID)
-		if backend == nil {
-			slog.Warn("backend not found in registry for prompt, creating minimal target",
-				"backend", prompt.BackendID, "prompt", prompt.Name)
-			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
-				WorkloadID:             prompt.BackendID,
-				OriginalCapabilityName: prompt.Name,
-			}
-		} else {
-			target := vmcp.BackendToTarget(backend)
-			// Store the original prompt name for forwarding to backend
-			target.OriginalCapabilityName = prompt.Name
-			routingTable.Prompts[prompt.Name] = target
-		}
-	}
+	// Add resources, resource templates, and prompts to the routing table.
+	// ResolveConflicts is the enforcement point that makes their identities
+	// unique (see the capability_conflicts.go header), but Merge is
+	// independently callable, so as defence in depth each merge helper keeps
+	// a duplicate out of both the routing table and the advertised list
+	// (first wins, loudly) rather than silently overwriting the earlier
+	// routing entry.
+	resources := mergeResources(ctx, resolved.Resources, registry, routingTable)
+	templates := mergeResourceTemplates(ctx, resolved.ResourceTemplates, registry, routingTable)
+	prompts := mergePrompts(ctx, resolved.Prompts, registry, routingTable)
 
 	// Determine conflict strategy used
 	conflictStrategy := vmcp.ConflictStrategyPrefix // Default
@@ -404,20 +392,24 @@ func (a *defaultAggregator) MergeCapabilities(
 		}
 	}
 
-	// Create final aggregated view
+	// Create final aggregated view. The advertised lists are the ones built
+	// alongside the routing tables above, so advertising and routing always
+	// agree on which entry owns a duplicated identity.
 	aggregated := &AggregatedCapabilities{
-		Tools:            tools,
-		Resources:        resolved.Resources,
-		Prompts:          resolved.Prompts,
-		SupportsLogging:  resolved.SupportsLogging,
-		SupportsSampling: resolved.SupportsSampling,
-		RoutingTable:     routingTable,
+		Tools:             tools,
+		Resources:         resources,
+		ResourceTemplates: templates,
+		Prompts:           prompts,
+		SupportsLogging:   resolved.SupportsLogging,
+		SupportsSampling:  resolved.SupportsSampling,
+		RoutingTable:      routingTable,
 		Metadata: &AggregationMetadata{
-			BackendCount:     0, // Will be set by caller
-			ToolCount:        len(tools),
-			ResourceCount:    len(resolved.Resources),
-			PromptCount:      len(resolved.Prompts),
-			ConflictStrategy: conflictStrategy,
+			BackendCount:          0, // Will be set by caller
+			ToolCount:             len(tools),
+			ResourceCount:         len(resources),
+			ResourceTemplateCount: len(templates),
+			PromptCount:           len(prompts),
+			ConflictStrategy:      conflictStrategy,
 		},
 	}
 
@@ -498,6 +490,120 @@ func (a *defaultAggregator) AggregateCapabilities(
 		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
+}
+
+// mergeResources adds resources to the routing table (keyed by URI) and
+// returns the advertised resource list. A URI already present in the routing
+// table is dropped from both, with a warning (first wins), so advertising and
+// routing always agree on which backend owns a URI.
+func mergeResources(
+	ctx context.Context,
+	resolved []vmcp.Resource,
+	registry vmcp.BackendRegistry,
+	routingTable *vmcp.RoutingTable,
+) []vmcp.Resource {
+	resources := make([]vmcp.Resource, 0, len(resolved))
+	for _, resource := range resolved {
+		if existing, duplicate := routingTable.Resources[resource.URI]; duplicate {
+			slog.Warn("duplicate resource URI in resolved capabilities, keeping first",
+				"uri", resource.URI, "kept_backend", existing.WorkloadID, "dropped_backend", resource.BackendID)
+			continue
+		}
+		resources = append(resources, resource)
+		backend := registry.Get(ctx, resource.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for resource, creating minimal target",
+				"backend", resource.BackendID, "resource", resource.URI)
+			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
+				WorkloadID:             resource.BackendID,
+				OriginalCapabilityName: resource.URI,
+			}
+		} else {
+			target := vmcp.BackendToTarget(backend)
+			// Store the original resource URI for forwarding to backend
+			target.OriginalCapabilityName = resource.URI
+			routingTable.Resources[resource.URI] = target
+		}
+	}
+	return resources
+}
+
+// mergeResourceTemplates adds resource templates to the routing table (keyed
+// by URI-template string) and returns the advertised template list.
+// Pass-through, mirroring resources: no URI-template rewriting, and the same
+// first-wins guard against duplicate template strings.
+//
+// OriginalCapabilityName is intentionally left empty. A resources/read routed
+// via a template carries the client's CONCRETE, already-expanded URI (e.g.
+// file:///logs/2025-01-01.txt); the backend performs its own template
+// expansion, so that concrete URI must reach it verbatim. Setting
+// OriginalCapabilityName to the template string would make
+// GetBackendCapabilityName replace the concrete URI with the unexpanded
+// template, and the backend would return unsubstituted content. vMCP does not
+// rename templates, so no name translation is needed here.
+func mergeResourceTemplates(
+	ctx context.Context,
+	resolved []vmcp.ResourceTemplate,
+	registry vmcp.BackendRegistry,
+	routingTable *vmcp.RoutingTable,
+) []vmcp.ResourceTemplate {
+	templates := make([]vmcp.ResourceTemplate, 0, len(resolved))
+	for _, template := range resolved {
+		if existing, duplicate := routingTable.ResourceTemplates[template.URITemplate]; duplicate {
+			slog.Warn("duplicate resource template in resolved capabilities, keeping first",
+				"resource_template", template.URITemplate,
+				"kept_backend", existing.WorkloadID, "dropped_backend", template.BackendID)
+			continue
+		}
+		templates = append(templates, template)
+		backend := registry.Get(ctx, template.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for resource template, creating minimal target",
+				"backend", template.BackendID, "resource_template", template.URITemplate)
+			routingTable.ResourceTemplates[template.URITemplate] = &vmcp.BackendTarget{
+				WorkloadID: template.BackendID,
+			}
+		} else {
+			routingTable.ResourceTemplates[template.URITemplate] = vmcp.BackendToTarget(backend)
+		}
+	}
+	return templates
+}
+
+// mergePrompts adds prompts to the routing table, keyed by resolved
+// (advertised) name, and returns the advertised prompt list, with the same
+// first-wins guard against duplicate resolved names.
+func mergePrompts(
+	ctx context.Context,
+	resolved []ResolvedPrompt,
+	registry vmcp.BackendRegistry,
+	routingTable *vmcp.RoutingTable,
+) []vmcp.Prompt {
+	prompts := make([]vmcp.Prompt, 0, len(resolved))
+	for _, prompt := range resolved {
+		if existing, duplicate := routingTable.Prompts[prompt.Name]; duplicate {
+			slog.Warn("duplicate prompt name in resolved capabilities, keeping first",
+				"prompt", prompt.Name, "kept_backend", existing.WorkloadID, "dropped_backend", prompt.BackendID)
+			continue
+		}
+		prompts = append(prompts, prompt.Prompt)
+		backend := registry.Get(ctx, prompt.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for prompt, creating minimal target",
+				"backend", prompt.BackendID, "prompt", prompt.Name)
+			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
+				WorkloadID:             prompt.BackendID,
+				OriginalCapabilityName: prompt.OriginalName,
+			}
+		} else {
+			target := vmcp.BackendToTarget(backend)
+			// Store the backend's own prompt name so prompts/get on a renamed
+			// prompt forwards the name the backend actually knows.
+			target.OriginalCapabilityName = prompt.OriginalName
+			routingTable.Prompts[prompt.Name] = target
+		}
+	}
+	return prompts
 }
 
 // actualBackendCapabilityName returns the real capability name the backend uses,

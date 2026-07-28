@@ -176,6 +176,31 @@ func NewHttpClientBuilder() *HttpClientBuilder {
 	}
 }
 
+// NewHostScopedClientBuilder returns an HttpClientBuilder pre-configured with
+// the SSRF-guard policy (CWE-918) appropriate for dialing host. By default the
+// returned builder blocks plain HTTP and connections to private/loopback/
+// link-local IP ranges. Both gates are relaxed automatically for loopback
+// hosts (development/testing) and when INSECURE_DISABLE_URL_VALIDATION is set.
+//
+// allowPrivateIPs widens only the private-IP gate — for example an in-cluster
+// provider reachable solely over an RFC-1918 address — without enabling plain
+// HTTP for non-loopback hosts. insecureAllowHTTP additionally permits
+// plain-HTTP for non-loopback hosts and must never be set in production.
+//
+// The returned builder is not yet built: callers may chain further options
+// (e.g. WithTimeout, WithDisableKeepAlives) before calling Build. This is the
+// single source of truth for the host-scoped guard policy shared by the
+// upstream OAuth2/OIDC providers and the DCR resolver so the two paths cannot
+// drift.
+func NewHostScopedClientBuilder(host string, allowPrivateIPs, insecureAllowHTTP bool) *HttpClientBuilder {
+	allowInsecure := IsLocalhost(host) ||
+		insecureAllowHTTP ||
+		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
+	return NewHttpClientBuilder().
+		WithInsecureAllowHTTP(allowInsecure).
+		WithPrivateIPs(allowInsecure || allowPrivateIPs)
+}
+
 // WithCABundle sets the CA certificate bundle path
 func (b *HttpClientBuilder) WithCABundle(path string) *HttpClientBuilder {
 	b.caCertPath = path

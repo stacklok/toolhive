@@ -7,15 +7,15 @@ package server
 
 import (
 	"context"
-	"maps"
+	"errors"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
-// sdkElicitationAdapter wraps mark3labs MCPServer to implement vmcp.ElicitationRequester.
+// sdkElicitationAdapter wraps mcpcompat MCPServer to implement vmcp.ElicitationRequester.
 //
 // It is the sole point where mcp-go elicitation types appear: it translates the
 // domain ElicitationRequest/ElicitationResult to/from the SDK types, keeping the
@@ -24,22 +24,22 @@ import (
 // Per MCP 2025-06-18 spec: The SDK handles JSON-RPC ID correlation internally,
 // so the adapter does not manage IDs.
 //
-// Thread-safety: Safe for concurrent calls. The mark3labs MCPServer is thread-safe.
+// Thread-safety: Safe for concurrent calls. The mcpcompat MCPServer is thread-safe.
 type sdkElicitationAdapter struct {
-	// mcpServer is the mark3labs SDK server instance that handles elicitation protocol.
+	// mcpServer is the mcpcompat SDK server instance that handles elicitation protocol.
 	// Typed as the minimal mcpElicitationRequester seam so the translation logic
 	// can be unit-tested against a fake SDK; *server.MCPServer satisfies it.
 	mcpServer mcpElicitationRequester
 }
 
-// mcpElicitationRequester is the minimal slice of the mark3labs SDK that the
+// mcpElicitationRequester is the minimal slice of the mcpcompat SDK that the
 // adapter depends on. *server.MCPServer satisfies it in production; tests
 // substitute a fake to verify domain ⇄ mcp-go translation without a live session.
 type mcpElicitationRequester interface {
 	RequestElicitation(ctx context.Context, request mcp.ElicitationRequest) (*mcp.ElicitationResult, error)
 }
 
-// NewSDKElicitationAdapter creates a new elicitation adapter that wraps the mark3labs SDK server.
+// NewSDKElicitationAdapter creates a new elicitation adapter that wraps the mcpcompat SDK server.
 //
 // The returned adapter implements vmcp.ElicitationRequester by translating the domain
 // request to/from mcp-go types and delegating to the SDK's RequestElicitation method.
@@ -59,11 +59,11 @@ func NewSDKElicitationAdapter(mcpServer *server.MCPServer) vmcp.ElicitationReque
 }
 
 // RequestElicitation translates the domain request to mcp-go, delegates to the
-// mark3labs SDK's RequestElicitation method, and translates the response back.
+// mcpcompat SDK's RequestElicitation method, and translates the response back.
 //
 // This is a synchronous blocking call that:
 //  1. Maps the domain ElicitationRequest to an mcp.ElicitationRequest
-//  2. Forwards the request to the mark3labs SDK
+//  2. Forwards the request to the mcpcompat SDK
 //  3. Blocks until the client responds or timeout occurs
 //  4. Maps the SDK's mcp.ElicitationResult back to the domain ElicitationResult
 //
@@ -88,14 +88,21 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 			RequestedSchema: req.RequestedSchema,
 		},
 	}
-	// Only attach _meta when the caller actually set it. NewMetaFromMap mutates
-	// its argument (it deletes progressToken), so copy first to avoid mutating
-	// the caller's map.
-	if req.Meta != nil {
-		mcpReq.Params.Meta = mcp.NewMetaFromMap(maps.Clone(req.Meta))
-	}
+	// req.Meta came from the BACKEND's elicitation/create (forwarding.go's
+	// newElicitationForwarder), so it crosses the same trust boundary as a backend
+	// result: route it through conversion.ToMCPMeta, which strips the reserved
+	// io.modelcontextprotocol/* keys before they reach the downstream client. A
+	// leaked protocolVersion here is worse than on a result -- this is a
+	// server->client REQUEST, where a go-sdk client may validate it.
+	//
+	// ToMCPMeta also hoists progressToken and copies (never mutating the caller's
+	// map), and returns nil for empty input -- so _meta stays absent when the
+	// backend set none, or set only reserved keys. Do not swap in
+	// mcp.NewMetaFromMap: it returns a non-nil *Meta for nil input, which would
+	// start emitting an empty _meta.
+	mcpReq.Params.Meta = conversion.ToMCPMeta(req.Meta)
 
-	// Delegate to the mark3labs SDK's RequestElicitation method.
+	// Delegate to the mcpcompat SDK's RequestElicitation method.
 	// The SDK will:
 	//   1. Extract session ID from context (set by SDK middleware)
 	//   2. Generate JSON-RPC ID for the request
@@ -107,6 +114,18 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 	// We don't need to manage any of this - it's all handled by the SDK.
 	resp, err := a.mcpServer.RequestElicitation(ctx, mcpReq)
 	if err != nil {
+		// A refusal for lack of a downstream session (Modern ingress: the
+		// stateless dispatch installed no ClientSession) is recorded so
+		// dispatchModern can classify the resulting call failure as a
+		// -32021 MissingRequiredClientCapabilityError instead of an opaque
+		// internal error. The error itself still propagates unchanged: it is
+		// the answer to the BACKEND's elicitation request, and the typed
+		// sentinel does not survive that wire round-trip — the recorder is
+		// the only channel back to the dispatcher (see
+		// modern_capability_refusal.go).
+		if errors.Is(err, server.ErrNoActiveSession) {
+			recordCapabilityRefusal(ctx, capabilityElicitation)
+		}
 		return nil, err
 	}
 

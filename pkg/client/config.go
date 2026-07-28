@@ -85,7 +85,7 @@ const (
 	VSCodeServer ClientApp = "vscode-server"
 	// MistralVibe represents the Mistral Vibe IDE.
 	MistralVibe ClientApp = "mistral-vibe"
-	// Codex represents the OpenAI Codex CLI.
+	// Codex represents the OpenAI Codex CLI and desktop app.
 	Codex ClientApp = "codex"
 	// KimiCli represents the Kimi Code CLI.
 	KimiCli ClientApp = "kimi-cli"
@@ -165,8 +165,10 @@ const (
 //   - ValueField names which ApplyConfig field to write. Valid values:
 //     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
 //     "TokenHelperCommand", "PlaceholderAPIKey", "ClaudeCodeHelperTTLMillis",
-//     "NodeTLSRejectUnauthorized". An unrecognised ValueField is a programming
-//     error and causes ConfigureLLMGateway to return an error.
+//     "NodeTLSRejectUnauthorized", "BedrockDisableExperimentalBetas",
+//     "BedrockHaikuModel", "BedrockOpusModel", "BedrockSonnetModel". An
+//     unrecognised ValueField is a programming error and causes
+//     ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
 //     that typos in ValueField are caught as errors rather than silently
@@ -180,7 +182,8 @@ type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
-	// "NodeTLSRejectUnauthorized"
+	// "NodeTLSRejectUnauthorized" | "BedrockDisableExperimentalBetas" |
+	// "BedrockHaikuModel" | "BedrockOpusModel" | "BedrockSonnetModel"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -245,8 +248,8 @@ type clientAppConfig struct {
 	// If nil or missing an entry for the current OS, no prefix is added.
 	PluginsPlatformPrefix map[Platform][]string
 	// LLM gateway configuration ─────────────────────────────────────────────
-	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
-	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
+	// LLMGatewayMode identifies the gateway integration strategy (direct token
+	// helper, proxy, credential helper, or Codex auth), or "" when unsupported.
 	LLMGatewayMode string
 	// LLMBinaryName is the executable name looked up via exec.LookPath to
 	// confirm the tool is actually installed (not just a leftover config
@@ -286,6 +289,13 @@ type clientAppConfig struct {
 	// LLMSettingsRelPath / LLMSettingsPlatformPrefix.
 	LLMDetectRelPath        []string
 	LLMDetectPlatformPrefix map[Platform][]string
+	// LLMInstalledDetector is an optional per-client detection hook that runs
+	// in addition to the shared settings-dir + binary-on-PATH check. Used by
+	// clients that have installation evidence beyond the CLI (e.g. Codex's
+	// desktop app). When set, the client is considered installed if either
+	// the shared check or this hook returns true. The hook must be set at
+	// construction time (NewClientManager), not in static config.
+	LLMInstalledDetector func() (bool, error)
 	// LLMManagedProfileDomain is the macOS managed-preferences plist domain
 	// (e.g. "com.anthropic.claudefordesktop.plist") that, when present, overrides
 	// the client's local config. Setup warns when detected. Empty when the client
@@ -548,6 +558,18 @@ var supportedClientIntegrations = []clientAppConfig{
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
+			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
+			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
+			// the per-tier model IDs pin Bedrock inference-profile IDs. All use
+			// ClearWhenEmpty so a non-Bedrock setup removes any stale keys.
+			{
+				JSONPointer:    "/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+				ValueField:     "BedrockDisableExperimentalBetas",
+				ClearWhenEmpty: true,
+			},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL", ValueField: "BedrockHaikuModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_OPUS_MODEL", ValueField: "BedrockOpusModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_SONNET_MODEL", ValueField: "BedrockSonnetModel", ClearWhenEmpty: true},
 		},
 	},
 	{

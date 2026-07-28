@@ -172,9 +172,7 @@ func TestConvertMapToCedarRecord(t *testing.T) {
 		{
 			name: "Nested map converts to Cedar record",
 			input: map[string]interface{}{
-				"act": map[string]interface{}{
-					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
-				},
+				"act": map[string]interface{}{"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent"},
 			},
 			expected: map[string]cedar.Value{
 				"act": cedar.NewRecord(cedar.RecordMap{

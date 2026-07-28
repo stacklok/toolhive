@@ -16,6 +16,7 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -177,28 +178,17 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// Wrap storage with the CIMD decorator before constructing the fosite provider
 	// so that GetClient calls for HTTPS client_id values are intercepted at the
 	// fosite level (not just the handler level).
-	if cfg.CIMDEnabled {
-		if len(cfg.BaselineClientScopes) > 0 {
-			slog.Warn("CIMD is enabled with baseline_client_scopes configured; "+
-				"any third-party client resolved via CIMD will also receive these scopes — "+
-				"ensure they are scopes you would grant by default to any unknown client",
-				"baseline_client_scopes", cfg.BaselineClientScopes)
-		}
-		stor, err = storage.NewCIMDStorageDecorator(stor, storage.CIMDDecoratorConfig{
-			Enabled:              true,
-			CacheMaxSize:         cfg.CIMDCacheMaxSize,
-			FallbackTTL:          cfg.CIMDCacheFallbackTTL,
-			ScopesSupported:      cfg.ScopesSupported,
-			BaselineClientScopes: cfg.BaselineClientScopes,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
-		}
+	stor, err = decorateStorageForCIMD(cfg, stor)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create fosite provider with the (possibly decorated) storage.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider := createProvider(authServerConfig, stor)
+	fositeProvider, err := buildProvider(cfg, authServerConfig, stor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
+	}
 
 	// Give the handler a refresher so the authorization chain can transparently
 	// refresh an expired upstream leg during login instead of skipping it and
@@ -226,6 +216,44 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		upstreams:         upstreams,
 		upstreamRefresher: refresher,
 	}, nil
+}
+
+// decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,
+// so GetClient calls for HTTPS client_id values are intercepted at the fosite
+// level (not just the handler level). Returns stor unchanged when CIMD is disabled.
+func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, error) {
+	if !cfg.CIMDEnabled {
+		return stor, nil
+	}
+	if len(cfg.BaselineClientScopes) > 0 {
+		slog.Warn("CIMD is enabled with baseline_client_scopes configured; "+
+			"any third-party client resolved via CIMD will also receive these scopes — "+
+			"ensure they are scopes you would grant by default to any unknown client",
+			"baseline_client_scopes", cfg.BaselineClientScopes)
+	}
+	decorated, err := storage.NewCIMDStorageDecorator(stor, storage.CIMDDecoratorConfig{
+		Enabled:              true,
+		CacheMaxSize:         cfg.CIMDCacheMaxSize,
+		FallbackTTL:          cfg.CIMDCacheFallbackTTL,
+		ScopesSupported:      cfg.ScopesSupported,
+		BaselineClientScopes: cfg.BaselineClientScopes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
+	}
+	return decorated, nil
+}
+
+// buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
+// token-exchange handler as an extension grant alongside the standard grants.
+func buildProvider(
+	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
+) (fosite.OAuth2Provider, error) {
+	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+	}
+	return createProvider(authServerConfig, stor, tokenExchangeFactory)
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the
@@ -294,9 +322,10 @@ func (s *server) Close() error {
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.
 //
-// Fosite is an OAuth 2.0 framework that implements the protocol details. The compose package
-// provides a builder pattern to wire together configuration, storage, token strategies,
-// and grant type handlers into a single OAuth2Provider that can handle all OAuth endpoints.
+// Fosite is an OAuth 2.0 framework that implements the protocol details. We use
+// server.NewAuthorizationServer which accepts server.Factory functions to register
+// grant type handlers. The standard compose factories are wrapped via wrapComposeFactory
+// and any extra factories (e.g., token exchange) are appended.
 //
 // The provider is configured with:
 //   - JWT strategy for access tokens (asymmetric signing, distributed validation via JWKS)
@@ -304,7 +333,12 @@ func (s *server) Close() error {
 //   - Authorization code grant (RFC 6749 Section 4.1)
 //   - Refresh token grant (RFC 6749 Section 6)
 //   - PKCE (RFC 7636) for public client security
-func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage) fosite.OAuth2Provider {
+//   - Any extra factories passed in (e.g., RFC 8693 token exchange)
+func createProvider(
+	authServerConfig *oauthserver.AuthorizationServerConfig,
+	stor storage.Storage,
+	extraFactories ...oauthserver.Factory,
+) (fosite.OAuth2Provider, error) {
 	slog.Debug("configuring fosite OAuth2 provider",
 		"key_id", authServerConfig.SigningKey.KeyID,
 		"algorithm", authServerConfig.SigningKey.Algorithm,
@@ -334,18 +368,21 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		authServerConfig.Config,
 	)
 
-	// compose.Compose wires together all the pieces into an OAuth2Provider:
-	// - Config: token lifespans, issuer URL, HMAC secret
-	// - Storage: where to persist authorization codes, tokens, and client data
-	// - Strategy: how to generate and validate tokens
-	// - Factories: which OAuth grant types to enable (each adds handlers for specific flows)
-	return compose.Compose(
-		authServerConfig.Config,
+	commonStrategy := &compose.CommonStrategy{CoreStrategy: jwtStrategy}
+
+	// Wrap fosite's compose factories to match server.Factory signature.
+	factories := []oauthserver.Factory{
+		wrapComposeFactory(compose.OAuth2AuthorizeExplicitFactory), // Authorization code grant
+		wrapComposeFactory(compose.OAuth2RefreshTokenGrantFactory), // Refresh token grant
+		wrapComposeFactory(compose.OAuth2PKCEFactory),              // PKCE for public clients
+	}
+	factories = append(factories, extraFactories...)
+
+	return oauthserver.NewAuthorizationServer(
+		authServerConfig,
 		stor,
-		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
-		compose.OAuth2AuthorizeExplicitFactory, // Authorization code grant
-		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
-		compose.OAuth2PKCEFactory,              // PKCE for public clients
+		commonStrategy,
+		factories...,
 	)
 }
 
@@ -375,4 +412,14 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 		}
 	}
 	return nil
+}
+
+// wrapComposeFactory adapts a compose.Factory to a server.Factory.
+// Compose factories take (fosite.Configurator, interface{}, interface{}) while
+// server factories take (*AuthorizationServerConfig, fosite.Storage, any).
+// The embedded *fosite.Config satisfies fosite.Configurator.
+func wrapComposeFactory(cf compose.Factory) oauthserver.Factory {
+	return func(config *oauthserver.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
+		return cf(config.Config, storage, strategy), nil
+	}
 }

@@ -6,18 +6,20 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -49,6 +51,12 @@ type fakeBackend struct {
 	resources []mcp.Resource
 	prompts   []mcp.Prompt
 
+	// toolsPageSize, when > 0, makes tools/list paginate: each response returns
+	// at most toolsPageSize tools plus a NextCursor until the set is exhausted.
+	// The cursor is the decimal offset of the next page. Used to verify the
+	// backend connector follows pagination cursors (#5844).
+	toolsPageSize int
+
 	// methodCalls counts how many times each method was invoked, so tests can
 	// assert that (e.g.) tools/list was reached after a recoverable
 	// resources/list failure.
@@ -59,6 +67,11 @@ type fakeBackend struct {
 	// method name. Tests asserting transport-chain behavior (e.g. HeaderForward)
 	// use headersFor(method) to inspect the headers a backend actually saw.
 	headersByMethod map[string]http.Header
+
+	// metaByMethod records the raw params._meta keyed by JSON-RPC method name.
+	// Tests asserting outbound W3C trace context propagation (SEP-414) use
+	// toolCallMeta() to inspect the _meta a backend actually saw on the wire.
+	metaByMethod map[string]json.RawMessage
 }
 
 type jsonRPCError struct {
@@ -74,6 +87,7 @@ func newFakeBackend(t *testing.T, fb *fakeBackend) string {
 	fb.t = t
 	fb.methodCalls = make(map[string]int)
 	fb.headersByMethod = make(map[string]http.Header)
+	fb.metaByMethod = make(map[string]json.RawMessage)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", fb.handle)
@@ -108,6 +122,16 @@ func (f *fakeBackend) headersFor(method string) http.Header {
 	return h.Clone()
 }
 
+// toolCallMeta returns the raw params._meta recorded for the most recent
+// tools/call request, or nil if no such request was seen or it carried no
+// _meta field. metaByMethod is keyed by method, but every test so far only
+// inspects tools/call; add a sibling accessor if another method needs one.
+func (f *fakeBackend) toolCallMeta() json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.metaByMethod[string(mcp.MethodToolsCall)]
+}
+
 // handle implements the JSON-RPC subset needed for backend init. The
 // streamable-HTTP transport sends POST requests with Accept:
 // application/json, text/event-stream — we always reply with
@@ -133,6 +157,10 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
+		Params  struct {
+			Cursor string          `json:"cursor"`
+			Meta   json.RawMessage `json:"_meta"`
+		} `json:"params"`
 	}
 	if err := json.Unmarshal(body, &msg); err != nil {
 		f.t.Errorf("fakeBackend: decode: %v body=%s", err, string(body))
@@ -143,6 +171,7 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.methodCalls[msg.Method]++
 	f.headersByMethod[msg.Method] = r.Header.Clone()
+	f.metaByMethod[msg.Method] = msg.Params.Meta
 	f.mu.Unlock()
 
 	// Notifications (no id, e.g. notifications/initialized) get an empty 202.
@@ -159,6 +188,10 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 	case string(mcp.MethodToolsList):
 		if f.listToolsErr != nil {
 			f.writeError(w, msg.ID, f.listToolsErr)
+			return
+		}
+		if f.toolsPageSize > 0 {
+			f.writeToolsPage(w, msg.ID, msg.Params.Cursor)
 			return
 		}
 		f.writeResult(w, msg.ID, map[string]any{"tools": f.tools})
@@ -207,6 +240,30 @@ func (f *fakeBackend) writeInitializeResult(w http.ResponseWriter, id json.RawMe
 	})
 }
 
+// writeToolsPage returns one page of f.tools starting at the offset encoded in
+// cursor (empty = first page), plus a NextCursor when more tools remain. The
+// cursor is the decimal offset of the next page.
+func (f *fakeBackend) writeToolsPage(w http.ResponseWriter, id json.RawMessage, cursor string) {
+	start := 0
+	if cursor != "" {
+		n, err := strconv.Atoi(cursor)
+		if err != nil {
+			f.writeError(w, id, &jsonRPCError{code: mcp.INVALID_PARAMS, message: "bad cursor"})
+			return
+		}
+		start = n
+	}
+	end := start + f.toolsPageSize
+	if end > len(f.tools) {
+		end = len(f.tools)
+	}
+	result := map[string]any{"tools": f.tools[start:end]}
+	if end < len(f.tools) {
+		result["nextCursor"] = strconv.Itoa(end)
+	}
+	f.writeResult(w, id, result)
+}
+
 func (f *fakeBackend) writeResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -234,12 +291,20 @@ func (f *fakeBackend) writeError(w http.ResponseWriter, id json.RawMessage, e *j
 	}
 }
 
-// newTestClient builds a streamable-HTTP mark3labs client pointing at url and
+// newTestClient builds a streamable-HTTP mcpcompat client pointing at url and
 // runs Start() so the transport is ready for initAndQueryCapabilities. Cleanup
 // is registered via t.Cleanup.
 func newTestClient(t *testing.T, url string) *mcpclient.Client {
 	t.Helper()
-	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(&http.Client{}))
+	// Each test client gets its own transport with keep-alive disabled. A bare
+	// &http.Client{} shares the process-global http.DefaultTransport, so across
+	// t.Parallel() subtests one client's teardown (t.Cleanup -> Close) can close
+	// idle connections a sibling is mid-request on. Go surfaces that as
+	// "connection broken: http: CloseIdleConnections called", which the
+	// streamable transport reports as a spurious 4xx/legacy-SSE init failure.
+	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(&http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}))
 	require.NoError(t, err)
 	require.NoError(t, c.Start(context.Background()))
 	t.Cleanup(func() { _ = c.Close() })
@@ -477,4 +542,53 @@ func TestInitAndQueryCapabilities_FatalErrors(t *testing.T) {
 			assert.ErrorContains(t, err, tc.errSubstr)
 		})
 	}
+}
+
+// TestInitAndQueryCapabilities_FollowsToolPagination verifies the per-session
+// backend connector follows MCP list-pagination cursors (#5844): a backend that
+// returns its tools across multiple pages contributes its COMPLETE set, not just
+// the first page. Before the fix the connector issued a single tools/list and
+// silently dropped every tool beyond the first page.
+func TestInitAndQueryCapabilities_FollowsToolPagination(t *testing.T) {
+	t.Parallel()
+
+	const (
+		total    = 250
+		pageSize = 100 // 3 pages: 100 + 100 + 50
+	)
+	tools := make([]mcp.Tool, total)
+	for i := range tools {
+		tools[i] = mcp.Tool{Name: fmt.Sprintf("tool_%d", i)}
+	}
+	fb := &fakeBackend{
+		advertiseTools: true,
+		tools:          tools,
+		toolsPageSize:  pageSize,
+	}
+	url := newFakeBackend(t, fb)
+	c := newTestClient(t, url)
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "fake-backend",
+		WorkloadName:  "fake-backend",
+		BaseURL:       url,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := initAndQueryCapabilities(t.Context(), c, target)
+	require.NoError(t, err)
+	require.NotNil(t, caps)
+
+	// Every page accumulated, with no gaps or duplicates across page boundaries.
+	require.Len(t, caps.Tools, total, "connector must accumulate every page, not just the first")
+	names := make(map[string]struct{}, total)
+	for _, tl := range caps.Tools {
+		names[tl.Name] = struct{}{}
+	}
+	assert.Len(t, names, total, "tool names must be distinct across pages (no overlap/duplication)")
+	assert.Contains(t, names, "tool_0", "first page present")
+	assert.Contains(t, names, fmt.Sprintf("tool_%d", total-1), "last page present")
+
+	// The cursor loop must issue ceil(total/pageSize) tools/list calls — proof
+	// pagination actually happened rather than one oversized page.
+	assert.Equal(t, 3, fb.callCount(string(mcp.MethodToolsList)), "expected one tools/list per page")
 }

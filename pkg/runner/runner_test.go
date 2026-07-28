@@ -5,20 +5,26 @@ package runner
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/secrets"
+	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
@@ -263,6 +269,53 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	t.Run("Streamable sends pinned probe protocol version in body only", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			mu             sync.Mutex
+			capturedBody   string
+			capturedHeader []string
+			headerPresent  bool
+		)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+
+				mu.Lock()
+				capturedBody = string(body)
+				capturedHeader, headerPresent = r.Header["Mcp-Protocol-Version"]
+				mu.Unlock()
+
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx := context.Background()
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 5*time.Second)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		// Assert against an independent literal (not probeProtocolVersion) so that
+		// changing the pin forces a conscious test update — the const is deliberately
+		// pinned and must not silently track mcp.LATEST_PROTOCOL_VERSION.
+		assert.Contains(t, capturedBody, `"protocolVersion":"2025-11-25"`)
+		assert.NotContains(t, capturedBody, "2024-11-05")
+		// The probe intentionally does not advertise the 2026-07-28 revision, which
+		// removes the initialize method the probe relies on.
+		assert.NotContains(t, capturedBody, "2026-07-28")
+		// The MCP-Protocol-Version header is intentionally NOT sent on the initialize
+		// request: it is scoped to post-initialize requests and a server MUST 400 an
+		// unsupported value, which would falsely mark an older backend as not-ready.
+		assert.False(t, headerPresent, "initialize probe must not send an MCP-Protocol-Version header, got %q", capturedHeader)
+	})
+
 	t.Run("SSE success", func(t *testing.T) {
 		t.Parallel()
 
@@ -378,6 +431,188 @@ func TestHandleRemoteAuthentication(t *testing.T) {
 		tokenSource, err := runner.handleRemoteAuthentication(context.Background())
 		assert.NoError(t, err)
 		assert.Nil(t, tokenSource)
+	})
+}
+
+//nolint:paralleltest // Mutates process-wide runtime and XDG state settings.
+func TestRunner_PersistClientCredentials(t *testing.T) {
+	// SaveState uses process-wide runtime and XDG state settings. Keep this test
+	// sequential and restore xdg's cached paths after t.Setenv restores the env.
+	t.Cleanup(xdg.Reload)
+	t.Setenv("TOOLHIVE_RUNTIME", "")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+
+	ctx := context.Background()
+	writableCapabilities := secrets.ProviderCapabilities{CanWrite: true}
+
+	t.Run("initial registration creates secret names and persists metadata", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		secretManager := secretsmocks.NewMockProvider(ctrl)
+
+		const (
+			clientSecretName = "OAUTH_CLIENT_SECRET_initial-registration"
+			regTokenName     = "OAUTH_REG_TOKEN_initial-registration"
+		)
+		secretExpiry := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+
+		gomock.InOrder(
+			secretManager.EXPECT().GetSecret(gomock.Any(), clientSecretName).Return("", assert.AnError),
+			secretManager.EXPECT().Capabilities().Return(writableCapabilities),
+			secretManager.EXPECT().SetSecret(ctx, clientSecretName, "initial-client-secret").Return(nil),
+			secretManager.EXPECT().GetSecret(gomock.Any(), regTokenName).Return("", assert.AnError),
+			secretManager.EXPECT().Capabilities().Return(writableCapabilities),
+			secretManager.EXPECT().SetSecret(ctx, regTokenName, "initial-registration-token").Return(nil),
+		)
+
+		remoteAuthConfig := &remote.Config{Issuer: "https://issuer.example.com"}
+		runConfig := NewRunConfig()
+		runConfig.Name = "initial-registration"
+		runConfig.BaseName = "initial-registration"
+		runConfig.RemoteAuthConfig = remoteAuthConfig
+		runner := &Runner{Config: runConfig}
+
+		err := runner.persistClientCredentials(
+			ctx,
+			secretManager,
+			"initial-client-id",
+			"initial-client-secret",
+			secretExpiry,
+			"initial-registration-token",
+			"https://issuer.example.com/register/initial-client-id",
+			"client_secret_basic",
+			9876,
+		)
+		require.NoError(t, err)
+
+		expected := remote.Config{
+			Issuer:                        "https://issuer.example.com",
+			CachedClientID:                "initial-client-id",
+			CachedClientSecretRef:         clientSecretName,
+			CachedSecretExpiry:            secretExpiry,
+			CachedRegTokenRef:             regTokenName,
+			CachedRegClientURI:            "https://issuer.example.com/register/initial-client-id",
+			CachedTokenEndpointAuthMethod: "client_secret_basic",
+			CachedDCRCallbackPort:         9876,
+		}
+		assert.Same(t, remoteAuthConfig, runner.Config.RemoteAuthConfig)
+		assert.Equal(t, expected, *runner.Config.RemoteAuthConfig)
+
+		persisted, err := LoadState(ctx, runConfig.BaseName)
+		require.NoError(t, err)
+		require.NotNil(t, persisted.RemoteAuthConfig)
+		assert.Equal(t, expected, *persisted.RemoteAuthConfig)
+	})
+
+	t.Run("renewal reuses secret names and updates the existing config", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		secretManager := secretsmocks.NewMockProvider(ctrl)
+
+		const (
+			clientSecretName = "OAUTH_CLIENT_SECRET_existing"
+			regTokenName     = "OAUTH_REG_TOKEN_existing"
+		)
+		secretExpiry := time.Date(2027, time.January, 2, 3, 4, 5, 0, time.UTC)
+		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
+		secretManager.EXPECT().SetSecret(ctx, clientSecretName, "renewed-client-secret").Return(nil)
+		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
+		secretManager.EXPECT().SetSecret(ctx, regTokenName, "renewed-registration-token").Return(nil)
+
+		remoteAuthConfig := &remote.Config{
+			Issuer:                        "https://issuer.example.com",
+			CachedClientID:                "old-client-id",
+			CachedClientSecretRef:         clientSecretName,
+			CachedSecretExpiry:            time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
+			CachedRegTokenRef:             regTokenName,
+			CachedRegClientURI:            "https://issuer.example.com/register/old-client-id",
+			CachedTokenEndpointAuthMethod: "none",
+			CachedDCRCallbackPort:         8080,
+		}
+		runConfig := NewRunConfig()
+		runConfig.Name = "renewal"
+		runConfig.BaseName = "renewal"
+		runConfig.RemoteAuthConfig = remoteAuthConfig
+		runner := &Runner{Config: runConfig}
+
+		err := runner.persistClientCredentials(
+			ctx,
+			secretManager,
+			"renewed-client-id",
+			"renewed-client-secret",
+			secretExpiry,
+			"renewed-registration-token",
+			"https://issuer.example.com/register/renewed-client-id",
+			"client_secret_post",
+			9090,
+		)
+		require.NoError(t, err)
+
+		expected := remote.Config{
+			Issuer:                        "https://issuer.example.com",
+			CachedClientID:                "renewed-client-id",
+			CachedClientSecretRef:         clientSecretName,
+			CachedSecretExpiry:            secretExpiry,
+			CachedRegTokenRef:             regTokenName,
+			CachedRegClientURI:            "https://issuer.example.com/register/renewed-client-id",
+			CachedTokenEndpointAuthMethod: "client_secret_post",
+			CachedDCRCallbackPort:         9090,
+		}
+		assert.Same(t, remoteAuthConfig, runner.Config.RemoteAuthConfig)
+		assert.Equal(t, expected, *runner.Config.RemoteAuthConfig)
+
+		persisted, err := LoadState(ctx, runConfig.BaseName)
+		require.NoError(t, err)
+		require.NotNil(t, persisted.RemoteAuthConfig)
+		assert.Equal(t, expected, *persisted.RemoteAuthConfig)
+	})
+
+	t.Run("SaveState failure leaves the existing config untouched", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		secretManager := secretsmocks.NewMockProvider(ctrl)
+
+		const (
+			clientSecretName = "OAUTH_CLIENT_SECRET_existing-failure"
+			regTokenName     = "OAUTH_REG_TOKEN_existing-failure"
+		)
+		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
+		secretManager.EXPECT().SetSecret(ctx, clientSecretName, "new-client-secret").Return(nil)
+		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
+		secretManager.EXPECT().SetSecret(ctx, regTokenName, "new-registration-token").Return(nil)
+
+		original := remote.Config{
+			Issuer:                        "https://issuer.example.com",
+			CachedClientID:                "existing-client-id",
+			CachedClientSecretRef:         clientSecretName,
+			CachedSecretExpiry:            time.Date(2026, time.December, 1, 0, 0, 0, 0, time.UTC),
+			CachedRegTokenRef:             regTokenName,
+			CachedRegClientURI:            "https://issuer.example.com/register/existing-client-id",
+			CachedTokenEndpointAuthMethod: "client_secret_basic",
+			CachedDCRCallbackPort:         8080,
+		}
+		remoteAuthConfig := &remote.Config{}
+		*remoteAuthConfig = original
+		runConfig := NewRunConfig()
+		runConfig.Name = "failed-renewal"
+		runConfig.BaseName = "../invalid"
+		runConfig.RemoteAuthConfig = remoteAuthConfig
+		runner := &Runner{Config: runConfig}
+
+		err := runner.persistClientCredentials(
+			ctx,
+			secretManager,
+			"new-client-id",
+			"new-client-secret",
+			time.Date(2027, time.December, 1, 0, 0, 0, 0, time.UTC),
+			"new-registration-token",
+			"https://issuer.example.com/register/new-client-id",
+			"client_secret_post",
+			9090,
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to save config with client credentials")
+		assert.Same(t, remoteAuthConfig, runner.Config.RemoteAuthConfig)
+		assert.Equal(t, original, *runner.Config.RemoteAuthConfig)
 	})
 }
 

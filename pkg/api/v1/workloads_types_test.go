@@ -89,20 +89,21 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		t.Parallel()
 
 		runConfig := &runner.RunConfig{
-			Name:           "test-workload",
-			Image:          "test-image:latest",
-			Host:           "localhost",
-			Port:           3000,
-			CmdArgs:        []string{"arg1", "arg2"},
-			TargetPort:     8080,
-			EnvVars:        map[string]string{"ENV1": "value1"},
-			Secrets:        []string{"secret1,target=/path1", "secret2,target=/path2"},
-			Volumes:        []string{"/host:/container"},
-			Transport:      types.TransportTypeSSE,
-			Group:          "test-group",
-			ProxyMode:      types.ProxyModeSSE,
-			IsolateNetwork: true,
-			ToolsFilter:    []string{"tool1", "tool2"},
+			Name:               "test-workload",
+			Image:              "test-image:latest",
+			Host:               "localhost",
+			Port:               3000,
+			CmdArgs:            []string{"arg1", "arg2"},
+			TargetPort:         8080,
+			EnvVars:            map[string]string{"ENV1": "value1"},
+			Secrets:            []string{"secret1,target=/path1", "secret2,target=/path2"},
+			Volumes:            []string{"/host:/container"},
+			Transport:          types.TransportTypeSSE,
+			Group:              "test-group",
+			ProxyMode:          types.ProxyModeSSE,
+			IsolateNetwork:     true,
+			ToolsFilter:        []string{"tool1", "tool2"},
+			AllowDockerGateway: true,
 		}
 
 		result := runConfigToCreateRequest(runConfig)
@@ -127,6 +128,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		require.NotNil(t, result.NetworkIsolation)
 		assert.True(t, *result.NetworkIsolation)
 		assert.Equal(t, []string{"tool1", "tool2"}, result.ToolsFilter)
+		assert.True(t, result.AllowDockerGateway)
 	})
 
 	t.Run("with plaintext header forward", func(t *testing.T) {

@@ -10,14 +10,15 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
-// MCPClient wraps the mark3labs MCP client with test-friendly methods.
+// MCPClient wraps the mcpcompat MCP client with test-friendly methods.
 // It automatically handles initialization and provides semantic assertion helpers
 // that integrate with Go's testing.TB interface.
 //
@@ -173,12 +174,41 @@ func (c *MCPClient) Close() error {
 func (c *MCPClient) ListTools(ctx context.Context) *mcp.ListToolsResult {
 	c.tb.Helper()
 
+	// Follow MCP pagination cursors so the returned set is the complete tool
+	// list across every page, not just the first. This is spec-conforming and
+	// harmless to callers that only assert containment.
+	var allTools []mcp.Tool
+	var cursor mcp.Cursor
+	for {
+		tools, next := c.ListToolsPage(ctx, cursor)
+		allTools = append(allTools, tools...)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+
+	c.tb.Logf("Listed %d tools from MCP server", len(allTools))
+	return &mcp.ListToolsResult{Tools: allTools}
+}
+
+// ListToolsPage lists a single page of tools starting at the given cursor
+// (pass an empty cursor for the first page). It returns that page's tools and
+// the NextCursor to fetch the following page (empty when no more pages remain).
+//
+// Use this when a test needs to assert page-level behavior (e.g. that the first
+// vMCP page is bounded by the server page size and carries a NextCursor,
+// proving pagination actually occurred). Most tests should use ListTools, which
+// accumulates across pages.
+func (c *MCPClient) ListToolsPage(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor) {
+	c.tb.Helper()
+
 	request := mcp.ListToolsRequest{}
+	request.Params.Cursor = cursor
 	result, err := c.client.ListTools(ctx, request)
 	require.NoError(c.tb, err, "failed to list tools")
 
-	c.tb.Logf("Listed %d tools from MCP server", len(result.Tools))
-	return result
+	return result.Tools, result.NextCursor
 }
 
 // CallTool calls the specified tool with the given arguments.

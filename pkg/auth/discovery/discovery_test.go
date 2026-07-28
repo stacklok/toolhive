@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -1324,8 +1325,9 @@ func TestHandleDynamicRegistration_MissingRegistrationEndpoint(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	config := &OAuthFlowConfig{
-		Scopes:       []string{"openid", "profile"},
-		CallbackPort: 8765,
+		Scopes:          []string{"openid", "profile"},
+		CallbackPort:    8765,
+		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
 	err := handleDynamicRegistration(context.Background(), server.URL, config)
@@ -1338,4 +1340,25 @@ func TestHandleDynamicRegistration_MissingRegistrationEndpoint(t *testing.T) {
 	assert.Contains(t, err.Error(), "DCR")
 	assert.Contains(t, err.Error(), "--remote-auth-client-id")
 	assert.Contains(t, err.Error(), "--remote-auth-client-secret")
+}
+
+func TestBuildOAuthFlowResult_CopiesDCRRenewalMetadata(t *testing.T) {
+	t.Parallel()
+
+	secretExpiry := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	config := &OAuthFlowConfig{
+		SecretExpiry:            secretExpiry,
+		RegistrationAccessToken: "registration-access-token",
+		RegistrationClientURI:   "https://issuer.example/register/client-id",
+		TokenEndpointAuthMethod: "client_secret_basic",
+		RegisteredCallbackPort:  49152,
+	}
+
+	result := buildOAuthFlowResult(nil, &oauth.Config{}, &oauth.TokenResult{}, config)
+
+	assert.Equal(t, config.SecretExpiry, result.SecretExpiry)
+	assert.Equal(t, config.RegistrationAccessToken, result.RegistrationAccessToken)
+	assert.Equal(t, config.RegistrationClientURI, result.RegistrationClientURI)
+	assert.Equal(t, config.TokenEndpointAuthMethod, result.TokenEndpointAuthMethod)
+	assert.Equal(t, config.RegisteredCallbackPort, result.RegisteredCallbackPort)
 }

@@ -1452,6 +1452,11 @@ func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.PodTemplateSpec != nil {
+		in, out := &in.PodTemplateSpec, &out.PodTemplateSpec
+		*out = new(runtime.RawExtension)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ResourceOverrides != nil {
 		in, out := &in.ResourceOverrides, &out.ResourceOverrides
 		*out = new(ResourceOverrides)

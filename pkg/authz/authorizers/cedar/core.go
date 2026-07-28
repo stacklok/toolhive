@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +150,16 @@ var (
 // ClientIDContextKey is the key used to store client ID in the context.
 type ClientIDContextKey struct{}
 
+// claimPrefix namespaces every JWT claim in the Cedar context/principal
+// attributes. claimSetPrefix namespaces the synthetic multi-valued-claim Sets.
+// They are deliberately disjoint: because every JWT claim is emitted under
+// claimPrefix, a token can never produce a claimSetPrefix key, so the synthetic
+// Sets cannot be shadowed or spoofed by claim content.
+const (
+	claimPrefix    = "claim_"
+	claimSetPrefix = "claimset_"
+)
+
 // Authorizer authorizes MCP operations using Cedar policies.
 type Authorizer struct {
 	// Cedar policy set
@@ -160,7 +171,8 @@ type Authorizer struct {
 	// Mutex for thread safety
 	mu sync.RWMutex
 	// primaryUpstreamProvider names the upstream IDP provider whose access token
-	// should be used as the source of JWT claims for Cedar evaluation.
+	// is the source of JWT claims for Cedar evaluation, aside from the narrow
+	// user-profile supplement described in resolveClaims.
 	// When empty, claims from the token on the original client request are used,
 	// which may be a ToolHive-issued token or any other bearer token.
 	primaryUpstreamProvider string
@@ -179,6 +191,20 @@ type Authorizer struct {
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
+	// supplementLog rate-limits the warning that the upstream access token lacked
+	// profile claims. It is deliberately separate from claimKeyLog: a shared
+	// timer would let whichever fires first suppress the other for the rest of
+	// the window, hiding the claim-key dump on exactly the deployments that need it.
+	supplementLog *syncutil.AtMost
+	// missingIDTokenLog rate-limits the warning that the primary provider has no
+	// usable stored id_token, so profile claims cannot be supplemented at all.
+	// Separate from supplementLog because the two are mutually exclusive per
+	// request and describe opposite conditions.
+	missingIDTokenLog *syncutil.AtMost
+	// multiValuedClaims lists JWT claim names normalized to a canonical unpadded
+	// space-delimited string, plus a companion Cedar Set, before Cedar evaluation.
+	// See ConfigOptions.MultiValuedClaims.
+	multiValuedClaims []string
 }
 
 // ConfigOptions represents the Cedar-specific authorization configuration options.
@@ -190,9 +216,17 @@ type ConfigOptions struct {
 	EntitiesJSON string `json:"entities_json" yaml:"entities_json"`
 
 	// PrimaryUpstreamProvider names the upstream IDP provider whose access
-	// token should be used as the source of JWT claims for Cedar evaluation.
-	// When empty, claims from the ToolHive-issued token are used (current behaviour).
+	// token is the primary source of JWT claims for Cedar evaluation.
+	// When empty, claims from the ToolHive-issued token are used.
 	// Must match an entry in identity.UpstreamTokens (e.g. "default", "github").
+	//
+	// The profile claims in profileClaimsFromIDToken fall back to the SAME
+	// provider's id_token when its access token omits them (many OIDC providers
+	// assert `email` only in the id_token), so `principal has claim_email` keeps
+	// meaning "this upstream asserted an email". Every other claim, including all
+	// group/role/scope claims, comes from the upstream access token or not at all,
+	// and the ToolHive-issued token the client presented is never a claim source on
+	// this path. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -214,6 +248,43 @@ type ConfigOptions struct {
 	// names (e.g. "Platform::Group") are not yet supported and are rejected at
 	// construction. See issue #5072.
 	GroupEntityType string `json:"group_entity_type,omitempty" yaml:"group_entity_type,omitempty"`
+
+	// MultiValuedClaims lists JWT claim NAMES (bare, e.g. "scp" or "scope") whose
+	// value is exposed to Cedar in two normalized forms, regardless of whether the
+	// IdP emits the claim as a space-delimited string (Entra `scp`, Keycloak `scope`)
+	// or a JSON array (Okta `scp`):
+	//
+	//  1. "claim_<name>" (both principal attribute and context) is a space-delimited
+	//     string: an array is joined with single spaces; a string value is passed
+	//     through VERBATIM — its spacing and order are preserved, not
+	//     re-canonicalized. Use this with `like`/`==` string policies.
+	//  2. "claimset_<name>" (bare key, both principal attribute and context) is a Cedar
+	//     Set of the claim's elements. Use this with `.contains`/`.containsAll`/
+	//     `.containsAny` for exact-element matching that cannot be fooled by a
+	//     substring (e.g. "Mail.Read" will not match "Mail.ReadWrite"). The "claimset_"
+	//     prefix is reserved and never collides with a JWT claim, since all JWT
+	//     claims are surfaced under the "claim_" prefix.
+	//
+	// Only for claims whose ELEMENTS are space-free (OAuth scopes, per RFC 6749 §3.3).
+	// Do NOT list group/role claims or any claim whose elements can contain spaces
+	// (e.g. group display names) — element boundaries would become ambiguous.
+	//
+	// Backward compatibility: opt-in. When empty (default), "claim_<name>" is
+	// byte-identical to today and no "claimset_<name>" key is added. Listing a claim
+	// leaves OTHER claims untouched.
+	//
+	// Migration hazard: listing a claim that an IdP emits as an ARRAY changes its
+	// "claim_<name>" form from a Cedar Set to a String. A pre-existing policy that
+	// tested it with `like`/substring — which errored on the Set and so failed
+	// closed (deny) — will then match against the joined string and can
+	// substring-match (e.g. `context.claim_scp like "*Mail.Read*"` also matches
+	// "Mail.ReadWrite"), an unintended grant. Audit existing `like` policies on a
+	// claim before listing it, and prefer "claimset_<name>" with `.contains`/
+	// `.containsAll`/`.containsAny` for exact-element membership.
+	//
+	// Note: this unifies claim SHAPE, not NAME — `scp` and `scope` remain distinct
+	// claim names, so a policy still references one specific name.
+	MultiValuedClaims []string `json:"multi_valued_claims,omitempty" yaml:"multi_valued_claims,omitempty"`
 }
 
 // validateGroupEntityType validates a GroupEntityType value. Empty string is
@@ -269,6 +340,9 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 		roleClaimName:           options.RoleClaimName,
 		serverName:              serverName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
+		supplementLog:           syncutil.NewAtMost(30 * time.Second),
+		missingIDTokenLog:       syncutil.NewAtMost(30 * time.Second),
+		multiValuedClaims:       options.MultiValuedClaims,
 	}
 
 	// Load policies
@@ -479,56 +553,213 @@ func (a *Authorizer) IsAuthorized(
 }
 
 // resolveClaims determines which JWT claims to use for Cedar policy evaluation.
-// When primaryUpstreamProvider is set, claims are extracted from the upstream
-// IDP token stored in the identity. Otherwise, claims from the token on the
-// original client request are used, which may be a ToolHive-issued token or
-// any other bearer token.
+//
+// When primaryUpstreamProvider is empty (the default), the claims of the token on
+// the original client request are used as-is. That may be a ToolHive-issued token
+// or any other bearer token.
+//
+// When primaryUpstreamProvider is set (the embedded auth server path), the claim
+// source is that provider's upstream credentials — and only that provider's. Its
+// access token is primary; the profile claims listed in profileClaimsFromIDToken
+// fall back to the same provider's id_token when the access token does not carry
+// them, because many OIDC providers assert `email` only in the id_token and the
+// access token alone was therefore a deny-all trap (#5916).
+//
+// Both tokens belong to the same upstream provider and session: the auth
+// middleware splits a single credential bundle into Identity.UpstreamTokens and
+// Identity.UpstreamIDTokens (see TokenValidator.Middleware in pkg/auth/token.go),
+// so a given key denotes the same provider and session in both maps. That is what
+// makes a supplemented claim carry the same provenance as one read from the access
+// token: `principal has claim_email` means "this upstream asserted an email". (The
+// two maps' key SETS may differ — a provider can have an access token but no
+// id_token, which is why the fallback is conditional. That is not a case of one key
+// meaning two different identities.)
+//
+// The ToolHive-issued token the client presented is deliberately NOT a claim
+// source here, even though it mirrors a name/email — in a multi-upstream chain
+// those belong to the first configured upstream, which need not be the pinned
+// provider, so using them could attribute one IdP's email to another.
+//
+// The supplement is restricted to profileClaimsFromIDToken rather than merging
+// the two token bodies. Read this before widening it:
+//
+//   - An id_token's registered claims (`iss`, `aud`, `exp`, `nonce`, `at_hash`,
+//     `azp`) describe that token, not the user. Merging them would overwrite the
+//     access token's own `aud`/`exp` with values that mean something different.
+//   - Authorization-bearing claims (`groups`, `roles`, `scope`) are left alone for
+//     now. Taking them from this provider's id_token would be provenance-correct —
+//     unlike taking them from the ToolHive-issued token, which must never happen —
+//     but it would newly grant requests that deny today, so it belongs in its own
+//     change rather than riding along with a deny-all fix.
+//   - `sub` is excluded because it becomes the Cedar principal entity ID rather
+//     than an attribute, and Cedar has no `has`-style guard in the principal
+//     position. An access token without `sub` violates RFC 9068; failing closed
+//     with ErrMissingPrincipal beats silently choosing a principal.
+//
+// An access-token value always wins, so a claim the access token does assert can
+// never be shadowed. A claim absent from both tokens stays absent, so `has`-guarded
+// policies still fail closed.
+//
+// The id_token is used without checking `exp`, deliberately: it is read as a record
+// of what the upstream asserted at login, not presented as a credential, and
+// rejecting it once expired would flip a policy from permit to deny mid-session.
+// See Identity.UpstreamIDTokens for that contract and its two consumers.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, error) {
-	if a.primaryUpstreamProvider != "" {
-		// Embedded auth server path: use the upstream IDP token's claims.
-		upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
-		if !tokenFound || upstreamToken == "" {
-			// The upstream token must be present if the authorizer is configured to use it.
-			// Missing token means the session has no upstream credential; deny.
-			return nil, fmt.Errorf("upstream token for provider %q not found in identity",
-				a.primaryUpstreamProvider)
-		}
-		parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
-		if err != nil {
-			// Distinguish "not JWT-shaped" (opaque OAuth 2.0 access token —
-			// Google's ya29.*, GitHub's gho_*, etc.) from "JWT-shaped but
-			// malformed/tampered" (a JWT with three segments that fails to
-			// parse). Only fall back for the former; preserve the deny for
-			// the latter so a tampered upstream JWT cannot bypass policy.
-			//
-			// The embedded auth server already mirrors the upstream OIDC
-			// sub/email/name claims into its issued AS token (see
-			// pkg/authserver/server/session/session.go). For opaque-token
-			// providers, falling back to identity.Claims preserves identity
-			// for policies referencing standard OIDC claims; policies that
-			// reference upstream-only claims (groups, hd, custom namespaced
-			// claims) will see those attributes as absent and must be
-			// authored defensively (`has(claim_groups) && ...`).
-			if !looksLikeJWT(upstreamToken) {
-				// The Warn shares claimKeyLog with logClaimKeys below so a busy
-				// Google/GitHub deployment does not emit one line per tool call.
-				a.claimKeyLog.Do(func() {
-					slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
-						"provider", a.primaryUpstreamProvider)
-				})
-				a.logClaimKeys("token-fallback", jwt.MapClaims(identity.Claims))
-				return jwt.MapClaims(identity.Claims), nil
-			}
-			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
-				a.primaryUpstreamProvider, err)
-		}
-		a.logClaimKeys("upstream", parsedClaims)
-		return parsedClaims, nil
+	requestClaims := jwt.MapClaims(identity.Claims)
+
+	if a.primaryUpstreamProvider == "" {
+		// Default path: use claims from the original client request's token.
+		a.logClaimKeys("token", requestClaims)
+		return requestClaims, nil
 	}
-	// Default path: use claims from the original client request's token.
-	claims := jwt.MapClaims(identity.Claims)
-	a.logClaimKeys("token", claims)
-	return claims, nil
+
+	// Embedded auth server path: the upstream IDP token is the primary claim source.
+	upstreamToken, tokenFound := identity.UpstreamTokens[a.primaryUpstreamProvider]
+	if !tokenFound || upstreamToken == "" {
+		// The upstream token must be present if the authorizer is configured to use it.
+		// Missing token means the session has no upstream credential; deny.
+		return nil, fmt.Errorf("upstream token for provider %q not found in identity",
+			a.primaryUpstreamProvider)
+	}
+
+	upstreamClaims, err := parseUpstreamJWTClaims(upstreamToken)
+	if err != nil {
+		// Distinguish "not JWT-shaped" (opaque OAuth 2.0 access token —
+		// Google's ya29.*, GitHub's gho_*, etc.) from "JWT-shaped but
+		// malformed/tampered" (a JWT with three segments that fails to
+		// parse). Only fall back for the former; preserve the deny for
+		// the latter so a tampered upstream JWT cannot bypass policy.
+		//
+		// Policies that reference upstream-only claims (groups, hd, custom
+		// namespaced claims) see those attributes as absent on this branch and
+		// must be authored defensively (`principal has claim_groups && ...`).
+		if !looksLikeJWT(upstreamToken) {
+			// The Warn shares claimKeyLog with logClaimKeys below so a busy
+			// Google/GitHub deployment does not emit one line per tool call.
+			a.claimKeyLog.Do(func() {
+				slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
+					"provider", a.primaryUpstreamProvider)
+			})
+			a.logClaimKeys("token-fallback", requestClaims)
+			return requestClaims, nil
+		}
+		return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
+			a.primaryUpstreamProvider, err)
+	}
+
+	merged := a.supplementFromIDToken(identity, upstreamClaims)
+	a.logClaimKeys("upstream", merged)
+	return merged, nil
+}
+
+// supplementFromIDToken returns upstreamClaims with the profileClaimsFromIDToken
+// it lacks filled in from the primary provider's stored id_token, logging what it
+// did. upstreamClaims is not mutated.
+//
+// A provider with no stored id_token (an OAuth 2.0 upstream that was never asked
+// for `openid`, so nothing was captured at login) yields no supplement: the claims
+// stay absent and `has`-guarded policies deny. OIDC upstreams always have one —
+// the provider rejects a login without it (upstream/oidc.go) and a refresh that
+// omits a rotated id_token carries the original forward (upstreamtoken/service.go),
+// so it does not vanish mid-session.
+func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClaims jwt.MapClaims) jwt.MapClaims {
+	idToken := identity.UpstreamIDTokens[a.primaryUpstreamProvider] // nil map safe in Go
+	if idToken == "" {
+		a.missingIDTokenLog.Do(func() {
+			slog.Warn("no upstream ID token stored for provider; policies referencing profile claims "+
+				"the access token omits will deny",
+				"provider", a.primaryUpstreamProvider,
+				"profile_claims", profileClaimsFromIDToken)
+		})
+		return upstreamClaims
+	}
+
+	idTokenClaims, err := parseUpstreamJWTClaims(idToken)
+	if err != nil {
+		// Do not fail the request: the access token parsed, so policies that only
+		// reference its claims must keep working. An unparsable id_token means no
+		// supplement, which denies exactly the policies that needed it.
+		a.missingIDTokenLog.Do(func() {
+			slog.Warn("upstream ID token for provider is not a parsable JWT; not supplementing profile claims",
+				"provider", a.primaryUpstreamProvider,
+				"error", err)
+		})
+		return upstreamClaims
+	}
+
+	merged, filled := supplementProfileClaims(upstreamClaims, idTokenClaims)
+	if len(filled) > 0 {
+		// Rate-limited on its own timer, not claimKeyLog: sharing one would let
+		// this Warn consume the window and permanently starve the claim-key dump
+		// in resolveClaims, which is what you want when debugging a denying policy.
+		//
+		// Claim keys only — never claim values, which hold user PII.
+		a.supplementLog.Do(func() {
+			slog.Warn("upstream access token lacks profile claims; using the upstream ID token's values "+
+				"for Cedar evaluation",
+				"provider", a.primaryUpstreamProvider,
+				"claims", filled)
+		})
+	}
+	return merged
+}
+
+// OIDC Core 1.0 §5.1 standard claim names, declared here rather than borrowed
+// from another package. What this code reads is an upstream provider's id_token,
+// so these are wire names fixed by the OIDC spec — not names ToolHive chooses.
+// Anchoring them to a ToolHive constant would invert the dependency: renaming that
+// constant would silently change which claim Cedar reads out of a third party's
+// token. Two literals also do not justify pulling an authorization-server
+// dependency tree into the authorizer.
+const (
+	oidcNameClaim  = "name"
+	oidcEmailClaim = "email"
+)
+
+// profileClaimsFromIDToken are the OIDC Core §5.1 profile claims that may be read
+// from the primary provider's id_token when its access token omits them. They
+// coincide with the two claims the embedded auth server extracts from that same
+// id_token: pkg/authserver/upstream/oidc.go reads them by their OIDC names, and the
+// callback handler then passes them to session.New
+// (pkg/authserver/server/handlers/callback.go). Both sides key off the wire names
+// independently — a shared reliance on the spec, not a coupling. If the auth server
+// ever mirrors more, adding it here is a separate, deliberate decision.
+//
+// Widening this list widens what can satisfy a policy — see resolveClaims first.
+var profileClaimsFromIDToken = []string{oidcNameClaim, oidcEmailClaim}
+
+// supplementProfileClaims returns a fresh claim set holding every access-token
+// claim plus, for each name in profileClaimsFromIDToken that the access token does
+// not carry, the id_token's value for that name. It also returns the sorted list of
+// names actually supplied by the id_token, for logging.
+//
+// Neither input is mutated and the result aliases neither, so the caller may hand
+// it to code that adds synthetic keys. Absent claims are never fabricated: a name
+// missing from both tokens is missing from the result, which keeps `has`-guarded
+// policies failing closed.
+func supplementProfileClaims(accessTokenClaims, idTokenClaims jwt.MapClaims) (merged jwt.MapClaims, filled []string) {
+	merged = make(jwt.MapClaims, len(accessTokenClaims)+len(profileClaimsFromIDToken))
+	for k, v := range accessTokenClaims {
+		merged[k] = v
+	}
+
+	for _, name := range profileClaimsFromIDToken {
+		if _, ok := merged[name]; ok {
+			// The access token asserted this claim; it always wins.
+			continue
+		}
+		v, ok := idTokenClaims[name]
+		if !ok {
+			continue
+		}
+		merged[name] = v
+		filled = append(filled, name)
+	}
+
+	// Sorted for a canonical, easily-greppable log line — profileClaimsFromIDToken
+	// is ordered for readability (name, email), not alphabetically.
+	slices.Sort(filled)
+	return merged, filled
 }
 
 // looksLikeJWT returns true when the token has the three-segment shape of a
@@ -587,10 +818,132 @@ func extractClientIDFromClaims(claims jwt.MapClaims) (string, bool) {
 func preprocessClaims(claims jwt.MapClaims) map[string]interface{} {
 	preprocessed := make(map[string]interface{})
 	for k, v := range claims {
-		claimKey := fmt.Sprintf("claim_%s", k)
+		claimKey := claimPrefix + k
 		preprocessed[claimKey] = v
 	}
 	return preprocessed
+}
+
+// normalizeMultiValuedClaims returns claims with every claim named in names
+// and present in claims rewritten to a canonical unpadded space-delimited
+// string. This lets a single Cedar `like`/`==` policy match a claim regardless
+// of whether the IdP emitted it as a space-delimited string or a JSON array.
+// See ConfigOptions.MultiValuedClaims for the full rationale.
+//
+// When names is empty the input is returned directly (no copy); otherwise a
+// shallow copy is returned and the input is never mutated.
+//
+//   - array ([]interface{} or []string): elements joined with single spaces.
+//     Non-string elements are stringified with fmt.Sprint rather than
+//     dropped; nested array/object elements are skipped with a slog.Debug
+//     since they have no scalar string form.
+//   - string: passthrough, completely unchanged (not trimmed).
+//   - empty array, or an array with no usable elements: "" (empty string —
+//     present but empty).
+//   - claim absent from claims, or names empty: left untouched (no key
+//     fabricated).
+//
+// Only top-level claim keys are matched; there is no dot-notation support.
+// claims is not mutated.
+func normalizeMultiValuedClaims(claims jwt.MapClaims, names []string) jwt.MapClaims {
+	if len(names) == 0 {
+		// Nothing to normalize. Return the input directly — the sole caller
+		// (preprocessClaims) only reads it, so no defensive copy is needed and
+		// the opt-in-empty path pays no allocation.
+		return claims
+	}
+
+	out := make(jwt.MapClaims, len(claims))
+	for k, v := range claims {
+		out[k] = v
+	}
+
+	for _, name := range names {
+		v, ok := claims[name]
+		if !ok {
+			continue
+		}
+
+		switch val := v.(type) {
+		case string:
+			// Verbatim passthrough: out[name] already equals val (out is a copy
+			// of claims), so this is intentionally a no-op. The explicit branch
+			// documents the string contract and, importantly, keeps a string
+			// value out of the default "unrecognized type" log below. This is the
+			// one place the string handling diverges from addMultiValuedClaimSets,
+			// which collapses whitespace via strings.Fields for the Set form.
+			out[name] = val
+		case []interface{}:
+			out[name] = strings.Join(multiValuedTokens(name, val), " ")
+		case []string:
+			out[name] = strings.Join(val, " ")
+		default:
+			slog.Debug("multi-valued claim has unrecognized type, leaving unchanged",
+				"claim", name, "type", fmt.Sprintf("%T", v))
+		}
+	}
+
+	return out
+}
+
+// addMultiValuedClaimSets adds a bare "claimset_<name>" key to processed for every
+// claim named in names and present in raw, holding the claim's elements as a
+// []string (converted to a Cedar Set by convertToCedarValueAtDepth). This is
+// the companion to normalizeMultiValuedClaims's "claim_<name>" string form:
+// where "claim_<name>" supports substring-style `like` matching, "claimset_<name>"
+// supports exact-element `.contains`/`.containsAll`/`.containsAny` matching.
+// The "claimset_" prefix is reserved and cannot collide with a JWT claim, since all
+// JWT claims are "claim_"-prefixed by preprocessClaims.
+//
+// processed must already have the "claim_" prefix applied (i.e. this must run
+// after preprocessClaims) so the added key stays bare. raw is not mutated.
+func addMultiValuedClaimSets(processed map[string]interface{}, raw jwt.MapClaims, names []string) {
+	for _, name := range names {
+		v, ok := raw[name]
+		if !ok {
+			continue
+		}
+
+		// The array path shares multiValuedTokens with normalizeMultiValuedClaims
+		// (string-only elements) so the Set and the joined string stay in sync.
+		// The string path deliberately differs: normalize passes the string
+		// through verbatim, whereas here strings.Fields splits it into exact
+		// elements (collapsing irregular whitespace) — the two cannot share one
+		// coercion for that reason.
+		switch val := v.(type) {
+		case string:
+			processed[claimSetPrefix+name] = strings.Fields(val)
+		case []interface{}:
+			processed[claimSetPrefix+name] = multiValuedTokens(name, val)
+		case []string:
+			processed[claimSetPrefix+name] = slices.Clone(val)
+		default:
+			slog.Debug("multi-valued claim has unrecognized type, omitting claimset set",
+				"claim", name, "type", fmt.Sprintf("%T", v))
+		}
+	}
+}
+
+// multiValuedTokens extracts the string elements of a []interface{} claim value
+// for normalizeMultiValuedClaims and addMultiValuedClaimSets. Only string
+// elements are kept: OAuth scope tokens are strings (RFC 6749 §3.3), so a
+// non-string element (number, bool, null, or a nested array/object) is
+// malformed and is skipped with a slog.Debug rather than stringified. Skipping
+// (a) avoids spurious tokens like "<nil>" or "1e+06" polluting both claim
+// forms, and (b) keeps the array shape consistent with the string shape, whose
+// strings.Fields path likewise yields only real string tokens.
+func multiValuedTokens(claimName string, elems []interface{}) []string {
+	tokens := make([]string, 0, len(elems))
+	for _, elem := range elems {
+		s, ok := elem.(string)
+		if !ok {
+			slog.Debug("multi-valued claim element is not a string, skipping",
+				"claim", claimName, "type", fmt.Sprintf("%T", elem))
+			continue
+		}
+		tokens = append(tokens, s)
+	}
+	return tokens
 }
 
 // preprocessArguments adds an "arg_" prefix to all argument keys.
@@ -884,8 +1237,12 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		extractGroups(resolvedClaims, a.roleClaimName)...,
 	))
 
-	// Preprocess claims and arguments
-	processedClaims := preprocessClaims(resolvedClaims)
+	// Preprocess claims and arguments. Multi-valued claim normalization runs
+	// after group/role extraction (which needs the raw claim shapes) and
+	// before the "claim_" prefix is applied.
+	normalizedClaims := normalizeMultiValuedClaims(resolvedClaims, a.multiValuedClaims)
+	processedClaims := preprocessClaims(normalizedClaims)
+	addMultiValuedClaimSets(processedClaims, resolvedClaims, a.multiValuedClaims)
 	processedArgs := preprocessArguments(arguments)
 
 	// Authorize based on the feature and operation

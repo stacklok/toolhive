@@ -35,7 +35,7 @@ func TestCallTool_RoutesToBackend(t *testing.T) {
 
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"result": "ok"}}
 	m.client.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(want, nil)
 
 	c, err := New(cfg)
@@ -45,6 +45,7 @@ func TestCallTool_RoutesToBackend(t *testing.T) {
 	got, err := c.CallTool(context.Background(), nil, "tool_a", map[string]any{"a": 1}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	assert.Equal(t, testBackendID, got.BackendID, "CallTool must stamp the routed target's backend onto the result")
 }
 
 func TestCallTool_NotFound(t *testing.T) {
@@ -73,8 +74,8 @@ func TestCallTool_CopyBeforeMutate(t *testing.T) {
 	// The backend client mutates the maps it receives; the caller's originals
 	// must be untouched because CallTool forwards clones.
 	m.client.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args, meta map[string]any) (*vmcp.ToolCallResult, error) {
+		CallTool(gomock.Any(), gomock.Any(), "tool_a", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args, meta map[string]any, _ map[string]string) (*vmcp.ToolCallResult, error) {
 			args["injected"] = true
 			meta["injected"] = true
 			return &vmcp.ToolCallResult{}, nil
@@ -109,7 +110,7 @@ func TestCallTool_CompositeWorkflow(t *testing.T) {
 	// The composite workflow's single tool step routes to the backend through the
 	// per-call composer built from the aggregated routing table.
 	m.client.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "be1.echo", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}, nil)
 
 	c, err := New(cfg)
@@ -121,6 +122,7 @@ func TestCallTool_CompositeWorkflow(t *testing.T) {
 	require.NotNil(t, got)
 	assert.False(t, got.IsError)
 	assert.Equal(t, true, got.StructuredContent["ok"])
+	assert.Empty(t, got.BackendID, "a composite tool has no single serving backend")
 }
 
 func TestCallTool_CompositeNotAccessible(t *testing.T) {
@@ -160,6 +162,7 @@ func TestReadResource(t *testing.T) {
 	got, err := c.ReadResource(context.Background(), nil, "file://a")
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	assert.Equal(t, testBackendID, got.BackendID, "ReadResource must stamp the routed target's backend onto the result")
 }
 
 func TestReadResource_NotFound(t *testing.T) {
@@ -194,6 +197,7 @@ func TestGetPrompt(t *testing.T) {
 	got, err := c.GetPrompt(context.Background(), nil, "p1", map[string]any{"x": 1})
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	assert.Equal(t, testBackendID, got.BackendID, "GetPrompt must stamp the routed target's backend onto the result")
 }
 
 func TestGetPrompt_CopyBeforeMutate(t *testing.T) {
@@ -254,7 +258,7 @@ func TestCallTool_ResolvesRenamedTool(t *testing.T) {
 	})
 
 	m.client.EXPECT().
-		CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{}, nil)
 
 	c, err := New(cfg)
@@ -304,11 +308,186 @@ func TestCompositeNameConflict_AdvertisedEqualsExecuted(t *testing.T) {
 
 	// CallTool("shared") must route to the backend, not execute the composite.
 	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"from": "backend"}}
-	m.client.EXPECT().CallTool(gomock.Any(), beTarget, "shared", gomock.Any(), gomock.Any()).Return(want, nil)
+	m.client.EXPECT().CallTool(gomock.Any(), beTarget, "shared", gomock.Any(), gomock.Any(), gomock.Any()).Return(want, nil)
 
 	got, err := c.CallTool(context.Background(), nil, "shared", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, want, got, "conflicting name must resolve to the backend tool, not the composite")
+}
+
+// TestComplete_RoutesPromptRef verifies a ref/prompt completion resolves the
+// backend through the prompts routing table and forwards to the backend client.
+func TestComplete_RoutesPromptRef(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	target := backendTarget()
+	expectAggregation(m, &aggregator.AggregatedCapabilities{
+		RoutingTable: &vmcp.RoutingTable{Prompts: map[string]*vmcp.BackendTarget{"p1": target}},
+	})
+
+	want := &vmcp.CompletionResult{Values: []string{"alpha", "beta"}, Total: 2}
+	ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypePrompt, Name: "p1"}
+	m.client.EXPECT().
+		Complete(gomock.Any(), target, ref, "arg", "a", gomock.Any()).
+		Return(want, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	got, err := c.Complete(t.Context(), nil, ref, "arg", "a", nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+// TestComplete_RoutesResourceTemplateRef verifies a ref/resource completion resolves
+// the backend through the resource-templates routing table and forwards to the
+// backend client. Per the MCP spec a ref/resource carries the URI TEMPLATE STRING
+// itself (ResourceTemplateReference's uri is "@format uri-template"), which a
+// template does not match by expansion — the router must route the exact template
+// string to its backend. An expanded URI still routes via template matching.
+func TestComplete_RoutesResourceTemplateRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{
+			name: "template string (spec form)",
+			uri:  "file:///logs/{date}.txt",
+		},
+		{
+			name: "expanded URI (template expansion match)",
+			uri:  "file:///logs/2025-01-01.txt",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, m := baseConfig(t)
+
+			target := backendTarget()
+			expectAggregation(m, &aggregator.AggregatedCapabilities{
+				RoutingTable: &vmcp.RoutingTable{
+					ResourceTemplates: map[string]*vmcp.BackendTarget{"file:///logs/{date}.txt": target},
+				},
+			})
+
+			want := &vmcp.CompletionResult{Values: []string{"2025-01-01.txt"}}
+			ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypeResource, URI: tc.uri}
+			m.client.EXPECT().
+				Complete(gomock.Any(), target, ref, "date", "2025", gomock.Any()).
+				Return(want, nil)
+
+			c, err := New(cfg)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+
+			got, err := c.Complete(t.Context(), nil, ref, "date", "2025", nil)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+// TestComplete_UnroutableRefReturnsEmpty covers the lenient-completion contract:
+// an unroutable prompt ref, an unroutable resource ref, and an unknown ref type all
+// yield a non-nil empty result rather than an error, and never reach the backend.
+func TestComplete_UnroutableRefReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ref  vmcp.CompletionRef
+	}{
+		{
+			name: "unknown prompt",
+			ref:  vmcp.CompletionRef{Type: vmcp.CompletionRefTypePrompt, Name: "missing"},
+		},
+		{
+			name: "unmatched resource",
+			ref:  vmcp.CompletionRef{Type: vmcp.CompletionRefTypeResource, URI: "file:///nope"},
+		},
+		{
+			name: "unknown ref type",
+			ref:  vmcp.CompletionRef{Type: "ref/bogus", Name: "x"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, m := baseConfig(t)
+			// Empty routing table: nothing routes. No client.Complete expectation, so
+			// a forwarded call would fail the test.
+			expectAggregation(m, &aggregator.AggregatedCapabilities{RoutingTable: &vmcp.RoutingTable{}})
+
+			c, err := New(cfg)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+
+			got, err := c.Complete(t.Context(), nil, tc.ref, "arg", "", nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Empty(t, got.Values)
+		})
+	}
+}
+
+// TestComplete_AdmissionDenied verifies a completion ref whose referenced capability
+// is denied by admission returns ErrAuthorizationFailed without reaching the backend,
+// for both a prompt ref (get-side decision) and a resource ref (read-side decision).
+func TestComplete_AdmissionDenied(t *testing.T) {
+	t.Parallel()
+
+	t.Run("prompt ref denied", func(t *testing.T) {
+		t.Parallel()
+		cfg, m := baseConfig(t)
+		cfg.ServerName = "test-vmcp"
+		cfg.Authz = cedarAuthzConfig(t,
+			`permit(principal, action == Action::"get_prompt", resource == Prompt::"allowed");`)
+
+		m.reg.EXPECT().List(gomock.Any()).
+			Return([]vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}).AnyTimes()
+		m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+			RoutingTable: &vmcp.RoutingTable{Prompts: map[string]*vmcp.BackendTarget{"denied": backendTarget()}},
+		}, nil).AnyTimes()
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+
+		ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypePrompt, Name: "denied"}
+		_, err = c.Complete(t.Context(), cedarIdentity(), ref, "arg", "", nil)
+		assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed)
+	})
+
+	t.Run("resource ref denied", func(t *testing.T) {
+		t.Parallel()
+		cfg, m := baseConfig(t)
+		cfg.ServerName = "test-vmcp"
+		cfg.Authz = cedarAuthzConfig(t,
+			`permit(principal, action == Action::"read_resource", resource == Resource::"file:///ok");`)
+
+		m.reg.EXPECT().List(gomock.Any()).
+			Return([]vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}).AnyTimes()
+		m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+			RoutingTable: &vmcp.RoutingTable{
+				ResourceTemplates: map[string]*vmcp.BackendTarget{"file:///{name}": backendTarget()},
+			},
+		}, nil).AnyTimes()
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+
+		ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypeResource, URI: "file:///secret"}
+		_, err = c.Complete(t.Context(), cedarIdentity(), ref, "name", "", nil)
+		assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed)
+	})
 }
 
 // stubComposer is a configurable composer.Composer for unit-testing

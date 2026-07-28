@@ -85,6 +85,17 @@ func TestParsingMiddleware(t *testing.T) {
 			expectedResID:  "ping",
 		},
 		{
+			name:           "server/discover request",
+			method:         "POST",
+			path:           "/messages",
+			contentType:    "application/json",
+			body:           `{"jsonrpc":"2.0","id":10,"method":"server/discover","params":{}}`,
+			expectParsed:   true,
+			expectedMethod: "server/discover",
+			expectedID:     int64(10),
+			expectedResID:  "discover",
+		},
+		{
 			name:         "GET request - not parsed",
 			method:       "GET",
 			path:         "/messages",
@@ -220,6 +231,138 @@ func TestParsingMiddleware(t *testing.T) {
 			} else {
 				assert.Nil(t, parsed, "Expected MCP request not to be parsed")
 			}
+		})
+	}
+}
+
+func TestParsingMiddlewareRejectsBatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "batch of requests",
+			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},` +
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"danger"}}]`,
+		},
+		{
+			name: "batch with leading whitespace",
+			body: "  \n\t[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}]",
+		},
+		{
+			name: "empty batch",
+			body: `[]`,
+		},
+		{
+			name: "malformed batch (unterminated array)",
+			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/call"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// The next handler must never run for a batch: reaching it means the
+			// batch bypassed rejection and would hit the backend uninspected.
+			nextCalled := false
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			assert.False(t, nextCalled, "batch must be rejected before the next handler")
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+
+			var resp struct {
+				JSONRPC string `json:"jsonrpc"`
+				Error   struct {
+					Code    int64  `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, "2.0", resp.JSONRPC)
+			assert.Equal(t, CodeInvalidRequest, resp.Error.Code)
+			assert.NotEmpty(t, resp.Error.Message)
+
+			// A batch has no single request id to echo. A tagged-struct
+			// decode (above) can't tell an absent "id" key apart from a
+			// present null -- both decode to the zero value -- so the
+			// omission is checked via a map decode instead.
+			var asMap map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &asMap))
+			_, hasID := asMap["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
+		})
+	}
+}
+
+func TestParsingMiddlewareModernHeaders(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name              string
+		mcpMethodHeader   string
+		mcpNameHeader     string
+		expectedMCPMethod string
+		expectedMCPName   string
+	}{
+		{
+			name:              "both headers set",
+			mcpMethodHeader:   "tools/call",
+			mcpNameHeader:     "some-tool",
+			expectedMCPMethod: "tools/call",
+			expectedMCPName:   "some-tool",
+		},
+		{
+			name:              "neither header set",
+			expectedMCPMethod: "",
+			expectedMCPName:   "",
+		},
+		{
+			name:              "sentinel-encoded Mcp-Name stored undecoded",
+			mcpMethodHeader:   "tools/call",
+			mcpNameHeader:     "=?base64?dG9vbA==?=",
+			expectedMCPMethod: "tools/call",
+			expectedMCPName:   "=?base64?dG9vbA==?=",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			if tt.mcpMethodHeader != "" {
+				req.Header.Set("Mcp-Method", tt.mcpMethodHeader)
+			}
+			if tt.mcpNameHeader != "" {
+				req.Header.Set("Mcp-Name", tt.mcpNameHeader)
+			}
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			parsed := GetParsedMCPRequest(capturedCtx)
+			require.NotNil(t, parsed)
+			assert.Equal(t, tt.expectedMCPMethod, parsed.MCPMethodHeader)
+			assert.Equal(t, tt.expectedMCPName, parsed.MCPNameHeader)
 		})
 	}
 }
@@ -1051,6 +1194,124 @@ func TestMetaFieldParsing(t *testing.T) {
 	}
 }
 
+func TestModernMetaParsing(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                    string
+		body                    string
+		expectedClientInfo      map[string]interface{}
+		expectedProtocolVersion string
+	}{
+		{
+			name: "clientInfo and protocolVersion present",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1.0"},
+						"io.modelcontextprotocol/protocolVersion": "2026-07-28"
+					}
+				}
+			}`,
+			expectedClientInfo: map[string]interface{}{
+				"name":    "test-client",
+				"version": "1.0",
+			},
+			expectedProtocolVersion: "2026-07-28",
+		},
+		{
+			name: "_meta absent",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 2,
+				"method": "tools/call",
+				"params": {
+					"name": "weather"
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+		{
+			name: "_meta present without modern keys",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 3,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"progressToken": "abc123"
+					}
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+		{
+			name: "protocolVersion wrong type",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 4,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"io.modelcontextprotocol/protocolVersion": 12345
+					}
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+		{
+			name: "clientInfo wrong type",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 5,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"_meta": {
+						"io.modelcontextprotocol/clientInfo": "not-an-object"
+					}
+				}
+			}`,
+			expectedClientInfo:      nil,
+			expectedProtocolVersion: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			parsed := GetParsedMCPRequest(capturedCtx)
+			require.NotNil(t, parsed)
+			assert.Equal(t, tt.expectedClientInfo, parsed.ClientInfo)
+			assert.Equal(t, tt.expectedProtocolVersion, parsed.ProtocolVersion)
+
+			assert.Equal(t, tt.expectedClientInfo, GetMCPClientInfo(capturedCtx))
+			assert.Equal(t, tt.expectedProtocolVersion, GetMCPProtocolVersion(capturedCtx))
+		})
+	}
+}
+
 func TestMetaFieldInvalidTypes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1320,14 +1581,9 @@ func TestParsingMiddlewareErrorHandling(t *testing.T) {
 			body:         bytes.NewBufferString(`{"invalid json`),
 			expectParsed: false,
 		},
-		{
-			name:         "JSON array instead of object",
-			method:       "POST",
-			path:         "/messages",
-			contentType:  "application/json",
-			body:         bytes.NewBufferString(`[{"jsonrpc":"2.0"}]`),
-			expectParsed: false,
-		},
+		// A top-level JSON array is a JSON-RPC batch; ParsingMiddleware rejects
+		// it outright (see TestParsingMiddlewareRejectsBatch) rather than passing
+		// it through, so it is deliberately not exercised here.
 	}
 
 	for _, tt := range tests {
@@ -1391,6 +1647,11 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 			method:             "notifications/initialized",
 			expectedResourceID: "initialized",
 		},
+		{
+			name:               "server/discover",
+			method:             "server/discover",
+			expectedResourceID: "discover",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1402,32 +1663,6 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 			assert.Nil(t, meta)
 		})
 	}
-}
-
-func TestParsingMiddlewareWithBatchRequests(t *testing.T) {
-	t.Parallel()
-	// Test batch JSON-RPC requests (currently not supported but should not crash)
-	batchBody := `[
-		{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tool1"}},
-		{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tool2"}}
-	]`
-
-	var capturedCtx context.Context
-	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedCtx = r.Context()
-		w.WriteHeader(http.StatusOK)
-	})
-
-	middleware := ParsingMiddleware(testHandler)
-	req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(batchBody))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	middleware.ServeHTTP(w, req)
-
-	// Batch requests should not be parsed (not supported yet)
-	parsed := GetParsedMCPRequest(capturedCtx)
-	assert.Nil(t, parsed)
 }
 
 func TestConvenienceFunctionsWithNilContext(t *testing.T) {

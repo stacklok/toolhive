@@ -92,8 +92,8 @@ func createXAAIdPServer(t *testing.T, expectedIDToken, idJAGToReturn string) *ht
 }
 
 // createXAATargetServer creates a mock target AS server that validates target
-// grant (RFC 7523 JWT Bearer grant) requests and returns an access token.
-func createXAATargetServer(t *testing.T, expectedAssertion, accessTokenToReturn string) *httptest.Server {
+// grant (RFC 7523 JWT Bearer grant) requests and returns a fixed access token.
+func createXAATargetServer(t *testing.T, expectedAssertion string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Helper()
@@ -109,11 +109,33 @@ func createXAATargetServer(t *testing.T, expectedAssertion, accessTokenToReturn 
 
 		w.Header().Set("Content-Type", "application/json")
 		err = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": accessTokenToReturn,
+			"access_token": "final-access-token",
 			"token_type":   "Bearer",
 			"expires_in":   3600,
 		})
 		assert.NoError(t, err)
+	}))
+}
+
+// xaaStrategyWithResource builds a BackendAuthStrategy for xaa with the standard
+// test config including TargetResource, pointing at the provided IdP/target URLs.
+func xaaStrategyWithResource(idpURL, targetURL string) *authtypes.BackendAuthStrategy {
+	return createXAAStrategy(func(cfg *authtypes.XAAConfig) {
+		cfg.IDPTokenURL = idpURL
+		cfg.TargetTokenURL = targetURL
+		cfg.TargetAudience = testTargetAudience
+		cfg.TargetResource = testTargetResource
+		cfg.SubjectProviderName = testProviderGitHub
+	})
+}
+
+// mustNotBeCalledTargetServer returns a mock target AS whose handler fails the
+// test if invoked. Used by error-path cases where the IdP exchange must reject
+// the assertion before the target grant runs.
+func mustNotBeCalledTargetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("target AS must not be called when IdP exchange rejects the ID-JAG")
 	}))
 }
 
@@ -582,8 +604,9 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idpServer := createXAAIdPServer(t, "user-id-token-jwt", "the-id-jag-token")
-				targetServer := createXAATargetServer(t, "the-id-jag-token", "final-access-token")
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, testTargetResource)
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := createXAATargetServer(t, idJAG)
 				return idpServer, targetServer
 			},
 			strategy: func(idpURL, targetURL string) *authtypes.BackendAuthStrategy {
@@ -642,7 +665,8 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idpServer := createXAAIdPServer(t, "valid-id-token", "valid-id-jag")
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, testTargetResource)
+				idpServer := createXAAIdPServer(t, "valid-id-token", idJAG)
 				targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusUnauthorized)
 					err := json.NewEncoder(w).Encode(map[string]any{
@@ -778,7 +802,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				wrongTypJWT := buildJWTWithTypHeader(t, "JWT")
+				wrongTypJWT := buildIDJAGJWT(t, "JWT", testTargetAudience, testTargetResource)
 				idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					err := json.NewEncoder(w).Encode(map[string]any{
@@ -789,7 +813,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 					})
 					assert.NoError(t, err)
 				}))
-				targetServer := createXAATargetServer(t, wrongTypJWT, "final-access-token")
+				targetServer := createXAATargetServer(t, wrongTypJWT)
 				return idpServer, targetServer
 			},
 			strategy: func(idpURL, targetURL string) *authtypes.BackendAuthStrategy {
@@ -815,7 +839,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				correctTypJWT := buildJWTWithTypHeader(t, "oauth-id-jag+jwt")
+				correctTypJWT := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, testTargetResource)
 				idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					err := json.NewEncoder(w).Encode(map[string]any{
@@ -826,7 +850,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 					})
 					assert.NoError(t, err)
 				}))
-				targetServer := createXAATargetServer(t, correctTypJWT, "final-access-token")
+				targetServer := createXAATargetServer(t, correctTypJWT)
 				return idpServer, targetServer
 			},
 			strategy: func(idpURL, targetURL string) *authtypes.BackendAuthStrategy {
@@ -843,6 +867,261 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "Bearer final-access-token", req.Header.Get("Authorization"))
 			},
+		},
+		// aud claim validation (draft §3.1: aud is REQUIRED).
+		{
+			name: "IdP exchange rejects ID-JAG with missing aud claim",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", nil, testTargetResource)
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "aud"},
+		},
+		{
+			name: "IdP exchange rejects ID-JAG with wrong aud (string)",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", "https://wrong.example.com", testTargetResource)
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "aud"},
+		},
+		{
+			name: "IdP exchange rejects ID-JAG with wrong aud (array)",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+					[]string{"https://wrong.example.com", "https://other.example.com"}, testTargetResource)
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "aud"},
+		},
+		{
+			name: "IdP exchange rejects ID-JAG with multi-element aud array",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+					[]string{testTargetAudience, "https://extra.example.com"}, testTargetResource)
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "aud"},
+		},
+		{
+			name: "IdP exchange accepts ID-JAG with aud as single-element array",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+					[]string{testTargetAudience}, testTargetResource)
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := createXAATargetServer(t, idJAG)
+				return idpServer, targetServer
+			},
+			strategy:    xaaStrategyWithResource,
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Equal(t, "Bearer final-access-token", req.Header.Get("Authorization"))
+			},
+		},
+		// resource claim validation (draft §3.1: resource is OPTIONAL, validated
+		// when one was requested).
+		{
+			name: "IdP exchange rejects ID-JAG with wrong resource",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, "https://wrong.example.com")
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "resource"},
+		},
+		{
+			name: "IdP exchange rejects ID-JAG with missing resource when requested",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				// resource omitted (empty string) while config requests one.
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, "")
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "resource"},
+		},
+		{
+			name: "IdP exchange accepts ID-JAG with resource as array containing TargetResource",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+					testTargetAudience, []string{testTargetResource})
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := createXAATargetServer(t, idJAG)
+				return idpServer, targetServer
+			},
+			strategy:    xaaStrategyWithResource,
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Equal(t, "Bearer final-access-token", req.Header.Get("Authorization"))
+			},
+		},
+		{
+			name: "IdP exchange accepts ID-JAG with resource array containing a non-string element",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+					testTargetAudience, []interface{}{float64(123), testTargetResource})
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := createXAATargetServer(t, idJAG)
+				return idpServer, targetServer
+			},
+			strategy:    xaaStrategyWithResource,
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Equal(t, "Bearer final-access-token", req.Header.Get("Authorization"))
+			},
+		},
+		{
+			name: "IdP exchange rejects ID-JAG with resource array containing only a non-string element",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+					testTargetAudience, []interface{}{float64(123)})
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "resource"},
+		},
+		// resource check skipped when TargetResource is not configured
+		// (wantResource == "" early-return branch in validateIDJAGClaims).
+		{
+			name: "IdP exchange accepts ID-JAG when TargetResource is not configured",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, nil)
+				// TargetResource is unset, so the exchange request carries no
+				// resource parameter; use an IdP mock that does not assert it.
+				idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Helper()
+					assert.Equal(t, http.MethodPost, r.Method)
+					require.NoError(t, r.ParseForm())
+					assert.Equal(t, oauthproto.GrantTypeTokenExchange, r.Form.Get("grant_type"))
+					assert.Equal(t, "user-id-token-jwt", r.Form.Get("subject_token"))
+					assert.Equal(t, oauthproto.TokenTypeIDJAG, r.Form.Get("requested_token_type"))
+					assert.NotEmpty(t, r.Form.Get("audience"), "audience must be set")
+					assert.Empty(t, r.Form.Get("resource"), "resource must be absent when not configured")
+
+					w.Header().Set("Content-Type", "application/json")
+					require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+						"access_token":      idJAG,
+						"token_type":        "N_A",
+						"issued_token_type": oauthproto.TokenTypeIDJAG,
+						"expires_in":        300,
+					}))
+				}))
+				targetServer := createXAATargetServer(t, idJAG)
+				return idpServer, targetServer
+			},
+			strategy: func(idpURL, targetURL string) *authtypes.BackendAuthStrategy {
+				return createXAAStrategy(func(cfg *authtypes.XAAConfig) {
+					cfg.IDPTokenURL = idpURL
+					cfg.TargetTokenURL = targetURL
+					cfg.TargetAudience = testTargetAudience
+					// TargetResource intentionally omitted.
+					cfg.SubjectProviderName = testProviderGitHub
+				})
+			},
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Equal(t, "Bearer final-access-token", req.Header.Get("Authorization"))
+			},
+		},
+		// parse failure: a non-JWT assertion cannot be a valid ID-JAG.
+		{
+			name: "IdP exchange rejects non-JWT assertion",
+			setupCtx: func() context.Context {
+				return createContextWithUpstreamIDTokens(
+					map[string]string{testProviderGitHub: "user-id-token-jwt"})
+			},
+			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
+				t.Helper()
+				idpServer := createXAAIdPServer(t, "user-id-token-jwt", "not-a-jwt")
+				targetServer := mustNotBeCalledTargetServer(t)
+				return idpServer, targetServer
+			},
+			strategy:      xaaStrategyWithResource,
+			expectError:   true,
+			errorContains: []string{"IdP exchange", "not a valid JWT"},
 		},
 	}
 
@@ -886,21 +1165,62 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 	}
 }
 
-// buildJWTWithTypHeader signs a minimal JWT with the given typ header value using
-// a throwaway RSA key. The token is not intended to be verified — it exists only
-// to exercise the header-parsing path in performIDPExchange.
-func buildJWTWithTypHeader(t *testing.T, typ string) string {
+// testJWTSigningKey is a throwaway RSA key shared by every buildIDJAGJWT call
+// in this file. Tokens built with it are only ever consumed via
+// ParseUnverified (signature never checked), so a single package-level key
+// avoids generating a fresh RSA-2048 key per test case.
+var testJWTSigningKey = func() *rsa.PrivateKey {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+	return key
+}()
+
+// buildIDJAGJWT signs a JWT with the given typ header, aud claim, and resource
+// claim using testJWTSigningKey. aud and resource may each be a string,
+// []string (to exercise the array form), or []interface{} (to exercise
+// heterogeneous arrays); a nil or empty string omits the claim. The token is
+// not intended to be verified — it exists to exercise the claim-validation
+// path in performIDPExchange.
+func buildIDJAGJWT(t *testing.T, typ string, aud, resource any) string {
 	t.Helper()
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	claims := jwt.MapClaims{"sub": "test"}
+	setClaim(t, claims, "aud", aud)
+	setClaim(t, claims, "resource", resource)
 
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"sub": "test"})
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["typ"] = typ
 
-	signed, err := token.SignedString(key)
+	signed, err := token.SignedString(testJWTSigningKey)
 	require.NoError(t, err)
 	return signed
+}
+
+// setClaim sets a string-or-array claim on a MapClaims, omitting it when v is
+// nil or an empty string. []string is marshalled as a JSON array (decoded back
+// by golang-jwt as []interface{}, exercising the array branch of
+// claimContainsString). []interface{} is set directly, allowing heterogeneous
+// arrays (e.g. mixing strings with non-string elements) to exercise the
+// type-guard in claimContainsString's array branch.
+func setClaim(t *testing.T, claims jwt.MapClaims, key string, v any) {
+	t.Helper()
+	switch c := v.(type) {
+	case nil:
+		// omit
+	case string:
+		if c == "" {
+			return
+		}
+		claims[key] = c
+	case []string:
+		claims[key] = c
+	case []interface{}:
+		claims[key] = c
+	default:
+		t.Fatalf("unsupported %s type %T", key, v)
+	}
 }
 
 func TestXAAStrategy_ClientSecretEnv(t *testing.T) {

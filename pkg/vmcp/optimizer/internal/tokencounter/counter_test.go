@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 func TestJSONByteDivisionCounter(t *testing.T) {

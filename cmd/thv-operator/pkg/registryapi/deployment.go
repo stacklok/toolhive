@@ -138,6 +138,12 @@ func (m *manager) upsertDeployment(
 	for k, v := range deployment.Annotations {
 		existing.Annotations[k] = v
 	}
+	// Prune the hash annotation if desired no longer wants it, otherwise it
+	// survives forever and deploymentNeedsUpdate reports drift on every
+	// reconcile (same bug class as #5817/#5818).
+	if _, wantHash := deployment.Annotations[podTemplateSpecHashAnnotation]; !wantHash {
+		delete(existing.Annotations, podTemplateSpecHashAnnotation)
+	}
 
 	// Ensure owner reference is set on the existing object
 	if err := controllerutil.SetControllerReference(mcpRegistry, existing, m.scheme); err != nil {

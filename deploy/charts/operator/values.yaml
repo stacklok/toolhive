@@ -11,9 +11,13 @@ operator:
     # -- Enable the StorageVersionMigrator controller, which auto-cleans
     # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
     # future release can drop deprecated versions (e.g. v1alpha1) without
-    # orphaning etcd objects in the cluster. Sets
+    # orphaning etcd objects in the cluster. Enabled by default; set to
+    # false to opt out and handle storage-version cleanup yourself. Sets
     # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
-    storageVersionMigrator: false
+    # Requires `operator.rbac.scope=cluster` — the controller watches
+    # cluster-scoped CRDs and re-stores resources across all namespaces, so
+    # the chart rejects this being true when scope is namespace.
+    storageVersionMigrator: true
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 
@@ -59,15 +63,40 @@ operator:
     existingSecretKey: ""
 
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.36.0
+  image: ghcr.io/stacklok/toolhive/operator:v0.40.1
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.36.0
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.40.1
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.36.0
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.40.1
+
+  # -- Air-gap image-discovery aid. toolhiveRunnerImage, vmcpImage, and
+  # registryAPI.image are never rendered as chart `image:` keys — the operator
+  # only injects them into child workloads at runtime via env vars
+  # (TOOLHIVE_RUNNER_IMAGE / VMCP_IMAGE / TOOLHIVE_REGISTRY_API_IMAGE). Static
+  # manifest scanners used by air-gap tooling (e.g. a vendor portal's image
+  # list generator) discover images by reading `image:` keys out of
+  # `helm template` output, so they miss these three and an air-gapped
+  # customer can hit ImagePullBackOff on the first MCPServer /
+  # VirtualMCPServer / MCPRegistry create.
+  #
+  # Enabling this renders a `replicas: 0` Deployment
+  # (`<release-name>-image-discovery`) whose pod template references all
+  # three images. A zero-replica Deployment never has Kubernetes schedule a
+  # pod from it, so the images are never pulled or run — this exists purely
+  # to put the refs in front of a static manifest scan.
+  imageDiscovery:
+    # -- Render the zero-replica image-discovery Deployment described above.
+    enabled: false
+    # -- Resource requests/limits for the image-discovery Deployment's
+    # containers. Admission control (a LimitRange, an OPA/Kyverno policy
+    # requiring explicit requests) validates these at CREATE time even
+    # though replicas: 0 means nothing ever actually runs, so this is
+    # exposed separately from operator.resources for clusters that need it set.
+    resources: {}
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

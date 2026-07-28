@@ -13,12 +13,18 @@ tasks:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
       - swag init -g pkg/api/server.go --v3.1 -o docs/server --parseDependencyLevel 1
+      # swag can non-deterministically double enum arrays for types from
+      # external modules (see cmd/help/dedupe-enums); normalize the output.
+      - go run ./cmd/help/dedupe-enums docs/server/docs.go docs/server/swagger.json docs/server/swagger.yaml
       - task: helm-docs
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
-      - go install github.com/swaggo/swag/v2/cmd/swag@latest
+      # Pinned to the version go.mod already requires, so @latest can't
+      # silently drift onto a newer/older swag release.
+      # Keep in sync with .github/workflows/verify-docgen.yml.
+      - go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
 
   helm-docs:
     desc: Generate Helm chart documentation
@@ -214,6 +220,24 @@ tasks:
         platforms: [linux, darwin]
       - task: test-integration-windows
         platforms: [windows]
+
+  conformance:
+    desc: Run the MCP conformance suite against a `thv run` deployment (requires Docker + Node)
+    deps: [build]
+    env:
+      THV_BINARY: "{{.PWD}}/bin/thv"
+      CONFORMANCE_TARGET: '{{.CONFORMANCE_TARGET | default "proxy"}}'
+    cmds:
+      - ./test/conformance/run-conformance.sh
+
+  conformance-vmcp:
+    desc: Run the MCP conformance suite against a `thv vmcp serve` deployment (requires Docker + Node)
+    deps: [build]
+    env:
+      THV_BINARY: "{{.PWD}}/bin/thv"
+      CONFORMANCE_TARGET: vmcp
+    cmds:
+      - ./test/conformance/run-conformance.sh
 
   test-all:
     desc: Run all tests (unit, integration, and e2e)

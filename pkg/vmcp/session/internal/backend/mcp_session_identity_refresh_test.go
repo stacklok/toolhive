@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -85,7 +85,7 @@ func TestHTTPSession_PerRequestIdentity_DrivesUpstreamAuthHeader(t *testing.T) {
 	initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	sess, _, err := connector(initCtx, target, staleIdentity, "")
+	sess, _, err := connector(initCtx, target, staleIdentity, "", nil)
 	require.NoError(t, err, "connector must initialise the backend successfully")
 	t.Cleanup(func() { _ = sess.Close() })
 
@@ -161,7 +161,7 @@ func TestHTTPSession_FallbackIdentity_UsedWhenContextHasNoIdentity(t *testing.T)
 	initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	sess, _, err := connector(initCtx, target, fallbackIdentity, "")
+	sess, _, err := connector(initCtx, target, fallbackIdentity, "", nil)
 	require.NoError(t, err, "connector must initialise the backend successfully")
 	t.Cleanup(func() { _ = sess.Close() })
 

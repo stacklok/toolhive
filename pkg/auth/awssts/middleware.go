@@ -12,7 +12,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -227,6 +229,37 @@ func createAWSStsMiddlewareFunc(
 	}
 }
 
+// hopByHopHeaders lists hop-by-hop headers that httputil.ReverseProxy
+// removes before forwarding. This matches the standard library's
+// hopHeaders list in net/http/httputil/reverseproxy.go.
+var hopByHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// stripHopByHopHeaders removes hop-by-hop headers from a header set,
+// including any header named in the Connection value (RFC 7230 §6.1,
+// RFC 9110 §7.6.1).
+func stripHopByHopHeaders(header http.Header) {
+	for _, f := range header.Values("Connection") {
+		for _, name := range strings.Split(f, ",") {
+			if name = textproto.TrimString(name); name != "" {
+				header.Del(name)
+			}
+		}
+	}
+	for _, h := range hopByHopHeaders {
+		header.Del(h)
+	}
+}
+
 // signRequestForTarget signs the request with SigV4 for the given target host
 // without permanently modifying r.Host or r.URL. When targetURL is non-nil, a
 // clone is used for signing so that only the SigV4 headers are copied back to
@@ -254,6 +287,12 @@ func signRequestForTarget(r *http.Request, signer *RequestSigner, creds *aws.Cre
 		}
 		_ = r.Body.Close()
 	}
+
+	// Strip hop-by-hop headers from the actual request before cloning.
+	// httputil.ReverseProxy removes these before forwarding; if they
+	// remain on r they can trigger removal of newly-signed headers
+	// (e.g. Connection: X-Amz-Date would delete the SigV4 X-Amz-Date).
+	stripHopByHopHeaders(r.Header)
 
 	// Build a signing-only clone with the target host.
 	signingReq := r.Clone(r.Context())

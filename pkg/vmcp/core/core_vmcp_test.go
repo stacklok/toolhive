@@ -283,6 +283,145 @@ func TestListResourcesAndPrompts(t *testing.T) {
 	assert.Equal(t, "p1", prompts[0].Name)
 }
 
+// denyResourceAdmission is a test Admission that drops resources whose URI is in
+// deny. It embeds allowAllAdmission so the tool/prompt methods are satisfied, and
+// overrides only FilterResources — the sole method ListResourceTemplates exercises
+// (the URI template is projected onto a resource URI for admission).
+type denyResourceAdmission struct {
+	allowAllAdmission
+	deny map[string]struct{}
+}
+
+func (d denyResourceAdmission) FilterResources(
+	_ context.Context, _ *auth.Identity, resources []vmcp.Resource,
+) ([]vmcp.Resource, error) {
+	out := make([]vmcp.Resource, 0, len(resources))
+	for i := range resources {
+		if _, blocked := d.deny[resources[i].URI]; !blocked {
+			out = append(out, resources[i])
+		}
+	}
+	return out, nil
+}
+
+func TestListResourceTemplates(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(2)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		ResourceTemplates: []vmcp.ResourceTemplate{
+			{URITemplate: "file:///logs/{date}.txt", BackendID: "be1"},
+			{URITemplate: "secret:///{id}", BackendID: "be1"},
+		},
+	}, nil).Times(2)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// Default allow-all admission: both templates surface, tagged with their backend.
+	templates, err := c.ListResourceTemplates(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, templates, 2)
+
+	// Inject a deny-admission that filters templates by URI template (treated as the
+	// resource id): the denied template is withheld, mirroring ListResources.
+	c.(*coreVMCP).admission = denyResourceAdmission{deny: map[string]struct{}{"secret:///{id}": {}}}
+	templates, err = c.ListResourceTemplates(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "file:///logs/{date}.txt", templates[0].URITemplate)
+	assert.Equal(t, "be1", templates[0].BackendID)
+}
+
+func TestListResourceTemplates_Empty(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(
+		&aggregator.AggregatedCapabilities{}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	templates, err := c.ListResourceTemplates(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, templates)
+}
+
+// TestDiscover_SingleAggregation verifies Discover derives all four
+// capability-presence flags from ONE aggregation call (reg.List +
+// AggregateCapabilities each Times(1)) rather than the four independent
+// fan-outs ListTools/ListResources/ListResourceTemplates/ListPrompts would
+// cost if called separately.
+func TestDiscover_SingleAggregation(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	backends := []vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}
+	m.reg.EXPECT().List(gomock.Any()).Return(backends).Times(1)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), backends).Return(&aggregator.AggregatedCapabilities{
+		Tools:             []vmcp.Tool{backendTool("echo")},
+		Resources:         []vmcp.Resource{{URI: "file://a", BackendID: testBackendID}},
+		ResourceTemplates: []vmcp.ResourceTemplate{{URITemplate: "file:///logs/{date}.txt", BackendID: testBackendID}},
+		Prompts:           []vmcp.Prompt{{Name: "p1", BackendID: testBackendID}},
+		RoutingTable:      &vmcp.RoutingTable{},
+	}, nil).Times(1)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	caps, err := c.Discover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, DiscoverCapabilities{
+		HasTools: true, HasResources: true, HasResourceTemplates: true, HasPrompts: true,
+	}, caps)
+}
+
+// TestDiscover_EmptyAggregate verifies an empty aggregated view yields every
+// flag false, not an error.
+func TestDiscover_EmptyAggregate(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	caps, err := c.Discover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, DiscoverCapabilities{}, caps)
+}
+
+// TestDiscover_DeniedIdentityHidesTools is the security-critical case: a
+// backend advertising a tool must NOT set HasTools for an identity the
+// admission seam denies that tool to. Deriving the flag from the raw
+// aggregate instead of the admission-filtered set would leak the tool's
+// existence to an identity that cannot call it.
+func TestDiscover_DeniedIdentityHidesTools(t *testing.T) {
+	t.Parallel()
+	_, m := baseConfig(t)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{"echo": {authorized: false}}}
+	c := checkCore(m, newCedarAdmission(authorizer))
+	expectAggregationAnyTimes(m, &aggregator.AggregatedCapabilities{
+		Tools:        []vmcp.Tool{backendTool("echo")},
+		RoutingTable: &vmcp.RoutingTable{},
+	})
+
+	caps, err := c.Discover(t.Context(), cedarIdentity())
+	require.NoError(t, err)
+	assert.False(t, caps.HasTools,
+		"a denied identity must not see HasTools=true even though the backend advertises a tool")
+}
+
 func TestListTools_AggregationError(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
@@ -396,12 +535,15 @@ func TestLookup(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
 
-	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	// Seven aggregations: each Lookup aggregates once, except the failing
+	// LookupResource, which also consults the resource-template view on the
+	// concrete-resource miss.
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(7)
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
 		Tools:     []vmcp.Tool{backendTool("tool_a")},
 		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
 		Prompts:   []vmcp.Prompt{{Name: "p1", BackendID: "be1"}},
-	}, nil).Times(6)
+	}, nil).Times(7)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -427,6 +569,50 @@ func TestLookup(t *testing.T) {
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
 }
 
+// TestLookupResource_TemplateBackedURI verifies LookupResource accepts the URIs a
+// templated read serves — both the template string itself (the form a
+// resources/subscribe or completion ref/resource carries) and an expanded URI
+// matching an advertised template — while an unmatched URI still misses. This
+// keeps the subscribe admission (coreSubscribeHandler) aligned with read.
+func TestLookupResource_TemplateBackedURI(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
+		ResourceTemplates: []vmcp.ResourceTemplate{
+			{
+				URITemplate: "file:///logs/{date}.txt",
+				Name:        "Daily log",
+				Description: "A day's log file",
+				MimeType:    "text/plain",
+				BackendID:   "be1",
+			},
+		},
+	}, nil).Times(6)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+
+	// The exact template string resolves to the template's capability.
+	res, err := c.LookupResource(ctx, nil, "file:///logs/{date}.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "file:///logs/{date}.txt", res.URI)
+	assert.Equal(t, "be1", res.BackendID)
+
+	// An expanded URI matching the template resolves to the same capability.
+	res, err = c.LookupResource(ctx, nil, "file:///logs/2025-01-01.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "be1", res.BackendID)
+
+	// A URI matching no concrete resource or template still misses.
+	_, err = c.LookupResource(ctx, nil, "db:///users/42")
+	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+}
+
 func TestClose_Idempotent(t *testing.T) {
 	t.Parallel()
 	cfg, _ := baseConfig(t)
@@ -439,6 +625,59 @@ func TestClose_Idempotent(t *testing.T) {
 		require.NoError(t, c.Close())
 		require.NoError(t, c.Close())
 	})
+}
+
+// invalidatorAggregator is a minimal aggregator.Aggregator that also
+// implements aggregator.CacheInvalidator, so TestInvalidateCapabilityCache_*
+// can assert coreVMCP.InvalidateCapabilityCache's delegation without depending
+// on the real cachingAggregator (covered separately in the aggregator package).
+type invalidatorAggregator struct {
+	aggregator.Aggregator
+	invalidateCalls int
+}
+
+func (a *invalidatorAggregator) InvalidateAll() { a.invalidateCalls++ }
+
+var _ aggregator.CacheInvalidator = (*invalidatorAggregator)(nil)
+
+// TestInvalidateCapabilityCache_DelegatesWhenSupported verifies (#5748) that
+// InvalidateCapabilityCache type-asserts the configured aggregator to
+// aggregator.CacheInvalidator and calls InvalidateAll when it is implemented.
+func TestInvalidateCapabilityCache_DelegatesWhenSupported(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	inv := &invalidatorAggregator{Aggregator: m.agg}
+	cfg.Aggregator = inv
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	c.InvalidateCapabilityCache()
+	assert.Equal(t, 1, inv.invalidateCalls)
+}
+
+// TestInvalidateCapabilityCache_WarnsWhenUnsupported verifies (#5748) that
+// InvalidateCapabilityCache is a WARN-logged no-op — not a silent one — when
+// the configured aggregator does not implement aggregator.CacheInvalidator
+// (baseConfig's plain MockAggregator does not).
+//
+//nolint:paralleltest // installs a global slog default + non-thread-safe buffer; must not run in parallel
+func TestInvalidateCapabilityCache_WarnsWhenUnsupported(t *testing.T) {
+	cfg, _ := baseConfig(t)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	assert.NotPanics(t, func() { c.InvalidateCapabilityCache() })
+	assert.Contains(t, buf.String(), "does not support it",
+		"unsupported aggregator must WARN-log, not silently no-op")
 }
 
 // Must run serially: it swaps the global slog default to capture output into a

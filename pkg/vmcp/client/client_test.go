@@ -13,9 +13,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -23,14 +25,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	gosync "sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/propagation"
@@ -38,7 +38,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
@@ -54,7 +60,7 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("factory error")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -68,6 +74,11 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 			BaseURL:       "http://localhost:8080",
 			TransportType: "streamable-http",
 		}
+
+		// Pre-seed the revision cache to Legacy so ListCapabilities skips the
+		// Modern discover probe (which would need a real transport/registry) and
+		// goes straight to the injected clientFactory under test.
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 		capabilities, err := backendClient.ListCapabilities(context.Background(), target)
 
@@ -97,6 +108,17 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Empty(t, result.Resources)
+	})
+
+	t.Run("queryResourceTemplates with unsupported capability returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		// Resource templates are gated on the resources capability; when the backend
+		// does not advertise resources, the query is skipped and returns empty.
+		result, err := queryResourceTemplates(context.Background(), nil, false, "test-backend")
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Empty(t, result.ResourceTemplates)
 	})
 
 	t.Run("queryPrompts with unsupported capability returns empty slice", func(t *testing.T) {
@@ -320,7 +342,7 @@ func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 			require.NoError(t, err)
 			httpClient := backendClient.(*httpBackendClient)
 
-			_, err = httpClient.defaultClientFactory(context.Background(), target)
+			_, err = httpClient.defaultClientFactory(context.Background(), target, false)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport)
@@ -336,7 +358,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -351,7 +373,8 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -366,7 +389,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -381,6 +404,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		data, err := backendClient.ReadResource(context.Background(), target, "test://resource")
 
 		require.Error(t, err)
@@ -396,7 +420,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -411,6 +435,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		prompt, err := backendClient.GetPrompt(context.Background(), target, "test_prompt", map[string]any{"arg": "value"})
 
 		require.Error(t, err)
@@ -1480,4 +1505,391 @@ func ExampleWithDialControl() {
 		panic(err)
 	}
 	_ = backendClient
+}
+
+// TestListCapabilities_MethodNotFoundResourceTemplates verifies FIX: a backend
+// that advertises the resources capability but answers resources/templates/list
+// with JSON-RPC -32601 (method not found) degrades to an EMPTY template list
+// instead of dropping its entire capability set — its concrete resources still
+// aggregate.
+func TestListCapabilities_MethodNotFoundResourceTemplates(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := mcpserver.NewMCPServer("partial-backend", "1.0.0")
+	mcpServer.AddResource(
+		mcp.Resource{
+			URI:      "file:///readme.txt",
+			Name:     "Readme",
+			MIMEType: "text/plain",
+		},
+		func(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI:      req.Params.URI,
+					MIMEType: "text/plain",
+					Text:     "hello",
+				},
+			}, nil
+		},
+	)
+
+	// resources/templates/list is not implemented: answer it with a JSON-RPC
+	// -32601 (method not found) while delegating everything else to the server.
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil && probe.Method == "resources/templates/list" {
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      probe.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+			respBytes, _ := json.Marshal(resp)
+			_, _ = w.Write(respBytes)
+			return
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "partial-backend",
+		WorkloadName:  "Partial Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "a -32601 on resources/templates/list must not drop the backend")
+	require.NotNil(t, caps)
+
+	assert.Empty(t, caps.ResourceTemplates, "templates must degrade to an empty list")
+	require.Len(t, caps.Resources, 1, "the backend's concrete resources must still aggregate")
+	assert.Equal(t, "file:///readme.txt", caps.Resources[0].URI)
+}
+
+// TestDefaultClientFactory_SSEForwarding verifies the SSE transport gets the
+// same elicitation/sampling forwarding handlers as streamable-http when
+// forwarding is requested and forwarders are bound, and that Initialize declares
+// the corresponding client capabilities to the backend (without them a
+// backend's mid-call elicitation/create or sampling/createMessage is rejected
+// instead of relayed).
+func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		bindForwarders  bool
+		forwarding      bool
+		wantElicitCap   bool
+		wantSamplingCap bool
+	}{
+		{
+			name:            "bound forwarders and forwarding requested declare elicitation and sampling",
+			bindForwarders:  true,
+			forwarding:      true,
+			wantElicitCap:   true,
+			wantSamplingCap: true,
+		},
+		{
+			name:           "bound forwarders without forwarding request declares neither",
+			bindForwarders: true,
+			forwarding:     false,
+		},
+		{
+			name:           "unbound forwarders declare neither",
+			bindForwarders: false,
+			forwarding:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Minimal SSE server: one event carrying the endpoint, then the
+			// MCP endpoint answers initialize and reports the client's declared
+			// capabilities back to the test.
+			var (
+				mu          gosync.Mutex
+				gotElicit   bool
+				gotSampling bool
+			)
+			var mcpEndpoint string
+			// events carries JSON-RPC responses the /mcp POST handler queues for
+			// delivery on the SSE stream (legacy SSE transport semantics).
+			events := make(chan []byte, 16)
+			mux := http.NewServeMux()
+			mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+				rawMessage, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, "Failed to read request", http.StatusBadRequest)
+					return
+				}
+				defer r.Body.Close()
+				var req struct {
+					Method string `json:"method"`
+					ID     any    `json:"id"`
+					Params struct {
+						Capabilities struct {
+							Elicitation map[string]any `json:"elicitation"`
+							Sampling    map[string]any `json:"sampling"`
+						} `json:"capabilities"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal(rawMessage, &req); err != nil {
+					http.Error(w, "Bad request", http.StatusBadRequest)
+					return
+				}
+				if req.Method == "server/discover" {
+					// go-sdk v1.7's Connect() is Modern-first (SEP-2575): it always
+					// tries server/discover before falling back to legacy initialize.
+					// Answer -32601 (method not found) over the SSE message channel so
+					// the client falls back to initialize below (which this fake
+					// already handles), instead of hanging waiting for a response that
+					// never comes.
+					respBytes, _ := json.Marshal(map[string]any{
+						"jsonrpc": "2.0",
+						"id":      req.ID,
+						"error":   map[string]any{"code": -32601, "message": "method not found"},
+					})
+					w.WriteHeader(http.StatusAccepted)
+					select {
+					case events <- respBytes:
+					case <-time.After(5 * time.Second):
+						// t.Errorf, not t.Fatal: this runs on the server's own goroutine
+						// (Fatal's runtime.Goexit would kill the wrong one).
+						t.Errorf("timed out queuing server/discover fallback response for SSE delivery")
+					}
+					return
+				}
+				if req.Method != "initialize" {
+					// Notifications (initialized, cancelled) need no response body.
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				mu.Lock()
+				gotElicit = req.Params.Capabilities.Elicitation != nil
+				gotSampling = req.Params.Capabilities.Sampling != nil
+				mu.Unlock()
+
+				respBytes, _ := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
+						"capabilities":    map[string]any{},
+						"serverInfo":      map[string]any{"name": "sse-backend", "version": "1.0.0"},
+					},
+				})
+				// Per the legacy SSE transport, the server answers a client POST
+				// with 202 Accepted and delivers the JSON-RPC response as a
+				// "message" event on the client's SSE stream.
+				w.WriteHeader(http.StatusAccepted)
+				select {
+				case events <- respBytes:
+				case <-time.After(5 * time.Second):
+					// t.Errorf, not t.Fatal: this runs on the server's own goroutine.
+					t.Errorf("timed out queuing initialize response for SSE delivery")
+				}
+			})
+			mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", mcpEndpoint)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				for {
+					select {
+					case <-r.Context().Done():
+						return
+					case msg := <-events:
+						_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+						if f, ok := w.(http.Flusher); ok {
+							f.Flush()
+						}
+					}
+				}
+			})
+			httpServer := httptest.NewServer(mux)
+			defer httpServer.Close()
+			mcpEndpoint = httpServer.URL + "/mcp"
+
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+			backendClient, err := NewHTTPBackendClient(registry)
+			require.NoError(t, err)
+			httpClient := backendClient.(*httpBackendClient)
+
+			if tt.bindForwarders {
+				httpClient.BindForwarders(
+					&stubElicitationRequester{},
+					&stubSamplingRequester{},
+					nil,
+				)
+			}
+
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "sse-backend",
+				WorkloadName:  "SSE Backend",
+				BaseURL:       httpServer.URL + "/sse",
+				TransportType: "sse",
+			}
+
+			c, err := httpClient.defaultClientFactory(t.Context(), target, tt.forwarding)
+			require.NoError(t, err)
+			defer func() { _ = c.Close() }()
+
+			// The handlers themselves live on unexported mcpcompat Client fields, so
+			// the observable assertion is the capability declaration: the go-sdk
+			// auto-declares elicitation/sampling at initialize exactly when the
+			// corresponding handler is installed.
+			initCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			_, _, err = initializeClient(initCtx, c)
+			require.NoError(t, err)
+
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.wantElicitCap, gotElicit,
+				"elicitation capability declaration must match handler installation")
+			assert.Equal(t, tt.wantSamplingCap, gotSampling,
+				"sampling capability declaration must match handler installation")
+		})
+	}
+}
+
+// stubElicitationRequester is a no-op ElicitationRequester used to bind
+// forwarders in client-factory tests; only its non-nil-ness matters.
+type stubElicitationRequester struct{}
+
+func (*stubElicitationRequester) RequestElicitation(context.Context, vmcp.ElicitationRequest) (*vmcp.ElicitationResult, error) {
+	return nil, errors.New("stub: no downstream session")
+}
+
+// stubSamplingRequester is a no-op SamplingRequester used to bind forwarders in
+// client-factory tests; only its non-nil-ness matters.
+type stubSamplingRequester struct{}
+
+func (*stubSamplingRequester) RequestSampling(context.Context, vmcp.SamplingRequest) (*vmcp.SamplingResult, error) {
+	return nil, errors.New("stub: no downstream session")
+}
+
+// idleSpy is a RoundTripper that records CloseIdleConnections calls.
+type idleSpy struct{ closed int }
+
+func (*idleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *idleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestModernChain_CloseIdleConnectionsForwards verifies the trace/identity/auth
+// wrapper chain forwards CloseIdleConnections down to the concrete transport at
+// the bottom (a plain hc.CloseIdleConnections would otherwise be a silent no-op).
+func TestModernChain_CloseIdleConnectionsForwards(t *testing.T) {
+	t.Parallel()
+
+	spy := &idleSpy{}
+	chain := &tracePropagatingRoundTripper{
+		base: &identityPropagatingRoundTripper{
+			base: &authRoundTripper{base: spy},
+		},
+	}
+
+	// Reached the way http.Client.CloseIdleConnections reaches its transport.
+	chain.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed, "CloseIdleConnections must reach the bottom transport")
+}
+
+// TestNewBackendHTTPClient_RedirectPolicy verifies the shared choke point installs
+// SameHostRedirectPolicy: a cross-host 30x is refused (so the RoundTripper-injected
+// credential never reaches the attacker host), while a same-host redirect is
+// followed.
+func TestNewBackendHTTPClient_RedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	// inject mimics the auth/header-forward chain: it sets a credential on EVERY hop.
+	inject := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.Header.Set("Authorization", "secret")
+		return http.DefaultTransport.RoundTrip(req)
+	})
+
+	t.Run("cross-host redirect refused, no credential leak", func(t *testing.T) {
+		t.Parallel()
+
+		var attackerSawAuth atomic.Bool
+		attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "" {
+				attackerSawAuth.Store(true)
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(attacker.Close)
+
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Redirect(w, &http.Request{}, attacker.URL, http.StatusFound)
+		}))
+		t.Cleanup(origin.Close)
+
+		hc := newBackendHTTPClient(inject, 5*time.Second)
+		resp, err := hc.Get(origin.URL) //nolint:noctx // test
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		require.Error(t, err)
+		assert.ErrorIs(t, err, networking.ErrRedirectRefused)
+		assert.False(t, attackerSawAuth.Load(), "credential must not reach the cross-host redirect target")
+	})
+
+	t.Run("same-host redirect followed", func(t *testing.T) {
+		t.Parallel()
+
+		var landed atomic.Bool
+		mux := http.NewServeMux()
+		mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/end", http.StatusFound)
+		})
+		mux.HandleFunc("/end", func(w http.ResponseWriter, _ *http.Request) {
+			landed.Store(true)
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		hc := newBackendHTTPClient(inject, 5*time.Second)
+		resp, err := hc.Get(srv.URL + "/start") //nolint:noctx // test
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.True(t, landed.Load(), "same-host redirect must be followed")
+	})
 }

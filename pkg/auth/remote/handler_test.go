@@ -274,7 +274,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 
-			issuer, scopes, authServerInfo, err := handler.discoverIssuerAndScopes(
+			issuer, scopes, authServerInfo, _, err := handler.discoverIssuerAndScopes(
 				ctx,
 				authInfo,
 				remoteURL,
@@ -388,7 +388,7 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		// The path traversal should be normalized
@@ -410,7 +410,7 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		defer mockServer.Close()
 
 		ctx := t.Context()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, mockServer.URL)
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, mockServer.URL)
 
 		require.NoError(t, err)
 		// Should not use the insecure realm, should fall through
@@ -444,7 +444,7 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		// Should not hang or crash; Priority 3 fails gracefully and falls through to URL-derived issuer
 		require.NoError(t, err)
@@ -532,7 +532,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, scopes, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, scopes, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://configured.example.com", issuer)
@@ -551,7 +551,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://realm.example.com/oauth", issuer)
@@ -569,7 +569,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		// Should fall through to URL-derived issuer
@@ -587,7 +587,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com/path")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com/path")
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://server.example.com", issuer)
@@ -1010,4 +1010,22 @@ func TestResolveClientCredentials(t *testing.T) {
 			assert.Equal(t, tt.wantClientSecret, gotClientSecret, "clientSecret mismatch")
 		})
 	}
+}
+
+// TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs pins that performOAuthFlow's
+// allowPrivateIPs parameter reaches the built OAuthFlowConfig. Without this,
+// a future refactor could silently drop the SSRF-guard decision computed in
+// Authenticate/discoverIssuerAndScopes without any test failing.
+func TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{config: &Config{}}
+
+	flowConfig := h.buildOAuthFlowConfig([]string{"openid"}, nil, true)
+	assert.True(t, flowConfig.AllowPrivateIPs,
+		"allowPrivateIPs=true must reach OAuthFlowConfig.AllowPrivateIPs")
+
+	flowConfig = h.buildOAuthFlowConfig([]string{"openid"}, nil, false)
+	assert.False(t, flowConfig.AllowPrivateIPs,
+		"allowPrivateIPs=false must reach OAuthFlowConfig.AllowPrivateIPs")
 }

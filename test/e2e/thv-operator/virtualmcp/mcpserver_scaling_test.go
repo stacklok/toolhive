@@ -13,9 +13,6 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	"github.com/redis/go-redis/v9"
@@ -27,6 +24,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
@@ -114,6 +114,24 @@ func cleanupRedis(name string) {
 	_ = k8sClient.Delete(ctx, &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 	})
+}
+
+// scaleRedis sets the named Redis Deployment's replica count — 0 to simulate a
+// session-store outage, 1 to restore. Parameterized by name (unlike the
+// acceptance-tier helper removed in 5fa67123b, which hardcoded a shared "redis"
+// Deployment) so scaling one spec's Redis cannot disturb another's under
+// --procs=8.
+//
+// Callers should wrap this in Eventually: it is a read-modify-write, and
+// kube-controller-manager writes .status on the same object, so an isolated
+// Update can lose a race and return a 409 conflict.
+func scaleRedis(name string, replicas int32) error {
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, deploy); err != nil {
+		return err
+	}
+	deploy.Spec.Replicas = int32Ptr(replicas)
+	return k8sClient.Update(ctx, deploy)
 }
 
 // getReadyMCPServerPods returns all Running+Ready pods for an MCPServer.

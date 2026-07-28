@@ -2039,12 +2039,14 @@ func TestRedisKeyGeneration(t *testing.T) {
 		t.Parallel()
 		result := redisDCRKey("test:auth:", DCRKey{
 			Issuer:      "https://thv.example.com",
+			UpstreamID:  "https://idp.example.com",
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  "abc123",
 		})
-		// 23 = len("https://thv.example.com"), 38 = len("https://thv.example.com/oauth/callback")
+		// 23 = len("https://thv.example.com"), 23 = len("https://idp.example.com"),
+		// 38 = len("https://thv.example.com/oauth/callback")
 		assert.Equal(t,
-			"test:auth:dcr:23:https://thv.example.com:38:https://thv.example.com/oauth/callback:abc123",
+			"test:auth:dcr:23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:abc123",
 			result)
 	})
 }
@@ -2057,8 +2059,8 @@ func TestRedisKeyGeneration(t *testing.T) {
 func TestRedisDCRKey_Distinct(t *testing.T) {
 	t.Parallel()
 
-	mk := func(issuer, redirect, scopes string) DCRKey {
-		return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: scopes}
+	mk := func(issuer, upstreamID, redirect, scopes string) DCRKey {
+		return DCRKey{Issuer: issuer, UpstreamID: upstreamID, RedirectURI: redirect, ScopesHash: scopes}
 	}
 
 	tests := []struct {
@@ -2067,33 +2069,56 @@ func TestRedisDCRKey_Distinct(t *testing.T) {
 	}{
 		{
 			name: "different issuer",
-			a:    mk("https://idp-a.example.com", "https://x/cb", "h1"),
-			b:    mk("https://idp-b.example.com", "https://x/cb", "h1"),
+			a:    mk("https://idp-a.example.com", "https://up", "https://x/cb", "h1"),
+			b:    mk("https://idp-b.example.com", "https://up", "https://x/cb", "h1"),
+		},
+		{
+			// Two upstreams that share the consumer's issuer, redirect, and
+			// scopes and differ only by upstream — the #5823 shape.
+			name: "different upstream_id",
+			a:    mk("https://idp.example.com", "https://up-a", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up-b", "https://x/cb", "h1"),
 		},
 		{
 			name: "different redirect_uri",
-			a:    mk("https://idp.example.com", "https://x/cb", "h1"),
-			b:    mk("https://idp.example.com", "https://y/cb", "h1"),
+			a:    mk("https://idp.example.com", "https://up", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up", "https://y/cb", "h1"),
 		},
 		{
 			name: "different scopes hash",
-			a:    mk("https://idp.example.com", "https://x/cb", "h1"),
-			b:    mk("https://idp.example.com", "https://x/cb", "h2"),
+			a:    mk("https://idp.example.com", "https://up", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up", "https://x/cb", "h2"),
 		},
 		{
 			// Without length prefixing, ("ab", "cd") and ("a", "bcd") would
 			// both yield ":ab:cd:" as the issuer/redirect segment after a
 			// fmt.Sprintf collapse. The length prefix prevents that.
 			name: "redirect_uri-issuer boundary collision (length-prefix property)",
-			a:    mk("ab", "cd", "h1"),
-			b:    mk("a", "bcd", "h1"),
+			a:    mk("ab", "up", "cd", "h1"),
+			b:    mk("a", "up", "bcd", "h1"),
+		},
+		{
+			// UpstreamID legitimately contains colons and can abut the issuer
+			// boundary; the length prefix keeps ("ab","cd") and ("a","bcd")
+			// distinct across the issuer/upstream seam too.
+			name: "issuer-upstream_id boundary collision (length-prefix property)",
+			a:    mk("ab", "cd", "https://x/cb", "h1"),
+			b:    mk("a", "bcd", "https://x/cb", "h1"),
+		},
+		{
+			// UpstreamID also abuts RedirectURI; the length prefix must keep
+			// ("ab","cd") and ("a","bcd") distinct across the second new seam
+			// introduced by inserting UpstreamID between Issuer and RedirectURI.
+			name: "upstream_id-redirect_uri boundary collision (length-prefix property)",
+			a:    mk("https://idp.example.com", "ab", "cd", "h1"),
+			b:    mk("https://idp.example.com", "a", "bcd", "h1"),
 		},
 		{
 			// RedirectURI legitimately contains colons (e.g. ":443"). A plain
 			// "%s:%s:%s" key would be ambiguous; the length prefix is not.
 			name: "colons inside redirect_uri",
-			a:    mk("https://idp.example.com", "https://x.example.com:443/cb", "h1"),
-			b:    mk("https://idp.example.com", "https://x.example.com/cb:443", "h1"),
+			a:    mk("https://idp.example.com", "https://up", "https://x.example.com:443/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://up", "https://x.example.com/cb:443", "h1"),
 		},
 	}
 
@@ -2115,6 +2140,7 @@ func TestRedisDCRKey_Deterministic(t *testing.T) {
 
 	key := DCRKey{
 		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  ScopesHash([]string{"openid", "profile", "email"}),
 	}
@@ -2362,6 +2388,7 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 func dcrFixtureKey() DCRKey {
 	return DCRKey{
 		Issuer:      "https://thv.example.com",
+		UpstreamID:  "https://idp.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  ScopesHash([]string{"openid", "profile"}),
 	}
@@ -2461,8 +2488,8 @@ func TestRedisStorage_DCRCredentials_NotFound(t *testing.T) {
 
 func TestRedisStorage_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
-			return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
+		mkKey := func(issuer, upstreamID, redirect string, scopes []string) DCRKey {
+			return DCRKey{Issuer: issuer, UpstreamID: upstreamID, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
 		}
 		mk := func(key DCRKey, clientID string) *DCRCredentials {
 			return &DCRCredentials{
@@ -2473,10 +2500,13 @@ func TestRedisStorage_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 			}
 		}
 		entries := []*DCRCredentials{
-			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
-			mk(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
-			mk(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
-			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "a"),
+			mk(mkKey("https://idp-b.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "b"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://y/cb", []string{"openid"}), "c"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid", "email"}), "d"),
+			// Differs from entry "a" only by UpstreamID — the two-upstreams-in-
+			// one-authserver shape that collided before #5823.
+			mk(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
 		}
 		for _, e := range entries {
 			require.NoError(t, s.StoreDCRCredentials(ctx, e))
@@ -2505,6 +2535,7 @@ func TestRedisStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 		return &DCRCredentials{
 			Key: DCRKey{
 				Issuer:      "https://idp.example.com",
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://x/cb",
 				ScopesHash:  ScopesHash([]string{"openid"}),
 			},
@@ -2526,6 +2557,13 @@ func TestRedisStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 			name: "empty issuer",
 			mutator: func(c *DCRCredentials) *DCRCredentials {
 				c.Key.Issuer = ""
+				return c
+			},
+		},
+		{
+			name: "empty upstream_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.UpstreamID = ""
 				return c
 			},
 		},
@@ -2748,6 +2786,7 @@ func runDCRConcurrentAccess(
 		case dcrConcurrentDisjointKeys:
 			return DCRKey{
 				Issuer:      fmt.Sprintf("https://idp-%d.example.com", gid),
+				UpstreamID:  "https://upstream.example.com",
 				RedirectURI: "https://x/cb",
 				ScopesHash:  ScopesHash([]string{"openid"}),
 			}

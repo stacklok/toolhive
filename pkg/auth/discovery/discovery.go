@@ -519,6 +519,24 @@ type OAuthFlowConfig struct {
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
+
+	// AllowPrivateIPs permits the Dynamic Client Registration calls (discovery
+	// fetch and registration POST) to reach private/loopback/link-local
+	// addresses. Callers set it from networking.TargetIsPrivate on the remote
+	// target: when ToolHive is pointed at a private remote the upstream IdP may
+	// legitimately be private too, so its DCR calls must be allowed; otherwise
+	// they are guarded to contain SSRF (CWE-918). This mirrors the
+	// blockPrivateIPs decision the flow already applies to its other discovery
+	// fetches. Defaults to false (guarded).
+	AllowPrivateIPs bool
+
+	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
+	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
+	SecretExpiry            time.Time // zero means the secret never expires
+	RegistrationAccessToken string    //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -534,6 +552,16 @@ type OAuthFlowResult struct {
 	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
 	ClientID     string
 	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
+
+	// DCR renewal metadata (RFC 7591 §3.2.1 / RFC 7592).
+	// SecretExpiry is zero when the provider did not issue an expiring secret.
+	// RegistrationAccessToken and RegistrationClientURI are empty when the
+	// provider does not support RFC 7592 management operations.
+	SecretExpiry            time.Time
+	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -606,20 +634,12 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 // exists.
 //
 // One consequence of option (b) is that the resolver's RFC 7591 §3.2.1
-// expiry-driven refetch does NOT participate in the CLI's cross-
-// invocation persistence loop: each PerformOAuthFlow call builds a fresh
-// in-memory store, so a "cached but expired" entry from the previous
-// invocation never reaches the resolver. Cross-invocation expiry is also
-// NOT enforced by the remote handler's gate today —
-// HasCachedClientCredentials only checks CachedClientID != "" and does
-// not consult CachedSecretExpiry, so an expired-but-still-cached client
-// gets reused on the next invocation and surfaces as a token-endpoint
-// failure rather than a clean DCR re-registration. Tightening the gate
-// to also check CachedSecretExpiry is open follow-up work; the
-// behaviour today is "cross-invocation expiry is unhandled". Within a
-// single invocation, the resolver's expiry check is still in the loop
-// and would fire if the same call site somehow registered, persisted,
-// and re-queried the in-memory store — but the CLI never does this today.
+// expiry-driven refetch does NOT participate in the CLI's cross-invocation
+// persistence loop: each PerformOAuthFlow call builds a fresh in-memory store,
+// so a cached entry from a previous invocation never reaches the resolver.
+// Cross-invocation client-secret expiry is handled instead by the remote
+// handler, which consults CachedSecretExpiry and renews through RFC 7592 before
+// cached credentials are used.
 //
 // Wrapping the remote handler's secretProvider into a dcr.CredentialStore
 // adapter (option (a)) would close that loop and is the natural follow-up;
@@ -667,6 +687,18 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 		config.TokenURL = resolution.TokenEndpoint
 	}
 
+	// Store DCR renewal metadata for RFC 7592 operations.
+	// A zero ClientSecretExpiresAt means the secret never expires (RFC 7591 §3.2.1).
+	config.SecretExpiry = resolution.ClientSecretExpiresAt
+	config.RegistrationAccessToken = resolution.RegistrationAccessToken
+	config.RegistrationClientURI = resolution.RegistrationClientURI
+	config.TokenEndpointAuthMethod = resolution.TokenEndpointAuthMethod
+	config.RegisteredCallbackPort = config.CallbackPort
+
+	if resolution.RegistrationAccessToken != "" {
+		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
+	}
+
 	return nil
 }
 
@@ -707,12 +739,14 @@ func resolveDCRCredentials(
 	// dcr.Request.Issuer carries the caller's logical scope for cache
 	// keying. The CLI flow has no separate logical issuer of its own, so
 	// it deliberately reuses the upstream's issuer URL here. This is
-	// safe because the resolver's cache key is (Issuer, RedirectURI,
-	// ScopesHash) and the CLI always supplies an explicit loopback
-	// RedirectURI per RFC 8252 §7.3 — even if a future embedded-authserver
-	// upstream happened to share Issuer with a CLI invocation, the
-	// distinct RedirectURI keeps the cache keys apart. See the Issuer
-	// field doc on dcr.Request for the wider semantics.
+	// safe because the resolver's cache key is (Issuer, UpstreamID,
+	// RedirectURI, ScopesHash) and the CLI always supplies an explicit
+	// loopback RedirectURI per RFC 8252 §7.3 — even if a future
+	// embedded-authserver upstream happened to share Issuer with a CLI
+	// invocation, the distinct RedirectURI keeps the cache keys apart.
+	// UpstreamID (derived by the resolver from the RegistrationEndpoint set
+	// below, or a DiscoveryURL) further distinguishes distinct upstreams.
+	// See the Issuer field doc on dcr.Request for the wider semantics.
 	req := &dcr.Request{
 		Issuer:                issuer,
 		RedirectURI:           redirectURI,
@@ -720,6 +754,11 @@ func resolveDCRCredentials(
 		AuthorizationEndpoint: discoveredDoc.AuthorizationEndpoint,
 		TokenEndpoint:         discoveredDoc.TokenEndpoint,
 		PublicClient:          true,
+		// Carry the flow's private-IP decision so DCR shares the same SSRF
+		// posture as the flow's other discovery fetches; without this the DCR
+		// calls would always be guarded and a legitimately private upstream
+		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
+		AllowPrivateIPs: config.AllowPrivateIPs,
 	}
 
 	// Fetch AS metadata using the multi-URL fallback so non-root issuers
@@ -728,7 +767,26 @@ func resolveDCRCredentials(
 	// defence-in-depth for a future refactor that produces an empty-issuer
 	// doc and preserves the pre-existing RegistrationEndpoint-direct path.
 	if discoveredDoc.Issuer != "" {
-		fullMeta, metaErr := oauthproto.FetchAuthorizationServerMetadata(ctx, discoveredDoc.Issuer, nil)
+		// Guard this fetch the same way pkg/auth/dcr's own outbound calls are
+		// guarded (CWE-918): discoveredDoc.Issuer can be untrusted server input
+		// on some discovery branches (see discoverIssuerAndScopes in
+		// pkg/auth/remote/handler.go), so a nil client here would reopen the
+		// discovery-indirection and DNS-rebinding vectors this PR closes
+		// elsewhere. See networking.NewHostScopedClientBuilder for the guard
+		// policy and pkg/auth/dcr's newGuardedDCRClient for the same pattern.
+		metaHost, parseErr := url.Parse(discoveredDoc.Issuer)
+		if parseErr != nil {
+			return nil, fmt.Errorf("dynamic client registration failed: parse issuer for http client: %w", parseErr)
+		}
+		metaClient, clientErr := networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false).
+			WithDisableKeepAlives(true).
+			Build()
+		if clientErr != nil {
+			return nil, fmt.Errorf("dynamic client registration failed: build metadata http client: %w", clientErr)
+		}
+		metaClient.CheckRedirect = networking.SameHostRedirectPolicy()
+
+		fullMeta, metaErr := oauthproto.FetchAuthorizationServerMetadata(ctx, discoveredDoc.Issuer, metaClient)
 		if metaErr != nil && !errors.Is(metaErr, oauthproto.ErrRegistrationEndpointMissing) {
 			return nil, fmt.Errorf("dynamic client registration failed: discover authorization server metadata: %w", metaErr)
 		}
@@ -810,8 +868,10 @@ func getDiscoveryDocument(
 		}, nil
 	}
 
-	// Fall back to discovering endpoints
-	return oauth.DiscoverOIDCEndpoints(ctx, issuer)
+	// Fall back to discovering endpoints. This fetch precedes the DCR
+	// registration this function's callers are about to perform, so it shares
+	// the same private-IP policy (CWE-918) rather than defaulting to unguarded.
+	return oauth.DiscoverOIDCEndpoints(ctx, issuer, !config.AllowPrivateIPs)
 }
 
 // createOAuthConfig creates the OAuth configuration based on available endpoints
@@ -891,15 +951,30 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}
 
 	source := flow.TokenSource()
+	return buildOAuthFlowResult(source, oauthConfig, tokenResult, config), nil
+}
+
+func buildOAuthFlowResult(
+	tokenSource oauth2.TokenSource,
+	oauthConfig *oauth.Config,
+	tokenResult *oauth.TokenResult,
+	config *OAuthFlowConfig,
+) *OAuthFlowResult {
 	return &OAuthFlowResult{
-		TokenSource:  source,
+		TokenSource:  tokenSource,
 		Config:       oauthConfig,
 		AccessToken:  tokenResult.AccessToken,
 		RefreshToken: tokenResult.RefreshToken,
 		Expiry:       tokenResult.Expiry,
 		ClientID:     oauthConfig.ClientID,
 		ClientSecret: oauthConfig.ClientSecret,
-	}, nil
+		// DCR renewal metadata — populated only when dynamic registration was performed.
+		SecretExpiry:            config.SecretExpiry,
+		RegistrationAccessToken: config.RegistrationAccessToken,
+		RegistrationClientURI:   config.RegistrationClientURI,
+		TokenEndpointAuthMethod: config.TokenEndpointAuthMethod,
+		RegisteredCallbackPort:  config.RegisteredCallbackPort,
+	}
 }
 
 // FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a

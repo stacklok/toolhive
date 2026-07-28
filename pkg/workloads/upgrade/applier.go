@@ -301,9 +301,13 @@ func (a *Applier) buildUpgradedConfig(
 		runner.WithHost(old.Host),
 		runner.WithVolumes(slices.Clone(old.Volumes)),
 		runner.WithSecrets(mergedSecrets),
+		// Intentionally NOT paired with WithNetworkIsolationExplicit: a legacy
+		// config with isolation + a host/none network mode should degrade-and-warn
+		// on upgrade, not hard-fail. See #5775.
 		runner.WithNetworkIsolation(old.IsolateNetwork),
 		runner.WithAllowDockerGateway(old.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(old.TrustProxyHeaders),
+		runner.WithStrictProtocolValidation(old.StrictProtocolValidation),
 		runner.WithProxyMode(old.ProxyMode),
 		runner.WithCmdArgs(slices.Clone(old.CmdArgs)),
 		runner.WithStateless(old.Stateless),

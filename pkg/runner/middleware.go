@@ -76,6 +76,28 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return err
 	}
 
+	// Audit middleware (if enabled). Added directly inside body-limit so it
+	// wraps the REST of the chain: every request that passes the size cap
+	// produces an audit event no matter which middleware rejects it.
+	// Authentication (401) and authorization/webhook denials (403) map to
+	// outcome "denied"; other rejections such as rate limiting (429) map to
+	// "failure" (see audit.determineOutcome). Identity and parsed MCP data are
+	// read back from the inner auth/parser middlewares via the holder
+	// carriers (see auth.IdentityHolder, mcp.ParsedRequestHolder).
+	if config.AuditConfig != nil {
+		auditParams := audit.MiddlewareParams{
+			ConfigPath:    config.AuditConfigPath, // Keep for backwards compatibility
+			ConfigData:    config.AuditConfig,     // Use the loaded config data
+			Component:     config.AuditConfig.Component,
+			TransportType: config.Transport.String(), // Pass the actual transport type
+		}
+		auditConfig, err := types.NewMiddlewareConfig(audit.MiddlewareType, auditParams)
+		if err != nil {
+			return fmt.Errorf("failed to create audit middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *auditConfig)
+	}
+
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
 		OIDCConfig: config.OIDCConfig,
@@ -151,7 +173,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Mutating Webhooks middleware (if configured).
 	// Must run BEFORE validating webhooks:
-	// MCP Parser -> [Mutating Webhooks] -> [Validating Webhooks] -> Authz -> Audit
+	// Audit -> ... -> MCP Parser -> [Mutating Webhooks] -> [Validating Webhooks] -> Authz
 	middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, config)
 	if err != nil {
 		return err
@@ -202,21 +224,6 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 			return fmt.Errorf("failed to create authorization middleware config: %w", err)
 		}
 		middlewareConfigs = append(middlewareConfigs, *authzConfig)
-	}
-
-	// Audit middleware (if enabled)
-	if config.AuditConfig != nil {
-		auditParams := audit.MiddlewareParams{
-			ConfigPath:    config.AuditConfigPath, // Keep for backwards compatibility
-			ConfigData:    config.AuditConfig,     // Use the loaded config data
-			Component:     config.AuditConfig.Component,
-			TransportType: config.Transport.String(), // Pass the actual transport type
-		}
-		auditConfig, err := types.NewMiddlewareConfig(audit.MiddlewareType, auditParams)
-		if err != nil {
-			return fmt.Errorf("failed to create audit middleware config: %w", err)
-		}
-		middlewareConfigs = append(middlewareConfigs, *auditConfig)
 	}
 
 	// AWS STS middleware (if configured)

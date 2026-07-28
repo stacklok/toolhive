@@ -43,13 +43,16 @@ type Request struct {
 	//     RFC 8252 §7.3, so the redirect-URI defaulting is never
 	//     exercised on this path.
 	//
-	// The resolver's cache key is (Issuer, RedirectURI, ScopesHash); the
-	// two consumers do not collide on the key because the embedded
-	// authserver's RedirectURI lives on the authserver's origin and the
-	// CLI's lives on a loopback (RFC 8252 §7.3) — even when Issuer
-	// happens to match between the two profiles, the RedirectURI
-	// component keeps the cache key distinct. See the cross-consumer
-	// caveat on dcrFlight in resolver.go for the wider invariant.
+	// The resolver's cache key is (Issuer, UpstreamID, RedirectURI,
+	// ScopesHash), where UpstreamID is derived by the resolver from
+	// DiscoveryURL / RegistrationEndpoint (issue #5823). The two consumers
+	// do not collide on the key because the embedded authserver's
+	// RedirectURI lives on the authserver's origin and the CLI's lives on a
+	// loopback (RFC 8252 §7.3) — even when Issuer happens to match between
+	// the two profiles, the RedirectURI component keeps the cache key
+	// distinct; UpstreamID additionally keeps two upstreams within a single
+	// consumer apart. See the cross-consumer caveat on dcrFlight in
+	// resolver.go for the wider invariant.
 	//
 	// Issuer is *not* used for RFC 8414 §3.3 metadata verification —
 	// that uses an issuer recovered from DiscoveryURL inside the
@@ -71,7 +74,9 @@ type Request struct {
 	// document. The resolver fetches this URL exactly once and reads
 	// registration_endpoint, authorization_endpoint, token_endpoint,
 	// token_endpoint_auth_methods_supported, scopes_supported, and
-	// code_challenge_methods_supported from it.
+	// code_challenge_methods_supported from it. On this branch the resolver
+	// also derives the cache key's UpstreamID from the upstream issuer
+	// recovered from this URL.
 	//
 	// Mutually exclusive with RegistrationEndpoint.
 	DiscoveryURL string
@@ -80,7 +85,8 @@ type Request struct {
 	// On this branch the caller is expected to also supply AuthorizationEndpoint
 	// and TokenEndpoint explicitly; the resolver's auth-method selection
 	// defaults to client_secret_basic because no server-capability fields
-	// are available unless CodeChallengeMethodsSupported is also set.
+	// are available unless CodeChallengeMethodsSupported is also set. This
+	// URL is also the cache key's UpstreamID on this branch.
 	//
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string
@@ -132,4 +138,16 @@ type Request struct {
 	// code_challenge_methods_supported the S256 gate cannot be evaluated,
 	// so the resolver refuses to register as a public client.
 	PublicClient bool
+
+	// AllowPrivateIPs permits both of the resolver's outbound calls — the
+	// discovery fetch to DiscoveryURL and the registration POST to the
+	// resolved registration endpoint — to connect to private IP ranges.
+	// See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
+	// this widens (loopback exemption, dial-time re-check, etc.). Set this to
+	// true only when the upstream authorization server is reachable solely
+	// over a private address (e.g. an in-cluster IdP with no public
+	// endpoint); defaults to false. Mirrors the AllowPrivateIPs posture
+	// already carried by the OAuth2 and OIDC upstream configs so a DCR
+	// upstream is not the one outbound-facing path without an SSRF guard.
+	AllowPrivateIPs bool
 }

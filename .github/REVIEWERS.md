@@ -23,7 +23,9 @@ How it works:
 - **Edits to this file are themselves gated** by `.github/CODEOWNERS` (it lives
   under `.github/`).
 
-Handles are case-sensitive and must match GitHub exactly (including the leading `@`).
+Handles must match GitHub exactly (including the leading `@`). The implementation
+compares handles case-insensitively, so capitalisation differences are tolerated,
+but using the canonical casing avoids confusion.
 The repo does not use GitHub teams, so all owners are individuals.
 
 > **Scope (v1):** routing is intentionally limited to Kubernetes changes for now.

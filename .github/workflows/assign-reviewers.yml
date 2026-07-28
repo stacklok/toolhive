@@ -36,6 +36,11 @@ on:
   pull_request:
     types: [opened, ready_for_review, reopened, synchronize]
 
+# Prevent overlapping runs on the same PR from racing to post duplicate comments.
+concurrency:
+  group: reviewer-router-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 # Default everything to read-only; the job opts into the minimum it needs.
 permissions:
   contents: read
@@ -190,12 +195,32 @@ jobs:
             exit 0
           fi
 
+          # Deduplicate (two rules can name the same person).
+          survivors=$(jq '[group_by(.handle | ascii_downcase)[] | first]' <<<"$survivors")
+
+          # Skip anyone who has already reviewed or is already a requested reviewer
+          # -- re-requesting on every `synchronize` push is exactly the spam this
+          # action exists to prevent.
+          existing=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            --jq '[.[].user.login | ascii_downcase] | unique' 2>/dev/null || echo '[]')
+          requested=$(gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
+            --jq '[.users[].login | ascii_downcase] | unique' 2>/dev/null || echo '[]')
+          already=$(jq -n --argjson e "$existing" --argjson r "$requested" '$e + $r | unique')
+
+          survivors=$(jq --argjson already "$already" \
+            '[.[] | select((.handle | ascii_downcase) as $h | ($already | index($h)) == null)]' \
+            <<<"$survivors")
+
+          if [ "$(jq 'length' <<<"$survivors")" -eq 0 ]; then
+            echo "All matched reviewers have already reviewed or been requested; nothing to do."
+            exit 0
+          fi
+
           echo "Requesting: $(jq -r '[.[].handle] | join(", ")' <<<"$survivors")"
 
-          # Request the reviewers (idempotent; tolerate already-requested).
           if ! jq '{reviewers: [.[].handle]}' <<<"$survivors" | gh api -X POST \
             "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" --input - >/dev/null; then
-            echo "::warning::requested_reviewers call failed (already requested, or a login is not a collaborator)."
+            echo "::warning::requested_reviewers call failed (login not a collaborator?)."
           fi
 
           # Build the summary comment. The leading marker lets us find and UPDATE

@@ -6,6 +6,8 @@ package aggregator
 import (
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -43,17 +45,27 @@ import (
 //
 //   - Prompt names are NAMES, like tool names: prompts/get is translated back
 //     to the backend's own name via BackendTarget.GetBackendCapabilityName,
-//     so renaming is lossless. Every prompt is renamed UNCONDITIONALLY to its
+//     so renaming is lossless. By DEFAULT every prompt is renamed to its
 //     backend-prefixed form — the configured prefixFormat applied to the
 //     backend ID (default "{workload}_") — mirroring what
-//     PrefixConflictResolver does for every tool. The advertised name is
-//     therefore a pure function of (backendID, prompt name) and never shifts
-//     when unrelated backends join or leave the group. That stability is a
-//     security property, not cosmetics: the advertised name is what
-//     authorization matches on (Cedar builds Prompt::"<advertised name>"
-//     entities — see pkg/vmcp/core/admission.go), so a membership-dependent
-//     rename would silently detach permit AND forbid policies from the
-//     prompt they were written for, the forbid case failing open.
+//     PrefixConflictResolver does for every tool. Under the PRIORITY strategy
+//     (the same escape hatch tools have for clients that pin names), backends
+//     listed in priorityOrder keep their bare prompt names, a bare-name
+//     collision among listed backends resolves to the highest-priority one,
+//     and unlisted backends stay ALWAYS prefixed — deliberately stricter
+//     than the tool priority resolver, which lets a conflict-free unlisted
+//     tool keep its bare name.
+//
+//     The invariant both modes preserve: an advertised prompt name is a pure
+//     function of the aggregation config and (backendID, prompt name) — it
+//     NEVER shifts because an unrelated backend joined or left the group.
+//     That stability is a security property, not cosmetics: the advertised
+//     name is what authorization matches on (Cedar builds
+//     Prompt::"<advertised name>" entities — see pkg/vmcp/core/admission.go),
+//     so a membership-dependent rename would silently detach permit AND
+//     forbid policies from the prompt they were written for, the forbid case
+//     failing open. Names move only on an explicit config edit — the moment
+//     an operator reviews policy anyway.
 //
 //     Prompt-set changes on a live backend propagate to connected sessions
 //     through the list_changed resync path
@@ -91,51 +103,90 @@ func resolveResourceTemplateConflicts(
 		func(template vmcp.ResourceTemplate) string { return template.URITemplate })
 }
 
-// resolvePromptConflicts renames EVERY prompt to its backend-prefixed form:
-// prefixFormat applied to the backend ID (see applyPrefixFormat), prepended
-// to the prompt's own name. Renaming unconditionally keeps the advertised
-// name independent of group membership; see the file header for why that
-// matters to authorization.
+// resolvePromptConflicts forms every prompt's advertised name per the naming
+// config: backends listed in naming.priorityRank keep their bare name, all
+// others get the backend-prefixed form (prefixFormat applied to the backend
+// ID, see applyPrefixFormat). With no priority configuration every prompt is
+// prefixed. Either way the advertised name never depends on what else is
+// deployed; see the file header for why that matters to authorization.
 //
 // An exact duplicate within one backend (same backend advertises a name
 // twice) is dropped with a warning — both entries would advertise and route
-// identically, so nothing reachable is lost. Any other residual collision,
-// i.e. two distinct (backendID, name) pairs composing to the same prefixed
-// string (backend "b1" prompt "x_y" vs backend "b1_x" prompt "y"), is
-// ambiguous between backends and returns ErrUnresolvedConflicts rather than
-// silently dropping a prompt. backendIDs supplies the deterministic (sorted)
-// iteration order; the result is sorted by resolved name.
+// identically, so nothing reachable is lost. A bare-name collision among
+// priority-listed backends resolves to the highest-priority one (lowest
+// rank), dropping the others with a warning, mirroring the tool priority
+// strategy. Any other collision — two prefixed names composing to the same
+// string (backend "b1" prompt "x_y" vs backend "b1_x" prompt "y"), or a
+// prefixed name hitting a listed backend's literal bare name — is ambiguous
+// between backends and returns ErrUnresolvedConflicts rather than silently
+// dropping a prompt. backendIDs supplies the deterministic (sorted) iteration
+// order; the result is sorted by resolved name.
 func resolvePromptConflicts(
-	prefixFormat string,
+	naming promptNaming,
 	backendIDs []string,
 	capabilities map[string]*BackendCapabilities,
 ) ([]ResolvedPrompt, error) {
-	type advertiser struct{ backendID, originalName string }
-	seen := make(map[string]advertiser) // resolved name -> first advertiser
-	var resolved []ResolvedPrompt
-	for _, backendID := range backendIDs {
-		for _, prompt := range capabilities[backendID].Prompts {
-			resolvedName := applyPrefixFormat(prefixFormat, backendID, prompt.Name)
-			if first, duplicate := seen[resolvedName]; duplicate {
-				if first.backendID == backendID {
-					slog.Warn("backend advertises the same prompt name twice, dropping later duplicate",
-						"backend", backendID, "prompt", prompt.Name)
-					continue
-				}
-				return nil, fmt.Errorf(
-					"%w: prompt %q from backend %q and prompt %q from backend %q are both advertised as %q; rename one of them",
-					ErrUnresolvedConflicts,
-					first.originalName, first.backendID, prompt.Name, backendID, resolvedName)
-			}
-			seen[resolvedName] = advertiser{backendID: backendID, originalName: prompt.Name}
+	// candidate is one backend's claim on an advertised prompt name.
+	type candidate struct {
+		prompt    vmcp.Prompt
+		backendID string
+		rank      int // priority rank (lower wins); meaningful only when listed
+		listed    bool
+	}
 
-			resolvedPrompt := ResolvedPrompt{Prompt: prompt, OriginalName: prompt.Name}
-			resolvedPrompt.Name = resolvedName
-			resolved = append(resolved, resolvedPrompt)
+	byName := make(map[string][]candidate)
+	for _, backendID := range backendIDs {
+		rank, listed := naming.priorityRank[backendID]
+		for _, prompt := range capabilities[backendID].Prompts {
+			resolvedName := prompt.Name
+			if !listed {
+				resolvedName = applyPrefixFormat(naming.prefixFormat, backendID, prompt.Name)
+			}
+			// The advertised name is injective per backend (bare, or a fixed
+			// prefix plus the name), so a same-backend claim on this name can
+			// only be an exact duplicate of the same prompt.
+			duplicate := slices.ContainsFunc(byName[resolvedName], func(c candidate) bool {
+				return c.backendID == backendID
+			})
+			if duplicate {
+				slog.Warn("backend advertises the same prompt name twice, dropping later duplicate",
+					"backend", backendID, "prompt", prompt.Name)
+				continue
+			}
+			byName[resolvedName] = append(byName[resolvedName], candidate{
+				prompt: prompt, backendID: backendID, rank: rank, listed: listed,
+			})
 		}
 	}
 
-	sort.Slice(resolved, func(i, j int) bool { return resolved[i].Name < resolved[j].Name })
+	resolved := make([]ResolvedPrompt, 0, len(byName))
+	for _, resolvedName := range slices.Sorted(maps.Keys(byName)) {
+		candidates := byName[resolvedName]
+		winner := candidates[0]
+		for _, contender := range candidates[1:] {
+			// Distinct backends claim the same advertised name. Resolvable
+			// only when both are priority-listed (then both claims are the
+			// same bare name and rank decides); anything else — prefix
+			// composition ambiguity, or a prefixed name hitting a listed
+			// backend's literal name — has no defined owner.
+			if !winner.listed || !contender.listed {
+				return nil, fmt.Errorf(
+					"%w: prompt %q from backend %q and prompt %q from backend %q are both advertised as %q; rename one of them",
+					ErrUnresolvedConflicts,
+					winner.prompt.Name, winner.backendID, contender.prompt.Name, contender.backendID, resolvedName)
+			}
+			loser := contender
+			if contender.rank < winner.rank {
+				loser, winner = winner, contender
+			}
+			slog.Warn("prompt name advertised by multiple priority-listed backends, keeping highest priority",
+				"prompt", resolvedName, "kept_backend", winner.backendID, "dropped_backend", loser.backendID)
+		}
+
+		resolvedPrompt := ResolvedPrompt{Prompt: winner.prompt, OriginalName: winner.prompt.Name}
+		resolvedPrompt.Name = resolvedName
+		resolved = append(resolved, resolvedPrompt)
+	}
 	return resolved, nil
 }
 

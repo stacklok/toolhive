@@ -105,10 +105,11 @@ type ResolvedCapabilities struct {
 	// locator-identity policy as Resources. See resolveResourceTemplateConflicts.
 	ResourceTemplates []vmcp.ResourceTemplate
 
-	// Prompts are conflict-resolved by name: every prompt is renamed to its
-	// backend-prefixed form (the configured prefixFormat applied to the
-	// backend ID), so the advertised name is a pure function of
-	// (backendID, name) and never shifts with group membership. See
+	// Prompts are conflict-resolved by name: by default every prompt is
+	// renamed to its backend-prefixed form; under the priority strategy,
+	// backends listed in priorityOrder keep their bare names. Either way the
+	// advertised name is a pure function of the aggregation config and
+	// (backendID, name) — it never shifts with group membership. See
 	// resolvePromptConflicts.
 	Prompts []ResolvedPrompt
 
@@ -154,8 +155,9 @@ type ResolvedTool struct {
 type ResolvedPrompt struct {
 	vmcp.Prompt
 
-	// OriginalName is the prompt's name in the backend (Name is always its
-	// backend-prefixed form).
+	// OriginalName is the prompt's name in the backend (equal to Name only
+	// for priority-listed backends; otherwise Name is the backend-prefixed
+	// form).
 	OriginalName string
 }
 

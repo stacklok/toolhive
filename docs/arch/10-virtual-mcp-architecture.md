@@ -142,20 +142,27 @@ policies that deliberately differ by what the identity *is*:
 
 - **Prompt names are names**, like tool names: `prompts/get` is translated back
   to the backend's own name via `BackendTarget.GetBackendCapabilityName`, so a
-  rename does not break invocation. Every prompt is renamed
-  **unconditionally** to its backend-prefixed form —
-  `conflictResolutionConfig.prefixFormat` applied to the backend ID (default
-  `{workload}_`), the same formatting path the tool prefix strategy uses. The
-  advertised name is therefore a pure function of (backendID, name) and never
-  shifts when unrelated backends join or leave the group. That stability
-  matters beyond naming: authorization matches on the advertised name (Cedar
-  builds `Prompt::"<advertised name>"` entities), so a membership-dependent
-  rename would detach `permit` and `forbid` policies from the prompt they were
-  written for. Prompts are prefixed under **every** strategy — a `priority` or
-  `manual` configuration changes tool resolution only. If two distinct
-  (backendID, name) pairs compose to the same prefixed string (backend `b1`
-  prompt `x_y` vs backend `b1_x` prompt `y`), the name would be ambiguous
-  between backends and aggregation fails loudly instead of dropping one.
+  rename does not break invocation. By **default** every prompt is renamed to
+  its backend-prefixed form — `conflictResolutionConfig.prefixFormat` applied
+  to the backend ID (default `{workload}_`), the same formatting path the tool
+  prefix strategy uses. The **priority** strategy is the escape hatch for
+  clients that pin prompt names, exactly as it is for tools: backends listed
+  in `priorityOrder` keep their bare prompt names, a bare-name collision among
+  listed backends resolves to the highest-priority one, and unlisted backends
+  stay always-prefixed — deliberately stricter than tool priority resolution,
+  which lets a conflict-free unlisted tool keep its bare name. The invariant
+  both modes preserve: the advertised name is a pure function of the
+  aggregation config and (backendID, name), so it never shifts because an
+  unrelated backend joined or left the group. That stability matters beyond
+  naming: authorization matches on the advertised name (Cedar builds
+  `Prompt::"<advertised name>"` entities), so a membership-dependent rename
+  would detach `permit` and `forbid` policies from the prompt they were
+  written for — names move only on an explicit config edit. A `manual`
+  configuration changes tool resolution only. If two backends' advertised
+  names compose to the same string (backend `b1` prompt `x_y` vs backend
+  `b1_x` prompt `y`, or a prefixed name hitting a listed backend's literal
+  name), the name would be ambiguous between backends and aggregation fails
+  loudly instead of dropping one.
 - **Resource URIs and template strings are locators, not names.** The client
   passes them back verbatim (`resources/read`, `resources/subscribe`,
   completion refs), backends emit them in notifications and embedded resource

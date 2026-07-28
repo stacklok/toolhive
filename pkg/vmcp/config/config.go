@@ -467,14 +467,17 @@ type AggregationConfig struct {
 // +gendoc
 type ConflictResolutionConfig struct {
 	// PrefixFormat defines the prefix format for the "prefix" tool strategy
-	// and for prompt names, which are always backend-prefixed regardless of
-	// the tool strategy.
+	// and for backend-prefixed prompt names (the default for every prompt;
+	// under the "priority" strategy, backends listed in priorityOrder keep
+	// their own prompt names).
 	// Supports placeholders: {workload}, {workload}_, {workload}.
 	// +kubebuilder:default="{workload}_"
 	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
 	// PriorityOrder defines the workload priority order for the "priority" strategy.
+	// Listed workloads also keep their own prompt names (unlisted workloads'
+	// prompts stay backend-prefixed).
 	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
 }

@@ -29,11 +29,11 @@ type defaultAggregator struct {
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 	excludeAllTools  bool                                  // Global flag to exclude all tools
-	// promptPrefixFormat is the prefix format every prompt is renamed with
-	// (see resolvePromptConflicts). Derived from
-	// conflictResolutionConfig.prefixFormat at construction.
-	promptPrefixFormat string
-	tracer             trace.Tracer
+	// promptNaming controls how advertised prompt names are formed (see
+	// resolvePromptConflicts). Derived from the aggregation config at
+	// construction.
+	promptNaming promptNaming
+	tracer       trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
@@ -68,12 +68,12 @@ func NewDefaultAggregator(
 	}
 
 	return &defaultAggregator{
-		backendClient:      backendClient,
-		conflictResolver:   conflictResolver,
-		toolConfigMap:      toolConfigMap,
-		excludeAllTools:    excludeAllTools,
-		promptPrefixFormat: promptPrefixFormatFromConfig(aggregationConfig),
-		tracer:             tracer,
+		backendClient:    backendClient,
+		conflictResolver: conflictResolver,
+		toolConfigMap:    toolConfigMap,
+		excludeAllTools:  excludeAllTools,
+		promptNaming:     promptNamingFromConfig(aggregationConfig),
+		tracer:           tracer,
 	}
 }
 
@@ -274,7 +274,7 @@ func (a *defaultAggregator) ResolveConflicts(
 	backendIDs := slices.Sorted(maps.Keys(capabilities))
 	resolved.Resources = resolveResourceConflicts(backendIDs, capabilities)
 	resolved.ResourceTemplates = resolveResourceTemplateConflicts(backendIDs, capabilities)
-	resolved.Prompts, err = resolvePromptConflicts(a.promptPrefixFormat, backendIDs, capabilities)
+	resolved.Prompts, err = resolvePromptConflicts(a.promptNaming, backendIDs, capabilities)
 	if err != nil {
 		return nil, fmt.Errorf("prompt conflict resolution failed: %w", err)
 	}

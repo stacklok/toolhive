@@ -262,6 +262,76 @@ func TestDefaultAggregator_ResolveConflicts_PromptPrefixAmbiguity(t *testing.T) 
 	assert.Nil(t, resolved)
 }
 
+// TestDefaultAggregator_ResolveConflicts_PromptPriority pins the priority
+// escape hatch: backends listed in priorityOrder keep their bare prompt
+// names (a bare-name collision resolves by rank), while unlisted backends
+// stay always-prefixed even without a collision — the advertised name must
+// be decidable from config plus (backendID, name) alone, never from what
+// else happens to be deployed.
+func TestDefaultAggregator_ResolveConflicts_PromptPriority(t *testing.T) {
+	t.Parallel()
+
+	// b2 outranks b1 deliberately: sorted-backend-ID order would pick b1, so
+	// any regression from rank to encounter order flips the winner.
+	aggCfg := &config.AggregationConfig{
+		ConflictResolution: vmcp.ConflictStrategyPriority,
+		ConflictResolutionConfig: &config.ConflictResolutionConfig{
+			PriorityOrder: []string{"b2", "b1"},
+		},
+	}
+
+	t.Run("listed backends keep bare names, rank resolves collisions", func(t *testing.T) {
+		t.Parallel()
+		capabilities := map[string]*BackendCapabilities{
+			"b1": {BackendID: "b1", Prompts: []vmcp.Prompt{
+				newTestPrompt("review", "b1"), newTestPrompt("unique", "b1"),
+			}},
+			"b2":  {BackendID: "b2", Prompts: []vmcp.Prompt{newTestPrompt("review", "b2")}},
+			"ext": {BackendID: "ext", Prompts: []vmcp.Prompt{newTestPrompt("helper", "ext")}},
+		}
+
+		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
+		for range 5 {
+			resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+			require.NoError(t, err)
+
+			got := make(map[string][2]string, len(resolved.Prompts))
+			for _, prompt := range resolved.Prompts {
+				got[prompt.Name] = [2]string{prompt.BackendID, prompt.OriginalName}
+			}
+			assert.Equal(t, map[string][2]string{
+				// "review" goes to b2: first in priorityOrder, even though b1
+				// sorts first. b1's colliding prompt is dropped.
+				"review": {"b2", "review"},
+				// Listed backends keep bare names even for unique prompts.
+				"unique": {"b1", "unique"},
+				// Unlisted backends are ALWAYS prefixed, collision or not:
+				// exempting them would let a later join shift the name.
+				"ext_helper": {"ext", "helper"},
+			}, got)
+			assert.NotContains(t, got, "helper")
+			assert.NotContains(t, got, "b1_review")
+		}
+	})
+
+	t.Run("prefixed name hitting a listed backend's literal name errors", func(t *testing.T) {
+		t.Parallel()
+		capabilities := map[string]*BackendCapabilities{
+			// Listed b1 advertises the literal name "ext_helper"; unlisted
+			// ext's "helper" prefixes to the same string. Ambiguous between
+			// backends -> loud failure, not a silent drop.
+			"b1":  {BackendID: "b1", Prompts: []vmcp.Prompt{newTestPrompt("ext_helper", "b1")}},
+			"ext": {BackendID: "ext", Prompts: []vmcp.Prompt{newTestPrompt("helper", "ext")}},
+		}
+
+		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
+		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+		require.ErrorIs(t, err, ErrUnresolvedConflicts)
+		assert.Contains(t, err.Error(), "ext_helper")
+		assert.Nil(t, resolved)
+	})
+}
+
 // TestDefaultAggregator_ResolveConflicts_PromptPrefixFormat verifies prompt
 // renaming honours conflictResolutionConfig.prefixFormat — the same knob the
 // tool prefix strategy uses — rather than a hardcoded "_" separator.

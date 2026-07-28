@@ -27,16 +27,52 @@ func applyPrefixFormat(prefixFormat, backendID, name string) string {
 	return strings.ReplaceAll(prefixFormat, "{workload}", backendID) + name
 }
 
-// promptPrefixFormatFromConfig returns the prefix format prompts are renamed
-// with: conflictResolutionConfig.prefixFormat when set, defaultPrefixFormat
-// otherwise. Prompts are always prefixed (the strategy knob selects a TOOL
-// strategy only), so the format is honoured under every strategy.
-func promptPrefixFormatFromConfig(aggregationConfig *config.AggregationConfig) string {
-	if aggregationConfig != nil && aggregationConfig.ConflictResolutionConfig != nil &&
-		aggregationConfig.ConflictResolutionConfig.PrefixFormat != "" {
-		return aggregationConfig.ConflictResolutionConfig.PrefixFormat
+// promptNaming captures how advertised prompt names are formed by
+// resolvePromptConflicts. prefixFormat is the format backend-prefixed names
+// use. priorityRank maps the backend IDs listed in
+// conflictResolutionConfig.priorityOrder to their rank (lower wins); listed
+// backends keep their bare prompt names. It is non-nil only under the
+// priority strategy — nil means every prompt is prefixed.
+type promptNaming struct {
+	prefixFormat string
+	priorityRank map[string]int
+}
+
+// promptNamingFromConfig derives prompt naming from the aggregation config.
+// Default (prefix or manual strategy, or no config): every prompt is
+// prefixed with prefixFormat (conflictResolutionConfig.prefixFormat when
+// set), so the advertised name is a pure function of (backendID, name).
+// Under the priority strategy, backends listed in priorityOrder keep their
+// bare prompt names while unlisted backends stay ALWAYS prefixed — stricter
+// than the tool priority resolver, which lets a conflict-free unlisted tool
+// keep its bare name. Prompts cannot afford that laxity: their advertised
+// name is an authorization identity (see capability_conflicts.go), so the
+// only membership-independent choices are "bare because listed" and
+// "prefixed because not".
+func promptNamingFromConfig(aggregationConfig *config.AggregationConfig) promptNaming {
+	naming := promptNaming{prefixFormat: defaultPrefixFormat}
+	if aggregationConfig == nil {
+		return naming
 	}
-	return defaultPrefixFormat
+	if aggregationConfig.ConflictResolutionConfig != nil &&
+		aggregationConfig.ConflictResolutionConfig.PrefixFormat != "" {
+		naming.prefixFormat = aggregationConfig.ConflictResolutionConfig.PrefixFormat
+	}
+	if aggregationConfig.ConflictResolution == vmcp.ConflictStrategyPriority &&
+		aggregationConfig.ConflictResolutionConfig != nil {
+		priorityOrder := aggregationConfig.ConflictResolutionConfig.PriorityOrder
+		if len(priorityOrder) > 0 {
+			naming.priorityRank = make(map[string]int, len(priorityOrder))
+			for rank, backendID := range priorityOrder {
+				// A backend duplicated in priorityOrder keeps its first
+				// (highest-priority) position.
+				if _, seen := naming.priorityRank[backendID]; !seen {
+					naming.priorityRank[backendID] = rank
+				}
+			}
+		}
+	}
+	return naming
 }
 
 // NewConflictResolver creates the appropriate conflict resolver based on configuration.

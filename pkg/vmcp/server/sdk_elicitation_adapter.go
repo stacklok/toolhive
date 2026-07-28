@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
@@ -113,6 +114,18 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 	// We don't need to manage any of this - it's all handled by the SDK.
 	resp, err := a.mcpServer.RequestElicitation(ctx, mcpReq)
 	if err != nil {
+		// A refusal for lack of a downstream session (Modern ingress: the
+		// stateless dispatch installed no ClientSession) is recorded so
+		// dispatchModern can classify the resulting call failure as a
+		// -32021 MissingRequiredClientCapabilityError instead of an opaque
+		// internal error. The error itself still propagates unchanged: it is
+		// the answer to the BACKEND's elicitation request, and the typed
+		// sentinel does not survive that wire round-trip — the recorder is
+		// the only channel back to the dispatcher (see
+		// modern_capability_refusal.go).
+		if errors.Is(err, server.ErrNoActiveSession) {
+			recordCapabilityRefusal(ctx, capabilityElicitation)
+		}
 		return nil, err
 	}
 

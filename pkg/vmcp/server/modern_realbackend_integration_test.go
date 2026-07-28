@@ -55,7 +55,13 @@ func postModern(
 		meta = map[string]any{}
 	}
 	meta["io.modelcontextprotocol/protocolVersion"] = "2026-07-28"
-	meta["io.modelcontextprotocol/clientCapabilities"] = map[string]any{}
+	// clientCapabilities is required on every Modern request; default to the
+	// empty declaration, but preserve a caller-supplied value so tests can
+	// exercise declared-capability behavior (see
+	// TestIntegration_Modern_RealBackend_MidCallCapabilityContract).
+	if _, ok := meta["io.modelcontextprotocol/clientCapabilities"]; !ok {
+		meta["io.modelcontextprotocol/clientCapabilities"] = map[string]any{}
+	}
 	params["_meta"] = meta
 
 	body := map[string]any{
@@ -320,4 +326,88 @@ func TestIntegration_Modern_RealBackend_MalformedArguments(t *testing.T) {
 	errObj, ok := decoded["error"].(map[string]any)
 	require.True(t, ok, "decoded: %+v", decoded)
 	assert.EqualValues(t, -32602, errObj["code"])
+}
+
+// TestIntegration_Modern_RealBackend_MidCallCapabilityContract pins the
+// two-path error contract for a backend tool that demands mid-call
+// elicitation/sampling during a Modern client's tools/call
+// (writeModernCallFailure):
+//
+//   - capability NOT declared in _meta clientCapabilities: the draft schema's
+//     MissingRequiredClientCapabilityError — code -32021 with
+//     data.requiredCapabilities typed as a ClientCapabilities object — served
+//     at HTTP 200, a deliberate, documented deviation from the spec-mandated
+//     400 (go-sdk treats a non-transient 4xx as permanent connection death;
+//     see writeModernMissingCapability and go-sdk#1117).
+//   - capability DECLARED: -32021 would wrongly blame the client, and the
+//     2026-07-28 vocabulary has no "operation not supported" code, so it is
+//     an explicit -32603 whose vMCP-owned message names the real cause:
+//     honouring a declared capability mid-call is multi-round retrieval
+//     (SEP-2322), which this server does not implement.
+//
+// Both paths emit vMCP-crafted messages, so — unlike the raw backend error
+// chain they replace — they are asserted on ToolHive-owned strings, and the
+// backend workload ID must NOT leak into them.
+func TestIntegration_Modern_RealBackend_MidCallCapabilityContract(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startForwardingBackend(t)
+	ts := newRealModernTestServer(t, backendURL)
+
+	tests := []struct {
+		name       string
+		tool       string
+		capability string // the capability the backend's tool demands mid-call
+		declared   bool   // whether the request's _meta declares it
+	}{
+		{name: "elicitation undeclared", tool: fwdElicitTool, capability: "elicitation", declared: false},
+		{name: "sampling undeclared", tool: fwdSampleTool, capability: "sampling", declared: false},
+		{name: "elicitation declared", tool: fwdElicitTool, capability: "elicitation", declared: true},
+		{name: "sampling declared", tool: fwdSampleTool, capability: "sampling", declared: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			params := map[string]any{"name": tc.tool}
+			if tc.declared {
+				params["_meta"] = map[string]any{
+					"io.modelcontextprotocol/clientCapabilities": map[string]any{
+						tc.capability: map[string]any{},
+					},
+				}
+			}
+			resp, decoded := postModern(t, ts.URL, "tools/call", params, 1, tc.tool)
+			defer resp.Body.Close()
+
+			// Both paths ride HTTP 200: -32603 per writeModernError's mapping,
+			// -32021 per writeModernMissingCapability's documented deviation.
+			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+			require.NotContains(t, decoded, "result",
+				"must not fabricate a success or an input_required envelope: %+v", decoded)
+			errObj, ok := decoded["error"].(map[string]any)
+			require.True(t, ok, "decoded: %+v", decoded)
+			msg, _ := errObj["message"].(string)
+
+			// vMCP owns both messages: they must name the capability and the
+			// gateway limitation (SEP-2322), and must not leak the backend
+			// workload ID the raw error chain used to carry.
+			assert.Contains(t, msg, tc.capability)
+			assert.Contains(t, msg, "SEP-2322",
+				"the message must name multi-round retrieval as the gateway limitation")
+			assert.NotContains(t, msg, "real-backend",
+				"the crafted message must not leak the backend workload ID")
+
+			if !tc.declared {
+				assert.EqualValues(t, -32021, errObj["code"])
+				data, ok := errObj["data"].(map[string]any)
+				require.True(t, ok, "decoded: %+v", decoded)
+				required, ok := data["requiredCapabilities"].(map[string]any)
+				require.True(t, ok, "decoded: %+v", decoded)
+				assert.Contains(t, required, tc.capability,
+					"requiredCapabilities must name the capability the server needed")
+				return
+			}
+			assert.EqualValues(t, -32603, errObj["code"])
+		})
+	}
 }

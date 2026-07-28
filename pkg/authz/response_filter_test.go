@@ -24,6 +24,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -450,7 +451,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 		Result: json.RawMessage(responseData),
 	}
 
-	responseBytes, err := jsonrpc2.EncodeMessage(jsonrpcResponse)
+	responseBytes, err := json.Marshal(jsonrpcResponse)
 	require.NoError(t, err, "Failed to marshal JSON-RPC response")
 
 	// Create an HTTP request
@@ -868,6 +869,153 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 	})
 }
 
+// TestCarriesResult pins carriesResult's (and, through it, valueCarriesResult's)
+// classification of the shapes the SSE and JSON filters route through it: no
+// clean single Response, but the caller needs to know whether a "result" key
+// is hiding somewhere in the payload regardless.
+func TestCarriesResult(t *testing.T) {
+	t.Parallel()
+
+	const notification = `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`
+	const result = `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`
+
+	testCases := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{
+			name: "concatenated notification then result",
+			// The exact shape an SSE event's assembled data takes when two
+			// data: lines (a notification, then a result-bearing frame)
+			// concatenate into one payload: DecodeMessage rejects the whole
+			// thing as a single value, but the embedded result must still be
+			// caught.
+			data: notification + "\n" + result,
+			want: true,
+		},
+		{
+			name: "heterogeneous batch array",
+			// A batch whose first element isn't an object: Unmarshal-ing the
+			// whole array into a single probe struct would fail outright,
+			// missing the result-bearing element further down.
+			data: `[1,` + result + `]`,
+			want: true,
+		},
+		{
+			name: "undecodable prefix before a result stops at the first value",
+			// Deliberate: json.Decoder stops at the first value it can't
+			// decode ("garbage") and never reaches the result-bearing value
+			// after it. This is safe rather than a missed catch, because no
+			// strict client can read past that point either. Don't "fix"
+			// this into scanning past bad input looking for a result.
+			data: "garbage\n" + result,
+			want: false,
+		},
+		{
+			name: "plain notification carries no result",
+			data: notification,
+			want: false,
+		},
+		{
+			name: "empty input",
+			data: "",
+			want: false,
+		},
+		{
+			name: "nested array is not recursed into",
+			// Deliberate: a JSON-RPC batch is a flat array of message
+			// objects, so that's the only legitimate batch surface. Recursing
+			// into nested arrays is an O(d^2) amplification handle on
+			// encoding/json's own nesting cap for something no client
+			// actually flattens. Don't "fix" this into recursive descent.
+			data: `[[` + result + `]]`,
+			want: false,
+		},
+		{
+			name: "explicit null result still counts as carrying one",
+			// Deliberate, the fail-closed direction: RawMessage's
+			// UnmarshalJSON runs even for a JSON null, so a "result" key
+			// present with a null value is still treated as carrying a
+			// result. Don't "fix" this into skipping nulls.
+			data: `{"jsonrpc":"2.0","id":1,"result":null}`,
+			want: true,
+		},
+		{
+			name: "top-level scalar carries no result",
+			data: `"just a string"`,
+			want: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, carriesResult([]byte(tc.data)))
+		})
+	}
+}
+
+// newWeatherOnlyAuthorizer builds the Cedar authorizer most SSE regression
+// tests below share: a single policy permitting call_tool on "weather" plus
+// any extraPolicies the caller needs for other resource types.
+func newWeatherOnlyAuthorizer(t *testing.T, extraPolicies ...string) authorizers.Authorizer {
+	t.Helper()
+	policies := append([]string{
+		`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+	}, extraPolicies...)
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies:     policies,
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+	return authorizer
+}
+
+// newUser1Request builds a POST /messages request carrying the "user1"
+// identity most SSE regression tests below share.
+func newUser1Request(t *testing.T) *http.Request {
+	t.Helper()
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	require.NoError(t, err)
+	return req.WithContext(auth.WithIdentity(req.Context(), identity))
+}
+
+// newParsedUser1Request is newUser1Request plus mcpparser.ParsingMiddleware,
+// for tests whose error envelope must correlate against the request's real
+// JSON-RPC id: requestID() reads the parsed request back out of context, so
+// a plain request (no parsed MCP request in context) would always produce a
+// zero, id-less envelope regardless of what the fix is supposed to do.
+func newParsedUser1Request(t *testing.T, reqBody string) *http.Request {
+	t.Helper()
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+	req, err := http.NewRequest(http.MethodPost, "/messages", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	var parsedReq *http.Request
+	mcpparser.ParsingMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		parsedReq = r
+	})).ServeHTTP(httptest.NewRecorder(), req)
+	require.NotNil(t, parsedReq)
+	// ParsingMiddleware calls next even when parsing fails, so a nil parsedReq
+	// alone wouldn't catch a typo'd reqBody that fails to parse — that would
+	// silently degrade every caller to the zero-ID path. A notification (no
+	// "id" in reqBody) still parses to a non-nil ParsedMCPRequest with a nil
+	// ID, so this assertion holds for every caller, not just id-bearing ones.
+	require.NotNil(t, mcpparser.GetParsedMCPRequest(parsedReq.Context()),
+		"reqBody must have parsed into a ParsedMCPRequest, or requestID() silently falls back to the zero ID")
+	return parsedReq
+}
+
 // TestResponseFilteringWriter_SSE_PerEventFallthrough is a regression test for
 // issue #5257: when an SSE upstream interleaves a non-Response event (e.g. an
 // MCP notification) or an undecodable event with a real list response, the
@@ -881,20 +1029,10 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
-			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t,
+		`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+		`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+	)
 
 	// encodeListResponse marshals a list result type into a JSON-RPC Response
 	// data line.
@@ -1014,9 +1152,7 @@ func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 			t.Run(mc.name+"/"+plc.name, func(t *testing.T) {
 				t.Parallel()
 
-				req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-				require.NoError(t, err)
-				req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+				req := newUser1Request(t)
 
 				rr := httptest.NewRecorder()
 				rfw := NewResponseFilteringWriter(rr, authorizer, req, mc.method, nil, nil)
@@ -1030,7 +1166,7 @@ func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 				// what this test means to model. The trailing "" pair
 				// terminates the second event.
 				body := strings.Join([]string{plc.line, "", mc.respLine, "", ""}, "\n")
-				_, err = rfw.Write([]byte(body))
+				_, err := rfw.Write([]byte(body))
 				require.NoError(t, err)
 
 				require.NoError(t, rfw.FlushAndFilter())
@@ -1096,18 +1232,7 @@ func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	// A genuine, filterable tools/list response on a later line.
 	realResultJSON, err := json.Marshal(mcp.ListToolsResult{
@@ -1147,16 +1272,7 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 			// Run the real MCP parsing middleware so the request context
 			// carries a ParsedMCPRequest with a real id, matching production:
 			// requestID() reads it back out to correlate the error envelope.
-			reqBody := `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`
-			req, err := http.NewRequest(http.MethodPost, "/messages", strings.NewReader(reqBody))
-			require.NoError(t, err)
-			req.Header.Set("Content-Type", "application/json")
-			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
-			var parsedReq *http.Request
-			mcpparser.ParsingMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				parsedReq = r
-			})).ServeHTTP(httptest.NewRecorder(), req)
-			require.NotNil(t, parsedReq)
+			parsedReq := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 
 			rr := httptest.NewRecorder()
 			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
@@ -1166,7 +1282,7 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 			// response into two distinct SSE events, matching how a real MCP
 			// server frames SSE (one JSON-RPC message per event).
 			body := strings.Join([]string{f.payload, "", "data: " + string(realResp), "", ""}, "\n")
-			_, err = rfw.Write([]byte(body))
+			_, err := rfw.Write([]byte(body))
 			require.NoError(t, err)
 			require.NoError(t, rfw.FlushAndFilter())
 
@@ -1204,25 +1320,17 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 func TestResponseFilteringWriter_SSE_ConcatenatedEventBypass(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	notificationLine := `data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}`
 	resultLine := `data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}`
 
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+	// Run the real MCP parsing middleware so the request context carries a
+	// ParsedMCPRequest with a real id, matching production: requestID() reads
+	// it back out to correlate the error envelope. Without this, requestID()
+	// falls back to the zero ID, the envelope carries no "id", and this test
+	// would accept an envelope no client could actually correlate.
+	req := newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"tools/list"}`)
 
 	rr := httptest.NewRecorder()
 	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
@@ -1230,17 +1338,26 @@ func TestResponseFilteringWriter_SSE_ConcatenatedEventBypass(t *testing.T) {
 
 	// No blank line between the two data: lines: one event, two fields.
 	body := strings.Join([]string{notificationLine, resultLine, "", ""}, "\n")
-	_, err = rfw.Write([]byte(body))
+	_, err := rfw.Write([]byte(body))
 	require.NoError(t, err)
 	require.NoError(t, rfw.FlushAndFilter())
 
 	out := rr.Body.String()
 	assert.NotContains(t, out, "admin_tool",
 		"a result concatenated after a notification within one event must not bypass the filter")
+
 	// NotContains alone would also pass if the event were dropped silently
-	// (#6037's hang); require the fail-closed envelope actually went out.
-	assert.Contains(t, out, `"error"`,
-		"the concatenated event must fail closed into an error envelope, not vanish silently")
+	// (#6037's hang); require the fail-closed envelope actually went out and
+	// carries the request's id so the client can correlate it.
+	firstLine := strings.TrimSuffix(strings.SplitN(out, "\n", 2)[0], "\r")
+	payload := strings.TrimPrefix(firstLine, "data: ")
+	msg, err := jsonrpc2.DecodeMessage([]byte(payload))
+	require.NoError(t, err, "the fail-closed envelope must itself be valid JSON-RPC")
+	resp, ok := msg.(*jsonrpc2.Response)
+	require.True(t, ok, "the fail-closed envelope must be a clean Response")
+	require.NotNil(t, resp.Error, "the concatenated event must fail closed into an error envelope, not vanish silently")
+	assert.Equal(t, jsonrpc2.Int64ID(99), resp.ID,
+		"the error envelope must carry the request's id so the client can correlate it, or the #6037 hang reproduces")
 }
 
 // TestResponseFilteringWriter_SSE_MixedSeparatorsBypass is a regression test
@@ -1255,22 +1372,8 @@ func TestResponseFilteringWriter_SSE_ConcatenatedEventBypass(t *testing.T) {
 func TestResponseFilteringWriter_SSE_MixedSeparatorsBypass(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
-
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
 	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
@@ -1311,22 +1414,8 @@ func TestResponseFilteringWriter_SSE_MixedSeparatorsBypass(t *testing.T) {
 func TestResponseFilteringWriter_SSE_LeadingBOMBypass(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
-
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
 	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
@@ -1349,6 +1438,8 @@ func TestResponseFilteringWriter_SSE_LeadingBOMBypass(t *testing.T) {
 	assert.NotContains(t, out, "admin_tool",
 		"a leading UTF-8 BOM must not bypass the filter")
 	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+	assert.False(t, strings.HasPrefix(out, "\xEF\xBB\xBF"),
+		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
 }
 
 // TestResponseFilteringWriter_SSE_ErrorAndResultBypass is a regression test
@@ -1363,23 +1454,12 @@ func TestResponseFilteringWriter_SSE_LeadingBOMBypass(t *testing.T) {
 // The error-only row distinguishes "failed closed" from "passed through
 // unfiltered": both leave no admin_tool on the wire, so a substring check
 // alone can't tell a fix from a regression that fails closed on every
-// legitimate upstream error. Only the error *code* does — 500 is our
-// envelope, anything else is the upstream's own error surviving untouched.
+// legitimate upstream error. Only the error *code* does — mcpparser.CodeInternalError
+// is our envelope, anything else is the upstream's own error surviving untouched.
 func TestResponseFilteringWriter_SSE_ErrorAndResultBypass(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	testCases := []struct {
 		name          string
@@ -1403,15 +1483,13 @@ func TestResponseFilteringWriter_SSE_ErrorAndResultBypass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-			require.NoError(t, err)
-			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+			req := newUser1Request(t)
 
 			rr := httptest.NewRecorder()
 			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
-			_, err = rfw.Write([]byte(tc.body))
+			_, err := rfw.Write([]byte(tc.body))
 			require.NoError(t, err)
 			require.NoError(t, rfw.FlushAndFilter())
 
@@ -1427,7 +1505,7 @@ func TestResponseFilteringWriter_SSE_ErrorAndResultBypass(t *testing.T) {
 			}
 			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(firstLine, "data: ")), &decoded))
 			assert.Equal(t, tc.wantErrorCode, decoded.Error.Code,
-				"the error code distinguishes fail-closed (our internal-error envelope) from pass-through (the upstream's own code)")
+				"the error code distinguishes fail-closed (mcpparser.CodeInternalError, our envelope) from pass-through (the upstream's own code)")
 		})
 	}
 }
@@ -1443,18 +1521,7 @@ func TestResponseFilteringWriter_SSE_ErrorAndResultBypass(t *testing.T) {
 func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	// A batch array smuggling a tools/list result. DecodeMessage rejects the
 	// array, so the pre-fix JSON path wrote it through raw.
@@ -1491,27 +1558,18 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			reqBody := `{"jsonrpc":"2.0",` + tc.reqIDJSON + `"method":"tools/list"}`
-			req, err := http.NewRequest(http.MethodPost, "/messages", strings.NewReader(reqBody))
-			require.NoError(t, err)
-			req.Header.Set("Content-Type", "application/json")
-			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
-
 			// Run the real MCP parsing middleware so the request context carries a
 			// ParsedMCPRequest, matching how the request would look at this point
 			// in the real middleware chain. writeErrorResponse's id-recovery path
 			// reads the request id back out of that context.
-			var parsedReq *http.Request
-			mcpparser.ParsingMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				parsedReq = r
-			})).ServeHTTP(httptest.NewRecorder(), req)
-			require.NotNil(t, parsedReq)
+			reqBody := `{"jsonrpc":"2.0",` + tc.reqIDJSON + `"method":"tools/list"}`
+			parsedReq := newParsedUser1Request(t, reqBody)
 
 			rr := httptest.NewRecorder()
 			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
 
-			_, err = rfw.Write([]byte(smuggled))
+			_, err := rfw.Write([]byte(smuggled))
 			require.NoError(t, err)
 			require.NoError(t, rfw.FlushAndFilter())
 
@@ -1538,18 +1596,23 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 }
 
 // TestErrorResponseBody pins the wire shape of the JSON-RPC error envelope
-// errorResponseBody produces for a filter/encode failure: a "2.0" jsonrpc tag,
-// the standard internal-error code, a generic message that must NOT echo the
-// wrapped error (it can name tools the caller is not authorized to see, so
-// #6066 and security.md forbid forwarding it), and an id
-// that round-trips for a real request id but is entirely ABSENT (not present
-// and null) for the zero-value id. Absence matters because MCP types the
-// error response id as optional (id?: RequestId), and the reference
-// TypeScript SDK's strict schema admits undefined but not null — a null id
-// would make that client throw inside its transport.
+// errorResponseBody produces for a filter/encode failure: a "2.0" jsonrpc
+// tag, the standard JSON-RPC internal-error code (mcpparser.CodeInternalError)
+// with a fixed generic client-visible message that never echoes the wrapped
+// error's text (#6066 — that error can originate in policy evaluation and
+// name tools or resources), and an id that round-trips for a real request id
+// but is entirely ABSENT (not present and null) for the zero-value id.
+// Absence matters because MCP types the error response id as optional
+// (id?: RequestId), and the reference TypeScript SDK's strict schema admits
+// undefined but not null — a null id would make that client throw inside
+// its transport.
 func TestErrorResponseBody(t *testing.T) {
 	t.Parallel()
 
+	authorizer := newWeatherOnlyAuthorizer(t)
+	// A distinctive sentinel, not a generic message: its absence from the
+	// encoded body is what actually pins the #6066 scrub, rather than
+	// passing by the coincidence of a short or common wrapped error string.
 	wrapped := errors.New("leaky-tool-name-sentinel")
 
 	testCases := []struct {
@@ -1566,8 +1629,8 @@ func TestErrorResponseBody(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, nil, nil, string(mcp.MethodToolsList), nil, nil)
+			req := newUser1Request(t)
+			rfw := NewResponseFilteringWriter(httptest.NewRecorder(), authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			body := rfw.errorResponseBody(tc.id, wrapped)
 
 			var decoded map[string]any
@@ -1579,9 +1642,9 @@ func TestErrorResponseBody(t *testing.T) {
 			require.True(t, ok, "error field must decode as an object")
 			assert.Equal(t, float64(mcpparser.CodeInternalError), errObj["code"])
 			assert.Equal(t, "internal error", errObj["message"],
-				"the client-visible message must be generic")
+				"the client-visible message must be the fixed generic string, not the wrapped error")
 			assert.NotContains(t, string(body), wrapped.Error(),
-				"the wrapped error must never reach the client: it can name tools the caller cannot see")
+				"the wrapped error's text must never reach the wire (#6066)")
 
 			idValue, hasID := decoded["id"]
 			require.Equal(t, tc.wantID != nil, hasID, "id key presence mismatch")
@@ -1606,18 +1669,7 @@ func TestErrorResponseBody(t *testing.T) {
 func TestResponseFilteringWriter_SSE_SplitPayloadAcrossDataLines(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	resultJSON, err := json.Marshal(mcp.ListToolsResult{
 		Tools: []mcp.Tool{
@@ -1647,9 +1699,7 @@ func TestResponseFilteringWriter_SSE_SplitPayloadAcrossDataLines(t *testing.T) {
 
 	body := strings.Join([]string{"data: " + string(firstHalf), "data: " + string(secondHalf), "", ""}, "\n")
 
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
 	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
@@ -1675,18 +1725,7 @@ func TestResponseFilteringWriter_SSE_SplitPayloadAcrossDataLines(t *testing.T) {
 func TestResponseFilteringWriter_SSE_MultiEventBody(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	notificationLine := `data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"warming up"}}`
 
@@ -1707,9 +1746,7 @@ func TestResponseFilteringWriter_SSE_MultiEventBody(t *testing.T) {
 	// Two complete events, each terminated by its own blank line.
 	body := strings.Join([]string{notificationLine, "", respLine, "", ""}, "\n")
 
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+	req := newUser1Request(t)
 
 	rr := httptest.NewRecorder()
 	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
@@ -1736,18 +1773,7 @@ func TestResponseFilteringWriter_SSE_MultiEventBody(t *testing.T) {
 func TestResponseFilteringWriter_SSE_StructuralRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
-	require.NoError(t, err)
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
+	authorizer := newWeatherOnlyAuthorizer(t)
 
 	// The notification event carries no result, so it never reaches Cedar
 	// evaluation; the policy content is irrelevant to this test.
@@ -1777,15 +1803,13 @@ func TestResponseFilteringWriter_SSE_StructuralRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-			require.NoError(t, err)
-			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+			req := newUser1Request(t)
 
 			rr := httptest.NewRecorder()
 			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
 			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
-			_, err = rfw.Write([]byte(tc.body))
+			_, err := rfw.Write([]byte(tc.body))
 			require.NoError(t, err)
 			require.NoError(t, rfw.FlushAndFilter())
 
@@ -1793,6 +1817,85 @@ func TestResponseFilteringWriter_SSE_StructuralRoundTrip(t *testing.T) {
 				"a body needing no filtering must be reproduced byte-for-byte")
 		})
 	}
+}
+
+// TestResponseFilteringWriter_SSE_FilteredEventTerminators covers a hole
+// TestResponseFilteringWriter_SSE_StructuralRoundTrip leaves open: every row
+// there asserts byte-identity for a body that needs no filtering, so nothing
+// ever reaches resolveSSEEvent's replacement branch. Swapping that branch's
+// `term: l.term` for a hardcoded []byte("\n") would still pass the whole
+// suite. These cases exercise a body that IS filtered, so they assert the
+// (changed) output rather than a reproduced input and don't belong under the
+// byte-identity test's name.
+func TestResponseFilteringWriter_SSE_FilteredEventTerminators(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	encoded, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultJSON),
+	})
+	require.NoError(t, err)
+
+	t.Run("CRLF body: filtered data line and blank line stay CRLF-terminated", func(t *testing.T) {
+		t.Parallel()
+
+		req := newUser1Request(t)
+		rr := httptest.NewRecorder()
+		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		body := "data: " + string(encoded) + "\r\n\r\n"
+		_, err := rfw.Write([]byte(body))
+		require.NoError(t, err)
+		require.NoError(t, rfw.FlushAndFilter())
+
+		out := rr.Body.String()
+		assert.NotContains(t, out, "admin_tool", "the filtered event must not leak the denied tool")
+		assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+		require.True(t, strings.HasSuffix(out, "\r\n\r\n"),
+			"the replacement data line and the following blank line must both stay CRLF-terminated: %q", out)
+
+		// Every LF in the output must be immediately preceded by a CR: a bare
+		// LF proves the replacement line (or the blank line after it) fell
+		// back to a hardcoded "\n" instead of the CRLF the input actually used.
+		for i := 0; i < len(out); i++ {
+			if out[i] == '\n' {
+				require.True(t, i > 0 && out[i-1] == '\r', "found a bare LF at byte %d in %q", i, out)
+			}
+		}
+	})
+
+	t.Run("trailing filtered event with no closing blank line", func(t *testing.T) {
+		t.Parallel()
+
+		req := newUser1Request(t)
+		rr := httptest.NewRecorder()
+		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		// No trailing terminator at all: the backend closed the stream
+		// mid-event, same fixture as the unterminated-body case documented
+		// in processSSEResponse.
+		body := "data: " + string(encoded)
+		_, err := rfw.Write([]byte(body))
+		require.NoError(t, err)
+		require.NoError(t, rfw.FlushAndFilter())
+
+		out := rr.Body.String()
+		assert.NotContains(t, out, "admin_tool", "the filtered event must not leak the denied tool")
+		assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+		assert.False(t, strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\r"),
+			"an unterminated input must not gain a fabricated terminator: %q", out)
+	})
 }
 
 // TestResponseFilteringWriter_FilterBypassAttempts verifies that list results a

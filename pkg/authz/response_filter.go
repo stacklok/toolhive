@@ -176,8 +176,15 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 		if carriesResult(rawResponse) {
 			slog.Warn("JSON response carried a result outside a clean Response frame; dropping as a protocol violation",
 				"method", rfw.method)
+			// A batch is replaced wholesale by this single error envelope
+			// even if only one of many elements carried the smuggled
+			// result: JSON-RPC does define batch responses, but we don't
+			// attempt a partial one here, and mcpparser.ParsingMiddleware
+			// already rejects batch requests outright (see #5745), so a
+			// batch response on this path is already off-spec traffic.
+			// Fail-closed is the right side to err on regardless.
 			return rfw.writeErrorResponse(rfw.requestID(),
-				fmt.Errorf("dropped a frame carrying a result outside a clean Response"))
+				errors.New("dropped a frame carrying a result outside a clean Response"))
 		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, werr := rfw.ResponseWriter.Write(rawResponse)
@@ -263,7 +270,11 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	// A trailing event with no closing blank line is never dispatched by a
 	// spec-compliant client, but the backend did send these bytes, so write
 	// them (filtered) rather than drop them — without fabricating a
-	// terminator the backend didn't send.
+	// terminator the backend didn't send. Consequence: if that event needed
+	// filtering, the error envelope substituted here is never dispatched
+	// either, so the client hangs on its own timeout instead of seeing the
+	// error. Real backends terminate their events, so this is accepted, not
+	// fixed.
 	outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
 
 	for _, l := range outputLines {
@@ -289,12 +300,17 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 
 	var dataValues [][]byte
 	for _, l := range event {
-		// A bare "data" line with no colon doesn't match the "data:" prefix
-		// below, so it's excluded from assembly here, unlike strict WHATWG
-		// grammar (which treats it as a data field with an empty value).
-		// That's safe: its only effect on a spec-compliant client's buffer
-		// would be one extra LF, which is legal JSON whitespace outside a
-		// string literal and equally fatal to us and the client inside one.
+		// A bare "data" line with no colon, or one with a space before the
+		// colon ("data :foo"), doesn't match the "data:" prefix below, so both
+		// are excluded from assembly here, unlike strict WHATWG grammar (which
+		// treats a bare "data" as a field with an empty value). That's safe
+		// for two reasons: (1) the only effect on a spec-compliant client's
+		// assembled buffer is one extra LF, which is JSON-insignificant
+		// whitespace outside a string literal and can never turn JSON we'd
+		// reject into JSON a client would accept; (2) for
+		// "data :foo", bytes.Cut on the raw line yields before == "data " (not
+		// "data"), so the go-sdk's own line parser ignores it too, exactly
+		// like us and strict WHATWG.
 		data, ok := bytes.CutPrefix(l.text, []byte("data:"))
 		if !ok {
 			continue
@@ -372,7 +388,7 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) []byte {
 		slog.Warn("SSE event carried a result outside a clean Response frame; failing closed as a protocol violation",
 			"method", rfw.method)
 		return rfw.errorResponseBody(rfw.requestID(),
-			fmt.Errorf("dropped a frame carrying a result outside a clean Response"))
+			errors.New("dropped a frame carrying a result outside a clean Response"))
 	case decodeErr != nil:
 		// Genuinely undecodable and no smuggled result. Pass through unfiltered.
 		slog.Warn("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
@@ -408,9 +424,13 @@ func requiresResponseFiltering(method string) bool {
 // The payload may hold more than one top-level JSON value: an SSE event's
 // assembled data can concatenate several messages (e.g. a notification and a
 // response, one per data: line) into something DecodeMessage rejects as a
-// single value. A json.Decoder walks all of them instead of Unmarshal-ing the
-// whole payload as one document, so a result-bearing value after the first is
-// still caught rather than making the whole payload look undecodable.
+// single value. json.Decoder reads one JSON value at a time and stops at the
+// first one it can't decode, rather than Unmarshal-ing the whole payload as
+// one document, so a result-bearing value after the first is still caught
+// instead of making the whole payload look undecodable. Stopping there
+// (rather than trying to resync past the bad value) is safe: a payload the
+// decoder can't parse value-by-value isn't a single parseable JSON document
+// either, so no strict client can read past that point.
 func carriesResult(data []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	for {
@@ -432,10 +452,7 @@ func valueCarriesResult(value json.RawMessage) bool {
 	}
 	switch trimmed[0] {
 	case '{':
-		var probe struct {
-			Result json.RawMessage `json:"result"`
-		}
-		return json.Unmarshal(trimmed, &probe) == nil && probe.Result != nil
+		return objectCarriesResult(trimmed)
 	case '[':
 		// A single level, not recursive: a JSON-RPC batch is a flat array of
 		// message objects, so that's the whole legitimate surface. Recursing
@@ -451,10 +468,7 @@ func valueCarriesResult(value json.RawMessage) bool {
 			if len(elTrimmed) == 0 || elTrimmed[0] != '{' {
 				continue
 			}
-			var probe struct {
-				Result json.RawMessage `json:"result"`
-			}
-			if json.Unmarshal(elTrimmed, &probe) == nil && probe.Result != nil {
+			if objectCarriesResult(elTrimmed) {
 				return true
 			}
 		}
@@ -478,6 +492,18 @@ func sseCarriesResult(rawResponse []byte) bool {
 	return false
 }
 
+// objectCarriesResult reports whether a trimmed JSON object value has a
+// "result" key present, including an explicit `"result":null` — RawMessage's
+// UnmarshalJSON runs even for a JSON null, so probe.Result is non-nil (the
+// 4 bytes "null") whenever the key exists at all. Treating a null result as
+// carrying one is deliberate: it's the fail-closed direction.
+func objectCarriesResult(trimmedObject json.RawMessage) bool {
+	var probe struct {
+		Result json.RawMessage `json:"result"`
+	}
+	return json.Unmarshal(trimmedObject, &probe) == nil && probe.Result != nil
+}
+
 // filterListResponse filters the list response based on authorization policies
 func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
 	if response.Error != nil {
@@ -488,7 +514,7 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 		// closed rather than passing the smuggled list through under cover
 		// of the error field. See #5257.
 		if response.Result != nil {
-			return nil, fmt.Errorf("response carried both error and result")
+			return nil, errors.New("response carried both error and result")
 		}
 		// If there's an error and no result, don't filter
 		return response, nil

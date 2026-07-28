@@ -79,22 +79,7 @@ func ParseDelegationChain(act any, maxDepth int) DelegationChain {
 			return chain
 		}
 
-		actor := DelegatedActor{}
-		sub, subIsString := m["sub"].(string)
-		if subIsString {
-			actor.Subject = sub
-		}
-		claims := make(map[string]any, len(m))
-		for k, v := range m {
-			if k == "act" || (k == "sub" && subIsString) || slices.Contains(internalClaims, k) {
-				continue
-			}
-			claims[k] = v
-		}
-		if len(claims) > 0 {
-			actor.Claims = claims
-		}
-		chain.Actors = append(chain.Actors, actor)
+		chain.Actors = append(chain.Actors, parseActor(m))
 
 		next, ok := m["act"]
 		if !ok || next == nil {
@@ -111,7 +96,7 @@ func ParseDelegationChain(act any, maxDepth int) DelegationChain {
 		if !ok {
 			// current is guaranteed non-nil here (the loop above only
 			// advances current to a checked, present, non-nil "act" value),
-			// so a failed assertion means unparseable data beyond the cap.
+			// so a failed assertion means unparsable data beyond the cap.
 			chain.Malformed = true
 			break
 		}
@@ -125,4 +110,27 @@ func ParseDelegationChain(act any, maxDepth int) DelegationChain {
 	}
 
 	return chain
+}
+
+// parseActor builds one DelegatedActor from a decoded "act" claim object: the
+// "sub" member (if a string) becomes Subject, and every other member except
+// "act" and internalClaims (see context.go) is copied into Claims. A
+// non-string "sub" is preserved under Claims rather than dropped.
+func parseActor(m map[string]any) DelegatedActor {
+	actor := DelegatedActor{}
+	sub, subIsString := m["sub"].(string)
+	if subIsString {
+		actor.Subject = sub
+	}
+	claims := make(map[string]any, len(m))
+	for k, v := range m {
+		if k == "act" || (k == "sub" && subIsString) || slices.Contains(internalClaims, k) {
+			continue
+		}
+		claims[k] = v
+	}
+	if len(claims) > 0 {
+		actor.Claims = claims
+	}
+	return actor
 }

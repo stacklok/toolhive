@@ -9,21 +9,35 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
-// methodServerDiscover is the Modern (2026-07-28) capability-probe method. It is
-// special-cased in two places — the kill-switch branch below and dispatchModern's
-// method switch — because it is how a client learns which revisions a server
-// supports, so it must never be refused on version grounds.
+// methodServerDiscover is the Modern (2026-07-28) capability-probe method — how
+// a client learns which revisions a server supports. It is special-cased in two
+// places — the capability-gate branch in classifyingHandler and dispatchModern's
+// method switch (dispatchModernDiscover) — because it must never be refused on
+// version grounds: it is the one request a client needs answered to negotiate
+// down.
 const methodServerDiscover = "server/discover"
 
 // classifyingHandler classifies a parsed MCP request as Legacy (2025-11-25) or
 // Modern (2026-07-28) at the decode seam, rejects a malformed Modern request
-// with the correct JSON-RPC error before it reaches dispatch, and — when
-// Config.ModernDispatchEnabled — routes a well-formed Modern request to
-// dispatchModern instead of the SDK. Legacy traffic always falls through to
-// next unchanged. While the switch is off (default), a well-formed Modern
-// request is refused with a conformant -32022 rather than falling through —
-// see the kill-switch branch for why, and for why server/discover is exempt
-// and does still fall through.
+// with the correct JSON-RPC error before it reaches dispatch, and routes a
+// well-formed Modern request to dispatchModern instead of the SDK. Legacy
+// traffic always falls through to next unchanged.
+//
+// Classification is exact-match on both the MCP-Protocol-Version header and the
+// reserved io.modelcontextprotocol/* _meta keys (ClassifyRevision), so nothing
+// that is not unambiguously Modern reaches dispatchModern: Legacy wire behavior
+// is unaffected by this handler.
+//
+// Whether vMCP serves the Modern revision at all is a per-instance capability
+// question, not a global switch: #5959's temporary env-var kill-switch is
+// replaced by modernDispatchBlockers (modern_gate.go), which enumerates the
+// enabled features the stateless dispatch path cannot serve. When that list is
+// empty (the common case) a well-formed Modern request dispatches; when it is
+// not, the gate branch below refuses Modern with a conformant -32022 listing
+// Legacy so capable clients negotiate down and reach the SDK path, where every
+// enabled feature works. A request whose _meta names some OTHER protocol
+// version is refused with the same -32022 by ClassifyRevision below, which
+// owns every other version-grounds rejection.
 //
 // ValidateHeaderConsistency (Mcp-Method/Mcp-Name) only applies to Modern
 // requests: a Legacy request carrying a stray Mcp-Method/Mcp-Name header
@@ -74,16 +88,16 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// TEMPORARY kill-switch (default off): until Modern dispatch is
-		// conformance-validated, vMCP does not serve the Modern revision unless
-		// explicitly enabled. See issue #5959.
+		// Capability gate: when this instance has enabled features the stateless
+		// dispatch path cannot serve (modernDispatchBlockers, modern_gate.go),
+		// vMCP does not serve the Modern revision.
 		//
 		// Answer that conformantly here rather than letting the request reach the
 		// SDK. The draft's Streamable HTTP "Protocol Version Header" section
 		// requires a server that does not implement a requested version -- "whether
 		// the version is unknown to the server, or is a known version the server has
 		// chosen not to support" -- to reply 400 with an UnsupportedProtocolVersionError
-		// listing the versions it does support. A disabled kill switch is exactly the
+		// listing the versions it does support. A gated instance is exactly the
 		// second case. Falling through instead yields go-sdk's stateful-server
 		// rejection, which is a 400 with a PLAIN-TEXT body whose text is Go-API advice
 		// for the server author ("set StreamableHTTPOptions.Stateless = true") -- not
@@ -92,9 +106,12 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		// server/discover is deliberately exempt: it is how a client learns which
 		// revisions a server supports, so rejecting it on version grounds would leave
 		// the client no way to negotiate down. go-sdk exempts it for the same reason,
-		// and its stateful path answers discover correctly, so the fall-through is
-		// still right for that one method.
-		if !s.config.ModernDispatchEnabled {
+		// and its stateful path answers discover with the transport-filtered version
+		// list -- which excludes 2026-07-28 for a stateful transport -- so the
+		// fall-through is not just tolerable but the correct advertisement: a
+		// Modern-first client (go-sdk v1.7+ probes discover before initialize)
+		// reads it and lands on the Legacy handshake without ever seeing an error.
+		if blocked := s.modernDispatchBlockers(); len(blocked) > 0 {
 			if parsed.Method == methodServerDiscover {
 				next.ServeHTTP(w, r)
 				return

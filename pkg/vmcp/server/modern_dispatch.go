@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -587,10 +588,13 @@ func writeModernCallFailure(
 // caller that reacts to -32021 by declaring the capability on a retry
 // learns immediately that doing so will not help here (the declared case is served by
 // writeModernCallFailure's -32603 branch, not by MRTR).
+//
+// id follows writeModernError (modern_envelope.go): absent (via
+// transportsession.HasJSONRPCID) is encoded by omitting the "id" key, never
+// as null.
 func writeModernMissingCapability(w http.ResponseWriter, id any, capName string) {
-	writeModernEnvelope(w, http.StatusOK, map[string]any{
+	envelope := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id,
 		"error": map[string]any{
 			"code": mcpparser.CodeMissingClientCapability,
 			"message": fmt.Sprintf(
@@ -602,7 +606,11 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 				"requiredCapabilities": map[string]any{capName: map[string]any{}},
 			},
 		},
-	})
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
 }
 
 // writeModernDispatchError classifies a POST-dispatch error from
@@ -615,6 +623,18 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // therefore tested FIRST, before falling through to the generic internal
 // error.
 //
+// A domain error that carries its own stable JSON-RPC code and data
+// (mcpparser.CodedError — e.g. the rate limiter's -32029 with
+// data.retryAfterSeconds) is written with that code rather than laundered
+// into -32603. This is the Modern counterpart of the SDK path's
+// conversion.ErrorToToolResult, whose CodedError branch preserves the same
+// code/data in an IsError tool result's structuredContent because the SDK
+// tool-handler seam cannot emit a custom JSON-RPC error object. This
+// dispatcher owns the envelope, so it emits the real thing (mirroring how
+// #6061 classified mid-call capability refusals as -32021 instead of
+// -32603). Authorization denials are still tested first: a coded error can
+// never mask a denial's 403.
+//
 // The -32603 message reuses err.Error() verbatim. This matches the SDK path's
 // existing posture rather than inventing a new one: conversion.ErrorToToolResult's
 // generic branch, and the resources/read/prompts/get Serve handlers
@@ -622,8 +642,17 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // non-authz error. Re-sanitizing here would just diverge from what the SDK
 // path already exposes for the identical failure.
 func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err error) {
+	// Denial first (matches conversion.ErrorToToolResult): an error that is
+	// both a CodedError and wraps ErrAuthorizationFailed must render as the
+	// denial, never as retry-shaped coded data (the sets are disjoint today;
+	// this ordering is the invariant).
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernDenied(w, id, denyMsg)
+		return
+	}
+	var coded mcpparser.CodedError
+	if errors.As(err, &coded) {
+		writeModernCodedError(w, id, err, coded)
 		return
 	}
 	writeModernError(w, id, jsonRPCCodeInternalError, err.Error())

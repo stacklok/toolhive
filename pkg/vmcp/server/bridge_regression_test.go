@@ -207,10 +207,9 @@ func newRecordingBackendProxy(t *testing.T, backendURL string) (string, func() [
 	return ts.URL + "/mcp", getRecords
 }
 
-// newBridgeCellAServer builds a vMCP server with Modern dispatch's kill
-// switch ON, routing a single Legacy backend (at proxyURL) through
-// identityEchoStrategy so the credential that reaches the backend on each
-// call is observable. Mirrors newRealModernTestHandler's construction
+// newBridgeCellAServer builds a vMCP server routing a single Legacy backend
+// (at proxyURL) through identityEchoStrategy so the credential that reaches
+// the backend on each call is observable. Mirrors newRealTestHandler's construction
 // (session_management_realbackend_integration_test.go), diverging only in
 // the backend's AuthConfig -- that helper always uses "unauthenticated",
 // which would leave nothing for this file's tests to assert.
@@ -245,12 +244,11 @@ func newBridgeCellAServer(t *testing.T, proxyURL string) *httptest.Server {
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{
-			Host:                  "127.0.0.1",
-			Port:                  0,
-			SessionTTL:            5 * time.Minute,
-			ModernDispatchEnabled: true,
-			SessionFactory:        vmcpsession.NewSessionFactory(authReg),
-			Aggregator:            agg,
+			Host:           "127.0.0.1",
+			Port:           0,
+			SessionTTL:     5 * time.Minute,
+			SessionFactory: vmcpsession.NewSessionFactory(authReg),
+			Aggregator:     agg,
 		},
 		rt,
 		backendClient,

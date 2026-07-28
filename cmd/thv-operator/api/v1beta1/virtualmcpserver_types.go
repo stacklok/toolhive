@@ -93,8 +93,10 @@ type VirtualMCPServerSpec struct {
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
 	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
-	// When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
-	// that provides embedding capabilities.
+	// It is optional even when the optimizer is enabled: without it (and without
+	// spec.config.optimizer.embeddingService), find_tool falls back to FTS5
+	// keyword-only search with no semantic ranking. Set this field to point to a
+	// ready EmbeddingServer when semantic ranking is desired.
 	// The referenced EmbeddingServer must exist in the same namespace and be ready.
 	// +optional
 	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
@@ -599,7 +601,8 @@ func (r *VirtualMCPServer) Validate() error {
 // validateEmbeddingServer validates EmbeddingServerRef and Optimizer configuration.
 // Rules:
 // - embeddingServerRef.name must be non-empty when ref is provided
-// - optimizer requires either embeddingServerRef or a manually set embeddingService
+// - optimizer does not require an embedding source: with neither embeddingServerRef
+//   nor optimizer.embeddingService set, find_tool runs FTS5 keyword-only search
 // - if embeddingServerRef is set without optimizer, auto-populate optimizer with defaults
 //
 // The controller handles the remaining cases at runtime (event emission, URL population).
@@ -611,15 +614,6 @@ func (r *VirtualMCPServer) validateEmbeddingServer() error {
 
 	hasOptimizer := r.Spec.Config.Optimizer != nil
 	hasRef := r.Spec.EmbeddingServerRef != nil
-	hasManualService := hasOptimizer && r.Spec.Config.Optimizer.EmbeddingService != ""
-
-	// Optimizer configured without any embedding source is an error.
-	// The user must either set embeddingServerRef or manually set optimizer.embeddingService.
-	if hasOptimizer && !hasRef && !hasManualService {
-		return fmt.Errorf(
-			"spec.config.optimizer requires an embedding service: " +
-				"set spec.embeddingServerRef (recommended) or spec.config.optimizer.embeddingService")
-	}
 
 	// EmbeddingServerRef is set but optimizer is not configured: auto-populate
 	// optimizer with default values so the embedding server is actually used.

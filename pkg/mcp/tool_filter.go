@@ -697,7 +697,9 @@ func processEventStream(
 	} else if len(buffer) >= 1 && buffer[len(buffer)-1] == '\r' {
 		linesep = []byte("\r")
 	} else {
-		return fmt.Errorf("unsupported separator: %s", string(buffer))
+		// Length only, not the buffer: buffer is the full pre-filter payload
+		// (e.g. the unfiltered tools/list), and this error is logged upstream.
+		return fmt.Errorf("unsupported SSE line separator in %d-byte buffer", len(buffer))
 	}
 
 	var linesepTotal, linesepCount int

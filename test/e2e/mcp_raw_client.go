@@ -274,11 +274,12 @@ type RawRPCError struct {
 
 // RawResponse is the parsed result of sending a single (non-batch) JSON-RPC
 // request over MCP-over-HTTP. For batch responses (a JSON array), inspect
-// Body directly instead of ID/Result/Error.
+// Body directly instead of JSONRPC/ID/Result/Error.
 type RawResponse struct {
 	StatusCode int
 	Headers    http.Header
 	Body       []byte // raw response body, always populated
+	JSONRPC    string // echoed "jsonrpc" version tag; "" if absent or unparsable
 	ID         any    // echoed "id"; nil if absent, JSON null, or unparsable
 	Result     json.RawMessage
 	Error      *RawRPCError
@@ -381,12 +382,20 @@ type wireResponse struct {
 
 // populateEnvelope best-effort parses body as a single JSON-RPC response
 // object into out. A malformed or non-object body (e.g. a batch array, or
-// deliberately garbled test input) leaves ID/Result/Error at their zero
-// values; out.Body still carries the raw bytes for the caller to inspect.
+// deliberately garbled test input) leaves JSONRPC/ID/Result/Error at their
+// zero values; out.Body still carries the raw bytes for the caller to inspect.
 func populateEnvelope(body []byte, out *RawResponse) {
 	var w wireResponse
 	if err := json.Unmarshal(body, &w); err != nil {
 		return
+	}
+	// encoding/json struct tags match case-insensitively as a fallback, which
+	// would let a miscased "JSONRPC" or "JsonRpc" key satisfy `json:"jsonrpc"`
+	// -- exactly the kind of malformed envelope this field exists to catch
+	// (see #5950). Read it from a raw map instead, which is case-sensitive.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		_ = json.Unmarshal(raw["jsonrpc"], &out.JSONRPC)
 	}
 	out.ID = decodeID(w.ID)
 	out.Result = w.Result

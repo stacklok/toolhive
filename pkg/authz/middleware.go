@@ -136,34 +136,43 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
-// handleUnauthorized handles unauthorized requests.
+// handleUnauthorized handles unauthorized requests. The client always sees the fixed
+// "Unauthorized" message -- err (an authorizer failure) can carry policy detail that
+// security.md forbids returning to callers, so it is logged server-side instead.
+// Cedar's evaluation context can embed decoded JWT claim values (see the claim-keys-
+// only rule in authorizers/cedar/core.go), so err must not be surfaced to the client,
+// nor copied into additional log lines or fields beyond the single Warn below.
 func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
-	// Create an error response
-	errorMsg := "Unauthorized"
 	if err != nil {
-		errorMsg = err.Error()
+		slog.Warn("authorization denied", "error", err)
 	}
 
 	// Create a JSON-RPC error response
-	id, err := mcp.ConvertToJSONRPC2ID(msgID)
-	if err != nil {
+	id, convErr := mcp.ConvertToJSONRPC2ID(msgID)
+	if convErr != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails
 	}
 
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(mcp.JSONRPCCodeDenied, errorMsg),
+		Error: jsonrpc2.NewError(mcp.JSONRPCCodeDenied, "Unauthorized"),
 	}
 
-	// Set the response headers
+	// Encode before writing any header, so a marshal failure never leaves a
+	// half-written response (e.g. a 403 header followed by a second 500 write).
+	body, encErr := jsonrpc2.EncodeMessage(errorResponse)
+	if encErr != nil {
+		// Unreachable in practice: errorResponse is always a well-formed
+		// jsonrpc2.Response built from strings/ints above. Fall back to a
+		// hardcoded valid JSON-RPC error body rather than writing nothing.
+		slog.Error("failed to encode JSON-RPC unauthorized response", "error", encErr)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"Unauthorized"}}`, mcp.JSONRPCCodeDenied)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-
-	// Write the error response
-	if err := json.NewEncoder(w).Encode(errorResponse); err != nil {
-		// If we can't encode the error response, log it and return a simple error
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
+	//nolint:gosec // G104: writing the JSON-RPC denial body to an HTTP client; nothing to do on error
+	_, _ = w.Write(body)
 }
 
 // Middleware creates an HTTP middleware that authorizes MCP requests.
@@ -212,10 +221,13 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Get the feature and operation from the method
 		featureOp, ok := MCPMethodToFeatureOperation[parsedRequest.Method]
 		if !ok {
-			// Unknown method - deny by default for security
-			// Methods must be explicitly added to MCPMethodToFeatureOperation to be allowed
-			handleUnauthorized(w, parsedRequest.ID,
-				fmt.Errorf("unknown MCP method: %s (not configured for authorization)", parsedRequest.Method))
+			// Unknown method - deny by default for security. Methods must be
+			// explicitly added to MCPMethodToFeatureOperation to be allowed.
+			// This is expected traffic (e.g. a newer-spec client), not an
+			// operational failure, so it's Debug rather than the Warn
+			// handleUnauthorized logs for an actual authorizer error.
+			slog.Debug("MCP method denied by default", "method", parsedRequest.Method)
+			handleUnauthorized(w, parsedRequest.ID, nil)
 			return
 		}
 

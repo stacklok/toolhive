@@ -1138,6 +1138,11 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 // TestResponseFilteringWriter_JSON_DisguisedResponseFrame is the application/json
 // counterpart: the disguised-result bypass is transport-independent, so the JSON
 // path must also fail closed on a smuggled result rather than write it through.
+//
+// It also pins the writeErrorResponse envelope: the error body written on this
+// path must be conformant JSON-RPC (lowercase "jsonrpc"/"id"/"error" keys, no
+// "id" key for a notification) and must carry the *original request's* id, not
+// an empty one, so the client can still correlate the denial.
 func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 	t.Parallel()
 
@@ -1156,20 +1161,81 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 
 	// A batch array smuggling a tools/list result. DecodeMessage rejects the
 	// array, so the pre-fix JSON path wrote it through raw.
-	smuggled := `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
+	const smuggled = `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
 
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+	// writeErrorResponse logs the carriesResult error server-side and sends the
+	// client a fixed generic message alongside the standard JSON-RPC Internal
+	// Error code (mcpparser.CodeInternalError), not the HTTP status.
+	wantErr := `"error":{"code":` + strconv.FormatInt(mcpparser.CodeInternalError, 10) + `,"message":"internal error"}`
 
-	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
-	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	testCases := []struct {
+		name      string
+		reqIDJSON string // raw "id" field on the *incoming* request; "" omits it (notification)
+		wantIDKey string // expected "id" fragment in the error envelope; "" if id must be absent
+	}{
+		{
+			name:      "int id is recovered onto the error envelope",
+			reqIDJSON: `"id":42,`,
+			wantIDKey: `"id":42,`,
+		},
+		{
+			name:      "string id is recovered onto the error envelope",
+			reqIDJSON: `"id":"abc",`,
+			wantIDKey: `"id":"abc",`,
+		},
+		{
+			name:      "notification (no id) omits id entirely",
+			reqIDJSON: "",
+			wantIDKey: "",
+		},
+	}
 
-	_, err = rfw.Write([]byte(smuggled))
-	require.NoError(t, err)
-	require.NoError(t, rfw.FlushAndFilter())
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.NotContains(t, rr.Body.String(), "admin_tool",
-		"smuggled result on the application/json transport leaked past the filter")
+			reqBody := `{"jsonrpc":"2.0",` + tc.reqIDJSON + `"method":"tools/list"}`
+			req, err := http.NewRequest(http.MethodPost, "/messages", strings.NewReader(reqBody))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			// Run the real MCP parsing middleware so the request context carries a
+			// ParsedMCPRequest, matching how the request would look at this point
+			// in the real middleware chain. writeErrorResponse's id-recovery path
+			// reads the request id back out of that context.
+			var parsedReq *http.Request
+			mcpparser.ParsingMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				parsedReq = r
+			})).ServeHTTP(httptest.NewRecorder(), req)
+			require.NotNil(t, parsedReq)
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+			_, err = rfw.Write([]byte(smuggled))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+			body := rr.Body.String()
+			assert.NotContains(t, body, "admin_tool",
+				"smuggled result on the application/json transport leaked past the filter")
+
+			// assert.JSONEq is key-case-sensitive, so this single assertion catches
+			// "Error"/"ID" substituted for "error"/"id" (the historical bug), a
+			// missing "jsonrpc" tag, and a wrong or missing id all at once.
+			wantBody := `{"jsonrpc":"2.0",` + tc.wantIDKey + wantErr + `}`
+			assert.JSONEq(t, wantBody, body)
+
+			var decoded map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.wantIDKey != "", hasID, "id key presence mismatch")
+			_, hasResult := decoded["result"]
+			assert.False(t, hasResult, "error response must not contain a result key")
+		})
+	}
 }

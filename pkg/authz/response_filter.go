@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
@@ -140,7 +141,7 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 		if carriesResult(rawResponse) {
 			slog.Warn("JSON response carried a result outside a clean Response frame; dropping as a protocol violation",
 				"method", rfw.method)
-			return rfw.writeErrorResponse(jsonrpc2.ID{},
+			return rfw.writeErrorResponse(rfw.requestID(),
 				fmt.Errorf("dropped a frame carrying a result outside a clean Response"))
 		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -176,7 +177,9 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	} else if bytes.Contains(rawResponse, []byte("\r")) {
 		linesep = []byte("\r")
 	} else {
-		return fmt.Errorf("unsupported separator: %s", string(rawResponse))
+		// Length only, not the body: rawResponse is the full pre-filter payload
+		// (e.g. the unfiltered tools/list), and this error is logged upstream.
+		return fmt.Errorf("unsupported SSE line separator in %d-byte response", len(rawResponse))
 	}
 
 	var linesepTotal, linesepCount int
@@ -525,24 +528,46 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	return filteredResponse, nil
 }
 
-// writeErrorResponse writes an error response
+// writeErrorResponse logs the full filtering error server-side and sends the client a
+// generic message. err can originate in policy evaluation and name tools or
+// resources, so security.md forbids returning it verbatim.
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
+	slog.Error("error filtering response", "method", rfw.method, "error", err)
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(500, fmt.Sprintf("Error filtering response: %v", err)),
+		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "internal error"),
 	}
 
-	errorData, marshalErr := json.Marshal(errorResponse)
-	if marshalErr != nil {
-		// If we can't even marshal the error, write a simple error
-		rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
-		_, writeErr := rfw.ResponseWriter.Write([]byte(`{"error": "Internal server error"}`))
-		return writeErr
+	// Encode before writing any header, so an encode failure never leaves a
+	// half-written response.
+	body, encErr := jsonrpc2.EncodeMessage(errorResponse)
+	if encErr != nil {
+		// Unreachable in practice: errorResponse is always a well-formed
+		// jsonrpc2.Response built from a valid ID and message above. Fall back
+		// to a hardcoded valid JSON-RPC error body rather than writing nothing.
+		slog.Error("failed to encode JSON-RPC error response", "error", encErr)
+		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"internal error"}}`, mcpparser.CodeInternalError)
 	}
 
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
-	_, writeErr := rfw.ResponseWriter.Write(errorData)
+	_, writeErr := rfw.ResponseWriter.Write(body)
 	return writeErr
+}
+
+// requestID recovers the JSON-RPC id of the original request so an error
+// response written mid-filtering can still be correlated by the client.
+// Falls back to an empty jsonrpc2.ID (which EncodeMessage omits from the
+// wire entirely) if the request was never parsed or its id doesn't convert.
+func (rfw *ResponseFilteringWriter) requestID() jsonrpc2.ID {
+	parsed := mcpparser.GetParsedMCPRequest(rfw.request.Context())
+	if parsed == nil {
+		return jsonrpc2.ID{}
+	}
+	id, err := mcpparser.ConvertToJSONRPC2ID(parsed.ID)
+	if err != nil {
+		return jsonrpc2.ID{}
+	}
+	return id
 }
 
 // filterFindToolResponse filters the tools list embedded in a find_tool tools/call

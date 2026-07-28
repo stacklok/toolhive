@@ -136,6 +136,19 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | **priority** | First backend in priority order wins, others hidden |
 | **manual** | Explicit mapping for each conflict |
 
+**Conflict resolution covers tools only.** Resources, resource templates, and
+prompts are concatenated across backends with no de-duplication
+(`default_aggregator.go`, "no conflict resolution for these yet"), so
+`Resource.URI`, `ResourceTemplate.URITemplate` and `Prompt.Name` can each repeat
+in the aggregated view — two backends both exposing `file:///README.md` is
+enough. Only `Tool.Name` is unique, because tool resolution keys a map.
+
+Anything that treats one of those fields as an identity must account for that.
+The Modern list paginator does: its cursor names a position within a run of equal
+keys rather than assuming keys are distinct, because a plain "resume after this
+key" scan silently dropped an item whenever a duplicate landed on a page boundary
+(see [Client-facing list pagination](#client-facing-list-pagination)).
+
 ### Tool Filtering
 
 Beyond conflict resolution, vMCP can filter which tools are exposed through allow/deny lists, renaming, and description overrides.
@@ -392,13 +405,52 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 | Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
 | Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session; a backend's asynchronous `notifications/prompts/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
 | Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
-| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+| Subscriptions (`subscriptions/listen`) | Ack-level only | Modern (2026-07-28) edge, the revision's only server→client push channel. Answered with an SSE stream carrying the mandatory `notifications/subscriptions/acknowledged` and then a terminating result, both tagged `io.modelcontextprotocol/subscriptionId` and keyed by the listen request's JSON-RPC id (Modern has no sessions). The honored set is intersected against the advertised capabilities, all of whose push flags are false, so it is always **empty** and the stream closes immediately rather than idling. Serving it is what lets a go-sdk v1.7 client complete `Connect` at all — see below |
+
+The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination).
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
 
 ### Subscription limitation (ack-level)
 
 vMCP advertises `resources.subscribe: true` and answers `resources/subscribe` / `resources/unsubscribe` at **ack level**: the request is accepted (enforcing session binding and validating the URI is an advertised, admitted resource), and go-sdk records the subscription. vMCP does **not** currently propagate backend `notifications/resources/updated` to the subscribed client — doing so requires persistent per-session backend connections, which is out of scope. Clients that subscribe will receive a success ack but no update stream yet.
+
+### Client-facing list pagination
+
+On the Legacy edge the SDK's session-scoped feature store splits list results into
+pages. `dispatchModern` bypasses the SDK, so the Modern edge paginates itself
+(`pkg/vmcp/server/modern_pagination.go`).
+
+Modern has no sessions, so a cursor may not denote server-held iteration state.
+The draft pagination page makes cursors **opaque to clients** ("MUST treat cursors
+as opaque tokens"), which is precisely what allows the server to encode position
+*into* the token instead of remembering it. So the cursor is self-describing:
+base64url over a small JSON payload naming the list kind, the last key delivered,
+and how many items sharing that key have already been sent.
+
+Three properties worth knowing:
+
+- **Ordering.** Keyset paging needs a deterministic total order, and the
+  aggregator's fan-out order is not stable between calls, so Modern list results
+  are sorted by the item's key (`Tool.Name`, `Resource.URI`,
+  `ResourceTemplate.URITemplate`, `Prompt.Name`). Legacy ordering is unchanged.
+- **Duplicate keys are tolerated, not assumed away.** Only tool names are unique
+  (see [Conflict Resolution](#conflict-resolution)); resource URIs, template
+  strings and prompt names can repeat. The cursor therefore resumes *within* a run
+  of equal keys, because a plain "resume after this key" scan skipped every copy
+  and permanently dropped items whose key collided at a page boundary.
+- **End of results omits `nextCursor` entirely.** The draft states that "an empty
+  string is a valid cursor and thus MUST NOT be treated as the end of results", so
+  emitting `""` would make a conformant client re-request and loop on page one.
+
+The cursor encodes a position in the **aggregated** ordering and never names a
+backend, so adding or removing a backend cannot invalidate one. This is unrelated
+to the aggregator's *upstream* cursor-following (#5851), which is vMCP acting as a
+client walking a backend's pages.
+
+An invalid cursor — malformed, over-length, or minted for a different list verb —
+is rejected with `-32602`, per the draft's error-handling rule.
 
 ### Tools/resources/prompts list_changed propagation (#5748, #5969)
 
@@ -430,8 +482,17 @@ above for how that revision is resolved and cached. This is correct, not a gap i
 `initialize` and `Mcp-Session-Id`, so there is no Legacy-shaped persistent
 connection to hold and no standalone GET stream a Modern backend could push
 on. Modern's own server-push mechanism is `subscriptions/listen` (see
-[Transport Architecture](03-transport-architecture.md)), which vMCP does not
-implement yet — so `list_changed` propagation is currently Legacy-only.
+[Transport Architecture](03-transport-architecture.md)). vMCP **serves** that
+method on its client edge (`pkg/vmcp/server/modern_subscriptions.go`), but only
+at acknowledgement level: it computes the honored subscription set by
+intersecting the client's request against the capabilities `server/discover`
+advertises, and since every push-related flag there is deliberately false
+(`newModernCapabilities`), the honored set is always empty and no notification is
+ever pushed. So `list_changed` **delivery** remains Legacy-only, on both edges —
+what the Modern client edge gained is a conformant, explicitly-empty answer
+instead of a `-32601` that tore the client's connection down. Real Modern
+delivery is tracked in #5743 and requires vMCP to start advertising a push
+capability first.
 
 The sink is built once per session, at registration (`pkg/vmcp/server`'s
 `buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,

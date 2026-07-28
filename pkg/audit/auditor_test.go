@@ -628,6 +628,42 @@ func TestExtractSubjects(t *testing.T) {
 		assert.Equal(t, 1, chain.DroppedCount, "one dropped actor must be reported")
 	})
 
+	t.Run("delegation chain widens through configured max depth", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 25
+		depthAuditor, err := NewAuditorWithTransport(&Config{MaxDelegationDepth: &maxDepth}, "sse")
+		require.NoError(t, err)
+
+		subs := []string{
+			"agent-1", "agent-2", "agent-3", "agent-4", "agent-5",
+			"agent-6", "agent-7", "agent-8", "agent-9", "agent-10",
+			"agent-11", "agent-12", "agent-13", "agent-14",
+		}
+		claims := jwt.MapClaims{
+			"sub": "user123",
+			"act": nestedActClaim(subs...),
+		}
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		// Shaped like what auth.claimsToIdentity produces for a 14-hop token:
+		// the identity-layer parse caps at auth.DefaultMaxDelegationDepth (10),
+		// truncating the chain even though the raw "act" claim has all 14 hops.
+		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject:         "user123",
+				Claims:          claims,
+				DelegationChain: &parsed,
+			},
+		}
+		req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+		chain := depthAuditor.extractDelegationChain(req)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, len(subs), "configured depth must recover actors dropped by the identity-layer parse")
+		assert.False(t, chain.Truncated)
+	})
+
 	t.Run("no identity yields nil delegation chain", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -702,6 +738,82 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		}
 		assert.Nil(t, extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth))
 	})
+
+	// The following two cases share an identity shaped exactly like what
+	// auth.claimsToIdentity produces for a 14-hop token: the identity-layer
+	// parse always caps at auth.DefaultMaxDelegationDepth (10), so
+	// DelegationChain holds only the first 10 actors, truncated, with the
+	// full 14-hop chain still available in the raw "act" claim.
+	subs := []string{
+		"agent-1", "agent-2", "agent-3", "agent-4", "agent-5",
+		"agent-6", "agent-7", "agent-8", "agent-9", "agent-10",
+		"agent-11", "agent-12", "agent-13", "agent-14",
+	}
+	truncatedIdentity := func() *auth.Identity {
+		actors := make([]auth.DelegatedActor, auth.DefaultMaxDelegationDepth)
+		for i := range actors {
+			actors[i] = auth.DelegatedActor{Subject: subs[i]}
+		}
+		return &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				DelegationChain: &auth.DelegationChain{
+					Actors:       actors,
+					Truncated:    true,
+					DroppedCount: len(subs) - auth.DefaultMaxDelegationDepth,
+				},
+				Claims: map[string]any{"act": nestedActClaim(subs...)},
+			},
+		}
+	}
+
+	t.Run("configured depth wider than identity-layer parse recovers dropped actors", func(t *testing.T) {
+		t.Parallel()
+		chain := extractDelegationChainFromIdentity(truncatedIdentity(), 25)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, len(subs))
+		assert.False(t, chain.Truncated)
+		assert.Zero(t, chain.DroppedCount)
+		assert.Equal(t, subs[0], chain.Actors[0].Subject)
+		assert.Equal(t, subs[len(subs)-1], chain.Actors[len(subs)-1].Subject)
+	})
+
+	t.Run("configured depth narrower than identity-layer parse still rebinds", func(t *testing.T) {
+		t.Parallel()
+		chain := extractDelegationChainFromIdentity(truncatedIdentity(), 3)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, 3)
+		assert.True(t, chain.Truncated)
+		// 4 actors already dropped by the identity-layer parse (14 - 10),
+		// plus 7 more dropped by the narrower rebind (10 - 3).
+		assert.Equal(t, 11, chain.DroppedCount)
+	})
+
+	t.Run("truncated chain without raw act claim falls back to rebind", func(t *testing.T) {
+		t.Parallel()
+		identity := truncatedIdentity()
+		identity.Claims = nil // widening requested, but no raw claim to re-parse
+
+		chain := extractDelegationChainFromIdentity(identity, 25)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, auth.DefaultMaxDelegationDepth)
+		assert.True(t, chain.Truncated, "without the raw claim, the identity-layer truncation cannot be recovered")
+		assert.Equal(t, 4, chain.DroppedCount)
+	})
+}
+
+// nestedActClaim builds a raw RFC 8693 "act" claim nesting subs in order,
+// outermost first, matching the shape auth.ParseDelegationChain expects.
+func nestedActClaim(subs ...string) map[string]any {
+	var current map[string]any
+	for i := len(subs) - 1; i >= 0; i-- {
+		m := map[string]any{"sub": subs[i]}
+		if current != nil {
+			m["act"] = current
+		}
+		current = m
+	}
+	return current
 }
 
 func TestDetermineComponent(t *testing.T) {

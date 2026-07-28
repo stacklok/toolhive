@@ -558,23 +558,30 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 }
 
 // extractDelegationChainFromIdentity returns the RFC 8693 delegation chain
-// carried by the identity, re-bounded to maxDepth, or nil when the identity
-// has no chain. An already-parsed chain is re-bounded by applying maxDepth to
-// its actor list directly; an identity carrying only the raw "act" claim is
-// parsed once via auth.ParseDelegationChain. In both cases the configured cap
-// is enforced — there is no uncapped "honor as-is" fallback.
+// carried by the identity, bound to maxDepth, or nil when there is none.
+// The identity layer (auth.claimsToIdentity) always parses at
+// auth.DefaultMaxDelegationDepth, so a larger maxDepth requires re-parsing the
+// raw "act" claim — rebinding an already-parsed chain can only shrink it. The
+// re-parse is only trusted when it yields at least as many actors as are
+// already parsed, so it can widen the chain but never narrow it.
 func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *auth.DelegationChain {
 	if identity == nil {
 		return nil
 	}
-	if chain := identity.DelegationChain; chain != nil && len(chain.Actors) > 0 {
-		return rebindDelegationChain(chain, maxDepth)
+	rawAct := identity.Claims["act"]
+	chain := identity.DelegationChain
+	existingActors := 0
+	if chain != nil {
+		existingActors = len(chain.Actors)
 	}
-	if act, ok := identity.Claims["act"]; ok && act != nil {
-		chain := auth.ParseDelegationChain(act, maxDepth)
-		if len(chain.Actors) > 0 {
-			return &chain
+	if rawAct != nil && (chain == nil || len(chain.Actors) == 0 ||
+		(chain.Truncated && maxDepth > len(chain.Actors))) {
+		if parsed := auth.ParseDelegationChain(rawAct, maxDepth); len(parsed.Actors) > 0 && len(parsed.Actors) >= existingActors {
+			return &parsed
 		}
+	}
+	if chain != nil && len(chain.Actors) > 0 {
+		return rebindDelegationChain(chain, maxDepth)
 	}
 	return nil
 }

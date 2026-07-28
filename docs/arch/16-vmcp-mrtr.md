@@ -3,9 +3,17 @@
 Design for serving MCP 2026-07-28 Multi Round-Trip Requests (SEP-2322) through
 the Virtual MCP Server — the Modern replacement for the server-initiated
 elicitation/sampling forwarding that exists only on Legacy (2025-11-25)
-sessions. This is the design issue #5759 asked for and the "coherent future
-MRTR shape" the client-edge limitation section of
-[10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md) names.
+sessions. This work is tracked by issue **#6059** ("Support MRTR pass-through
+for Modern backends in vMCP"), which supersedes the earlier design request
+#5759 (closed as not-planned before #6059 was filed); it is the "coherent
+future MRTR shape" the client-edge limitation section of
+[10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md) names. That
+document carries the **landed rationale** for both current limitations — the
+backend-edge one ("elicitation and sampling are unavailable on Modern
+backends": empty `clientCapabilities`, `-32021` surfacing) and the client-edge
+one (the honest `-32603`/`-32021` contract) — and this document defers to it
+for that ground rather than restating it: what follows is the design that
+removes the limitations, cell by cell.
 
 Decision framing follows RFC-0083 (`stacklok/toolhive-rfcs`,
 `rfcs/THV-0083-stateless-vmcp.md`), which defers MRTR and fixes the
@@ -139,6 +147,19 @@ state to the same principal each time. vMCP MUST NOT interpret, rewrite, or
 append to the relayed `requestState`; the moment a design change requires
 vMCP-owned data inside it, that data moves to the workflow-handle machinery
 below (D5 protections), not into ad-hoc fields.
+
+**Open decision vs #6059 (resolve at slice 2/3, flagged, not silently
+diverged):** the tracking issue sketches step 2 as "wrap the backend's opaque
+`requestState` with vMCP routing context (which backend it came from)". This
+design deliberately relays it **verbatim** instead, re-deriving the backend on
+the retry from the capability name through the routing table — because the
+moment vMCP injects its own data into `requestState`, vMCP becomes a state-
+minting server under MRTR server requirements 4–5 (attacker-controlled input,
+integrity protection, principal binding), a key-management surface the
+verbatim relay avoids entirely. The cost is the rerouted-between-rounds edge
+case, which is client-recoverable (the new backend rejects foreign state and
+re-elicits). If review concludes the wrapped form is preferable, the wrapper
+must carry the D5-grade protections, not a bare backend ID.
 
 Failure modes, all client-recoverable per the spec's error-handling guidance
 (a server that got unusable `inputResponses` "SHOULD respond with a new
@@ -344,10 +365,12 @@ its predecessors merge:
    branches — the two cannot co-occur: the refusal recorder fires only on
    the Legacy-backend forwarding seams, `input_required` only from a Modern
    backend's envelope.
-3. **Capability mirroring (activates cell 1).** `ModernRequestMeta` gains a
-   capabilities argument; dispatch threads the downstream declaration to the
-   egress call (reusing #6061's `modernClientDeclaredCapability` reading of
-   `_meta`); the relay goes live end-to-end. The `-32021`-shaped
+3. **Capability mirroring (activates cell 1; with slice 2, this is what
+   issue #6059 tracks).** `ModernRequestMeta` gains a capabilities argument;
+   dispatch threads the downstream declaration to the egress call (reusing
+   #6061's `modernClientDeclaredCapability` reading of `_meta`); the relay
+   goes live end-to-end. The `requestState` open decision above (verbatim vs
+   #6059's routing-context wrapper) must be resolved here at the latest. The `-32021`-shaped
    undeclared-capability error contract landed ahead of this in #6061
    (merged 2026-07-28; `-32021` at HTTP 200 as the documented deviation,
    upstream go-sdk#1117). When this slice lands, #6061's declared-capability
@@ -390,5 +413,17 @@ from #6051 as their claims become false.
 - [10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md) — the
   client-edge limitation section (added by #6051) this design supersedes
   step by step; forwarding seams; #6006 bridge cells.
-- Issues: #5743 (epic), #5759 (this design), #6018 (shim retirement),
-  #5959/#6033 (kill-switch), #6050 (pagination/subscriptions).
+- Issues: #5743 (epic); **#6059 (tracks the MRTR pass-through this document
+  designs — supersedes #5759, the earlier not-planned design request)**;
+  #6018 (shim retirement); #5959/#6033 (kill-switch); #6050
+  (pagination/subscriptions).
+- Adjacent Modern-path issues this design deliberately does NOT cover:
+  **#6058** — per-request SSE streaming for `notifications/progress`/
+  `notifications/message`; distinct from MRTR (those are notifications, not
+  server-initiated requests — MRTR does not touch them), but slice 2's
+  `input_required` envelope may ride the same future stream as its final
+  message, per the spec's "MAY be sent … as the final message on an SSE
+  stream". **#6064** — `ping` removal and the required `resultType` on the
+  dispatch path; pure conformance, orthogonal to MRTR. **#6065** —
+  `subscriptions/listen` push delivery; a different channel with a fixed
+  four-type subscribable set, structurally disjoint from MRTR rounds.

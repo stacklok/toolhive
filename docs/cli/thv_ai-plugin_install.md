@@ -25,7 +25,7 @@ thv ai-plugin install [plugin-name] [flags]
 ### Options
 
 ```
-      --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
+      --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
       --force                 Overwrite existing plugin directory
       --group string          Group to add the plugin to after installation
   -h, --help                  help for install

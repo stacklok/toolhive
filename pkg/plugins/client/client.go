@@ -28,7 +28,7 @@ const (
 	defaultBaseURL   = "http://127.0.0.1:8080"
 	defaultTimeout   = 30 * time.Second
 	envAPIURL        = "TOOLHIVE_API_URL"
-	maxResponseSize  = 1 << 20 // 1 MiB — matches server-side maxRequestBodySize
+	maxResponseSize  = 1 << 20 // 1 MiB — defensive response cap; consistent with the skills client
 	maxErrorBodySize = 1 << 16 // 64 KiB — matches auth/token and DCR limits
 )
 

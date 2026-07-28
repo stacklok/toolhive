@@ -318,7 +318,7 @@ func (s *PluginsRoutes) pushPlugin(w http.ResponseWriter, r *http.Request) error
 //	@Description	Get a list of all locally-built OCI plugin artifacts in the local store
 //	@Tags			plugins
 //	@Produce		json
-//	@Success		200		{object}	buildListResponse
+//	@Success		200		{object}	pluginBuildListResponse
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/plugins/builds [get]
 func (s *PluginsRoutes) listBuilds(w http.ResponseWriter, r *http.Request) error {

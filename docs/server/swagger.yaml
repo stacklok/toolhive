@@ -225,8 +225,9 @@ components:
         maxDelegationDepth:
           description: |-
             MaxDelegationDepth caps how many nested RFC 8693 "act" entries are
-            recorded in an audit event's delegationChain. Deeper chains are
+            recorded in an audit event's delegation chain. Deeper chains are
             truncated (marked with truncated=true). Defaults to 10 when unset.
+            +kubebuilder:validation:Minimum=1
             +kubebuilder:default=10
             +optional
           type: integer
@@ -1040,6 +1041,27 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstallStatus'
         tag:
           description: Tag is the OCI tag (e.g. v1.0.0).
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_plugins.LocalBuild:
+      properties:
+        description:
+          description: Description is the skill description extracted from the artifact
+            metadata, if available.
+          type: string
+        digest:
+          description: Digest is the OCI digest of the artifact (sha256:...).
+          type: string
+        name:
+          description: Name is the skill name extracted from the artifact metadata,
+            if available.
+          type: string
+        tag:
+          description: Tag is the OCI tag or name used to reference the artifact.
+          type: string
+        version:
+          description: Version is the skill version extracted from the artifact metadata,
+            if available.
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_plugins.PluginContent:
@@ -2896,6 +2918,16 @@ components:
           description: Total is the total number of items matching the query
           type: integer
       type: object
+    pkg_api_v1.pluginBuildListResponse:
+      description: Response containing a list of locally-built OCI plugin artifacts
+      properties:
+        builds:
+          description: List of locally-built OCI plugin artifacts
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.LocalBuild'
+          type: array
+          uniqueItems: false
+      type: object
     pkg_api_v1.pluginListResponse:
       description: Response containing a list of installed plugins
       properties:
@@ -4255,6 +4287,18 @@ components:
             type: string
           type: array
           uniqueItems: false
+        build_with:
+          description: |-
+            BuildWith lists build-time dependency constraints, interpreted per
+            package ecosystem. For uvx:// builds these are PEP 508 requirement
+            specifiers passed to `uv tool install --with`, used to constrain
+            transitive dependencies the package itself leaves unbounded
+            (e.g. "mcp<2"). Ecosystems without constraint support (npx://, go://)
+            reject a non-empty BuildWith at build time.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         builder_image:
           description: |-
             BuilderImage is the full image reference for the builder stage.
@@ -4979,7 +5023,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.buildListResponse'
+                $ref: '#/components/schemas/pkg_api_v1.pluginBuildListResponse'
           description: OK
         "500":
           content:

@@ -213,7 +213,7 @@
                         "type": "integer"
                     },
                     "maxDelegationDepth": {
-                        "description": "MaxDelegationDepth caps how many nested RFC 8693 \"act\" entries are\nrecorded in an audit event's delegationChain. Deeper chains are\ntruncated (marked with truncated=true). Defaults to 10 when unset.\n+kubebuilder:default=10\n+optional",
+                        "description": "MaxDelegationDepth caps how many nested RFC 8693 \"act\" entries are\nrecorded in an audit event's delegation chain. Deeper chains are\ntruncated (marked with truncated=true). Defaults to 10 when unset.\n+kubebuilder:validation:Minimum=1\n+kubebuilder:default=10\n+optional",
                         "type": "integer"
                     }
                 },
@@ -973,6 +973,31 @@
                     },
                     "tag": {
                         "description": "Tag is the OCI tag (e.g. v1.0.0).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.LocalBuild": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the skill description extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest of the artifact (sha256:...).",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag or name used to reference the artifact.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version extracted from the artifact metadata, if available.",
                         "type": "string"
                     }
                 },
@@ -3212,6 +3237,20 @@
                 },
                 "type": "object"
             },
+            "pkg_api_v1.pluginBuildListResponse": {
+                "description": "Response containing a list of locally-built OCI plugin artifacts",
+                "properties": {
+                    "builds": {
+                        "description": "List of locally-built OCI plugin artifacts",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.LocalBuild"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.pluginListResponse": {
                 "description": "Response containing a list of installed plugins",
                 "properties": {
@@ -4731,6 +4770,14 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "build_with": {
+                        "description": "BuildWith lists build-time dependency constraints, interpreted per\npackage ecosystem. For uvx:// builds these are PEP 508 requirement\nspecifiers passed to `uv tool install --with`, used to constrain\ntransitive dependencies the package itself leaves unbounded\n(e.g. \"mcp\u003c2\"). Ecosystems without constraint support (npx://, go://)\nreject a non-empty BuildWith at build time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "builder_image": {
                         "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
@@ -5670,7 +5717,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/pkg_api_v1.buildListResponse"
+                                    "$ref": "#/components/schemas/pkg_api_v1.pluginBuildListResponse"
                                 }
                             }
                         },

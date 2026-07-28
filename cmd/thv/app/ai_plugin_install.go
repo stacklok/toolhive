@@ -35,7 +35,7 @@ func init() {
 	aiPluginCmd.AddCommand(aiPluginInstallCmd)
 
 	aiPluginInstallCmd.Flags().StringVar(&aiPluginInstallClientsRaw, "clients", "",
-		`Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client`)
+		`Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client`)
 	aiPluginInstallCmd.Flags().StringVar(
 		&aiPluginInstallScope, "scope", string(plugins.ScopeUser), "Installation scope (user, project)",
 	)

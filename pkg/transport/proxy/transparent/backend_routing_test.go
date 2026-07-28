@@ -204,36 +204,42 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 // same RoundTrip already echoed it.
 //
 // Note TestRoundTripReturns404ForUnknownSession above cannot catch this: its body
-// carries no "id", so it renders a null id either way.
+// carries no "id" key either way, so it can't tell a present-but-omitted id apart
+// from this test's cases.
 func TestRoundTrip404EchoesRequestID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		body   string
-		wantID string
+		name      string
+		body      string
+		wantIDKey bool
+		wantID    string // only checked when wantIDKey
 	}{
 		{
-			name:   "numeric id is echoed verbatim",
-			body:   `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`,
-			wantID: `"id":7`,
+			name:      "numeric id is echoed verbatim",
+			body:      `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`,
+			wantIDKey: true,
+			wantID:    `"id":7`,
 		},
 		{
-			name:   "string id is echoed verbatim",
-			body:   `{"jsonrpc":"2.0","id":"abc-123","method":"tools/list"}`,
-			wantID: `"id":"abc-123"`,
+			name:      "string id is echoed verbatim",
+			body:      `{"jsonrpc":"2.0","id":"abc-123","method":"tools/list"}`,
+			wantIDKey: true,
+			wantID:    `"id":"abc-123"`,
 		},
 		{
-			// A notification has no id by definition, so JSON-RPC requires null.
-			name:   "notification renders a null id",
-			body:   `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-			wantID: `"id":null`,
+			// A notification has no id by definition. MCP encodes that by
+			// omitting the "id" key entirely, not by emitting null.
+			name:      "notification omits the id key",
+			body:      `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			wantIDKey: false,
 		},
 		{
-			// An explicit null id is not a correlatable id either.
-			name:   "explicit null id stays null",
-			body:   `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
-			wantID: `"id":null`,
+			// An explicit null id is not a correlatable id either, so it is
+			// also encoded by omitting the key.
+			name:      "explicit null id omits the id key",
+			body:      `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
+			wantIDKey: false,
 		},
 	}
 
@@ -269,13 +275,18 @@ func TestRoundTrip404EchoesRequestID(t *testing.T) {
 			_ = resp.Body.Close()
 
 			assert.Contains(t, string(body), `"code":-32001`)
-			assert.Contains(t, string(body), tt.wantID)
 
 			// The body must remain a single valid JSON-RPC error object -- echoing
 			// a raw id must not corrupt the envelope.
 			var decoded map[string]any
 			require.NoError(t, json.Unmarshal(body, &decoded))
 			assert.Equal(t, "2.0", decoded["jsonrpc"])
+
+			_, ok := decoded["id"]
+			assert.Equal(t, tt.wantIDKey, ok, `"id" key presence`)
+			if tt.wantIDKey {
+				assert.Contains(t, string(body), tt.wantID)
+			}
 		})
 	}
 }
@@ -372,7 +383,16 @@ func TestRoundTripRejectsBatch(t *testing.T) {
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			assert.Contains(t, string(body), `"code":-32600`)
-			assert.Contains(t, string(body), `"id":null`)
+
+			// A batch has no single request id to echo. MCP encodes that by
+			// omitting the "id" key entirely (schema/2025-11-25 types the
+			// error response id as optional, not nullable), never as null --
+			// a substring check for "id":null would miss the key being
+			// present-but-null, so the key's absence is checked directly.
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(body, &parsed))
+			_, hasID := parsed["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
 		})
 	}
 }

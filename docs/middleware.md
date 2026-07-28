@@ -45,6 +45,8 @@ Multiple webhook definitions of the same type run in configuration order. When m
 
 Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
 
+When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation_chain` field on the principal object, with the same shape as the `delegation_chain` field documented under [Audit Middleware](#9-audit-middleware) below.
+
 Example:
 
 ```bash

@@ -53,14 +53,14 @@ type ValidatedClaims struct {
 	// Scopes is the space-delimited scope string from the "scope" claim.
 	// Empty if the subject token carries no scope claim.
 	Scopes string
-	// MayAct holds the authorized actor from the "may_act" claim (RFC 8693 §4.1).
+	// MayAct holds the authorized actor from the "may_act" claim (RFC 8693 §4.4).
 	// Nil when the subject token does not carry a may_act claim.
 	MayAct *MayActClaim
 	// Extra contains all non-standard claims not captured by other fields.
 	Extra map[string]any
 }
 
-// MayActClaim represents the RFC 8693 §4.1 may_act claim from a subject token.
+// MayActClaim represents the RFC 8693 §4.4 may_act claim from a subject token.
 // It identifies the party authorized to act on behalf of the subject.
 type MayActClaim struct {
 	Sub string `json:"sub"`

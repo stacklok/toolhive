@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/stacklok/toolhive-core/audit"
 	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 )
 
@@ -65,8 +66,10 @@ type PrincipalInfo struct {
 
 	// DelegationChain is the parsed RFC 8693 "act" claim: the ordered list of
 	// parties that acted on behalf of this identity's subject (outermost/most
-	// recent first). Nil when the token carries no act claim.
-	DelegationChain *DelegationChain `json:"delegation_chain,omitempty"`
+	// recent first). Nil when the token carries no act claim. The "delegation"
+	// tag matches the audit-event wire key so webhook payloads and audit logs
+	// share one spelling of the same structure.
+	DelegationChain *audit.DelegationChain `json:"delegation,omitempty"`
 }
 
 // Identity represents an authenticated user or service account.
@@ -182,18 +185,18 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 
 	// Create a safe representation with lowercase field names and redacted token
 	type SafeIdentity struct {
-		Subject          string            `json:"subject"`
-		PlatformUserID   string            `json:"platformUserId,omitempty"`
-		Name             string            `json:"name"`
-		Email            string            `json:"email"`
-		Groups           []string          `json:"groups"`
-		Claims           map[string]any    `json:"claims"`
-		DelegationChain  *DelegationChain  `json:"delegationChain,omitempty"`
-		Token            string            `json:"token"`
-		TokenType        string            `json:"tokenType"`
-		Metadata         map[string]string `json:"metadata"`
-		UpstreamTokens   map[string]string `json:"upstreamTokens,omitempty"`
-		UpstreamIDTokens map[string]string `json:"upstreamIDTokens,omitempty"`
+		Subject          string                 `json:"subject"`
+		PlatformUserID   string                 `json:"platformUserId,omitempty"`
+		Name             string                 `json:"name"`
+		Email            string                 `json:"email"`
+		Groups           []string               `json:"groups"`
+		Claims           map[string]any         `json:"claims"`
+		DelegationChain  *audit.DelegationChain `json:"delegation,omitempty"`
+		Token            string                 `json:"token"`
+		TokenType        string                 `json:"tokenType"`
+		Metadata         map[string]string      `json:"metadata"`
+		UpstreamTokens   map[string]string      `json:"upstreamTokens,omitempty"`
+		UpstreamIDTokens map[string]string      `json:"upstreamIDTokens,omitempty"`
 	}
 
 	const redacted = "REDACTED"

@@ -206,6 +206,18 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "mcp-protocol", "protocols"
 			})
 
 			It("should build and start successfully and provide arxiv tools [Serial]", func() {
+				// Quarantined 2026-07-28: arxiv-mcp-server declares an unbounded
+				// mcp>=1.27.0, so every fresh uvx build now resolves the Python
+				// mcp 2.0.0 major (released 2026-07-28T13:45Z) and crashes at
+				// import ('Server' object has no attribute 'list_prompts'),
+				// failing this test repo-wide for every PR. The official
+				// reference servers (mcp-server-fetch/time/git) are equally
+				// unbounded and equally broken, so there is no safe swap-in
+				// target. Unskip when upstream bounds or updates its mcp
+				// dependency, or when the uvx builder supports dependency
+				// constraints. See stacklok/toolhive#6108.
+				Skip("arxiv-mcp-server import-crashes under Python mcp 2.0.0; see #6108")
+
 				By("Starting the ArXiv MCP server using uvx:// protocol")
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,

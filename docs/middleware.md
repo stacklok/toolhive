@@ -45,7 +45,7 @@ Multiple webhook definitions of the same type run in configuration order. When m
 
 Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
 
-When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation_chain` field on the principal object, with the same shape as the `delegation_chain` field documented under [Audit Middleware](#9-audit-middleware) below.
+When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation` field on the principal object, with the same shape as the `delegation` field documented under [Audit Middleware](#9-audit-middleware) below.
 
 Example:
 
@@ -483,12 +483,14 @@ Audit events are logged as structured JSON objects:
     "client_name": "my-mcp-client",
     "client_version": "1.0.0"
   },
-  "delegation_chain": {
-    "actors": [
-      {"sub": "agent-client-1", "act_claims": {"iss": "https://auth.example.com"}},
+  "delegation": {
+    "chain": [
+      {"iss": "https://auth.example.com", "sub": "agent-client-1"},
       {"sub": "agent-client-2"}
     ],
-    "truncated": false
+    "truncated": false,
+    "omitted": 0,
+    "malformed": false
   },
   "target": {
     "endpoint": "/messages",
@@ -526,29 +528,35 @@ Audit events are logged as structured JSON objects:
   - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
   - `client_name`: MCP client name (from JWT claims)
   - `client_version`: MCP client version (from JWT claims)
-- `delegation_chain`: RFC 8693 delegation chain, present only when the caller
-  authenticated with a delegated token (i.e. the JWT carries an `act` claim)
-  - `actors`: Acting parties, outermost (most recent) first — `actors[0]` is
-    the direct delegate that presented the token. Empty array (not omitted)
-    when `malformed` is `true` and no actor could be parsed at all
-    - `sub`: Acting party identifier (from the `act` claim's `sub` member)
-    - `act_claims`: Additional `act` claim members (e.g. `iss`), when present.
-      May also carry `sub` when the token's `act.sub` was present but not a
-      string (RFC 7519 §4.1.2 requires a string); such a value is
-      deliberately not reported as the actor's `sub` and must not be treated
-      as an actor identifier
+- `delegation`: RFC 8693 delegation chain (toolhive-core's canonical schema),
+  present only when the caller authenticated with a delegated token (i.e. the
+  JWT carries an `act` claim)
+  - `chain`: Delegation hops, outermost (most recent) first — `chain[0]` is
+    the direct delegate that presented the token. Always an array, never
+    null; empty when `malformed` is `true` and no hop could be parsed at all
+    - `iss`: The hop's issuer (from the `act` claim's `iss` member), when
+      present and a string. Omitted otherwise
+    - `sub`: Acting party identifier (from the `act` claim's `sub` member),
+      when present and a string. Omitted otherwise. A non-string `iss` or
+      `sub` leaves the field out and flags the chain `malformed` instead.
+      Any other `act` claim members are deliberately never serialized
+      (data minimization per RFC 8693 §6); per OpenID Connect Core §5.7 the
+      (`iss`, `sub`) pair is the stable actor identifier
   - `truncated`: `true` when the chain exceeded the configured maximum depth
-    (`maxDelegationDepth` in the audit config, default 10) and trailing
-    actors were dropped
-  - `dropped_count`: Number of actors dropped due to the depth cap, present
-    only when `truncated` is `true`
-  - `malformed`: `true` when the token's `act` claim (at the top level or at
-    some nesting depth) was present and non-null but not a JSON object, per
-    RFC 8693 §4.1; present only when `true`. Actors already parsed from
-    shallower levels of the chain (if any) are still reported alongside it.
-    When the malformed value sits immediately past the depth cap,
-    `dropped_count` is deliberately 0 and `truncated` is `false` — unreadable
-    data past the cap is not a countable actor
+    (`maxDelegationDepth` in the audit config, default 10) and inner hops
+    were dropped; the outermost hops — including `chain[0]`, the current
+    actor — are always kept. Always present
+  - `omitted`: Number of well-formed hops dropped due to the depth cap.
+    Always present; `0` when nothing was dropped
+  - `malformed`: `true` when the token's `act` claim violated RFC 8693
+    conformance somewhere in the chain (non-object `act`, non-string `iss`
+    or `sub`). Always present. Hops already parsed before the violation are
+    still reported alongside it. A malformed value sitting immediately past
+    the depth cap flags `malformed` but is not a countable hop for `omitted`
+  - `malformedReason`: Low-cardinality label for the first conformance
+    violation encountered (`act_not_object`, `nested_act_not_object`,
+    `iss_not_string`, `sub_not_string`). Present only when `malformed` is
+    `true`
 - `target`: Information about the operation target
   - `endpoint`: HTTP endpoint path
   - `method`: HTTP method

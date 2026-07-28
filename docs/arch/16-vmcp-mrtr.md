@@ -36,8 +36,8 @@ byte-identical to the copy this design was written against. The checklist
 below therefore remains pending the final cut.*
 
 **Draft-only dependencies (re-verify against the final cut).** The schema
-types and the SEPs are Final and low-risk. Four load-bearing points in this
-design rest on the draft *spec page's* text, which refines (or diverges from)
+types and the SEPs are Final and low-risk. Five load-bearing points in this
+design rest on the draft *spec pages'* text, which refines (or diverges from)
 the Final SEP and could still move before the final cut:
 
 - **The three-method table.** SEP-2322 (Final) also allows
@@ -45,13 +45,27 @@ the Final SEP and could still move before the final cut:
   when tasks moved to an extension. If the final restores a fourth method,
   the relay's method allow-list grows — a table edit, not a design change.
 - **Capability gating** (server requirement 7, "MUST NOT send an
-  `inputRequests` that the client has not declared") is page-only — SEP-2322
-  does not state it. Capability mirroring is designed around it; if the final
-  weakens it to SHOULD, mirroring remains correct (it is also what makes the
-  relay deliverable), only the backend-violation error becomes discretionary.
+  `inputRequests` that the client has not declared") is not stated by
+  SEP-2322, but it is not merely page-local either: the core `_meta` section
+  of `/specification/draft/basic` carries the general form as a MUST — a
+  server "MUST NOT rely on capabilities the client has not declared" and MUST
+  answer a request that needs one with `MissingRequiredClientCapabilityError`
+  (`-32021`) listing the missing capabilities in `data.requiredCapabilities`.
+  The MRTR requirement is the pattern-specific instance. Capability mirroring
+  is designed around it; the risk is only that the final cut reshuffles which
+  page states it.
 - **Server requirement 6** ("at least one of `inputRequests` or
-  `requestState`") is page-only; it affects only what vMCP treats as a
-  backend protocol violation.
+  `requestState`") is stated on the page *and* in `schema/draft/schema.ts`'s
+  `InputRequiredResult` doc comment ("At least one of `inputRequests` or
+  `requestState` MUST be present") — anchored in the Final-typed schema, so
+  the least likely of these to move. It governs what vMCP treats as a backend
+  protocol violation (the egress decode fails closed on it — see slice 1).
+- **Unrecognized `resultType` severity.** SEP-2322 says the client "SHOULD
+  treat unrecognized values as invalid protocol responses"; the draft basic
+  page's ResultType section tightens it: any unrecognized value "MUST be
+  considered invalid". The egress decode implements the MUST (sentinel-only,
+  no extractable round); a final cut that reverts to SHOULD costs nothing,
+  since rejecting remains SHOULD-conformant.
 - **The `requestState` security language** differs between the two: SEP-2322
   says user-specific state "MUST use some mechanism to cryptographically
   bind" it to the user, while the page allows omitting integrity protection
@@ -119,6 +133,23 @@ halves of these cells were built in #6006; this table is the MRTR overlay.
 
 ### Cell 1 — Modern client ↔ Modern backend: stateless pass-through
 
+```mermaid
+sequenceDiagram
+    participant C as Modern client
+    participant V as vMCP
+    participant B as Modern backend
+    C->>V: tools/call (id: 1, _meta.clientCapabilities)
+    V->>B: tools/call (id: v1, mirrored clientCapabilities)
+    B-->>V: input_required (inputRequests, requestState)
+    V-->>C: input_required (relayed verbatim, id: 1)
+    note over C: fulfills inputRequests locally
+    C->>V: tools/call retry (id: 2, inputResponses, echoed requestState)
+    note over V: fresh request — any replica;<br/>backend re-derived from routing table
+    V->>B: tools/call retry (id: v2, both fields verbatim)
+    B-->>V: complete (id: v2)
+    V-->>C: complete (id: 2)
+```
+
 For a plain (non-composite) `tools/call` / `resources/read` / `prompts/get`,
 vMCP adds **no state of its own**:
 
@@ -127,7 +158,8 @@ vMCP adds **no state of its own**:
    capabilities the downstream client declared on this request — never more
    (vMCP must not solicit `inputRequests` it cannot deliver downstream), never
    less (an empty declaration makes a compliant backend that needs input
-   return `-32021 MissingRequiredClientCapability`, which is today's behavior:
+   return `-32021 MissingRequiredClientCapability` — mandated by the core
+   `_meta` section's MUST, not merely predicted — which is today's behavior:
    `mcpparser.ModernRequestMeta` hardcodes `clientCapabilities: {}`).
 2. **`input_required` relay (ingress ← egress).** When the backend returns
    `resultType:"input_required"`, vMCP relays `inputRequests` (values opaque,
@@ -140,26 +172,68 @@ vMCP adds **no state of its own**:
 
 Round-trip state lives **only** in the backend's `requestState`, whose
 integrity/user-binding obligations sit with the backend that minted it, per
-the spec. The end-to-end principal binding survives because vMCP's outgoing
-auth (OBO / header injection / token exchange) presents the calling
-principal's identity to the backend on every round — the backend binds its
-state to the same principal each time. vMCP MUST NOT interpret, rewrite, or
-append to the relayed `requestState`; the moment a design change requires
-vMCP-owned data inside it, that data moves to the workflow-handle machinery
-below (D5 protections), not into ad-hoc fields.
+the spec. Whether the end-to-end principal binding survives that division of
+labor **depends on the egress auth strategy**:
+
+- Under the **user-derived** strategies (`token_exchange`, `xaa`,
+  `upstream_inject`, `aws_sts`), vMCP's outgoing auth presents the calling
+  principal's identity to the backend on every round, so the backend can bind
+  its `requestState` to the same principal each time (server requirement 5)
+  and reject another user's echo. The claim above holds.
+- Under the **shared-credential** strategies — `header_injection` (a static,
+  config-mounted secret whose own docstring says it "does not depend on user
+  identity") and `unauthenticated` (a no-op) — the backend sees **one vMCP
+  identity for every downstream user**. Its principal binding then binds all
+  rounds to that shared identity: it cannot protect one downstream user from
+  another, because no signal distinguishing them ever reaches it. If
+  cross-user misuse of a relayed `requestState` matters for such a backend,
+  **vMCP must bind the round to the downstream principal itself, because no
+  other component can** — which turns the wrap-vs-verbatim decision below
+  from a preference into a configuration-dependent obligation for
+  shared-credential egress.
+
+vMCP MUST NOT interpret, rewrite, or append to the relayed `requestState`;
+the moment a design change requires vMCP-owned data inside it, that data
+moves to the workflow-handle machinery below (D5 protections) or an
+equivalent server-side entry, not into ad-hoc fields.
 
 **Open decision vs #6059 (resolve at slice 2/3, flagged, not silently
 diverged):** the tracking issue sketches step 2 as "wrap the backend's opaque
-`requestState` with vMCP routing context (which backend it came from)". This
-design deliberately relays it **verbatim** instead, re-deriving the backend on
-the retry from the capability name through the routing table — because the
-moment vMCP injects its own data into `requestState`, vMCP becomes a state-
-minting server under MRTR server requirements 4–5 (attacker-controlled input,
-integrity protection, principal binding), a key-management surface the
-verbatim relay avoids entirely. The cost is the rerouted-between-rounds edge
-case, which is client-recoverable (the new backend rejects foreign state and
-re-elicits). If review concludes the wrapped form is preferable, the wrapper
-must carry the D5-grade protections, not a bare backend ID.
+`requestState` with vMCP routing context (which backend it came from)". Three
+arms, no winner picked here:
+
+1. **Verbatim relay** (this document's default): re-derive the backend on the
+   retry from the capability name through the routing table. vMCP never mints
+   state, so MRTR server requirements 4–5 (attacker-controlled input,
+   integrity protection, principal binding) stay entirely with the backend —
+   no vMCP key-management surface. Costs: the rerouted-between-rounds edge
+   case, which is client-recoverable (the new backend rejects foreign state
+   and re-elicits); and under shared-credential egress it leaves the
+   cross-downstream-user gap above unclosed, since the backend cannot close
+   it and vMCP added nothing that could.
+2. **#6059's wrapper**: vMCP wraps the backend's `requestState` with routing
+   context. The moment vMCP injects its own data, it becomes a state-minting
+   server under requirements 4–5; the wrapper must carry D5-grade protections
+   (integrity, principal binding, TTL) — cryptographic keys and their
+   management, the surface arm 1 avoids.
+3. **Server-side handle over a verbatim backend round**: relay verbatim *to
+   the backend*, but make the **downstream-visible** `requestState` an opaque
+   handle into a server-side entry `{backend, capability,
+   owner=binding.Format(iss, sub), backend requestState, TTL}` — the same D5
+   handle machinery the composite slice below already builds, and **no keys
+   at all** (the state never leaves the server, so there is nothing to sign
+   or seal). This closes cross-principal replay, cross-backend A→B
+   substitution, and the shared-credential gap above in one move. Its cost is
+   exactly the durable store this design otherwise keeps off the pass-through
+   path: every `input_required` round writes an entry, and plain-tool relay
+   stops being stateless at vMCP.
+
+Arm 1 maximizes statelessness, arm 3 maximizes containment with composite-
+slice machinery instead of cryptography, arm 2 buys arm 3's properties at the
+price of a key-management surface and is dominated by it unless the store is
+unavailable. If shared-credential egress must support MRTR with cross-user
+protection, arm 1 alone cannot deliver it (see above); the resolution at
+slice 2/3 must say which arm serves that configuration.
 
 Failure modes, all client-recoverable per the spec's error-handling guidance
 (a server that got unusable `inputResponses` "SHOULD respond with a new
@@ -230,18 +304,35 @@ RFC-0083 D5 sequences the durable machinery on:
   ≥128-bit opaque random token; an owner field on `WorkflowStatus` holding
   the authenticated `(iss, sub)` pair encoded exactly as the existing
   identity binding does — `pkg/vmcp/session/binding`'s
-  `Format(iss, sub)` → `iss + "\x00" + sub`, plaintext, not hashed — so the
-  two owner-binding mechanisms stay consistent.
+  `Format(iss, sub)`, which returns `iss + "\x00" + sub` (and an error for
+  empty components), plaintext, not hashed — so the two owner-binding
+  mechanisms stay consistent.
 - **Owner check on resume**: the retry's authenticated identity must satisfy
   `binding.Format(iss, sub) == status.Owner` before any state is loaded;
   a mismatch is an audit-visible security signal (owner-mismatch resume),
   fails closed, and reveals nothing about the handle's existence.
 - **TTL at write** (bounding the replay window per MRTR server requirement 5)
   and **redaction**: the handle never appears in audit or telemetry output.
-- This satisfies the spec's requirement to "cryptographically bind the data
-  to the original user": the state never leaves the server, and the handle is
-  an unguessable capability whose owner is checked server-side — stronger
-  than client-side AEAD, with no key-management surface.
+- **With authenticated incoming auth**, this satisfies the spec's requirement
+  to "cryptographically bind the data to the original user": the state never
+  leaves the server, and the handle is an unguessable capability whose owner
+  is checked server-side — stronger than client-side AEAD, with no
+  key-management surface.
+- **Under `incomingAuth: anonymous`** the owner check is vacuous: every
+  anonymous session stores the same `binding.UnauthenticatedSentinel`, and
+  `validateCallerBinding` accepts any anonymous caller
+  (`pkg/vmcp/session/internal/security`), so "the original user" is not a
+  concept the deployment has — the owner-mismatch audit signal can never
+  fire, and protection reduces to handle unguessability plus TTL. Slice 5
+  **accepts this as a documented single-tenant caveat rather than refusing to
+  suspend**: anonymous auth already grants any caller the tools themselves,
+  so a stolen handle adds resumption of a workflow the thief could have run
+  outright — no privilege the deployment's trust model doesn't already
+  concede. Refusing would break composites for exactly the single-operator
+  deployments anonymous auth exists for. A multi-user deployment fronting
+  vMCP with anything but authenticated incoming auth gets no cross-user
+  workflow isolation, and slice 5's docs must say so where `anonymous` is
+  documented.
 
 **The distinction that sizes the infrastructure**: plain-tool pass-through
 rounds and the Legacy-client bridge need *no* durable store; only
@@ -272,14 +363,22 @@ Explicit answer to "does sampling deserve an MRTR path": **vMCP builds no
 sampling feature; sampling flows through the generic relay only.**
 
 - The MRTR union still carries it: `InputRequest = CreateMessageRequest |
-  ListRootsRequest | ElicitRequest` (schema/draft, above) — deprecated types
-  stay in the unions during the window ("The following union types reference
-  deprecated types but MUST NOT be modified during the deprecation period",
-  SEP-2577).
-- SEP-2577 (Final) deprecates sampling as of 2026-07-28: "New implementations
-  SHOULD NOT add support for deprecated features unless needed for backward
-  compatibility with existing counterparts", with "integrate directly with
-  LLM provider APIs" as the sanctioned replacement.
+  ListRootsRequest | ElicitRequest` (schema/draft, above). SEP-2577's
+  explicit union freeze ("The following union types reference deprecated
+  types but MUST NOT be modified during the deprecation period",
+  `seps/2577-deprecate-roots-sampling-and-logging.md`) enumerates only
+  `ClientNotification`, `ClientResult`, `ServerRequest`, and
+  `ServerNotification` — `InputRequest` is **not** on that list (it
+  postdates the SEP), so its shape rests on the schema as published plus the
+  SEP's blanket "features remain fully functional during the deprecation
+  window" guarantee, not on a named freeze. Same practical effect during the
+  window; re-check the union at each revision rather than assuming it frozen.
+- SEP-2577 (Final) deprecates sampling — along with roots and logging, the
+  latter irrelevant to MRTR — as of 2026-07-28: "New implementations SHOULD
+  NOT add support for deprecated features unless needed for backward
+  compatibility with existing counterparts" (SEP-2577, Capability
+  negotiation section), with "integrate directly with LLM provider APIs" as
+  the sanctioned replacement.
 - vMCP's position under that carve-out: the pass-through relay is
   **type-agnostic** — vMCP forwards whatever `inputRequests` the backend sent
   and the client declared capability for, without interpreting them, so
@@ -340,27 +439,37 @@ Verified against go-sdk `v1.7.0-pre.3` (the transitive pin via
 
 ## Sequencing (collision-aware)
 
-In-flight at time of writing: #6050 (modern pagination/subscriptions —
-rewrites `modern_dispatch.go`/`modern_envelope.go`), #6033 (kill-switch
-removal — `classification.go`, `server.go`, `serve.go` and test helpers),
-#6051 (Legacy-pins the forwarding tests, adds doc 10's client-edge limitation
-section). Slices are ordered so each lands without touching those files until
-its predecessors merge:
+Collision set at time of writing: #6050 (modern pagination/subscriptions —
+rewrites `modern_dispatch.go`/`modern_envelope.go`) and #6051 (Legacy-pins
+the forwarding tests, adds doc 10's client-edge limitation section) have
+both **merged** (2026-07-28); #6033 (kill-switch removal —
+`classification.go`, `server.go`, `serve.go` and test helpers) remains open.
+Slices are ordered so each lands without touching #6033's files until it
+merges:
 
 1. **Egress MRTR surface (safe now; implemented alongside this doc).** Domain
-   type `vmcp.InputRequiredResult`; `pkg/vmcp/client`'s Modern shim decodes an
-   `input_required` envelope into a typed, `errors.Is`-compatible error
-   carrying the payload instead of the opaque
-   `errModernInputRequired`. No behavior change: capabilities are still
-   declared empty, so a compliant backend cannot yet send `input_required`;
-   the seam #6051 calls "the egress half" simply becomes load-bearing.
-   Files: `pkg/vmcp/mrtr.go`, `pkg/vmcp/client/modern.go` (one hook),
-   `pkg/vmcp/client/modern_mrtr.go` — none touched by the in-flight PRs.
+   types `vmcp.InputRequiredResult` and `vmcp.InputRequiredError` (carrier and
+   `InputRequiredFromError` extractor live beside the domain type, so slice
+   2's server-side rendering never imports the concrete HTTP client and mock
+   consumers can construct the error); `pkg/vmcp/client`'s Modern shim decodes
+   an `input_required` envelope into that typed, `errors.Is`-compatible error
+   instead of the opaque `errModernInputRequired`. Extraction is
+   **fail-closed**: a round is extractable only on the three methods that may
+   carry one, only for `resultType:"input_required"` exactly, and only when
+   the payload decodes strictly and satisfies server requirement 6 — every
+   violation keeps pure sentinel semantics, so a slice-2 consumer can never
+   relay a malformed or misplaced round. `RequestState` is a `*string`, since
+   client requirement 2 makes absent-vs-present-and-empty an observable
+   distinction the retry must preserve. No behavior change: capabilities are
+   still declared empty, so a compliant backend cannot yet send
+   `input_required`; the seam #6051 calls "the egress half" simply becomes
+   load-bearing. Files: `pkg/vmcp/mrtr.go`, `pkg/vmcp/client/modern.go` (one
+   hook), `pkg/vmcp/client/modern_mrtr.go` — none touched by #6033.
 2. **Ingress envelope + retry params (after #6050/#6033).** `dispatchModern`
    accepts `inputResponses`/`requestState`, threads them through
    `core.CallTool`→`BackendClient`, and renders `input_required` envelopes;
    parser vocabulary for the two params. Post-#6061, the rendering branch
-   hooks into `writeModernCallFailure` via `InputRequiredFromError`,
+   hooks into `writeModernCallFailure` via `vmcp.InputRequiredFromError`,
    alongside (never instead of) its authz-priority and capability-refusal
    branches — the two cannot co-occur: the refusal recorder fires only on
    the Legacy-backend forwarding seams, `input_required` only from a Modern
@@ -390,7 +499,8 @@ from #6051 as their claims become false.
 ## Testing strategy
 
 - Slice 1: envelope decode (payload extraction, `errors.Is` back-compat with
-  the sentinel, malformed-payload tolerance), no-behavior-change pins.
+  the sentinel, fail-closed rejection of malformed/empty/misplaced rounds),
+  no-behavior-change pins.
 - Slice 2/3: dispatcher round-trip — `input_required` envelope shape
   (resultType, echoed id, relayed keys), retry threading, capability-gate
   refusals (undeclared → no forward; backend violation → explicit error).

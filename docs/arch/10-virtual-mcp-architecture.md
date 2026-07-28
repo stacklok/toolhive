@@ -310,7 +310,7 @@ The client edge mirrors the backend edge. The Modern dispatcher
 (SEP-2322) is unimplemented on this edge too. When a backend tool issues a
 mid-call server-initiated request during a **Modern** client's `tools/call`,
 there is no client session to forward it to, so the call fails with an explicit
-`-32603` whose message names the refused request (pinned by
+error naming the refused request (pinned by
 `TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly`). This is a
 deliberate honest-unsupported error, not a gap left by accident:
 
@@ -328,12 +328,16 @@ so a conformant 400 would tear down the entire client session to punish one
 call. And for a client that DID declare the capability, the 2026-07-28
 vocabulary has no conformant code at all: no "operation not supported", MRTR
 is not a server-advertised capability, and SEP-2322 has no decline mechanism.
-The planned follow-up therefore serves `-32021` (with
-`data.requiredCapabilities`, and a message naming both the capability and the
-gateway limitation) at **HTTP 200** for the undeclared case — deviating from
-the mandated 400 for exactly the reason above — and keeps `-32603` for the
-declared case as a documented spec gap. Until that lands, both cases surface
-as `-32603`.
+**#6061 (merged) implements exactly that two-path contract** in
+`writeModernCallFailure`/`writeModernMissingCapability` (`pkg/vmcp/server`):
+`-32021` with `data.requiredCapabilities` and a message naming both the
+capability and the gateway limitation, served at **HTTP 200** for the
+undeclared case — deviating from the mandated 400 for exactly the reason
+above (tracked upstream as go-sdk#1117) — and an explicit `-32603` naming
+SEP-2322 for the declared case, as a documented spec gap. The MRTR design
+([16-vmcp-mrtr.md](16-vmcp-mrtr.md)) supersedes this contract slice by slice
+where the backend is Modern; it is permanent for the Modern-client ↔ Legacy-
+backend cell.
 
 **A clean error does not mean nothing happened.** The refusal reaches the
 backend mid-call, so a real backend tool may have executed — including side
@@ -381,11 +385,13 @@ not parked `tools/call`.
 The coherent future MRTR shape for a re-aggregating gateway is
 **Modern-client ↔ Modern-backend pass-through** — relay a Modern backend's
 `inputRequests`/`requestState` to the client and the client's
-`inputResponses` back, genuinely stateless at vMCP. It requires the egress
-half first (today a Modern backend's `input_required` surfaces as
-`errModernInputRequired`, the seam left in `pkg/vmcp/client`), and by the time
-Modern backends exist to relay from, SEP-2577's deprecations make elicitation
-its only durable consumer; see #5743.
+`inputResponses` back, genuinely stateless at vMCP. The full design is
+[16-vmcp-mrtr.md](16-vmcp-mrtr.md); its slice 1 (the egress half) has landed —
+a Modern backend's `input_required` still classifies as
+`errModernInputRequired`, but the typed `vmcp.InputRequiredError` now carries
+the decoded round for the relay slices to consume. By the time Modern
+backends exist to relay from, SEP-2577's deprecations make elicitation its
+only durable consumer; see #5743 and #6059.
 
 Progress and log notifications toward Modern clients are a separate concern
 from MRTR: they remain spec-legal as request-scoped notifications on the

@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -376,6 +377,15 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
 	})
+
+	// Surface the capability gate's verdict once at startup: the blocker list is
+	// derived from construction-time configuration and cannot change afterwards,
+	// so this single line is the operator-visible record of why Modern-capable
+	// clients of this instance negotiate down to Legacy (see modern_gate.go).
+	if blocked := srv.modernDispatchBlockers(); len(blocked) > 0 {
+		slog.Info("MCP 2026-07-28 (Modern) dispatch disabled: enabled features require the session (Legacy) path",
+			"features", blocked)
+	}
 
 	// Disarm the close-on-error guard: the Server is fully constructed.
 	closeStorageOnErr = false

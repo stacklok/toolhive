@@ -412,6 +412,55 @@ The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
 
+### Served MCP revisions: the Modern capability gate
+
+vMCP serves two client-facing MCP revisions: **Legacy** (2025-11-25, the SDK
+session path) always, and **Modern** (2026-07-28, `classifyingHandler →
+dispatchModern`, stateless) **conditionally** — only when every enabled feature
+of the instance is servable by the stateless dispatch path. The condition is
+`modernDispatchBlockers` (`pkg/vmcp/server/modern_gate.go`), an explicit
+enumeration that replaced the temporary `TOOLHIVE_VMCP_MODERN_STATELESS`
+env-var kill-switch (#5959): instead of a global "don't serve Modern", the
+instance serves Modern exactly when it can serve it correctly.
+
+Features that currently gate Modern off, and why:
+
+| Feature | Why the stateless path cannot serve it |
+|---------|----------------------------------------|
+| Optimizer (`find_tool`/`call_tool`) | The meta-tools are Serve-layer and **session-scoped** (`serve_optimizer.go`): each session builds an FTS5 index over its advertised set and swaps the two meta-tools in. The index is deliberately not in the stateless core, and `dispatchModern` serves `tools/*` straight from `core.ListTools`/`core.CallTool` — a Modern client would silently receive the raw aggregated tool set and `tools/call find_tool` would fail. Parity needs an identity- or instance-scoped index |
+
+"Cannot serve" means a Modern client would silently get different behavior than
+the feature promises — not merely that the feature is session-flavored.
+Redis-backed session sharing, for example, does **not** gate Modern: Legacy
+clients keep their shared, reconstructible sessions while Modern clients are
+sessionless by design and store nothing, a coexistence asserted end-to-end by
+`test/e2e/thv-operator/virtualmcp/virtualmcp_dual_era_redis_test.go`.
+
+Wire behavior when the gate is closed:
+
+- **`server/discover` falls through to the SDK** instead of dispatching. go-sdk's
+  stateful transport filters 2026-07-28 out of its `supportedVersions`
+  (`SupportsProtocolVersion` requires `Stateless`), so the probe answer
+  advertises Legacy only. This matters because go-sdk v1.7+ clients are
+  Modern-first: `Connect` probes `server/discover` **before** `initialize` and
+  upgrades to whatever the server advertises. The fall-through answer is what
+  lands them on the Legacy handshake — where sessions, and every gated feature,
+  work.
+- **Every other well-formed Modern request** is refused with a conformant
+  400 + `-32022 UnsupportedProtocolVersionError` whose data lists the Legacy
+  version, the shape a client negotiates down from. It is answered in
+  `classifyingHandler` rather than falling through, because go-sdk's stateful
+  rejection for Modern traffic is a plain-text 400 carrying no version list.
+- **Legacy traffic is untouched** either way; the gate only ever affects
+  requests that classified Modern.
+
+The gate is derived from construction-time configuration, logged once at
+startup ("MCP 2026-07-28 (Modern) dispatch disabled…"), and pinned by
+`TestModernDispatchBlockers`, `TestClassifyingHandler_ModernCapabilityGate`,
+and the full-handler pair in `modern_gate_integration_test.go`. Achieving
+Modern parity for a feature means deleting its entry and updating those tests —
+nothing else needs to change.
+
 ### Subscription limitation (ack-level)
 
 vMCP advertises `resources.subscribe: true` and answers `resources/subscribe` / `resources/unsubscribe` at **ack level**: the request is accepted (enforcing session binding and validating the URI is an advertised, admitted resource), and go-sdk records the subscription. vMCP does **not** currently propagate backend `notifications/resources/updated` to the subscribed client — doing so requires persistent per-session backend connections, which is out of scope. Clients that subscribe will receive a success ack but no update stream yet.

@@ -16,7 +16,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,11 +37,17 @@ const dualEraRedisKeyPrefix = "thv:vmcp:dualera:"
 
 // This spec is the Redis-backed counterpart of virtualmcp_dual_era_backends_test.go:
 // same mixed Legacy+Modern backend set behind one vMCP, but with session storage
-// backed by Redis instead of the in-memory default, and the Modern client
-// dispatcher explicitly enabled via pod-template env. It exists as the shared
+// backed by Redis instead of the in-memory default. It exists as the shared
 // fixture for two follow-on specs (not yet added): concurrent Legacy+Modern
 // traffic against the Redis-backed session store, and a Redis-outage spec that
 // scales Redis to 0 replicas mid-test.
+//
+// This file is also the end-to-end assertion that Redis session storage does
+// NOT close vMCP's Modern capability gate (modernDispatchBlockers,
+// pkg/vmcp/server/modern_gate.go): Legacy clients keep their shared,
+// reconstructible sessions while Modern clients are served statelessly and
+// store nothing. Redis therefore must never be added to the gate's blocker
+// list — the Modern legs below fail with -32022 if it is.
 //
 // Both backends run the SAME yardstick-server image and set BACKEND_MODE=echo
 // explicitly so that STATELESS is the ONLY difference between them. (TRANSPORT
@@ -63,18 +68,19 @@ const dualEraRedisKeyPrefix = "thv:vmcp:dualera:"
 // IMPORTANT -- this spec must NOT use CreateInitializedMCPClient, WaitForExpectedTools,
 // or ToolsContainAll (all in helpers.go / wait_for_tools_helpers.go). Those build a
 // go-sdk/mcpcompat client, and go-sdk v1.7's Connect is Modern-first: it sends
-// server/discover before anything else. With the Modern dispatcher on (this file's
-// TOOLHIVE_VMCP_MODERN_STATELESS pod-template env), classifyingHandler routes
-// server/discover to dispatchModern instead of the SDK's stateful fallback
-// (pkg/vmcp/server/classification.go:97-110), so such a client always negotiates
-// Modern and gets no session -- there is no way to make it open a Legacy session
-// against this vMCP. The observed failure is mcpcompat's Initialize unconditionally
-// installing list-changed handlers, which makes go-sdk open a "subscriptions/listen"
-// stream vMCP does not implement, answered with HTTP 404 and surfaced as go-sdk's
-// ErrSessionMissing ("session not found") despite Initialize having "succeeded".
-// Use *e2e.RawMCPClient instead: it pins the era explicitly per request (Legacy via
-// e2e.NewLegacyRequest + the MCP-Protocol-Version header), which is what actually
-// gets a Legacy session from a Modern-dispatch-enabled vMCP.
+// server/discover before anything else. This vMCP serves Modern (Redis session
+// storage does not close the capability gate -- see the header above), so
+// classifyingHandler routes server/discover to dispatchModern instead of the
+// SDK's stateful fallback (pkg/vmcp/server/classification.go), and such a client
+// always negotiates Modern and gets no session -- there is no way to make it open
+// a Legacy session against this vMCP. The observed failure is mcpcompat's
+// Initialize unconditionally installing list-changed handlers, which makes go-sdk
+// open a "subscriptions/listen" stream vMCP does not implement, answered with
+// HTTP 404 and surfaced as go-sdk's ErrSessionMissing ("session not found")
+// despite Initialize having "succeeded". Use *e2e.RawMCPClient instead: it pins
+// the era explicitly per request (Legacy via e2e.NewLegacyRequest + the
+// MCP-Protocol-Version header), which is what actually gets a Legacy session
+// from a Modern-serving vMCP.
 var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage", Ordered, func() {
 	var (
 		timeout         = 5 * time.Minute
@@ -153,27 +159,6 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 			},
 		}, timeout, pollingInterval)
 
-		// The Modern client dispatcher is env-only with no CRD field and defaults
-		// to OFF (pkg/vmcp/cli/serve.go's modernDispatchEnvVar); without this
-		// override every Modern request below would return 400 regardless of
-		// Redis, and Steps 3/4's Modern legs would be testing nothing. Follows the
-		// PodTemplateSpec env-injection pattern in
-		// virtualmcp_auth_discovery_test.go:825-846: container name must be "vmcp".
-		podTemplateSpec := corev1.PodTemplateSpec{
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{
-					{
-						Name: "vmcp",
-						Env: []corev1.EnvVar{
-							{Name: "TOOLHIVE_VMCP_MODERN_STATELESS", Value: "true"},
-						},
-					},
-				},
-			},
-		}
-		podTemplateRaw, err := json.Marshal(podTemplateSpec)
-		Expect(err).ToNot(HaveOccurred())
-
 		By("Creating VirtualMCPServer over the mixed backend set with Redis session storage")
 		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, defaultNamespace,
 			v1beta1test.WithVMCPGroupRef(mcpGroupName),
@@ -225,7 +210,6 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 			//     to -- so it is deliberately left unset rather than set to a value
 			//     that would do nothing.
 			v1beta1test.WithVMCPReplicas(1),
-			v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{Raw: podTemplateRaw}),
 			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
 				v.Spec.ServiceType = "NodePort"
 			}),

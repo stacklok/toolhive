@@ -115,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file
+      --build-with stringArray                      Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem (uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); errors on ecosystems without constraint support (can be specified multiple times)
       --ca-cert string                              Path to a custom CA certificate file to use for container builds
       --enable-audit                                Enable audit logging with default configuration (default false)
       --endpoint-prefix string                      Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)
@@ -197,7 +198,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --tools-override string                       Path to a JSON file containing overrides for MCP server tools names and descriptions
       --transport string                            Transport mode (sse, streamable-http or stdio)
       --trust-proxy-headers                         Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default false)
-      --uv-with stringArray                         Additional PEP 508 requirement specifier passed to 'uv tool install --with' for uvx:// builds, e.g. --uv-with 'mcp<2' to constrain a transitive dependency (can be specified multiple times)
   -v, --volume stringArray                          Mount a volume into the container (format: host-path:container-path[:ro])
       --webhook-config stringArray                  Path to webhook configuration file (can be specified multiple times to merge configs)
 ```

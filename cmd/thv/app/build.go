@@ -60,10 +60,10 @@ var buildFlags BuildFlags
 
 // BuildFlags holds the configuration for building MCP server containers
 type BuildFlags struct {
-	Tag    string
-	Output string
-	DryRun bool
-	UVWith []string
+	Tag       string
+	Output    string
+	DryRun    bool
+	BuildWith []string
 }
 
 func init() {
@@ -79,9 +79,10 @@ func AddBuildFlags(cmd *cobra.Command, config *BuildFlags) {
 		"(default builds an image instead of generating a Dockerfile)")
 	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "Generate Dockerfile without building (stdout output unless -o is set) "+
 		"(default false)")
-	cmd.Flags().StringArrayVar(&config.UVWith, "uv-with", []string{},
-		"Additional PEP 508 requirement specifier passed to 'uv tool install --with' for uvx:// builds, "+
-			"e.g. --uv-with 'mcp<2' to constrain a transitive dependency (can be specified multiple times)")
+	cmd.Flags().StringArrayVar(&config.BuildWith, "build-with", []string{},
+		"Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem "+
+			"(uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); "+
+			"errors on ecosystems without constraint support (can be specified multiple times)")
 }
 
 func buildCmdFunc(cmd *cobra.Command, args []string) error {
@@ -99,8 +100,8 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Build runtime config override from flags (if any) and validate it early.
 	var runtimeOverride *templates.RuntimeConfig
-	if len(buildFlags.UVWith) > 0 {
-		runtimeOverride = &templates.RuntimeConfig{UVWith: buildFlags.UVWith}
+	if len(buildFlags.BuildWith) > 0 {
+		runtimeOverride = &templates.RuntimeConfig{BuildWith: buildFlags.BuildWith}
 		if err := runtimeOverride.Validate(); err != nil {
 			return fmt.Errorf("invalid runtime configuration: %w", err)
 		}

@@ -481,6 +481,13 @@ Audit events are logged as structured JSON objects:
     "client_name": "my-mcp-client",
     "client_version": "1.0.0"
   },
+  "delegation_chain": {
+    "actors": [
+      {"sub": "agent-client-1", "act_claims": {"iss": "https://auth.example.com"}},
+      {"sub": "agent-client-2"}
+    ],
+    "truncated": false
+  },
   "target": {
     "endpoint": "/messages",
     "method": "POST",
@@ -517,6 +524,17 @@ Audit events are logged as structured JSON objects:
   - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
   - `client_name`: MCP client name (from JWT claims)
   - `client_version`: MCP client version (from JWT claims)
+- `delegation_chain`: RFC 8693 delegation chain, present only when the caller
+  authenticated with a delegated token (i.e. the JWT carries an `act` claim)
+  - `actors`: Acting parties, outermost (most recent) first — `actors[0]` is
+    the direct delegate that presented the token
+    - `sub`: Acting party identifier (from the `act` claim's `sub` member)
+    - `act_claims`: Additional `act` claim members (e.g. `iss`), when present
+  - `truncated`: `true` when the chain exceeded the configured maximum depth
+    (`maxDelegationDepth` in the audit config, default 10) and trailing
+    actors were dropped
+  - `dropped_count`: Number of actors dropped due to the depth cap, present
+    only when `truncated` is `true`
 - `target`: Information about the operation target
   - `endpoint`: HTTP endpoint path
   - `method`: HTTP method

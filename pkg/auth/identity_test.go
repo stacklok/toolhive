@@ -512,6 +512,62 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			},
 		},
 		{
+			name: "includes_delegation_chain",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					DelegationChain: &DelegationChain{
+						Actors: []DelegatedActor{
+							{Subject: "agent-1", Claims: map[string]any{"iss": "https://issuer.example"}},
+							{Subject: "agent-2"},
+						},
+					},
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				chain, ok := result["delegationChain"].(map[string]any)
+				require.True(t, ok, "delegationChain should be a map")
+				assert.Equal(t, false, chain["truncated"])
+
+				actors, ok := chain["actors"].([]any)
+				require.True(t, ok, "actors should be an array")
+				require.Len(t, actors, 2)
+
+				first, ok := actors[0].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "agent-1", first["sub"])
+				claims, ok := first["act_claims"].(map[string]any)
+				require.True(t, ok, "actor extra claims should be preserved under act_claims")
+				assert.Equal(t, "https://issuer.example", claims["iss"])
+
+				second, ok := actors[1].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "agent-2", second["sub"])
+			},
+		},
+		{
+			name: "omits_empty_delegation_chain",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				_, exists := result["delegationChain"]
+				assert.False(t, exists, "delegationChain key should be omitted when no chain is present")
+			},
+		},
+		{
 			name: "marshals_claims_without_tsid_unchanged",
 			identity: &Identity{
 				PrincipalInfo: PrincipalInfo{

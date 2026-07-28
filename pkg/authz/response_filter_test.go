@@ -484,13 +484,14 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
-	// Create an error response
+	// Create an error response in wire format (json.Marshal on the struct would
+	// produce Go field names, not a JSON-RPC frame).
 	jsonrpcResponse := &jsonrpc2.Response{
 		ID:    jsonrpc2.Int64ID(1),
 		Error: jsonrpc2.NewError(404, "Not found"),
 	}
 
-	responseBytes, err := json.Marshal(jsonrpcResponse)
+	responseBytes, err := jsonrpc2.EncodeMessage(jsonrpcResponse)
 	require.NoError(t, err, "Failed to marshal JSON-RPC response")
 
 	// Create an HTTP request
@@ -502,6 +503,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 
 	// Create the response filtering writer
 	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
+	filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -1236,6 +1238,131 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 			assert.Equal(t, tc.wantIDKey != "", hasID, "id key presence mismatch")
 			_, hasResult := decoded["result"]
 			assert.False(t, hasResult, "error response must not contain a result key")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_FilterBypassAttempts verifies that list results a
+// backend tries to slip past the filter -- via media-type casing or whitespace
+// (RFC 9110 makes both legal), a non-200 2xx status (fetch-based clients accept
+// any 2xx as ok), or an unrecognized Content-Type on a result-carrying body --
+// are still filtered, while responses with nothing to filter pass through.
+func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
+	t.Parallel()
+
+	// The policy permits only "weather"; "admin_tool" must never reach the client.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	resultData, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	listBody, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultData),
+	})
+	require.NoError(t, err)
+	sseListBody := []byte("event: message\ndata: " + string(listBody) + "\n\n")
+
+	testCases := []struct {
+		name        string
+		contentType string // "" leaves the Content-Type header unset
+		statusCode  int
+		body        []byte
+		// wantFiltered: the denied tool is stripped from the client-visible
+		// body; otherwise the body passes through byte-for-byte.
+		wantFiltered bool
+	}{
+		{
+			name:         "uppercase media type is normalized and filtered",
+			contentType:  "Application/JSON",
+			statusCode:   http.StatusOK,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "whitespace before media type parameters is normalized and filtered",
+			contentType:  "application/json ; charset=utf-8",
+			statusCode:   http.StatusOK,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "2xx status other than 200 and 202 is filtered",
+			contentType:  "application/json",
+			statusCode:   http.StatusCreated,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "unrecognized media type carrying a JSON result is filtered",
+			contentType:  "text/plain",
+			statusCode:   http.StatusOK,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "missing media type carrying an SSE result is filtered",
+			contentType:  "",
+			statusCode:   http.StatusOK,
+			body:         sseListBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "unrecognized media type with no JSON-RPC result passes through",
+			contentType:  "text/plain",
+			statusCode:   http.StatusOK,
+			body:         []byte("plain text, nothing to filter"),
+			wantFiltered: false,
+		},
+		{
+			name:         "non-2xx error response passes through unfiltered",
+			contentType:  "application/json",
+			statusCode:   http.StatusInternalServerError,
+			body:         listBody,
+			wantFiltered: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims:  jwt.MapClaims{"sub": "user123"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			fw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			if tc.contentType != "" {
+				fw.ResponseWriter.Header().Set("Content-Type", tc.contentType)
+			}
+			fw.WriteHeader(tc.statusCode)
+			_, err = fw.Write(tc.body)
+			require.NoError(t, err)
+			require.NoError(t, fw.FlushAndFilter())
+
+			assert.Equal(t, tc.statusCode, rr.Code, "original status code should be preserved")
+			if tc.wantFiltered {
+				body := rr.Body.String()
+				assert.Contains(t, body, "weather", "permitted tool should remain in the response")
+				assert.NotContains(t, body, "admin_tool", "denied tool leaked to the client")
+			} else {
+				assert.Equal(t, tc.body, rr.Body.Bytes(), "response should pass through unchanged")
+			}
 		})
 	}
 }

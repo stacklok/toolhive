@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // The following code is adapted from github.com/metal-toolbox/auditevent
@@ -64,6 +66,10 @@ type AuditEvent struct {
 	// e.g. who triggered the event? Additional information
 	// may be added, such as group membership and/or role
 	Subjects map[string]string `json:"subjects"`
+	// DelegationChain: when the caller authenticated with an RFC 8693
+	// delegated token, this records the full chain of acting parties
+	// (outermost/most recent first) extracted from the token's "act" claim.
+	DelegationChain *auth.DelegationChain `json:"delegationChain,omitempty"`
 	// Component: allows to determine in which component the event occurred
 	// (Answering the "Where" question of section c in the NIST SP 800-53
 	// Revision 5.1 Control AU-3).
@@ -144,6 +150,12 @@ func NewAuditEventWithID(
 	}
 }
 
+// WithDelegationChain sets the RFC 8693 delegation chain of the event.
+func (e *AuditEvent) WithDelegationChain(chain *auth.DelegationChain) *AuditEvent {
+	e.DelegationChain = chain
+	return e
+}
+
 // WithTarget sets the target of the event.
 func (e *AuditEvent) WithTarget(target map[string]string) *AuditEvent {
 	e.Target = target
@@ -179,6 +191,11 @@ func (e *AuditEvent) LogTo(ctx context.Context, logger *slog.Logger, level slog.
 			slog.Any("extra", e.Source.Extra),
 		),
 		slog.Any("subjects", e.Subjects),
+	}
+
+	// Add delegation chain if present
+	if e.DelegationChain != nil {
+		attrs = append(attrs, slog.Any("delegation_chain", e.DelegationChain))
 	}
 
 	// Add target if present

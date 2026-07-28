@@ -886,7 +886,9 @@ func (e *envoyProxy) SetupIngress(ctx context.Context, spec proxySpec, _ egressR
 
 	var ingressPort int
 	if spec.TransportType != "stdio" && spec.UpstreamPort > 0 {
-		port, err := networking.FindOrUsePort(spec.UpstreamPort + 1)
+		// A random port avoids every same-image workload racing to bind the
+		// same preferred port when starting concurrently (see #6063).
+		port, err := networking.FindOrUsePort(0)
 		if err != nil {
 			return 0, fmt.Errorf("failed to find ingress port: %w", err)
 		}

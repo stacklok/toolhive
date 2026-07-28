@@ -208,6 +208,53 @@ func TestPriorityConflictResolver(t *testing.T) {
 			},
 		},
 		{
+			name:          "mixed listed and unlisted conflict uses prefix fallback",
+			priorityOrder: []string{"github"},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {
+					{Name: "deploy", Description: "GitHub deploy"},
+				},
+				"prod": {
+					{Name: "deploy", Description: "Production deploy"},
+				},
+			},
+			wantCount: 2,
+			wantWinners: map[string]string{
+				"github_deploy": "github",
+				"prod_deploy":   "prod",
+			},
+			wantStrategies: map[string]vmcp.ConflictResolutionStrategy{
+				"github_deploy": vmcp.ConflictStrategyPrefix,
+				"prod_deploy":   vmcp.ConflictStrategyPrefix,
+			},
+		},
+		{
+			name:          "three-way mixed listed and unlisted conflict uses prefix fallback",
+			priorityOrder: []string{"github", "staging"},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {
+					{Name: "deploy", Description: "GitHub deploy"},
+				},
+				"staging": {
+					{Name: "deploy", Description: "Staging deploy"},
+				},
+				"prod": {
+					{Name: "deploy", Description: "Production deploy"},
+				},
+			},
+			wantCount: 3,
+			wantWinners: map[string]string{
+				"github_deploy":  "github",
+				"staging_deploy": "staging",
+				"prod_deploy":    "prod",
+			},
+			wantStrategies: map[string]vmcp.ConflictResolutionStrategy{
+				"github_deploy":  vmcp.ConflictStrategyPrefix,
+				"staging_deploy": vmcp.ConflictStrategyPrefix,
+				"prod_deploy":    vmcp.ConflictStrategyPrefix,
+			},
+		},
+		{
 			name:          "empty priority order",
 			priorityOrder: []string{},
 			toolsByBackend: map[string][]vmcp.Tool{

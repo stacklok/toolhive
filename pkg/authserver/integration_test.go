@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -790,6 +792,23 @@ func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
 		"delegated token exp must be capped at the 15m delegation lifespan, not the subject token's 30m")
 }
 
+// readSingleAuditEvent reads the audit log file at path and decodes exactly
+// one newline-delimited JSON event, failing the test if there isn't exactly one.
+func readSingleAuditEvent(t *testing.T, path string) map[string]any {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NotEmpty(t, strings.TrimSpace(string(data)), "audit log is empty; expected one event")
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 1, "expected exactly one audit event, got: %q", string(data))
+
+	var event map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &event))
+	return event
+}
+
 // TestIntegration_TokenExchange_AuditDelegationChain proves the end-to-end
 // audit story for RFC 8693 delegation: a delegated token minted by the real
 // token-exchange handler is validated by the auth middleware, and the audit
@@ -866,10 +885,10 @@ func TestIntegration_TokenExchange_AuditDelegationChain(t *testing.T) {
 	// Chain: audit (outer) -> auth -> bare stub handler. The stub does NOT
 	// re-publish the identity: this test pins that TokenValidator.Middleware
 	// alone publishes the validated identity to the audit holder.
-	var auditBuf bytes.Buffer
-	auditor, err := audit.NewAuditorWithTransport(&audit.Config{}, "streamable-http")
+	auditLog := filepath.Join(t.TempDir(), "audit.log")
+	auditor, err := audit.NewAuditorWithTransport(&audit.Config{LogFile: auditLog}, "streamable-http")
 	require.NoError(t, err)
-	auditor.SetLogWriterForTest(&auditBuf) //nolint:staticcheck // test-only writer capture until NewAuditorWithWriter exists
+	defer auditor.Close()
 
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -884,11 +903,7 @@ func TestIntegration_TokenExchange_AuditDelegationChain(t *testing.T) {
 		"delegated token must validate through the auth middleware")
 
 	// Exactly one audit event, carrying the delegation chain.
-	lines := strings.Split(strings.TrimSpace(auditBuf.String()), "\n")
-	require.Len(t, lines, 1, "expected exactly one audit event, got: %q", auditBuf.String())
-
-	var event map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &event))
+	event := readSingleAuditEvent(t, auditLog)
 
 	subjects, ok := event["subjects"].(map[string]any)
 	require.True(t, ok, "subjects should be a map")
@@ -944,10 +959,10 @@ func TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain(t *te
 	}, auth.WithKeyProvider(&testKeyProvider{key: ts.PrivateKey}))
 	require.NoError(t, err)
 
-	var auditBuf bytes.Buffer
-	auditor, err := audit.NewAuditorWithTransport(&audit.Config{}, "streamable-http")
+	auditLog := filepath.Join(t.TempDir(), "audit.log")
+	auditor, err := audit.NewAuditorWithTransport(&audit.Config{LogFile: auditLog}, "streamable-http")
 	require.NoError(t, err)
-	auditor.SetLogWriterForTest(&auditBuf) //nolint:staticcheck // test-only writer capture until NewAuditorWithWriter exists
+	defer auditor.Close()
 
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -961,11 +976,7 @@ func TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain(t *te
 	require.Equal(t, http.StatusOK, rr.Code,
 		"plain token must validate through the auth middleware")
 
-	lines := strings.Split(strings.TrimSpace(auditBuf.String()), "\n")
-	require.Len(t, lines, 1, "expected exactly one audit event, got: %q", auditBuf.String())
-
-	var event map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &event))
+	event := readSingleAuditEvent(t, auditLog)
 
 	subjects, ok := event["subjects"].(map[string]any)
 	require.True(t, ok, "subjects should be a map")

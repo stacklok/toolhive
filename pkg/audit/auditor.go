@@ -113,18 +113,6 @@ func (a *Auditor) Close() error {
 	return nil
 }
 
-// SetLogWriterForTest redirects the auditor's log output to w. It is intended
-// for tests in other packages (e.g. integration tests) that need to capture
-// emitted audit events without reimplementing the auditor.
-//
-// Deprecated: this is test-only surface on a production type. A future
-// NewAuditorWithWriter constructor accepting an explicit io.Writer should
-// replace it; keep usage confined to tests.
-func (a *Auditor) SetLogWriterForTest(w io.Writer) {
-	a.auditLogger = NewAuditLogger(w)
-	a.logWriter = w
-}
-
 // isSSETransport checks if the current transport is SSE
 func (a *Auditor) isSSETransport() bool {
 	return a.transportType == types.TransportTypeSSE.String()

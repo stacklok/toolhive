@@ -16,7 +16,7 @@ var aiPluginBuildTag string
 
 var aiPluginBuildCmd = &cobra.Command{
 	Use:   "build [path]",
-	Short: "Build a plugin",
+	Short: "Build an AI-tool plugin into a local OCI artifact",
 	Long: `Build a plugin from a local directory into an OCI artifact that can be pushed to a registry.
 
 On success, prints the OCI reference of the built artifact to stdout.`,

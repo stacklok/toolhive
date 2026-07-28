@@ -15,7 +15,7 @@ var aiPluginValidateFormat string
 
 var aiPluginValidateCmd = &cobra.Command{
 	Use:   "validate [path]",
-	Short: "Validate a plugin definition",
+	Short: "Validate an AI-tool plugin directory",
 	Long:  `Check that a plugin definition in the given directory is valid and well-formed.`,
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {

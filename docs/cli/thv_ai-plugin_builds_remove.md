@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin builds remove
 
-Remove a locally-built plugin artifact
+Remove a locally-built AI-tool plugin artifact
 
 ### Synopsis
 
@@ -35,5 +35,5 @@ thv ai-plugin builds remove <tag> [flags]
 
 ### SEE ALSO
 
-* [thv ai-plugin builds](thv_ai-plugin_builds.md)	 - List locally-built plugin artifacts
+* [thv ai-plugin builds](thv_ai-plugin_builds.md)	 - List locally-built AI-tool plugin artifacts
 

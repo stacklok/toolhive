@@ -16,7 +16,7 @@ Manage AI-tool plugins
 ### Synopsis
 
 The ai-plugin command provides subcommands to manage plugins for AI tools
-(e.g. Claude Code, OpenCode) — not plugins for ToolHive itself.
+(e.g. Claude Code, Codex) — not plugins for ToolHive itself.
 
 ### Options
 
@@ -33,12 +33,12 @@ The ai-plugin command provides subcommands to manage plugins for AI tools
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
-* [thv ai-plugin build](thv_ai-plugin_build.md)	 - Build a plugin
-* [thv ai-plugin builds](thv_ai-plugin_builds.md)	 - List locally-built plugin artifacts
-* [thv ai-plugin info](thv_ai-plugin_info.md)	 - Show plugin details
-* [thv ai-plugin install](thv_ai-plugin_install.md)	 - Install a plugin
-* [thv ai-plugin list](thv_ai-plugin_list.md)	 - List installed plugins
-* [thv ai-plugin push](thv_ai-plugin_push.md)	 - Push a built plugin
-* [thv ai-plugin uninstall](thv_ai-plugin_uninstall.md)	 - Uninstall a plugin
-* [thv ai-plugin validate](thv_ai-plugin_validate.md)	 - Validate a plugin definition
+* [thv ai-plugin build](thv_ai-plugin_build.md)	 - Build an AI-tool plugin into a local OCI artifact
+* [thv ai-plugin builds](thv_ai-plugin_builds.md)	 - List locally-built AI-tool plugin artifacts
+* [thv ai-plugin info](thv_ai-plugin_info.md)	 - Show details of an AI-tool plugin
+* [thv ai-plugin install](thv_ai-plugin_install.md)	 - Install an AI-tool plugin
+* [thv ai-plugin list](thv_ai-plugin_list.md)	 - List installed AI-tool plugins
+* [thv ai-plugin push](thv_ai-plugin_push.md)	 - Push a built AI-tool plugin to an OCI registry
+* [thv ai-plugin uninstall](thv_ai-plugin_uninstall.md)	 - Uninstall an AI-tool plugin
+* [thv ai-plugin validate](thv_ai-plugin_validate.md)	 - Validate an AI-tool plugin directory
 

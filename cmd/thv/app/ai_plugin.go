@@ -11,5 +11,5 @@ var aiPluginCmd = &cobra.Command{
 	Use:   "ai-plugin",
 	Short: "Manage AI-tool plugins",
 	Long: `The ai-plugin command provides subcommands to manage plugins for AI tools
-(e.g. Claude Code, OpenCode) — not plugins for ToolHive itself.`,
+(e.g. Claude Code, Codex) — not plugins for ToolHive itself.`,
 }

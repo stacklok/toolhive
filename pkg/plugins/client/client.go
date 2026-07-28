@@ -324,6 +324,8 @@ func (c *Client) doJSONRequest(
 	if result != nil {
 		limited := io.LimitReader(resp.Body, maxResponseSize)
 		if err := json.NewDecoder(limited).Decode(result); err != nil {
+			// Drain before close so the connection can be reused.
+			_, _ = io.Copy(io.Discard, limited)
 			return fmt.Errorf("decoding response: %w", err)
 		}
 	}

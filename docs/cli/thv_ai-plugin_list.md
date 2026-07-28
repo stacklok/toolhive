@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin list
 
-List installed plugins
+List installed AI-tool plugins
 
 ### Synopsis
 

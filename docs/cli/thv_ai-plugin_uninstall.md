@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin uninstall
 
-Uninstall a plugin
+Uninstall an AI-tool plugin
 
 ### Synopsis
 

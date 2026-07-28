@@ -18,7 +18,7 @@ var aiPluginBuildsFormat string
 
 var aiPluginBuildsCmd = &cobra.Command{
 	Use:   "builds",
-	Short: "List locally-built plugin artifacts",
+	Short: "List locally-built AI-tool plugin artifacts",
 	Long:  `List all locally-built OCI plugin artifacts stored in the local OCI store.`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&aiPluginBuildsFormat),

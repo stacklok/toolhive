@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin validate
 
-Validate a plugin definition
+Validate an AI-tool plugin directory
 
 ### Synopsis
 

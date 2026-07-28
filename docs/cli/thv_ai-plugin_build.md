@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin build
 
-Build a plugin
+Build an AI-tool plugin into a local OCI artifact
 
 ### Synopsis
 

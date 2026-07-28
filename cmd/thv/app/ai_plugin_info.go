@@ -26,7 +26,7 @@ var (
 
 var aiPluginInfoCmd = &cobra.Command{
 	Use:               "info [plugin-name]",
-	Short:             "Show plugin details",
+	Short:             "Show details of an AI-tool plugin",
 	Long:              `Display detailed information about a plugin, including metadata, version, and installation status.`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeAIPluginNames,
@@ -92,13 +92,13 @@ func printAIPluginInfoText(info *plugins.PluginInfo) {
 				_, _ = fmt.Fprintf(w, "Components:\t%s\n", formatComponentInventory(managed))
 			}
 			if len(declared) > 0 {
-				_, _ = fmt.Fprintf(w, "Declared (NOT managed by ToolHive):\t%s\n", formatComponentInventory(declared))
+				_, _ = fmt.Fprintf(w, "Declared (not managed by ToolHive):\t%s\n", formatComponentInventory(declared))
 			}
 		}
 	}
 
 	if len(info.UnmaterializedComponents) > 0 {
-		_, _ = fmt.Fprintln(w, "\nUnmaterialized Components:")
+		_, _ = fmt.Fprintln(w, "\nNot activated on this client (declared by the plugin, but the client does not load them):")
 		for _, clientType := range slices.Sorted(maps.Keys(info.UnmaterializedComponents)) {
 			types := info.UnmaterializedComponents[clientType]
 			labels := make([]string, 0, len(types))
@@ -111,7 +111,8 @@ func printAIPluginInfoText(info *plugins.PluginInfo) {
 	if len(info.ProjectScopeDegradedClients) > 0 {
 		degraded := append([]string(nil), info.ProjectScopeDegradedClients...)
 		sort.Strings(degraded)
-		_, _ = fmt.Fprintf(w, "\nProject-scope Degraded Clients:\t%s\n", strings.Join(degraded, ", "))
+		_, _ = fmt.Fprintf(w, "\nInstalled at user scope instead of project scope (client cannot scope per-project):\t%s\n",
+			strings.Join(degraded, ", "))
 	}
 
 	_ = w.Flush()

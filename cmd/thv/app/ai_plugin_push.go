@@ -11,7 +11,7 @@ import (
 
 var aiPluginPushCmd = &cobra.Command{
 	Use:   "push [reference]",
-	Short: "Push a built plugin",
+	Short: "Push a built AI-tool plugin to an OCI registry",
 	Long:  `Push a previously built plugin artifact to a remote OCI registry.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  aiPluginPushCmdFunc,

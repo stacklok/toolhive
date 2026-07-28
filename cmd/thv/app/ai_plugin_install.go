@@ -19,7 +19,7 @@ var (
 
 var aiPluginInstallCmd = &cobra.Command{
 	Use:   "install [plugin-name]",
-	Short: "Install a plugin",
+	Short: "Install an AI-tool plugin",
 	Long: `Install a plugin by name or OCI reference.
 The plugin will be fetched from a remote registry and installed locally.`,
 	Args: cobra.ExactArgs(1),

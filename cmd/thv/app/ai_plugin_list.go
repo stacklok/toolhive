@@ -26,7 +26,7 @@ var (
 var aiPluginListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
-	Short:   "List installed plugins",
+	Short:   "List installed AI-tool plugins",
 	Long:    `List all currently installed plugins and their status.`,
 	PreRunE: chainPreRunE(
 		validateAIPluginScope(&aiPluginListScope),

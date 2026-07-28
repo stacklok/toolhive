@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin info
 
-Show plugin details
+Show details of an AI-tool plugin
 
 ### Synopsis
 

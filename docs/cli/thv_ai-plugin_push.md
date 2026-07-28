@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin push
 
-Push a built plugin
+Push a built AI-tool plugin to an OCI registry
 
 ### Synopsis
 

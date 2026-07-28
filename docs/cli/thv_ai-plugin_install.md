@@ -11,7 +11,7 @@ mdx:
 
 ## thv ai-plugin install
 
-Install a plugin
+Install an AI-tool plugin
 
 ### Synopsis
 

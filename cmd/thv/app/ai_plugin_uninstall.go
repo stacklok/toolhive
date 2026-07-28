@@ -16,7 +16,7 @@ var (
 
 var aiPluginUninstallCmd = &cobra.Command{
 	Use:               "uninstall [plugin-name]",
-	Short:             "Uninstall a plugin",
+	Short:             "Uninstall an AI-tool plugin",
 	Long:              `Remove a previously installed plugin by name.`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeAIPluginNames,

@@ -25,7 +25,6 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -286,137 +285,6 @@ func TestDeriveKeyID(t *testing.T) {
 	assert.NotEqual(t, id1, id3, "different keys should produce different IDs")
 }
 
-func TestLoadHMACSecrets(t *testing.T) {
-	t.Parallel()
-
-	validSecret := strings.Repeat("a", 32)
-	validSecret2 := strings.Repeat("b", 32)
-	tooShortSecret := strings.Repeat("a", 31)
-
-	tests := []struct {
-		name        string
-		setup       func(t *testing.T, dir string) []string
-		wantCurrent []byte
-		wantRotated [][]byte
-		wantErr     string
-	}{
-		{
-			name:        "empty paths",
-			setup:       func(_ *testing.T, _ string) []string { return []string{} },
-			wantCurrent: nil,
-			wantRotated: nil,
-		},
-		{
-			name: "single secret",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{writeFileNamed(t, dir, "current", validSecret)}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: nil,
-		},
-		{
-			name: "with rotated secrets",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					writeFileNamed(t, dir, "rotated1", validSecret2),
-				}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: [][]byte{[]byte(validSecret2)},
-		},
-		{
-			name: "empty current path",
-			setup: func(_ *testing.T, _ string) []string {
-				return []string{""}
-			},
-			wantErr: "current HMAC secret path cannot be empty",
-		},
-		{
-			name: "invalid current secret file",
-			setup: func(_ *testing.T, _ string) []string {
-				return []string{"/nonexistent/secret"}
-			},
-			wantErr: "failed to load current",
-		},
-		{
-			name: "invalid rotated secret",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					"/nonexistent/rotated",
-				}
-			},
-			wantErr: "failed to load rotated HMAC secret [1]",
-		},
-		{
-			name: "skip empty rotated paths",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					"",
-					writeFileNamed(t, dir, "rotated2", validSecret2),
-				}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: [][]byte{[]byte(validSecret2)},
-		},
-		{
-			name: "whitespace trimmed",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", "  "+validSecret+"  \n\n"),
-					writeFileNamed(t, dir, "rotated", "\t"+validSecret2+"\n"),
-				}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: [][]byte{[]byte(validSecret2)},
-		},
-		{
-			name: "current too short",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{writeFileNamed(t, dir, "current", tooShortSecret)}
-			},
-			wantErr: "HMAC secret must be at least",
-		},
-		{
-			name: "rotated too short",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					writeFileNamed(t, dir, "rotated", tooShortSecret),
-				}
-			},
-			wantErr: "failed to load rotated HMAC secret [1]",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			dir := t.TempDir()
-			paths := tt.setup(t, dir)
-
-			secrets, err := LoadHMACSecrets(paths)
-
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-				assert.Nil(t, secrets)
-			} else {
-				require.NoError(t, err)
-				if tt.wantCurrent == nil {
-					assert.Nil(t, secrets)
-				} else {
-					require.NotNil(t, secrets)
-					assert.Equal(t, tt.wantCurrent, secrets.Current)
-					assert.Equal(t, tt.wantRotated, secrets.Rotated)
-				}
-			}
-		})
-	}
-}
-
 // Helpers
 
 func writePEM(t *testing.T, dir, pemType string, der []byte) string {
@@ -424,12 +292,5 @@ func writePEM(t *testing.T, dir, pemType string, der []byte) string {
 	path := filepath.Join(dir, "key.pem")
 	data := pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: der})
 	require.NoError(t, os.WriteFile(path, data, 0600))
-	return path
-}
-
-func writeFileNamed(t *testing.T, dir, name, content string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
 	return path
 }

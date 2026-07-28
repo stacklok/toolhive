@@ -27,6 +27,10 @@ type ServerConfig struct {
 	StartTimeout   time.Duration
 	RequestTimeout time.Duration
 	DebugMode      bool
+	// ExtraEnv adds "KEY=VALUE" environment variables to the `thv serve`
+	// subprocess, for tests that need to opt into experimental or
+	// feature-gated behavior without changing it for every other E2E test.
+	ExtraEnv []string
 }
 
 // NewServerConfig creates a new API server configuration with defaults
@@ -104,7 +108,7 @@ func NewServer(config *ServerConfig) (*Server, error) {
 		"TOOLHIVE_DEV=true",
 		fmt.Sprintf("XDG_CONFIG_HOME=%s", tempXdgConfigHome),
 		fmt.Sprintf("HOME=%s", tempHome),
-	}, cmd.Env...)
+	}, config.ExtraEnv...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 

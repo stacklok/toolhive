@@ -144,17 +144,33 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 			assert.NotEmpty(t, readResult.Contents)
 
 			// Verify that all requests were parsed by the middleware
-			assert.GreaterOrEqual(t, len(parsedRequests), 4, "Expected at least 4 parsed requests (initialize, list tools, call tool, list resources, read resource)")
+			assert.GreaterOrEqual(t, len(parsedRequests), 4, "Expected at least 4 parsed requests (session establishment, list tools, call tool, list resources, read resource)")
 
-			// Verify specific parsed requests
-			foundInitialize := false
+			// Verify specific parsed requests. mcpcompat's client is Modern-first
+			// (SEP-2575) on every transport, so both arms send server/discover
+			// first. The SSE server transport advertises 2026-07-28 unconditionally
+			// (no ProtocolVersionSupporter gate), so discover succeeds and
+			// "initialize" is never sent there. The streamable-HTTP server here is
+			// stateful (no WithStateless), which gates 2026-07-28 on being
+			// stateless, so its discover negotiates down and it additionally sends
+			// "initialize".
+			foundSessionEstablished := false
 			foundToolCall := false
 			foundResourceRead := false
+			var methodsSeen []string
 			for _, parsed := range parsedRequests {
+				methodsSeen = append(methodsSeen, parsed.Method)
 				switch parsed.Method {
 				case "initialize":
-					foundInitialize = true
+					foundSessionEstablished = true
 					assert.Equal(t, "test-client", parsed.ResourceID)
+				case "server/discover":
+					if tc.transport == "sse" {
+						// parser.go maps server/discover to the static ResourceID
+						// "discover" (not a client-name ResourceID).
+						foundSessionEstablished = true
+						assert.Equal(t, "discover", parsed.ResourceID)
+					}
 				case "tools/call":
 					foundToolCall = true
 					assert.Equal(t, "test_tool", parsed.ResourceID)
@@ -163,7 +179,11 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 					assert.Equal(t, "test://resource", parsed.ResourceID)
 				}
 			}
-			assert.True(t, foundInitialize, "Initialize request should have been parsed")
+			assert.True(t, foundSessionEstablished, "session establishment request (initialize or server/discover) should have been parsed")
+			if tc.transport == "sse" {
+				assert.Contains(t, methodsSeen, "server/discover", "SSE arm should negotiate via server/discover")
+				assert.NotContains(t, methodsSeen, "initialize", "SSE arm is Modern-first and should never fall back to initialize here")
+			}
 			assert.True(t, foundToolCall, "Tool call request should have been parsed")
 			assert.True(t, foundResourceRead, "Resource read request should have been parsed")
 		})

@@ -166,6 +166,10 @@ type Config struct {
 	// When enabled, vMCP exposes only find_tool and call_tool operations to clients
 	// instead of all backend tools directly. This reduces token usage by allowing
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// Enabling the optimizer currently pins this instance to MCP 2025-11-25: the
+	// find_tool/call_tool meta-tools are session-scoped, so Modern-capable (2026-07-28)
+	// clients are negotiated down to the Legacy revision (see
+	// pkg/vmcp/server/modern_gate.go; Modern parity is tracked in stacklok/toolhive#6089).
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 
@@ -273,6 +277,16 @@ type OIDCConfig struct {
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production
 	InsecureAllowHTTP bool `json:"insecureAllowHttp,omitempty" yaml:"insecureAllowHttp,omitempty"`
+
+	// CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle
+	// used when the OIDC middleware performs HTTPS requests to the issuer
+	// (OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle
+	// at this path is added to the trust store used for verifying the issuer's
+	// TLS certificate. Typically populated by the Kubernetes operator from
+	// MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster
+	// service-account CA when using Kubernetes service-account auth.
+	// +optional
+	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
 }
 
 // AuthzConfig configures authorization.
@@ -456,13 +470,18 @@ type AggregationConfig struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type ConflictResolutionConfig struct {
-	// PrefixFormat defines the prefix format for the "prefix" strategy.
+	// PrefixFormat defines the prefix format for the "prefix" tool strategy
+	// and for backend-prefixed prompt names (the default for every prompt;
+	// under the "priority" strategy, backends listed in priorityOrder keep
+	// their own prompt names).
 	// Supports placeholders: {workload}, {workload}_, {workload}.
 	// +kubebuilder:default="{workload}_"
 	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
 	// PriorityOrder defines the workload priority order for the "priority" strategy.
+	// Listed workloads also keep their own prompt names (unlisted workloads'
+	// prompts stay backend-prefixed).
 	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
 }

@@ -142,9 +142,71 @@ func TestSDKElicitationAdapter_NilMetaProducesNoMeta(t *testing.T) {
 	assert.Nil(t, fake.gotRequest.Params.Meta)
 }
 
+// TestSDKElicitationAdapter_StripsReservedMeta is the #5986 regression pin for
+// the server->client REQUEST direction. req.Meta here originates from the
+// BACKEND's elicitation/create (newElicitationForwarder in pkg/vmcp/client), so
+// it crosses the same trust boundary as a backend result: a reserved
+// io.modelcontextprotocol/* key must not reach the downstream client, which may
+// validate it (a leaked protocolVersion is worse on a request than on a result).
+func TestSDKElicitationAdapter_StripsReservedMeta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		meta          map[string]any
+		wantNilMeta   bool
+		wantAdditions map[string]any
+	}{
+		{
+			name: "reserved keys stripped, backend metadata preserved",
+			meta: map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/serverInfo":      map[string]any{"name": "attacker"},
+				"trace":                                   "abc",
+			},
+			wantAdditions: map[string]any{"trace": "abc"},
+		},
+		{
+			// Collapses to no _meta at all rather than an empty object, matching
+			// the nil-Meta behavior above.
+			name: "only reserved keys produces no _meta",
+			meta: map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			},
+			wantNilMeta: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := &fakeSDKElicitationRequester{
+				result: &mcp.ElicitationResult{
+					ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept},
+				},
+			}
+			adapter := &sdkElicitationAdapter{mcpServer: fake}
+
+			_, err := adapter.RequestElicitation(context.Background(), vmcp.ElicitationRequest{
+				Message: "Confirm?",
+				Meta:    tt.meta,
+			})
+			require.NoError(t, err)
+
+			if tt.wantNilMeta {
+				assert.Nil(t, fake.gotRequest.Params.Meta)
+				return
+			}
+			require.NotNil(t, fake.gotRequest.Params.Meta)
+			assert.Equal(t, tt.wantAdditions, fake.gotRequest.Params.Meta.AdditionalFields)
+		})
+	}
+}
+
 // TestSDKElicitationAdapter_MetaIsCopied verifies that translating a request
-// with Meta does not mutate the caller's map (NewMetaFromMap deletes
-// progressToken from its argument).
+// with Meta does not mutate the caller's map (the SDK's NewMetaFromMap deletes
+// progressToken from its argument; conversion.ToMCPMeta copies instead).
 func TestSDKElicitationAdapter_MetaIsCopied(t *testing.T) {
 	t.Parallel()
 

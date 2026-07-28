@@ -6,10 +6,20 @@ package streamable
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"time"
 
 	"golang.org/x/exp/jsonrpc2"
+
+	"github.com/stacklok/toolhive/pkg/mcp"
 )
+
+// sseKeepAliveInterval is the cadence at which an otherwise-idle SSE stream
+// writes a ": keep-alive\n\n" comment (see writeSSEKeepAlive), so
+// intermediary proxies/load balancers do not close the connection for
+// inactivity.
+const sseKeepAliveInterval = 30 * time.Second
 
 // isNotification returns true if the JSON-RPC message is a notification (no ID).
 func isNotification(msg jsonrpc2.Message) bool {
@@ -19,9 +29,94 @@ func isNotification(msg jsonrpc2.Message) bool {
 	return false
 }
 
+// isClientResponse returns true if msg is a *jsonrpc2.Response, i.e. a
+// client's reply to a server-initiated request (see
+// rejectServerRequestToBackend) rather than a client-initiated request or
+// notification.
+func isClientResponse(msg jsonrpc2.Message) bool {
+	_, ok := msg.(*jsonrpc2.Response)
+	return ok
+}
+
 // writeHTTPError writes a plain HTTP error with status.
 func writeHTTPError(w http.ResponseWriter, status int, msg string) {
 	http.Error(w, msg, status)
+}
+
+// writeSSEData writes data as a single SSE "data:" event to w and flushes it.
+// It returns the underlying write error (if any) so the caller can decide
+// whether to end the stream; it does not itself log or close anything.
+func writeSSEData(w io.Writer, flusher http.Flusher, data []byte) error {
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+// assertFlushable type-asserts w as http.Flusher, which every SSE response in
+// this package requires so data can be pushed to the client as it is
+// written, rather than buffered until the handler returns. On failure it
+// writes the standard 500 "Streaming not supported" error to w and returns
+// (nil, false); the caller must return immediately without writing anything
+// else. On success it returns (w.(http.Flusher), true).
+func assertFlushable(w http.ResponseWriter) (http.Flusher, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
+		return nil, false
+	}
+	return flusher, true
+}
+
+// setSSEHeaders sets the standard response headers for an SSE stream:
+// Content-Type: text/event-stream, Cache-Control: no-cache, and
+// Connection: keep-alive.
+func setSSEHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+}
+
+// startSSEStream asserts that w supports flushing (see assertFlushable), sets
+// the standard SSE headers (see setSSEHeaders), and flushes them to the
+// client immediately so it knows the stream is open without waiting for the
+// first data: frame.
+//
+// If extra is non-nil, it is called after the SSE headers are set but before
+// the flush, letting a caller add further response headers (e.g.
+// Mcp-Session-Id) while they are still guaranteed to reach the client:
+// net/http locks in headers at the first Flush/WriteHeader call, so any
+// header set after this function returns would be silently dropped.
+//
+// It returns (flusher, true) on success. If w does not implement
+// http.Flusher, it writes the "Streaming not supported" 500 itself (see
+// assertFlushable) and returns (nil, false); the caller must return without
+// writing anything else, and extra is never called.
+func startSSEStream(w http.ResponseWriter, extra func()) (http.Flusher, bool) {
+	flusher, ok := assertFlushable(w)
+	if !ok {
+		return nil, false
+	}
+	setSSEHeaders(w)
+	if extra != nil {
+		extra()
+	}
+	flusher.Flush()
+	return flusher, true
+}
+
+// writeSSEKeepAlive writes a single SSE comment line (": keep-alive\n\n") to
+// w and flushes it, so intermediary proxies/load balancers do not close an
+// otherwise-idle SSE connection for inactivity. It returns the underlying
+// write error (if any), mirroring writeSSEData, so the caller can decide
+// whether to end the stream; it does not itself log or close anything.
+func writeSSEKeepAlive(w io.Writer, flusher http.Flusher) error {
+	if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil { //nolint:gosec // G705: fixed literal, not derived from any request
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 // writeJSONRPC writes a jsonrpc2.Message using the library's encoder to ensure proper serialization.
@@ -59,9 +154,65 @@ func compositeKey(sessID, idKey string) string {
 	return sessID + "|" + idKey
 }
 
-// isSupportedMCPVersion is intentionally permissive: we accept any present version string.
-// This avoids being pedantic and breaking on new protocol dates while remaining compliant,
-// since this proxy is transport-level and does not depend on specific MCP versions.
-func isSupportedMCPVersion(_ string) bool {
-	return true
+// extractStringParam returns params[key] as a string, and whether it was
+// present and string-typed. Absent params, params that don't decode as a JSON
+// object, or a non-string value at key all yield ("", false) rather than an
+// error -- callers treat a missing/malformed field as "nothing to route on".
+func extractStringParam(params json.RawMessage, key string) (string, bool) {
+	if len(params) == 0 {
+		return "", false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(params, &m); err != nil {
+		return "", false
+	}
+	s, ok := m[key].(string)
+	return s, ok
+}
+
+// rewriteRequestParam returns a new *jsonrpc2.Request identical to req except
+// that its top-level params[key] is set to value (params is created if req
+// had none). It never mutates req: per the "copy before mutating caller
+// input" style rule, the params map is freshly decoded from req.Params before
+// the assignment, so no caller-held reference (including req itself) is
+// modified.
+func rewriteRequestParam(req *jsonrpc2.Request, key string, value any) (*jsonrpc2.Request, error) {
+	m := map[string]any{}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &m); err != nil {
+			return nil, err
+		}
+	}
+	m[key] = value
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return &jsonrpc2.Request{ID: req.ID, Method: req.Method, Params: data}, nil
+}
+
+// supportedMCPVersions is the set of MCP protocol revision dates this proxy
+// recognizes when strict validation is enabled (WithStrictProtocolValidation).
+// The upcoming stateless revision is sourced from mcp.MCPVersionModern rather
+// than duplicated as a literal, so the strict gate and the ClassifyRevision
+// routing path (which keys off the same constant) cannot drift if that draft
+// date changes before it is finalized.
+var supportedMCPVersions = map[string]struct{}{
+	"2024-11-05":         {},
+	"2025-03-26":         {},
+	"2025-06-18":         {},
+	"2025-11-25":         {},
+	mcp.MCPVersionModern: {},
+}
+
+// isSupportedMCPVersion reports whether version is one of the known MCP
+// protocol revision dates in supportedMCPVersions. It is only consulted when
+// the proxy's strict protocol validation is enabled (see
+// WithStrictProtocolValidation); in the default permissive mode, handlePost
+// never calls it and any MCP-Protocol-Version header value is accepted, since
+// this proxy is transport-level and does not depend on a specific MCP
+// revision.
+func isSupportedMCPVersion(version string) bool {
+	_, ok := supportedMCPVersions[version]
+	return ok
 }

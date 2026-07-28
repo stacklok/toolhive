@@ -13,14 +13,17 @@ package backendtelemetry
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -29,6 +32,33 @@ import (
 const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+var (
+	reclassCounterOnce sync.Once
+	reclassCounter     metric.Int64Counter
+)
+
+// RecordRevisionReclassification increments the count of backends whose MCP
+// revision was reclassified after a call revealed the cached revision was wrong.
+//
+// The backend client resolves revisions below the telemetry decorator, so this
+// is a free function backed by the global meter provider rather than the injected
+// one used by MonitorBackends.
+//
+// NOTE: no labels yet — old/new revision labels (and the CRD status surface)
+// are deferred. If the global provider ever diverges from the injected one, thread
+// the meter down instead.
+func RecordRevisionReclassification(ctx context.Context) {
+	reclassCounterOnce.Do(func() {
+		reclassCounter, _ = otel.GetMeterProvider().Meter(instrumentationName).Int64Counter(
+			"toolhive_vmcp_backend_revision_reclassifications",
+			metric.WithDescription("Number of times a backend's MCP revision was reclassified after a mismatch"),
+		)
+	})
+	if reclassCounter != nil {
+		reclassCounter.Add(ctx, 1)
+	}
+}
 
 // MonitorBackends decorates the backend client so it records telemetry on each method call.
 // It also emits a gauge for the number of backends discovered once, since the number of backends is static.
@@ -103,6 +133,26 @@ type telemetryBackendClient struct {
 
 var _ vmcp.BackendClient = telemetryBackendClient{}
 
+// CachedRevision forwards to the wrapped client's optional vmcp.RevisionReporter so
+// callers reaching the client THROUGH this decorator (e.g. the health monitor)
+// can still read the negotiated revision. Returns (0, false) when the wrapped
+// client does not report revisions.
+func (t telemetryBackendClient) CachedRevision(workloadID string) (mcpparser.Revision, bool) {
+	if r, ok := t.backendClient.(vmcp.RevisionReporter); ok {
+		return r.CachedRevision(workloadID)
+	}
+	return 0, false
+}
+
+// revisionLabel returns the backend's negotiated MCP revision as a metric label
+// value, or "" when unprobed/unknown (low cardinality: 2 values + empty).
+func (t telemetryBackendClient) revisionLabel(workloadID string) string {
+	if rev, ok := t.CachedRevision(workloadID); ok {
+		return rev.String()
+	}
+	return ""
+}
+
 // mapActionToMCPMethod maps internal action names to MCP method names per the OTEL MCP spec.
 func mapActionToMCPMethod(action string) string {
 	switch action {
@@ -153,6 +203,8 @@ func (t telemetryBackendClient) record(
 		attribute.String("action", action),
 		// OTEL MCP spec-required attributes
 		attribute.String("mcp.method.name", mcpMethod),
+		// Negotiated MCP revision (low cardinality: 2 values + empty when unprobed).
+		attribute.String("mcp.protocol.revision", t.revisionLabel(target.WorkloadID)),
 	}
 
 	commonAttrs = append(commonAttrs, attrs...)
@@ -205,6 +257,7 @@ func (t telemetryBackendClient) CallTool(
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
+	paramHeaders map[string]string,
 ) (_ *vmcp.ToolCallResult, retErr error) {
 	attrs := []attribute.KeyValue{
 		attribute.String("tool_name", toolName),        // backward compat
@@ -216,7 +269,7 @@ func (t telemetryBackendClient) CallTool(
 	}
 	ctx, done := t.record(ctx, target, "call_tool", toolName, &retErr, attrs...)
 	defer done()
-	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
+	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta, paramHeaders)
 }
 
 func (t telemetryBackendClient) ReadResource(

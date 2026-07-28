@@ -746,3 +746,22 @@ func TestSanitizeError(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusTracker_RecordRevision verifies the MCP revision read-model is stored
+// on a tracked backend and is a no-op for an untracked one.
+func TestStatusTracker_RecordRevision(t *testing.T) {
+	t.Parallel()
+
+	tr := newStatusTracker(3, nil)
+	tr.RecordSuccess("b1", "n1", vmcp.BackendHealthy) // creates the state
+	tr.RecordRevision("b1", "2026-07-28")
+
+	st, ok := tr.GetState("b1")
+	require.True(t, ok)
+	assert.Equal(t, "2026-07-28", st.MCPRevision)
+
+	// No-op for an untracked backend (must not create state).
+	tr.RecordRevision("missing", "2025-11-25")
+	_, ok = tr.GetState("missing")
+	assert.False(t, ok)
+}

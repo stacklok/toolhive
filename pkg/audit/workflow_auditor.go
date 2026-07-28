@@ -70,6 +70,7 @@ func (w *WorkflowAuditor) LogWorkflowStarted(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -121,6 +122,7 @@ func (w *WorkflowAuditor) LogWorkflowCompleted(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -173,6 +175,7 @@ func (w *WorkflowAuditor) LogWorkflowFailed(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -212,6 +215,7 @@ func (w *WorkflowAuditor) LogWorkflowTimedOut(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -251,6 +255,7 @@ func (w *WorkflowAuditor) LogStepStarted(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -288,6 +293,7 @@ func (w *WorkflowAuditor) LogStepCompleted(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -327,6 +333,7 @@ func (w *WorkflowAuditor) LogStepFailed(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -364,6 +371,7 @@ func (w *WorkflowAuditor) LogStepSkipped(
 		subjects,
 		w.component,
 	)
+	w.attachDelegation(ctx, event)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -407,4 +415,16 @@ func (*WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
 	}
 
 	return subjects
+}
+
+// attachDelegation attaches the RFC 8693 delegation chain from the context's
+// identity to the event. It is a no-op when there is no identity or the
+// identity carries no delegation chain.
+func (w *WorkflowAuditor) attachDelegation(ctx context.Context, event *AuditEvent) {
+	identity, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return
+	}
+	event.WithDelegationChain(
+		extractDelegationChainFromIdentity(identity, w.config.MaxDelegationDepthOrDefault()))
 }

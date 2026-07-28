@@ -32,6 +32,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
+// DiscoverCapabilities summarizes, for one identity, whether each capability
+// kind has at least one admission-filtered entry. It carries no descriptor
+// arrays -- only presence flags -- unlike the []vmcp.Tool/Resource/etc. slices
+// ListTools/ListResources/ListResourceTemplates/ListPrompts return.
+type DiscoverCapabilities struct {
+	HasTools             bool
+	HasResources         bool
+	HasResourceTemplates bool
+	HasPrompts           bool
+}
+
 // VMCP is the core Virtual MCP domain object.
 //
 // Contract:
@@ -197,11 +208,34 @@ type VMCP interface {
 	// corresponding authorized list would not show.
 	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
 
+	// Discover returns identity's capability-presence flags -- whether it is
+	// admitted to at least one tool, resource, resource template, and prompt --
+	// from a SINGLE aggregation of backend capabilities, for server/discover.
+	//
+	// It applies the exact same admission-filtered code paths
+	// ListTools/ListResources/ListResourceTemplates/ListPrompts use against one
+	// shared aggregated view, so a flag is true iff the ADMISSION-FILTERED set
+	// for that capability is non-empty -- never derived from the raw aggregate,
+	// which would leak capabilities identity cannot reach. This mirrors the
+	// post-admission-summary precedent ListBackends(filterUnauthorized=true)
+	// established, applied to presence flags instead of a backend list. See
+	// ListTools for the nil/anonymous identity semantics.
+	Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error)
+
 	// BackendHealth returns the backend health reporter the core owns, or nil when health
 	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and
 	// filters capabilities with it; the transport layer uses this only to report on or sync
 	// backend health (e.g. the /health route and periodic status reporting).
 	BackendHealth() health.Reporter
+
+	// InvalidateCapabilityCache forces the next List/Lookup/Call on every identity
+	// to re-sweep backend capabilities rather than serve a cached view. Serve's
+	// Server calls it after a backend reports notifications/tools/list_changed
+	// (#5748), before re-deriving the session's advertised tool set — otherwise
+	// the resync would immediately re-read the now-stale cached aggregation. It
+	// is a no-op (WARN-logged, not silent) when the configured Aggregator does
+	// not memoize results — see aggregator.CacheInvalidator.
+	InvalidateCapabilityCache()
 
 	// Close releases core-held resources (backend connections, the health monitor, etc.).
 	// Implementations must be idempotent: calling Close multiple times returns nil.

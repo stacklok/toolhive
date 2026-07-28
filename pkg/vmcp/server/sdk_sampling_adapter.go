@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
@@ -73,6 +74,11 @@ func (a *sdkSamplingAdapter) RequestSampling(
 
 	resp, err := a.mcpServer.RequestSampling(ctx, mcpReq)
 	if err != nil {
+		// Mirror of sdkElicitationAdapter's refusal recording — see the
+		// comment there and modern_capability_refusal.go.
+		if errors.Is(err, server.ErrNoActiveSession) {
+			recordCapabilityRefusal(ctx, capabilitySampling)
+		}
 		return nil, err
 	}
 

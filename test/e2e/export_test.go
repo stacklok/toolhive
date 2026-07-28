@@ -5,7 +5,6 @@ package e2e_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -212,5 +211,5 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 
 // generateExportTestServerName creates a unique server name for export tests
 func generateExportTestServerName(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, GinkgoRandomSeed())
+	return e2e.GenerateUniqueServerName(prefix)
 }

@@ -207,6 +207,12 @@ type RunConfig struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
+	// StrictProtocolValidation enables strict MCP-Protocol-Version validation
+	// on the streamable HTTP proxy: a request whose header names an unknown
+	// MCP revision is rejected with HTTP 400. Default false accepts any
+	// version string (an absent header is always accepted in either mode).
+	StrictProtocolValidation bool `json:"strict_protocol_validation,omitempty" yaml:"strict_protocol_validation,omitempty"`
+
 	// Stateless indicates the server only supports POST (no SSE/GET).
 	// When true, the proxy returns 405 for incoming GET requests and uses a
 	// POST-based health check instead of the default GET probe.

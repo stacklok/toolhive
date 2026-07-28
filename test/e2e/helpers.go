@@ -6,16 +6,21 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
+
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 )
 
 // GenerateUniqueServerName creates a unique server name for tests
@@ -133,7 +138,45 @@ func (c *THVCommand) ExpectFailure() (string, string, error) {
 	return stdout, stderr, err
 }
 
-// WaitForMCPServer waits for an MCP server to be running
+// ServerReadyTimeoutEnv overrides how long specs wait for a freshly started
+// workload to reach the running state.
+const ServerReadyTimeoutEnv = "TOOLHIVE_E2E_SERVER_READY_TIMEOUT"
+
+// defaultServerReadyTimeout is the readiness budget used when
+// ServerReadyTimeoutEnv is unset.
+//
+// Reaching `running` covers more than starting a container: the detached worker
+// also polls the workload's own MCP endpoint until initialize succeeds before it
+// flips the status (pkg/runner.waitForInitializeSuccess, which the product is
+// willing to wait 5 minutes for). Specs that start several workloads at once
+// need a budget well above container-start time, otherwise they fail while the
+// workload is still legitimately starting on a loaded CI runner.
+const defaultServerReadyTimeout = 2 * time.Minute
+
+// ServerReadyTimeout returns the budget a spec should give a freshly started
+// workload to reach the running state. Set ServerReadyTimeoutEnv to any Go
+// duration (e.g. "3m") to raise it on a slow machine.
+func ServerReadyTimeout() time.Duration {
+	raw := os.Getenv(ServerReadyTimeoutEnv)
+	if raw == "" {
+		return defaultServerReadyTimeout
+	}
+
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		Fail(fmt.Sprintf("%s must be a positive Go duration (e.g. \"3m\"), got %q", ServerReadyTimeoutEnv, raw))
+	}
+	return timeout
+}
+
+// WaitForMCPServer waits for an MCP server to be running.
+//
+// The status is read from the named workload's own record in `thv list --all
+// --format json`. Substring-matching the text table instead would accept "this
+// name appears somewhere and some workload is running", which can return while
+// the named workload is still starting. A timeout reports the last status
+// observed and dumps the server state, so a CI log shows whether the workload
+// was still starting, had errored, or never appeared at all.
 func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -141,28 +184,96 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	var lastObserved string
 	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for MCP server %s to be running", serverName)
-		case <-ticker.C:
-			stdout, _, err := NewTHVCommand(config, "list").Run()
-			if err != nil {
-				continue
-			}
-
-			// Check if the server is listed and running
-			if strings.Contains(stdout, serverName) && strings.Contains(stdout, "running") {
-				return nil
+		workload, err := findWorkload(config, serverName)
+		switch {
+		case err != nil:
+			// `thv list` can fail transiently while other workloads are
+			// starting, so keep polling and surface the failure only if the
+			// timeout expires.
+			lastObserved = fmt.Sprintf("thv list failed: %v", err)
+		case workload == nil:
+			lastObserved = "not listed"
+		case workload.Status == rt.WorkloadStatusRunning:
+			return nil
+		default:
+			lastObserved = fmt.Sprintf("status %q", workload.Status)
+			if workload.StatusContext != "" {
+				lastObserved += fmt.Sprintf(" (%s)", workload.StatusContext)
 			}
 		}
+
+		select {
+		case <-ctx.Done():
+			DebugServerState(config, serverName)
+			return fmt.Errorf("timeout waiting for MCP server %s to be running after %v; last observed: %s",
+				serverName, timeout, lastObserved)
+		case <-ticker.C:
+		}
+	}
+}
+
+// ExpectMCPServersRunning waits for each named workload to reach the running
+// state within ServerReadyTimeout, and fails naming the workload that did not.
+//
+// All workloads are polled concurrently so that the total wait is bounded by
+// the slowest workload rather than the sum of all waits.
+func ExpectMCPServersRunning(config *TestConfig, serverNames ...string) {
+	errs := make([]error, len(serverNames))
+	var wg sync.WaitGroup
+	for i, name := range serverNames {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			errs[i] = WaitForMCPServer(config, name, ServerReadyTimeout())
+		}(i, name)
+	}
+	wg.Wait()
+	for i, serverName := range serverNames {
+		ExpectWithOffset(1, errs[i]).ToNot(HaveOccurred(),
+			"workload %s (of %v) should reach the running state", serverName, serverNames)
 	}
 }
 
 // IsServerRunning checks if an MCP server is running
 func IsServerRunning(config *TestConfig, serverName string) bool {
-	stdout, _ := NewTHVCommand(config, "list").ExpectSuccess()
-	return strings.Contains(stdout, serverName) && strings.Contains(stdout, "running")
+	workload, err := findWorkload(config, serverName)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "should be able to list workloads")
+	return workload != nil && workload.Status == rt.WorkloadStatusRunning
+}
+
+// listTimeout bounds a single `thv list` call. It is well above how long a list
+// takes even on a loaded runner, and well below any readiness budget: callers
+// poll, so a list that overruns is retried rather than fatal. Run() would apply
+// TestConfig.TestTimeout instead, letting one hung list outlast the wait it is
+// being polled for.
+const listTimeout = 30 * time.Second
+
+// FindWorkload returns the named workload's record as reported by `thv list`, or
+// nil if it is not listed. newCmd builds each list invocation, so a spec that
+// runs thv under an isolated config/home/data env passes its own builder and
+// observes the workloads created in that state rather than the real config.
+//
+// --all is required so that workloads which have not reached running yet
+// (starting, error) are visible rather than filtered out.
+func FindWorkload(newCmd func(args ...string) *THVCommand, serverName string) (*core.Workload, error) {
+	stdout, stderr, err := newCmd("list", "--all", "--format", "json").RunWithTimeout(listTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("thv list: %w (stderr: %s)", err, strings.TrimSpace(stderr))
+	}
+
+	var workloads []core.Workload
+	if err := json.Unmarshal([]byte(stdout), &workloads); err != nil {
+		return nil, fmt.Errorf("failed to parse thv list output %q: %w", stdout, err)
+	}
+
+	for i := range workloads {
+		if workloads[i].Name == serverName {
+			return &workloads[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // StopAndRemoveMCPServer stops and removes an MCP server
@@ -236,6 +347,18 @@ func DebugServerState(config *TestConfig, serverName string) {
 		GinkgoWriter.Printf("Failed to get logs: %v\n", err)
 	} else {
 		GinkgoWriter.Printf("Server logs:\n%s\n", logs)
+	}
+
+	// The container log alone has repeatedly been useless for readiness
+	// timeouts: a workload stuck in `starting` or flipped to `error` fails
+	// inside the detached supervisor (transport start, readiness probe,
+	// restart loop), whose output goes to the proxy log file — not to the
+	// container. Dump it too so a CI failure names the actual blocker.
+	proxyLogs, stderr, err := NewTHVCommand(config, "logs", serverName, "--proxy").Run()
+	if err != nil {
+		GinkgoWriter.Printf("Failed to get proxy logs: %v\nStderr: %s\n", err, stderr)
+	} else {
+		GinkgoWriter.Printf("Proxy logs:\n%s\n", proxyLogs)
 	}
 
 	GinkgoWriter.Printf("=== End debugging for %s ===\n", serverName)
@@ -354,4 +477,12 @@ func CreateFakeBrowserDir(tempDir string) (string, error) {
 		}
 	}
 	return dir, nil
+}
+
+// findWorkload returns the named workload's record as reported by `thv list`,
+// or nil if it is not listed.
+func findWorkload(config *TestConfig, serverName string) (*core.Workload, error) {
+	return FindWorkload(func(args ...string) *THVCommand {
+		return NewTHVCommand(config, args...)
+	}, serverName)
 }

@@ -38,6 +38,8 @@ The skill command provides subcommands to manage skills.
 * [thv skill install](thv_skill_install.md)	 - Install a skill
 * [thv skill list](thv_skill_list.md)	 - List installed skills
 * [thv skill push](thv_skill_push.md)	 - Push a built skill
+* [thv skill sync](thv_skill_sync.md)	 - Restore project skills to match the lock file (experimental)
 * [thv skill uninstall](thv_skill_uninstall.md)	 - Uninstall a skill
+* [thv skill upgrade](thv_skill_upgrade.md)	 - Upgrade project skills to newer pinned content (experimental)
 * [thv skill validate](thv_skill_validate.md)	 - Validate a skill definition
 

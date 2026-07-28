@@ -15,12 +15,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
-// TestOptimizerFactoryGatedOnAdvertiseFromCore locks in the AC6 double-index
-// guarantee: New surfaces the optimizer factory via OptimizerFactory() ONLY when
-// AdvertiseFromCore is true. That makes the session-factory decorator (installed iff
-// !AdvertiseFromCore) and the Serve-layer getter mutually exclusive store writers, so a
-// Serve composition root that enables the optimizer but forgets the flag gets a nil
-// factory (no Serve-layer optimizer) instead of a silent second upsert into the store.
+// TestOptimizerFactoryGatedOnAdvertiseFromCore locks in the constructor guard
+// behind the AC6 single-writer guarantee and the Modern capability gate's
+// enablement signal: New accepts an optimizer only together with
+// AdvertiseFromCore, so the Serve layer (via OptimizerFactory()) is the sole
+// writer of the shared FTS5 store and a non-nil OptimizerFactory() faithfully
+// means "optimizer enabled" (pkg/vmcp/server/modern_gate.go depends on that).
+// Optimizer-without-flag is rejected at construction instead of silently
+// producing an optimizer that indexes the store but serves nobody.
 func TestOptimizerFactoryGatedOnAdvertiseFromCore(t *testing.T) {
 	t.Parallel()
 
@@ -31,10 +33,9 @@ func TestOptimizerFactoryGatedOnAdvertiseFromCore(t *testing.T) {
 	tests := []struct {
 		name              string
 		advertiseFromCore bool
-		wantSurfaced      bool
 	}{
-		{"surfaced to Serve when advertising from core", true, true},
-		{"not surfaced on the legacy path (decorator owns it)", false, false},
+		{"surfaced to Serve when advertising from core", true},
+		{"rejected at construction without AdvertiseFromCore", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,16 +48,16 @@ func TestOptimizerFactoryGatedOnAdvertiseFromCore(t *testing.T) {
 				OptimizerFactory:  optFactory,
 				AdvertiseFromCore: tc.advertiseFromCore,
 			}, newFakeRegistry())
+
+			if !tc.advertiseFromCore {
+				require.ErrorContains(t, err, "AdvertiseFromCore",
+					"New must reject an optimizer without AdvertiseFromCore at construction")
+				return
+			}
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = cleanup(context.Background()) })
-
-			if tc.wantSurfaced {
-				assert.NotNil(t, sm.OptimizerFactory(),
-					"the factory must be surfaced to the Serve layer when AdvertiseFromCore is set")
-			} else {
-				assert.Nil(t, sm.OptimizerFactory(),
-					"the factory must NOT be surfaced when AdvertiseFromCore is false (decorator owns the store)")
-			}
+			assert.NotNil(t, sm.OptimizerFactory(),
+				"the factory must be surfaced to the Serve layer when AdvertiseFromCore is set")
 		})
 	}
 }

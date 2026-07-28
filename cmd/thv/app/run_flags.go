@@ -102,6 +102,10 @@ type RunFlags struct {
 	// Proxy headers
 	TrustProxyHeaders bool
 
+	// StrictProtocolValidation enables strict MCP-Protocol-Version validation
+	// on the streamable HTTP proxy.
+	StrictProtocolValidation bool
+
 	// Endpoint prefix for SSE endpoint URLs
 	EndpointPrefix string
 
@@ -278,6 +282,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
+	cmd.Flags().BoolVar(&config.StrictProtocolValidation, "strict-protocol-validation", false,
+		"Reject client requests whose MCP-Protocol-Version header is an unknown/unsupported MCP revision with HTTP 400 "+
+			"(streamable-HTTP proxy only; an absent header is accepted). Off by default: any version is accepted.")
 	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
 		"Declare the server as stateless (POST-only, no SSE). "+
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
@@ -690,6 +697,7 @@ func buildRunnerConfig(
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithStrictProtocolValidation(runFlags.StrictProtocolValidation),
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),

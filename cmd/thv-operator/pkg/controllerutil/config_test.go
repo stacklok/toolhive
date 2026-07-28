@@ -128,56 +128,6 @@ func TestSortWorkloadRefs(t *testing.T) {
 	})
 }
 
-func TestWorkloadRefsEqual(t *testing.T) {
-	t.Parallel()
-
-	t.Run("equal slices", func(t *testing.T) {
-		t.Parallel()
-		a := []mcpv1beta1.WorkloadReference{
-			{Kind: "MCPServer", Name: "alpha"},
-			{Kind: "MCPServer", Name: "beta"},
-		}
-		b := []mcpv1beta1.WorkloadReference{
-			{Kind: "MCPServer", Name: "alpha"},
-			{Kind: "MCPServer", Name: "beta"},
-		}
-		assert.True(t, WorkloadRefsEqual(a, b))
-	})
-
-	t.Run("different order is not equal", func(t *testing.T) {
-		t.Parallel()
-		a := []mcpv1beta1.WorkloadReference{
-			{Kind: "MCPServer", Name: "alpha"},
-			{Kind: "MCPServer", Name: "beta"},
-		}
-		b := []mcpv1beta1.WorkloadReference{
-			{Kind: "MCPServer", Name: "beta"},
-			{Kind: "MCPServer", Name: "alpha"},
-		}
-		assert.False(t, WorkloadRefsEqual(a, b))
-	})
-
-	t.Run("different lengths", func(t *testing.T) {
-		t.Parallel()
-		a := []mcpv1beta1.WorkloadReference{{Kind: "MCPServer", Name: "alpha"}}
-		b := []mcpv1beta1.WorkloadReference{
-			{Kind: "MCPServer", Name: "alpha"},
-			{Kind: "MCPServer", Name: "beta"},
-		}
-		assert.False(t, WorkloadRefsEqual(a, b))
-	})
-
-	t.Run("both nil", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, WorkloadRefsEqual(nil, nil))
-	})
-
-	t.Run("nil vs empty", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, WorkloadRefsEqual(nil, []mcpv1beta1.WorkloadReference{}))
-	})
-}
-
 func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 

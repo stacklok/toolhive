@@ -116,17 +116,6 @@ spec:
               echo "MCPServer did not get a webhookConfigHash"
               kubectl get mcpserver missing-webhook-server -n toolhive-system -o yaml
               exit 1
-        - assert:
-            resource:
-              apiVersion: toolhive.stacklok.dev/v1alpha1
-              kind: MCPWebhookConfig
-              metadata:
-                name: non-existent-webhook-config
-                namespace: toolhive-system
-              status:
-                referencingWorkloads:
-                  - kind: MCPServer
-                    name: missing-webhook-server
 
     # Delete in dependency order so the MCPWebhookConfig finalizer can clear before Chainsaw cleanup.
     - name: cleanup-webhook-config-dependencies

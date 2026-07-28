@@ -63,10 +63,24 @@ ToolHive's telemetry has been updated across four areas:
 
 ## Backward Compatibility
 
-### The `useLegacyAttributes` Flag
+Span attributes and metrics follow different backward-compatibility policies —
+the migration is not dual-emitted uniformly across both signal types:
 
-To avoid breaking existing dashboards and alerts, ToolHive uses a **dual
-emission** strategy:
+| Signal | Policy |
+|--------|--------|
+| Span (trace) attributes | Dual-emitted behind `useLegacyAttributes`, see below |
+| Metric names and labels | Hard cutover, no legacy fallback — see [Metric Name and Label Mapping](#metric-name-and-label-mapping) |
+
+Span attributes get a compatibility window because they are additive
+key-value pairs on a span already being emitted — carrying both names costs
+a few extra bytes per span, and trace tooling often has saved queries
+hard-coded to the old attribute keys. Metrics don't get one: maintaining a
+full parallel metric family (separate series, separate cardinality, separate
+storage) is not free, and the RFC accepted the one-time break as cheaper
+than the ongoing cost of running two metric vocabularies side by side (see
+[Deleted Legacy Metrics](#deleted-legacy-metrics)).
+
+### The `useLegacyAttributes` Flag
 
 | Setting | Behavior |
 |---------|----------|

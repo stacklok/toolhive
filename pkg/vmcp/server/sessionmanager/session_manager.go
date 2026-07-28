@@ -161,7 +161,7 @@ func New(
 		},
 	)
 
-	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, sm.Terminate)
+	sm.factory = vmcpsession.NewDecoratingFactory(cfg.Base)
 
 	cleanup := func(ctx context.Context) error {
 		return optimizerCleanup(ctx)

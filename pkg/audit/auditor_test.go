@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 )
@@ -571,13 +572,13 @@ func TestExtractSubjects(t *testing.T) {
 		}
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		parsed := coreaudit.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
 		identity := &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject:         claims["sub"].(string),
 				Name:            claims["name"].(string),
 				Claims:          claims,
-				DelegationChain: &parsed,
+				DelegationChain: parsed,
 			},
 		}
 		ctx := auth.WithIdentity(req.Context(), identity)
@@ -589,10 +590,10 @@ func TestExtractSubjects(t *testing.T) {
 
 		chain := auditor.extractDelegationChain(req)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, 2)
+		require.Len(t, chain.Chain, 2)
 		assert.False(t, chain.Truncated)
-		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
-		assert.Equal(t, "agent-2", chain.Actors[1].Subject)
+		assert.Equal(t, "agent-1", chain.Chain[0].Subject)
+		assert.Equal(t, "agent-2", chain.Chain[1].Subject)
 	})
 
 	t.Run("delegation chain respects configured max depth", func(t *testing.T) {
@@ -610,22 +611,22 @@ func TestExtractSubjects(t *testing.T) {
 		}
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		parsed := coreaudit.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
 		identity := &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject:         "user123",
 				Claims:          claims,
-				DelegationChain: &parsed,
+				DelegationChain: parsed,
 			},
 		}
 		req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 		chain := depthAuditor.extractDelegationChain(req)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, 1, "chain must be capped at the configured max depth")
-		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		require.Len(t, chain.Chain, 1, "chain must be capped at the configured max depth")
+		assert.Equal(t, "agent-1", chain.Chain[0].Subject)
 		assert.True(t, chain.Truncated, "dropped trailing actors must mark the chain truncated")
-		assert.Equal(t, 1, chain.DroppedCount, "one dropped actor must be reported")
+		assert.Equal(t, 1, chain.Omitted, "one dropped actor must be reported")
 	})
 
 	t.Run("delegation chain widens through configured max depth", func(t *testing.T) {
@@ -648,19 +649,19 @@ func TestExtractSubjects(t *testing.T) {
 		// Shaped like what auth.claimsToIdentity produces for a 14-hop token:
 		// the identity-layer parse caps at auth.DefaultMaxDelegationDepth (10),
 		// truncating the chain even though the raw "act" claim has all 14 hops.
-		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		parsed := coreaudit.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
 		identity := &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject:         "user123",
 				Claims:          claims,
-				DelegationChain: &parsed,
+				DelegationChain: parsed,
 			},
 		}
 		req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 		chain := depthAuditor.extractDelegationChain(req)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, len(subs), "configured depth must recover actors dropped by the identity-layer parse")
+		require.Len(t, chain.Chain, len(subs), "configured depth must recover actors dropped by the identity-layer parse")
 		assert.False(t, chain.Truncated)
 	})
 
@@ -691,8 +692,8 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		identity := &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject: "user123",
-				DelegationChain: &auth.DelegationChain{
-					Actors: []auth.DelegatedActor{
+				DelegationChain: &coreaudit.DelegationChain{
+					Chain: []coreaudit.DelegatedActor{
 						{Subject: "agent-1"},
 						{Subject: "agent-2"},
 					},
@@ -701,10 +702,10 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		}
 		chain := extractDelegationChainFromIdentity(identity, 1)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, 1, "the parsed chain must be capped at maxDepth")
-		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		require.Len(t, chain.Chain, 1, "the parsed chain must be capped at maxDepth")
+		assert.Equal(t, "agent-1", chain.Chain[0].Subject)
 		assert.True(t, chain.Truncated)
-		assert.Equal(t, 1, chain.DroppedCount)
+		assert.Equal(t, 1, chain.Omitted)
 	})
 
 	t.Run("raw act claim without parsed chain is parsed with max depth", func(t *testing.T) {
@@ -722,10 +723,10 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		}
 		chain := extractDelegationChainFromIdentity(identity, 1)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, 1, "the raw act claim must be parsed with the depth cap")
-		assert.Equal(t, "agent-1", chain.Actors[0].Subject)
+		require.Len(t, chain.Chain, 1, "the raw act claim must be parsed with the depth cap")
+		assert.Equal(t, "agent-1", chain.Chain[0].Subject)
 		assert.True(t, chain.Truncated)
-		assert.Equal(t, 1, chain.DroppedCount)
+		assert.Equal(t, 1, chain.Omitted)
 	})
 
 	t.Run("no chain and no act claim yields nil", func(t *testing.T) {
@@ -743,7 +744,7 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		t.Parallel()
 		// No pre-parsed DelegationChain, so the ONLY path that can produce a
 		// result is the raw-act re-parse guard
-		// (auth.ParseDelegationChain(rawAct, maxDepth)); the trailing
+		// (coreaudit.ParseDelegationChain(rawAct, maxDepth)); the trailing
 		// "chain != nil" branch is unreachable here (chain is nil), so this
 		// isolates the re-parse guard's own Malformed handling.
 		identity := &auth.Identity{
@@ -753,9 +754,9 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 			},
 		}
 		chain := extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth)
-		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface, not be swallowed by the len(Actors) > 0 guards")
+		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface, not be swallowed by the zero-chain guards")
 		assert.True(t, chain.Malformed)
-		assert.Empty(t, chain.Actors)
+		assert.Empty(t, chain.Chain)
 	})
 
 	t.Run("malformed act with zero actors is not discarded (trailing raw-claim branch)", func(t *testing.T) {
@@ -768,7 +769,7 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		identity := &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject: "user123",
-				DelegationChain: &auth.DelegationChain{
+				DelegationChain: &coreaudit.DelegationChain{
 					Malformed: true,
 				},
 			},
@@ -776,7 +777,7 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		chain := extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth)
 		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface via the trailing rebind branch")
 		assert.True(t, chain.Malformed)
-		assert.Empty(t, chain.Actors)
+		assert.Empty(t, chain.Chain)
 	})
 
 	// The following two cases share an identity shaped exactly like what
@@ -790,17 +791,17 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		"agent-11", "agent-12", "agent-13", "agent-14",
 	}
 	truncatedIdentity := func() *auth.Identity {
-		actors := make([]auth.DelegatedActor, auth.DefaultMaxDelegationDepth)
+		actors := make([]coreaudit.DelegatedActor, auth.DefaultMaxDelegationDepth)
 		for i := range actors {
-			actors[i] = auth.DelegatedActor{Subject: subs[i]}
+			actors[i] = coreaudit.DelegatedActor{Subject: subs[i]}
 		}
 		return &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject: "user123",
-				DelegationChain: &auth.DelegationChain{
-					Actors:       actors,
-					Truncated:    true,
-					DroppedCount: len(subs) - auth.DefaultMaxDelegationDepth,
+				DelegationChain: &coreaudit.DelegationChain{
+					Chain:     actors,
+					Truncated: true,
+					Omitted:   len(subs) - auth.DefaultMaxDelegationDepth,
 				},
 				Claims: map[string]any{"act": nestedActClaim(subs...)},
 			},
@@ -811,22 +812,22 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		t.Parallel()
 		chain := extractDelegationChainFromIdentity(truncatedIdentity(), 25)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, len(subs))
+		require.Len(t, chain.Chain, len(subs))
 		assert.False(t, chain.Truncated)
-		assert.Zero(t, chain.DroppedCount)
-		assert.Equal(t, subs[0], chain.Actors[0].Subject)
-		assert.Equal(t, subs[len(subs)-1], chain.Actors[len(subs)-1].Subject)
+		assert.Zero(t, chain.Omitted)
+		assert.Equal(t, subs[0], chain.Chain[0].Subject)
+		assert.Equal(t, subs[len(subs)-1], chain.Chain[len(subs)-1].Subject)
 	})
 
 	t.Run("configured depth narrower than identity-layer parse still rebinds", func(t *testing.T) {
 		t.Parallel()
 		chain := extractDelegationChainFromIdentity(truncatedIdentity(), 3)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, 3)
+		require.Len(t, chain.Chain, 3)
 		assert.True(t, chain.Truncated)
 		// 4 actors already dropped by the identity-layer parse (14 - 10),
 		// plus 7 more dropped by the narrower rebind (10 - 3).
-		assert.Equal(t, 11, chain.DroppedCount)
+		assert.Equal(t, 11, chain.Omitted)
 	})
 
 	t.Run("truncated chain without raw act claim falls back to rebind", func(t *testing.T) {
@@ -836,14 +837,14 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 
 		chain := extractDelegationChainFromIdentity(identity, 25)
 		require.NotNil(t, chain)
-		require.Len(t, chain.Actors, auth.DefaultMaxDelegationDepth)
+		require.Len(t, chain.Chain, auth.DefaultMaxDelegationDepth)
 		assert.True(t, chain.Truncated, "without the raw claim, the identity-layer truncation cannot be recovered")
-		assert.Equal(t, 4, chain.DroppedCount)
+		assert.Equal(t, 4, chain.Omitted)
 	})
 }
 
 // nestedActClaim builds a raw RFC 8693 "act" claim nesting subs in order,
-// outermost first, matching the shape auth.ParseDelegationChain expects.
+// outermost first, matching the shape coreaudit.ParseDelegationChain expects.
 func nestedActClaim(subs ...string) map[string]any {
 	var current map[string]any
 	for i := len(subs) - 1; i >= 0; i-- {
@@ -1460,36 +1461,36 @@ func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
 	})
 }
 
-// TestLogAuditEventDelegationChain pins the emitted delegation_chain shape on
-// the primary logAuditEvent path (every ordinary POST). The SSE path already
-// has an equivalent pin (see "delegated token stream open carries the
-// delegation chain" in TestStreamOpenAuditEvents) and workflow auditing has
-// its own (workflow_auditor_test.go), but logAuditEvent had none, so a
-// pkg/audit regression here was only ever caught by running pkg/authserver's
-// suite. What this test uniquely pins beyond those two siblings is that the
-// POST path honours Config.MaxDelegationDepth via
+// TestLogAuditEventDelegationChain pins the emitted delegation shape on the
+// primary logAuditEvent path (every ordinary POST). The SSE path already has
+// an equivalent pin (see "delegated token stream open carries the delegation
+// chain" in TestStreamOpenAuditEvents) and workflow auditing has its own
+// (workflow_auditor_test.go), but logAuditEvent had none, so a pkg/audit
+// regression here was only ever caught by running pkg/authserver's suite.
+// What this test uniquely pins beyond those two siblings is that the POST
+// path honours Config.MaxDelegationDepth via
 // Config.MaxDelegationDepthOrDefault at this specific call site.
 func TestLogAuditEventDelegationChain(t *testing.T) {
 	t.Parallel()
 
-	// twoHopIdentity builds an auth.Identity carrying a hand-built two-actor
+	// twoHopIdentity builds an auth.Identity carrying a hand-built two-hop
 	// RFC 8693 chain, outermost (most recent) first: agent-2 delegated from
-	// agent-1, with agent-1's act claim also carrying an extra "iss" member to
-	// pin the documented act_claims shape.
+	// agent-1, with agent-1 also carrying its issuer to pin the promoted
+	// per-hop "iss" field.
 	twoHopIdentity := func() *auth.Identity {
 		act := map[string]any{
 			"sub": "agent-2",
 			"act": map[string]any{"sub": "agent-1", "iss": "https://issuer.example"},
 		}
-		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		chain := coreaudit.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
 		return &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 			Subject:         "user-123",
 			Claims:          map[string]any{"act": act},
-			DelegationChain: &chain,
+			DelegationChain: chain,
 		}}
 	}
 
-	t.Run("full documented shape: two actors, one carrying act_claims", func(t *testing.T) {
+	t.Run("full documented shape: two hops, one carrying iss", func(t *testing.T) {
 		t.Parallel()
 		auditor, logBuf := newBufferAuditor(t)
 		identity := twoHopIdentity()
@@ -1503,28 +1504,30 @@ func TestLogAuditEventDelegationChain(t *testing.T) {
 		events := decodeAuditEvents(t, logBuf)
 		require.Len(t, events, 1)
 
-		chain, ok := events[0]["delegation_chain"].(map[string]any)
+		chain, ok := events[0]["delegation"].(map[string]any)
 		require.True(t, ok, "the POST/logAuditEvent path must carry the delegation chain")
 		assert.Equal(t, false, chain["truncated"])
-		_, hasDropped := chain["dropped_count"]
-		assert.False(t, hasDropped, "dropped_count must be omitted when nothing was dropped")
+		assert.Equal(t, float64(0), chain["omitted"],
+			"omitted has no omitempty: it must be present and zero when nothing was dropped")
+		assert.Equal(t, false, chain["malformed"])
+		_, hasReason := chain["malformedReason"]
+		assert.False(t, hasReason, "malformedReason must be omitted on a well-formed chain")
 
-		actors, ok := chain["actors"].([]any)
-		require.True(t, ok, "actors should be an array")
-		require.Len(t, actors, 2)
+		hops, ok := chain["chain"].([]any)
+		require.True(t, ok, "chain should be an array")
+		require.Len(t, hops, 2)
 
-		outer, ok := actors[0].(map[string]any)
+		outer, ok := hops[0].(map[string]any)
 		require.True(t, ok)
-		assert.Equal(t, "agent-2", outer["sub"], "actors[0] must be the outermost/most recent actor")
-		_, hasClaims := outer["act_claims"]
-		assert.False(t, hasClaims, "the outer actor here carries no extra act members")
+		assert.Equal(t, "agent-2", outer["sub"], "chain[0] must be the outermost/most recent actor")
+		_, hasIss := outer["iss"]
+		assert.False(t, hasIss, "the outer hop here carries no issuer")
 
-		inner, ok := actors[1].(map[string]any)
+		inner, ok := hops[1].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "agent-1", inner["sub"])
-		actClaims, ok := inner["act_claims"].(map[string]any)
-		require.True(t, ok, "the documented act_claims member must surface extra act-claim data")
-		assert.Equal(t, "https://issuer.example", actClaims["iss"])
+		assert.Equal(t, "https://issuer.example", inner["iss"],
+			"a hop's issuer must surface as the promoted per-hop iss field")
 	})
 
 	t.Run("MaxDelegationDepth truncates the chain and keeps the outermost actor", func(t *testing.T) {
@@ -1542,18 +1545,18 @@ func TestLogAuditEventDelegationChain(t *testing.T) {
 		events := decodeAuditEvents(t, logBuf)
 		require.Len(t, events, 1)
 
-		chain, ok := events[0]["delegation_chain"].(map[string]any)
+		chain, ok := events[0]["delegation"].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, true, chain["truncated"])
-		assert.Equal(t, float64(1), chain["dropped_count"],
-			"one of the two actors must be reported dropped")
+		assert.Equal(t, float64(1), chain["omitted"],
+			"one of the two hops must be reported omitted")
 
-		actors, ok := chain["actors"].([]any)
+		hops, ok := chain["chain"].([]any)
 		require.True(t, ok)
-		require.Len(t, actors, 1, "MaxDelegationDepth=1 must leave exactly one surviving actor")
-		surviving, ok := actors[0].(map[string]any)
+		require.Len(t, hops, 1, "MaxDelegationDepth=1 must leave exactly one surviving hop")
+		surviving, ok := hops[0].(map[string]any)
 		require.True(t, ok)
-		assert.Equal(t, "agent-2", surviving["sub"], "the surviving actor must be the outermost one")
+		assert.Equal(t, "agent-2", surviving["sub"], "the surviving hop must be the outermost one")
 	})
 
 	t.Run("plain identity omits the delegation chain", func(t *testing.T) {
@@ -1570,20 +1573,20 @@ func TestLogAuditEventDelegationChain(t *testing.T) {
 		events := decodeAuditEvents(t, logBuf)
 		require.Len(t, events, 1)
 
-		_, exists := events[0]["delegation_chain"]
+		_, exists := events[0]["delegation"]
 		assert.False(t, exists,
-			"a non-delegated identity must not produce a delegation_chain member on the POST path")
+			"a non-delegated identity must not produce a delegation member on the POST path")
 	})
 
-	t.Run("malformed act claim is pinned as malformed:true with zero actors", func(t *testing.T) {
+	t.Run("malformed act claim is pinned as malformed:true with an empty chain", func(t *testing.T) {
 		t.Parallel()
 		auditor, logBuf := newBufferAuditor(t)
 		act := "not-an-object"
-		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		chain := coreaudit.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
 		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 			Subject:         "user-123",
 			Claims:          map[string]any{"act": act},
-			DelegationChain: &chain,
+			DelegationChain: chain,
 		}}
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1595,12 +1598,13 @@ func TestLogAuditEventDelegationChain(t *testing.T) {
 		events := decodeAuditEvents(t, logBuf)
 		require.Len(t, events, 1)
 
-		logged, ok := events[0]["delegation_chain"].(map[string]any)
-		require.True(t, ok, "a malformed act claim must still produce a delegation_chain member")
+		logged, ok := events[0]["delegation"].(map[string]any)
+		require.True(t, ok, "a malformed act claim must still produce a delegation member")
 		assert.Equal(t, true, logged["malformed"])
-		actors, ok := logged["actors"].([]any)
-		require.True(t, ok, "actors must marshal as a JSON array, not null")
-		assert.Len(t, actors, 0)
+		assert.Equal(t, string(coreaudit.MalformedReasonActNotObject), logged["malformedReason"])
+		hops, ok := logged["chain"].([]any)
+		require.True(t, ok, "chain must marshal as a JSON array, not null")
+		assert.Len(t, hops, 0)
 	})
 }
 
@@ -1719,12 +1723,12 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 			"sub": "agent-1",
 			"act": map[string]any{"sub": "agent-2"},
 		}
-		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		chain := coreaudit.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
 		delegated := &auth.Identity{
 			PrincipalInfo: auth.PrincipalInfo{
 				Subject:         "user-123",
 				Claims:          map[string]any{"act": act},
-				DelegationChain: &chain,
+				DelegationChain: chain,
 			},
 		}
 
@@ -1743,16 +1747,16 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 		require.Len(t, events, 1)
 		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
 
-		logged, ok := events[0]["delegation_chain"].(map[string]any)
+		logged, ok := events[0]["delegation"].(map[string]any)
 		require.True(t, ok, "the SSE connection event must carry the delegation chain")
 		assert.Equal(t, false, logged["truncated"])
-		actors, ok := logged["actors"].([]any)
+		hops, ok := logged["chain"].([]any)
 		require.True(t, ok)
-		require.Len(t, actors, 2)
-		first, ok := actors[0].(map[string]any)
+		require.Len(t, hops, 2)
+		first, ok := hops[0].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "agent-1", first["sub"])
-		second, ok := actors[1].(map[string]any)
+		second, ok := hops[1].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "agent-2", second["sub"])
 	})
@@ -1782,8 +1786,8 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "user-123", subjects[SubjectKeyUserID], "the identity must have landed")
 
-		_, exists := events[0]["delegation_chain"]
+		_, exists := events[0]["delegation"]
 		assert.False(t, exists,
-			"an authenticated non-delegated identity must not produce a delegation_chain member on the stream-open path")
+			"an authenticated non-delegated identity must not produce a delegation member on the stream-open path")
 	})
 }

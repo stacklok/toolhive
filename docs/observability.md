@@ -293,7 +293,7 @@ and VirtualMCPServer. Prometheus appends `_total` to counter names. The latency
 histogram is exported with the `_seconds` unit suffix and the standard
 `_bucket`, `_sum`, and `_count` series suffixes.
 
-#### `toolhive_rate_limit_decisions` (Counter)
+#### `stacklok.toolhive.ratelimit.decisions` (Counter)
 
 Total number of rate limit bucket decisions. An allowed request increments once
 for every applicable bucket. A rejected request increments only for the first
@@ -308,7 +308,7 @@ do not increment this counter.
 | `scope` | string | `"shared"` or `"per_user"` |
 | `operation_type` | string | `"server"` or `"tool"` |
 
-#### `toolhive_rate_limit_redis_errors` (Counter)
+#### `stacklok.toolhive.ratelimit.redis_errors` (Counter)
 
 Total number of Redis errors encountered while checking rate limits.
 
@@ -318,7 +318,7 @@ Total number of Redis errors encountered while checking rate limits.
 | `mcp_server` | string | MCPServer or VirtualMCPServer name |
 | `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
 
-#### `toolhive_rate_limit_check_latency` (Histogram, seconds)
+#### `stacklok.toolhive.ratelimit.check_latency` (Histogram, seconds)
 
 Duration of each attempted atomic Redis Lua rate limit check, including failed
 checks.

@@ -58,7 +58,7 @@ func newRateLimitTelemetry(
 	meter := meterProvider.Meter(rateLimitInstrumentationName)
 
 	decisions, err := meter.Int64Counter(
-		"toolhive_rate_limit_decisions",
+		"stacklok.toolhive.ratelimit.decisions",
 		metric.WithDescription("Total number of rate limit bucket decisions"),
 	)
 	if err != nil {
@@ -66,7 +66,7 @@ func newRateLimitTelemetry(
 	}
 
 	redisErrors, err := meter.Int64Counter(
-		"toolhive_rate_limit_redis_errors",
+		"stacklok.toolhive.ratelimit.redis_errors",
 		metric.WithDescription("Total number of Redis errors during rate limit checks"),
 	)
 	if err != nil {
@@ -74,7 +74,7 @@ func newRateLimitTelemetry(
 	}
 
 	checkLatency, err := meter.Float64Histogram(
-		"toolhive_rate_limit_check_latency",
+		"stacklok.toolhive.ratelimit.check_latency",
 		metric.WithDescription("Duration of Redis Lua rate limit checks in seconds"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),

@@ -233,21 +233,21 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 			if scrapeErr != nil {
 				return scrapeErr
 			}
-			if !rateLimitCounterIsNonZero(metricFamilies, "toolhive_rate_limit_decisions", map[string]string{
+			if !rateLimitCounterIsNonZero(metricFamilies, "stacklok_toolhive_ratelimit_decisions", map[string]string{
 				"decision":       "allowed",
 				"scope":          "per_user",
 				"operation_type": "server",
 			}) {
 				return fmt.Errorf("allowed rate limit decision counter is zero")
 			}
-			if !rateLimitCounterIsNonZero(metricFamilies, "toolhive_rate_limit_decisions", map[string]string{
+			if !rateLimitCounterIsNonZero(metricFamilies, "stacklok_toolhive_ratelimit_decisions", map[string]string{
 				"decision":       "rejected",
 				"scope":          "per_user",
 				"operation_type": "server",
 			}) {
 				return fmt.Errorf("rejected rate limit decision counter is zero")
 			}
-			if !rateLimitHistogramIsNonZero(metricFamilies, "toolhive_rate_limit_check_latency") {
+			if !rateLimitHistogramIsNonZero(metricFamilies, "stacklok_toolhive_ratelimit_check_latency") {
 				return fmt.Errorf("rate limit check latency histogram is empty")
 			}
 			return nil

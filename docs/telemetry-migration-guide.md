@@ -283,6 +283,9 @@ regardless of that flag's setting.
 | `tool` (label, deleted `toolhive_mcp_tool_calls`) | `gen_ai.tool.name` (`gen_ai_tool_name`) | New attribute on `mcp.server.operation.duration`; **not** `tool_name` — that label is used only by the unrelated vMCP optimizer `call_tool` metrics (see [vMCP Backend Client Attributes](#vmcp-backend-client-attributes)) |
 | `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | |
 | `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | Renamed, not deleted |
+| `toolhive_rate_limit_decisions` | `stacklok.toolhive.ratelimit.decisions` | Renamed, not deleted |
+| `toolhive_rate_limit_redis_errors` | `stacklok.toolhive.ratelimit.redis_errors` | Renamed, not deleted |
+| `toolhive_rate_limit_check_latency` | `stacklok.toolhive.ratelimit.check_latency` | Renamed, not deleted |
 | `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | Now split by `outcome` label instead of a separate errors counter |
 | `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | Merged into the executions counter above, not a standalone metric |
 | `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | |

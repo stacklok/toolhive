@@ -51,7 +51,7 @@ func TestRateLimitMetrics_SharedDecisionsAndLatency(t *testing.T) {
 	require.False(t, second.Allowed)
 
 	metrics := collectRateLimitMetrics(t, reader)
-	decisions := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
+	decisions := requireRateLimitMetric(t, metrics, "stacklok.toolhive.ratelimit.decisions")
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
 		"mcp_server":     "test-server",
@@ -74,7 +74,7 @@ func TestRateLimitMetrics_SharedDecisionsAndLatency(t *testing.T) {
 		"operation_type": rateLimitOperationTool,
 	}))
 
-	latency := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_check_latency")
+	latency := requireRateLimitMetric(t, metrics, "stacklok.toolhive.ratelimit.check_latency")
 	assert.Equal(t, uint64(2), histogramCountWithAttributes(t, latency, map[string]string{
 		"namespace":  "test-ns",
 		"mcp_server": "test-server",
@@ -112,7 +112,7 @@ func TestRateLimitMetrics_PerUserDecisions(t *testing.T) {
 	require.False(t, second.Allowed)
 
 	metrics := collectRateLimitMetrics(t, reader)
-	decisions := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
+	decisions := requireRateLimitMetric(t, metrics, "stacklok.toolhive.ratelimit.decisions")
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
 		"namespace":      "test-ns",
 		"mcp_server":     "test-server",
@@ -154,19 +154,19 @@ func TestRateLimitMetrics_RedisErrorAndFailedLatency(t *testing.T) {
 	require.Error(t, err)
 
 	metrics := collectRateLimitMetrics(t, reader)
-	redisErrors := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_redis_errors")
+	redisErrors := requireRateLimitMetric(t, metrics, "stacklok.toolhive.ratelimit.redis_errors")
 	assert.Equal(t, int64(1), counterValueWithAttributes(t, redisErrors, map[string]string{
 		"namespace":  "test-ns",
 		"mcp_server": "test-server",
 		"error_type": redisErrorTypeConnection,
 	}))
 
-	latency := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_check_latency")
+	latency := requireRateLimitMetric(t, metrics, "stacklok.toolhive.ratelimit.check_latency")
 	assert.Equal(t, uint64(1), histogramCountWithAttributes(t, latency, map[string]string{
 		"namespace":  "test-ns",
 		"mcp_server": "test-server",
 	}))
-	assert.Nil(t, findRateLimitMetric(metrics, "toolhive_rate_limit_decisions"))
+	assert.Nil(t, findRateLimitMetric(metrics, "stacklok.toolhive.ratelimit.decisions"))
 }
 
 func TestRateLimitMetrics_NoApplicableBucketRecordsNothing(t *testing.T) {
@@ -250,7 +250,7 @@ func TestClassifyRedisError(t *testing.T) {
 	}
 }
 
-func TestRateLimitMetricNamesUseToolHivePrefix(t *testing.T) {
+func TestRateLimitMetricNamesUseStacklokPrefix(t *testing.T) {
 	t.Parallel()
 	reader, meterProvider := newRateLimitMeterProvider()
 
@@ -267,7 +267,7 @@ func TestRateLimitMetricNamesUseToolHivePrefix(t *testing.T) {
 	require.NotEmpty(t, metrics.ScopeMetrics)
 	for _, scopeMetrics := range metrics.ScopeMetrics {
 		for _, measured := range scopeMetrics.Metrics {
-			assert.True(t, strings.HasPrefix(measured.Name, "toolhive_"), measured.Name)
+			assert.True(t, strings.HasPrefix(measured.Name, "stacklok.toolhive.ratelimit."), measured.Name)
 		}
 	}
 }

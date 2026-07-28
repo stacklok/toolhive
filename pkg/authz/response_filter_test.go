@@ -6,6 +6,7 @@ package authz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1365,4 +1366,85 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestErrorResponseBody pins the wire shape of the JSON-RPC error envelope
+// errorResponseBody produces for a filter/encode failure: a "2.0" jsonrpc tag,
+// the standard internal-error code, a generic message that must NOT echo the
+// wrapped error (it can name tools the caller is not authorized to see, so
+// #6066 and security.md forbid forwarding it), and an id that round-trips for
+// a real request id but is entirely ABSENT (not present and null) for the
+// zero-value id. Absence matters because MCP types the
+// error response id as optional (id?: RequestId), and the reference
+// TypeScript SDK's strict schema admits undefined but not null — a null id
+// would make that client throw inside its transport.
+func TestErrorResponseBody(t *testing.T) {
+	t.Parallel()
+
+	wrapped := errors.New("leaky-tool-name-sentinel")
+
+	testCases := []struct {
+		name   string
+		id     jsonrpc2.ID
+		wantID any // nil means the id key must be absent
+	}{
+		{name: "int64 id round-trips", id: jsonrpc2.Int64ID(7), wantID: float64(7)},
+		{name: "string id round-trips", id: jsonrpc2.StringID("abc"), wantID: "abc"},
+		{name: "zero-value id key is absent, not null", id: jsonrpc2.ID{}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, nil, nil, string(mcp.MethodToolsList), nil, nil)
+			body := rfw.errorResponseBody(tc.id, wrapped)
+
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(body, &decoded))
+
+			assert.Equal(t, "2.0", decoded["jsonrpc"])
+
+			errObj, ok := decoded["error"].(map[string]any)
+			require.True(t, ok, "error field must decode as an object")
+			assert.Equal(t, float64(mcpparser.CodeInternalError), errObj["code"])
+			assert.Equal(t, "internal error", errObj["message"],
+				"the client-visible message must be generic")
+			assert.NotContains(t, string(body), wrapped.Error(),
+				"the wrapped error must never reach the client: it can name tools the caller cannot see")
+
+			idValue, hasID := decoded["id"]
+			require.Equal(t, tc.wantID != nil, hasID, "id key presence mismatch")
+			if tc.wantID != nil {
+				assert.Equal(t, tc.wantID, idValue)
+			}
+		})
+	}
+}
+
+// TestWriteSSEErrorLine pins the two invariants writeSSEErrorLine must hold
+// on the text/event-stream path (issue #6037): the written line is exactly
+// "data: " followed by the same envelope errorResponseBody produces, with no
+// trailing terminator (the caller, processSSEResponse, owns the separator —
+// a hardcoded one here would desync a \r\n stream), and the status code is
+// left untouched, since headers are already committed by the time an SSE
+// frame fails mid-stream.
+func TestWriteSSEErrorLine(t *testing.T) {
+	t.Parallel()
+
+	// writeSSEErrorLine only reads rfw.ResponseWriter; the authorizer, request,
+	// and Content-Type are irrelevant on this path, so nils are safe here.
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, nil, nil, string(mcp.MethodToolsList), nil, nil)
+
+	id := jsonrpc2.Int64ID(9)
+	wrapped := errors.New("boom")
+	require.NoError(t, rfw.writeSSEErrorLine(id, wrapped))
+
+	want := "data: " + string(rfw.errorResponseBody(id, wrapped))
+	assert.Equal(t, want, rr.Body.String(),
+		"writeSSEErrorLine must write exactly the data-prefixed envelope, nothing else")
+	assert.Equal(t, http.StatusOK, rr.Code,
+		"writeSSEErrorLine must not set a non-200 status; the SSE headers are already committed by the time it runs")
 }

@@ -184,12 +184,7 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 		return werr
 	}
 
-	filteredResponse, err := rfw.filterListResponse(response)
-	if err != nil {
-		return rfw.writeErrorResponse(response.ID, err)
-	}
-
-	filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
+	filteredData, err := rfw.filterAndEncode(response)
 	if err != nil {
 		return rfw.writeErrorResponse(response.ID, err)
 	}
@@ -197,6 +192,15 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 	rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 	_, err = rfw.ResponseWriter.Write(filteredData)
 	return err
+}
+
+// filterAndEncode filters a Response and encodes the result for the wire.
+func (rfw *ResponseFilteringWriter) filterAndEncode(response *jsonrpc2.Response) ([]byte, error) {
+	filteredResponse, err := rfw.filterListResponse(response)
+	if err != nil {
+		return nil, err
+	}
+	return jsonrpc2.EncodeMessage(filteredResponse)
 }
 
 func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error {
@@ -227,8 +231,8 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 		var written bool
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			w, stop, err := rfw.writeSSEDataLine(data)
-			if stop {
+			w, err := rfw.writeSSEDataLine(data)
+			if err != nil {
 				return err
 			}
 			written = w
@@ -249,7 +253,9 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	}
 
 	// This ensures we don't send too few line separators, which might break
-	// SSE parsing.
+	// SSE parsing. Note it writes at most one separator back, however many
+	// were dropped — see writeSSEErrorLine's doc comment for the multi-event
+	// case that leaves mis-framed.
 	if linesepCount < linesepTotal {
 		_, err := rfw.ResponseWriter.Write(linesep)
 		if err != nil {
@@ -262,28 +268,30 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 // writeSSEDataLine classifies a single SSE `data:` payload and writes the
 // filtered response when it is a clean Response. written reports whether the
-// caller should skip the raw passthrough for this line. stop reports that
-// processSSEResponse should return err immediately (an error response has
-// already been written on the filter/encode error paths).
-func (rfw *ResponseFilteringWriter) writeSSEDataLine(data []byte) (written, stop bool, err error) {
+// caller should skip the raw passthrough for this line. A non-nil err means a
+// transport write failed and processSSEResponse should abort; a filtering or
+// encoding failure is instead written as a substitute error `data:` line via
+// writeSSEErrorLine and does not stop processing of the remaining frames. The
+// substitute line is reported as written so the caller skips the raw
+// passthrough: emitting the unfiltered frame after a failed filter would leak
+// the list this filter exists to scrub (#5257).
+func (rfw *ResponseFilteringWriter) writeSSEDataLine(data []byte) (written bool, err error) {
 	message, decodeErr := jsonrpc2.DecodeMessage(data)
 	response, isResponse := message.(*jsonrpc2.Response)
 	switch {
 	case isResponse:
-		filteredResponse, ferr := rfw.filterListResponse(response)
+		filteredData, ferr := rfw.filterAndEncode(response)
 		if ferr != nil {
-			return false, true, rfw.writeErrorResponse(response.ID, ferr)
-		}
-		filteredData, ferr := jsonrpc2.EncodeMessage(filteredResponse)
-		if ferr != nil {
-			return false, true, rfw.writeErrorResponse(response.ID, ferr)
+			slog.Warn("failed to filter/encode SSE response; emitting a JSON-RPC error in place of the frame",
+				"method", rfw.method, "error", ferr)
+			return true, rfw.writeSSEErrorLine(response.ID, ferr)
 		}
 		// The caller writes linesep after this line, so do not append a
 		// terminator here. A hardcoded "\n" desyncs \r\n streams.
 		if _, werr := rfw.ResponseWriter.Write([]byte("data: " + string(filteredData))); werr != nil {
-			return false, true, fmt.Errorf("%w: %w", errBug, werr)
+			return false, fmt.Errorf("%w: %w", errBug, werr)
 		}
-		return true, false, nil
+		return true, nil
 	case carriesResult(data):
 		// The frame is not a clean Response but still carries a result. This
 		// covers a non-Response type (a request/notification frame smuggling a
@@ -293,20 +301,20 @@ func (rfw *ResponseFilteringWriter) writeSSEDataLine(data []byte) (written, stop
 		// the very list this filter scrubs (#5257). Fail closed and drop the line.
 		slog.Warn("SSE data line carried a result outside a clean Response frame; dropping as a protocol violation",
 			"method", rfw.method)
-		return true, false, nil
+		return true, nil
 	case decodeErr != nil:
 		// Genuinely undecodable and no smuggled result. Pass this line through
 		// unfiltered (this line only).
 		slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
 			"method", rfw.method, "error", decodeErr)
-		return false, false, nil
+		return false, nil
 	default:
 		// Genuine non-Response frame (e.g. an interleaved notifications/* message)
 		// with no result payload. Routine SSE traffic, so log at Debug to keep the
 		// suspicious branches above from being buried. Pass through this line only.
 		slog.Debug("SSE data line was not a JSON-RPC Response; passing through unfiltered",
 			"method", rfw.method)
-		return false, false, nil
+		return false, nil
 	}
 }
 
@@ -579,30 +587,58 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 	return filteredResponse, nil
 }
 
-// writeErrorResponse logs the full filtering error server-side and sends the client a
-// generic message. err can originate in policy evaluation and name tools or
-// resources, so security.md forbids returning it verbatim.
-func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
+// errorResponseBody logs the full filtering error server-side and encodes a
+// JSON-RPC error response carrying a deliberately generic client-visible
+// message: err can originate in policy evaluation and name tools or resources,
+// so security.md forbids returning it verbatim (#6066). Both transports build
+// their body here, so neither can leak it. id is echoed so the client can
+// correlate the error with its request.
+func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error) []byte {
 	slog.Error("error filtering response", "method", rfw.method, "error", err)
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
 		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "internal error"),
 	}
 
-	// Encode before writing any header, so an encode failure never leaves a
-	// half-written response.
 	body, encErr := jsonrpc2.EncodeMessage(errorResponse)
 	if encErr != nil {
 		// Unreachable in practice: errorResponse is always a well-formed
 		// jsonrpc2.Response built from a valid ID and message above. Fall back
 		// to a hardcoded valid JSON-RPC error body rather than writing nothing.
 		slog.Error("failed to encode JSON-RPC error response", "error", encErr)
-		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"internal error"}}`, mcpparser.CodeInternalError)
+		return fmt.Appendf(nil, `{"jsonrpc":"2.0","error":{"code":%d,"message":"internal error"}}`,
+			mcpparser.CodeInternalError)
 	}
+	return body
+}
 
+// writeErrorResponse writes an error response for the application/json path.
+// The SSE path must NOT use this: WriteHeader is a no-op once Flush() has
+// committed the headers, which is the case for any real SSE response. Use
+// writeSSEErrorLine instead.
+func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
-	_, writeErr := rfw.ResponseWriter.Write(body)
+	_, writeErr := rfw.ResponseWriter.Write(rfw.errorResponseBody(id, err))
 	return writeErr
+}
+
+// writeSSEErrorLine writes a filtering failure as an SSE `data:` line, in place
+// of the frame that failed. It writes no terminator: processSSEResponse frames
+// this line exactly as it frames a successfully filtered one, so the error is
+// delivered wherever a filtered response would have been. Bodies carrying more
+// than one event are mis-framed by the separator reconciliation either way,
+// independently of whether filtering succeeded.
+//
+// Deliberately no WriteHeader: earlier lines are already on the wire and Flush()
+// has committed the headers, so a status change would be dropped — and
+// text/event-stream with a bare JSON body is unreadable by an SSE client
+// regardless. See issue #6037.
+func (rfw *ResponseFilteringWriter) writeSSEErrorLine(id jsonrpc2.ID, err error) error {
+	_, writeErr := rfw.ResponseWriter.Write([]byte("data: " + string(rfw.errorResponseBody(id, err))))
+	if writeErr != nil {
+		return fmt.Errorf("%w: %w", errBug, writeErr)
+	}
+	return nil
 }
 
 // requestID recovers the JSON-RPC id of the original request so an error

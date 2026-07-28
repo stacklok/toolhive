@@ -9,7 +9,21 @@ import (
 	"errors"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive-core/audit"
 )
+
+// DefaultMaxDelegationDepth is ToolHive's default cap on how many RFC 8693
+// delegation hops are retained when parsing an "act" claim. It is aligned
+// with the issuance-side cap in pkg/authserver/server/tokenexchange/handler.go
+// (maxDelegationDepth) and the claim-nesting cap in
+// pkg/authz/authorizers/cedar/entity.go (maxClaimNestingDepth), both 10.
+//
+// This is deliberately LOWER than toolhive-core's audit.DefaultMaxDelegationDepth
+// (16): core's value is a library-wide parse ceiling, while 10 is ToolHive's own
+// minting cap. Parsing at the mint cap preserves the signal that a chain with
+// Truncated=true could not have been minted by ToolHive's own issuance path.
+const DefaultMaxDelegationDepth = 10
 
 // IdentityContextKey is the key used to store Identity in the request context.
 // This provides type-safe context storage and retrieval for authenticated identities.
@@ -205,12 +219,14 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 
 	// Parse the RFC 8693 "act" claim (if present) into a delegation chain.
 	// This is primarily for audit: per RFC 8693 §4.1, an authorizer applying
-	// access control MUST consider only the current actor (chain.Actors[0]);
-	// any nested actors in chain.Actors[1:] are informational only.
+	// access control MUST consider only the current actor (chain.Chain[0]);
+	// any nested actors in chain.Chain[1:] are informational only.
+	// The parse cannot fail by design: a malformed act claim must never fail
+	// authentication, only be recorded (Malformed/MalformedReason on the chain).
 	if act, ok := claims["act"]; ok && act != nil {
-		chain := ParseDelegationChain(act, DefaultMaxDelegationDepth)
-		if len(chain.Actors) > 0 || chain.Malformed {
-			identity.DelegationChain = &chain
+		chain := audit.ParseDelegationChain(act, DefaultMaxDelegationDepth)
+		if !chain.IsZero() {
+			identity.DelegationChain = chain
 		}
 	}
 

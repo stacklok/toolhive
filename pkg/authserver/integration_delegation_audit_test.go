@@ -148,7 +148,7 @@ func auditEventForTokenWithConfig(
 // TestIntegration_TokenExchange_AuditDelegationChain proves the end-to-end
 // audit story for RFC 8693 delegation: a delegated token minted by the real
 // token-exchange handler is validated by the auth middleware, and the audit
-// middleware emits an event whose delegationChain records the acting agent.
+// middleware emits an event whose delegation chain records the acting agent.
 func TestIntegration_TokenExchange_AuditDelegationChain(t *testing.T) {
 	t.Parallel()
 
@@ -188,22 +188,24 @@ func TestIntegration_TokenExchange_AuditDelegationChain(t *testing.T) {
 	assert.Equal(t, delegatedUserSub, subjects["user_id"],
 		"audit subject must be the delegated user, not the agent")
 
-	chain, ok := event["delegation_chain"].(map[string]any)
-	require.True(t, ok, "delegation_chain must be present in the audit event")
+	chain, ok := event["delegation"].(map[string]any)
+	require.True(t, ok, "delegation must be present in the audit event")
 	assert.Equal(t, false, chain["truncated"])
-	actors, ok := chain["actors"].([]any)
-	require.True(t, ok, "actors should be an array")
-	require.Len(t, actors, 1, "a single exchange yields a single actor")
-	actor, ok := actors[0].(map[string]any)
+	assert.Equal(t, float64(0), chain["omitted"])
+	assert.Equal(t, false, chain["malformed"])
+	hops, ok := chain["chain"].([]any)
+	require.True(t, ok, "chain should be an array")
+	require.Len(t, hops, 1, "a single exchange yields a single hop")
+	hop, ok := hops[0].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, agentClientID, actor["sub"],
+	assert.Equal(t, agentClientID, hop["sub"],
 		"the delegation chain must record the acting agent client")
 }
 
 // TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain is the
 // negative companion to TestIntegration_TokenExchange_AuditDelegationChain: a
 // plain (non-delegated) token through the same audit(auth(stub)) chain must
-// produce an audit event with NO delegation_chain member.
+// produce an audit event with NO delegation member.
 func TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain(t *testing.T) {
 	t.Parallel()
 
@@ -223,9 +225,9 @@ func TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain(t *te
 	assert.Equal(t, plainUserSub, subjects["user_id"],
 		"audit subject must be the authenticated user")
 
-	_, exists := event["delegation_chain"]
+	_, exists := event["delegation"]
 	assert.False(t, exists,
-		"a non-delegated token must not produce a delegation_chain member")
+		"a non-delegated token must not produce a delegation member")
 }
 
 // mintTwoHopDelegatedToken produces a token whose second hop is genuine
@@ -233,7 +235,7 @@ func TestIntegration_AuditMiddleware_NonDelegatedTokenOmitsDelegationChain(t *te
 // "delegates" to secondAgentClientID — while the first hop is a hand-signed
 // stand-in for an earlier exchange this test never performs. What this pins
 // is the handler's nesting direction: the second (real) actor must land at
-// actors[0], outermost, with the hand-signed first actor at actors[1].
+// chain[0], outermost, with the hand-signed first actor at chain[1].
 //
 // This AS can honour an RFC 8693 §4.4 may_act claim — checkDelegationConsent
 // (handler.go) treats it as the authoritative consent signal and skips the
@@ -284,7 +286,7 @@ func mintTwoHopDelegatedToken(t *testing.T) (ts *testServerWithUpstream, delegat
 // real handler output from an actual token-exchange call, hop 1
 // (firstAgentClientID) is the hand-signed stand-in described on
 // mintTwoHopDelegatedToken, and the audit event for the resulting token
-// orders the two actors outermost (most recent) first.
+// orders the two hops outermost (most recent) first.
 func TestIntegration_TokenExchange_MultiActorDelegationChain(t *testing.T) {
 	t.Parallel()
 
@@ -293,26 +295,26 @@ func TestIntegration_TokenExchange_MultiActorDelegationChain(t *testing.T) {
 	event := auditEventForToken(t, ts.PrivateKey, delegated,
 		"re-delegated token must validate through the auth middleware")
 
-	chain, ok := event["delegation_chain"].(map[string]any)
-	require.True(t, ok, "delegation_chain must be present in the audit event")
+	chain, ok := event["delegation"].(map[string]any)
+	require.True(t, ok, "delegation must be present in the audit event")
 	assert.Equal(t, false, chain["truncated"])
-	actors, ok := chain["actors"].([]any)
-	require.True(t, ok, "actors should be an array")
-	require.Len(t, actors, 2, "a re-delegated token yields two actors")
+	hops, ok := chain["chain"].([]any)
+	require.True(t, ok, "chain should be an array")
+	require.Len(t, hops, 2, "a re-delegated token yields two hops")
 
-	actor0, ok := actors[0].(map[string]any)
+	hop0, ok := hops[0].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, secondAgentClientID, actor0["sub"],
-		"actors[0] (outermost) must be the client that performed the second exchange")
-	actor1, ok := actors[1].(map[string]any)
+	assert.Equal(t, secondAgentClientID, hop0["sub"],
+		"chain[0] (outermost) must be the client that performed the second exchange")
+	hop1, ok := hops[1].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, firstAgentClientID, actor1["sub"],
-		"actors[1] (innermost) must be the earlier, first-hop actor")
+	assert.Equal(t, firstAgentClientID, hop1["sub"],
+		"chain[1] (innermost) must be the earlier, first-hop actor")
 }
 
 // TestIntegration_TokenExchange_TruncatedDelegationChainAuditEvent proves
 // that an auditor configured with MaxDelegationDepth: 1 truncates a genuine
-// 2-actor delegation chain down to its outermost (most recent) actor.
+// 2-hop delegation chain down to its outermost (most recent) actor.
 func TestIntegration_TokenExchange_TruncatedDelegationChainAuditEvent(t *testing.T) {
 	t.Parallel()
 
@@ -323,17 +325,17 @@ func TestIntegration_TokenExchange_TruncatedDelegationChainAuditEvent(t *testing
 		"re-delegated token must validate through the auth middleware",
 		audit.Config{MaxDelegationDepth: &maxDepth})
 
-	chain, ok := event["delegation_chain"].(map[string]any)
-	require.True(t, ok, "delegation_chain must be present in the audit event")
+	chain, ok := event["delegation"].(map[string]any)
+	require.True(t, ok, "delegation must be present in the audit event")
 	assert.Equal(t, true, chain["truncated"])
-	assert.Equal(t, float64(1), chain["dropped_count"],
-		"one of the two actors must be reported dropped")
+	assert.Equal(t, float64(1), chain["omitted"],
+		"one of the two hops must be reported omitted")
 
-	actors, ok := chain["actors"].([]any)
-	require.True(t, ok, "actors should be an array")
-	require.Len(t, actors, 1, "MaxDelegationDepth=1 must leave exactly one surviving actor")
-	actor0, ok := actors[0].(map[string]any)
+	hops, ok := chain["chain"].([]any)
+	require.True(t, ok, "chain should be an array")
+	require.Len(t, hops, 1, "MaxDelegationDepth=1 must leave exactly one surviving hop")
+	hop0, ok := hops[0].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, secondAgentClientID, actor0["sub"],
-		"the surviving actor must be the outermost one")
+	assert.Equal(t, secondAgentClientID, hop0["sub"],
+		"the surviving hop must be the outermost one")
 }

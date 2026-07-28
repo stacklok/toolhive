@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -550,43 +551,44 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 // The identity layer (auth.claimsToIdentity) always parses at
 // auth.DefaultMaxDelegationDepth, so a larger maxDepth requires re-parsing the
 // raw "act" claim — rebinding an already-parsed chain can only shrink it. The
-// re-parse is only trusted when it yields at least as many actors as are
+// re-parse is only trusted when it yields at least as many hops as are
 // already parsed, so it can widen the chain but never narrow it.
-func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *auth.DelegationChain {
+func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *coreaudit.DelegationChain {
 	if identity == nil {
 		return nil
 	}
 	rawAct := identity.Claims["act"]
 	chain := identity.DelegationChain
-	existingActors := 0
+	existingHops := 0
 	if chain != nil {
-		existingActors = len(chain.Actors)
+		existingHops = len(chain.Chain)
 	}
-	if rawAct != nil && (chain == nil || len(chain.Actors) == 0 ||
-		(chain.Truncated && maxDepth > len(chain.Actors))) {
-		if parsed := auth.ParseDelegationChain(rawAct, maxDepth); (len(parsed.Actors) > 0 || parsed.Malformed) &&
-			len(parsed.Actors) >= existingActors {
-			return &parsed
+	if rawAct != nil && (chain.IsZero() ||
+		(chain.Truncated && maxDepth > existingHops)) {
+		parsed := coreaudit.ParseDelegationChain(rawAct, maxDepth)
+		if !parsed.IsZero() && len(parsed.Chain) >= existingHops {
+			return parsed
 		}
 	}
-	if chain != nil && (len(chain.Actors) > 0 || chain.Malformed) {
+	if !chain.IsZero() {
 		return rebindDelegationChain(chain, maxDepth)
 	}
 	return nil
 }
 
-// rebindDelegationChain applies maxDepth to an already-parsed chain: actors
-// beyond the cap are dropped, the chain is marked truncated, and the dropped
-// count accounts for both actors truncated at parse time and actors dropped
-// by this re-binding.
-func rebindDelegationChain(chain *auth.DelegationChain, maxDepth int) *auth.DelegationChain {
+// rebindDelegationChain applies maxDepth to an already-parsed chain: hops
+// beyond the cap are dropped (keeping the outermost hops, so Chain[0] — the
+// current actor — is preserved), the chain is marked truncated, and the
+// omitted count accounts for both hops truncated at parse time and hops
+// dropped by this re-binding.
+func rebindDelegationChain(chain *coreaudit.DelegationChain, maxDepth int) *coreaudit.DelegationChain {
 	if maxDepth <= 0 {
 		maxDepth = auth.DefaultMaxDelegationDepth
 	}
 	bound := *chain
-	if len(bound.Actors) > maxDepth {
-		bound.DroppedCount += len(bound.Actors) - maxDepth
-		bound.Actors = bound.Actors[:maxDepth]
+	if len(bound.Chain) > maxDepth {
+		bound.Omitted += len(bound.Chain) - maxDepth
+		bound.Chain = bound.Chain[:maxDepth]
 		bound.Truncated = true
 	}
 	return &bound
@@ -625,7 +627,7 @@ func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 
 // extractDelegationChain extracts the RFC 8693 delegation chain from the
 // HTTP request's identity, or nil when there is no identity or no chain.
-func (a *Auditor) extractDelegationChain(r *http.Request) *auth.DelegationChain {
+func (a *Auditor) extractDelegationChain(r *http.Request) *coreaudit.DelegationChain {
 	identity, ok := identityFromRequest(r)
 	if !ok {
 		return nil

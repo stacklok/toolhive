@@ -1193,7 +1193,7 @@ spec:
                         default: 10
                         description: |-
                           MaxDelegationDepth caps how many nested RFC 8693 "act" entries are
-                          recorded in an audit event's delegationChain. Deeper chains are
+                          recorded in an audit event's delegation chain. Deeper chains are
                           truncated (marked with truncated=true). Defaults to 10 when unset.
                         minimum: 1
                         type: integer
@@ -4653,7 +4653,7 @@ spec:
                         default: 10
                         description: |-
                           MaxDelegationDepth caps how many nested RFC 8693 "act" entries are
-                          recorded in an audit event's delegationChain. Deeper chains are
+                          recorded in an audit event's delegation chain. Deeper chains are
                           truncated (marked with truncated=true). Defaults to 10 when unset.
                         minimum: 1
                         type: integer

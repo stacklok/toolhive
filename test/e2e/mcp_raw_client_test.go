@@ -226,6 +226,40 @@ func TestRawClientSend(t *testing.T) {
 		require.Equal(t, json.Number("42"), resp.ID)
 		require.JSONEq(t, `{"ok":true}`, string(resp.Result))
 		require.Nil(t, resp.Error)
+		require.Equal(t, "2.0", resp.JSONRPC)
+	})
+
+	t.Run("pre-fix denial shape (capitalized keys, no jsonrpc tag) leaves JSONRPC empty", func(t *testing.T) {
+		t.Parallel()
+		// This is the exact shape a jsonrpc2.Response marshaled with
+		// encoding/json's default reflection produces (no json tags, unexported
+		// ID field): pins that the harness reads it as having no version tag,
+		// rather than defaulting or being fooled into "2.0" by the stdlib's
+		// case-insensitive key matching. The case above is what actually fails
+		// if JSONRPC stops being populated.
+		server, _ := newCapturingServer(t, `{"Result":null,"Error":{"code":403,"message":"x"},"ID":{}}`)
+
+		req, err := NewLegacyRequest("ping", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Empty(t, resp.JSONRPC)
+	})
+
+	t.Run("a miscased jsonrpc key does not satisfy the version-tag check", func(t *testing.T) {
+		t.Parallel()
+		// encoding/json struct tags match case-insensitively as a fallback, so
+		// a naive `json:"jsonrpc"` unmarshal would let this non-conformant key
+		// through. resp.JSONRPC must only ever reflect the exact lowercase key.
+		server, _ := newCapturingServer(t, `{"JSONRPC":"2.0","id":1,"result":{}}`)
+
+		req, err := NewLegacyRequest("ping", nil)
+		require.NoError(t, err)
+		resp, err := client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+
+		require.Empty(t, resp.JSONRPC)
 	})
 
 	t.Run("parses error.code, error.data and a large-int64 id without precision loss", func(t *testing.T) {

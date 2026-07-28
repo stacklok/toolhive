@@ -77,7 +77,7 @@ func TestValidatingMiddleware(t *testing.T) {
 		// Add parsed MCP request and auth identity to context
 		parsedMCP := &mcp.ParsedMCPRequest{
 			Method: "tools/call",
-			ID:     1,
+			ID:     int64(1),
 		}
 		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, parsedMCP)
 
@@ -169,7 +169,7 @@ func TestValidatingMiddleware(t *testing.T) {
 		err := json.Unmarshal(rr.Body.Bytes(), &errResp)
 		require.NoError(t, err)
 
-		errObj, ok := errResp["Error"].(map[string]interface{})
+		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
 		assert.Equal(t, float64(http.StatusForbidden), errObj["code"])
 		assert.Equal(t, "Request denied by policy", errObj["message"])
@@ -270,6 +270,76 @@ func TestValidatingMiddleware(t *testing.T) {
 	})
 }
 
+// TestValidatingMiddlewareDenialIsConformantJSONRPC pins the sendErrorResponse envelope on
+// the wire: lowercase "jsonrpc"/"id"/"error" keys, no "id" key for a notification, and no
+// "result" key. assert.JSONEq is case-sensitive, so a single assertion catches "Error"/"ID"
+// substituted for "error"/"id" (the historical bug) alongside a missing "jsonrpc" tag.
+func TestValidatingMiddlewareDenialIsConformantJSONRPC(t *testing.T) {
+	t.Parallel()
+
+	// Deterministic denial: the webhook always disallows, driving sendErrorResponse
+	// through the real middleware chain rather than constructing the response by hand.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(webhook.Response{
+			Version: webhook.APIVersion,
+			UID:     "resp-uid",
+			Allowed: false,
+			Message: "ignored", // sendErrorResponse ignores the webhook's message to avoid leaking info
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := webhook.Config{
+		Name:          "test-webhook",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyFail,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeValidating, nil)
+	require.NoError(t, err)
+	mw := createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "test-server", "stdio")
+
+	const wantErr = `"error":{"code":403,"message":"Request denied by policy"}`
+
+	testCases := []struct {
+		name     string
+		id       interface{} // ParsedMCPRequest.ID; nil for a notification
+		wantBody string
+	}{
+		{name: "int64 id", id: int64(42), wantBody: `{"jsonrpc":"2.0","id":42,` + wantErr + `}`},
+		{name: "string id", id: "abc", wantBody: `{"jsonrpc":"2.0","id":"abc",` + wantErr + `}`},
+		{name: "nil id (notification) omits id entirely", id: nil, wantBody: `{"jsonrpc":"2.0",` + wantErr + `}`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call"}`)))
+			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: tc.id})
+			req = req.WithContext(ctx)
+
+			rr := httptest.NewRecorder()
+			mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler must not be called for a denied request")
+			})).ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusForbidden, rr.Code)
+			assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+			assert.JSONEq(t, tc.wantBody, rr.Body.String())
+
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.id != nil, hasID, "id key presence mismatch")
+			_, hasResult := decoded["result"]
+			assert.False(t, hasResult, "denied response must not contain a result key")
+		})
+	}
+}
+
 // makeJSONBodyOfSize builds a syntactically-valid JSON body of exactly `size`
 // bytes by padding the value of a "data" field with ASCII characters. The
 // resulting bytes are valid JSON-RPC for use as an MCP request body.
@@ -312,7 +382,7 @@ func TestValidatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 
 		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize+1)
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
@@ -327,7 +397,7 @@ func TestValidatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 		// The error response is a JSON-RPC envelope.
 		var errResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
-		errObj, ok := errResp["Error"].(map[string]interface{})
+		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
 		assert.Equal(t, float64(http.StatusRequestEntityTooLarge), errObj["code"])
 		assert.Equal(t, "Request body exceeds maximum size", errObj["message"])
@@ -352,7 +422,7 @@ func TestValidatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 
 		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize)
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
@@ -496,7 +566,7 @@ func TestCreateMiddleware_ResolvesHMACSecret(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call","id":1}`)))
 	req = req.WithContext(context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{
 		Method: "tools/call",
-		ID:     1,
+		ID:     int64(1),
 	}))
 
 	rr := httptest.NewRecorder()
@@ -550,7 +620,7 @@ func TestValidatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
 
 			reqBody := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":1}`)
 			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(reqBody))
-			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
 			req = req.WithContext(ctx)
 
 			var nextCalled bool
@@ -660,8 +730,9 @@ func TestMultiWebhookChain(t *testing.T) {
 
 		// Verify error response
 		var errResp map[string]interface{}
-		_ = json.Unmarshal(rr.Body.Bytes(), &errResp)
-		errObj := errResp["Error"].(map[string]interface{})
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+		errObj, ok := errResp["error"].(map[string]interface{})
+		require.True(t, ok)
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 
@@ -685,8 +756,9 @@ func TestMultiWebhookChain(t *testing.T) {
 
 		// Verify error response
 		var errResp map[string]interface{}
-		_ = json.Unmarshal(rr.Body.Bytes(), &errResp)
-		errObj := errResp["Error"].(map[string]interface{})
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+		errObj, ok := errResp["error"].(map[string]interface{})
+		require.True(t, ok)
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 

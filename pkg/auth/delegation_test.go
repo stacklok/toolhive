@@ -132,6 +132,121 @@ func TestParseDelegationChain(t *testing.T) {
 	}
 }
 
+// TestParseDelegationChain_Malformed pins RFC 8693 §4.1 non-object "act"
+// handling: a malformed act must be distinguishable from a legitimately
+// absent/ended one, and must never be conflated with it.
+func TestParseDelegationChain_Malformed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		act           any
+		maxDepth      int
+		wantSubjects  []string
+		wantMalformed bool
+	}{
+		{
+			name:          "absent act is not malformed",
+			act:           nil,
+			maxDepth:      DefaultMaxDelegationDepth,
+			wantSubjects:  nil,
+			wantMalformed: false,
+		},
+		{
+			name:          "top-level non-object act is malformed with zero actors",
+			act:           "agent-1",
+			maxDepth:      DefaultMaxDelegationDepth,
+			wantSubjects:  nil,
+			wantMalformed: true,
+		},
+		{
+			name:          "top-level array act is malformed with zero actors",
+			act:           []any{"agent-1"},
+			maxDepth:      DefaultMaxDelegationDepth,
+			wantSubjects:  nil,
+			wantMalformed: true,
+		},
+		{
+			name:          "nested non-object act is malformed with actors parsed so far",
+			act:           map[string]any{"sub": "agent-1", "act": "junk"},
+			maxDepth:      DefaultMaxDelegationDepth,
+			wantSubjects:  []string{"agent-1"},
+			wantMalformed: true,
+		},
+		{
+			name: "non-object act exactly at the depth cap is malformed",
+			act: map[string]any{
+				"sub": "agent-1",
+				"act": map[string]any{"sub": "agent-2", "act": "junk"},
+			},
+			maxDepth:      2,
+			wantSubjects:  []string{"agent-1", "agent-2"},
+			wantMalformed: true,
+		},
+		{
+			name:          "legitimately ended chain (no act member) is not malformed",
+			act:           map[string]any{"sub": "agent-1"},
+			maxDepth:      DefaultMaxDelegationDepth,
+			wantSubjects:  []string{"agent-1"},
+			wantMalformed: false,
+		},
+		{
+			name:          "legitimately ended chain (explicit null act) is not malformed",
+			act:           map[string]any{"sub": "agent-1", "act": nil},
+			maxDepth:      DefaultMaxDelegationDepth,
+			wantSubjects:  []string{"agent-1"},
+			wantMalformed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain := ParseDelegationChain(tt.act, tt.maxDepth)
+
+			assert.Equal(t, tt.wantSubjects, actorSubjects(chain))
+			assert.Equal(t, tt.wantMalformed, chain.Malformed)
+		})
+	}
+}
+
+// TestParseDelegationChain_NonStringSub pins that a non-string "sub" is
+// preserved under act_claims instead of silently vanishing: an actor whose
+// identifier was the wrong JSON type must stay distinguishable from one with
+// no identifier at all.
+func TestParseDelegationChain_NonStringSub(t *testing.T) {
+	t.Parallel()
+
+	chain := ParseDelegationChain(map[string]any{"sub": float64(123)}, DefaultMaxDelegationDepth)
+
+	require.Len(t, chain.Actors, 1)
+	assert.Empty(t, chain.Actors[0].Subject, "a non-string sub must not populate Subject")
+	assert.Equal(t, map[string]any{"sub": float64(123)}, chain.Actors[0].Claims,
+		"a non-string sub must be preserved under act_claims, not dropped")
+}
+
+// TestParseDelegationChain_FiltersInternalClaims pins that act_claims goes
+// through the same internal-claim filter as the identity's top-level claims,
+// so credential-adjacent claims (e.g. "tsid") never reach an external sink
+// through this path even if act construction grows to mirror subject-token
+// claims in the future.
+func TestParseDelegationChain_FiltersInternalClaims(t *testing.T) {
+	t.Parallel()
+
+	act := map[string]any{
+		"sub":  "agent-1",
+		"tsid": "session-secret",
+		"iss":  "https://issuer.example",
+	}
+
+	chain := ParseDelegationChain(act, DefaultMaxDelegationDepth)
+
+	require.Len(t, chain.Actors, 1)
+	assert.Equal(t, map[string]any{"iss": "https://issuer.example"}, chain.Actors[0].Claims,
+		"tsid must be filtered out of act_claims the same as top-level Claims")
+}
+
 func TestParseDelegationChain_ActorClaims(t *testing.T) {
 	t.Parallel()
 

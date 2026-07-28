@@ -45,6 +45,8 @@ Multiple webhook definitions of the same type run in configuration order. When m
 
 Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
 
+When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation_chain` field on the principal object, with the same shape as the `delegation_chain` field documented under [Audit Middleware](#9-audit-middleware) below.
+
 Example:
 
 ```bash
@@ -527,14 +529,26 @@ Audit events are logged as structured JSON objects:
 - `delegation_chain`: RFC 8693 delegation chain, present only when the caller
   authenticated with a delegated token (i.e. the JWT carries an `act` claim)
   - `actors`: Acting parties, outermost (most recent) first — `actors[0]` is
-    the direct delegate that presented the token
+    the direct delegate that presented the token. Empty array (not omitted)
+    when `malformed` is `true` and no actor could be parsed at all
     - `sub`: Acting party identifier (from the `act` claim's `sub` member)
-    - `act_claims`: Additional `act` claim members (e.g. `iss`), when present
+    - `act_claims`: Additional `act` claim members (e.g. `iss`), when present.
+      May also carry `sub` when the token's `act.sub` was present but not a
+      string (RFC 7519 §4.1.2 requires a string); such a value is
+      deliberately not reported as the actor's `sub` and must not be treated
+      as an actor identifier
   - `truncated`: `true` when the chain exceeded the configured maximum depth
     (`maxDelegationDepth` in the audit config, default 10) and trailing
     actors were dropped
   - `dropped_count`: Number of actors dropped due to the depth cap, present
     only when `truncated` is `true`
+  - `malformed`: `true` when the token's `act` claim (at the top level or at
+    some nesting depth) was present and non-null but not a JSON object, per
+    RFC 8693 §4.1; present only when `true`. Actors already parsed from
+    shallower levels of the chain (if any) are still reported alongside it.
+    When the malformed value sits immediately past the depth cap,
+    `dropped_count` is deliberately 0 and `truncated` is `false` — unreadable
+    data past the cap is not a countable actor
 - `target`: Information about the operation target
   - `endpoint`: HTTP endpoint path
   - `method`: HTTP method

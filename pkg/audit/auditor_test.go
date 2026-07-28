@@ -628,6 +628,42 @@ func TestExtractSubjects(t *testing.T) {
 		assert.Equal(t, 1, chain.DroppedCount, "one dropped actor must be reported")
 	})
 
+	t.Run("delegation chain widens through configured max depth", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 25
+		depthAuditor, err := NewAuditorWithTransport(&Config{MaxDelegationDepth: &maxDepth}, "sse")
+		require.NoError(t, err)
+
+		subs := []string{
+			"agent-1", "agent-2", "agent-3", "agent-4", "agent-5",
+			"agent-6", "agent-7", "agent-8", "agent-9", "agent-10",
+			"agent-11", "agent-12", "agent-13", "agent-14",
+		}
+		claims := jwt.MapClaims{
+			"sub": "user123",
+			"act": nestedActClaim(subs...),
+		}
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		// Shaped like what auth.claimsToIdentity produces for a 14-hop token:
+		// the identity-layer parse caps at auth.DefaultMaxDelegationDepth (10),
+		// truncating the chain even though the raw "act" claim has all 14 hops.
+		parsed := auth.ParseDelegationChain(claims["act"], auth.DefaultMaxDelegationDepth)
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject:         "user123",
+				Claims:          claims,
+				DelegationChain: &parsed,
+			},
+		}
+		req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+		chain := depthAuditor.extractDelegationChain(req)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, len(subs), "configured depth must recover actors dropped by the identity-layer parse")
+		assert.False(t, chain.Truncated)
+	})
+
 	t.Run("no identity yields nil delegation chain", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -702,6 +738,122 @@ func TestExtractDelegationChainFromIdentity(t *testing.T) {
 		}
 		assert.Nil(t, extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth))
 	})
+
+	t.Run("malformed act with zero actors is not discarded (re-parse guard)", func(t *testing.T) {
+		t.Parallel()
+		// No pre-parsed DelegationChain, so the ONLY path that can produce a
+		// result is the raw-act re-parse guard
+		// (auth.ParseDelegationChain(rawAct, maxDepth)); the trailing
+		// "chain != nil" branch is unreachable here (chain is nil), so this
+		// isolates the re-parse guard's own Malformed handling.
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims:  map[string]any{"act": "not-an-object"},
+			},
+		}
+		chain := extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth)
+		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface, not be swallowed by the len(Actors) > 0 guards")
+		assert.True(t, chain.Malformed)
+		assert.Empty(t, chain.Actors)
+	})
+
+	t.Run("malformed act with zero actors is not discarded (trailing raw-claim branch)", func(t *testing.T) {
+		t.Parallel()
+		// No raw "act" claim is present (e.g. Claims not carrying the raw
+		// value, or already stripped), so the re-parse guard's rawAct != nil
+		// check is skipped entirely: this exercises the OTHER guard, the
+		// trailing "chain != nil && ..." branch that rebinds an
+		// already-parsed chain.
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				DelegationChain: &auth.DelegationChain{
+					Malformed: true,
+				},
+			},
+		}
+		chain := extractDelegationChainFromIdentity(identity, auth.DefaultMaxDelegationDepth)
+		require.NotNil(t, chain, "a malformed-but-actorless chain must still surface via the trailing rebind branch")
+		assert.True(t, chain.Malformed)
+		assert.Empty(t, chain.Actors)
+	})
+
+	// The following two cases share an identity shaped exactly like what
+	// auth.claimsToIdentity produces for a 14-hop token: the identity-layer
+	// parse always caps at auth.DefaultMaxDelegationDepth (10), so
+	// DelegationChain holds only the first 10 actors, truncated, with the
+	// full 14-hop chain still available in the raw "act" claim.
+	subs := []string{
+		"agent-1", "agent-2", "agent-3", "agent-4", "agent-5",
+		"agent-6", "agent-7", "agent-8", "agent-9", "agent-10",
+		"agent-11", "agent-12", "agent-13", "agent-14",
+	}
+	truncatedIdentity := func() *auth.Identity {
+		actors := make([]auth.DelegatedActor, auth.DefaultMaxDelegationDepth)
+		for i := range actors {
+			actors[i] = auth.DelegatedActor{Subject: subs[i]}
+		}
+		return &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				DelegationChain: &auth.DelegationChain{
+					Actors:       actors,
+					Truncated:    true,
+					DroppedCount: len(subs) - auth.DefaultMaxDelegationDepth,
+				},
+				Claims: map[string]any{"act": nestedActClaim(subs...)},
+			},
+		}
+	}
+
+	t.Run("configured depth wider than identity-layer parse recovers dropped actors", func(t *testing.T) {
+		t.Parallel()
+		chain := extractDelegationChainFromIdentity(truncatedIdentity(), 25)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, len(subs))
+		assert.False(t, chain.Truncated)
+		assert.Zero(t, chain.DroppedCount)
+		assert.Equal(t, subs[0], chain.Actors[0].Subject)
+		assert.Equal(t, subs[len(subs)-1], chain.Actors[len(subs)-1].Subject)
+	})
+
+	t.Run("configured depth narrower than identity-layer parse still rebinds", func(t *testing.T) {
+		t.Parallel()
+		chain := extractDelegationChainFromIdentity(truncatedIdentity(), 3)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, 3)
+		assert.True(t, chain.Truncated)
+		// 4 actors already dropped by the identity-layer parse (14 - 10),
+		// plus 7 more dropped by the narrower rebind (10 - 3).
+		assert.Equal(t, 11, chain.DroppedCount)
+	})
+
+	t.Run("truncated chain without raw act claim falls back to rebind", func(t *testing.T) {
+		t.Parallel()
+		identity := truncatedIdentity()
+		identity.Claims = nil // widening requested, but no raw claim to re-parse
+
+		chain := extractDelegationChainFromIdentity(identity, 25)
+		require.NotNil(t, chain)
+		require.Len(t, chain.Actors, auth.DefaultMaxDelegationDepth)
+		assert.True(t, chain.Truncated, "without the raw claim, the identity-layer truncation cannot be recovered")
+		assert.Equal(t, 4, chain.DroppedCount)
+	})
+}
+
+// nestedActClaim builds a raw RFC 8693 "act" claim nesting subs in order,
+// outermost first, matching the shape auth.ParseDelegationChain expects.
+func nestedActClaim(subs ...string) map[string]any {
+	var current map[string]any
+	for i := len(subs) - 1; i >= 0; i-- {
+		m := map[string]any{"sub": subs[i]}
+		if current != nil {
+			m["act"] = current
+		}
+		current = m
+	}
+	return current
 }
 
 func TestDetermineComponent(t *testing.T) {
@@ -1191,7 +1343,14 @@ func TestAuditLoggerLevelFormat(t *testing.T) {
 // buffer, for tests asserting on emitted events.
 func newBufferAuditor(t *testing.T) (*Auditor, *bytes.Buffer) {
 	t.Helper()
-	auditor, err := NewAuditorWithTransport(&Config{Component: "test"}, "streamable-http")
+	return newBufferAuditorWithConfig(t, &Config{Component: "test"})
+}
+
+// newBufferAuditorWithConfig is newBufferAuditor for tests that need a
+// non-default Config (e.g. MaxDelegationDepth).
+func newBufferAuditorWithConfig(t *testing.T, cfg *Config) (*Auditor, *bytes.Buffer) {
+	t.Helper()
+	auditor, err := NewAuditorWithTransport(cfg, "streamable-http")
 	require.NoError(t, err)
 	var logBuf bytes.Buffer
 	auditor.auditLogger = NewAuditLogger(&logBuf)
@@ -1298,6 +1457,150 @@ func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
 		target, ok := events[0]["target"].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "target_tool", target[TargetKeyName])
+	})
+}
+
+// TestLogAuditEventDelegationChain pins the emitted delegation_chain shape on
+// the primary logAuditEvent path (every ordinary POST). The SSE path already
+// has an equivalent pin (see "delegated token stream open carries the
+// delegation chain" in TestStreamOpenAuditEvents) and workflow auditing has
+// its own (workflow_auditor_test.go), but logAuditEvent had none, so a
+// pkg/audit regression here was only ever caught by running pkg/authserver's
+// suite. What this test uniquely pins beyond those two siblings is that the
+// POST path honours Config.MaxDelegationDepth via
+// Config.MaxDelegationDepthOrDefault at this specific call site.
+func TestLogAuditEventDelegationChain(t *testing.T) {
+	t.Parallel()
+
+	// twoHopIdentity builds an auth.Identity carrying a hand-built two-actor
+	// RFC 8693 chain, outermost (most recent) first: agent-2 delegated from
+	// agent-1, with agent-1's act claim also carrying an extra "iss" member to
+	// pin the documented act_claims shape.
+	twoHopIdentity := func() *auth.Identity {
+		act := map[string]any{
+			"sub": "agent-2",
+			"act": map[string]any{"sub": "agent-1", "iss": "https://issuer.example"},
+		}
+		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		return &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+			Subject:         "user-123",
+			Claims:          map[string]any{"act": act},
+			DelegationChain: &chain,
+		}}
+	}
+
+	t.Run("full documented shape: two actors, one carrying act_claims", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+		identity := twoHopIdentity()
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = auth.WithIdentity(r.Context(), identity)
+			w.WriteHeader(http.StatusOK)
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+
+		chain, ok := events[0]["delegation_chain"].(map[string]any)
+		require.True(t, ok, "the POST/logAuditEvent path must carry the delegation chain")
+		assert.Equal(t, false, chain["truncated"])
+		_, hasDropped := chain["dropped_count"]
+		assert.False(t, hasDropped, "dropped_count must be omitted when nothing was dropped")
+
+		actors, ok := chain["actors"].([]any)
+		require.True(t, ok, "actors should be an array")
+		require.Len(t, actors, 2)
+
+		outer, ok := actors[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-2", outer["sub"], "actors[0] must be the outermost/most recent actor")
+		_, hasClaims := outer["act_claims"]
+		assert.False(t, hasClaims, "the outer actor here carries no extra act members")
+
+		inner, ok := actors[1].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-1", inner["sub"])
+		actClaims, ok := inner["act_claims"].(map[string]any)
+		require.True(t, ok, "the documented act_claims member must surface extra act-claim data")
+		assert.Equal(t, "https://issuer.example", actClaims["iss"])
+	})
+
+	t.Run("MaxDelegationDepth truncates the chain and keeps the outermost actor", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 1
+		auditor, logBuf := newBufferAuditorWithConfig(t, &Config{Component: "test", MaxDelegationDepth: &maxDepth})
+		identity := twoHopIdentity()
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = auth.WithIdentity(r.Context(), identity)
+			w.WriteHeader(http.StatusOK)
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+
+		chain, ok := events[0]["delegation_chain"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, true, chain["truncated"])
+		assert.Equal(t, float64(1), chain["dropped_count"],
+			"one of the two actors must be reported dropped")
+
+		actors, ok := chain["actors"].([]any)
+		require.True(t, ok)
+		require.Len(t, actors, 1, "MaxDelegationDepth=1 must leave exactly one surviving actor")
+		surviving, ok := actors[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-2", surviving["sub"], "the surviving actor must be the outermost one")
+	})
+
+	t.Run("plain identity omits the delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-123"}}
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = auth.WithIdentity(r.Context(), identity)
+			w.WriteHeader(http.StatusOK)
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+
+		_, exists := events[0]["delegation_chain"]
+		assert.False(t, exists,
+			"a non-delegated identity must not produce a delegation_chain member on the POST path")
+	})
+
+	t.Run("malformed act claim is pinned as malformed:true with zero actors", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+		act := "not-an-object"
+		chain := auth.ParseDelegationChain(act, auth.DefaultMaxDelegationDepth)
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+			Subject:         "user-123",
+			Claims:          map[string]any{"act": act},
+			DelegationChain: &chain,
+		}}
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = auth.WithIdentity(r.Context(), identity)
+			w.WriteHeader(http.StatusOK)
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+
+		logged, ok := events[0]["delegation_chain"].(map[string]any)
+		require.True(t, ok, "a malformed act claim must still produce a delegation_chain member")
+		assert.Equal(t, true, logged["malformed"])
+		actors, ok := logged["actors"].([]any)
+		require.True(t, ok, "actors must marshal as a JSON array, not null")
+		assert.Len(t, actors, 0)
 	})
 }
 
@@ -1426,7 +1729,9 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 		}
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Emulate inner auth attaching a delegated identity before the stream starts.
+			// Emulate inner auth attaching the identity before the stream starts.
+			// The returned context is intentionally discarded: only WithIdentity's
+			// side effect of filling the audit-injected IdentityHolder matters here.
 			_ = auth.WithIdentity(r.Context(), delegated)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
@@ -1450,5 +1755,35 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 		second, ok := actors[1].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "agent-2", second["sub"])
+	})
+
+	t.Run("non-delegated identity stream open omits the delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		plain := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-123"}}
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Emulate inner auth attaching the identity before the stream starts.
+			// The returned context is intentionally discarded: only WithIdentity's
+			// side effect of filling the audit-injected IdentityHolder matters here.
+			_ = auth.WithIdentity(r.Context(), plain)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: message\ndata: {}\n\n"))
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+
+		subjects, ok := events[0]["subjects"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "user-123", subjects[SubjectKeyUserID], "the identity must have landed")
+
+		_, exists := events[0]["delegation_chain"]
+		assert.False(t, exists,
+			"an authenticated non-delegated identity must not produce a delegation_chain member on the stream-open path")
 	})
 }

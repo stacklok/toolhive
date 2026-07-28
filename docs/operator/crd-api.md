@@ -42,7 +42,7 @@ _Appears in:_
 | `includeResponseData` _boolean_ | IncludeResponseData determines whether to include response data in audit logs. | false | Optional: \{\} <br /> |
 | `detectApplicationErrors` _boolean_ | DetectApplicationErrors controls whether the audit middleware inspects<br />JSON-RPC response bodies for application-level errors when the HTTP<br />status code indicates success (2xx). When enabled, a small prefix of<br />the response body is buffered to detect JSON-RPC error fields,<br />independent of the IncludeResponseData setting. | true | Optional: \{\} <br /> |
 | `maxDataSize` _integer_ | MaxDataSize limits the size of request/response data included in audit logs (in bytes). | 1024 | Optional: \{\} <br /> |
-| `maxDelegationDepth` _integer_ | MaxDelegationDepth caps how many nested RFC 8693 "act" entries are<br />recorded in an audit event's delegationChain. Deeper chains are<br />truncated (marked with truncated=true). Defaults to 10 when unset. | 10 | Optional: \{\} <br /> |
+| `maxDelegationDepth` _integer_ | MaxDelegationDepth caps how many nested RFC 8693 "act" entries are<br />recorded in an audit event's delegationChain. Deeper chains are<br />truncated (marked with truncated=true). Defaults to 10 when unset. | 10 | Minimum: 1 <br />Optional: \{\} <br /> |
 | `logFile` _string_ | LogFile specifies the file path for audit logs. If empty, logs to stdout. |  | Optional: \{\} <br /> |
 
 

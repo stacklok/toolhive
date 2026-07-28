@@ -168,11 +168,13 @@ func TestClaimsToIdentity_ParsesActClaim(t *testing.T) {
 		assert.Nil(t, id.DelegationChain)
 	})
 
-	t.Run("non-map act claim", func(t *testing.T) {
+	t.Run("non-map act claim is surfaced as malformed, not silently dropped", func(t *testing.T) {
 		t.Parallel()
 		id, err := claimsToIdentity(jwt.MapClaims{"sub": "user123", "act": "agent-1"}, "tok")
 		require.NoError(t, err)
-		assert.Nil(t, id.DelegationChain)
+		require.NotNil(t, id.DelegationChain, "a malformed act must still produce a chain so the issue is visible")
+		assert.True(t, id.DelegationChain.Malformed)
+		assert.Empty(t, id.DelegationChain.Actors)
 	})
 }
 

@@ -57,6 +57,7 @@ type Config struct {
 	// MaxDelegationDepth caps how many nested RFC 8693 "act" entries are
 	// recorded in an audit event's delegationChain. Deeper chains are
 	// truncated (marked with truncated=true). Defaults to 10 when unset.
+	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=10
 	// +optional
 	MaxDelegationDepth *int `json:"maxDelegationDepth,omitempty" yaml:"maxDelegationDepth,omitempty"`
@@ -174,6 +175,10 @@ func (c *Config) Validate() error {
 
 	if c.MaxDataSize < 0 {
 		return fmt.Errorf("maxDataSize cannot be negative")
+	}
+
+	if c.MaxDelegationDepth != nil && *c.MaxDelegationDepth <= 0 {
+		return fmt.Errorf("maxDelegationDepth must be positive")
 	}
 
 	// Validate event types (basic validation - could be extended)

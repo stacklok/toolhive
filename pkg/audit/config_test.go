@@ -449,6 +449,37 @@ func TestGetLogWriter_WithActualFile(t *testing.T) {
 	})
 }
 
+func TestValidateMaxDelegationDepth(t *testing.T) {
+	t.Parallel()
+
+	depth := func(d int) *int { return &d }
+
+	tests := []struct {
+		name    string
+		value   *int
+		wantErr bool
+	}{
+		{name: "nil is valid", value: nil, wantErr: false},
+		{name: "positive is valid", value: depth(5), wantErr: false},
+		{name: "zero is rejected", value: depth(0), wantErr: true},
+		{name: "negative is rejected", value: depth(-3), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := &Config{MaxDelegationDepth: tt.value}
+			err := config.Validate()
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "maxDelegationDepth must be positive")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestMaxDelegationDepthOrDefault(t *testing.T) {
 	t.Parallel()
 

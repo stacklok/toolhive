@@ -711,7 +711,7 @@ func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
 
 	// Mint a subject token signed by the server's own key (the validator verifies
 	// against the server's JWKS). client_id must equal the acting client so the
-	// RFC 8693 §4.1 delegation-consent check (client_id binding) passes.
+	// RFC 8693 §4.4 delegation-consent check (client_id binding) passes.
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.RS256, Key: ts.PrivateKey},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"),

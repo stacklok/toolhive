@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yosida95/uritemplate/v3"
+
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -289,6 +291,54 @@ func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) (
 	return c.admission.FilterResources(ctx, identity, agg.Resources)
 }
 
+// ListResourceTemplates health-filters the registry, aggregates resource
+// templates on demand, and returns only those identity is admitted to read.
+//
+// Resource templates carry no admission entity of their own: the URI template is
+// treated as the resource id, reusing the exact resource-read filter (the same
+// per-item skip-on-error, log-and-continue decision ListResources applies). A
+// template whose URI-template string is denied is withheld.
+func (c *coreVMCP) ListResourceTemplates(
+	ctx context.Context, identity *auth.Identity,
+) ([]vmcp.ResourceTemplate, error) {
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.filterResourceTemplates(ctx, identity, agg.ResourceTemplates)
+}
+
+// filterResourceTemplates applies the resource-read admission filter to templates
+// by projecting each template's URI template onto a vmcp.Resource and reusing
+// admission.FilterResources, so templates and resources share one decision path.
+// The surviving URI templates select which templates are returned.
+func (c *coreVMCP) filterResourceTemplates(
+	ctx context.Context, identity *auth.Identity, templates []vmcp.ResourceTemplate,
+) ([]vmcp.ResourceTemplate, error) {
+	if len(templates) == 0 {
+		return []vmcp.ResourceTemplate{}, nil
+	}
+	proxies := make([]vmcp.Resource, len(templates))
+	for i := range templates {
+		proxies[i] = vmcp.Resource{URI: templates[i].URITemplate, BackendID: templates[i].BackendID}
+	}
+	allowedProxies, err := c.admission.FilterResources(ctx, identity, proxies)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(allowedProxies))
+	for i := range allowedProxies {
+		allowed[allowedProxies[i].URI] = struct{}{}
+	}
+	filtered := make([]vmcp.ResourceTemplate, 0, len(templates))
+	for i := range templates {
+		if _, ok := allowed[templates[i].URITemplate]; ok {
+			filtered = append(filtered, templates[i])
+		}
+	}
+	return filtered, nil
+}
+
 // ListPrompts health-filters the registry, aggregates prompts on demand, and
 // returns only those identity is admitted to get.
 func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
@@ -297,6 +347,45 @@ func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]
 		return nil, err
 	}
 	return c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+}
+
+// Discover aggregates backend capabilities ONCE and derives all four
+// capability-presence flags from that single view, applying the exact same
+// admission-filter code paths ListTools/ListResources/ListResourceTemplates/
+// ListPrompts each apply independently (advertisedTools+FilterTools,
+// FilterResources, filterResourceTemplates, FilterPrompts). Sharing those
+// helpers against one aggregatedView call -- rather than reimplementing the
+// filtering -- is what guarantees a flag can never drift from what the
+// corresponding List* verb would show for the same identity.
+func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error) {
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+
+	tools, err := c.admission.FilterTools(ctx, identity, c.advertisedTools(agg))
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+	templates, err := c.filterResourceTemplates(ctx, identity, agg.ResourceTemplates)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return DiscoverCapabilities{}, err
+	}
+
+	return DiscoverCapabilities{
+		HasTools:             len(tools) > 0,
+		HasResources:         len(resources) > 0,
+		HasResourceTemplates: len(templates) > 0,
+		HasPrompts:           len(prompts) > 0,
+	}, nil
 }
 
 // LookupTool resolves an advertised tool name (incl. composite tools) to its
@@ -320,6 +409,13 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 // LookupResource resolves an advertised resource URI to its capability without
 // reading it. Delegates to ListResources, so a URI that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
+//
+// A URI backed by a resource TEMPLATE resolves too: after the concrete-resource
+// miss, the URI is checked against the admission-filtered resource templates
+// (the same view ListResourceTemplates advertises) — an exact template-string
+// match (the form a resources/subscribe or completion ref/resource carries) or
+// a template-expansion match. This keeps subscribe's admission aligned with
+// read: any URI ReadResource would serve is a valid subscription target.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
@@ -331,7 +427,37 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 			return &resource, nil
 		}
 	}
+
+	templates, err := c.ListResourceTemplates(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	for i := range templates {
+		if templates[i].URITemplate == uri || templateMatches(templates[i].URITemplate, uri) {
+			// Project the template onto a resource (the same projection
+			// filterResourceTemplates uses) so lookup and list agree on the shape.
+			return &vmcp.Resource{
+				URI:         templates[i].URITemplate,
+				Name:        templates[i].Name,
+				Description: templates[i].Description,
+				MimeType:    templates[i].MimeType,
+				BackendID:   templates[i].BackendID,
+			}, nil
+		}
+	}
+
 	return nil, fmt.Errorf("%w: resource %q", vmcp.ErrNotFound, uri)
+}
+
+// templateMatches reports whether the RFC 6570 URI template matches uri. An
+// invalid template string reports no match (it was already logged and skipped
+// at routing-table construction).
+func templateMatches(tmplStr, uri string) bool {
+	tmpl, err := uritemplate.New(tmplStr)
+	if err != nil {
+		return false
+	}
+	return tmpl.Match(uri) != nil
 }
 
 // LookupPrompt resolves an advertised prompt name to its capability without
@@ -393,6 +519,22 @@ func (c *coreVMCP) LookupBackend(
 		}
 	}
 	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
+}
+
+// InvalidateCapabilityCache implements VMCP.InvalidateCapabilityCache. It
+// type-asserts the configured aggregator to aggregator.CacheInvalidator and
+// delegates; when the aggregator does not implement it, the call is a WARN-logged
+// no-op — not a silent one — because a caller relying on invalidation (the
+// list_changed resync path) needs to know the request had no effect (go-style:
+// no silent no-ops).
+func (c *coreVMCP) InvalidateCapabilityCache() {
+	invalidator, ok := c.aggregator.(aggregator.CacheInvalidator)
+	if !ok {
+		slog.Warn("capability cache invalidation requested but the configured aggregator does not support it",
+			"aggregatorType", fmt.Sprintf("%T", c.aggregator))
+		return
+	}
+	invalidator.InvalidateAll()
 }
 
 // Close stops the workflow state store's cleanup goroutine. It is idempotent:

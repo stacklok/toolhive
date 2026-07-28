@@ -175,19 +175,22 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
-		require.NoError(t, err)
-		assert.NotNil(t, resolved)
-		// In Phase 1, we just collect tools - conflict is detected but first one wins
-		assert.Contains(t, resolved.Tools, "tool1")
-		assert.Contains(t, resolved.Tools, "tool2")
-		assert.Contains(t, resolved.Tools, "shared_tool")
-		// Shared tool should have one backend (whichever was encountered first in map iteration)
-		// Map iteration order is non-deterministic, so accept either backend
-		sharedToolBackend := resolved.Tools["shared_tool"].BackendID
-		assert.True(t, sharedToolBackend == "backend1" || sharedToolBackend == "backend2",
-			"shared_tool should belong to either backend1 or backend2, got: %s", sharedToolBackend)
+		// Repeat: map iteration order is re-randomized per call, and the
+		// fallback winner must not depend on it.
+		for range 5 {
+			resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+
+			require.NoError(t, err)
+			assert.NotNil(t, resolved)
+			// The no-resolver fallback keeps the first tool per name in sorted
+			// backend order, so the conflict winner is deterministic.
+			assert.Contains(t, resolved.Tools, "tool1")
+			assert.Contains(t, resolved.Tools, "tool2")
+			assert.Contains(t, resolved.Tools, "shared_tool")
+			assert.Equal(t, "backend1", resolved.Tools["shared_tool"].BackendID,
+				"fallback must keep the first backend in sorted-ID order")
+		}
 	})
 
 	t.Run("no conflicts", func(t *testing.T) {
@@ -240,8 +243,8 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 			Resources: []vmcp.Resource{
 				{URI: "test://resource1", BackendID: "backend1"},
 			},
-			Prompts: []vmcp.Prompt{
-				{Name: "prompt1", BackendID: "backend1"},
+			Prompts: []ResolvedPrompt{
+				{Prompt: vmcp.Prompt{Name: "prompt1", BackendID: "backend1"}, OriginalName: "prompt1"},
 			},
 			SupportsLogging:  true,
 			SupportsSampling: false,
@@ -303,6 +306,79 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		assert.Equal(t, 2, aggregated.Metadata.ToolCount)
 		assert.Equal(t, 1, aggregated.Metadata.ResourceCount)
 		assert.Equal(t, 1, aggregated.Metadata.PromptCount)
+	})
+
+	t.Run("merge threads resource templates through and populates the routing table", func(t *testing.T) {
+		t.Parallel()
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{},
+			ResourceTemplates: []vmcp.ResourceTemplate{
+				{URITemplate: "file:///logs/{date}.txt", Name: "Daily log", MimeType: "text/plain", BackendID: "backend1"},
+			},
+		}
+
+		backends := []vmcp.Backend{
+			{
+				ID:            "backend1",
+				Name:          "Backend 1",
+				BaseURL:       "http://backend1:8080",
+				TransportType: "streamable-http",
+				HealthStatus:  vmcp.BackendHealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+		require.NoError(t, err)
+
+		// Pass-through: the aggregated view carries the templates unchanged.
+		require.Len(t, aggregated.ResourceTemplates, 1)
+		assert.Equal(t, "file:///logs/{date}.txt", aggregated.ResourceTemplates[0].URITemplate)
+		assert.Equal(t, "backend1", aggregated.ResourceTemplates[0].BackendID)
+		assert.Equal(t, 1, aggregated.Metadata.ResourceTemplateCount)
+
+		// Routing table is keyed by URI template and carries full backend info.
+		require.Contains(t, aggregated.RoutingTable.ResourceTemplates, "file:///logs/{date}.txt")
+		target := aggregated.RoutingTable.ResourceTemplates["file:///logs/{date}.txt"]
+		require.NotNil(t, target)
+		assert.Equal(t, "backend1", target.WorkloadID)
+		assert.Equal(t, "http://backend1:8080", target.BaseURL)
+		// OriginalCapabilityName must be EMPTY so a resources/read routed via this
+		// template forwards the client's CONCRETE, already-expanded URI to the
+		// backend verbatim (the backend does its own expansion). If it were set to
+		// the template, GetBackendCapabilityName would replace the concrete URI with
+		// the unexpanded template and the backend would return unsubstituted content
+		// (conformance: "Parameter substitution not reflected in content").
+		assert.Empty(t, target.OriginalCapabilityName)
+		assert.Equal(t, "file:///logs/2025-01-01.txt",
+			target.GetBackendCapabilityName("file:///logs/2025-01-01.txt"),
+			"a concrete expanded URI must pass through to the backend unchanged")
+	})
+
+	t.Run("registry miss still translates a renamed prompt", func(t *testing.T) {
+		t.Parallel()
+		// The minimal-target fallback (backend absent from the registry) must
+		// carry the backend's OWN prompt name, not the advertised one —
+		// otherwise prompts/get on the renamed prompt forwards a name the
+		// backend does not know.
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{},
+			Prompts: []ResolvedPrompt{
+				{Prompt: vmcp.Prompt{Name: "b1_review", BackendID: "b1"}, OriginalName: "review"},
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(nil)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+		require.NoError(t, err)
+
+		target := aggregated.RoutingTable.Prompts["b1_review"]
+		require.NotNil(t, target)
+		assert.Equal(t, "b1", target.WorkloadID)
+		assert.Equal(t, "review", target.GetBackendCapabilityName("b1_review"),
+			"prompts/get on the advertised name must forward the backend's own name")
 	})
 }
 

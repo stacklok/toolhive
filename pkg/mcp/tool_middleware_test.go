@@ -186,12 +186,11 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		serverOpts     []testkit.TestMCPServerOption
-		opts           *[]ToolMiddlewareOption
-		expected       any
-		callToolName   string
-		expectedStatus int
+		name         string
+		serverOpts   []testkit.TestMCPServerOption
+		opts         *[]ToolMiddlewareOption
+		expected     any
+		callToolName string
 	}{
 		{
 			name: "No filter, No override - Call Foo",
@@ -201,10 +200,9 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 				//nolint:goconst
 				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
 			},
-			opts:           nil,
-			expected:       "Foo",
-			callToolName:   "Foo",
-			expectedStatus: http.StatusOK,
+			opts:         nil,
+			expected:     "Foo",
+			callToolName: "Foo",
 		},
 		{
 			name: "Filter Foo, No override - Call Foo",
@@ -217,9 +215,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 			},
-			expected:       "Foo",
-			callToolName:   "Foo",
-			expectedStatus: http.StatusOK,
+			expected:     "Foo",
+			callToolName: "Foo",
 		},
 		{
 			name: "Filter Foo, No override - Call Bar",
@@ -232,9 +229,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 			},
-			expected:       nil,
-			callToolName:   "Bar",
-			expectedStatus: http.StatusBadRequest, // Bar is filtered out
+			expected:     nil,
+			callToolName: "Bar",
 		},
 		{
 			name: "No filter, Override MyFoo -> Foo - Call MyFoo",
@@ -247,9 +243,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       "Foo",
-			callToolName:   "MyFoo",
-			expectedStatus: http.StatusOK,
+			expected:     "Foo",
+			callToolName: "MyFoo",
 		},
 		{
 			name: "No filter, Override MyFoo -> Foo - Call Bar",
@@ -262,9 +257,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       "Bar",
-			callToolName:   "Bar",
-			expectedStatus: http.StatusOK,
+			expected:     "Bar",
+			callToolName: "Bar",
 		},
 		{
 			name: "Filter MyFoo, Override MyFoo -> Foo - Call MyFoo",
@@ -278,9 +272,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 				WithToolsFilter("MyFoo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       "Foo",
-			callToolName:   "MyFoo",
-			expectedStatus: http.StatusOK,
+			expected:     "Foo",
+			callToolName: "MyFoo",
 		},
 		{
 			name: "Filter MyFoo, Override MyFoo -> Foo - Call Bar",
@@ -294,9 +287,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 				WithToolsFilter("MyFoo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       nil,
-			callToolName:   "Bar",
-			expectedStatus: http.StatusBadRequest, // Bar is filtered out
+			expected:     nil,
+			callToolName: "Bar",
 		},
 		{
 			name: "No filter, Override Bar -> Foo - Call Foo",
@@ -309,9 +301,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Bar", "Foo", ""),
 			},
-			expected:       "Bar",
-			callToolName:   "Foo",
-			expectedStatus: http.StatusOK,
+			expected:     "Bar",
+			callToolName: "Foo",
 		},
 		{
 			name: "No filter, Override Bar -> Foo - Call Bar",
@@ -324,9 +315,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "Bar", ""),
 			},
-			expected:       "Foo",
-			callToolName:   "Bar",
-			expectedStatus: http.StatusOK,
+			expected:     "Foo",
+			callToolName: "Bar",
 		},
 		{
 			name: "Filter MyFoo, Override Foo -> MyFoo",
@@ -340,9 +330,8 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 				WithToolsFilter("Foo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       nil,
-			callToolName:   "MyFoo",
-			expectedStatus: http.StatusBadRequest,
+			expected:     nil,
+			callToolName: "MyFoo",
 		},
 	}
 

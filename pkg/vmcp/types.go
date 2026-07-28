@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stacklok/toolhive/pkg/mcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -286,6 +287,11 @@ type DiscoveredBackend struct {
 	// Resets to 0 when the backend becomes healthy again.
 	// +optional
 	ConsecutiveFailures int `json:"consecutiveFailures,omitempty"`
+
+	// MCPRevision is the backend's negotiated MCP protocol revision
+	// ("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed.
+	// +optional
+	MCPRevision string `json:"mcpRevision,omitempty"`
 }
 
 // DeepCopyInto copies the receiver into out. Required for Kubernetes CRD types.
@@ -423,6 +429,29 @@ type Resource struct {
 	BackendID string
 }
 
+// ResourceTemplate represents an MCP resource template capability.
+// Unlike a Resource, whose URI identifies a single concrete resource, a
+// ResourceTemplate declares an RFC 6570 URI template that expands to a family
+// of resource URIs (e.g. "file:///logs/{date}.txt"). Reading an expanded URI is
+// served through the existing resource-read path: the router matches the URI
+// against these templates when the exact-URI lookup misses.
+type ResourceTemplate struct {
+	// URITemplate is the RFC 6570 URI template (should be globally unique).
+	URITemplate string
+
+	// Name is a human-readable name.
+	Name string
+
+	// Description describes the resource template.
+	Description string
+
+	// MimeType is the MIME type shared by resources matching this template (optional).
+	MimeType string
+
+	// BackendID identifies the backend that provides this resource template.
+	BackendID string
+}
+
 // Prompt represents an MCP prompt capability.
 type Prompt struct {
 	// Name is the prompt name (may conflict with other backends).
@@ -534,6 +563,11 @@ type ToolCallResult struct {
 	// This includes progressToken, trace context, and custom backend metadata.
 	// Per MCP specification, this field is optional and may be nil.
 	Meta map[string]any
+
+	// BackendID is the logical backend that served the call, set by the core
+	// after routing. Empty for a composite tool (no single serving backend).
+	// Audit-only: never serialized to the client.
+	BackendID string `json:"-"`
 }
 
 // ResourceContent represents a single resource content item,
@@ -562,6 +596,10 @@ type ResourceReadResult struct {
 	// because they return []ResourceContents directly, not a result wrapper.
 	// This field is preserved for future SDK improvements but may be nil.
 	Meta map[string]any
+
+	// BackendID is the logical backend that served the read, set by the core
+	// after routing. Audit-only: never serialized to the client.
+	BackendID string `json:"-"`
 }
 
 // PromptMessage represents a single message in a prompt response,
@@ -588,6 +626,47 @@ type PromptGetResult struct {
 	// This includes progressToken, trace context, and custom backend metadata.
 	// Per MCP specification, this field is optional and may be nil.
 	Meta map[string]any
+
+	// BackendID is the logical backend that served the get, set by the core
+	// after routing. Audit-only: never serialized to the client.
+	BackendID string `json:"-"`
+}
+
+// Completion reference type constants, matching the MCP completion/complete
+// "ref" discriminator values.
+const (
+	// CompletionRefTypePrompt identifies a prompt-argument completion reference.
+	CompletionRefTypePrompt = "ref/prompt"
+	// CompletionRefTypeResource identifies a resource(-template) completion reference.
+	CompletionRefTypeResource = "ref/resource"
+)
+
+// CompletionRef identifies what a completion/complete request is completing:
+// either a prompt argument (Type == CompletionRefTypePrompt, Name set) or a
+// resource-template variable (Type == CompletionRefTypeResource, URI set). It is
+// the domain equivalent of the MCP PromptReference/ResourceReference shapes,
+// following the Anti-Corruption Layer pattern (no mcp-go types cross the core
+// boundary, vmcp anti-pattern #5).
+type CompletionRef struct {
+	// Type is the reference discriminator: CompletionRefTypePrompt or
+	// CompletionRefTypeResource.
+	Type string
+	// Name is the prompt name (set only for CompletionRefTypePrompt).
+	Name string
+	// URI is the resource URI or URI template (set only for
+	// CompletionRefTypeResource).
+	URI string
+}
+
+// CompletionResult holds argument-completion candidates returned by a backend.
+// It is the domain equivalent of the MCP CompletionResultDetails.
+type CompletionResult struct {
+	// Values are the completion candidate strings (MCP caps this at 100 items).
+	Values []string
+	// Total is the total number of options available, which may exceed len(Values).
+	Total int
+	// HasMore indicates additional options exist beyond those in Values.
+	HasMore bool
 }
 
 // RoutingTable contains the mappings from capability names to backend targets.
@@ -604,6 +683,11 @@ type RoutingTable struct {
 
 	// Resources maps resource URIs to their backend targets.
 	Resources map[string]*BackendTarget
+
+	// ResourceTemplates maps resource URI-template strings to their backend targets.
+	// The router consults this when an exact Resources lookup misses: it matches
+	// the requested URI against each template and routes to the first match.
+	ResourceTemplates map[string]*BackendTarget
 
 	// Prompts maps prompt names to their backend targets.
 	Prompts map[string]*BackendTarget
@@ -647,8 +731,18 @@ type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
 	// The meta parameter contains _meta fields from the client request that should be forwarded to the backend.
 	// Returns the complete tool result including _meta field from the backend response.
+	//
+	// paramHeaders carries the SEP-2243 Mcp-Param-* headers mirrored from the tool's
+	// x-mcp-header-designated arguments, keyed by full header name. It is supplied by
+	// the caller because deriving it needs the tool's inputSchema, which lives in the
+	// aggregated capability view rather than on BackendTarget; passing it explicitly
+	// keeps this client free of a schema cache and its staleness window. nil or empty
+	// means nothing to mirror, which is the common case. It applies only to a Modern
+	// (2026-07-28) backend hop -- SEP-2243 is part of that revision -- and is ignored
+	// for a Legacy backend.
 	CallTool(
-		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any,
+		meta map[string]any, paramHeaders map[string]string,
 	) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.
@@ -659,9 +753,43 @@ type BackendClient interface {
 	// Returns the complete prompt result including _meta field.
 	GetPrompt(ctx context.Context, target *BackendTarget, name string, arguments map[string]any) (*PromptGetResult, error)
 
+	// Complete requests argument-completion candidates from the backend MCP server
+	// (the completion/complete method). ref identifies the prompt or resource being
+	// completed; argName/argValue are the argument name and its partial value;
+	// contextArgs carries previously-resolved argument values for multi-argument
+	// completion (may be nil). For a CompletionRefTypePrompt ref, the prompt name is
+	// translated to the backend's own name via target.GetBackendCapabilityName.
+	//
+	// If the backend does not advertise the completions capability, an empty (non-nil)
+	// CompletionResult is returned without error, matching the MCP spec's lenient
+	// completion semantics.
+	Complete(
+		ctx context.Context, target *BackendTarget, ref CompletionRef,
+		argName, argValue string, contextArgs map[string]string,
+	) (*CompletionResult, error)
+
 	// ListCapabilities queries a backend for its capabilities.
 	// Returns tools, resources, and prompts exposed by the backend.
 	ListCapabilities(ctx context.Context, target *BackendTarget) (*CapabilityList, error)
+}
+
+// RevisionReporter reports a backend's resolved MCP protocol revision, keyed by
+// workload ID. The second return distinguishes "known" from "not probed yet" —
+// callers must not read the Revision when it is false, since RevisionLegacy is
+// the zero value.
+//
+// Deliberately NOT part of [BackendClient]: it is a read-model for
+// status/telemetry and for deciding whether a Legacy session connect is worth
+// attempting, not a protocol operation, and every BackendClient implementation
+// (including the generated mocks) would otherwise have to satisfy it. Consumers
+// type-assert to it and degrade gracefully when the assertion fails.
+//
+// Because that assertion is the failure mode — a wrapper that forgets to forward
+// CachedRevision silently disables the behaviour with no compile error —
+// implementations should pin themselves with a compile-time assertion, e.g.
+// `var _ vmcp.RevisionReporter = (*httpBackendClient)(nil)`.
+type RevisionReporter interface {
+	CachedRevision(workloadID string) (mcp.Revision, bool)
 }
 
 // CapabilityList contains the capabilities from a backend's MCP server.
@@ -672,6 +800,9 @@ type CapabilityList struct {
 
 	// Resources available on this backend.
 	Resources []Resource
+
+	// ResourceTemplates available on this backend.
+	ResourceTemplates []ResourceTemplate
 
 	// Prompts available on this backend.
 	Prompts []Prompt

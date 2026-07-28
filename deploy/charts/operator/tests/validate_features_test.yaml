@@ -1,0 +1,15 @@
+suite: validate-features — namespace scope rejects migrator
+# helm-unittest requires failedTemplate values to be set at the suite level;
+# test-level set is not applied when the template override differs from the
+# suite templates list.
+set:
+  operator.rbac.scope: namespace
+  operator.rbac.allowedNamespaces: [toolhive-system]
+  operator.features.storageVersionMigrator: true
+templates:
+  - validate-features.yaml
+tests:
+  - it: rejects the storage version migrator when scope is namespace
+    asserts:
+      - failedTemplate:
+          errorPattern: "operator.features.storageVersionMigrator requires operator.rbac.scope=cluster"

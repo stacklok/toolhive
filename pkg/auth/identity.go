@@ -62,6 +62,11 @@ type PrincipalInfo struct {
 	// Claims contains additional claims from the auth token.
 	// This preserves all JWT claims for authorization policies.
 	Claims map[string]any `json:"claims,omitempty"`
+
+	// DelegationChain is the parsed RFC 8693 "act" claim: the ordered list of
+	// parties that acted on behalf of this identity's subject (outermost/most
+	// recent first). Nil when the token carries no act claim.
+	DelegationChain *DelegationChain `json:"delegation_chain,omitempty"`
 }
 
 // Identity represents an authenticated user or service account.
@@ -121,7 +126,7 @@ type Identity struct {
 	// is active and the JWT contains a token session ID (tsid claim).
 	// Each value is the rotated ID token when a refresh produced one
 	// (OIDC Core 1.0 §12.2), otherwise the original JWT captured at the initial
-	// OIDC login; it is not independently validated for freshness.
+	// OIDC login.
 	//
 	// State semantics:
 	//   - nil            — no tsid claim was present on the incoming JWT
@@ -129,8 +134,29 @@ type Identity struct {
 	//   - empty map      — tsid claim was valid but no providers had an
 	//                      ID token stored for the session.
 	//   - populated map  — keys are upstream provider names; values are the
-	//                      stored ID token JWTs (may be expired; callers MUST
-	//                      validate the `exp` claim before use).
+	//                      stored ID token JWTs, which may be expired.
+	//
+	// Whether `exp` matters depends on what the caller does with the token. Nothing
+	// in this package enforces it; the two current consumers use the token
+	// differently and neither validates it locally:
+	//
+	//   - PRESENTING it as a credential — e.g. as the subject_token of an RFC 8693
+	//     exchange (pkg/vmcp/auth/strategies) — is subject to expiry, because the
+	//     party receiving it will reject an expired assertion. That consumer
+	//     deliberately does not pre-check `exp` either: it lets the IdP reject the
+	//     exchange and surfaces the resulting `invalid_grant`. So such a caller must
+	//     either check `exp` first or be prepared to handle that failure.
+	//   - READING identity claims out of it — as the Cedar authorizer does for the
+	//     profile claims an upstream access token omits — is not subject to expiry at
+	//     all. The token is evidence that the upstream asserted something at login,
+	//     and expiry says nothing about whether that assertion happened. Rejecting it
+	//     once expired would flip an authorization decision mid-session, since
+	//     sessions outlive ID tokens by days; and the claims are no staler than the
+	//     alternative, since the profile claims mirrored into the ToolHive-issued
+	//     token are likewise captured once at login and never refreshed.
+	//
+	// Either way the token is NOT re-validated for signature or freshness here, so
+	// treat its claims as login-time facts rather than current state.
 	//
 	// Redacted in MarshalJSON() to prevent token leakage.
 	// MUST NOT be mutated after the Identity is placed in the request context.
@@ -162,6 +188,7 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		Email            string            `json:"email"`
 		Groups           []string          `json:"groups"`
 		Claims           map[string]any    `json:"claims"`
+		DelegationChain  *DelegationChain  `json:"delegationChain,omitempty"`
 		Token            string            `json:"token"`
 		TokenType        string            `json:"tokenType"`
 		Metadata         map[string]string `json:"metadata"`
@@ -221,6 +248,7 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		Email:            i.Email,
 		Groups:           i.Groups,
 		Claims:           claims,
+		DelegationChain:  i.DelegationChain,
 		Token:            token,
 		TokenType:        i.TokenType,
 		Metadata:         i.Metadata,

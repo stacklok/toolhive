@@ -12,7 +12,11 @@ import (
 
 const (
 	// CodeRateLimited is the JSON-RPC error code for rate-limited requests.
-	// Per RFC THV-0057: implementation-defined code in the -32000 to -32099 range.
+	// It was chosen (RFC THV-0057) when -32000..-32099 was uniformly
+	// implementation-defined, but the draft MCP spec now reserves
+	// -32020..-32099 exclusively for spec-defined codes, which this is not.
+	// The value is retained for wire compatibility; reallocation outside
+	// -32768..-32000 is tracked in #6101.
 	CodeRateLimited int64 = -32029
 
 	// MessageRateLimited is the error message for rate-limited requests.

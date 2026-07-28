@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -173,6 +175,61 @@ func TestModernRequestIgnoresClientSessionID(t *testing.T) {
 
 	_, ok := proxy.sessionManager.Get(bogusSession)
 	assert.False(t, ok, "Modern path must not register the foreign session id")
+}
+
+// TestModernNeverReusesClientSessionIDAsRoutingToken is the mutation-check
+// analogue of the transparent proxy's TestGuardUnknownSessionFiresDespiteForgedModernRevision.
+// Where that test proves an UNKNOWN session ID still triggers the Legacy
+// guard, this one closes the complementary gap: it registers a REAL, known
+// session in sessionManager and proves resolveSessionForRequest still mints
+// a fresh routing token instead of reusing it.
+//
+// TestModernRequestIgnoresClientSessionID (above) only exercises a bogus,
+// unregistered session ID, so it cannot detect a regression that consults
+// sessionManager as a fallback before minting: on a lookup miss such code
+// would still mint a fresh token and pass that test. Using a real registered
+// session here closes that hole -- this test FAILS if the Modern branch is
+// ever re-keyed on Mcp-Session-Id presence (i.e. reuses a known client SID as
+// the routing token, or calls sessionManager.Get/AddWithID for it at all).
+func TestModernNeverReusesClientSessionIDAsRoutingToken(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
+	t.Cleanup(func() { _ = proxy.Stop(context.Background()) })
+
+	knownSessionID := uuid.New().String()
+	require.NoError(t, proxy.sessionManager.AddWithID(knownSessionID))
+
+	newModernRequest := func() *jsonrpc2.Request {
+		req, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "tools/call", json.RawMessage(
+			`{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",`+
+				`"io.modelcontextprotocol/clientCapabilities":{}}}`))
+		require.NoError(t, err)
+		return req
+	}
+
+	resolve := func() string {
+		httpReq := httptest.NewRequest(http.MethodPost, StreamableHTTPEndpoint, http.NoBody)
+		httpReq.Header.Set("MCP-Protocol-Version", mcp.MCPVersionModern)
+		httpReq.Header.Set("Mcp-Session-Id", knownSessionID)
+
+		token, setHeader, err := proxy.resolveSessionForRequest(httptest.NewRecorder(), httpReq, newModernRequest())
+		require.NoError(t, err)
+		assert.False(t, setHeader, "Modern branch must never ask the client to adopt a session")
+		return token
+	}
+
+	token1 := resolve()
+	token2 := resolve()
+
+	assert.NotEqual(t, knownSessionID, token1, "Modern branch must not reuse the known client session id as its routing token")
+	assert.NotEqual(t, knownSessionID, token2, "Modern branch must not reuse the known client session id as its routing token")
+	assert.NotEqual(t, token1, token2, "each Modern request must mint its own fresh routing token")
+
+	_, err := uuid.Parse(token1)
+	assert.NoError(t, err, "routing token must be a freshly minted UUID, not a passthrough of client input")
+	_, err = uuid.Parse(token2)
+	assert.NoError(t, err, "routing token must be a freshly minted UUID, not a passthrough of client input")
 }
 
 // TestModernClassificationErrorsReturn400 verifies that ClassifyRevision errors

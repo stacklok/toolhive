@@ -594,6 +594,146 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 	}
 }
 
+func TestWorkflowAuditor_DelegationChain(t *testing.T) {
+	t.Parallel()
+
+	delegatedChain := auth.ParseDelegationChain(
+		map[string]any{
+			"sub": "agent-1",
+			"act": map[string]any{"sub": "agent-2"},
+		}, auth.DefaultMaxDelegationDepth)
+	delegatedIdentity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user-delegated",
+			Name:    "Delegated User",
+			Claims: map[string]any{
+				"act": map[string]any{
+					"sub": "agent-1",
+					"act": map[string]any{"sub": "agent-2"},
+				},
+			},
+			DelegationChain: &delegatedChain,
+		},
+	}
+
+	// attachDelegation is hand-repeated in every Log* method, so each call site is pinned individually.
+	logMethods := []struct {
+		name    string
+		logFunc func(a *WorkflowAuditor, ctx context.Context)
+	}{
+		{
+			name: "LogWorkflowStarted",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
+			},
+		},
+		{
+			name: "LogWorkflowCompleted",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowCompleted(ctx, "wf-1", "wf", time.Second, 1, nil)
+			},
+		},
+		{
+			name: "LogWorkflowFailed",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowFailed(ctx, "wf-1", "wf", time.Second, 1, errors.New("failed"))
+			},
+		},
+		{
+			name: "LogWorkflowTimedOut",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowTimedOut(ctx, "wf-1", "wf", time.Second, 1)
+			},
+		},
+		{
+			name: "LogStepStarted",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogStepStarted(ctx, "wf-1", "step-1", "tool", "some-tool")
+			},
+		},
+		{
+			name: "LogStepCompleted",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogStepCompleted(ctx, "wf-1", "step-1", time.Second, 0)
+			},
+		},
+		{
+			name: "LogStepFailed",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogStepFailed(ctx, "wf-1", "step-1", time.Second, 0, errors.New("failed"))
+			},
+		},
+		{
+			name: "LogStepSkipped",
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogStepSkipped(ctx, "wf-1", "step-1", "condition")
+			},
+		},
+	}
+
+	for _, tt := range logMethods {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			auditor, writer := createTestAuditor(t, DefaultConfig())
+
+			ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+			tt.logFunc(auditor, ctx)
+
+			require.NotEmpty(t, writer.logs, "expected log entry")
+			entry := parseLogEntry(t, writer.getLastLog())
+
+			chain, ok := entry["delegation_chain"].(map[string]any)
+			require.True(t, ok, "delegation_chain should be present in the log output")
+			assert.Equal(t, false, chain["truncated"])
+			actors, ok := chain["actors"].([]any)
+			require.True(t, ok)
+			require.Len(t, actors, 2)
+			first, ok := actors[0].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, "agent-1", first["sub"])
+			second, ok := actors[1].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, "agent-2", second["sub"])
+		})
+	}
+
+	t.Run("no identity omits delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, writer := createTestAuditor(t, DefaultConfig())
+
+		auditor.LogWorkflowStarted(context.Background(), "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		_, exists := entry["delegation_chain"]
+		assert.False(t, exists, "delegation_chain should be omitted without an identity")
+	})
+
+	t.Run("configured max depth truncates chain", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 1
+		auditor, writer := createTestAuditor(t, &Config{MaxDelegationDepth: &maxDepth})
+
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+		auditor.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		chain, ok := entry["delegation_chain"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, true, chain["truncated"])
+		actors, ok := chain["actors"].([]any)
+		require.True(t, ok)
+		require.Len(t, actors, 1)
+		first, ok := actors[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-1", first["sub"])
+		assert.Equal(t, float64(1), chain["dropped_count"])
+	})
+}
+
 func TestWorkflowAuditor_ExtractSource(t *testing.T) {
 	t.Parallel()
 

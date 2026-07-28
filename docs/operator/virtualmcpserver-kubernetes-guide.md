@@ -650,6 +650,55 @@ spec:
           - 'permit(principal, action, resource);'
 ```
 
+**Which token's claims a policy sees**: Cedar reads the primary upstream
+provider's *access token*. Claims that token asserts always win. Because many
+OIDC providers put profile claims in the `id_token` only and omit them from the
+access token, `name` and `email` fall back to **that same provider's `id_token`**
+(captured at login and stored alongside its access token) when the access token
+does not carry them. Provenance is preserved either way: `principal has
+claim_email` means "this upstream asserted an email". When a fallback happens the
+proxy logs, once per 30s:
+
+```
+WARN upstream access token lacks profile claims; using the upstream ID token's
+     values for Cedar evaluation provider=okta claims="[email]"
+```
+
+That fallback uses the stored `id_token` even after it has expired, by design. It
+is read as a record of what the upstream asserted when the user logged in, not
+presented to anyone as a credential. Since a session can outlive an `id_token` by
+days, expiring it out of policy evaluation would let the same user be permitted
+early in a session and denied later, with no configuration change.
+
+The token the client presented — the one ToolHive's auth server issued — is
+never a claim source here, even though it mirrors a `name` and `email`. In a
+multi-upstream chain those mirrored values come from the **first** configured
+upstream (the identity provider), which need not be the provider
+`primaryUpstreamProvider` names, so using them could attribute one IdP's email to
+another.
+
+An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
+`id_token`, so nothing is available to fall back to and the claim stays absent.
+The proxy says so once per 30s:
+
+```
+WARN no upstream ID token stored for provider; policies referencing profile
+     claims the access token omits will deny provider=okta
+```
+
+Every other claim is upstream-access-token-only. In particular, group, role and
+scope claims are not substituted from anywhere, so a policy such as `principal in
+THVGroup::"platform-eng"` only ever matches groups the upstream access token
+asserts. The same holds for the principal: `sub` is never substituted, so a rule
+keyed on `Client::"<upstream-subject>"` keeps matching the upstream identity, and
+an access token with no `sub` is rejected outright rather than having a principal
+chosen for it.
+
+If a policy references a claim that neither the access token nor the `id_token`
+carries, `principal has claim_x` is false and the policy denies — author domain
+and group gates defensively with `has`, and confirm the claim is present in one of
+those two tokens before gating on it.
+
 > **Migration: `primaryUpstreamProvider` location**
 >
 > The field used to live under

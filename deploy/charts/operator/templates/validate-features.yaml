@@ -1,0 +1,17 @@
+{{/*
+Validate feature-flag / RBAC-scope combinations and fail the render early with
+an actionable message rather than deploying a wedged operator.
+
+The StorageVersionMigrator controller watches cluster-scoped
+CustomResourceDefinition objects and re-stores custom resources across every
+namespace, so it requires cluster-scoped RBAC and a cluster-scoped manager
+cache. A namespace-scoped operator (operator.rbac.scope=namespace) gets only
+per-namespace RoleBindings and a namespace-restricted cache, so the controller
+cannot sync its CRD informer and would prevent the manager from starting. We
+fail loudly here instead of silently dropping the feature, because a silent
+drop would let a namespace-scoped admin believe storedVersions are being kept
+clean when they are not.
+*/}}
+{{- if and .Values.operator.features.storageVersionMigrator (ne .Values.operator.rbac.scope "cluster") -}}
+{{- fail "operator.features.storageVersionMigrator requires operator.rbac.scope=cluster: the StorageVersionMigrator controller watches cluster-scoped CustomResourceDefinitions and re-stores resources across all namespaces, which a namespace-scoped operator cannot do. Set operator.features.storageVersionMigrator=false for namespace-scoped installs." -}}
+{{- end -}}

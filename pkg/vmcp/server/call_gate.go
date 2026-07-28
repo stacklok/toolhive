@@ -74,14 +74,23 @@ func (s *Server) authzCallGate() server.CallGate {
 			//
 			// This default is deliberately fail-OPEN, unlike pkg/authz's
 			// MCPMethodToFeatureOperation ("methods not in this map are denied by
-			// default"). The gate mirrors the core admission seam, which only
-			// authorizes tools/resources/prompts today; elicitation/create,
-			// sampling/createMessage, and tasks/* have no admission decision yet, so
-			// denying them here would diverge from the core rather than enforce a
-			// real policy. To gate a NEW verb: add a Check* method on core.VMCP for
-			// it and a case above — do NOT flip this default to deny, which would
-			// reject protocol methods (initialize/ping/list/notifications) that must
-			// always pass.
+			// default"). The gate mirrors the core admission seam. For methods with
+			// NO admission decision at all (elicitation/create, sampling/createMessage,
+			// tasks/*), denying here would diverge from the core rather than enforce a
+			// real policy.
+			//
+			// Two methods DO carry a core admission decision but are intentionally
+			// NOT wire-gated here — this is a conscious choice, not an oversight:
+			//   - completion/complete: core.Complete authorizes the underlying prompt/
+			//     resource ref at dispatch.
+			//   - resources/subscribe: core validates the URI via LookupResource at
+			//     dispatch.
+			// Both are enforced at dispatch instead of on the wire because they are not
+			// argument-conditional in the way the gate's parsed-args fast path assumes,
+			// and their denials already surface through the core's error mapping. To
+			// gate a NEW verb on the wire: add a Check* method on core.VMCP for it and a
+			// case above — do NOT flip this default to deny, which would reject protocol
+			// methods (initialize/ping/list/notifications) that must always pass.
 			return nil
 		}
 

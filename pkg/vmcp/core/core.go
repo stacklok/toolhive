@@ -32,6 +32,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
+// DiscoverCapabilities summarizes, for one identity, whether each capability
+// kind has at least one admission-filtered entry. It carries no descriptor
+// arrays -- only presence flags -- unlike the []vmcp.Tool/Resource/etc. slices
+// ListTools/ListResources/ListResourceTemplates/ListPrompts return.
+type DiscoverCapabilities struct {
+	HasTools             bool
+	HasResources         bool
+	HasResourceTemplates bool
+	HasPrompts           bool
+}
+
 // VMCP is the core Virtual MCP domain object.
 //
 // Contract:
@@ -74,6 +85,14 @@ type VMCP interface {
 	// ListResources returns the resources advertised to identity.
 	ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error)
 
+	// ListResourceTemplates returns the resource templates advertised to identity.
+	// Each template's URI template is treated as the resource id for the admission
+	// filter (the same read-side decision ListResources applies), so a template the
+	// identity may not read is withheld. Reading an expanded URI reuses ReadResource
+	// (the router matches the URI against these templates); there is no dedicated
+	// template read method.
+	ListResourceTemplates(ctx context.Context, identity *auth.Identity) ([]vmcp.ResourceTemplate, error)
+
 	// ReadResource reads the resource at uri on behalf of identity. The
 	// returned result's Meta may be nil (see the interface contract).
 	ReadResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
@@ -88,6 +107,27 @@ type VMCP interface {
 	// _meta to forward.
 	GetPrompt(ctx context.Context, identity *auth.Identity, name string,
 		args map[string]any) (*vmcp.PromptGetResult, error)
+
+	// Complete resolves argument-completion candidates for a prompt argument or a
+	// resource-template variable on behalf of identity (the completion/complete
+	// method).
+	//
+	// ref selects the target: a CompletionRefTypePrompt ref resolves the backend via
+	// the prompts routing table (by ref.Name); a CompletionRefTypeResource ref resolves
+	// it via the resource-templates routing table (matching ref.URI against templates)
+	// with an exact concrete-resource fallback. The referenced capability is
+	// admission-checked (the same get/read decision GetPrompt/ReadResource enforce)
+	// before the backend is queried.
+	//
+	// argName/argValue are the argument being completed; contextArgs carries
+	// previously-resolved argument values for multi-argument completion (may be nil).
+	//
+	// An unroutable ref, or a backend that does not advertise completions, yields an
+	// empty (non-nil) CompletionResult rather than an error — matching the MCP spec's
+	// lenient completion semantics. Admission denial still returns an error wrapping
+	// vmcp.ErrAuthorizationFailed. See ListTools for the nil/anonymous identity semantics.
+	Complete(ctx context.Context, identity *auth.Identity, ref vmcp.CompletionRef,
+		argName, argValue string, contextArgs map[string]string) (*vmcp.CompletionResult, error)
 
 	// LookupTool resolves an advertised tool name to its capability (incl.
 	// BackendID) WITHOUT invoking it. Returns an error for an unknown or
@@ -168,11 +208,34 @@ type VMCP interface {
 	// corresponding authorized list would not show.
 	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
 
+	// Discover returns identity's capability-presence flags -- whether it is
+	// admitted to at least one tool, resource, resource template, and prompt --
+	// from a SINGLE aggregation of backend capabilities, for server/discover.
+	//
+	// It applies the exact same admission-filtered code paths
+	// ListTools/ListResources/ListResourceTemplates/ListPrompts use against one
+	// shared aggregated view, so a flag is true iff the ADMISSION-FILTERED set
+	// for that capability is non-empty -- never derived from the raw aggregate,
+	// which would leak capabilities identity cannot reach. This mirrors the
+	// post-admission-summary precedent ListBackends(filterUnauthorized=true)
+	// established, applied to presence flags instead of a backend list. See
+	// ListTools for the nil/anonymous identity semantics.
+	Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error)
+
 	// BackendHealth returns the backend health reporter the core owns, or nil when health
 	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and
 	// filters capabilities with it; the transport layer uses this only to report on or sync
 	// backend health (e.g. the /health route and periodic status reporting).
 	BackendHealth() health.Reporter
+
+	// InvalidateCapabilityCache forces the next List/Lookup/Call on every identity
+	// to re-sweep backend capabilities rather than serve a cached view. Serve's
+	// Server calls it after a backend reports notifications/tools/list_changed
+	// (#5748), before re-deriving the session's advertised tool set — otherwise
+	// the resync would immediately re-read the now-stale cached aggregation. It
+	// is a no-op (WARN-logged, not silent) when the configured Aggregator does
+	// not memoize results — see aggregator.CacheInvalidator.
+	InvalidateCapabilityCache()
 
 	// Close releases core-held resources (backend connections, the health monitor, etc.).
 	// Implementations must be idempotent: calling Close multiple times returns nil.

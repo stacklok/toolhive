@@ -11,7 +11,7 @@ jobs:
     name: Build ToolHive Binary
     runs-on: ubuntu-8cores-32gb
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -50,6 +50,7 @@ jobs:
           - title: core
             label_filter: core
             artifact: e2e-test-results-core
+            procs: 4
           - title: mcp-run
             label_filter: mcp-run
             artifact: e2e-test-results-mcp-run
@@ -57,8 +58,12 @@ jobs:
             label_filter: mcp-protocol
             artifact: e2e-test-results-mcp-protocol
           - title: proxy
-            label_filter: proxy
+            label_filter: "proxy && !isolation"
             artifact: e2e-test-results-proxy
+          - title: network-isolation
+            label_filter: isolation
+            artifact: e2e-test-results-network-isolation
+            test_timeout: 25m
           - title: middleware
             label_filter: 'middleware || stability'
             artifact: e2e-test-results-middleware
@@ -86,7 +91,7 @@ jobs:
             label_filter: llm
             artifact: e2e-test-results-llm
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -99,7 +104,7 @@ jobs:
           go mod download
       - name: Install Ginkgo CLI
         run: |
-          go install github.com/onsi/ginkgo/v2/ginkgo@latest
+          go install github.com/onsi/ginkgo/v2/ginkgo@v2.28.1
 
       - name: Download ToolHive binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -121,22 +126,52 @@ jobs:
 
       - name: Pre-pull container images
         run: |
-          # Pre-pull images used by E2E tests so that workload creation
-          # does not pay the image-pull cost inside the 60s API timeout.
-          docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.3 &
-          docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
-          docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
+          # Pre-pull images used by E2E tests so that workload startup does not
+          # pay the image-pull cost inside a spec's readiness timeout.
+          #
+          # Images that tests reach through a registry server name (`thv run
+          # fetch`) are resolved from the binary under test instead of being
+          # hardcoded here. Renovate bumps github.com/stacklok/toolhive-catalog
+          # daily but has no manager for these docker pull lines, so hardcoded
+          # tags drift out of sync with the catalog silently and the pre-pull
+          # stops covering what the tests actually run.
+          servers="fetch osv"
+          images="ghcr.io/stacklok/toolhive/egress-proxy:latest"
           # yardstick is only needed for the vmcp test suite
           if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
-            docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
+            images="$images ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0"
           fi
-          # the time server is only used by the proxy (streamable-http) test suite
-          if [ "${{ matrix.label_filter }}" = "proxy" ]; then
-            docker pull ghcr.io/stacklok/dockyard/uvx/mcp-server-time:2026.1.26 &
+          # the time server and yardstick (dual-era barrier mode) are only
+          # used by the proxy (streamable-http) test suite
+          if [ "${{ matrix.label_filter }}" = "proxy && !isolation" ]; then
+            servers="$servers time"
+            images="$images ghcr.io/stackloklabs/yardstick/yardstick-server:1.2.0"
           fi
+          # Envoy is only used by the network-isolation test suite
+          if [ "${{ matrix.title }}" = "network-isolation" ]; then
+            images="$images envoyproxy/envoy-distroless:v1.32.3"
+          fi
+
+          for server in $servers; do
+            image="$(./bin/thv registry info "$server" --format json | jq -er '.image')"
+            echo "Resolved registry server '$server' -> $image"
+            images="$images $image"
+          done
+
+          for image in $images; do
+            docker pull -q "$image" &
+          done
           wait
+
+          # `wait` reports success even when a background pull failed, so check
+          # each image landed locally. Failing here is far cheaper to diagnose
+          # than a spec timing out later while it waits on a live pull.
           echo "Pre-pulled images:"
-          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy|yardstick|mcp-server-time'
+          for image in $images; do
+            docker image inspect "$image" >/dev/null \
+              || { echo "::error::failed to pre-pull $image"; exit 1; }
+            echo "  $image"
+          done
 
       - name: Run E2E tests (${{ matrix.title }})
         env:
@@ -144,6 +179,7 @@ jobs:
           TOOLHIVE_EGRESS_IMAGE: ghcr.io/stacklok/toolhive/egress-proxy:latest
           TEST_TIMEOUT: ${{ matrix.test_timeout || '15m' }}
           LABEL_FILTER: ${{ matrix.label_filter }}
+          PROCS: ${{ matrix.procs || 1 }}
         run: ./test/e2e/run_tests.sh
 
       - name: Upload test results (${{ matrix.title }})
@@ -160,8 +196,12 @@ jobs:
     runs-on: ubuntu-8cores-32gb
     needs: build-binary
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [proxy, vmcp]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -185,12 +225,13 @@ jobs:
       - name: Run MCP conformance suite
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv
+          CONFORMANCE_TARGET: ${{ matrix.target }}
         run: ./test/conformance/run-conformance.sh
 
       - name: Upload conformance results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: conformance-results
+          name: conformance-results-${{ matrix.target }}
           path: test/conformance/results
           retention-days: 7

@@ -167,12 +167,12 @@ func TestLoadHMACSecrets(t *testing.T) {
 		assert.Equal(t, []byte(rotatedSecret), secrets.Rotated[0])
 	})
 
-	t.Run("trims whitespace from secrets", func(t *testing.T) {
+	t.Run("preserves leading and trailing whitespace bytes in secrets", func(t *testing.T) {
 		t.Parallel()
 
 		tmpDir := t.TempDir()
 		secretFile := filepath.Join(tmpDir, "hmac-secret")
-		secretValue := "  secret-with-whitespace  \n"
+		secretValue := "  secret-with-whitespace-that-is-at-least-32-bytes  \n"
 
 		err := os.WriteFile(secretFile, []byte(secretValue), 0600)
 		require.NoError(t, err)
@@ -181,7 +181,88 @@ func TestLoadHMACSecrets(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, secrets)
 
-		assert.Equal(t, []byte("secret-with-whitespace"), secrets.Current)
+		assert.Equal(t, []byte(secretValue), secrets.Current)
+	})
+
+	t.Run("does not corrupt binary secrets with whitespace-valued edge bytes", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "hmac-secret")
+
+		original := make([]byte, 32)
+		for i := range original {
+			original[i] = 0xAB
+		}
+		original[0] = 0x20
+		original[31] = 0x0A
+
+		require.NoError(t, os.WriteFile(secretFile, original, 0600))
+
+		secrets, err := loadHMACSecrets([]string{secretFile})
+		require.NoError(t, err)
+		require.NotNil(t, secrets)
+
+		require.Len(t, secrets.Current, 32)
+		assert.Equal(t, original, secrets.Current)
+	})
+
+	t.Run("does not corrupt rotated binary secrets with whitespace-valued edge bytes", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		currentFile := filepath.Join(tmpDir, "hmac-current")
+		rotatedFile := filepath.Join(tmpDir, "hmac-rotated")
+
+		require.NoError(t, os.WriteFile(currentFile, []byte("current-secret-32-bytes-minimum!"), 0600))
+
+		original := make([]byte, 32)
+		for i := range original {
+			original[i] = 0xAB
+		}
+		original[0] = 0x20
+		original[31] = 0x0A
+
+		require.NoError(t, os.WriteFile(rotatedFile, original, 0600))
+
+		secrets, err := loadHMACSecrets([]string{currentFile, rotatedFile})
+		require.NoError(t, err)
+		require.NotNil(t, secrets)
+
+		require.Len(t, secrets.Rotated, 1)
+		assert.Equal(t, original, secrets.Rotated[0])
+	})
+
+	t.Run("short current secret returns error naming file and byte counts", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		secretFile := filepath.Join(tmpDir, "hmac-secret")
+
+		require.NoError(t, os.WriteFile(secretFile, make([]byte, 31), 0600))
+
+		_, err := loadHMACSecrets([]string{secretFile})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), secretFile)
+		assert.Contains(t, err.Error(), "31")
+		assert.Contains(t, err.Error(), "32")
+	})
+
+	t.Run("short rotated secret returns error naming file and byte counts", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		currentFile := filepath.Join(tmpDir, "hmac-current")
+		rotatedFile := filepath.Join(tmpDir, "hmac-rotated")
+
+		require.NoError(t, os.WriteFile(currentFile, []byte("current-secret-32-bytes-minimum!"), 0600))
+		require.NoError(t, os.WriteFile(rotatedFile, make([]byte, 31), 0600))
+
+		_, err := loadHMACSecrets([]string{currentFile, rotatedFile})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), rotatedFile)
+		assert.Contains(t, err.Error(), "31")
+		assert.Contains(t, err.Error(), "32")
 	})
 
 	t.Run("skips empty paths in rotated files", func(t *testing.T) {

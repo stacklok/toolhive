@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	mcp "github.com/stacklok/toolhive/pkg/mcp"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -81,18 +82,33 @@ func (m *MockBackendClient) EXPECT() *MockBackendClientMockRecorder {
 }
 
 // CallTool mocks base method.
-func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
+func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any, paramHeaders map[string]string) (*vmcp.ToolCallResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CallTool", ctx, target, toolName, arguments, meta)
+	ret := m.ctrl.Call(m, "CallTool", ctx, target, toolName, arguments, meta, paramHeaders)
 	ret0, _ := ret[0].(*vmcp.ToolCallResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // CallTool indicates an expected call of CallTool.
-func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, arguments, meta any) *gomock.Call {
+func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, arguments, meta, paramHeaders any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, target, toolName, arguments, meta)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, target, toolName, arguments, meta, paramHeaders)
+}
+
+// Complete mocks base method.
+func (m *MockBackendClient) Complete(ctx context.Context, target *vmcp.BackendTarget, ref vmcp.CompletionRef, argName, argValue string, contextArgs map[string]string) (*vmcp.CompletionResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Complete", ctx, target, ref, argName, argValue, contextArgs)
+	ret0, _ := ret[0].(*vmcp.CompletionResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Complete indicates an expected call of Complete.
+func (mr *MockBackendClientMockRecorder) Complete(ctx, target, ref, argName, argValue, contextArgs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Complete", reflect.TypeOf((*MockBackendClient)(nil).Complete), ctx, target, ref, argName, argValue, contextArgs)
 }
 
 // GetPrompt mocks base method.
@@ -138,4 +154,43 @@ func (m *MockBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 func (mr *MockBackendClientMockRecorder) ReadResource(ctx, target, uri any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadResource", reflect.TypeOf((*MockBackendClient)(nil).ReadResource), ctx, target, uri)
+}
+
+// MockRevisionReporter is a mock of RevisionReporter interface.
+type MockRevisionReporter struct {
+	ctrl     *gomock.Controller
+	recorder *MockRevisionReporterMockRecorder
+	isgomock struct{}
+}
+
+// MockRevisionReporterMockRecorder is the mock recorder for MockRevisionReporter.
+type MockRevisionReporterMockRecorder struct {
+	mock *MockRevisionReporter
+}
+
+// NewMockRevisionReporter creates a new mock instance.
+func NewMockRevisionReporter(ctrl *gomock.Controller) *MockRevisionReporter {
+	mock := &MockRevisionReporter{ctrl: ctrl}
+	mock.recorder = &MockRevisionReporterMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockRevisionReporter) EXPECT() *MockRevisionReporterMockRecorder {
+	return m.recorder
+}
+
+// CachedRevision mocks base method.
+func (m *MockRevisionReporter) CachedRevision(workloadID string) (mcp.Revision, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CachedRevision", workloadID)
+	ret0, _ := ret[0].(mcp.Revision)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// CachedRevision indicates an expected call of CachedRevision.
+func (mr *MockRevisionReporterMockRecorder) CachedRevision(workloadID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CachedRevision", reflect.TypeOf((*MockRevisionReporter)(nil).CachedRevision), workloadID)
 }

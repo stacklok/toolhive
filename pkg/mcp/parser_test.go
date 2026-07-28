@@ -235,6 +235,77 @@ func TestParsingMiddleware(t *testing.T) {
 	}
 }
 
+func TestParsingMiddlewareRejectsBatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "batch of requests",
+			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},` +
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"danger"}}]`,
+		},
+		{
+			name: "batch with leading whitespace",
+			body: "  \n\t[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}]",
+		},
+		{
+			name: "empty batch",
+			body: `[]`,
+		},
+		{
+			name: "malformed batch (unterminated array)",
+			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/call"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// The next handler must never run for a batch: reaching it means the
+			// batch bypassed rejection and would hit the backend uninspected.
+			nextCalled := false
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			assert.False(t, nextCalled, "batch must be rejected before the next handler")
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+
+			var resp struct {
+				JSONRPC string `json:"jsonrpc"`
+				Error   struct {
+					Code    int64  `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, "2.0", resp.JSONRPC)
+			assert.Equal(t, CodeInvalidRequest, resp.Error.Code)
+			assert.NotEmpty(t, resp.Error.Message)
+
+			// A batch has no single request id to echo. A tagged-struct
+			// decode (above) can't tell an absent "id" key apart from a
+			// present null -- both decode to the zero value -- so the
+			// omission is checked via a map decode instead.
+			var asMap map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &asMap))
+			_, hasID := asMap["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
+		})
+	}
+}
+
 func TestParsingMiddlewareModernHeaders(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1510,14 +1581,9 @@ func TestParsingMiddlewareErrorHandling(t *testing.T) {
 			body:         bytes.NewBufferString(`{"invalid json`),
 			expectParsed: false,
 		},
-		{
-			name:         "JSON array instead of object",
-			method:       "POST",
-			path:         "/messages",
-			contentType:  "application/json",
-			body:         bytes.NewBufferString(`[{"jsonrpc":"2.0"}]`),
-			expectParsed: false,
-		},
+		// A top-level JSON array is a JSON-RPC batch; ParsingMiddleware rejects
+		// it outright (see TestParsingMiddlewareRejectsBatch) rather than passing
+		// it through, so it is deliberately not exercised here.
 	}
 
 	for _, tt := range tests {
@@ -1597,32 +1663,6 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 			assert.Nil(t, meta)
 		})
 	}
-}
-
-func TestParsingMiddlewareWithBatchRequests(t *testing.T) {
-	t.Parallel()
-	// Test batch JSON-RPC requests (currently not supported but should not crash)
-	batchBody := `[
-		{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tool1"}},
-		{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tool2"}}
-	]`
-
-	var capturedCtx context.Context
-	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedCtx = r.Context()
-		w.WriteHeader(http.StatusOK)
-	})
-
-	middleware := ParsingMiddleware(testHandler)
-	req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(batchBody))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	middleware.ServeHTTP(w, req)
-
-	// Batch requests should not be parsed (not supported yet)
-	parsed := GetParsedMCPRequest(capturedCtx)
-	assert.Nil(t, parsed)
 }
 
 func TestConvenienceFunctionsWithNilContext(t *testing.T) {

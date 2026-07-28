@@ -42,6 +42,7 @@ _Appears in:_
 | `includeResponseData` _boolean_ | IncludeResponseData determines whether to include response data in audit logs. | false | Optional: \{\} <br /> |
 | `detectApplicationErrors` _boolean_ | DetectApplicationErrors controls whether the audit middleware inspects<br />JSON-RPC response bodies for application-level errors when the HTTP<br />status code indicates success (2xx). When enabled, a small prefix of<br />the response body is buffered to detect JSON-RPC error fields,<br />independent of the IncludeResponseData setting. | true | Optional: \{\} <br /> |
 | `maxDataSize` _integer_ | MaxDataSize limits the size of request/response data included in audit logs (in bytes). | 1024 | Optional: \{\} <br /> |
+| `maxDelegationDepth` _integer_ | MaxDelegationDepth caps how many nested RFC 8693 "act" entries are<br />recorded in an audit event's delegationChain. Deeper chains are<br />truncated (marked with truncated=true). Defaults to 10 when unset. | 10 | Minimum: 1 <br />Optional: \{\} <br /> |
 | `logFile` _string_ | LogFile specifies the file path for audit logs. If empty, logs to stdout. |  | Optional: \{\} <br /> |
 
 
@@ -413,7 +414,7 @@ _Appears in:_
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.<br />Deprecated (Kubernetes operator only): When deploying via the operator, use<br />VirtualMCPServer.spec.telemetryConfigRef to reference a shared MCPTelemetryConfig<br />resource instead. This field remains valid for standalone (non-operator) deployments. |  | Optional: \{\} <br /> |
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  | Optional: \{\} <br /> |
-| `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  | Optional: \{\} <br /> |
+| `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions.<br />Enabling the optimizer currently pins this instance to MCP 2025-11-25: the<br />find_tool/call_tool meta-tools are session-scoped, so Modern-capable (2026-07-28)<br />clients are negotiated down to the Legacy revision (see<br />pkg/vmcp/server/modern_gate.go; Modern parity is tracked in stacklok/toolhive#6089). |  | Optional: \{\} <br /> |
 | `codeMode` _[vmcp.config.CodeModeConfig](#vmcpconfigcodemodeconfig)_ | CodeMode configures vMCP code mode: server-side execution of Starlark scripts that<br />orchestrate multiple backend tool calls in a single request via the execute_tool_script<br />virtual tool. When enabled, execute_tool_script is advertised alongside the backend<br />tools; a script's inner tool calls are authorized individually, so a script can only<br />reach tools the caller is already permitted to use. Disabled by default. |  | Optional: \{\} <br /> |
 | `sessionStorage` _[vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When provider is "redis", the operator injects Redis connection parameters<br />(address, db, keyPrefix) here. The Redis password is provided separately via<br />the THV_SESSION_REDIS_PASSWORD environment variable. |  | Optional: \{\} <br /> |
 | `rateLimiting` _[ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)_ | RateLimiting defines rate limiting configuration for the Virtual MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
@@ -433,8 +434,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" strategy.<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ | Optional: \{\} <br /> |
-| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy. |  | Optional: \{\} <br /> |
+| `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" tool strategy<br />and for backend-prefixed prompt names (the default for every prompt;<br />under the "priority" strategy, backends listed in priorityOrder keep<br />their own prompt names).<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ | Optional: \{\} <br /> |
+| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy.<br />Listed workloads also keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
 
 
 
@@ -553,6 +554,7 @@ _Appears in:_
 | `protectedResourceAllowPrivateIp` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing |  |  |
 | `jwksAllowPrivateIp` _boolean_ | JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.<br />Enable when the embedded auth server runs on a loopback address and<br />the OIDC middleware needs to fetch its JWKS from that address.<br />Use with caution - only enable for trusted internal IDPs or testing. |  |  |
 | `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
+| `caBundlePath` _string_ | CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle<br />used when the OIDC middleware performs HTTPS requests to the issuer<br />(OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle<br />at this path is added to the trust store used for verifying the issuer's<br />TLS certificate. Typically populated by the Kubernetes operator from<br />MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster<br />service-account CA when using Kubernetes service-account auth. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OperationalConfig
@@ -4756,6 +4758,14 @@ _Appears in:_
 
 
 
+
+
+
+
+
+
+
+
 #### pkg.vmcp.ConflictResolutionStrategy
 
 _Underlying type:_ _string_
@@ -4804,6 +4814,31 @@ This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.Di
 | `circuitBreakerState` _string_ | CircuitBreakerState is the current circuit breaker state (closed, open, half-open).<br />Empty when circuit breaker is disabled or not configured. |  | Enum: [closed open half-open] <br />Optional: \{\} <br /> |
 | `circuitLastChanged` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | CircuitLastChanged is the timestamp when the circuit breaker state last changed.<br />Empty when circuit breaker is disabled or has never changed state. |  | Optional: \{\} <br /> |
 | `consecutiveFailures` _integer_ | ConsecutiveFailures is the current count of consecutive health check failures.<br />Resets to 0 when the backend becomes healthy again. |  | Optional: \{\} <br /> |
+| `mcpRevision` _string_ | MCPRevision is the backend's negotiated MCP protocol revision<br />("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed. |  | Optional: \{\} <br /> |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

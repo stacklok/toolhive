@@ -32,6 +32,12 @@ type backendHealthState struct {
 	// circuitBreaker manages circuit breaker state for this backend.
 	// Always non-nil; uses alwaysClosedCircuit when circuit breaker is disabled.
 	circuitBreaker CircuitBreaker
+
+	// mcpRevision is the backend's negotiated MCP revision as a read-model copy
+	// (e.g. "2026-07-28"/"2025-11-25"), sourced from the client's cache during the
+	// health check. Empty when the backend has not been probed. May lag the client
+	// cache slightly — fine for status.
+	mcpRevision string
 }
 
 // statusTracker tracks health status for multiple backends.
@@ -171,6 +177,7 @@ func (*statusTracker) copyState(state *backendHealthState) *State {
 		LastErrorCategory:   sanitizeError(state.lastError),
 		LastError:           state.lastError,
 		LastTransitionTime:  state.lastTransitionTime,
+		MCPRevision:         state.mcpRevision,
 	}
 
 	// Include circuit breaker state
@@ -240,6 +247,18 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 
 	// Update circuit breaker
 	state.circuitBreaker.RecordSuccess()
+}
+
+// RecordRevision stores the backend's negotiated MCP revision read-model. It is
+// a no-op for an untracked or removed backend (RecordSuccess/RecordFailure runs
+// first and creates the state, so a tracked backend always exists here).
+func (t *statusTracker) RecordRevision(backendID, revision string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if state, exists := t.states[backendID]; exists {
+		state.mcpRevision = revision
+	}
 }
 
 // RecordFailure records a failed health check for a backend.
@@ -514,4 +533,9 @@ type State struct {
 	// CircuitLastChanged is when the circuit breaker state last changed.
 	// When circuit breaker is disabled, this will be zero time (via alwaysClosedCircuit).
 	CircuitLastChanged time.Time
+
+	// MCPRevision is the backend's negotiated MCP revision ("2026-07-28" or
+	// "2025-11-25"), or empty when the backend has not been probed. This is a
+	// read-model copy of the client's cached revision.
+	MCPRevision string
 }

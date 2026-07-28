@@ -595,7 +595,7 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 	}
 }
 
-func TestWorkflowAuditor_DelegationChain(t *testing.T) {
+func TestWorkflowAuditor_NewEvent(t *testing.T) {
 	t.Parallel()
 
 	delegatedChain := coreaudit.ParseDelegationChain(
@@ -617,124 +617,54 @@ func TestWorkflowAuditor_DelegationChain(t *testing.T) {
 		},
 	}
 
-	// attachDelegation is hand-repeated in every Log* method, so each call site is pinned individually.
-	logMethods := []struct {
-		name    string
-		logFunc func(a *WorkflowAuditor, ctx context.Context)
-	}{
-		{
-			name: "LogWorkflowStarted",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
-			},
-		},
-		{
-			name: "LogWorkflowCompleted",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogWorkflowCompleted(ctx, "wf-1", "wf", time.Second, 1, nil)
-			},
-		},
-		{
-			name: "LogWorkflowFailed",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogWorkflowFailed(ctx, "wf-1", "wf", time.Second, 1, errors.New("failed"))
-			},
-		},
-		{
-			name: "LogWorkflowTimedOut",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogWorkflowTimedOut(ctx, "wf-1", "wf", time.Second, 1)
-			},
-		},
-		{
-			name: "LogStepStarted",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogStepStarted(ctx, "wf-1", "step-1", "tool", "some-tool")
-			},
-		},
-		{
-			name: "LogStepCompleted",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogStepCompleted(ctx, "wf-1", "step-1", time.Second, 0)
-			},
-		},
-		{
-			name: "LogStepFailed",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogStepFailed(ctx, "wf-1", "step-1", time.Second, 0, errors.New("failed"))
-			},
-		},
-		{
-			name: "LogStepSkipped",
-			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
-				a.LogStepSkipped(ctx, "wf-1", "step-1", "condition")
-			},
-		},
-	}
+	t.Run("adds source subjects and delegation", func(t *testing.T) {
+		t.Parallel()
 
-	for _, tt := range logMethods {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			auditor, writer := createTestAuditor(t, DefaultConfig())
+		auditor, _ := createTestAuditor(t, DefaultConfig())
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
 
-			ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
-			tt.logFunc(auditor, ctx)
+		event := auditor.newEvent(ctx, EventTypeWorkflowStarted, OutcomeSuccess)
 
-			require.NotEmpty(t, writer.logs, "expected log entry")
-			entry := parseLogEntry(t, writer.getLastLog())
-
-			chain, ok := entry["delegation"].(map[string]any)
-			require.True(t, ok, "delegation should be present in the log output")
-			assert.Equal(t, false, chain["truncated"])
-			hops, ok := chain["chain"].([]any)
-			require.True(t, ok)
-			require.Len(t, hops, 2)
-			first, ok := hops[0].(map[string]any)
-			require.True(t, ok)
-			assert.Equal(t, "agent-1", first["sub"])
-			second, ok := hops[1].(map[string]any)
-			require.True(t, ok)
-			assert.Equal(t, "agent-2", second["sub"])
-		})
-	}
+		assert.Equal(t, EventTypeWorkflowStarted, event.Type)
+		assert.Equal(t, OutcomeSuccess, event.Outcome)
+		assert.Equal(t, "vmcp-composer", event.Component)
+		assert.Equal(t, SourceTypeLocal, event.Source.Type)
+		assert.Equal(t, "vmcp-composer", event.Source.Value)
+		assert.Equal(t, "Delegated User", event.Subjects[SubjectKeyUser])
+		require.NotNil(t, event.DelegationChain)
+		assert.False(t, event.DelegationChain.Truncated)
+		require.Len(t, event.DelegationChain.Chain, 2)
+		assert.Equal(t, "agent-1", event.DelegationChain.Chain[0].Subject)
+		assert.Equal(t, "agent-2", event.DelegationChain.Chain[1].Subject)
+	})
 
 	t.Run("no identity omits delegation chain", func(t *testing.T) {
 		t.Parallel()
-		auditor, writer := createTestAuditor(t, DefaultConfig())
 
-		auditor.LogWorkflowStarted(context.Background(), "wf-1", "wf", nil, time.Second)
+		auditor, _ := createTestAuditor(t, DefaultConfig())
 
-		require.NotEmpty(t, writer.logs, "expected log entry")
-		entry := parseLogEntry(t, writer.getLastLog())
+		event := auditor.newEvent(context.Background(), EventTypeWorkflowStarted, OutcomeSuccess)
 
-		_, exists := entry["delegation"]
-		assert.False(t, exists, "delegation should be omitted without an identity")
+		assert.Nil(t, event.DelegationChain)
+		assert.Equal(t, "anonymous", event.Subjects[SubjectKeyUser])
 	})
 
 	t.Run("configured max depth truncates chain", func(t *testing.T) {
 		t.Parallel()
+
 		maxDepth := 1
-		auditor, writer := createTestAuditor(t, &Config{MaxDelegationDepth: &maxDepth})
-
+		auditor, _ := createTestAuditor(t, &Config{MaxDelegationDepth: &maxDepth})
 		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
-		auditor.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
 
-		require.NotEmpty(t, writer.logs, "expected log entry")
-		entry := parseLogEntry(t, writer.getLastLog())
+		event := auditor.newEvent(ctx, EventTypeWorkflowStarted, OutcomeSuccess)
 
-		chain, ok := entry["delegation"].(map[string]any)
-		require.True(t, ok)
-		assert.Equal(t, true, chain["truncated"])
-		hops, ok := chain["chain"].([]any)
-		require.True(t, ok)
-		require.Len(t, hops, 1)
-		first, ok := hops[0].(map[string]any)
-		require.True(t, ok)
-		assert.Equal(t, "agent-1", first["sub"])
-		assert.Equal(t, float64(1), chain["omitted"])
+		require.NotNil(t, event.DelegationChain)
+		assert.True(t, event.DelegationChain.Truncated)
+		require.Len(t, event.DelegationChain.Chain, 1)
+		assert.Equal(t, "agent-1", event.DelegationChain.Chain[0].Subject)
+		assert.Equal(t, 1, event.DelegationChain.Omitted)
 	})
 }
-
 func TestWorkflowAuditor_ExtractSource(t *testing.T) {
 	t.Parallel()
 

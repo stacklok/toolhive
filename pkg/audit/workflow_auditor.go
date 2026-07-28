@@ -48,6 +48,18 @@ func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
 	}, nil
 }
 
+func (w *WorkflowAuditor) newEvent(ctx context.Context, eventType string, outcome string) *AuditEvent {
+	event := NewAuditEvent(
+		eventType,
+		w.extractSource(ctx),
+		outcome,
+		w.extractSubjects(ctx),
+		w.component,
+	)
+	w.attachDelegation(ctx, event)
+	return event
+}
+
 // LogWorkflowStarted logs the start of workflow execution.
 func (w *WorkflowAuditor) LogWorkflowStarted(
 	ctx context.Context,
@@ -60,17 +72,7 @@ func (w *WorkflowAuditor) LogWorkflowStarted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStarted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowStarted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -112,17 +114,7 @@ func (w *WorkflowAuditor) LogWorkflowCompleted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowCompleted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowCompleted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -165,17 +157,7 @@ func (w *WorkflowAuditor) LogWorkflowFailed(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowFailed,
-		source,
-		OutcomeFailure,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowFailed, OutcomeFailure)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -205,17 +187,7 @@ func (w *WorkflowAuditor) LogWorkflowTimedOut(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowTimedOut,
-		source,
-		OutcomeFailure,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowTimedOut, OutcomeFailure)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -245,17 +217,7 @@ func (w *WorkflowAuditor) LogStepStarted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepStarted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowStepStarted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -283,17 +245,7 @@ func (w *WorkflowAuditor) LogStepCompleted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepCompleted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowStepCompleted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -323,17 +275,7 @@ func (w *WorkflowAuditor) LogStepFailed(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepFailed,
-		source,
-		OutcomeFailure,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowStepFailed, OutcomeFailure)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -361,17 +303,7 @@ func (w *WorkflowAuditor) LogStepSkipped(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepSkipped,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
-	w.attachDelegation(ctx, event)
+	event := w.newEvent(ctx, EventTypeWorkflowStepSkipped, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,

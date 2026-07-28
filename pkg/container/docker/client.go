@@ -1647,9 +1647,11 @@ func mergeEnvVars(base, extra map[string]string) map[string]string {
 // the workload and returns the host-side port it is bound on.
 func (c *Client) setupIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
 	externalEndpointsConfig map[string]*network.EndpointSettings, networkPermissions *permissions.NetworkPermissions) (int, error) {
-	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
+	// A random port avoids every same-image workload racing to bind the same
+	// preferred port when starting concurrently (see #6063).
+	squidPort, err := networking.FindOrUsePort(0)
 	if err != nil {
-		return 0, fmt.Errorf("failed to find or use port %d: %w", squidPort, err)
+		return 0, fmt.Errorf("failed to find an available port: %w", err)
 	}
 	squidExposedPorts := map[string]struct{}{
 		fmt.Sprintf("%d/tcp", squidPort): {},

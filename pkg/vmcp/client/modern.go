@@ -32,6 +32,12 @@ const modernClientName = "toolhive-vmcp"
 // this shim does not drive — see errModernInputRequired.
 const modernResultTypeComplete = "complete"
 
+// modernResultTypeInputRequired is the SEP-2322 envelope resultType announcing
+// a Multi Round-Trip Request round. The only non-"complete" resultType whose
+// payload survives decode (newInputRequiredError); everything else is sentinel-
+// only.
+const modernResultTypeInputRequired = "input_required"
+
 // jsonRPCCodeMethodNotFound is the JSON-RPC "method not found" code. Declared
 // locally rather than imported (mcpcompat's METHOD_NOT_FOUND is the SDK's wire
 // vocabulary; the Modern layer sources its codes independently — see
@@ -57,10 +63,14 @@ var errWrongEra = errors.New("backend response is not a Modern (2026-07-28) MCP 
 // of a side-effecting tool). The cache may still be reclassified.
 var errLegacyResponseBody = errors.New("backend returned a Legacy-shaped body (no resultType); it may have executed")
 
-// errModernInputRequired is returned when a Modern envelope decodes with a
-// resultType other than "complete" (e.g. "input_required"). Multi-round tool
-// retrieval is deferred; this shim detects and errors rather than returning a
-// blank success.
+// errModernInputRequired is the classification sentinel for a Modern envelope
+// whose resultType is not "complete" (e.g. "input_required"). The message
+// string is frozen for compatibility — it predates the MRTR seam, and both
+// probeRevision's errors.Is classification and client-visible error text pin
+// it — even though "unsupported" no longer tells the whole story: an
+// input_required round's SEP-2322 payload now rides the typed
+// vmcp.InputRequiredError wrapping this sentinel, and MRTR consumers branch on
+// vmcp.InputRequiredFromError (docs/arch/16-vmcp-mrtr.md, slice 1).
 var errModernInputRequired = errors.New("modern response requires additional input (multi-round retrieval unsupported)")
 
 // errModernProtocolError wraps a well-formed JSON-RPC error whose code is one of
@@ -267,7 +277,12 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 		// request. Distinct from errWrongEra so the caller does not auto-retry.
 		return errLegacyResponseBody
 	default:
-		return fmt.Errorf("%w: resultType=%q", errModernInputRequired, envelope.ResultType)
+		// Typed so an "input_required" round's SEP-2322 payload (inputRequests,
+		// requestState) survives for MRTR consumers (vmcp.InputRequiredFromError)
+		// — gated on the three methods that may carry a round and on payload
+		// validity; unwraps to errModernInputRequired with an identical message,
+		// so classification and behavior are unchanged for everyone else.
+		return newInputRequiredError(method, envelope.ResultType, result)
 	}
 
 	if out != nil {

@@ -284,7 +284,7 @@ func validateExchangeParams(form url.Values) (string, error) {
 	return subjectToken, nil
 }
 
-// checkDelegationConsent enforces the RFC 8693 §4.1 delegation consent check.
+// checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.
 //
 // If the subject token carries a may_act claim, it is the authoritative
 // consent signal: only the party named in may_act.sub may delegate. The

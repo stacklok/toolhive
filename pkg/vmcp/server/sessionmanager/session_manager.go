@@ -95,6 +95,12 @@ type Manager struct {
 // registry. It builds the decorating session factory from cfg, wiring the
 // optimizer and composite tool layers internally.
 //
+// An optimizer (FactoryConfig.OptimizerFactory or OptimizerConfig) requires
+// FactoryConfig.AdvertiseFromCore; New rejects the combination otherwise. The
+// guard makes a non-nil OptimizerFactory() a faithful "optimizer enabled"
+// signal, which the Modern capability gate in pkg/vmcp/server/modern_gate.go
+// depends on.
+//
 // The returned cleanup function releases any resources allocated during
 // construction (e.g. the optimizer's SQLite store). Callers must invoke it
 // on shutdown. If no cleanup is needed, a no-op function is returned.
@@ -108,6 +114,10 @@ func New(
 	}
 	if cfg.CacheCapacity < 0 {
 		return nil, nil, fmt.Errorf("sessionmanager.New: CacheCapacity must be >= 0 (got %d)", cfg.CacheCapacity)
+	}
+	if (cfg.OptimizerFactory != nil || cfg.OptimizerConfig != nil) && !cfg.AdvertiseFromCore {
+		return nil, nil, fmt.Errorf("sessionmanager.New: the optimizer requires " +
+			"FactoryConfig.AdvertiseFromCore (the Serve layer builds it over the core's tools)")
 	}
 	capacity := cfg.CacheCapacity
 	if capacity == 0 {
@@ -126,14 +136,13 @@ func New(
 		backendReg: backendRegistry,
 	}
 
-	// Surface the resolved optimizer factory to the Serve path ONLY when
-	// AdvertiseFromCore is set. That makes the two store writers mutually exclusive:
-	// the session-factory decorator runs iff !AdvertiseFromCore (buildDecoratingFactory
-	// below), and OptimizerFactory() returns a non-nil factory iff AdvertiseFromCore —
-	// so a Serve composition root that enables the optimizer but forgets the flag gets a
-	// nil factory (no Serve-layer optimizer) rather than a silent double-index of the
-	// shared FTS5 store. The legacy server.New path leaves AdvertiseFromCore false and
-	// never calls OptimizerFactory(), so its decorator is unaffected.
+	// Surface the resolved optimizer factory to the Serve path. The constructor
+	// guard above rejects an optimizer without AdvertiseFromCore, so the shared
+	// FTS5 store has exactly one writer (the Serve layer) and OptimizerFactory()
+	// is non-nil exactly when the optimizer is enabled. server.New sets
+	// AdvertiseFromCore unconditionally (server.go), so every in-tree composition
+	// takes this branch; the flag exists for direct-Serve embedders, which New
+	// rejects when they configure an optimizer without setting it.
 	if cfg.AdvertiseFromCore {
 		sm.optimizerFactory = optimizerFactory
 	}
@@ -160,16 +169,17 @@ func New(
 	return sm, cleanup, nil
 }
 
-// OptimizerFactory returns the resolved (telemetry-wrapped) optimizer factory, or
-// nil when the optimizer is disabled OR FactoryConfig.AdvertiseFromCore is false.
+// OptimizerFactory returns the resolved (telemetry-wrapped) optimizer factory,
+// or nil exactly when the optimizer is disabled: New rejects an optimizer
+// without FactoryConfig.AdvertiseFromCore, so nil-ness here is a faithful
+// "optimizer enabled" signal (the Modern capability gate in
+// pkg/vmcp/server/modern_gate.go depends on it).
 //
-// It is consumed by the Serve path (FactoryConfig.AdvertiseFromCore), which builds
-// a per-session optimizer over the core's advertised tool set rather than via the
-// session decorator. Gating on AdvertiseFromCore makes the decorator and this getter
-// mutually exclusive store writers, so the shared FTS5 store can never be double-indexed
-// (see New). The optimizer's shared store and its cleanup remain owned by this Manager
-// (the cleanup function returned from New). On the legacy server.New path the factory is
-// applied internally via the session decorator and this getter is unused.
+// It is consumed by the Serve path, which builds a per-session optimizer over
+// the core's advertised tool set. The optimizer's shared store and its cleanup
+// remain owned by this Manager (the cleanup function returned from New).
+// server.New sets AdvertiseFromCore unconditionally, so this getter is live on
+// every composition path.
 func (m *Manager) OptimizerFactory() func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error) {
 	return m.optimizerFactory
 }

@@ -5,6 +5,7 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -423,29 +424,29 @@ var _ = Describe("server/discover Authorization Guard", Label("proxy", "stateles
 		Expect(callResp.Error).To(BeNil())
 	})
 
-	It("still denies with 403 a method the Cedar policy does not permit", func() {
+	It("still denies with 403 a method the Cedar policy does not permit, with a conformant JSON-RPC envelope", func() {
 		// server/discover's always-allowed flip doesn't touch the general
 		// default-deny rule (MCPMethodToFeatureOperation's doc comment:
 		// "Methods not in this map are denied by default"). tools/call IS in
 		// the map and routes through Cedar; the policy in this BeforeEach
 		// only permits resource == Tool::"echo", so calling any other tool
-		// name still gets denied -- keeps the 403/denial path (and its
-		// non-conformant-envelope wire shape, #5950) covered by this suite.
+		// name still gets denied -- keeps the 403/denial path covered by this
+		// suite.
 		req, err := e2e.NewModernRequest("tools/call", map[string]any{
 			"name":      "notpermitted",
 			"arguments": map[string]any{"input": "shouldbedenied"},
 		})
 		Expect(err).ToNot(HaveOccurred())
+		req.WithID(int64(9001))
 
 		resp, err := client.Send(context.Background(), proxyURL, req)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.StatusCode).To(Equal(403))
 		Expect(resp.Error).ToNot(BeNil())
-		// The denial envelope is currently non-conformant JSON-RPC (capitalized
-		// Result/Error/ID, no "jsonrpc":"2.0" -- tracked in #5950); this parses
-		// only because encoding/json's unmarshal is case-insensitive. That's the
-		// envelope's job to fix, not this guard's -- here we're asserting authz
-		// *behavior* (denied, code 403), not wire conformance.
 		Expect(resp.Error.Code).To(Equal(int64(403)))
+		// The denial envelope must be conformant JSON-RPC: correct version tag
+		// and the request's id echoed back.
+		Expect(resp.JSONRPC).To(Equal("2.0"))
+		Expect(resp.ID).To(Equal(json.Number("9001")))
 	})
 })

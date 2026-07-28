@@ -178,15 +178,6 @@ func buildCedarAuthzServer(
 			Authz:          authzCfg,
 			AuditConfig:    auditCfg,
 			CodeModeConfig: codeModeCfg,
-			// Required for TestIntegration_CedarAuthzDenial_ModernPath_IsAudited to
-			// exercise what it claims: dispatchModern's re-homed call gate. Without
-			// it the kill switch refuses the Modern request in classifyingHandler and
-			// dispatchModern never runs. (Before the classifier learned to refuse an
-			// unserved revision, the request instead fell through to the SDK path, so
-			// that test passed on a denial from a different gate entirely.) Safe for
-			// the Legacy-shaped tests sharing this helper: classifyingHandler passes
-			// Legacy traffic through regardless of this flag.
-			ModernDispatchEnabled: true,
 		},
 		router.NewSessionRouter(&vmcp.RoutingTable{}),
 		backendClient,

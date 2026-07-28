@@ -46,7 +46,7 @@ func NewPriorityConflictResolver(priorityOrder []string) (*PriorityConflictResol
 	return &PriorityConflictResolver{
 		PriorityOrder:  priorityOrder,
 		priorityMap:    priorityMap,
-		prefixResolver: NewPrefixConflictResolver("{workload}_"), // Fallback for unmapped backends
+		prefixResolver: NewPrefixConflictResolver(defaultPrefixFormat), // Fallback for unmapped backends
 	}, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 )
@@ -38,6 +40,13 @@ type modernFakeCore struct {
 
 	discoverCaps core.DiscoverCapabilities
 	discoverErr  error
+	// discoverCalls counts Discover invocations, so a test can assert the
+	// subscriptions/listen pre-check skipped the backend fan-out entirely (the
+	// response is identical either way, so only the count is observable).
+	discoverCalls int
+	// discoverIdentity records the identity Discover was called with, so
+	// per-identity filtering of a computed set can be pinned rather than assumed.
+	discoverIdentity *auth.Identity
 
 	checkToolErr, checkResourceErr, checkPromptErr error
 	callToolErr, readResourceErr, getPromptErr     error
@@ -73,7 +82,9 @@ func (f *modernFakeCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Pr
 	return f.prompts, nil
 }
 
-func (f *modernFakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
+func (f *modernFakeCore) Discover(_ context.Context, identity *auth.Identity) (core.DiscoverCapabilities, error) {
+	f.discoverCalls++
+	f.discoverIdentity = identity
 	return f.discoverCaps, f.discoverErr
 }
 
@@ -295,7 +306,7 @@ func TestDispatchModern_PingRealParser(t *testing.T) {
 	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 	req.Header.Set("Mcp-Method", "ping")
 
-	s := classifyingHandlerTestServer(true)
+	s := classifyingHandlerTestServer()
 	nextCalled := false
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true })
 
@@ -709,6 +720,76 @@ func TestDispatchModern_AuthzGate(t *testing.T) {
 			assert.True(t, fc.callCalled)
 		})
 	}
+}
+
+// TestDispatchModern_CodedErrorPreservesCodeAndData pins the CodedError branch
+// of writeModernDispatchError: a domain error carrying its own stable JSON-RPC
+// code and data (here the rate limiter's -32029 with data.retryAfterSeconds)
+// must reach the Modern client with that code and data intact, not be
+// laundered into an opaque -32603 — parity with the SDK path, where
+// conversion.ErrorToToolResult preserves the same code/data in
+// structuredContent. HTTP status stays 200: go-sdk rejects a non-200 POST
+// response before decoding its body, so a 429 would discard the error object
+// -- and data.retryAfterSeconds -- unread (see writeModernCodedError).
+func TestDispatchModern_CodedErrorPreservesCodeAndData(t *testing.T) {
+	t.Parallel()
+
+	limited := &ratelimit.RateLimitedError{RetryAfter: 5 * time.Second}
+
+	cases := []struct {
+		method     string
+		resourceID string
+	}{
+		{method: "tools/call", resourceID: "echo"},
+		{method: "resources/read", resourceID: "file://doc"},
+		{method: "prompts/get", resourceID: "review"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.method+"/coded error keeps its code and data", func(t *testing.T) {
+			t.Parallel()
+			parsed := &mcpparser.ParsedMCPRequest{Method: c.method, ResourceID: c.resourceID, IsRequest: true, ID: "1"}
+			fc := &modernFakeCore{callToolErr: limited, readResourceErr: limited, getPromptErr: limited}
+
+			rec, body := dispatchModernTest(t.Context(), t, fc, true, parsed)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+			errObj, ok := body["error"].(map[string]any)
+			require.True(t, ok, "got %v", body)
+			assert.Equal(t, float64(ratelimit.CodeRateLimited), errObj["code"])
+			assert.Equal(t, ratelimit.MessageRateLimited, errObj["message"])
+			data, ok := errObj["data"].(map[string]any)
+			require.True(t, ok, "coded error data must be preserved, got %v", errObj)
+			assert.Equal(t, float64(5), data["retryAfterSeconds"])
+		})
+	}
+
+	t.Run("wrapping a coded error keeps the code and the wrapped message", func(t *testing.T) {
+		t.Parallel()
+		parsed := &mcpparser.ParsedMCPRequest{Method: "tools/call", ResourceID: "echo", IsRequest: true, ID: "1"}
+		fc := &modernFakeCore{callToolErr: fmt.Errorf("calling backend: %w", limited)}
+
+		rec, body := dispatchModernTest(t.Context(), t, fc, true, parsed)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		errObj, ok := body["error"].(map[string]any)
+		require.True(t, ok, "got %v", body)
+		assert.Equal(t, float64(ratelimit.CodeRateLimited), errObj["code"],
+			"errors.As must unwrap to the coded error")
+		assert.Equal(t, "calling backend: "+ratelimit.MessageRateLimited, errObj["message"],
+			"message must keep the caller's wrap context")
+	})
+
+	t.Run("an authz denial wrapping never yields the coded branch", func(t *testing.T) {
+		t.Parallel()
+		// Belt-and-suspenders for the documented ordering: a denial keeps its
+		// 403 even if some future error value were both a denial and coded.
+		parsed := &mcpparser.ParsedMCPRequest{Method: "tools/call", ResourceID: "echo", IsRequest: true, ID: "1"}
+		fc := &modernFakeCore{callToolErr: fmt.Errorf("%w: no", vmcp.ErrAuthorizationFailed)}
+
+		rec, _ := dispatchModernTest(t.Context(), t, fc, true, parsed)
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+	})
 }
 
 // TestDispatchModern_ArgumentsShape asserts the raw-params shape guard on

@@ -112,6 +112,18 @@ func (c *InitializedMCPClient) Close() {
 // CreateInitializedMCPClient creates an MCP client, starts the transport, and initializes
 // the connection with the given client name. Returns an InitializedMCPClient that should
 // be closed when done using defer client.Close().
+//
+// DO NOT use this (or any mcpcompat-built client) in a spec that asserts
+// SESSION semantics against a vMCP. The underlying go-sdk client is
+// Modern-first — it probes server/discover before initialize and upgrades to
+// 2026-07-28 whenever the server advertises it — and cannot be pinned to
+// Legacy (#5911). Against a Modern-serving vMCP it gets no session, and
+// GetSessionId() is empty. Session specs must pin the era explicitly with the
+// raw Legacy primitives in legacy_session_helpers_test.go instead. (Specs that
+// only assert tool/resource behavior are era-agnostic and may use this freely;
+// clients of the thv-proxyrunner transparent proxy negotiate against the
+// BACKEND, so MCPServer/MCPRemoteProxy session specs are unaffected as long as
+// the backend itself is Legacy.)
 func CreateInitializedMCPClient(nodePort int32, clientName string, timeout time.Duration) (*InitializedMCPClient, error) {
 	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
 	mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL)

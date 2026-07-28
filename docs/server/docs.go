@@ -218,6 +218,10 @@ const docTemplate = `{
                     "maxDataSize": {
                         "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
                         "type": "integer"
+                    },
+                    "maxDelegationDepth": {
+                        "description": "MaxDelegationDepth caps how many nested RFC 8693 \"act\" entries are\nrecorded in an audit event's delegationChain. Deeper chains are\ntruncated (marked with truncated=true). Defaults to 10 when unset.\n+kubebuilder:validation:Minimum=1\n+kubebuilder:default=10\n+optional",
+                        "type": "integer"
                     }
                 },
                 "type": "object"

@@ -43,7 +43,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 					Name:        "greet",
 					Description: "say hi",
 					InputSchema: map[string]any{"type": "object"},
-				}}, testServerName, testServerVersion)
+				}}, testServerName, testServerVersion, "")
 				require.NoError(t, err)
 				return result
 			},
@@ -54,7 +54,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernResourcesList([]vmcp.Resource{
 					{Name: "info", URI: "embedded:info", MimeType: "text/plain"},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, "")
 			},
 			wantCacheable: true,
 		},
@@ -63,7 +63,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernResourceTemplatesList([]vmcp.ResourceTemplate{
 					{Name: "logs", URITemplate: "file:///logs/{date}.txt"},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, "")
 			},
 			wantCacheable: true,
 		},
@@ -72,7 +72,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernPromptsList([]vmcp.Prompt{
 					{Name: "code_review", Arguments: []vmcp.PromptArgument{{Name: "Code", Required: true}}},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, "")
 			},
 			wantCacheable: true,
 		},
@@ -328,7 +328,7 @@ func TestModernEnvelopeEmptyCollections(t *testing.T) {
 			field: "tools",
 			build: func(t *testing.T) any {
 				t.Helper()
-				result, err := newModernToolsList(nil, testServerName, testServerVersion)
+				result, err := newModernToolsList(nil, testServerName, testServerVersion, "")
 				require.NoError(t, err)
 				return result
 			},
@@ -336,19 +336,19 @@ func TestModernEnvelopeEmptyCollections(t *testing.T) {
 		{
 			name:  "resources/list",
 			field: "resources",
-			build: func(*testing.T) any { return newModernResourcesList(nil, testServerName, testServerVersion) },
+			build: func(*testing.T) any { return newModernResourcesList(nil, testServerName, testServerVersion, "") },
 		},
 		{
 			name:  "resources/templates/list",
 			field: "resourceTemplates",
 			build: func(*testing.T) any {
-				return newModernResourceTemplatesList(nil, testServerName, testServerVersion)
+				return newModernResourceTemplatesList(nil, testServerName, testServerVersion, "")
 			},
 		},
 		{
 			name:  "prompts/list",
 			field: "prompts",
-			build: func(*testing.T) any { return newModernPromptsList(nil, testServerName, testServerVersion) },
+			build: func(*testing.T) any { return newModernPromptsList(nil, testServerName, testServerVersion, "") },
 		},
 		{
 			name:  "tools/call content",

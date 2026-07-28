@@ -6,6 +6,7 @@ package authz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -484,13 +485,14 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
-	// Create an error response
+	// Create an error response in wire format (json.Marshal on the struct would
+	// produce Go field names, not a JSON-RPC frame).
 	jsonrpcResponse := &jsonrpc2.Response{
 		ID:    jsonrpc2.Int64ID(1),
 		Error: jsonrpc2.NewError(404, "Not found"),
 	}
 
-	responseBytes, err := json.Marshal(jsonrpcResponse)
+	responseBytes, err := jsonrpc2.EncodeMessage(jsonrpcResponse)
 	require.NoError(t, err, "Failed to marshal JSON-RPC response")
 
 	// Create an HTTP request
@@ -502,6 +504,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 
 	// Create the response filtering writer
 	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
+	filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -1138,6 +1141,11 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 // TestResponseFilteringWriter_JSON_DisguisedResponseFrame is the application/json
 // counterpart: the disguised-result bypass is transport-independent, so the JSON
 // path must also fail closed on a smuggled result rather than write it through.
+//
+// It also pins the writeErrorResponse envelope: the error body written on this
+// path must be conformant JSON-RPC (lowercase "jsonrpc"/"id"/"error" keys, no
+// "id" key for a notification) and must carry the *original request's* id, not
+// an empty one, so the client can still correlate the denial.
 func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 	t.Parallel()
 
@@ -1156,20 +1164,287 @@ func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
 
 	// A batch array smuggling a tools/list result. DecodeMessage rejects the
 	// array, so the pre-fix JSON path wrote it through raw.
-	smuggled := `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
+	const smuggled = `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
 
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	// writeErrorResponse logs the carriesResult error server-side and sends the
+	// client a fixed generic message alongside the standard JSON-RPC Internal
+	// Error code (mcpparser.CodeInternalError), not the HTTP status.
+	wantErr := `"error":{"code":` + strconv.FormatInt(mcpparser.CodeInternalError, 10) + `,"message":"internal error"}`
+
+	testCases := []struct {
+		name      string
+		reqIDJSON string // raw "id" field on the *incoming* request; "" omits it (notification)
+		wantIDKey string // expected "id" fragment in the error envelope; "" if id must be absent
+	}{
+		{
+			name:      "int id is recovered onto the error envelope",
+			reqIDJSON: `"id":42,`,
+			wantIDKey: `"id":42,`,
+		},
+		{
+			name:      "string id is recovered onto the error envelope",
+			reqIDJSON: `"id":"abc",`,
+			wantIDKey: `"id":"abc",`,
+		},
+		{
+			name:      "notification (no id) omits id entirely",
+			reqIDJSON: "",
+			wantIDKey: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reqBody := `{"jsonrpc":"2.0",` + tc.reqIDJSON + `"method":"tools/list"}`
+			req, err := http.NewRequest(http.MethodPost, "/messages", strings.NewReader(reqBody))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			// Run the real MCP parsing middleware so the request context carries a
+			// ParsedMCPRequest, matching how the request would look at this point
+			// in the real middleware chain. writeErrorResponse's id-recovery path
+			// reads the request id back out of that context.
+			var parsedReq *http.Request
+			mcpparser.ParsingMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				parsedReq = r
+			})).ServeHTTP(httptest.NewRecorder(), req)
+			require.NotNil(t, parsedReq)
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, parsedReq, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+			_, err = rfw.Write([]byte(smuggled))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+			body := rr.Body.String()
+			assert.NotContains(t, body, "admin_tool",
+				"smuggled result on the application/json transport leaked past the filter")
+
+			// assert.JSONEq is key-case-sensitive, so this single assertion catches
+			// "Error"/"ID" substituted for "error"/"id" (the historical bug), a
+			// missing "jsonrpc" tag, and a wrong or missing id all at once.
+			wantBody := `{"jsonrpc":"2.0",` + tc.wantIDKey + wantErr + `}`
+			assert.JSONEq(t, wantBody, body)
+
+			var decoded map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.wantIDKey != "", hasID, "id key presence mismatch")
+			_, hasResult := decoded["result"]
+			assert.False(t, hasResult, "error response must not contain a result key")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_FilterBypassAttempts verifies that list results a
+// backend tries to slip past the filter -- via media-type casing or whitespace
+// (RFC 9110 makes both legal), a non-200 2xx status (fetch-based clients accept
+// any 2xx as ok), or an unrecognized Content-Type on a result-carrying body --
+// are still filtered, while responses with nothing to filter pass through.
+func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
+	t.Parallel()
+
+	// The policy permits only "weather"; "admin_tool" must never reach the client.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
 	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
+	resultData, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	listBody, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultData),
+	})
+	require.NoError(t, err)
+	sseListBody := []byte("event: message\ndata: " + string(listBody) + "\n\n")
+
+	testCases := []struct {
+		name        string
+		contentType string // "" leaves the Content-Type header unset
+		statusCode  int
+		body        []byte
+		// wantFiltered: the denied tool is stripped from the client-visible
+		// body; otherwise the body passes through byte-for-byte.
+		wantFiltered bool
+	}{
+		{
+			name:         "uppercase media type is normalized and filtered",
+			contentType:  "Application/JSON",
+			statusCode:   http.StatusOK,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "whitespace before media type parameters is normalized and filtered",
+			contentType:  "application/json ; charset=utf-8",
+			statusCode:   http.StatusOK,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "2xx status other than 200 and 202 is filtered",
+			contentType:  "application/json",
+			statusCode:   http.StatusCreated,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "unrecognized media type carrying a JSON result is filtered",
+			contentType:  "text/plain",
+			statusCode:   http.StatusOK,
+			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "missing media type carrying an SSE result is filtered",
+			contentType:  "",
+			statusCode:   http.StatusOK,
+			body:         sseListBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "unrecognized media type with no JSON-RPC result passes through",
+			contentType:  "text/plain",
+			statusCode:   http.StatusOK,
+			body:         []byte("plain text, nothing to filter"),
+			wantFiltered: false,
+		},
+		{
+			name:         "non-2xx error response passes through unfiltered",
+			contentType:  "application/json",
+			statusCode:   http.StatusInternalServerError,
+			body:         listBody,
+			wantFiltered: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims:  jwt.MapClaims{"sub": "user123"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			fw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			if tc.contentType != "" {
+				fw.ResponseWriter.Header().Set("Content-Type", tc.contentType)
+			}
+			fw.WriteHeader(tc.statusCode)
+			_, err = fw.Write(tc.body)
+			require.NoError(t, err)
+			require.NoError(t, fw.FlushAndFilter())
+
+			assert.Equal(t, tc.statusCode, rr.Code, "original status code should be preserved")
+			if tc.wantFiltered {
+				body := rr.Body.String()
+				assert.Contains(t, body, "weather", "permitted tool should remain in the response")
+				assert.NotContains(t, body, "admin_tool", "denied tool leaked to the client")
+			} else {
+				assert.Equal(t, tc.body, rr.Body.Bytes(), "response should pass through unchanged")
+			}
+		})
+	}
+}
+
+// TestErrorResponseBody pins the wire shape of the JSON-RPC error envelope
+// errorResponseBody produces for a filter/encode failure: a "2.0" jsonrpc tag,
+// the standard internal-error code, a generic message that must NOT echo the
+// wrapped error (it can name tools the caller is not authorized to see, so
+// #6066 and security.md forbid forwarding it), and an id that round-trips for
+// a real request id but is entirely ABSENT (not present and null) for the
+// zero-value id. Absence matters because MCP types the
+// error response id as optional (id?: RequestId), and the reference
+// TypeScript SDK's strict schema admits undefined but not null — a null id
+// would make that client throw inside its transport.
+func TestErrorResponseBody(t *testing.T) {
+	t.Parallel()
+
+	wrapped := errors.New("leaky-tool-name-sentinel")
+
+	testCases := []struct {
+		name   string
+		id     jsonrpc2.ID
+		wantID any // nil means the id key must be absent
+	}{
+		{name: "int64 id round-trips", id: jsonrpc2.Int64ID(7), wantID: float64(7)},
+		{name: "string id round-trips", id: jsonrpc2.StringID("abc"), wantID: "abc"},
+		{name: "zero-value id key is absent, not null", id: jsonrpc2.ID{}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, nil, nil, string(mcp.MethodToolsList), nil, nil)
+			body := rfw.errorResponseBody(tc.id, wrapped)
+
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(body, &decoded))
+
+			assert.Equal(t, "2.0", decoded["jsonrpc"])
+
+			errObj, ok := decoded["error"].(map[string]any)
+			require.True(t, ok, "error field must decode as an object")
+			assert.Equal(t, float64(mcpparser.CodeInternalError), errObj["code"])
+			assert.Equal(t, "internal error", errObj["message"],
+				"the client-visible message must be generic")
+			assert.NotContains(t, string(body), wrapped.Error(),
+				"the wrapped error must never reach the client: it can name tools the caller cannot see")
+
+			idValue, hasID := decoded["id"]
+			require.Equal(t, tc.wantID != nil, hasID, "id key presence mismatch")
+			if tc.wantID != nil {
+				assert.Equal(t, tc.wantID, idValue)
+			}
+		})
+	}
+}
+
+// TestWriteSSEErrorLine pins the two invariants writeSSEErrorLine must hold
+// on the text/event-stream path (issue #6037): the written line is exactly
+// "data: " followed by the same envelope errorResponseBody produces, with no
+// trailing terminator (the caller, processSSEResponse, owns the separator —
+// a hardcoded one here would desync a \r\n stream), and the status code is
+// left untouched, since headers are already committed by the time an SSE
+// frame fails mid-stream.
+func TestWriteSSEErrorLine(t *testing.T) {
+	t.Parallel()
+
+	// writeSSEErrorLine only reads rfw.ResponseWriter; the authorizer, request,
+	// and Content-Type are irrelevant on this path, so nils are safe here.
 	rr := httptest.NewRecorder()
-	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
-	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	rfw := NewResponseFilteringWriter(rr, nil, nil, string(mcp.MethodToolsList), nil, nil)
 
-	_, err = rfw.Write([]byte(smuggled))
-	require.NoError(t, err)
-	require.NoError(t, rfw.FlushAndFilter())
+	id := jsonrpc2.Int64ID(9)
+	wrapped := errors.New("boom")
+	require.NoError(t, rfw.writeSSEErrorLine(id, wrapped))
 
-	assert.NotContains(t, rr.Body.String(), "admin_tool",
-		"smuggled result on the application/json transport leaked past the filter")
+	want := "data: " + string(rfw.errorResponseBody(id, wrapped))
+	assert.Equal(t, want, rr.Body.String(),
+		"writeSSEErrorLine must write exactly the data-prefixed envelope, nothing else")
+	assert.Equal(t, http.StatusOK, rr.Code,
+		"writeSSEErrorLine must not set a non-200 status; the SSE headers are already committed by the time it runs")
 }

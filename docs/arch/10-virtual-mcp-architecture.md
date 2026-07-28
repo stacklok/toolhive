@@ -136,6 +136,89 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | **priority** | First backend in priority order wins, others hidden |
 | **manual** | Explicit mapping for each conflict |
 
+The three strategies above cover **tools**. Resources, resource templates, and
+prompts are resolved separately (`aggregator/capability_conflicts.go`), with
+policies that deliberately differ by what the identity *is*:
+
+- **Prompt names are names**, like tool names: `prompts/get` is translated back
+  to the backend's own name via `BackendTarget.GetBackendCapabilityName`, so a
+  rename does not break invocation. By **default** every prompt is renamed to
+  its backend-prefixed form — `conflictResolutionConfig.prefixFormat` applied
+  to the backend ID (default `{workload}_`), the same formatting path the tool
+  prefix strategy uses. The **priority** strategy is the escape hatch for
+  clients that pin prompt names, exactly as it is for tools: backends listed
+  in `priorityOrder` keep their bare prompt names, a bare-name collision among
+  listed backends resolves to the highest-priority one, and unlisted backends
+  stay always-prefixed — deliberately stricter than tool priority resolution,
+  which lets a conflict-free unlisted tool keep its bare name. A `manual`
+  configuration changes tool resolution only.
+
+  The invariant both modes preserve, scoped precisely: the advertised name of a
+  given (backendID, name) **pair** is a pure function of the aggregation config
+  and that pair, so it never shifts because an unrelated backend joined or left
+  the group. That stability matters beyond naming: authorization matches on the
+  advertised name (Cedar builds `Prompt::"<advertised name>"` entities), so a
+  membership-dependent rename would detach `permit` and `forbid` policies from
+  the prompt they were written for — names move only on an explicit config
+  edit.
+
+  The invariant does **not** promise that an advertised *string* keeps naming
+  the same prompt. Under `priority`, two listed backends can claim the same
+  bare name and the higher-ranked one takes it, so a
+  `permit(... resource == Prompt::"review")` written while `b1` owned `review`
+  silently begins authorizing `b2`'s **different** prompt once a higher-ranked
+  `b2` advertising that name deploys — no config edit involved. Cedar's
+  resource identity is the advertised name and nothing else (it carries no
+  backend attribute), so whoever wins a shared name inherits every policy
+  written for it. `forbid` still fails closed, because the priority loser is
+  **dropped rather than aliased**; it is `permit` that gets redirected. Keep
+  `priorityOrder` and name-scoped `permit` policies under review together.
+
+  The loser being dropped instead of re-prefixed is deliberate: prefixing it so
+  "nothing is lost" would re-advertise that prompt under a name no policy
+  mentions, putting it beyond any `forbid` written on the bare name — the
+  fail-open this design exists to avoid.
+
+  When two advertised names compose to the same string and no backend owns it —
+  backend `b1` prompt `x_y` vs backend `b1_x` prompt `y`, or a prefixed name
+  hitting a listed backend's literal name — the name is **ambiguous**, and
+  **every** colliding prompt is dropped with the collision logged at `ERROR`.
+  Aggregation does not fail:
+  erroring would take the group's entire aggregated view down (tools,
+  resources, templates, prompts, backend visibility) over one prompt name that
+  needs no conflict-resolution config to reach — just an unlucky combination of
+  operator-chosen workload names and backend-chosen prompt names. Keeping one
+  claimant is not an option either, since the survivor would inherit whatever
+  policy was written for the prompt it collided with. With the name advertised
+  by nobody, every `permit` and `forbid` on it is vacuous and the rest of the
+  group keeps serving.
+- **Resource URIs and template strings are locators, not names.** The client
+  passes them back verbatim (`resources/read`, `resources/subscribe`,
+  completion refs), backends emit them in notifications and embedded resource
+  contents, and template-matched reads forward the client's concrete URI
+  untranslated — so vMCP never rewrites them. A URI (or template string)
+  advertised by several backends is instead advertised **once**: the backend
+  earliest in sorted-backend-ID order wins, later duplicates are dropped with a
+  warning. Reads are unchanged — the routing table keys by URI, so only one
+  backend was ever served per URI; the fix makes that pick deterministic and
+  the advertised list agree with it. Only the winning backend's `name`,
+  `description` and `mimeType` are advertised for that URI, so a duplicate that
+  differed in those fields loses them along with its entry.
+
+After aggregation, every capability identity (`Tool.Name`, `Resource.URI`,
+`ResourceTemplate.URITemplate`, `Prompt.Name`) is unique in the aggregated view.
+Resources, resource templates and prompts are processed in sorted-backend-ID
+order, so their outcomes are stable across runs; tool resolution
+(`prefix_resolver.go`, `manual_resolver.go`) still iterates backends in map
+order, so a tool collision *after* prefixing or a manual override picks a
+nondeterministic winner.
+
+The Modern list paginator still does **not** rely on that uniqueness: its cursor
+names a position within a run of equal keys rather than assuming keys are
+distinct, because the paginator is generic and a plain "resume after this key"
+scan silently dropped an item whenever a duplicate landed on a page boundary
+(see [Client-facing list pagination](#client-facing-list-pagination)).
+
 ### Tool Filtering
 
 Beyond conflict resolution, vMCP can filter which tools are exposed through allow/deny lists, renaming, and description overrides.
@@ -289,6 +372,104 @@ multi-round tool retrieval (MRTR), so the fix is shaped MRTR-first rather than b
 extending the SSE standalone-stream model — see the epic (#5743) and the
 mid-call forwarding section below for the Legacy behaviour this contrasts with.
 
+### Limitation: elicitation and sampling are unavailable to Modern clients
+
+The client edge mirrors the backend edge. The Modern dispatcher
+(`pkg/vmcp/server`'s `dispatchModern`) is single-shot: every result it builds is
+`resultType: "complete"`, and it never emits `"input_required"` — MRTR
+(SEP-2322) is unimplemented on this edge too. When a backend tool issues a
+mid-call server-initiated request during a **Modern** client's `tools/call`,
+there is no client session to forward it to, so the call fails with an explicit
+error naming the refused request (pinned by
+`TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly`). This is a
+deliberate honest-unsupported error, not a gap left by accident:
+
+**The `-32603` is a documented deviation, not the spec's answer — and the
+spec's answer is unshippable today.** For a client that did NOT declare the
+needed capability in its per-request `clientCapabilities`, SEP-2575 MUSTs a
+`-32021` `MissingRequiredClientCapabilityError` at **HTTP 400**, with
+explicitly execution-time language ("if processing a request requires a
+capability…") — go-sdk's own doc comment on the error type tells handlers to
+return it mid-execution, so the mid-call timing is not the problem. The
+problem is the transport: go-sdk's streamable client treats any non-transient
+4xx (its transient set is only 500/502/503/504/429) as a **connection**
+failure — `checkResponse` → `fail()` → a one-shot, permanent session death —
+so a conformant 400 would tear down the entire client session to punish one
+call. And for a client that DID declare the capability, the 2026-07-28
+vocabulary has no conformant code at all: no "operation not supported", MRTR
+is not a server-advertised capability, and SEP-2322 has no decline mechanism.
+**#6061 (merged) implements exactly that two-path contract** in
+`writeModernCallFailure`/`writeModernMissingCapability` (`pkg/vmcp/server`):
+`-32021` with `data.requiredCapabilities` and a message naming both the
+capability and the gateway limitation, served at **HTTP 200** for the
+undeclared case — deviating from the mandated 400 for exactly the reason
+above (tracked upstream as go-sdk#1117) — and an explicit `-32603` naming
+SEP-2322 for the declared case, as a documented spec gap. The MRTR design
+([16-vmcp-mrtr.md](16-vmcp-mrtr.md)) supersedes this contract slice by slice
+where the backend is Modern; it is permanent for the Modern-client ↔ Legacy-
+backend cell.
+
+**A clean error does not mean nothing happened.** The refusal reaches the
+backend mid-call, so a real backend tool may have executed — including side
+effects — up to the point it demanded input. A Modern client receiving this
+error must not assume the call was side-effect-free. (The integration
+fixture's tools elicit as their first action, so the tests cannot exhibit
+this; production tools can.)
+
+- The 2026-07-28 revision **removed** server-initiated requests; go-sdk's
+  `ServerSession.assertServerInitiatedRequestAllowed` refuses
+  elicitation/sampling/roots purely by negotiated protocol version, so no
+  capability negotiation can restore the Legacy forwarding model for Modern
+  clients.
+- A server that never returns `input_required` is fully SEP-2575-conformant:
+  the per-request `clientCapabilities` a client declares are an offer the
+  server may use, not an obligation.
+- SEP-2577 deprecates sampling (and logging and roots) outright as of
+  2026-07-28, with direct LLM-provider integration as the sanctioned
+  replacement — so elicitation is the only durable consumer a future MRTR
+  implementation would serve.
+
+Legacy clients keep the full mid-call forwarding behaviour unchanged; the
+forwarding integration tests pin their downstream clients to Legacy explicitly
+(`legacyPinningRoundTripper` in `pkg/vmcp/server`'s external test package)
+because that surface exists only on a Legacy session.
+
+**Bridging was considered, costed, and rejected.** Serving MRTR to Modern
+clients on top of a *Legacy*
+backend would require parking the live, mid-flight backend call server-side
+(the blocked goroutine and its open session cannot be serialized into the
+opaque `requestState` the SEP designed for handler re-invocation) and keying
+the resume on an unguessable token — per-round server state with TTL/eviction,
+identity binding on a token that becomes a capability to resume someone else's
+in-flight call, and replica affinity with no `Mcp-Session-Id` to route on. That
+would reintroduce, in different clothes, the per-request server state the
+2026-07-28 revision removed. The spec's own sanctioned path for genuinely stateful
+`input_required` work is the **Tasks** extension (SEP-2663: `tools/call`
+returns `resultType: "task"` with a `taskId`; the client polls `tasks/get` and
+answers outstanding `inputRequests` via `inputResponses` on `tasks/update`;
+note SEP-2663 supersedes SEP-1686 and removed the blocking `tasks/result`
+method for the same reasons argued here) — if Modern-client elicitation over
+Legacy backends is ever truly demanded, that is the machinery to reach for,
+not parked `tools/call`.
+
+The coherent future MRTR shape for a re-aggregating gateway is
+**Modern-client ↔ Modern-backend pass-through** — relay a Modern backend's
+`inputRequests`/`requestState` to the client and the client's
+`inputResponses` back, genuinely stateless at vMCP. The full design is
+[16-vmcp-mrtr.md](16-vmcp-mrtr.md); its slice 1 (the egress half) has landed —
+a Modern backend's `input_required` still classifies as
+`errModernInputRequired`, but the typed `vmcp.InputRequiredError` now carries
+the decoded round for the relay slices to consume. By the time Modern
+backends exist to relay from, SEP-2577's deprecations make elicitation its
+only durable consumer; see #5743 and #6059.
+
+Progress and log notifications toward Modern clients are a separate concern
+from MRTR: they remain spec-legal as request-scoped notifications on the
+POST-initiated SSE response stream (SEP-2260 requires messages on that stream
+to relate to the originating request; `progressToken` is unchanged), which the
+single-shot dispatcher does not produce today — a vMCP streaming-dispatch gap,
+not a spec absence.
+
 ## Served MCP Capabilities
 
 Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.
@@ -300,13 +481,132 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 | Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
 | Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session; a backend's asynchronous `notifications/prompts/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
 | Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
-| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+| Subscriptions (`subscriptions/listen`) | Ack-level only | Modern (2026-07-28) edge, the revision's only server→client push channel. Answered with an SSE stream carrying the mandatory `notifications/subscriptions/acknowledged` and then a terminating result, both tagged `io.modelcontextprotocol/subscriptionId` and keyed by the listen request's JSON-RPC id (Modern has no sessions). The honored set is intersected against the advertised capabilities, all of whose push flags are false, so it is always **empty** and the stream closes immediately rather than idling. Serving it is what lets a go-sdk v1.7 client complete `Connect` at all — see below |
+
+The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination).
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
+
+### Served MCP revisions: the Modern capability gate
+
+vMCP serves two client-facing MCP revisions: **Legacy** (2025-11-25, the SDK
+session path) always, and **Modern** (2026-07-28, `classifyingHandler →
+dispatchModern`, stateless) **conditionally** — only when every enabled feature
+of the instance is servable by the stateless dispatch path. The condition is
+`modernDispatchBlockers` (`pkg/vmcp/server/modern_gate.go`), an explicit
+enumeration that replaced the temporary `TOOLHIVE_VMCP_MODERN_STATELESS`
+env-var kill-switch (#5959): instead of a global "don't serve Modern", the
+instance serves Modern exactly when it can serve it correctly.
+
+Features that currently gate Modern off, and why:
+
+| Feature | Why the stateless path cannot serve it |
+|---------|----------------------------------------|
+| Optimizer (`find_tool`/`call_tool`) | The meta-tools are Serve-layer and **session-scoped** (`serve_optimizer.go`): each session builds an FTS5 index over its advertised set and swaps the two meta-tools in. The index is deliberately not in the stateless core, and `dispatchModern` serves `tools/*` straight from `core.ListTools`/`core.CallTool` — a Modern client would silently receive the raw aggregated tool set and `tools/call find_tool` would fail. Parity needs an identity- or instance-scoped index |
+
+"Cannot serve" means a Modern client would silently get different behavior than
+the feature promises — not merely that the feature is session-flavored.
+Redis-backed session sharing, for example, does **not** gate Modern: Legacy
+clients keep their shared, reconstructible sessions while Modern clients are
+sessionless by design and store nothing, a coexistence asserted end-to-end by
+`test/e2e/thv-operator/virtualmcp/virtualmcp_dual_era_redis_test.go`. Rate
+limiting does not gate Modern either: the limiter is a core decorator
+(`pkg/vmcp/ratelimit`), so both eras meter the same `CallTool` seam, and the
+Modern dispatcher preserves the limiter's coded error on the wire — a real
+JSON-RPC error object, `-32029` with `data.retryAfterSeconds`
+(`writeModernCodedError`, at HTTP 200 because go-sdk rejects a non-200
+response before decoding the body, so on a 429 the error object — and its
+`retryAfterSeconds` — would be discarded unread) — where the Legacy SDK seam
+can only smuggle the same code and data into an `IsError` tool result's
+`structuredContent` (`conversion.ErrorToToolResult`). Note that `-32029` sits
+inside the draft spec's reserved band (`-32020`..`-32099`, reserved for
+spec-defined codes); reallocating it is tracked in #6101.
+
+"Does not gate Modern" is not "costs the same", though. The limiter wraps only
+the `CallTool` seam, so the list verbs and `server/discover` are unmetered on
+both eras — but Legacy aggregates once per session registration, while Modern
+re-runs the full backend fan-out on every request with no cache, by design
+(`core_vmcp.go`'s `aggregatedView`). A Modern client can therefore loop
+unmetered, uncached fan-outs — reachable unauthenticated when incoming auth is
+anonymous. Rate-limiting the list/discover verbs, or a short-TTL per-identity
+capability cache, is deferred until profiling shows the per-request fan-out
+cost matters (#5761 — the same deferral recorded in `dispatchModernDiscover`'s
+doc comment).
+
+Wire behavior when the gate is closed:
+
+- **`server/discover` falls through to the SDK** instead of dispatching. go-sdk's
+  `filterSupportedVersions` keeps every version the transport's
+  `SupportsProtocolVersion` accepts, and the stateful transport excludes only
+  >= 2026-07-28 (those require `Stateless`), so the probe answer is the
+  transport-filtered list — everything except Modern: `[2025-11-25,
+  2025-06-18, 2025-03-26, 2024-11-05]`. This matters because go-sdk v1.7+
+  clients are Modern-first: `Connect` probes `server/discover` **before**
+  `initialize` and upgrades to whatever the server advertises. The
+  fall-through answer is what lands them on the Legacy handshake — where
+  sessions, and every gated feature, work. That answer over-advertises,
+  though: the `-32022` refusal below lists only 2025-11-25, and the refusal is
+  the accurate one — `mcpcompat`'s `handleInitialize` always responds with
+  `LATEST_PROTOCOL_VERSION` regardless of what the client requests, so the
+  three older revisions in the discover answer are not actually servable. The
+  mismatch is the SDK's discover answer to narrow, not the `-32022` list to
+  widen.
+- **Every other well-formed Modern request** is refused with a conformant
+  400 + `-32022 UnsupportedProtocolVersionError` whose data lists the Legacy
+  version, the shape a client negotiates down from. It is answered in
+  `classifyingHandler` rather than falling through, because go-sdk's stateful
+  rejection for Modern traffic is a plain-text 400 carrying no version list.
+- **Legacy traffic is untouched** either way; the gate only ever affects
+  requests that classified Modern.
+
+The gate is derived from construction-time configuration, logged once at
+startup ("MCP 2026-07-28 (Modern) dispatch disabled…"), and pinned by
+`TestModernDispatchBlockers`, `TestClassifyingHandler_ModernCapabilityGate`,
+and the full-handler pair in `modern_gate_integration_test.go`. Achieving
+Modern parity for a feature means deleting its entry and updating those tests —
+nothing else needs to change.
 
 ### Subscription limitation (ack-level)
 
 vMCP advertises `resources.subscribe: true` and answers `resources/subscribe` / `resources/unsubscribe` at **ack level**: the request is accepted (enforcing session binding and validating the URI is an advertised, admitted resource), and go-sdk records the subscription. vMCP does **not** currently propagate backend `notifications/resources/updated` to the subscribed client — doing so requires persistent per-session backend connections, which is out of scope. Clients that subscribe will receive a success ack but no update stream yet.
+
+### Client-facing list pagination
+
+On the Legacy edge the SDK's session-scoped feature store splits list results into
+pages. `dispatchModern` bypasses the SDK, so the Modern edge paginates itself
+(`pkg/vmcp/server/modern_pagination.go`).
+
+Modern has no sessions, so a cursor may not denote server-held iteration state.
+The draft pagination page makes cursors **opaque to clients** ("MUST treat cursors
+as opaque tokens"), which is precisely what allows the server to encode position
+*into* the token instead of remembering it. So the cursor is self-describing:
+base64url over a small JSON payload naming the list kind, the last key delivered,
+and how many items sharing that key have already been sent.
+
+Three properties worth knowing:
+
+- **Ordering.** Keyset paging needs a deterministic total order, and the
+  aggregator's fan-out order is not stable between calls, so Modern list results
+  are sorted by the item's key (`Tool.Name`, `Resource.URI`,
+  `ResourceTemplate.URITemplate`, `Prompt.Name`). Legacy ordering is unchanged.
+- **Duplicate keys are tolerated, not assumed away.** The aggregator makes all
+  four keys unique (see [Conflict Resolution](#conflict-resolution)), but the
+  paginator is generic and does not depend on that caller invariant. The cursor
+  resumes *within* a run of equal keys, because a plain "resume after this key"
+  scan skipped every copy and permanently dropped items whose key collided at a
+  page boundary.
+- **End of results omits `nextCursor` entirely.** The draft states that "an empty
+  string is a valid cursor and thus MUST NOT be treated as the end of results", so
+  emitting `""` would make a conformant client re-request and loop on page one.
+
+The cursor encodes a position in the **aggregated** ordering and never names a
+backend, so adding or removing a backend cannot invalidate one. This is unrelated
+to the aggregator's *upstream* cursor-following (#5851), which is vMCP acting as a
+client walking a backend's pages.
+
+An invalid cursor — malformed, over-length, or minted for a different list verb —
+is rejected with `-32602`, per the draft's error-handling rule.
 
 ### Tools/resources/prompts list_changed propagation (#5748, #5969)
 
@@ -338,8 +638,17 @@ above for how that revision is resolved and cached. This is correct, not a gap i
 `initialize` and `Mcp-Session-Id`, so there is no Legacy-shaped persistent
 connection to hold and no standalone GET stream a Modern backend could push
 on. Modern's own server-push mechanism is `subscriptions/listen` (see
-[Transport Architecture](03-transport-architecture.md)), which vMCP does not
-implement yet — so `list_changed` propagation is currently Legacy-only.
+[Transport Architecture](03-transport-architecture.md)). vMCP **serves** that
+method on its client edge (`pkg/vmcp/server/modern_subscriptions.go`), but only
+at acknowledgement level: it computes the honored subscription set by
+intersecting the client's request against the capabilities `server/discover`
+advertises, and since every push-related flag there is deliberately false
+(`newModernCapabilities`), the honored set is always empty and no notification is
+ever pushed. So `list_changed` **delivery** remains Legacy-only, on both edges —
+what the Modern client edge gained is a conformant, explicitly-empty answer
+instead of a `-32601` that tore the client's connection down. Real Modern
+delivery is tracked in #5743 and requires vMCP to start advertising a push
+capability first.
 
 The sink is built once per session, at registration (`pkg/vmcp/server`'s
 `buildListChangedSink`), closing over the SDK `ClientSession`, the session ID,
@@ -483,6 +792,13 @@ connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
 While a backend `tools/call` (or other request) is in flight, the backend may issue **server-initiated** requests and notifications back toward the client: elicitation, sampling, progress, and logging. vMCP forwards these mid-call in both directions through a per-call forwarder that bridges the backend connection to the originating client session, so a backend that needs user input (elicitation) or model completions (sampling), or that emits progress/log notifications, reaches the real client transparently. This is distinct from composite-tool elicitation (which the composer drives during a workflow); the mid-call forwarder handles the general request-scoped case for a single backend call.
 
 **Implementation**: `pkg/vmcp/forwarding.go`, `pkg/vmcp/client/forwarding.go`, `pkg/vmcp/server/serve_handlers.go`
+
+**Known limitation (Modern clients)**: everything in this section describes a
+**Legacy (2025-11-25) client session**. For Modern (2026-07-28) clients there
+is no session and no server-initiated request channel, so none of this
+forwarding applies — see
+[Limitation: elicitation and sampling are unavailable to Modern clients](#limitation-elicitation-and-sampling-are-unavailable-to-modern-clients)
+for what a Modern caller gets instead.
 
 **Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested `logging/setLevel`. vMCP requests debug-level logging from the backend so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own level preference is not applied to the relayed stream.
 

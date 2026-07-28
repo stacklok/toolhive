@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -59,6 +62,27 @@ func baseConfig(t *testing.T) (*Config, *coreMocks) {
 		BackendClient:   m.client,
 	}
 	return cfg, m
+}
+
+func requireNoOpenFDForPath(t *testing.T, path string) {
+	t.Helper()
+
+	entries, err := os.ReadDir("/proc/self/fd")
+	require.NoError(t, err)
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err != nil {
+			continue
+		}
+		require.NotEqual(t, path, target, "audit log file descriptor must be closed")
+	}
+}
+
+func closeErrorPathAuditConfig(t *testing.T) (*audit.Config, string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "workflow-audit.log")
+	return &audit.Config{LogFile: path}, path
 }
 
 // testBackendID is the single backend ID used across these tests.
@@ -113,6 +137,84 @@ func TestNew_NilConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 	assert.Nil(t, c)
+}
+
+func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closes retained audit log file", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, _ := baseConfig(t)
+		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		require.NoError(t, c.Close())
+
+		require.ErrorIs(t, c.(*coreVMCP).workflowAuditor.Close(), os.ErrClosed)
+	})
+
+	t.Run("logs close errors without failing Close", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, _ := baseConfig(t)
+		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		core := c.(*coreVMCP)
+		require.NoError(t, core.workflowAuditor.Close())
+
+		require.NoError(t, c.Close())
+	})
+}
+
+func TestNew_ErrorPathsCloseWorkflowAuditLogFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *Config, *coreMocks)
+	}{
+		{
+			name: "workflow validation error",
+			mutate: func(_ *testing.T, cfg *Config, _ *coreMocks) {
+				cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+					"wf": {
+						Name: "wf",
+						Steps: []composer.WorkflowStep{
+							{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s2"}},
+							{ID: "s2", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s1"}},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "health monitor creation error",
+			mutate: func(_ *testing.T, cfg *Config, mocks *coreMocks) {
+				mocks.reg.EXPECT().List(gomock.Any()).Return(nil)
+				cfg.HealthMonitorConfig = &health.MonitorConfig{}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, mocks := baseConfig(t)
+			var auditLogPath string
+			cfg.AuditConfig, auditLogPath = closeErrorPathAuditConfig(t)
+			tt.mutate(t, cfg, mocks)
+
+			c, err := New(cfg)
+
+			require.Error(t, err)
+			assert.Nil(t, c)
+			requireNoOpenFDForPath(t, auditLogPath)
+		})
+	}
 }
 
 func TestNew_ValidatesWorkflows(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,16 @@ func TestNewAuditor(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, auditor)
 	assert.Equal(t, config, auditor.config)
+}
+
+func TestAuditor_CloseDoesNotCloseStdout(t *testing.T) {
+	t.Parallel()
+
+	auditor := &Auditor{logWriter: os.Stdout}
+
+	require.NoError(t, auditor.Close())
+	_, err := os.Stdout.Write(nil)
+	require.NoError(t, err, "Close() must not close os.Stdout")
 }
 
 func TestAuditorMiddlewareDisabled(t *testing.T) {

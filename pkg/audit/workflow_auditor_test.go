@@ -23,9 +23,23 @@ type testLogWriter struct {
 	logs []string
 }
 
+type closeTrackingWriter struct {
+	closed   bool
+	closeErr error
+}
+
 func (w *testLogWriter) Write(p []byte) (n int, err error) {
 	w.logs = append(w.logs, string(p))
 	return len(p), nil
+}
+
+func (*closeTrackingWriter) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
+func (w *closeTrackingWriter) Close() error {
+	w.closed = true
+	return w.closeErr
 }
 
 func (w *testLogWriter) getLastLog() string {
@@ -52,6 +66,7 @@ func createTestAuditor(t *testing.T, config *Config) (*WorkflowAuditor, *testLog
 		auditLogger: NewAuditLogger(writer),
 		config:      config,
 		component:   "vmcp-composer",
+		logWriter:   writer,
 	}
 
 	return auditor, writer
@@ -120,6 +135,48 @@ func TestNewWorkflowAuditor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkflowAuditor_Close(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closes retained file writer", func(t *testing.T) {
+		t.Parallel()
+
+		logFilePath := t.TempDir() + "/workflow-audit.log"
+		auditor, err := NewWorkflowAuditor(&Config{LogFile: logFilePath})
+		require.NoError(t, err)
+
+		_, ok := auditor.logWriter.(interface{ Close() error })
+		require.True(t, ok, "file-backed workflow auditor should retain a closeable writer")
+
+		require.NoError(t, auditor.Close())
+	})
+
+	t.Run("does not close stdout", func(t *testing.T) {
+		t.Parallel()
+
+		auditor, err := NewWorkflowAuditor(&Config{})
+		require.NoError(t, err)
+
+		require.NoError(t, auditor.Close())
+		_, err = os.Stdout.Write(nil)
+		require.NoError(t, err, "Close() must not close os.Stdout")
+		assert.Same(t, os.Stdout, auditor.logWriter)
+	})
+
+	t.Run("propagates close errors", func(t *testing.T) {
+		t.Parallel()
+
+		closeErr := errors.New("close failed")
+		writer := &closeTrackingWriter{closeErr: closeErr}
+		auditor := &WorkflowAuditor{logWriter: writer}
+
+		err := auditor.Close()
+
+		require.ErrorIs(t, err, closeErr)
+		assert.True(t, writer.closed)
+	})
 }
 
 func TestWorkflowAuditor_LogWorkflowStarted(t *testing.T) {

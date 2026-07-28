@@ -514,14 +514,18 @@ sessionless by design and store nothing, a coexistence asserted end-to-end by
 limiting does not gate Modern either: the limiter is a core decorator
 (`pkg/vmcp/ratelimit`), so both eras meter the same `CallTool` seam, and the
 Modern dispatcher preserves the limiter's coded error on the wire — a real
-JSON-RPC error object, `-32029` with `data.retryAfterSeconds`
+JSON-RPC error object, `429` with `data.retryAfterSeconds`
 (`writeModernCodedError`, at HTTP 200 because go-sdk rejects a non-200
-response before decoding the body, so on a 429 the error object — and its
-`retryAfterSeconds` — would be discarded unread) — where the Legacy SDK seam
-can only smuggle the same code and data into an `IsError` tool result's
-`structuredContent` (`conversion.ErrorToToolResult`). Note that `-32029` sits
-inside the draft spec's reserved band (`-32020`..`-32099`, reserved for
-spec-defined codes); reallocating it is tracked in #6101.
+response before decoding the body, so on an HTTP 429 the error object — and
+its `retryAfterSeconds` — would be discarded unread) — where the Legacy SDK
+seam can only smuggle the same code and data into an `IsError` tool result's
+`structuredContent` (`conversion.ErrorToToolResult`). The code `429` mirrors
+HTTP Too Many Requests (the same pattern as the `403` denial code) and sits
+outside the JSON-RPC reserved range (`-32768`..`-32000`), making it
+conformant under both MCP 2026-07-28 — which reserves `-32020`..`-32099`
+exclusively for spec-defined codes — and 2025-11-25 and earlier, which
+inherit plain JSON-RPC 2.0. It replaced `-32029`, which sat inside the
+reserved band (#6101).
 
 "Does not gate Modern" is not "costs the same", though. The limiter wraps only
 the `CallTool` seam, so the list verbs and `server/discover` are unmetered on

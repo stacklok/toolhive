@@ -10,6 +10,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/audit"
 )
 
 // TestIdentityContext_StoreAndRetrieve verifies basic context storage and retrieval functionality.
@@ -147,11 +149,11 @@ func TestClaimsToIdentity_ParsesActClaim(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotNil(t, id.DelegationChain)
-		require.Len(t, id.DelegationChain.Actors, 2)
+		require.Len(t, id.DelegationChain.Chain, 2)
 		assert.False(t, id.DelegationChain.Truncated)
-		assert.Equal(t, "agent-1", id.DelegationChain.Actors[0].Subject)
-		assert.Equal(t, map[string]any{"iss": "https://issuer.example"}, id.DelegationChain.Actors[0].Claims)
-		assert.Equal(t, "agent-2", id.DelegationChain.Actors[1].Subject)
+		assert.Equal(t, "agent-1", id.DelegationChain.Chain[0].Subject)
+		assert.Equal(t, "https://issuer.example", id.DelegationChain.Chain[0].Issuer)
+		assert.Equal(t, "agent-2", id.DelegationChain.Chain[1].Subject)
 	})
 
 	t.Run("no act claim", func(t *testing.T) {
@@ -174,7 +176,8 @@ func TestClaimsToIdentity_ParsesActClaim(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, id.DelegationChain, "a malformed act must still produce a chain so the issue is visible")
 		assert.True(t, id.DelegationChain.Malformed)
-		assert.Empty(t, id.DelegationChain.Actors)
+		assert.Equal(t, audit.MalformedReasonActNotObject, id.DelegationChain.MalformedReason)
+		assert.Empty(t, id.DelegationChain.Chain)
 	})
 }
 

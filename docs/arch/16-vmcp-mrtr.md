@@ -326,13 +326,18 @@ RFC-0083 D5 sequences the durable machinery on:
   fire, and protection reduces to handle unguessability plus TTL. Slice 5
   **accepts this as a documented single-tenant caveat rather than refusing to
   suspend**: anonymous auth already grants any caller the tools themselves,
-  so a stolen handle adds resumption of a workflow the thief could have run
-  outright — no privilege the deployment's trust model doesn't already
-  concede. Refusing would break composites for exactly the single-operator
-  deployments anonymous auth exists for. A multi-user deployment fronting
-  vMCP with anything but authenticated incoming auth gets no cross-user
-  workflow isolation, and slice 5's docs must say so where `anonymous` is
-  documented.
+  so a stolen handle adds no *tool-invocation* privilege the trust model
+  doesn't already concede — the thief could have run the workflow outright.
+  It does add a *data-read* privilege the trust model does not concede:
+  resuming loads another caller's accumulated step outputs, produced from
+  arguments the thief could not necessarily have supplied, so that
+  intermediate data is not something they could have obtained on their own —
+  a real residual exposure, gated on handle secrecy alone, which the
+  redaction requirement above covers. Refusing would break composites for
+  exactly the single-operator deployments anonymous auth exists for. A
+  multi-user deployment fronting vMCP with anything but authenticated
+  incoming auth gets no cross-user workflow isolation, and slice 5's docs
+  must say so where `anonymous` is documented.
 
 **The distinction that sizes the infrastructure**: plain-tool pass-through
 rounds and the Legacy-client bridge need *no* durable store; only

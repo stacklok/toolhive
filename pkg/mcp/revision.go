@@ -198,15 +198,16 @@ func ModernRequestMeta(clientName, clientVersion string) map[string]any {
 }
 
 // The following JSON-RPC error codes are defined by the draft MCP spec
-// (schema/draft/schema.ts) for the stateless "Modern" revision. They are
-// declared as local literals, matching this repo's existing convention for
-// JSON-RPC codes (e.g. streamable_proxy.go's -32603). The only SDK with
-// equivalents, modelcontextprotocol/go-sdk, is reachable solely as a
-// transitive dependency (via toolhive-core's mcpcompat) and is pinned to an
-// older draft snapshot (2026-06-30, CodeHeaderMismatch = -32001) with no
-// equivalents at all for the other two codes below, so importing it would
-// risk wiring in stale values. Revisit once the go-sdk dependency is bumped
-// to a revision that matches MCPVersionModern.
+// (schema/draft/schema.ts) for the stateless "Modern" revision, except for the
+// last three, which are standard JSON-RPC 2.0 codes rather than draft-spec-
+// specific ones. They are declared as local literals, matching this repo's
+// existing convention for JSON-RPC codes (e.g. streamable_proxy.go's -32603).
+// The only SDK with equivalents, modelcontextprotocol/go-sdk, is reachable
+// solely as a transitive dependency (via toolhive-core's mcpcompat) and is
+// pinned to an older draft snapshot (2026-06-30, CodeHeaderMismatch = -32001)
+// with no equivalents at all for the other two codes below, so importing it
+// would risk wiring in stale values. Revisit once the go-sdk dependency is
+// bumped to a revision that matches MCPVersionModern.
 //
 // These are exported so other packages (e.g. the HTTP layer) can reference
 // the same wire values instead of hardcoding or redeclaring them.
@@ -228,8 +229,13 @@ const (
 	// CodeInvalidRequest is the standard JSON-RPC Invalid Request code. ToolHive
 	// uses it to reject a message whose shape is not a valid single request for
 	// the negotiated protocol version — currently a JSON-RPC batch, which was
-	// removed from MCP in the 2025-06-18 revision (see batch.go).
+	// removed from MCP in the 2025-06-18 revision (see batch.go) — and also for
+	// a request body over the configured size limit (HTTP 413, see
+	// JSONRPCCodeForStatus).
 	CodeInvalidRequest int64 = -32600
+	// CodeInternalError is the standard JSON-RPC Internal Error code, used for
+	// server-side failures that are not attributable to the request's shape.
+	CodeInternalError int64 = -32603
 )
 
 // HeaderMismatchError indicates the MCP-Protocol-Version HTTP header did not match

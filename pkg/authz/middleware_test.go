@@ -1270,7 +1270,7 @@ func TestHandleUnauthorizedIsConformantJSONRPC(t *testing.T) {
 	})
 	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
 
-	const wantErr = `"error":{"code":403,"message":"unknown MCP method: tasks/list (not configured for authorization)"}`
+	const wantErr = `"error":{"code":403,"message":"Unauthorized"}`
 
 	testCases := []struct {
 		name      string
@@ -1324,6 +1324,45 @@ func TestHandleUnauthorizedIsConformantJSONRPC(t *testing.T) {
 			assert.False(t, hasResult, "denied response must not contain a result key")
 		})
 	}
+}
+
+// TestHandleUnauthorizedScrubsAuthorizerError drives the real middleware chain
+// (parsing + authorization) for a denial caused solely by the authorizer erroring
+// while reporting allowed=true (as opposed to a clean policy deny), and asserts the
+// 403 body carries the fixed "Unauthorized" message rather than the authorizer's
+// error text. allowed is deliberately true here: authorizeAndServe's condition is
+// `err != nil || !authorized`, so with allowed=false the test would still pass via
+// the !authorized disjunct even if err were dropped somewhere -- this fixture pins
+// the err-only branch specifically.
+func TestHandleUnauthorizedScrubsAuthorizerError(t *testing.T) {
+	t.Parallel()
+
+	sensitiveErr := errors.New("cedar entity store lookup failed: secret-backend-url unreachable")
+	stub := &stubAuthorizer{allowed: true, err: sensitiveErr}
+
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler must not be called for a denied request")
+	})
+	middleware := mcpparser.ParsingMiddleware(Middleware(stub, handler, nil))
+
+	reqBody := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"data"}}`
+	req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "test-user",
+		Claims:  jwt.MapClaims{"sub": "test-user"},
+	}}
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	rr := httptest.NewRecorder()
+	middleware.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"error":{"code":403,"message":"Unauthorized"}}`, rr.Body.String())
+	assert.NotContains(t, rr.Body.String(), "secret-backend-url",
+		"authorizer error text must not leak to the client")
 }
 
 // TestConvertToJSONRPC2ID tests the convertToJSONRPC2ID function with various ID types
@@ -1437,6 +1476,18 @@ func TestAuthorizeAndServe(t *testing.T) {
 		{
 			name:             "authorizer error — 403, next not called",
 			allowed:          false,
+			authErr:          errors.New("policy evaluation failed"),
+			expectHandlerHit: false,
+			expectStatus:     http.StatusForbidden,
+		},
+		{
+			// allowed=true here discriminates fail-closed-on-error from
+			// fail-closed-on-deny: with allowed=false above, the 403 could come
+			// from either disjunct of `err != nil || !authorized`, so it alone
+			// doesn't pin that an authorizer error fails closed even when it
+			// also happens to report allowed.
+			name:             "authorizer error with allowed=true — still 403, next not called",
+			allowed:          true,
 			authErr:          errors.New("policy evaluation failed"),
 			expectHandlerHit: false,
 			expectStatus:     http.StatusForbidden,

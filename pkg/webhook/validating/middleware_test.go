@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -171,7 +172,7 @@ func TestValidatingMiddleware(t *testing.T) {
 
 		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
-		assert.Equal(t, float64(http.StatusForbidden), errObj["code"])
+		assert.Equal(t, float64(mcp.JSONRPCCodeDenied), errObj["code"])
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 
@@ -399,7 +400,7 @@ func TestValidatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
 		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
-		assert.Equal(t, float64(http.StatusRequestEntityTooLarge), errObj["code"])
+		assert.Equal(t, float64(mcp.CodeInvalidRequest), errObj["code"])
 		assert.Equal(t, "Request body exceeds maximum size", errObj["message"])
 	})
 
@@ -434,6 +435,42 @@ func TestValidatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 		assert.True(t, nextCalled, "next should be called for boundary-size body (fail-open ignores webhook error)")
 		assert.Equal(t, http.StatusOK, rr.Code)
 	})
+}
+
+// errReader always fails, for exercising the io.ReadAll error path in
+// createValidatingHandler that is distinct from an http.MaxBytesError (the
+// oversized-body case already covered by TestValidatingMiddleware_RequestBodySizeLimit).
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestValidatingMiddleware_BodyReadError_MapsToInternalErrorCode pins the JSON-RPC
+// code on the "Failed to read request body" HTTP 500 path (sendErrorResponse's
+// default case in mcp.JSONRPCCodeForStatus), the validating-package equivalent of
+// TestMutatingMiddleware_ScopeViolation_FailPolicy's HTTP 500 assertion.
+func TestValidatingMiddleware_BodyReadError_MapsToInternalErrorCode(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/", errReader{err: errors.New("boom")})
+	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
+	req = req.WithContext(ctx)
+
+	mw := createValidatingHandler(nil, "srv", "stdio")
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+	rr := httptest.NewRecorder()
+	mw(nextHandler).ServeHTTP(rr, req)
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+	var errResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+	errObj, ok := errResp["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(mcp.CodeInternalError), errObj["code"])
 }
 
 func TestMiddlewareParams_Validate(t *testing.T) {

@@ -32,6 +32,8 @@ func RegistryV01Router() http.Handler {
 		r.Get("/servers/{serverName}/versions/latest", getServerV01)
 		r.Get("/x/dev.toolhive/skills", listSkillsV01)
 		r.Get("/x/dev.toolhive/skills/{namespace}/{skillName}", getSkillV01)
+		r.Get("/x/dev.toolhive/plugins", listPluginsV01)
+		r.Get("/x/dev.toolhive/plugins/{namespace}/{pluginName}", getPluginV01)
 	})
 	return r
 }

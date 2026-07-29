@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -108,16 +109,28 @@ func grantEveryone(t *testing.T, path string) {
 	require.NoError(t, err, "icacls grant Everyone failed: %s", out)
 }
 
-// assertRestrictedDACL asserts dir carries a protected DACL with no ACE for
-// the groups a local attacker could come from. The exhaustive per-ACE check
-// lives in the discovery package's own Windows tests; this is the pkg/api view
-// of the same contract.
+// aceTrusteePattern captures the trustee of each ACE in an SDDL DACL, which is
+// the last of the six semicolon-separated ACE fields.
+var aceTrusteePattern = regexp.MustCompile(`\(([^)]*)\)`)
+
+// assertRestrictedDACL asserts dir carries a protected DACL that grants nobody
+// but SYSTEM and the process user. The per-ACE permission checks live in the
+// discovery package's own Windows tests; this is the pkg/api view of the same
+// contract.
 func assertRestrictedDACL(t *testing.T, dir string) {
 	t.Helper()
+
+	tokenUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	require.NoError(t, err)
+	allowed := []string{"SY", tokenUser.User.Sid.String()}
+
 	sddl := dirSDDL(t, dir)
 	assert.Contains(t, sddl, "D:P", "DACL of %s must be protected against inheritance: %s", dir, sddl)
-	for _, sid := range []string{";;;WD)", ";;;AU)", ";;;BU)", ";;;IU)"} {
-		assert.NotContains(t, sddl, sid, "DACL of %s must not grant %s: %s", dir, sid, sddl)
+	for _, ace := range aceTrusteePattern.FindAllStringSubmatch(sddl, -1) {
+		fields := strings.Split(ace[1], ";")
+		trustee := fields[len(fields)-1]
+		assert.Contains(t, allowed, trustee,
+			"DACL of %s must grant only SYSTEM and the process user, found %s: %s", dir, trustee, sddl)
 	}
 }
 

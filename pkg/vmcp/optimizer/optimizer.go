@@ -201,7 +201,7 @@ type FindToolInput struct {
 
 	// ToolKeywords is an optional list of keywords to narrow the search.
 	//nolint:lll // Long description tag provides essential context for LLM tool usage.
-	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search."`
+	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords driving the BM25 keyword-search arm (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Semantic matching always uses tool_description, so provide a complete description even when supplying keywords."`
 }
 
 // FindToolOutput contains the results of a tool search.
@@ -336,7 +336,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames)
+	matches, err := d.store.Search(ctx, types.SearchQuery{
+		Description: input.ToolDescription,
+		Keywords:    input.ToolKeywords,
+	}, d.toolNames)
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
 	}

@@ -25,7 +25,7 @@ func TestGenerateSchema_FindToolInput(t *testing.T) {
 			"tool_keywords": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search.",
+				"description": "Optional keywords driving the BM25 keyword-search arm (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Semantic matching always uses tool_description, so provide a complete description even when supplying keywords.",
 			},
 		},
 		"required": []string{"tool_description"},

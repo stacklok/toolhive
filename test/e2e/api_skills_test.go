@@ -204,7 +204,9 @@ func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
 }
 
 func pushSkill(server *e2e.Server, reference string) *http.Response {
-	reqBody := pushSkillRequest{Reference: reference}
+	// E2E artifacts are pushed unsigned (no signing infrastructure in the
+	// suite); project-scoped installs of them pass allow_unsigned.
+	reqBody := pushSkillRequest{Reference: reference, NoSign: true}
 	jsonData, err := json.Marshal(reqBody)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 
@@ -219,6 +221,7 @@ func pushSkill(server *e2e.Server, reference string) *http.Response {
 
 type pushSkillRequest struct {
 	Reference string `json:"reference"`
+	NoSign    bool   `json:"no_sign,omitempty"`
 }
 
 // createUpstreamRegistryWithSkill creates a JSON file in the upstream registry

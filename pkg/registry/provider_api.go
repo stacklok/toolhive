@@ -26,6 +26,7 @@ type APIRegistryProvider struct {
 	client         api.Client
 	tokenSource    auth.TokenSource
 	skillsClient   api.SkillsClient
+	pluginsClient  api.PluginsClient
 }
 
 // NewAPIRegistryProvider creates a new API registry provider.
@@ -40,12 +41,16 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 	// Create skills client (best-effort — skills API may not be available)
 	skillsClient, _ := api.NewSkillsClient(apiURL, allowPrivateIp, tokenSource)
 
+	// Create plugins client (best-effort — plugins API may not be available)
+	pluginsClient, _ := api.NewPluginsClient(apiURL, allowPrivateIp, tokenSource)
+
 	p := &APIRegistryProvider{
 		apiURL:         apiURL,
 		allowPrivateIp: allowPrivateIp,
 		client:         client,
 		tokenSource:    tokenSource,
 		skillsClient:   skillsClient,
+		pluginsClient:  pluginsClient,
 	}
 
 	// Initialize the base provider with the GetRegistry function
@@ -227,22 +232,54 @@ func (p *APIRegistryProvider) SearchSkills(query string) ([]types.Skill, error) 
 	return skills, nil
 }
 
-// ListAvailablePlugins returns nil until the PluginsClient is wired up.
-// TODO(5529): backed by PluginsClient in the next iteration.
-func (*APIRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
-	return nil, nil
+// ListAvailablePlugins returns all plugins from the API, with auto-pagination.
+func (p *APIRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	if p.pluginsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	result, err := p.pluginsClient.ListPlugins(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	plugins := make([]types.Plugin, 0, len(result.Plugins))
+	for _, pl := range result.Plugins {
+		if pl != nil {
+			plugins = append(plugins, *pl)
+		}
+	}
+	return plugins, nil
 }
 
-// GetPlugin returns nil until the PluginsClient is wired up.
-// TODO(5529): backed by PluginsClient in the next iteration.
-func (*APIRegistryProvider) GetPlugin(_, _ string) (*types.Plugin, error) {
-	return nil, nil
+// GetPlugin returns a specific plugin by namespace and name from the API.
+func (p *APIRegistryProvider) GetPlugin(namespace, name string) (*types.Plugin, error) {
+	if p.pluginsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return p.pluginsClient.GetPlugin(ctx, namespace, name)
 }
 
-// SearchPlugins returns nil until the PluginsClient is wired up.
-// TODO(5529): backed by PluginsClient in the next iteration.
-func (*APIRegistryProvider) SearchPlugins(_ string) ([]types.Plugin, error) {
-	return nil, nil
+// SearchPlugins searches for plugins matching the query via the API.
+func (p *APIRegistryProvider) SearchPlugins(query string) ([]types.Plugin, error) {
+	if p.pluginsClient == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := p.pluginsClient.SearchPlugins(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	plugins := make([]types.Plugin, 0, len(result.Plugins))
+	for _, pl := range result.Plugins {
+		if pl != nil {
+			plugins = append(plugins, *pl)
+		}
+	}
+	return plugins, nil
 }
 
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata

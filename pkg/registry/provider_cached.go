@@ -46,6 +46,12 @@ type CachedAPIRegistryProvider struct {
 	skillsCacheSet bool
 	skillsTime     time.Time
 
+	// Plugins cache
+	pluginsMu       sync.RWMutex
+	cachedPlugins   []types.Plugin
+	pluginsCacheSet bool
+	pluginsTime     time.Time
+
 	// Cache configuration
 	cacheTTL      time.Duration
 	usePersistent bool
@@ -445,6 +451,62 @@ func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error)
 	p.skillsMu.Unlock()
 
 	return allSkills, nil
+}
+
+// ListAvailablePlugins returns plugins from the registry API, with caching.
+// Creates a PluginsClient on demand and fetches all plugins with auto-pagination.
+func (p *CachedAPIRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	// Check cache
+	p.pluginsMu.RLock()
+	if p.pluginsCacheSet && time.Since(p.pluginsTime) < p.cacheTTL {
+		plugins := p.cachedPlugins
+		p.pluginsMu.RUnlock()
+		return plugins, nil
+	}
+	p.pluginsMu.RUnlock()
+
+	// Fetch from API
+	pluginsClient, err := api.NewPluginsClient(p.apiURL, p.allowPrivateIp, p.tokenSource)
+	if err != nil {
+		// Return cached data if available
+		p.pluginsMu.RLock()
+		defer p.pluginsMu.RUnlock()
+		if p.pluginsCacheSet {
+			return p.cachedPlugins, nil
+		}
+		return nil, fmt.Errorf("failed to create plugins client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// ListPlugins auto-paginates internally, returning all plugins in one call
+	result, err := pluginsClient.ListPlugins(ctx, nil)
+	if err != nil {
+		// Return cached data if available, otherwise nil (plugins are optional)
+		p.pluginsMu.RLock()
+		defer p.pluginsMu.RUnlock()
+		if p.pluginsCacheSet {
+			return p.cachedPlugins, nil
+		}
+		return nil, nil
+	}
+
+	allPlugins := make([]types.Plugin, 0, len(result.Plugins))
+	for _, pl := range result.Plugins {
+		if pl != nil {
+			allPlugins = append(allPlugins, *pl)
+		}
+	}
+
+	// Update cache
+	p.pluginsMu.Lock()
+	p.cachedPlugins = allPlugins
+	p.pluginsCacheSet = true
+	p.pluginsTime = time.Now()
+	p.pluginsMu.Unlock()
+
+	return allPlugins, nil
 }
 
 // ConvertServerJSON wraps ConvertServerJSON for cached provider

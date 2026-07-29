@@ -23,7 +23,7 @@ var errLockWrite = errors.New("lock file write failed")
 // materialized entries for any toolhive.requires dependencies declared in
 // its SKILL.md. It also marks sk as lock-managed in the store. Callers must
 // only invoke this for project-scope installs with the lock file feature
-// enabled (see skills.LockFileFeatureEnabled) — sk is returned updated so the
+// enabled — sk is returned updated so the
 // caller can reflect the Managed flag back to its own result.
 func (s *service) recordLockState(
 	ctx context.Context,

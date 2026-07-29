@@ -1089,10 +1089,6 @@ func buildAndPushSkill(server *e2e.Server, ociRegistry *httptest.Server, skillNa
 	return ociRef
 }
 
-// This RFC THV-0080 feature is gated behind TOOLHIVE_SKILLS_LOCK_ENABLED
-// while it lands across a stack of PRs (see skills.LockFileFeatureEnabled),
-// so this Describe block runs its own server with the gate turned on rather
-// than sharing the "Skills API" block's default-off server above.
 var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "api-registry", "skills", "skills-lock", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
@@ -1101,7 +1097,6 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 	BeforeEach(func() {
 		config = e2e.NewServerConfig()
-		config.ExtraEnv = []string{"TOOLHIVE_SKILLS_LOCK_ENABLED=true"}
 		apiServer = e2e.StartServer(config)
 	})
 

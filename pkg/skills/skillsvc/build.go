@@ -16,7 +16,9 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // Validate checks whether a skill definition is valid.
@@ -111,6 +113,12 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 			http.StatusBadRequest,
 		)
 	}
+	if opts.Key == "" && !opts.NoSign {
+		return httperr.WithCode(
+			errors.New("signing key required: set key (--key), or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	}
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
 	if err != nil {
@@ -125,7 +133,26 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 		return fmt.Errorf("pushing to registry: %w", err)
 	}
 
+	if opts.NoSign {
+		return nil
+	}
+	// Sign the pushed artifact and attach the signature manifest next to
+	// it, so project-scoped installs can verify it (RFC THV-0080).
+	if _, err := s.artifactSigner().SignOCI(ctx, opts.Reference, d.String(), signer.Options{
+		Key: opts.Key,
+	}); err != nil {
+		return httperr.WithCode(fmt.Errorf("signing pushed artifact: %w", err), http.StatusBadRequest)
+	}
 	return nil
+}
+
+// artifactSigner returns the configured signer, defaulting to the Sigstore
+// signer with the composite registry keychain.
+func (s *service) artifactSigner() signer.Signer {
+	if s.sigSigner != nil {
+		return s.sigSigner
+	}
+	return signer.NewDefault(images.NewCompositeKeychain())
 }
 
 // ListBuilds returns all locally-built OCI skill artifacts in the local store.

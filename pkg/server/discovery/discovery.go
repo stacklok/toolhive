@@ -45,10 +45,24 @@ type ServerInfo struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
+// discoveryDirChain returns the directories ToolHive creates for the discovery
+// file under base, outermost first. The last element is the discovery
+// directory itself.
+//
+// The intermediate toolhive directory is part of the chain on purpose. A user
+// who can delete or rename it can substitute a directory of their own, and
+// every restriction applied to the leaf would then apply to a directory nobody
+// reads.
+func discoveryDirChain(base string) []string {
+	toolhiveDir := filepath.Join(base, "toolhive")
+	return []string{toolhiveDir, filepath.Join(toolhiveDir, "server")}
+}
+
 // defaultDiscoveryDir returns the default directory for the discovery file
 // based on the XDG Base Directory Specification.
 func defaultDiscoveryDir() string {
-	return filepath.Join(xdg.StateHome, "toolhive", "server")
+	chain := discoveryDirChain(xdg.StateHome)
+	return chain[len(chain)-1]
 }
 
 // FilePath returns the full path to the server discovery file
@@ -57,10 +71,41 @@ func FilePath() string {
 	return filepath.Join(defaultDiscoveryDir(), "server.json")
 }
 
+// EnsureSecureDir creates the discovery directory chain and locks it down.
+// Callers must invoke it before they read, lock, or otherwise trust anything
+// under the discovery directory, not just before they write.
+//
+// Startup is the case that matters: pkg/api creates the directory, takes
+// server.json.lock inside it, and runs Discover before it ever calls
+// WriteServerInfo. If a directory left loose by an earlier run only got
+// restricted by the write, a pre-planted server.json would be trusted for a
+// whole startup cycle, and a Discover result of StateRunning returns before
+// the write is reached at all.
+func EnsureSecureDir() error {
+	return ensureSecureDirIn(xdg.StateHome)
+}
+
+// ensureSecureDirIn creates the discovery directory chain under base and
+// restricts each directory ToolHive owns in it, outermost first.
+func ensureSecureDirIn(base string) error {
+	for _, dir := range discoveryDirChain(base) {
+		if err := os.MkdirAll(dir, dirPermissions); err != nil {
+			return fmt.Errorf("failed to create discovery directory: %w", err)
+		}
+		if err := restrictDiscoveryDirPermissions(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // WriteServerInfo atomically writes the server discovery file.
-// It creates the directory if needed, rejects symlinks at the target path,
-// and writes with restricted permissions (0600).
+// It creates and restricts the directory chain if needed, rejects symlinks at
+// the target path, and writes with restricted permissions (0600).
 func WriteServerInfo(info *ServerInfo) error {
+	if err := EnsureSecureDir(); err != nil {
+		return err
+	}
 	return writeServerInfoTo(defaultDiscoveryDir(), info)
 }
 
@@ -114,6 +159,14 @@ func readServerInfoFrom(dir string) (*ServerInfo, error) {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("refusing to read discovery file: %s is a symlink", path)
 		}
+	}
+
+	// Reject a file another account owns for the same reason we reject a
+	// symlink: the URL and nonce inside it decide where clients send their
+	// API traffic. Tightening the directory stops new writes, but a file
+	// planted while the directory was still loose keeps its old ACL.
+	if err := validateDiscoveryFileOwner(path); err != nil {
+		return nil, err
 	}
 
 	data, err := os.ReadFile(path) // #nosec G304 -- path is constructed from a trusted XDG directory, not user input

@@ -19,3 +19,11 @@ func restrictDiscoveryDirPermissions(dir string) error {
 	}
 	return nil
 }
+
+// validateDiscoveryFileOwner is a no-op outside Windows. POSIX mode bits are
+// enforced rather than advisory, so a 0700 directory owned by the user already
+// keeps other accounts from planting a discovery file, and no existing
+// non-Windows behavior changes here.
+func validateDiscoveryFileOwner(_ string) error {
+	return nil
+}

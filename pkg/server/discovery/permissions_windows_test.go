@@ -78,6 +78,114 @@ func TestRestrictDiscoveryDirPermissions_NewDirectory(t *testing.T) {
 	assertDiscoveryDACLRestricted(t, dir)
 }
 
+// TestEnsureSecureDirIn_ProtectsIntermediateToolhiveDir covers the ancestor
+// replacement path. Restricting only the server leaf leaves the intermediate
+// toolhive directory with inherited Modify, which carries DELETE on that
+// object: another interactive user can rename toolhive aside, recreate
+// toolhive\server with an ACL of their own, and the protected leaf is bypassed
+// because nothing reads it any more. Both directories in the chain must end up
+// protected.
+func TestEnsureSecureDirIn_ProtectsIntermediateToolhiveDir(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	grantEveryone(t, base)
+
+	chain := discoveryDirChain(base)
+	require.Len(t, chain, 2)
+	toolhiveDir, serverDir := chain[0], chain[1]
+
+	// Model the state an earlier ToolHive left behind: both directories exist
+	// already, created with plain MkdirAll, so both inherited Everyone.
+	require.NoError(t, os.MkdirAll(serverDir, dirPermissions))
+	require.Contains(t, strings.ToUpper(discoveryDirSDDL(t, toolhiveDir)), "WD",
+		"precondition: intermediate toolhive dir must inherit Everyone (WD)")
+
+	require.NoError(t, ensureSecureDirIn(base))
+
+	assertDiscoveryDACLRestricted(t, toolhiveDir)
+	assertDiscoveryDACLRestricted(t, serverDir)
+}
+
+// TestRestrictDiscoveryDir_FailsClosedOnUntrustedOwner covers hostile
+// ownership. Replacing the DACL is not enough when another account owns the
+// directory: owners keep WRITE_DAC implicitly and can make the ACL permissive
+// again, so the lockdown must fail rather than report success.
+//
+// Creating a directory owned by a different account needs a second user or
+// SeRestorePrivilege, neither of which a unit test can assume, so the trusted
+// owner set is injected instead: the directory is genuinely owned by the test
+// user and the set deliberately does not include them.
+func TestRestrictDiscoveryDir_FailsClosedOnUntrustedOwner(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	grantEveryone(t, dir)
+
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	require.NoError(t, err)
+
+	err = restrictDiscoveryDir(dir, []*windows.SID{systemSID})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to trust discovery directory")
+
+	// The DACL must be left untouched: a half-applied lockdown on a directory
+	// somebody else owns would look secure to an operator reading icacls.
+	assert.Contains(t, strings.ToUpper(discoveryDirSDDL(t, dir)), "WD",
+		"loose ACE must survive: ownership is checked before the DACL is replaced")
+}
+
+// TestRestrictDiscoveryDir_AcceptsCurrentUserOwner is the positive half of the
+// ownership check: the real trusted set must accept a directory the process
+// created itself, so the fail-closed path above cannot pass by rejecting
+// everything.
+func TestRestrictDiscoveryDir_AcceptsCurrentUserOwner(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	trusted, err := trustedOwnerSIDs()
+	require.NoError(t, err)
+
+	require.NoError(t, restrictDiscoveryDir(dir, trusted))
+	assertDiscoveryDACLRestricted(t, dir)
+}
+
+// TestValidateFileOwner_RejectsUntrustedOwner covers the read path. The
+// directory lockdown stops new writes but does not rewrite the ACL of a
+// server.json planted while the directory was still loose, so the file's own
+// owner decides whether its URL and nonce can be trusted.
+func TestValidateFileOwner_RejectsUntrustedOwner(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	info := &ServerInfo{
+		URL:       "npipe://attacker-pipe",
+		PID:       1,
+		Nonce:     "planted-nonce",
+		StartedAt: time.Now().UTC(),
+	}
+	require.NoError(t, writeServerInfoTo(dir, info))
+	path := filepath.Join(dir, "server.json")
+
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	require.NoError(t, err)
+
+	err = validateFileOwner(path, []*windows.SID{systemSID})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to trust discovery file")
+
+	// A file the process owns stays readable, and a missing file is not a
+	// trust decision (readServerInfoFrom must still return os.ErrNotExist).
+	trusted, err := trustedOwnerSIDs()
+	require.NoError(t, err)
+	assert.NoError(t, validateFileOwner(path, trusted))
+	assert.NoError(t, validateFileOwner(filepath.Join(dir, "absent.json"), trusted))
+
+	got, err := readServerInfoFrom(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "planted-nonce", got.Nonce)
+}
+
 func grantEveryone(t *testing.T, path string) {
 	t.Helper()
 	// icacls grants are the product-path way to introduce a loose ACE;

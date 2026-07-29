@@ -160,6 +160,55 @@ func TestWriteServerInfo_CreatesDirectoryWithCorrectPermissions(t *testing.T) {
 	assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm())
 }
 
+// TestEnsureSecureDirIn_CreatesAndRestrictsChain asserts the chain contract
+// startup depends on: both the intermediate toolhive directory and the server
+// leaf exist and are restricted before anything reads or locks inside them.
+// The Windows DACL half is asserted in
+// TestEnsureSecureDirIn_ProtectsIntermediateToolhiveDir.
+func TestEnsureSecureDirIn_CreatesAndRestrictsChain(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	require.NoError(t, ensureSecureDirIn(base))
+
+	chain := discoveryDirChain(base)
+	require.Len(t, chain, 2)
+	for _, dir := range chain {
+		fi, err := os.Stat(dir)
+		require.NoError(t, err)
+		require.True(t, fi.IsDir(), "%s must be a directory", dir)
+		if runtime.GOOS == "windows" {
+			continue
+		}
+		assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", dir)
+	}
+}
+
+// TestEnsureSecureDirIn_TightensExistingChain covers the upgrade path: a chain
+// left behind by an earlier run with loose permissions must be tightened, since
+// startup trusts the discovery file inside it.
+func TestEnsureSecureDirIn_TightensExistingChain(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory modes are not meaningful on Windows; see DACL tests")
+	}
+
+	base := t.TempDir()
+	chain := discoveryDirChain(base)
+	require.NoError(t, os.MkdirAll(chain[len(chain)-1], 0755))
+	for _, dir := range chain {
+		require.NoError(t, os.Chmod(dir, 0755))
+	}
+
+	require.NoError(t, ensureSecureDirIn(base))
+
+	for _, dir := range chain {
+		fi, err := os.Stat(dir)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", dir)
+	}
+}
+
 func TestWriteServerInfo_RejectsSymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

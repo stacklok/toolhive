@@ -116,18 +116,48 @@ func (s *service) installByName(
 // installFromRegistryLookup resolves a plain plugin name via the registry
 // lookup and dispatches to the appropriate installer. When no lookup is
 // configured or it returns no hits, returns a 404 with an install hint.
+//
+// Resolution mirrors skillsvc.resolveFromRegistry exactly:
+//   - a lookup error is logged and treated as "not found" (fall back to the
+//     404 hint) rather than propagated, and
+//   - search hits are post-filtered for an exact, case-insensitive name match
+//     (PluginSearchHit carries Name only, so there is no namespace filter).
+//
+// Multiple exact matches are ambiguous and produce a 409 listing candidates.
+// Package selection mirrors skillsvc.resolveRegistryPackages: the first OCI
+// package (Type == "oci") is chosen; when none exists, a 422 is returned.
 func (s *service) installFromRegistryLookup(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 ) (*plugins.InstallResult, error) {
 	if s.pluginLookup != nil {
-		hits, err := s.pluginLookup.SearchPlugins(ctx, opts.Name)
+		// Use the last path segment as the search query (matching
+		// skillsvc.resolveFromRegistry's splitQualifiedName), since
+		// SearchPlugins matches on name substring.
+		_, searchName := splitQualifiedName(opts.Name)
+
+		hits, err := s.pluginLookup.SearchPlugins(ctx, searchName)
 		if err != nil {
-			return nil, fmt.Errorf("searching registry for plugin %q: %w", opts.Name, err)
+			slog.Warn("registry plugin lookup failed, falling back to not-found", "name", opts.Name, "error", err)
+			hits = nil
 		}
-		if len(hits) > 0 && len(hits[0].Packages) > 0 {
-			pkg := hits[0].Packages[0]
+
+		// Filter for exact match. Case-insensitive because registry data
+		// may not be normalized to lowercase even though local plugin names are.
+		var matches []PluginSearchHit
+		for _, hit := range hits {
+			if !strings.EqualFold(hit.Name, searchName) {
+				continue
+			}
+			matches = append(matches, hit)
+		}
+
+		if len(matches) == 1 {
+			pkg, pkgErr := selectOCIPluginPackage(opts.Name, matches[0].Packages)
+			if pkgErr != nil {
+				return nil, pkgErr
+			}
 			slog.Info("resolved plugin from registry", "name", opts.Name, "reference", pkg.Reference)
 			opts.Name = pkg.Reference
 			ref, _, parseErr := parseOCIReference(pkg.Reference)
@@ -143,6 +173,10 @@ func (s *service) installFromRegistryLookup(
 			}
 			return s.installAndRegister(ctx, result, opts.Group, result.Plugin.Metadata.Name, scope, opts.ProjectRoot)
 		}
+
+		if len(matches) > 1 {
+			return nil, ambiguousPluginNameError(opts.Name, matches)
+		}
 	}
 
 	return nil, httperr.WithCode(
@@ -151,6 +185,54 @@ func (s *service) installFromRegistryLookup(
 			opts.Name, opts.Name),
 		http.StatusNotFound,
 	)
+}
+
+// selectOCIPluginPackage selects the first OCI package from a registry entry's
+// package list. Mirror of skillsvc.resolveRegistryPackages' OCI branch: OCI
+// packages are preferred, and a missing OCI package yields a 422 error.
+func selectOCIPluginPackage(name string, packages []PluginPackage) (PluginPackage, error) {
+	for _, pkg := range packages {
+		if pkg.Type == "oci" && pkg.Reference != "" {
+			return pkg, nil
+		}
+	}
+	return PluginPackage{}, httperr.WithCode(
+		fmt.Errorf("plugin %q found in registry but has no installable OCI package", name),
+		http.StatusUnprocessableEntity,
+	)
+}
+
+// ambiguousPluginNameError builds a 409 error listing each ambiguous match,
+// capped at 5 candidates with an "and N more" suffix. Mirror of
+// skillsvc.resolveFromRegistry's ambiguity path.
+func ambiguousPluginNameError(name string, matches []PluginSearchHit) error {
+	const maxCandidates = 5
+	candidates := make([]string, 0, len(matches))
+	for _, m := range matches {
+		candidates = append(candidates, m.Name)
+	}
+	suffix := ""
+	if len(candidates) > maxCandidates {
+		suffix = fmt.Sprintf(" and %d more", len(candidates)-maxCandidates)
+		candidates = candidates[:maxCandidates]
+	}
+	return httperr.WithCode(
+		fmt.Errorf("ambiguous plugin name %q matches multiple registry entries: %s%s; install by full OCI reference instead",
+			name, strings.Join(candidates, ", "), suffix),
+		http.StatusConflict,
+	)
+}
+
+// splitQualifiedName splits "namespace/name" into (namespace, name). If the
+// input has no "/" it returns ("", name) unchanged. Plugin names validated by
+// ValidatePluginName never contain "/", so this is a structural mirror of
+// skillsvc.splitQualifiedName that is a no-op for valid plugin names.
+func splitQualifiedName(s string) (namespace, name string) {
+	idx := strings.LastIndex(s, "/")
+	if idx < 0 {
+		return "", s
+	}
+	return s[:idx], s[idx+1:]
 }
 
 // registerPluginInGroup adds the plugin to the requested group when a group

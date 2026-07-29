@@ -9,10 +9,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/api"
+	regmocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 )
 
 func TestFilterPluginsV01(t *testing.T) {
@@ -122,4 +126,56 @@ func TestRegistryV01Router_ListPlugins_PaginationBeyondResults(t *testing.T) {
 	assert.Empty(t, body.Plugins, "Page beyond results should return empty plugins")
 	assert.Equal(t, 999, body.Metadata.Page)
 	assert.GreaterOrEqual(t, body.Metadata.Total, 0)
+}
+
+// TestRegistryV01Router_GetPlugin_RegistryAuthError confirms that an upstream
+// *api.RegistryHTTPError with a 401/403 status is mapped to the structured
+// registry_auth_required 503 response (writeRegistryAuthRequiredError), so
+// desktop clients can branch on the code. The skills handler has the same
+// mapping but lacks this test; plugins get explicit coverage here.
+//
+// The test wires getPluginV01WithProvider directly against a mock provider via
+// a dedicated chi route, avoiding the process-wide default provider singleton
+// so it stays deterministic and parallel-safe.
+func TestRegistryV01Router_GetPlugin_RegistryAuthError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{"unauthorized maps to registry_auth_required", http.StatusUnauthorized},
+		{"forbidden maps to registry_auth_required", http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+
+			provider := regmocks.NewMockProvider(ctrl)
+			provider.EXPECT().GetPlugin("io.test", "auth-plugin").
+				Return(nil, &api.RegistryHTTPError{StatusCode: tt.statusCode, URL: "https://registry.test/plugin"})
+
+			r := chi.NewRouter()
+			r.Get("/x/dev.toolhive/plugins/{namespace}/{pluginName}",
+				func(w http.ResponseWriter, req *http.Request) {
+					getPluginV01WithProvider(w, req, provider)
+				})
+			srv := httptest.NewServer(r)
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/x/dev.toolhive/plugins/io.test/auth-plugin")
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+			assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+
+			var body registryErrorResponse
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			assert.Equal(t, RegistryAuthRequiredCode, body.Code)
+			assert.Contains(t, body.Message, "Registry authentication required")
+		})
+	}
 }

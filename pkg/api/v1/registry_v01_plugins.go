@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
+	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/api"
 )
 
@@ -84,13 +85,19 @@ func listPluginsV01(w http.ResponseWriter, r *http.Request) {
 //	@Failure		503				{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
 //	@Router			/registry/{registryName}/v0.1/x/dev.toolhive/plugins/{namespace}/{pluginName} [get]
 func getPluginV01(w http.ResponseWriter, r *http.Request) {
-	namespace := chi.URLParam(r, "namespace")
-	pluginName := chi.URLParam(r, "pluginName")
-
 	provider, ok := getRegistryProvider(w)
 	if !ok {
 		return
 	}
+	getPluginV01WithProvider(w, r, provider)
+}
+
+// getPluginV01WithProvider contains the Get-plugin logic against an explicit
+// provider, separated from getRegistryProvider so tests can inject a mock
+// provider without touching the process-wide singleton.
+func getPluginV01WithProvider(w http.ResponseWriter, r *http.Request, provider regpkg.Provider) {
+	namespace := chi.URLParam(r, "namespace")
+	pluginName := chi.URLParam(r, "pluginName")
 
 	plugin, err := provider.GetPlugin(namespace, pluginName)
 	if err != nil {

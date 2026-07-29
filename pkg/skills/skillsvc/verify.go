@@ -26,11 +26,10 @@ func (s *service) artifactVerifier() verifier.Verifier {
 }
 
 // shouldVerifyInstall reports whether install-time signature verification
-// applies: project-scope installs with the lock file feature enabled. The
-// lock file is where trust decisions are recorded, so verification is
-// scoped to it.
+// applies: project-scope installs. The lock file is where trust decisions
+// are recorded, so verification is scoped to it.
 func shouldVerifyInstall(opts skills.InstallOptions, scope skills.Scope) bool {
-	return scope == skills.ScopeProject && opts.ProjectRoot != "" && skills.LockFileFeatureEnabled()
+	return scope == skills.ScopeProject && opts.ProjectRoot != ""
 }
 
 // provenanceDecision is the outcome of install-time verification: either a

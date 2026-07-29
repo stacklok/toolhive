@@ -3453,6 +3453,14 @@ const docTemplate = `{
             "pkg_api_v1.pushSkillRequest": {
                 "description": "Request to push a built skill artifact",
                 "properties": {
+                    "key": {
+                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
+                        "type": "string"
+                    },
+                    "no_sign": {
+                        "description": "NoSign pushes without signing",
+                        "type": "boolean"
+                    },
                     "reference": {
                         "description": "OCI reference to push",
                         "type": "string"

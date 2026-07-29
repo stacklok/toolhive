@@ -19,6 +19,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/sign"
 )
 
+//go:generate mockgen -destination=mocks/mock_signer.go -package=mocks -source=signer.go Signer
+
 // ErrKeyRequired indicates no signing key was provided. Keyless (OIDC)
 // signing is not implemented yet, so a cosign private key is the only
 // supported signing method.

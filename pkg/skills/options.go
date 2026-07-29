@@ -230,6 +230,13 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+	// Key is the path to a cosign PEM private key used to sign the pushed
+	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Empty with
+	// NoSign false is an error: unsigned pushes must be explicit.
+	Key string `json:"key,omitempty"`
+	// NoSign pushes without signing. Consumers installing the artifact
+	// project-scoped will need an explicit unsigned exception.
+	NoSign bool `json:"no_sign,omitempty"`
 }
 
 // SyncOptions configures the behavior of the Sync operation.

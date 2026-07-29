@@ -24,7 +24,9 @@ thv skill push [reference] [flags]
 ### Options
 
 ```
-  -h, --help   help for push
+  -h, --help         help for push
+      --key string   Path to a cosign private key to sign the pushed artifact (COSIGN_PASSWORD decrypts encrypted keys)
+      --no-sign      Push without signing (consumers will need an explicit unsigned exception to install project-scoped)
 ```
 
 ### Options inherited from parent commands

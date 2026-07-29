@@ -46,7 +46,9 @@ different component subsets.
   + SQLite storage + migration 002.
 - **Phase 3** (this doc): install/list/info/uninstall + MaterializationAdapter
   (Claude Code + Codex) + groups integration.
-- **Phase 4** (planned, #5528): REST API + `thv ai-plugin` CLI + app wiring.
+- **Phase 4** (shipped, #5528): REST API + `thv ai-plugin` CLI + app wiring.
+- **Phase 5b** (shipped, #5529): registry-name install wired via `lazyPluginLookup`;
+  plain-name resolution through the registry lookup chain.
 
 ## Core Concepts
 
@@ -86,7 +88,8 @@ reporting which component types it deliberately dropped.
 
 OCI reference (`ghcr.io/org/plugin:v1`), git reference
 (`git://host/owner/repo[@ref][#subdir]`), or plain name (registry lookup —
-seam declared, wired in a later phase).
+wired via `lazyPluginLookup`; `thv ai-plugin install <plain-name>`
+resolves through the registry's `SearchPlugins` → first hit's OCI package).
 
 ### 2. Building
 
@@ -267,6 +270,8 @@ The OCI plugin layer (`ociplugins.Store`, `PluginPackager`, `RegistryClient`,
 | `pkg/plugins/pluginsvc/list.go` / `info.go` / `uninstall.go` | lifecycle methods |
 | `pkg/plugins/adapters/claudecode.go` | Claude Code adapter (FS + settings.json mutation) |
 | `pkg/plugins/adapters/codex.go` | Codex adapter (FS + TOML) |
+| `pkg/registry/api/plugins_client.go` | MCP v0.1 registry plugin search client |
+| `pkg/api/v1/registry_v01_plugins.go` | HTTP handler for plugin search endpoint |
 | `pkg/storage/sqlite/plugin_store.go` | SQLite store |
 | `pkg/groups/plugins.go` | group membership |
 | `pkg/client/plugins.go` | client metadata + path resolution |

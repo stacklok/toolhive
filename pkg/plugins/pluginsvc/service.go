@@ -92,6 +92,13 @@ func WithClientManager(cm *client.ClientManager) Option {
 type PluginSearchHit struct {
 	// Name is the plugin name (kebab-case).
 	Name string `json:"name"`
+	// Namespace is the registry namespace the hit was published under
+	// (reverse-DNS, e.g. "io.github.user"). Carried so callers can disambiguate
+	// same-named plugins across namespaces.
+	Namespace string `json:"namespace,omitempty"`
+	// Version is the plugin version string reported by the registry. Used by
+	// the install flow to honor an explicit --version request.
+	Version string `json:"version,omitempty"`
 	// Description is a human-readable description of the plugin.
 	Description string `json:"description,omitempty"`
 	// Packages lists the OCI packages that publish this plugin.
@@ -104,6 +111,10 @@ type PluginPackage struct {
 	Reference string `json:"reference"`
 	// Type is the package type (e.g. "oci").
 	Type string `json:"type,omitempty"`
+	// Digest is the OCI digest of the package artifact, when reported by the
+	// registry. Carried as part of the trust tuple (reference + digest) so
+	// callers can pin installs to a verified artifact.
+	Digest string `json:"digest,omitempty"`
 }
 
 // PluginLookup resolves a plain plugin name against a registry/index. This seam

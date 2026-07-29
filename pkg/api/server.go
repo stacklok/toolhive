@@ -391,6 +391,7 @@ func (b *ServerBuilder) createDefaultPluginManager() error {
 		pluginsvc.WithGroupManager(b.groupManager),
 		pluginsvc.WithMaterializers(materializers),
 		pluginsvc.WithClientManager(cm),
+		pluginsvc.WithPluginLookup(lazyPluginLookup{}),
 	}
 
 	b.pluginManager = pluginsvc.New(pluginOpts...)
@@ -841,6 +842,52 @@ func (lazySkillLookup) SearchSkills(query string) ([]regtypes.Skill, error) {
 		return nil, err
 	}
 	return provider.SearchSkills(query)
+}
+
+// lazyPluginLookup implements pluginsvc.PluginLookup by resolving the registry
+// provider on each call, mirroring lazySkillLookup. Registry config changes are
+// picked up without restarting the server.
+type lazyPluginLookup struct{}
+
+func (lazyPluginLookup) SearchPlugins(_ context.Context, query string) ([]pluginsvc.PluginSearchHit, error) {
+	provider, err := registry.GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	if err != nil {
+		return nil, err
+	}
+	found, err := provider.SearchPlugins(query)
+	if err != nil {
+		return nil, err
+	}
+	return pluginHitsFromRegistry(found), nil
+}
+
+// pluginHitsFromRegistry adapts registry plugin search results to the
+// pluginsvc lookup shape. The OCI reference lives in SkillPackage.Identifier
+// on the wire; pluginsvc consumes it as PluginPackage.Reference. Namespace,
+// Version, and Digest are carried through so the install flow can disambiguate
+// by namespace, honor an explicit version request, and pin to a verified
+// digest.
+func pluginHitsFromRegistry(regPlugins []regtypes.Plugin) []pluginsvc.PluginSearchHit {
+	hits := make([]pluginsvc.PluginSearchHit, 0, len(regPlugins))
+	for i := range regPlugins {
+		p := &regPlugins[i]
+		pkgs := make([]pluginsvc.PluginPackage, 0, len(p.Packages))
+		for _, sp := range p.Packages {
+			pkgs = append(pkgs, pluginsvc.PluginPackage{
+				Reference: sp.Identifier,
+				Type:      sp.RegistryType,
+				Digest:    sp.Digest,
+			})
+		}
+		hits = append(hits, pluginsvc.PluginSearchHit{
+			Name:        p.Name,
+			Namespace:   p.Namespace,
+			Version:     p.Version,
+			Description: p.Description,
+			Packages:    pkgs,
+		})
+	}
+	return hits
 }
 
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.

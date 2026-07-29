@@ -4,6 +4,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -50,7 +51,7 @@ func init() {
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newSkillClient(cmd.Context())
 
-	_, err := c.Install(cmd.Context(), skills.InstallOptions{
+	result, err := c.Install(cmd.Context(), skills.InstallOptions{
 		Name:          args[0],
 		Scope:         skills.Scope(skillInstallScope),
 		Clients:       parseSkillInstallClients(skillInstallClientsRaw),
@@ -63,7 +64,29 @@ func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 		return formatSkillError("install skill", err)
 	}
 
+	printInstallTrust(result)
 	return nil
+}
+
+// printInstallTrust shows the trust state the install recorded — RFC
+// THV-0080 wants the pinned identity displayed prominently, not discovered
+// weeks later inside a signer-mismatch error.
+func printInstallTrust(result *skills.InstallResult) {
+	if result == nil {
+		return
+	}
+	name := result.Skill.Metadata.Name
+	switch {
+	case result.Provenance != nil && result.Provenance.Provisional:
+		fmt.Printf("Installed %s (signed by %s; verification provisional — see lock file)\n",
+			name, result.Provenance.SignerIdentity)
+	case result.Provenance != nil:
+		fmt.Printf("Installed %s (signed by %s)\n", name, result.Provenance.SignerIdentity)
+	case result.Unsigned:
+		fmt.Printf("Installed %s (unsigned — recorded as an explicit exception in the lock file)\n", name)
+	default:
+		fmt.Printf("Installed %s\n", name)
+	}
 }
 
 // parseSkillInstallClients splits a comma-separated --clients flag value.

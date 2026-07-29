@@ -804,7 +804,7 @@ forwarding applies — see
 [Limitation: elicitation and sampling are unavailable to Modern clients](#limitation-elicitation-and-sampling-are-unavailable-to-modern-clients)
 for what a Modern caller gets instead.
 
-**Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested `logging/setLevel`. vMCP requests debug-level logging from the backend so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own level preference is not applied to the relayed stream.
+**Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested level. On Legacy, vMCP requests debug-level logging from the backend (`logging/setLevel`) so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own `logging/setLevel` preference is not applied to the relayed stream. The same is true on Modern (2026-07-28), where the RPC is removed and the level rides per-request in `_meta["io.modelcontextprotocol/logLevel"]`: vMCP strips that reserved per-hop key from the downstream request and overlays its own (`debug`, when forwarding is bound) on the backend hop, so a Modern client's per-request level preference is likewise not honored — the relay runs at debug either way.
 
 **Known limitation (resource-template authorization)**: a resource template is advertised on the template-string entity (e.g. `file:///logs/{date}.txt`), but a concrete read is admission-checked on the **expanded** URI (e.g. `file:///logs/2025-01-01.txt`). Operators should therefore author resource authorization policies against concrete URI patterns, not the template string.
 

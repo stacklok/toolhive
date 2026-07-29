@@ -18,7 +18,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/llm"
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -160,15 +159,12 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 		By("Configuring environment secrets provider")
 		thvCmd("secret", "provider", "environment").ExpectSuccess()
 
-		// Allocate a free port for the OIDC mock server.
-		var err error
-		oidcPort, err = networking.FindOrUsePort(0)
-		Expect(err).ToNot(HaveOccurred())
-
 		// Create and start the mock OIDC server.
-		By(fmt.Sprintf("Starting OIDC mock server on port %d", oidcPort))
-		oidcServer, err = e2e.NewOIDCMockServer(oidcPort, clientID, clientSecret)
+		var err error
+		oidcServer, err = e2e.NewOIDCMockServer(0, clientID, clientSecret)
 		Expect(err).ToNot(HaveOccurred())
+		oidcPort = oidcServer.Port()
+		By(fmt.Sprintf("Starting OIDC mock server on port %d", oidcPort))
 		oidcServer.EnableAutoComplete()
 		Expect(oidcServer.Start()).To(Succeed())
 

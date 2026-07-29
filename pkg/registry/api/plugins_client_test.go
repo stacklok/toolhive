@@ -376,6 +376,62 @@ func TestPluginsClient_SearchPlugins(t *testing.T) {
 	}
 }
 
+// TestPluginsClient_SearchPluginsPagination verifies that SearchPlugins
+// auto-paginates through all available pages, mirroring ListPlugins. Same-named
+// plugins across namespaces can span pages; a single-page search would miss the
+// later pages and enable wrong-publisher installs.
+func TestPluginsClient_SearchPluginsPagination(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "kube", r.URL.Query().Get("search"))
+		w.Header().Set("Content-Type", "application/json")
+
+		callCount++
+		cursor := r.URL.Query().Get("cursor")
+		var resp pluginsListResponse
+
+		switch {
+		case cursor == "" && callCount == 1:
+			resp = pluginsListResponse{
+				Plugins: []*thvregistry.Plugin{
+					{Namespace: "io.github.a", Name: "k8s-plugin", Version: "1.0.0"},
+				},
+				Metadata: struct {
+					Count      int    `json:"count"`
+					NextCursor string `json:"nextCursor"`
+				}{Count: 1, NextCursor: "page2"},
+			}
+		case cursor == "page2":
+			resp = pluginsListResponse{
+				Plugins: []*thvregistry.Plugin{
+					{Namespace: "io.github.b", Name: "k8s-plugin", Version: "2.0.0"},
+				},
+				Metadata: struct {
+					Count      int    `json:"count"`
+					NextCursor string `json:"nextCursor"`
+				}{Count: 1, NextCursor: ""},
+			}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		err := json.NewEncoder(w).Encode(resp)
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	client := newTestPluginsClient(t, server)
+	result, err := client.SearchPlugins(t.Context(), "kube")
+	require.NoError(t, err)
+	require.Len(t, result.Plugins, 2, "both pages should be concatenated")
+	require.Equal(t, "io.github.a", result.Plugins[0].Namespace)
+	require.Equal(t, "io.github.b", result.Plugins[1].Namespace)
+	require.Equal(t, 2, callCount, "both pages should have been fetched")
+}
+
 func TestPluginsClient_ListPluginVersions(t *testing.T) {
 	t.Parallel()
 

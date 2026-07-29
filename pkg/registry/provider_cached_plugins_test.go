@@ -143,8 +143,8 @@ func TestCachedProvider_PluginsStaleOnFailure(t *testing.T) {
 }
 
 // TestCachedProvider_PluginsStaleOnFailureEmptyCache verifies that a transient
-// failure with NO cached data returns nil, nil (plugins are optional) rather
-// than an error — mirroring the skills fallback in provider_cached.go.
+// failure with NO cached data returns the error (not nil,nil) so the v0.1
+// registry route surfaces a real failure instead of an empty 200 [].
 func TestCachedProvider_PluginsStaleOnFailureEmptyCache(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +156,6 @@ func TestCachedProvider_PluginsStaleOnFailureEmptyCache(t *testing.T) {
 	require.NoError(t, err)
 
 	got, err := provider.ListAvailablePlugins()
-	require.NoError(t, err, "transient failure with empty cache should return nil, nil")
+	require.Error(t, err, "transient failure with empty cache should return the error, not nil,nil")
 	require.Nil(t, got)
 }

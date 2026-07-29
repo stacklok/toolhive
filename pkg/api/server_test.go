@@ -178,8 +178,8 @@ func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
 func TestPluginHitsFromRegistry(t *testing.T) {
 	t.Parallel()
 
-	skillPkg := func(identifier, registryType string) regtypes.SkillPackage {
-		return regtypes.SkillPackage{Identifier: identifier, RegistryType: registryType}
+	skillPkg := func(identifier, registryType, digest string) regtypes.SkillPackage {
+		return regtypes.SkillPackage{Identifier: identifier, RegistryType: registryType, Digest: digest}
 	}
 
 	tests := []struct {
@@ -192,9 +192,11 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 			input: []regtypes.Plugin{
 				{
 					Name:        "code-reviewer",
+					Namespace:   "io.github.user",
+					Version:     "1.0.0",
 					Description: "Reviews code for bugs",
 					Packages: []regtypes.SkillPackage{
-						skillPkg("ghcr.io/org/code-reviewer:v1", "oci"),
+						skillPkg("ghcr.io/org/code-reviewer:v1", "oci", "sha256:abc"),
 					},
 				},
 			},
@@ -202,10 +204,13 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 				t.Helper()
 				require.Len(t, hits, 1)
 				assert.Equal(t, "code-reviewer", hits[0].Name)
+				assert.Equal(t, "io.github.user", hits[0].Namespace)
+				assert.Equal(t, "1.0.0", hits[0].Version)
 				assert.Equal(t, "Reviews code for bugs", hits[0].Description)
 				require.Len(t, hits[0].Packages, 1)
 				assert.Equal(t, "ghcr.io/org/code-reviewer:v1", hits[0].Packages[0].Reference)
 				assert.Equal(t, "oci", hits[0].Packages[0].Type)
+				assert.Equal(t, "sha256:abc", hits[0].Packages[0].Digest)
 			},
 		},
 		{
@@ -213,32 +218,40 @@ func TestPluginHitsFromRegistry(t *testing.T) {
 			input: []regtypes.Plugin{
 				{
 					Name:        "multi-pkg",
+					Namespace:   "io.github.acme",
+					Version:     "2.1.0",
 					Description: "Has multiple packages",
 					Packages: []regtypes.SkillPackage{
-						skillPkg("ghcr.io/org/multi:latest", "oci"),
-						skillPkg("https://github.com/org/repo.git", "git"),
+						skillPkg("ghcr.io/org/multi:latest", "oci", "sha256:def"),
+						skillPkg("https://github.com/org/repo.git", "git", ""),
 					},
 				},
 			},
 			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
 				t.Helper()
 				require.Len(t, hits, 1)
+				assert.Equal(t, "io.github.acme", hits[0].Namespace)
+				assert.Equal(t, "2.1.0", hits[0].Version)
 				require.Len(t, hits[0].Packages, 2)
 				assert.Equal(t, "ghcr.io/org/multi:latest", hits[0].Packages[0].Reference)
 				assert.Equal(t, "oci", hits[0].Packages[0].Type)
+				assert.Equal(t, "sha256:def", hits[0].Packages[0].Digest)
 				assert.Equal(t, "https://github.com/org/repo.git", hits[0].Packages[1].Reference)
 				assert.Equal(t, "git", hits[0].Packages[1].Type)
+				assert.Empty(t, hits[0].Packages[1].Digest)
 			},
 		},
 		{
 			name: "plugin with zero packages",
 			input: []regtypes.Plugin{
-				{Name: "no-pkgs", Description: "No packages"},
+				{Name: "no-pkgs", Namespace: "io.github.bare", Version: "0.1.0", Description: "No packages"},
 			},
 			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
 				t.Helper()
 				require.Len(t, hits, 1)
 				assert.Equal(t, "no-pkgs", hits[0].Name)
+				assert.Equal(t, "io.github.bare", hits[0].Namespace)
+				assert.Equal(t, "0.1.0", hits[0].Version)
 				assert.NotNil(t, hits[0].Packages)
 				assert.Empty(t, hits[0].Packages)
 			},

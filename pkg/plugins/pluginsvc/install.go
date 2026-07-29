@@ -123,6 +123,10 @@ func (s *service) installByName(
 //   - search hits are post-filtered for an exact, case-insensitive name match
 //     (PluginSearchHit carries Name only, so there is no namespace filter).
 //
+// When opts.Version is set, exact-name matches are further narrowed to those
+// whose Version equals opts.Version; no version match falls through to the 404
+// not-found path (which includes the requested version in the message).
+//
 // Multiple exact matches are ambiguous and produce a 409 listing candidates.
 // Package selection mirrors skillsvc.resolveRegistryPackages: the first OCI
 // package (Type == "oci") is chosen; when none exists, a 422 is returned.
@@ -153,25 +157,22 @@ func (s *service) installFromRegistryLookup(
 			matches = append(matches, hit)
 		}
 
+		// When a version was requested, narrow the exact-name matches to those
+		// whose Version equals opts.Version (string equality). A hit that does
+		// not carry a Version cannot satisfy a versioned request. No match
+		// falls through to the 404 not-found path below.
+		if opts.Version != "" {
+			var versioned []PluginSearchHit
+			for _, m := range matches {
+				if m.Version == opts.Version {
+					versioned = append(versioned, m)
+				}
+			}
+			matches = versioned
+		}
+
 		if len(matches) == 1 {
-			pkg, pkgErr := selectOCIPluginPackage(opts.Name, matches[0].Packages)
-			if pkgErr != nil {
-				return nil, pkgErr
-			}
-			slog.Info("resolved plugin from registry", "name", opts.Name, "reference", pkg.Reference)
-			opts.Name = pkg.Reference
-			ref, _, parseErr := parseOCIReference(pkg.Reference)
-			if parseErr != nil {
-				return nil, httperr.WithCode(
-					fmt.Errorf("registry returned invalid OCI reference %q: %w", pkg.Reference, parseErr),
-					http.StatusUnprocessableEntity,
-				)
-			}
-			result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-			if ociErr != nil {
-				return nil, ociErr
-			}
-			return s.installAndRegister(ctx, result, opts.Group, result.Plugin.Metadata.Name, scope, opts.ProjectRoot)
+			return s.installFromRegistryHit(ctx, opts, scope, matches[0])
 		}
 
 		if len(matches) > 1 {
@@ -179,12 +180,57 @@ func (s *service) installFromRegistryLookup(
 		}
 	}
 
+	if opts.Version != "" {
+		return nil, httperr.WithCode(
+			fmt.Errorf("plugin %q version %q not found in local store or registry;"+
+				" install by OCI reference:\n  thv ai-plugin install ghcr.io/<namespace>/%s:%s",
+				opts.Name, opts.Version, opts.Name, opts.Version),
+			http.StatusNotFound,
+		)
+	}
 	return nil, httperr.WithCode(
 		fmt.Errorf("plugin %q not found in local store or registry;"+
-			" install by OCI reference:\n  thv plugin install ghcr.io/<namespace>/%s:<version>",
+			" install by OCI reference:\n  thv ai-plugin install ghcr.io/<namespace>/%s:<version>",
 			opts.Name, opts.Name),
 		http.StatusNotFound,
 	)
+}
+
+// installFromRegistryHit selects the OCI package from a single resolved hit,
+// parses its reference, and dispatches to installFromOCI. It guards against a
+// malformed catalog package whose Reference is not structurally an OCI
+// reference (parseOCIReference returns (nil, false, nil) for such input),
+// which would otherwise nil-deref in validateOCIRegistryHost.
+func (s *service) installFromRegistryHit(
+	ctx context.Context,
+	opts plugins.InstallOptions,
+	scope plugins.Scope,
+	hit PluginSearchHit,
+) (*plugins.InstallResult, error) {
+	pkg, pkgErr := selectOCIPluginPackage(opts.Name, hit.Packages)
+	if pkgErr != nil {
+		return nil, pkgErr
+	}
+	slog.Info("resolved plugin from registry", "name", opts.Name, "reference", pkg.Reference)
+	opts.Name = pkg.Reference
+	ref, isOCIRef, parseErr := parseOCIReference(pkg.Reference)
+	if parseErr != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("registry returned invalid OCI reference %q: %w", pkg.Reference, parseErr),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	if !isOCIRef || ref == nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("registry returned invalid OCI reference %q", pkg.Reference),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
+	if ociErr != nil {
+		return nil, ociErr
+	}
+	return s.installAndRegister(ctx, result, opts.Group, result.Plugin.Metadata.Name, scope, opts.ProjectRoot)
 }
 
 // selectOCIPluginPackage selects the first OCI package from a registry entry's

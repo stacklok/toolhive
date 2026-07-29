@@ -43,7 +43,7 @@ type PluginsClient interface {
 	GetPluginVersion(ctx context.Context, namespace, name, version string) (*thvregistry.Plugin, error)
 	// ListPlugins retrieves plugins with optional filtering and pagination.
 	ListPlugins(ctx context.Context, opts *PluginsListOptions) (*PluginsListResult, error)
-	// SearchPlugins searches for plugins matching the query (single page, no auto-pagination).
+	// SearchPlugins searches for plugins matching the query (auto-paginates).
 	SearchPlugins(ctx context.Context, query string) (*PluginsListResult, error)
 	// ListPluginVersions lists all versions of a specific plugin.
 	ListPluginVersions(ctx context.Context, namespace, name string) (*PluginsListResult, error)
@@ -139,25 +139,37 @@ func (c *mcpPluginsClient) ListPlugins(ctx context.Context, opts *PluginsListOpt
 }
 
 // SearchPlugins searches for plugins matching the query.
-// Returns a single page of results (no auto-pagination).
+// It auto-paginates through all available pages, concatenating results —
+// mirroring ListPlugins. This prevents wrong-publisher installs when
+// same-named plugins across namespaces span pages.
 func (c *mcpPluginsClient) SearchPlugins(ctx context.Context, query string) (*PluginsListResult, error) {
-	basePath, err := url.JoinPath(c.baseURL, pluginsBasePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build plugins URL: %w", err)
-	}
-	params := url.Values{}
-	params.Add("search", query)
+	opts := &PluginsListOptions{Search: query, Limit: 100}
 
-	endpoint := basePath + "?" + params.Encode()
+	var allPlugins []*thvregistry.Plugin
+	cursor := ""
 
-	var listResp pluginsListResponse
-	if err := c.doPluginsGet(ctx, endpoint, &listResp); err != nil {
-		return nil, err
+	for {
+		page, nextCursor, err := c.fetchPluginsPage(ctx, cursor, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		allPlugins = append(allPlugins, page...)
+
+		if nextCursor == "" {
+			break
+		}
+
+		cursor = nextCursor
+
+		// Safety limit: prevent infinite loops (mirrors ListPlugins).
+		if len(allPlugins) > 10000 {
+			return nil, fmt.Errorf("exceeded maximum plugins limit (10000)")
+		}
 	}
 
 	return &PluginsListResult{
-		Plugins:    listResp.Plugins,
-		NextCursor: listResp.Metadata.NextCursor,
+		Plugins: allPlugins,
 	}, nil
 }
 

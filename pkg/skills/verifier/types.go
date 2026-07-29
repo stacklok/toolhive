@@ -28,6 +28,9 @@ type Result struct {
 	RepositoryURI string
 	// SigstoreURL is the transparency log instance used for verification.
 	SigstoreURL string
+	// Provisional marks a verification with a documented assurance gap
+	// (git signatures until Rekor proof validation lands).
+	Provisional bool
 	// Bundle is the serialized Sigstore bundle for offline re-verification.
 	Bundle []byte
 }
@@ -44,6 +47,7 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 		CertIssuer:     r.CertIssuer,
 		RepositoryURI:  r.RepositoryURI,
 		SigstoreURL:    r.SigstoreURL,
+		Provisional:    r.Provisional,
 	}
 }
 

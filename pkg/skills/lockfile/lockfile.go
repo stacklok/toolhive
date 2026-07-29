@@ -99,6 +99,12 @@ type Provenance struct {
 	RepositoryURI string `yaml:"repositoryUri,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `yaml:"sigstoreUrl,omitempty"`
+	// Provisional marks provenance whose verification has a documented
+	// gap — currently git-commit signatures, verified for signature and
+	// certificate chain but without transparency-log proof of signing
+	// time. Visible in lock diffs so reduced assurance is never silent;
+	// removed when the gap closes.
+	Provisional bool `yaml:"provisional,omitempty"`
 }
 
 // Lockfile is the parsed contents of a project's toolhive.lock.yaml.

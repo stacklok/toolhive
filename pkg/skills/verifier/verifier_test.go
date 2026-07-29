@@ -223,6 +223,20 @@ func TestToLockProvenance(t *testing.T) {
 			want:   nil,
 		},
 		{
+			name: "provisional result marks the lock provenance",
+			result: &Result{
+				Signed:         true,
+				SignerIdentity: "dev@example.com",
+				CertIssuer:     "https://accounts.example.com",
+				Provisional:    true,
+			},
+			want: &lockfile.Provenance{
+				SignerIdentity: "dev@example.com",
+				CertIssuer:     "https://accounts.example.com",
+				Provisional:    true,
+			},
+		},
+		{
 			name: "identity-bearing result maps all fields",
 			result: &Result{
 				Signed:         true,

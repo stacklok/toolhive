@@ -41,7 +41,7 @@ func newTestCA(t *testing.T) *testCA {
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "test-fulcio-root"},
-		NotBefore:             time.Now().Add(-time.Hour),
+		NotBefore:             time.Now().Add(-48 * time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		IsCA:                  true,
 		KeyUsage:              x509.KeyUsageCertSign,
@@ -68,6 +68,30 @@ func (ca *testCA) issueSigningCert(t *testing.T, email string) (*x509.Certificat
 		NotAfter:    time.Now().Add(9 * time.Minute),
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
+		ExtraExtensions: []pkix.Extension{
+			{Id: fulcioIssuerOID, Value: []byte(testGitIssuer)},
+		},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, key.Public(), ca.key)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	return cert, key
+}
+
+// issueExpiredSigningCert issues a signing certificate whose validity
+// window lies entirely in the past.
+func (ca *testCA) issueExpiredSigningCert(t *testing.T, email string) (*x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber:   big.NewInt(3),
+		EmailAddresses: []string{email},
+		NotBefore:      time.Now().Add(-24 * time.Hour),
+		NotAfter:       time.Now().Add(-23 * time.Hour),
+		KeyUsage:       x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
 		ExtraExtensions: []pkix.Extension{
 			{Id: fulcioIssuerOID, Value: []byte(testGitIssuer)},
 		},
@@ -145,6 +169,26 @@ func TestVerifyGitSignatureRejects(t *testing.T) {
 		_, err := verifyGitSignature(t.Context(), payload, []byte("not a signature"), ca.pool(), x509.NewCertPool())
 		require.Error(t, err)
 	})
+}
+
+// TestVerifyGitSignatureAcceptsExpiredCertificate pins the current time
+// anchoring: verification time is the certificate's own validity window, so
+// a certificate that expired long ago still verifies. This is the
+// documented assurance gap of the git path (no transparency-log proof of
+// signing time — provenance is marked Provisional for it).
+//
+// TODO(rekor): flip this expectation to require.Error once Rekor
+// inclusion-proof validation lands and bounds the replay window.
+func TestVerifyGitSignatureAcceptsExpiredCertificate(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t)
+	cert, key := ca.issueExpiredSigningCert(t, "dev@example.com")
+	payload := []byte(testCommitPayload)
+	sig := signCommitPayload(t, payload, cert, key)
+
+	_, err := verifyGitSignature(t.Context(), payload, sig, ca.pool(), x509.NewCertPool())
+	require.NoError(t, err,
+		"expired certificates currently verify (validity-window anchoring); see TODO(rekor)")
 }
 
 func TestVerifyGitInputGuards(t *testing.T) {

@@ -63,7 +63,12 @@ func (*Default) VerifyGit(
 		return nil, fmt.Errorf("%w: commit is signed by a different identity than %q",
 			ErrSignerMismatch, expected.SignerIdentity)
 	}
-	return resultFromCore(identity, nil), nil
+	result := resultFromCore(identity, nil)
+	// No transparency-log proof is validated yet (see the doc comment), so
+	// git verification carries a documented assurance gap — marked so the
+	// lock file shows it rather than implying full verification.
+	result.Provisional = true
+	return result, nil
 }
 
 // verifyGitSignature verifies the CMS (PKCS#7) signature gitsign attaches

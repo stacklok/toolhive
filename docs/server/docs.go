@@ -1774,6 +1774,32 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo": {
+                "description": "Provenance is the signer identity the project's lock file records\nfor this skill, when project-scoped and lock-managed.",
+                "properties": {
+                    "cert_issuer": {
+                        "description": "CertIssuer is the OIDC issuer that authenticated the signer.",
+                        "type": "string"
+                    },
+                    "provisional": {
+                        "description": "Provisional marks provenance with a documented verification gap\n(git signatures until transparency-log validation lands).",
+                        "type": "boolean"
+                    },
+                    "repository_uri": {
+                        "description": "RepositoryURI is the source repository from the certificate\nextensions, when present.",
+                        "type": "string"
+                    },
+                    "signer_identity": {
+                        "description": "SignerIdentity is the certificate subject identity (workflow path for\nGitHub Actions certificates, SAN verbatim otherwise).",
+                        "type": "string"
+                    },
+                    "sigstore_url": {
+                        "description": "SigstoreURL is the Sigstore instance the signature chains to.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
@@ -1839,6 +1865,13 @@ const docTemplate = `{
                     },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo"
+                    },
+                    "unsigned": {
+                        "description": "Unsigned reports that the lock file records an explicit unsigned\nexception for this skill.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"

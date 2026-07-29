@@ -234,6 +234,10 @@ func (s *service) installAndRegister(
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
 	lockScoped := scope == skills.ScopeProject && skills.LockFileFeatureEnabled()
+	// Surface the verification decision on the result so callers can show
+	// what trust state this install recorded.
+	result.Provenance = opts.Provenance
+	result.Unsigned = opts.Unsigned
 
 	// Snapshot the prior lock entry before anything below can write one, so
 	// rollback can reinstate it (RequiredBy links from other parents

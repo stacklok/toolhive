@@ -973,6 +973,7 @@ re-sync, modify `configYAML` (or restart the registry API pod).
 - [Operator Architecture](09-operator-architecture.md) - MCPRegistry CRD
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - How registry metadata feeds a server's RunConfig
 - [Skills System](12-skills-system.md) - Skills discovery and distribution via registry
+- [Plugins System](14-plugins-system.md) - Plugins discovery and distribution via registry (analogue of skills)
 
 ### External Documentation
 - [ToolHive User Documentation](https://docs.stacklok.com/toolhive/) - User-facing guides

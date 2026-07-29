@@ -51,6 +51,8 @@ type syncRequest struct {
 	Prune       bool     `json:"prune,omitempty"`
 	Check       bool     `json:"check,omitempty"`
 	Adopt       bool     `json:"adopt,omitempty"`
+	// AllowUnsigned mirrors skills.SyncOptions.AllowUnsigned for adoption.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 type upgradeRequest struct {

@@ -225,6 +225,10 @@ type SyncOptions struct {
 	// Check verifies on-disk content against contentDigest without installing
 	// or writing anything.
 	Check bool `json:"check,omitempty"`
+	// AllowUnsigned permits adopting a skill whose signature state cannot
+	// be established (no stored bundle), recording an explicit unsigned
+	// exception — the same trust decision as an unsigned install.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 	// Adopt writes lock entries for existing unmanaged project-scope installs.
 	Adopt bool `json:"adopt,omitempty"`
 }

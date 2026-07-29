@@ -30,9 +30,6 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referenceCount
-      name: References
-      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -284,43 +281,6 @@ spec:
                   for this MCPOIDCConfig.
                 format: int64
                 type: integer
-              referenceCount:
-                description: ReferenceCount is the number of workloads referencing
-                  this config.
-                format: int32
-                type: integer
-              referencingWorkloads:
-                description: |-
-                  ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
-                  Each entry identifies the workload by kind and name. The map key is the
-                  (kind, name) pair so two workloads of different kinds that share a name
-                  (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
-                  entries rather than colliding under merge-patch semantics.
-                items:
-                  description: |-
-                    WorkloadReference identifies a workload that references a shared configuration resource.
-                    Namespace is implicit — cross-namespace references are not supported.
-                  properties:
-                    kind:
-                      description: Kind is the type of workload resource
-                      enum:
-                      - MCPServer
-                      - VirtualMCPServer
-                      - MCPRemoteProxy
-                      type: string
-                    name:
-                      description: Name is the name of the workload resource
-                      minLength: 1
-                      type: string
-                  required:
-                  - kind
-                  - name
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - kind
-                - name
-                x-kubernetes-list-type: map
             type: object
         type: object
     served: true
@@ -334,9 +294,6 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referenceCount
-      name: References
-      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -589,43 +546,6 @@ spec:
                   for this MCPOIDCConfig.
                 format: int64
                 type: integer
-              referenceCount:
-                description: ReferenceCount is the number of workloads referencing
-                  this config.
-                format: int32
-                type: integer
-              referencingWorkloads:
-                description: |-
-                  ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
-                  Each entry identifies the workload by kind and name. The map key is the
-                  (kind, name) pair so two workloads of different kinds that share a name
-                  (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
-                  entries rather than colliding under merge-patch semantics.
-                items:
-                  description: |-
-                    WorkloadReference identifies a workload that references a shared configuration resource.
-                    Namespace is implicit — cross-namespace references are not supported.
-                  properties:
-                    kind:
-                      description: Kind is the type of workload resource
-                      enum:
-                      - MCPServer
-                      - VirtualMCPServer
-                      - MCPRemoteProxy
-                      type: string
-                    name:
-                      description: Name is the name of the workload resource
-                      minLength: 1
-                      type: string
-                  required:
-                  - kind
-                  - name
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - kind
-                - name
-                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

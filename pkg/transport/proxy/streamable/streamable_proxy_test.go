@@ -559,7 +559,7 @@ func TestHandleGet_SessionDecisionMatrix(t *testing.T) {
 // TestWriteSSEErrorEvent verifies the "id" key is present and echoed for a
 // valid jsonrpc2.ID, and omitted entirely -- never sent as "id":null -- for
 // the zero-value ID (jsonrpc2.ID{}.IsValid() == false), in both cases
-// preserving the SSE "data: ...\n\n" framing writeSSEData produces.
+// preserving the SSE "event: message" + "data: ..." framing writeSSEData produces.
 //
 // The body is decoded to map[string]any rather than a tagged struct: a
 // struct field of type `any` cannot distinguish an absent key from a
@@ -586,9 +586,12 @@ func TestWriteSSEErrorEvent(t *testing.T) {
 			assert.True(t, rec.Flushed, "writeSSEErrorEvent must flush the SSE frame to the client")
 
 			body := rec.Body.String()
-			require.True(t, strings.HasPrefix(body, "data: "), "SSE frame must carry the data: prefix, got %q", body)
+			require.True(t, strings.HasPrefix(body, "event: message\n"), "SSE frame must include event: message, got %q", body)
 			require.True(t, strings.HasSuffix(body, "\n\n"), "SSE frame must end with a blank line, got %q", body)
-			payload := strings.TrimSuffix(strings.TrimPrefix(body, "data: "), "\n\n")
+			lines := strings.Split(strings.TrimSuffix(body, "\n\n"), "\n")
+			require.Len(t, lines, 2, "expected event + data lines, got %q", body)
+			require.Equal(t, "event: message", lines[0])
+			payload := strings.TrimPrefix(lines[1], "data: ")
 
 			var parsed map[string]any
 			require.NoError(t, json.Unmarshal([]byte(payload), &parsed))

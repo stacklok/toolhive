@@ -113,13 +113,14 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
-		Name:        req.Name,
-		Version:     req.Version,
-		Scope:       req.Scope,
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Force:       req.Force,
-		Group:       req.Group,
+		Name:          req.Name,
+		Version:       req.Version,
+		Scope:         req.Scope,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Force:         req.Force,
+		Group:         req.Group,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err

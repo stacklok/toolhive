@@ -1594,6 +1594,9 @@ const docTemplate = `{
                     "digest-missing",
                     "validation-rejected",
                     "lock-write-failed",
+                    "signature-invalid",
+                    "signer-mismatch",
+                    "unsigned-rejected",
                     "unknown"
                 ],
                 "type": "string",
@@ -1602,6 +1605,9 @@ const docTemplate = `{
                     "FailureReasonDigestMissing",
                     "FailureReasonValidationRejected",
                     "FailureReasonLockWriteFailed",
+                    "FailureReasonSignatureInvalid",
+                    "FailureReasonSignerMismatch",
+                    "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
             },
@@ -3109,6 +3115,10 @@ const docTemplate = `{
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits installing a project-scoped skill without a\nverified signature; the exception is recorded in the project's lock\nfile.",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
                         "items": {

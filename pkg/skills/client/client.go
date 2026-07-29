@@ -164,13 +164,14 @@ func (c *Client) List(ctx context.Context, opts skills.ListOptions) ([]skills.In
 // Install installs a skill from a remote source.
 func (c *Client) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
 	body := installRequest{
-		Name:        opts.Name,
-		Version:     opts.Version,
-		Scope:       opts.Scope,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Force:       opts.Force,
-		Group:       opts.Group,
+		Name:          opts.Name,
+		Version:       opts.Version,
+		Scope:         opts.Scope,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Force:         opts.Force,
+		Group:         opts.Group,
+		AllowUnsigned: opts.AllowUnsigned,
 	}
 
 	var resp installResponse

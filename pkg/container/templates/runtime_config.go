@@ -6,7 +6,9 @@ package templates
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
@@ -159,6 +161,80 @@ func (rc *RuntimeConfig) Validate() error {
 	return errors.Join(errs...)
 }
 
+// Clone returns a deep copy of rc, safe for the caller to mutate without
+// affecting the original — including RuntimeDefaults entries, whose slices
+// are package-global and would otherwise be aliased by a shallow copy.
+// A nil receiver returns nil.
+func (rc *RuntimeConfig) Clone() *RuntimeConfig {
+	if rc == nil {
+		return nil
+	}
+	clone := *rc
+	clone.AdditionalPackages = slices.Clone(rc.AdditionalPackages)
+	clone.BuildWith = slices.Clone(rc.BuildWith)
+	clone.RuntimeEnv = maps.Clone(rc.RuntimeEnv)
+	return &clone
+}
+
+// WithOverrides returns a new RuntimeConfig with rc as the base and override
+// layered on top:
+//   - BuilderImage: override wins if non-empty, else falls back to rc's.
+//   - AdditionalPackages: the union, rc's entries first, then any override
+//     entries not already present.
+//   - RuntimeEnv: merged, with override's value winning on a shared key.
+//   - BuildWith: taken from override as-is; no defaults exist for it.
+//
+// WithOverrides(nil) returns rc.Clone() — a distinct object, never rc itself.
+// A nil receiver returns override.Clone().
+func (rc *RuntimeConfig) WithOverrides(override *RuntimeConfig) *RuntimeConfig {
+	if rc == nil {
+		return override.Clone()
+	}
+	if override == nil {
+		return rc.Clone()
+	}
+
+	// Start from a copy of the base so any future field defaults to
+	// base-wins rather than a zero value.
+	merged := *rc
+	if override.BuilderImage != "" {
+		merged.BuilderImage = override.BuilderImage
+	}
+
+	seen := make(map[string]bool, len(rc.AdditionalPackages))
+	merged.AdditionalPackages = append([]string(nil), rc.AdditionalPackages...)
+	for _, pkg := range rc.AdditionalPackages {
+		seen[pkg] = true
+	}
+	for _, pkg := range override.AdditionalPackages {
+		if !seen[pkg] {
+			merged.AdditionalPackages = append(merged.AdditionalPackages, pkg)
+			seen[pkg] = true
+		}
+	}
+
+	merged.RuntimeEnv = mergeEnvMaps(rc.RuntimeEnv, override.RuntimeEnv)
+	merged.BuildWith = slices.Clone(override.BuildWith)
+
+	return &merged
+}
+
+// ValidateFor rejects a non-empty BuildWith for transports whose builder
+// doesn't support build-time dependency constraints — only the uvx builder
+// currently supports them — and otherwise validates rc via Validate.
+// A nil receiver returns nil.
+func (rc *RuntimeConfig) ValidateFor(transportType TransportType) error {
+	if rc == nil {
+		return nil
+	}
+	if transportType != TransportTypeUVX && len(rc.BuildWith) > 0 {
+		return fmt.Errorf(
+			"build_with is not supported for %s:// builds (only uvx://)", transportType,
+		)
+	}
+	return rc.Validate()
+}
+
 // RuntimeDefaults provides default configurations for each runtime type
 var RuntimeDefaults = map[TransportType]RuntimeConfig{
 	TransportTypeGO: {
@@ -175,12 +251,26 @@ var RuntimeDefaults = map[TransportType]RuntimeConfig{
 	},
 }
 
-// GetDefaultRuntimeConfig returns the default runtime configuration for a given transport type
+// GetDefaultRuntimeConfig returns the default runtime configuration for a given
+// transport type. The result is a deep copy detached from RuntimeDefaults, so
+// callers may freely mutate it without affecting the package-global defaults.
 func GetDefaultRuntimeConfig(transportType TransportType) RuntimeConfig {
 	config, ok := RuntimeDefaults[transportType]
 	if !ok {
 		// Return empty config if transport type not found
 		return RuntimeConfig{}
 	}
-	return config
+	return *config.Clone()
+}
+
+// mergeEnvMaps merges two environment variable maps without mutating either
+// input. Entries in override take precedence over entries in base.
+func mergeEnvMaps(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(base)+len(override))
+	maps.Copy(merged, base)
+	maps.Copy(merged, override)
+	return merged
 }

@@ -25,6 +25,7 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 type elicitingCore struct {
@@ -123,6 +124,7 @@ func (t *responsePostRecordingTransport) RoundTrip(req *http.Request) (*http.Res
 	select {
 	case t.observed <- observation:
 	default:
+		// This test expects one response POST; discard any retry after that observation.
 	}
 	return resp, nil
 }
@@ -139,7 +141,10 @@ func cleanupWithin(t *testing.T, name string, cleanup func() error) {
 	}
 }
 
-func TestHandler_AcceptsClientResponsePostWithLegacyAuthzConfigured(t *testing.T) {
+// TestHandler_AcceptsClientResponsePost guards two Serve-path regressions: a
+// Legacy client response POST must return 202, and configuring the retired HTTP
+// authorization middleware must not reinstall it in Handler's request chain.
+func TestHandler_AcceptsClientResponsePost(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -152,12 +157,19 @@ func TestHandler_AcceptsClientResponsePostWithLegacyAuthzConfigured(t *testing.T
 		InputSchema: map[string]any{"type": "object"},
 	}
 	factory, _ := newToolSessionFactory(t, ctrl, []vmcp.Tool{testTool})
+	// Optimizer is a real construction-time Modern blocker. Enabling it makes the
+	// Modern-first client negotiate the session-based Legacy path under test.
+	optimizerFactory := &recordingOptimizerFactory{}
 	core := &elicitingCore{fakeCore: &fakeCore{tools: []vmcp.Tool{testTool}}}
 
 	srv, err := Serve(ctx, core, &ServerConfig{
-		SessionTTL:           time.Minute,
-		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
-		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+		SessionTTL: time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{
+			Base:              factory,
+			OptimizerFactory:  optimizerFactory.build,
+			AdvertiseFromCore: true,
+		},
+		BackendRegistry: vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -165,9 +177,9 @@ func TestHandler_AcceptsClientResponsePostWithLegacyAuthzConfigured(t *testing.T
 	})
 	core.requester = NewSDKElicitationAdapter(srv.MCPServer())
 
-	// Before server.New moved onto the core admission path, production configured
-	// these two layers together. The request-only authz layer treated a JSON-RPC
-	// response as malformed because the parser intentionally returned no request.
+	// Regression canary: Handler no longer reads config.AuthzMiddleware (the HTTP
+	// authz block was removed in #5556). Setting it here proves that reintroducing
+	// that block would reject response POSTs as malformed.
 	srv.config.AuthMiddleware = mcpparser.ParsingMiddleware
 	srv.config.AuthzMiddleware = legacyRequestAuthorization
 
@@ -211,13 +223,14 @@ func TestHandler_AcceptsClientResponsePostWithLegacyAuthzConfigured(t *testing.T
 		cleanupWithin(t, "MCP client", client.Close)
 	})
 
-	_, err = client.Initialize(ctx, mcp.InitializeRequest{
+	initializeResult, err := client.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo:      mcp.Implementation{Name: "response-test", Version: "1.0.0"},
 		},
 	})
 	require.NoError(t, err)
+	require.Equal(t, mcp.LATEST_PROTOCOL_VERSION, initializeResult.ProtocolVersion)
 
 	type callOutcome struct {
 		result *mcp.CallToolResult
@@ -226,7 +239,13 @@ func TestHandler_AcceptsClientResponsePostWithLegacyAuthzConfigured(t *testing.T
 	callDone := make(chan callOutcome, 1)
 	go func() {
 		result, err := client.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{Name: testTool.Name},
+			Params: mcp.CallToolParams{
+				Name: optimizerdec.CallToolName,
+				Arguments: map[string]any{
+					"tool_name":  testTool.Name,
+					"parameters": map[string]any{},
+				},
+			},
 		})
 		callDone <- callOutcome{result: result, err: err}
 	}()
@@ -234,6 +253,12 @@ func TestHandler_AcceptsClientResponsePostWithLegacyAuthzConfigured(t *testing.T
 	var responsePost responsePostObservation
 	select {
 	case responsePost = <-observed:
+	case outcome := <-callDone:
+		t.Fatalf(
+			"tool call finished before client response POST: result=%v error=%v",
+			outcome.result,
+			outcome.err,
+		)
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for client response POST: %v", ctx.Err())
 	}

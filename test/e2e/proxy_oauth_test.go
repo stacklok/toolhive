@@ -15,12 +15,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -54,27 +54,25 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 		osvServerName = generateUniqueOIDCServerName("osv-oauth-target")
 		proxyServerName = generateUniqueOIDCServerName("proxy-oauth-test")
 
-		// Find available ports for our mock servers using networking utilities
-		mockOIDCPort, err = networking.FindOrUsePort(0)
-		Expect(err).ToNot(HaveOccurred())
-
-		proxyPort, err = networking.FindOrUsePort(0)
-		Expect(err).ToNot(HaveOccurred())
-
-		mockOIDCBaseURL = fmt.Sprintf("http://localhost:%d", mockOIDCPort)
+		// proxyPort is discovered per-It from the `thv proxy` subprocess's own
+		// stdout once it binds -- see discoverProxyPort. It's started with
+		// port 0 rather than a pre-selected port to close the find-then-bind
+		// TOCTOU window.
 
 		// Start mock OIDC server using Ory Fosite
 		By("Starting mock OIDC server")
 		specReport := CurrentSpecReport()
 		if strings.Contains(specReport.FullText(), "Proxy OAuth Authentication E2E") {
 			mockOIDCServer, err = e2e.NewOIDCMockServer(
-				mockOIDCPort, clientID, clientSecret,
+				0, clientID, clientSecret,
 				e2e.WithAccessTokenLifespan(2*time.Second),
 			)
 		} else {
-			mockOIDCServer, err = e2e.NewOIDCMockServer(mockOIDCPort, clientID, clientSecret)
+			mockOIDCServer, err = e2e.NewOIDCMockServer(0, clientID, clientSecret)
 		}
 		Expect(err).ToNot(HaveOccurred())
+		mockOIDCPort = mockOIDCServer.Port()
+		mockOIDCBaseURL = fmt.Sprintf("http://localhost:%d", mockOIDCPort)
 
 		// Enable auto-complete for MCP tests
 		mockOIDCServer.EnableAutoComplete()
@@ -137,15 +135,20 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
 			By("Starting the proxy with OAuth configuration")
-			proxyCmd = startProxyWithOAuth(
-				config,
-				proxyServerName,
-				base,
-				proxyPort,
-				mockOIDCBaseURL,
-				clientID,
-				clientSecret,
-			)
+			var out *syncBuffer
+			proxyCmd, out = startProxyWithOAuth(config, proxyServerName, base, 0, mockOIDCBaseURL, clientID, clientSecret)
+			// This test never drives the OAuth flow to completion (no
+			// WaitForAuthRequest/CompleteAuthRequest call), so the proxy may
+			// exit on --remote-auth-timeout before it ever binds a listener
+			// and prints the port line -- pre-existing behavior, unrelated to
+			// port selection. Discovery failure here is expected and
+			// harmless: the assertions below already tolerate the port being
+			// unset (proxyPort stays 0) or the proxy having exited.
+			if p, portErr := discoverProxyPort(out, 10*time.Second); portErr != nil {
+				GinkgoWriter.Printf("proxy port not discovered (OAuth flow may not have completed): %v\n", portErr)
+			} else {
+				proxyPort = p
+			}
 
 			// Give the proxy some time to start and potentially complete OAuth flow
 			time.Sleep(10 * time.Second)
@@ -180,14 +183,11 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
 			By("Starting the proxy with OAuth auto-detection")
-			proxyCmd = startProxyWithOAuthDetection(
-				config,
-				proxyServerName,
-				base,
-				proxyPort,
-				clientID,
-				clientSecret,
-			)
+			var out *syncBuffer
+			proxyCmd, out, proxyPort, err = startProxyAndDiscoverPort(func() (*exec.Cmd, *syncBuffer) {
+				return startProxyWithOAuthDetection(config, proxyServerName, base, 0, clientID, clientSecret)
+			}, 5*time.Second)
+			Expect(err).ToNot(HaveOccurred(), "proxy output: %s", out.String())
 
 			// Give the proxy time to start
 			time.Sleep(5 * time.Second)
@@ -212,15 +212,15 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
 			By("Starting the proxy with invalid OAuth credentials")
-			proxyCmd = startProxyWithOAuth(
-				config,
-				proxyServerName,
-				base,
-				proxyPort,
-				mockOIDCBaseURL,
-				"invalid-client",
-				"invalid-secret",
-			)
+			var out *syncBuffer
+			proxyCmd, out = startProxyWithOAuth(config, proxyServerName, base, 0, mockOIDCBaseURL, "invalid-client", "invalid-secret")
+			// The proxy is expected to exit on the OAuth failure below before it
+			// ever binds a listener, so it never prints the port line -- this
+			// test doesn't use proxyPort, so a discovery failure is expected
+			// and harmless.
+			if _, portErr := discoverProxyPort(out, 2*time.Second); portErr != nil {
+				GinkgoWriter.Printf("proxy port not discovered (expected, proxy should exit on OAuth failure): %v\n", portErr)
+			}
 
 			By("Verifying the proxy process exits due to OAuth failure")
 			// The proxy should exit when OAuth fails due to invalid client credentials
@@ -255,15 +255,16 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
 			By("Starting the proxy with missing OAuth issuer but remote-auth enabled")
-			proxyCmd = startProxyWithOAuth(
-				config,
-				proxyServerName,
-				base,
-				proxyPort,
-				"", // Empty issuer
-				clientID,
-				clientSecret,
-			)
+			const emptyIssuer = ""
+			var out *syncBuffer
+			proxyCmd, out = startProxyWithOAuth(config, proxyServerName, base, 0, emptyIssuer, clientID, clientSecret)
+			// The proxy is expected to exit immediately below due to the
+			// missing issuer, before it ever binds a listener, so it never
+			// prints the port line -- this test doesn't use proxyPort, so a
+			// discovery failure is expected and harmless.
+			if _, portErr := discoverProxyPort(out, 2*time.Second); portErr != nil {
+				GinkgoWriter.Printf("proxy port not discovered (expected, proxy should exit due to missing issuer): %v\n", portErr)
+			}
 
 			By("Verifying the proxy process exits due to missing issuer")
 			// The proxy should exit immediately when --remote-auth is enabled but issuer is missing
@@ -298,14 +299,11 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
 			By("Starting the proxy with auto-detection (no --remote-auth flag)")
-			proxyCmd = startProxyWithAutoDetection(
-				config,
-				proxyServerName,
-				base,
-				proxyPort,
-				clientID,
-				clientSecret,
-			)
+			var out *syncBuffer
+			proxyCmd, out, proxyPort, err = startProxyAndDiscoverPort(func() (*exec.Cmd, *syncBuffer) {
+				return startProxyWithAutoDetection(config, proxyServerName, base, 0, clientID, clientSecret)
+			}, 5*time.Second)
+			Expect(err).ToNot(HaveOccurred(), "proxy output: %s", out.String())
 
 			// Give the proxy time to try auto-detection
 			time.Sleep(5 * time.Second)
@@ -330,50 +328,49 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			GinkgoWriter.Printf("Base URL for proxy: %s\n", baseURL)
 
 			By("Starting the proxy with OAuth configuration and longer timeout")
-			var outputBuffer *bytes.Buffer
-			proxyCmd, outputBuffer = startProxyWithOAuthForMCP(
-				config,
-				proxyServerName,
-				baseURL, // Use base URL instead of full URL
-				proxyPort,
-				mockOIDCBaseURL,
-				clientID,
-				clientSecret,
-			)
+			var outputBuffer *syncBuffer
+			// startProxyAndDiscoverPort retries the whole closure -- fresh subprocess,
+			// fresh port, fresh OAuth exchange -- if the previous attempt lost the
+			// real port-bind race (see the doc comment on discoverProxyPort).
+			proxyCmd, outputBuffer, proxyPort, err = startProxyAndDiscoverPort(func() (*exec.Cmd, *syncBuffer) {
+				// baseURL, not the full server URL -- the transparent proxy needs the
+				// base URL (see the comment above where it's derived).
+				cmd, out := startProxyWithOAuthForMCP(config, proxyServerName, baseURL, 0, mockOIDCBaseURL, clientID, clientSecret)
 
-			By("Extracting OAuth URL from proxy output and completing the flow")
-			// Give the proxy a moment to start and display the OAuth URL
-			time.Sleep(5 * time.Second)
+				By("Extracting OAuth URL from proxy output and completing the flow")
+				// Give the proxy a moment to start and display the OAuth URL
+				time.Sleep(5 * time.Second)
 
-			// Extract OAuth URL from captured output
-			output := outputBuffer.String()
-			GinkgoWriter.Printf("Captured proxy output: %s\n", output)
+				// Extract OAuth URL from captured output
+				output := out.String()
+				GinkgoWriter.Printf("Captured proxy output: %s\n", output)
 
-			// Use regex to extract the OAuth URL
-			// Pattern: "Please open this URL in your browser: <URL>"
-			urlPattern := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`)
-			matches := urlPattern.FindStringSubmatch(output)
+				// Use regex to extract the OAuth URL
+				// Pattern: "Please open this URL in your browser: <URL>"
+				urlPattern := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`)
+				matches := urlPattern.FindStringSubmatch(output)
 
-			var authURL string
-			if len(matches) >= 2 {
-				authURL = matches[1]
-				GinkgoWriter.Printf("Extracted OAuth URL from buffer: %s\n", authURL)
-			} else {
-				// Fallback: construct the URL from what we know
-				// We can see the URL in the logs, so let's construct it
-				authURL = fmt.Sprintf("%s/auth?client_id=%s&response_type=code&scope=openid+profile+email", mockOIDCBaseURL, clientID)
-				GinkgoWriter.Printf("Using constructed OAuth URL: %s\n", authURL)
-			}
+				var authURL string
+				if len(matches) >= 2 {
+					authURL = matches[1]
+					GinkgoWriter.Printf("Extracted OAuth URL from buffer: %s\n", authURL)
+				} else {
+					// Fallback: construct the URL from what we know
+					// We can see the URL in the logs, so let's construct it
+					authURL = fmt.Sprintf("%s/auth?client_id=%s&response_type=code&scope=openid+profile+email", mockOIDCBaseURL, clientID)
+					GinkgoWriter.Printf("Using constructed OAuth URL: %s\n", authURL)
+				}
 
-			// Complete the OAuth flow by visiting the URL with auto_complete parameter
-			err = completeOAuthFlow(authURL)
-			if err != nil {
-				GinkgoWriter.Printf("Failed to complete OAuth flow: %v\n", err)
-				Skip("Skipping MCP test due to OAuth flow completion failure")
-			}
+				// Complete the OAuth flow by visiting the URL with auto_complete parameter
+				if flowErr := completeOAuthFlow(authURL); flowErr != nil {
+					GinkgoWriter.Printf("Failed to complete OAuth flow: %v\n", flowErr)
+					Skip("Skipping MCP test due to OAuth flow completion failure")
+				}
 
-			// Wait for proxy to complete OAuth and start
-			time.Sleep(5 * time.Second)
+				return cmd, out
+			}, 15*time.Second)
+			By("Waiting for the proxy to complete OAuth and bind its listener")
+			Expect(err).ToNot(HaveOccurred(), "proxy output: %s", outputBuffer.String())
 
 			By("Testing MCP connection through proxy")
 			proxyURL := fmt.Sprintf("http://localhost:%d/mcp", proxyPort)
@@ -417,29 +414,27 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			GinkgoWriter.Printf("Base URL for proxy: %s\n", baseURL)
 
 			By("Starting the proxy with OAuth-enabled MCP support")
-			var outputBuffer *bytes.Buffer
-			proxyCmd, outputBuffer = startProxyWithOAuthForMCP(
-				config,
-				proxyServerName,
-				baseURL,
-				proxyPort,
-				mockOIDCBaseURL,
-				clientID,
-				clientSecret,
-			)
+			var outputBuffer *syncBuffer
+			// startProxyAndDiscoverPort retries the whole closure -- fresh subprocess,
+			// fresh port, fresh OAuth exchange -- if the previous attempt lost the
+			// real port-bind race (see the doc comment on discoverProxyPort).
+			proxyCmd, outputBuffer, proxyPort, err = startProxyAndDiscoverPort(func() (*exec.Cmd, *syncBuffer) {
+				cmd, out := startProxyWithOAuthForMCP(config, proxyServerName, baseURL, 0, mockOIDCBaseURL, clientID, clientSecret)
 
-			By("Completing the initial OAuth flow")
-			Eventually(outputBuffer.String, 5*time.Second, 500*time.Millisecond).
-				Should(ContainSubstring("Please open this URL"))
+				By("Completing the initial OAuth flow")
+				Eventually(out.String, 5*time.Second, 500*time.Millisecond).
+					Should(ContainSubstring("Please open this URL"))
 
-			matches := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`).
-				FindStringSubmatch(outputBuffer.String())
-			Expect(matches).To(HaveLen(2))
-			authURL := matches[1]
-			Expect(completeOAuthFlow(authURL)).To(Succeed())
+				matches := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`).
+					FindStringSubmatch(out.String())
+				Expect(matches).To(HaveLen(2))
+				authURL := matches[1]
+				Expect(completeOAuthFlow(authURL)).To(Succeed())
 
-			By("Giving proxy time to finish OAuth exchange")
-			time.Sleep(2 * time.Second)
+				return cmd, out
+			}, 10*time.Second)
+			By("Waiting for the proxy to finish the OAuth exchange and bind its listener")
+			Expect(err).ToNot(HaveOccurred(), "proxy output: %s", outputBuffer.String())
 
 			By("Waiting for access token to expire")
 			time.Sleep(3 * time.Second) // longer than the 2s lifespan
@@ -483,7 +478,108 @@ func checkServerHealth(healthUrl string) error {
 	return fmt.Errorf("server not healthy, status: %d", resp.StatusCode)
 }
 
-func startProxyWithOAuth(config *e2e.TestConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) *exec.Cmd {
+// syncBuffer is a bytes.Buffer guarded by a mutex, safe for concurrent
+// writes (exec.Cmd's internal stdout/stderr copier goroutines) and reads
+// (a polling goroutine like discoverProxyPort, or Eventually matchers)
+// while the subprocess is still running.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// startLongRunningWithCapture is like e2e.StartLongRunningTHVCommand, but
+// also captures stdout/stderr into a buffer. Callers inspect the buffer
+// (e.g. via discoverProxyPort) rather than reaping the process via cmd.Wait
+// -- cmd.Wait must never be called concurrently, and each test in this file
+// that cares about the process's exit decides independently whether and
+// when to call it.
+func startLongRunningWithCapture(config *e2e.TestConfig, args ...string) (*exec.Cmd, *syncBuffer) {
+	cmd := exec.Command(config.THVBinary, args...) //nolint:gosec // Intentional for e2e testing
+	cmd.Env = os.Environ()
+
+	out := &syncBuffer{}
+	multiWriter := io.MultiWriter(out, GinkgoWriter)
+	cmd.Stdout = multiWriter
+	cmd.Stderr = multiWriter
+
+	Expect(cmd.Start()).To(Succeed())
+	return cmd, out
+}
+
+// proxyBoundPortPattern matches the port number `thv proxy` prints once its
+// listener is actually bound, e.g. "... on port 54321 -> ..." (see
+// cmd/thv/app/proxy.go's fmt.Printf after proxy.Start()).
+var proxyBoundPortPattern = regexp.MustCompile(`on port (\d+)`)
+
+// discoverProxyPort polls out (the captured stdout/stderr of a `thv proxy`
+// subprocess started with --port 0) for the line the subprocess prints once
+// it has actually bound its listener, and returns the port it chose.
+//
+// Passing port 0 and reading the real port back afterwards -- rather than
+// pre-selecting a port and handing it to the subprocess -- narrows the
+// find-then-bind TOCTOU window but does not close it: FindOrUsePort(0)
+// (cmd/thv/app/proxy.go) still does the classic probe-then-release, and the
+// real bind happens later, inside transparent.NewTransparentProxy(...).Start(),
+// after the OAuth exchange (handleOutgoingAuthentication) completes. Another
+// process can still steal the port during that window; the window is just
+// usually much shorter than the original pre-selected-port bug. See
+// startProxyAndDiscoverPort for the retry that closes it at call sites that
+// use it.
+//
+// It's expected (and safe to ignore) for this to time out on tests where the
+// proxy process exits before ever binding, e.g. on an OAuth failure.
+func discoverProxyPort(out *syncBuffer, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if m := proxyBoundPortPattern.FindStringSubmatch(out.String()); m != nil {
+			return strconv.Atoi(m[1])
+		}
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("proxy port not found in output within %s", timeout)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// startProxyAndDiscoverPort starts a `thv proxy` subprocess via start, waits
+// for it to report its real bound port via discoverProxyPort, and retries
+// once (a fresh subprocess, drawing a fresh random port) if the failure was
+// a lost port-bind race -- detected by the captured output containing
+// "address already in use". A discovery failure for any OTHER reason (e.g.
+// this call site's proxy is expected to exit before ever binding, such as
+// on an OAuth-config failure) is returned as-is, uncorrected: the caller
+// decides whether that's fatal or tolerable.
+func startProxyAndDiscoverPort(
+	start func() (*exec.Cmd, *syncBuffer),
+	timeout time.Duration,
+) (*exec.Cmd, *syncBuffer, int, error) {
+	cmd, out := start()
+	port, err := discoverProxyPort(out, timeout)
+	if err == nil {
+		return cmd, out, port, nil
+	}
+	if !strings.Contains(out.String(), "address already in use") {
+		return cmd, out, 0, err
+	}
+	GinkgoWriter.Printf("proxy lost a port-bind race, retrying once: %v\n", err)
+	cmd, out = start()
+	port, err = discoverProxyPort(out, timeout)
+	return cmd, out, port, err
+}
+
+func startProxyWithOAuth(config *e2e.TestConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) (*exec.Cmd, *syncBuffer) {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -513,10 +609,10 @@ func startProxyWithOAuth(config *e2e.TestConfig, serverName, targetURL string, p
 	// Log the command for debugging
 	GinkgoWriter.Printf("Starting proxy with args: %v\n", args)
 
-	return e2e.StartLongRunningTHVCommand(config, args...)
+	return startLongRunningWithCapture(config, args...)
 }
 
-func startProxyWithOAuthDetection(config *e2e.TestConfig, serverName, targetURL string, port int, clientID, clientSecret string) *exec.Cmd {
+func startProxyWithOAuthDetection(config *e2e.TestConfig, serverName, targetURL string, port int, clientID, clientSecret string) (*exec.Cmd, *syncBuffer) {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -528,10 +624,10 @@ func startProxyWithOAuthDetection(config *e2e.TestConfig, serverName, targetURL 
 		serverName,
 	}
 
-	return e2e.StartLongRunningTHVCommand(config, args...)
+	return startLongRunningWithCapture(config, args...)
 }
 
-func startProxyWithAutoDetection(config *e2e.TestConfig, serverName, targetURL string, port int, clientID, clientSecret string) *exec.Cmd {
+func startProxyWithAutoDetection(config *e2e.TestConfig, serverName, targetURL string, port int, clientID, clientSecret string) (*exec.Cmd, *syncBuffer) {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -546,10 +642,10 @@ func startProxyWithAutoDetection(config *e2e.TestConfig, serverName, targetURL s
 	// Log the command for debugging
 	GinkgoWriter.Printf("Starting proxy with auto-detection args: %v\n", args)
 
-	return e2e.StartLongRunningTHVCommand(config, args...)
+	return startLongRunningWithCapture(config, args...)
 }
 
-func startProxyWithOAuthForMCP(config *e2e.TestConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) (*exec.Cmd, *bytes.Buffer) {
+func startProxyWithOAuthForMCP(config *e2e.TestConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) (*exec.Cmd, *syncBuffer) {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -567,23 +663,7 @@ func startProxyWithOAuthForMCP(config *e2e.TestConfig, serverName, targetURL str
 	// Log the command for debugging
 	GinkgoWriter.Printf("Starting proxy with OAuth for MCP args: %v\n", args)
 
-	// Create command
-	cmd := exec.Command(config.THVBinary, args...)
-	cmd.Env = os.Environ()
-
-	// Create buffer to capture output (capture both stdout and stderr)
-	var outputBuffer bytes.Buffer
-
-	// Use MultiWriter to write to both buffer and GinkgoWriter
-	multiWriter := io.MultiWriter(&outputBuffer, GinkgoWriter)
-	cmd.Stdout = multiWriter
-	cmd.Stderr = multiWriter // Capture stderr too since logger might write there
-
-	// Start the command
-	err := cmd.Start()
-	Expect(err).ToNot(HaveOccurred())
-
-	return cmd, &outputBuffer
+	return startLongRunningWithCapture(config, args...)
 }
 
 // completeOAuthFlow programmatically completes the OAuth flow by visiting the authorization URL

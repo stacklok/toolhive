@@ -227,6 +227,24 @@ func (p *APIRegistryProvider) SearchSkills(query string) ([]types.Skill, error) 
 	return skills, nil
 }
 
+// ListAvailablePlugins returns nil until the PluginsClient is wired up.
+// TODO(5529): backed by PluginsClient in the next iteration.
+func (*APIRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	return nil, nil
+}
+
+// GetPlugin returns nil until the PluginsClient is wired up.
+// TODO(5529): backed by PluginsClient in the next iteration.
+func (*APIRegistryProvider) GetPlugin(_, _ string) (*types.Plugin, error) {
+	return nil, nil
+}
+
+// SearchPlugins returns nil until the PluginsClient is wired up.
+// TODO(5529): backed by PluginsClient in the next iteration.
+func (*APIRegistryProvider) SearchPlugins(_ string) ([]types.Plugin, error) {
+	return nil, nil
+}
+
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata
 // Uses converters from converters.go (same package)
 // Note: Only handles OCI packages and remote servers, skips npm/pypi by design

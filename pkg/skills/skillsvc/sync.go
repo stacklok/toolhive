@@ -231,6 +231,9 @@ func classifySyncFailure(err error) skills.FailureReason {
 	if errors.Is(err, errLockWrite) {
 		return skills.FailureReasonLockWriteFailed
 	}
+	if reason := classifySignatureError(err); reason != "" {
+		return reason
+	}
 	switch httperr.Code(err) {
 	case http.StatusNotFound:
 		return skills.FailureReasonDigestMissing

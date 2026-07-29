@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -377,7 +378,10 @@ func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
 			return filepath.Join(projectRoot, "."+client, "skills", skillName), nil
 		})
 	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
-	svc := New(store, WithPathResolver(pr), WithGitResolver(gr))
+	mv := verifiermocks.NewMockVerifier(ctrl)
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	svc := New(store, WithPathResolver(pr), WithGitResolver(gr), WithVerifier(mv))
 
 	ref, _ := gitRef("multi-skill")
 	_, err = svc.Install(t.Context(), skills.InstallOptions{

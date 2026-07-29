@@ -51,6 +51,8 @@ func (s *service) recordLockState(
 		ResolvedReference: resolvedReference,
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
+		Provenance:        provenanceInfoToLock(opts.Provenance),
+		Unsigned:          opts.Unsigned,
 		RequiredByParent:  opts.RequiredByParent,
 		PreserveExplicit:  opts.SyncRestore,
 	}); err != nil {
@@ -150,6 +152,11 @@ type lockEntryInput struct {
 	// transitively materialized dependency. Empty means the entry is
 	// explicit (a direct, user-requested install).
 	RequiredByParent string
+	// Provenance is the verified signer identity to record, nil for
+	// unsigned or unverified entries.
+	Provenance *lockfile.Provenance
+	// Unsigned records the explicit unsigned-install exception.
+	Unsigned bool
 	// PreserveExplicit keeps the existing entry's Explicit flag verbatim
 	// instead of deriving it from RequiredByParent. Set by sync restores: a
 	// restore is not a user install, so it must not promote a non-explicit
@@ -175,6 +182,8 @@ func recordLockEntry(projectRoot string, in lockEntryInput) error {
 			ResolvedReference: in.ResolvedReference,
 			Digest:            in.Digest,
 			ContentDigest:     in.ContentDigest,
+			Provenance:        in.Provenance,
+			Unsigned:          in.Unsigned,
 			Explicit:          in.RequiredByParent == "",
 		}
 		existing, exists := lf.Get(in.Name)

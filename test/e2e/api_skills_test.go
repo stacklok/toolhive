@@ -49,13 +49,14 @@ type skillMetadataResponse struct {
 }
 
 type installSkillRequest struct {
-	Name        string `json:"name"`
-	Version     string `json:"version,omitempty"`
-	Scope       string `json:"scope,omitempty"`
-	ProjectRoot string `json:"project_root,omitempty"`
-	Client      string `json:"client,omitempty"`
-	Force       bool   `json:"force,omitempty"`
-	Group       string `json:"group,omitempty"`
+	Name          string `json:"name"`
+	Version       string `json:"version,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	ProjectRoot   string `json:"project_root,omitempty"`
+	Client        string `json:"client,omitempty"`
+	Force         bool   `json:"force,omitempty"`
+	Group         string `json:"group,omitempty"`
+	AllowUnsigned bool   `json:"allow_unsigned,omitempty"`
 }
 
 type installSkillResponse struct {
@@ -1115,7 +1116,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1133,10 +1134,36 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 		Expect(entry.Digest).ToNot(BeEmpty())
 		Expect(entry.ContentDigest).ToNot(BeEmpty())
 		Expect(entry.Explicit).To(BeTrue())
+		Expect(entry.Unsigned).To(BeTrue(), "the unsigned exception must be recorded in the lock entry")
 
 		By("Cleaning up")
 		cleanupResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
 		defer cleanupResp.Body.Close()
+	})
+
+	It("rejects an unsigned project-scoped install without allow_unsigned", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-unsigned-rejected"
+
+		By("Starting an in-process OCI registry and pushing an unsigned test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "An unsigned skill that must be rejected")
+
+		By("Installing without allow_unsigned and expecting a 403")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusForbidden))
+
+		By("Verifying no lock entry was written")
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok := lf.Get(skillName)
+		Expect(ok).To(BeFalse(), "a rejected install must not write a lock entry")
 	})
 
 	It("removes the lock entry when the skill is uninstalled", func() {
@@ -1150,7 +1177,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1185,7 +1212,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1234,7 +1261,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))

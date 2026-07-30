@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -149,10 +150,32 @@ func NewHTTPMiddleware(
 	return middleware.Handler
 }
 
+// buildInfoOnce guards registerBuildInfo. build_info is process identity, not a
+// per-request or per-server measurement, and RegisterBuildInfo attaches an
+// observable callback while returning no handle to release it. NewHTTPMiddleware
+// is reachable from the public Provider.Middleware() with no arity constraint, so
+// without this guard a process instrumenting two proxies — or rebuilding its
+// middleware chain — would permanently attach duplicate callbacks observing the
+// same attribute set.
+//
+// This makes docs/observability.md's "registered once per process" claim true.
+// The durable fix is to register during provider assembly in
+// pkg/telemetry/providers, where ComponentName and the resource already live;
+// this is the cheap interim.
+var buildInfoOnce sync.Once
+
 // registerBuildInfo registers the stacklok.build_info gauge via the shared
 // toolhive-core helper, stamping this component's identity (toolhive) plus the
-// build version/commit.
+// build version/commit. Registers at most once per process.
 func registerBuildInfo(meter metric.Meter) {
+	buildInfoOnce.Do(func() { registerBuildInfoNow(meter) })
+}
+
+// registerBuildInfoNow performs the registration unconditionally, bypassing
+// buildInfoOnce. Exists so a test asserting on build_info can register against
+// its own meter provider regardless of whether an earlier test in the same
+// process already consumed the once-guard.
+func registerBuildInfoNow(meter metric.Meter) {
 	info := versions.GetVersionInfo()
 	if err := coremetrics.RegisterBuildInfo(meter, providers.ComponentName, info.Version, info.Commit); err != nil {
 		slog.Debug("failed to register build info", "error", err)

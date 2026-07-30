@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -97,14 +98,36 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		s.dispatchModernPromptGet(ctx, w, parsed, identity)
 	case "completion/complete":
 		s.dispatchModernComplete(ctx, w, parsed, identity)
+	case methodSubscriptionsListen:
+		// Ungated, same bucket as the list verbs and discover -- see
+		// dispatchModernSubscriptionsListen for why, and for the one future
+		// change that would require gating it.
+		s.dispatchModernSubscriptionsListen(ctx, w, parsed, identity)
 	case "ping":
-		// ping is deliberately ungated (unauthenticated liveness, same bucket
-		// as initialize -- no Check*) and carries NEITHER resultType NOR
-		// _meta.serverInfo on the wire: the SDK's ping handler returns
-		// emptyResult, and both annotateServerInfo and setCompleteResultType
-		// early-return/no-op for it (go-sdk server.go:1929-1945,1992). Do not
-		// route this through the envelope builders above -- a bare {} is the
-		// correct, spec-matching result.
+		// ping does NOT exist in 2026-07-28: `ping` appears nowhere in
+		// schema/draft/schema.ts, and go-sdk lists it among the methods removed
+		// for this revision (server.go:1880), answering -32601. So answering it
+		// at all is deliberate LENIENCY toward a client that pings anyway, not
+		// spec conformance -- an earlier version of this comment claimed the
+		// latter, which was wrong twice over: the method is gone, and the bare {}
+		// below omits `resultType`, which schema.ts's Result MUSTs on every
+		// result ("Servers implementing this protocol version MUST include this
+		// field").
+		//
+		// Kept as-is rather than switched to -32601 because that is a behavior
+		// change to a pre-existing path, out of scope for the change that
+		// introduced this comment fix. It is inert in practice: a go-sdk Modern
+		// client never pings (startKeepalive sits past an early return), so
+		// nothing observable depends on either answer today. If you are here to
+		// tighten it, -32601 is the conformant answer.
+		//
+		// It is ungated (unauthenticated liveness, same bucket as initialize --
+		// no Check*). Do not route it through the envelope builders above: they
+		// would stamp resultType and _meta.serverInfo, which the Legacy SDK path
+		// does not do for ping either (annotateServerInfo and
+		// setCompleteResultType both early-return for it, go-sdk
+		// server.go:1929-1945,1992), so the bare {} at least keeps the two paths
+		// answering alike.
 		writeModernResult(w, parsed.ID, struct{}{})
 	default:
 		writeModernError(w, parsed.ID, jsonRPCCodeMethodNotFound, "method not found")
@@ -112,19 +135,21 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 }
 
 // The four list-dispatch helpers below (tools/list, resources/list,
-// resources/templates/list, prompts/list) always return the full
-// admission-filtered set from the matching core.List* and do not emit a
-// nextCursor: the Modern list-result envelopes carry no cursor field at all
-// (PaginatedResult.nextCursor is optional, so omitting it is spec-valid),
-// client-facing cursor pagination is unimplemented, and any cursor a Modern
-// client sends is ignored. This is unrelated to the aggregator's UPSTREAM
+// resources/templates/list, prompts/list) each page the full
+// admission-filtered set from the matching core.List* through paginateModern,
+// emitting a nextCursor while items remain. The cursor is stateless keyset
+// pagination over the aggregated ordering -- see modern_pagination.go for the
+// wire contract and why a self-describing cursor is what a sessionless
+// revision requires. This is unrelated to the aggregator's UPSTREAM
 // cursor-following for internal discovery (#5851); that's a different layer.
 //
 // A List*/Discover failure logs the full error server-side and returns a
 // generic -32603 message to the client (writeModernListError below): unlike
 // the call/read/get verbs, these errors come from aggregation and routing
 // plumbing (backend IDs, upstream addressing), and security.md forbids
-// leaking that detail to callers.
+// leaking that detail to callers. An invalid CURSOR is the exception: it is
+// caller input rather than a server-side fault, so writeModernPageError maps
+// it to -32602 instead.
 func (s *Server) dispatchModernToolsList(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {
@@ -133,7 +158,18 @@ func (s *Server) dispatchModernToolsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	result, err := newModernToolsList(tools, s.config.Name, s.config.Version)
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(tools, func(t vmcp.Tool) string { return t.Name },
+		cursorKindTools, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	result, err := newModernToolsList(page, s.config.Name, s.config.Version, next)
 	if err != nil {
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
@@ -149,7 +185,18 @@ func (s *Server) dispatchModernResourcesList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernResourcesList(resources, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(resources, func(r vmcp.Resource) string { return r.URI },
+		cursorKindResources, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernResourcesList(page, s.config.Name, s.config.Version, next))
 }
 
 func (s *Server) dispatchModernResourceTemplatesList(
@@ -160,7 +207,18 @@ func (s *Server) dispatchModernResourceTemplatesList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(templates, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(templates, func(t vmcp.ResourceTemplate) string { return t.URITemplate },
+		cursorKindResourceTemplates, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(page, s.config.Name, s.config.Version, next))
 }
 
 func (s *Server) dispatchModernPromptsList(
@@ -171,7 +229,18 @@ func (s *Server) dispatchModernPromptsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernPromptsList(prompts, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(prompts, func(p vmcp.Prompt) string { return p.Name },
+		cursorKindPrompts, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernPromptsList(page, s.config.Name, s.config.Version, next))
 }
 
 // dispatchModernDiscover serves server/discover, Modern's replacement for
@@ -433,6 +502,21 @@ func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, me
 	writeModernError(w, id, jsonRPCCodeInternalError, "internal error")
 }
 
+// writeModernPageError classifies a paginateModern failure. An invalid cursor is
+// bad caller input, so it gets -32602 -- matching the spec's "handle invalid
+// cursors gracefully" and go-sdk, which returns ErrInvalidParams for a cursor it
+// cannot decode. The message deliberately does not say WHY the cursor was
+// rejected: clients must treat cursors as opaque, so describing the internal
+// encoding would invite them to construct one. Anything else here is an encode
+// failure, i.e. a server-side fault, and falls through to -32603.
+func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, method string, err error) {
+	if errors.Is(err, errInvalidModernCursor) {
+		writeModernError(w, id, jsonRPCCodeInvalidParams, "invalid cursor")
+		return
+	}
+	writeModernListError(ctx, w, id, method, err)
+}
+
 // writeModernCallFailure classifies a POST-dispatch error from the three call
 // verbs (tools/call, resources/read, prompts/get), layering the mid-call
 // capability-refusal case on top of writeModernDispatchError's authz/generic
@@ -504,10 +588,13 @@ func writeModernCallFailure(
 // caller that reacts to -32021 by declaring the capability on a retry
 // learns immediately that doing so will not help here (the declared case is served by
 // writeModernCallFailure's -32603 branch, not by MRTR).
+//
+// id follows writeModernError (modern_envelope.go): absent (via
+// transportsession.HasJSONRPCID) is encoded by omitting the "id" key, never
+// as null.
 func writeModernMissingCapability(w http.ResponseWriter, id any, capName string) {
-	writeModernEnvelope(w, http.StatusOK, map[string]any{
+	envelope := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      id,
 		"error": map[string]any{
 			"code": mcpparser.CodeMissingClientCapability,
 			"message": fmt.Sprintf(
@@ -519,7 +606,11 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 				"requiredCapabilities": map[string]any{capName: map[string]any{}},
 			},
 		},
-	})
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
 }
 
 // writeModernDispatchError classifies a POST-dispatch error from
@@ -532,6 +623,18 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // therefore tested FIRST, before falling through to the generic internal
 // error.
 //
+// A domain error that carries its own stable JSON-RPC code and data
+// (mcpparser.CodedError — e.g. the rate limiter's 429 with
+// data.retryAfterSeconds) is written with that code rather than laundered
+// into -32603. This is the Modern counterpart of the SDK path's
+// conversion.ErrorToToolResult, whose CodedError branch preserves the same
+// code/data in an IsError tool result's structuredContent because the SDK
+// tool-handler seam cannot emit a custom JSON-RPC error object. This
+// dispatcher owns the envelope, so it emits the real thing (mirroring how
+// #6061 classified mid-call capability refusals as -32021 instead of
+// -32603). Authorization denials are still tested first: a coded error can
+// never mask a denial's 403.
+//
 // The -32603 message reuses err.Error() verbatim. This matches the SDK path's
 // existing posture rather than inventing a new one: conversion.ErrorToToolResult's
 // generic branch, and the resources/read/prompts/get Serve handlers
@@ -539,8 +642,17 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 // non-authz error. Re-sanitizing here would just diverge from what the SDK
 // path already exposes for the identical failure.
 func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err error) {
+	// Denial first (matches conversion.ErrorToToolResult): an error that is
+	// both a CodedError and wraps ErrAuthorizationFailed must render as the
+	// denial, never as retry-shaped coded data (the sets are disjoint today;
+	// this ordering is the invariant).
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernDenied(w, id, denyMsg)
+		return
+	}
+	var coded mcpparser.CodedError
+	if errors.As(err, &coded) {
+		writeModernCodedError(w, id, err, coded)
 		return
 	}
 	writeModernError(w, id, jsonRPCCodeInternalError, err.Error())

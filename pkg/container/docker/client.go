@@ -1458,7 +1458,34 @@ func (c *Client) createContainer(
 		EndpointsConfig: endpointsConfig,
 	}
 
-	// Create the container
+	id, err := c.createAndStartContainer(ctx, containerName, config, hostConfig, networkConfig)
+	if err != nil && errdefs.IsNotFound(err) {
+		if _, sharesExternalNetwork := endpointsConfig["toolhive-external"]; sharesExternalNetwork {
+			// "toolhive-external" is shared, concurrency-created infrastructure
+			// reused by every workload; deleteNetworks removes it opportunistically
+			// once it looks like no workload needs it anymore. Under concurrent
+			// `thv` processes that teardown can race this container's own creation,
+			// so the network can vanish between our create-time existence check and
+			// this container actually attaching to it, surfacing as a not-found
+			// error from either Create or Start. Recreate it and retry once instead
+			// of failing the whole workload for what is a transient condition.
+			if recreateErr := c.createExternalNetworks(ctx); recreateErr == nil {
+				id, err = c.createAndStartContainer(ctx, containerName, config, hostConfig, networkConfig)
+			}
+		}
+	}
+	return id, err
+}
+
+// createAndStartContainer creates and starts a container, wrapping any
+// Docker API error with contextual information.
+func (c *Client) createAndStartContainer(
+	ctx context.Context,
+	containerName string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	networkConfig *network.NetworkingConfig,
+) (string, error) {
 	resp, err := c.api.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
 		Config:           config,
 		HostConfig:       hostConfig,
@@ -1477,6 +1504,12 @@ func (c *Client) createContainer(
 	// Start the container
 	_, err = c.api.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{})
 	if err != nil {
+		// Docker leaves the container behind in a "created" state on a failed
+		// start (e.g. its network vanished underneath it). Clean it up so a
+		// caller-driven retry under the same name doesn't collide with it.
+		if _, rmErr := c.api.ContainerRemove(ctx, resp.ID, mobyclient.ContainerRemoveOptions{Force: true}); rmErr != nil {
+			slog.Debug("failed to remove container after failed start", "id", resp.ID, "error", rmErr)
+		}
 		return "", NewContainerError(err, resp.ID, fmt.Sprintf("failed to start container: %v", err))
 	}
 

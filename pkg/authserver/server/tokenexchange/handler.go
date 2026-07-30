@@ -15,6 +15,7 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -154,10 +155,38 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// delegation chain remains auditable rather than being discarded.
 	act := map[string]any{"sub": actorID}
 	if priorAct, ok := validatedClaims.Extra["act"]; ok && priorAct != nil {
-		if actChainDepth(priorAct) >= maxDelegationDepth {
+		// Parse with the shared audit-side parser rather than a bespoke walker: it
+		// reports both the chain depth and any RFC 8693 Section 4.1 conformance
+		// violation, so a non-object act cannot slip past the depth gate and be
+		// re-minted. A JSON-null act is filtered by the guard above: it asserts no
+		// delegation and must not read as malformed.
+		chain := coreaudit.ParseDelegationChain(priorAct, maxDelegationDepth)
+		if chain.Malformed {
+			// RFC 8693 Section 2.2.2 nominally calls for invalid_request on a bad
+			// subject_token, but also allows that "other error codes may also be
+			// used, as appropriate": invalid_grant keeps this consistent with the
+			// depth, consent, and expiry gates in this same handler, all of which
+			// reject a structurally unacceptable subject token that way.
+			//
+			// MalformedReason is a closed, value-free enum; it is surfaced to the
+			// client and MUST stay that way — never interpolate claim contents here.
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHintf(
+				"The subject token's delegation chain is malformed (%s).", chain.MalformedReason))
+		}
+		// Equivalent to the depth of the prior chain: the parser appends exactly one
+		// hop per level and stops at maxDelegationDepth, so len(Chain) is
+		// min(depth, maxDelegationDepth).
+		if len(chain.Chain) >= maxDelegationDepth {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token's delegation chain is too deep."))
 		}
+		// Nest priorAct verbatim rather than re-serializing from chain: core keeps
+		// each hop's extra claims in an unexported map, so rebuilding would silently
+		// drop the history trail that Section 4.1 asks us to preserve. The cost is
+		// that unknown hop claims — and the non-identity claims Section 4.1 calls
+		// "not meaningful" inside act — pass through re-signed, which sits in
+		// tension with Section 6 data minimization. Accepted here; bounding the
+		// subtree belongs with the external-issuer work in #5989.
 		act["act"] = priorAct
 	}
 	delegatedSession.JWTClaims.Extra["act"] = act
@@ -284,7 +313,7 @@ func validateExchangeParams(form url.Values) (string, error) {
 	return subjectToken, nil
 }
 
-// checkDelegationConsent enforces the RFC 8693 §4.1 delegation consent check.
+// checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.
 //
 // If the subject token carries a may_act claim, it is the authoritative
 // consent signal: only the party named in may_act.sub may delegate. The
@@ -467,23 +496,4 @@ func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
 		}
 	}
 	return nil
-}
-
-// actChainDepth returns the number of nested "act" entries in a subject
-// token's delegation chain, starting from its outermost act claim. A
-// non-map act (or nil) has depth 0.
-func actChainDepth(act any) int {
-	depth := 0
-	for {
-		m, ok := act.(map[string]any)
-		if !ok {
-			return depth
-		}
-		depth++
-		next, ok := m["act"]
-		if !ok || next == nil {
-			return depth
-		}
-		act = next
-	}
 }

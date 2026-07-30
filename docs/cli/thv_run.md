@@ -115,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file
+      --build-with stringArray                      Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem (uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); errors on ecosystems without constraint support (can be specified multiple times)
       --ca-cert string                              Path to a custom CA certificate file to use for container builds
       --enable-audit                                Enable audit logging with default configuration (default false)
       --endpoint-prefix string                      Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)

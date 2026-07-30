@@ -457,3 +457,75 @@ func TestRuntimeConfigValidate_MultipleErrorsWithRuntimeEnv(t *testing.T) {
 	assert.Contains(t, err.Error(), "is reserved and cannot be overridden")
 	assert.Contains(t, err.Error(), "contains potentially dangerous characters")
 }
+
+func TestRuntimeConfigValidate_ValidBuildWith(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{
+		"mcp<2",
+		"mcp>=1.27,<2",
+		"mcp==1.29.0",
+		"package[extra]==1.2.*",
+		"foo~=1.4",
+		"Foo_bar!=2.0",
+		"pkg >= 1.0, < 3",
+	}
+	for _, spec := range valid {
+		rc := &RuntimeConfig{BuildWith: []string{spec}}
+		assert.NoError(t, rc.Validate(), "specifier %q should be valid", spec)
+	}
+}
+
+func TestRuntimeConfigValidate_InvalidBuildWith(t *testing.T) {
+	t.Parallel()
+
+	invalid := []string{
+		"",                          // empty
+		"mcp<2'; rm -rf /",          // single quote escapes the --with argument
+		"mcp<2\" || true",           // double quote
+		"mcp<2`id`",                 // backtick command substitution
+		"mcp<2$(id)",                // dollar command substitution
+		"mcp<2;id",                  // command separator
+		"mcp<2|id",                  // pipe
+		"mcp<2&id",                  // background
+		"mcp<2\\",                   // backslash
+		"mcp<2\ninject",             // newline breaks out of the RUN line
+		"-e evil",                   // leading dash could become a flag
+		strings.Repeat("a", 129),    // over length bound
+		"pkg; python_version<'3.8'", // env markers need quotes, deliberately unsupported
+	}
+	for _, spec := range invalid {
+		rc := &RuntimeConfig{BuildWith: []string{spec}}
+		assert.Error(t, rc.Validate(), "specifier %q should be rejected", spec)
+	}
+}
+
+func TestUVXTemplateRendersBuildWith(t *testing.T) {
+	t.Parallel()
+
+	rc := GetDefaultRuntimeConfig(TransportTypeUVX)
+	rc.BuildWith = []string{"mcp<2", "other>=1,<4"}
+	data := TemplateData{
+		MCPPackage:    "arxiv-mcp-server",
+		RuntimeConfig: &rc,
+	}
+	dockerfile, err := GetDockerfileTemplate(TransportTypeUVX, data)
+	require.NoError(t, err)
+	assert.Contains(t, dockerfile, `uv tool install --with 'mcp<2' --with 'other>=1,<4' "$package_spec"`,
+		"each BuildWith specifier must be passed as a single-quoted --with argument")
+}
+
+func TestUVXTemplateWithoutBuildWithIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	rc := GetDefaultRuntimeConfig(TransportTypeUVX)
+	data := TemplateData{
+		MCPPackage:    "arxiv-mcp-server",
+		RuntimeConfig: &rc,
+	}
+	dockerfile, err := GetDockerfileTemplate(TransportTypeUVX, data)
+	require.NoError(t, err)
+	assert.Contains(t, dockerfile, `uv tool install "$package_spec"`,
+		"no --with arguments should appear when BuildWith is empty")
+	assert.NotContains(t, dockerfile, "--with")
+}

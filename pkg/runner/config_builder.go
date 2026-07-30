@@ -699,8 +699,11 @@ func WithMiddlewareFromFlags(
 		//
 		// NOTE: addCoreMiddlewares also injects usage metrics before webhook insertion here,
 		// which differs slightly from PopulateMiddlewareConfigs where usage metrics is added
-		// after webhooks. This is currently benign because usage metrics does not depend on
-		// webhook state, and the broader ordering TODO remains to unify these paths.
+		// after webhooks. Since mutating webhooks republish the parsed request
+		// (mcp.RepublishParsedMCPRequest), the two paths now disagree when a webhook rewrites
+		// the JSON-RPC method: this path counts the method as received, the operator path counts
+		// the method as mutated. Only tool-call counts are affected, and only for a webhook that
+		// patches "method" itself. The broader ordering TODO remains to unify these paths.
 
 		// Add Mutating webhooks before Validating webhooks
 		var err error

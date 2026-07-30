@@ -1871,3 +1871,142 @@ func TestParsingMiddlewareIntegration(t *testing.T) {
 		})
 	}
 }
+
+func TestRepublishParsedMCPRequest(t *testing.T) {
+	t.Parallel()
+
+	oldBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"old-tool","arguments":{"a":1}}}`
+	newBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"new-tool","arguments":{"b":2}}}`
+
+	tests := []struct {
+		name          string
+		body          []byte
+		expectErr     bool
+		expectBatch   bool
+		expectNilReq  bool
+		checkResponse func(t *testing.T, req *http.Request, err error)
+	}{
+		{
+			name: "happy re-parse reflects new body",
+			body: []byte(newBody),
+			checkResponse: func(t *testing.T, req *http.Request, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				parsed := GetParsedMCPRequest(req.Context())
+				require.NotNil(t, parsed)
+				assert.Equal(t, "tools/call", parsed.Method)
+				assert.Equal(t, "new-tool", parsed.ResourceID)
+				assert.Equal(t, map[string]interface{}{"b": float64(2)}, parsed.Arguments)
+				assert.NotNil(t, parsed.Params)
+				assert.Equal(t, int64(2), parsed.ID)
+				assert.False(t, parsed.IsBatch)
+			},
+		},
+		{
+			name:        "batch body rejected before parsing",
+			body:        []byte(`[{"jsonrpc":"2.0","method":"tools/call","id":1}]`),
+			expectErr:   true,
+			expectBatch: true,
+		},
+		{
+			name:        "whitespace-prefixed batch still detected",
+			body:        []byte(" \t[{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"id\":1}]"),
+			expectErr:   true,
+			expectBatch: true,
+		},
+		{
+			name:      "valid JSON that is not a request",
+			body:      []byte(`{"jsonrpc":"2.0","result":{}}`),
+			expectErr: true,
+		},
+		{
+			name:      "empty object is not a request",
+			body:      []byte(`{}`),
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(oldBody))
+			req.Header.Set("Content-Type", "application/json")
+			var capturedOldCtx context.Context
+			testHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				capturedOldCtx = r.Context()
+			})
+			ParsingMiddleware(testHandler).ServeHTTP(httptest.NewRecorder(), req)
+			require.NotNil(t, GetParsedMCPRequest(capturedOldCtx), "precondition: old body must have parsed")
+			req = req.WithContext(capturedOldCtx)
+
+			republished, err := RepublishParsedMCPRequest(req, tt.body)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Nil(t, republished)
+				if tt.expectBatch {
+					var batchErr *BatchUnsupportedError
+					assert.ErrorAs(t, err, &batchErr)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, republished)
+			if tt.checkResponse != nil {
+				tt.checkResponse(t, republished, err)
+			}
+
+			// The original request's context must still yield the OLD parse:
+			// RepublishParsedMCPRequest must not mutate the caller's request.
+			oldParsed := GetParsedMCPRequest(req.Context())
+			require.NotNil(t, oldParsed)
+			assert.Equal(t, "old-tool", oldParsed.ResourceID)
+		})
+	}
+}
+
+func TestRepublishParsedMCPRequestHeaders(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(""))
+	req.Header.Set("Mcp-Method", "tools/call")
+	req.Header.Set("Mcp-Name", "some-tool")
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`)
+	republished, err := RepublishParsedMCPRequest(req, body)
+	require.NoError(t, err)
+
+	parsed := GetParsedMCPRequest(republished.Context())
+	require.NotNil(t, parsed)
+	assert.Equal(t, "tools/call", parsed.MCPMethodHeader)
+	assert.Equal(t, "some-tool", parsed.MCPNameHeader)
+}
+
+func TestRepublishParsedMCPRequestHolder(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`)
+
+	t.Run("holder present is refreshed", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(""))
+		holder := &ParsedRequestHolder{}
+		req = req.WithContext(WithParsedRequestHolder(req.Context(), holder))
+
+		republished, err := RepublishParsedMCPRequest(req, body)
+		require.NoError(t, err)
+		require.NotNil(t, republished)
+		require.NotNil(t, holder.Parsed)
+		assert.Equal(t, "weather", holder.Parsed.ResourceID)
+	})
+
+	t.Run("holder absent does not panic", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(""))
+
+		republished, err := RepublishParsedMCPRequest(req, body)
+		require.NoError(t, err)
+		require.NotNil(t, republished)
+	})
+}

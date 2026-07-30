@@ -74,18 +74,20 @@ type FactoryConfig struct {
 	// AdvertiseFromCore signals that the advertised capability set is sourced from
 	// the core (the Serve path), not from this factory's per-session aggregation.
 	//
-	// It is the single switch that selects WHICH layer indexes the shared FTS5 store,
-	// so the two can never both do it (the AC6 double-index):
-	//   - true:  New does NOT install the optimizer decorator on the session factory,
-	//            and exposes the resolved factory via Manager.OptimizerFactory so the
-	//            Serve layer builds a per-session optimizer over the core's tools.
-	//   - false: New installs the optimizer decorator (legacy behavior) and
-	//            Manager.OptimizerFactory returns nil, so a Serve composition root that
-	//            enables the optimizer but forgets this flag gets no Serve-layer
-	//            optimizer rather than a second, divergent upsert into the store.
-	// Either way New resolves the optimizer factory and owns its store/cleanup. Has no
-	// effect when the optimizer is disabled. The legacy server.New path leaves this
-	// false, so its optimizer decorator is unchanged.
+	// It is required whenever an optimizer is configured:
+	//   - true:  New exposes the resolved factory via Manager.OptimizerFactory so
+	//            the Serve layer builds a per-session optimizer over the core's
+	//            tools — the single writer of the shared FTS5 store (the AC6
+	//            no-double-index guarantee).
+	//   - false: fine without an optimizer; with one, New rejects the config at
+	//            construction, because the Serve layer discards the decorator's
+	//            per-session tools (the optimizer would index the store yet serve
+	//            nobody) and the Modern capability gate would fail open.
+	// New resolves the optimizer factory and owns its store/cleanup. server.New
+	// sets this unconditionally (server.go), so every in-tree composition
+	// advertises from the core; the flag exists for direct-Serve embedders. The
+	// decorator branch the false case used to select is now unreachable — its
+	// deletion is tracked in #6103.
 	AdvertiseFromCore bool
 }
 
@@ -154,6 +156,9 @@ func buildDecoratingFactory(
 	// over the core's advertised set, so the factory's optimizer decorator is skipped
 	// to avoid double-indexing the shared store (see FactoryConfig.AdvertiseFromCore).
 	// Composite tools and their telemetry are owned by the core, not the factory.
+	// This branch is unreachable: New rejects an optimizer without AdvertiseFromCore,
+	// so optimizerFactory is nil whenever the flag is false. Deleting the decorator
+	// path is tracked in #6103.
 	if optimizerFactory != nil && !cfg.AdvertiseFromCore {
 		decorators = append(decorators, optimizerDecoratorFn(optimizerFactory, terminateSession))
 	}

@@ -677,20 +677,31 @@ path for server->client messages.
   send-on-closed-channel panic if a concurrent broadcast/dispatch races
   eviction/shutdown.
 
-**Forward-compatibility note**: the 2026-07-28 (Modern) MCP revision (see
-`mcp.MCPVersionModern` and `pkg/mcp/revision.go`) introduces
-`subscriptions/listen`, a POST method whose response stream stays open for
-server-pushed subscription events. `serverStreamRegistry` is a reasonable
-decoupled fan-out seam to build a future Modern handler for this method on top
-of, but it is **not** a drop-in reuse. Per the 2026-07-28 spec, real adaptation is
-required: `subscriptions/listen` is a long-lived POST, not a GET; Modern has no
-sessions, so streams must be keyed per-subscription-id rather than per session
-ID; delivery requires per-notification-type AND per-URI opt-in filtering, not
-blanket fan-out; an initial `notifications/subscriptions/acknowledged` must be
-sent; and deliveries must be tagged with `io.modelcontextprotocol/subscriptionId`.
-`dispatcher_streams.go` is intentionally kept transport-agnostic (no HTTP
-types) so that this adaptation, when it happens, does not also require
-rewriting the underlying fan-out primitives.
+**Relationship to Modern `subscriptions/listen`**: the 2026-07-28 (Modern)
+revision (see `mcp.MCPVersionModern` and `pkg/mcp/revision.go`) replaces the
+standalone GET with `subscriptions/listen`, a POST method whose response stream
+stays open for server-pushed subscription events.
+
+vMCP now **serves** that method on its client edge
+(`pkg/vmcp/server/modern_subscriptions.go`), and deliberately does **not** use
+`serverStreamRegistry`. The reason is that the handler honors no subscriptions:
+the honored set is intersected against the capabilities `server/discover`
+advertises, every push flag there is false, so the acknowledged set is always
+empty and the stream terminates immediately. With nothing to fan out, wiring in a
+fan-out registry from another package would add an abstraction with zero
+consumers. What the handler does implement is the wire contract — a long-lived
+POST rather than a GET, keyed per-subscription-id (the listen request's own
+JSON-RPC id) rather than per session ID since Modern has no sessions, an initial
+`notifications/subscriptions/acknowledged`, and
+`io.modelcontextprotocol/subscriptionId` tagging.
+
+`serverStreamRegistry` remains the sensible seam for the piece still missing:
+actual **delivery** of notifications on a Modern listen stream (#5743). That work
+needs per-notification-type AND per-URI opt-in filtering rather than blanket
+fan-out, and per `schema/draft/schema.ts` must tag *every* notification with the
+subscription id, not just the acknowledgement. `dispatcher_streams.go` is
+therefore still intentionally kept transport-agnostic (no HTTP types), so that
+when delivery lands it does not also require rewriting the fan-out primitives.
 
 ## Error Handling
 

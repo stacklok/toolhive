@@ -31,6 +31,8 @@ Two webhook types are supported:
 1. **Mutating webhooks**: Transform the parsed MCP request before later policy evaluation.
 2. **Validating webhooks**: Approve or deny the request after mutation has completed.
 
+A mutating webhook therefore steers what authorization (and audit, telemetry, and usage metrics) evaluates, including the feature/operation mapping used to pick a Cedar policy. This is intended: an operator who configures a mutating webhook — including a fail-open one — is deliberately giving it influence over policy input, not introducing an accident.
+
 When configured together, the effective order is:
 
 1. Audit (wraps everything below, so webhook denials are audited)
@@ -45,6 +47,8 @@ Multiple webhook definitions of the same type run in configuration order. When m
 
 Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
 
+When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation` field on the principal object, with the same shape as the `delegation` field documented under [Audit Middleware](#9-audit-middleware) below.
+
 Example:
 
 ```bash
@@ -55,6 +59,11 @@ Example config files:
 
 - [`docs/examples/webhooks.yaml`](examples/webhooks.yaml)
 - [`docs/examples/webhooks.json`](examples/webhooks.json)
+
+### Known limitations
+
+- **Stale Modern headers.** A mutating webhook patches only the JSON body, so after it renames a tool the `Mcp-Method`/`Mcp-Name` headers forwarded to the backend still describe the original name. `ValidateHeaderConsistency` (`pkg/mcp/revision.go:512`) requires the header and body to agree and returns a `RequestHeaderMismatchError` (`CodeHeaderMismatch`) if they don't, but today that check is only wired into vMCP (`pkg/vmcp/server/classification.go:72`), which never runs the mutating webhook — so nothing in ToolHive catches this yet. A spec-conformant Modern (2026-07-28) backend will reject the mismatched request itself, so this fails closed rather than silently mis-authorizing. Practical guidance: a mutating webhook must not rename tools on the Modern path.
+- **Controls outside the parser see the pre-mutation request.** The tool-call filter (`pkg/mcp/tool_filter.go`) reads the raw request body directly, and the rate limiter runs before the mutating webhook in the chain (see the ordering rules below) — both decide against the request as received, not as mutated. A mutating webhook can therefore rename a call into a tool that `--tools` filtering excluded, and the rate limiter debits the bucket for the requested tool rather than the executed one. This is a known gap, not a regression: the tool filter's position ahead of the MCP parser is deliberate (it needs the raw request), as already noted in the ordering rules below.
 
 ## Architecture Diagram
 
@@ -481,6 +490,15 @@ Audit events are logged as structured JSON objects:
     "client_name": "my-mcp-client",
     "client_version": "1.0.0"
   },
+  "delegation": {
+    "chain": [
+      {"iss": "https://auth.example.com", "sub": "agent-client-1"},
+      {"sub": "agent-client-2"}
+    ],
+    "truncated": false,
+    "omitted": 0,
+    "malformed": false
+  },
   "target": {
     "endpoint": "/messages",
     "method": "POST",
@@ -517,6 +535,35 @@ Audit events are logged as structured JSON objects:
   - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
   - `client_name`: MCP client name (from JWT claims)
   - `client_version`: MCP client version (from JWT claims)
+- `delegation`: RFC 8693 delegation chain (toolhive-core's canonical schema),
+  present only when the caller authenticated with a delegated token (i.e. the
+  JWT carries an `act` claim)
+  - `chain`: Delegation hops, outermost (most recent) first — `chain[0]` is
+    the direct delegate that presented the token. Always an array, never
+    null; empty when `malformed` is `true` and no hop could be parsed at all
+    - `iss`: The hop's issuer (from the `act` claim's `iss` member), when
+      present and a string. Omitted otherwise
+    - `sub`: Acting party identifier (from the `act` claim's `sub` member),
+      when present and a string. Omitted otherwise. A non-string `iss` or
+      `sub` leaves the field out and flags the chain `malformed` instead.
+      Any other `act` claim members are deliberately never serialized
+      (data minimization per RFC 8693 §6); per OpenID Connect Core §5.7 the
+      (`iss`, `sub`) pair is the stable actor identifier
+  - `truncated`: `true` when the chain exceeded the configured maximum depth
+    (`maxDelegationDepth` in the audit config, default 10) and inner hops
+    were dropped; the outermost hops — including `chain[0]`, the current
+    actor — are always kept. Always present
+  - `omitted`: Number of well-formed hops dropped due to the depth cap.
+    Always present; `0` when nothing was dropped
+  - `malformed`: `true` when the token's `act` claim violated RFC 8693
+    conformance somewhere in the chain (non-object `act`, non-string `iss`
+    or `sub`). Always present. Hops already parsed before the violation are
+    still reported alongside it. A malformed value sitting immediately past
+    the depth cap flags `malformed` but is not a countable hop for `omitted`
+  - `malformedReason`: Low-cardinality label for the first conformance
+    violation encountered (`act_not_object`, `nested_act_not_object`,
+    `iss_not_string`, `sub_not_string`). Present only when `malformed` is
+    `true`
 - `target`: Information about the operation target
   - `endpoint`: HTTP endpoint path
   - `method`: HTTP method
@@ -1008,11 +1055,14 @@ The middleware chain execution order is critical and controlled by the order in 
 5. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
 6. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
 7. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-8. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
-9. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
-10. **Authorization Middleware** (if enabled) - Cedar policy evaluation
-11. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
-12. **Recovery Middleware** (always present) - Catches panics
+8. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
+9. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
+10. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
+11. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
+12. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
+13. **Authorization Middleware** (if enabled) - Cedar policy evaluation
+14. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
+15. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
 - Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
@@ -1022,9 +1072,12 @@ The middleware chain execution order is critical and controlled by the order in 
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
+- Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request
+- Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so every later consumer (authorization, audit, telemetry, usage metrics) reads the cached parse rather than re-reading the body
 - Header Forward executes close to the backend handler (innermost position)
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
 - Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. Their rejections (413/403) are the only ones not audited.
+- The list above (steps 1-15) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
 
 ### Custom Authorization Policies
 

@@ -107,16 +107,18 @@ func newModernCacheable() modernCacheable {
 type modernToolsListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
-	Tools []mcp.Tool `json:"tools"`
-	Meta  modernMeta `json:"_meta"`
+	Tools      []mcp.Tool `json:"tools"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Meta       modernMeta `json:"_meta"`
 }
 
 // modernResourcesListResult is the resources/list wire result.
 type modernResourcesListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
-	Resources []mcp.Resource `json:"resources"`
-	Meta      modernMeta     `json:"_meta"`
+	Resources  []mcp.Resource `json:"resources"`
+	NextCursor string         `json:"nextCursor,omitempty"`
+	Meta       modernMeta     `json:"_meta"`
 }
 
 // modernResourceTemplatesListResult is the resources/templates/list wire result.
@@ -124,6 +126,7 @@ type modernResourceTemplatesListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
 	ResourceTemplates []mcp.ResourceTemplate `json:"resourceTemplates"`
+	NextCursor        string                 `json:"nextCursor,omitempty"`
 	Meta              modernMeta             `json:"_meta"`
 }
 
@@ -131,8 +134,9 @@ type modernResourceTemplatesListResult struct {
 type modernPromptsListResult struct {
 	ResultType string `json:"resultType"`
 	modernCacheable
-	Prompts []mcp.Prompt `json:"prompts"`
-	Meta    modernMeta   `json:"_meta"`
+	Prompts    []mcp.Prompt `json:"prompts"`
+	NextCursor string       `json:"nextCursor,omitempty"`
+	Meta       modernMeta   `json:"_meta"`
 }
 
 // modernCallToolResult is the tools/call wire result. Unlike the four list
@@ -229,21 +233,10 @@ type modernDiscoverResult struct {
 	Meta              modernMeta             `json:"_meta"`
 }
 
-// newModernDiscover builds the server/discover wire result. hasTools/
-// hasResources/hasPrompts are the caller's len(core.List*(ctx, identity))>0
-// admission-filtered presence checks -- this function only shapes them into
-// the wire capability flags, so a discover response reflects exclusively
-// what this identity may reach, same as the four list results. hasTemplates
-// folds into the "resources" capability: the wire protocol has no separate
-// resource-templates capability flag.
-//
-// Completions is set unconditionally, unlike the three identity-filtered
-// flags above: completion/complete has no per-identity admission of its own
-// (core.Complete authorizes the underlying prompt/resource ref at dispatch,
-// not the completions feature itself), and this dispatcher serves it for
-// every caller once Modern dispatch is enabled at all -- matching how the
-// Legacy/SDK path always wires server.WithCompletionHandler regardless of
-// identity (serve.go).
+// newModernDiscover builds the server/discover wire result. The capability
+// flags themselves are shaped by newModernCapabilities below -- see its doc
+// comment for what each flag means and why the push-related ones are false.
+// This function only assembles the envelope around them.
 //
 // SupportedVersions enumerates every protocol version this vMCP endpoint
 // actually serves, not just Modern: mcpparser.MCPVersionModern (this
@@ -252,9 +245,68 @@ type modernDiscoverResult struct {
 // LATEST_PROTOCOL_VERSION regardless of what a client requests -- it does
 // not support older Legacy revisions either). A discover-first client uses
 // this list to decide whether it can skip the Legacy initialize handshake.
+//
+// CONSTRAINT: this function must only be reached with the Modern capability
+// gate open. It hardcodes MCPVersionModern into SupportedVersions and never
+// consults the gate; that is truthful only because classifyingHandler
+// (classification.go) routes server/discover to the SDK when the gate is
+// closed, and the SDK's stateful transport computes the truthful Legacy-only
+// list there. Do NOT plumb the gate in here — that would create a second
+// source of the version list. Anyone re-routing gated discover to
+// dispatchModern must revisit this.
 func newModernDiscover(
 	hasTools, hasResources, hasTemplates, hasPrompts bool, serverName, serverVersion string,
 ) modernDiscoverResult {
+	return modernDiscoverResult{
+		ResultType:        modernResultTypeComplete,
+		modernCacheable:   newModernCacheable(),
+		SupportedVersions: []string{mcpparser.MCPVersionModern, mcp.LATEST_PROTOCOL_VERSION},
+		Capabilities:      newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts),
+		Meta:              newModernMeta(serverName, serverVersion),
+	}
+}
+
+// newModernCapabilities shapes the four admission-filtered presence checks into
+// the wire capability flags.
+//
+// hasTools/hasResources/hasTemplates/hasPrompts are the caller's
+// len(core.List*(ctx, identity))>0 checks, so an advertisement reflects
+// exclusively what this identity may reach, same as the four list results.
+// hasTemplates folds into the "resources" capability: the wire protocol has no
+// separate resource-templates flag.
+//
+// Completions is set unconditionally, unlike the identity-filtered flags:
+// completion/complete has no per-identity admission of its own (core.Complete
+// authorizes the underlying prompt/resource ref at dispatch, not the completions
+// feature itself), and this dispatcher serves it for every caller -- matching how
+// the Legacy/SDK path always wires server.WithCompletionHandler regardless of
+// identity (serve.go).
+//
+// It is the SINGLE source of truth for what this dispatcher advertises: server/discover publishes it verbatim (above), and
+// subscriptions/listen intersects a client's requested notification set against
+// it (honoredSubscriptions, modern_subscriptions.go). Keeping one builder is
+// what makes those two answers impossible to drift apart -- a client can never
+// be told a push capability exists by one verb and denied it by the other.
+//
+// Every push-related flag below is deliberately false, and each `false` is a
+// load-bearing statement about what vMCP can actually do, not an oversight:
+//
+//   - Tools/Prompts/Resources ListChanged: dispatchModern creates no session, so
+//     the per-session list_changed machinery (buildListChangedSink, wired only
+//     from handleSessionRegistrationImpl in server.go) never runs for a Modern
+//     client, whatever revision its backends speak.
+//   - Resources Subscribe: this stateless single-shot dispatcher has no
+//     persistent connection to a client to push a server-initiated
+//     resources/updated notification over, so resources/subscribe is not
+//     advertised here and returns -32601 by design, not by oversight. vMCP does
+//     not forward backend resources/updated on the Legacy path either
+//     (ack-level only; see docs/arch/10-virtual-mcp-architecture.md).
+//
+// Flipping any of them to true is a promise to deliver that notification type,
+// which today nothing in vMCP can keep. Implement delivery in the SAME change,
+// or a Modern client will subscribe successfully and then wait forever. See
+// #5743.
+func newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts bool) mcp.ServerCapabilities {
 	var caps mcp.ServerCapabilities
 	if hasTools {
 		caps.Tools = &struct {
@@ -262,11 +314,6 @@ func newModernDiscover(
 		}{}
 	}
 	if hasResources || hasTemplates {
-		// Subscribe is left false (omitted on the wire): this stateless
-		// single-shot dispatcher has no persistent connection to a client to
-		// push a server-initiated resources/updated notification over, so
-		// resources/subscribe is not advertised here and returns -32601 by
-		// design, not by oversight.
 		caps.Resources = &struct {
 			Subscribe   bool `json:"subscribe,omitempty"`
 			ListChanged bool `json:"listChanged,omitempty"`
@@ -278,18 +325,18 @@ func newModernDiscover(
 		}{}
 	}
 	caps.Completions = &struct{}{}
-	return modernDiscoverResult{
-		ResultType:        modernResultTypeComplete,
-		modernCacheable:   newModernCacheable(),
-		SupportedVersions: []string{mcpparser.MCPVersionModern, mcp.LATEST_PROTOCOL_VERSION},
-		Capabilities:      caps,
-		Meta:              newModernMeta(serverName, serverVersion),
-	}
+	return caps
 }
 
 // newModernToolsList builds the tools/list wire result from the core's
 // admission-filtered domain tools.
-func newModernToolsList(tools []vmcp.Tool, serverName, serverVersion string) (modernToolsListResult, error) {
+// nextCursor is LAST on purpose: it sits among same-typed string parameters, and
+// when it was in the middle a transposition with serverName compiled silently and
+// put a server name in the cursor field. Keep new string params appended, not
+// inserted.
+func newModernToolsList(
+	tools []vmcp.Tool, serverName, serverVersion, nextCursor string,
+) (modernToolsListResult, error) {
 	wireTools := make([]mcp.Tool, 0, len(tools))
 	for _, t := range tools {
 		wireTool, err := modernToolFromDomain(t)
@@ -302,13 +349,16 @@ func newModernToolsList(tools []vmcp.Tool, serverName, serverVersion string) (mo
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
 		Tools:           wireTools,
+		NextCursor:      nextCursor,
 		Meta:            newModernMeta(serverName, serverVersion),
 	}, nil
 }
 
 // newModernResourcesList builds the resources/list wire result from the
 // core's admission-filtered domain resources.
-func newModernResourcesList(resources []vmcp.Resource, serverName, serverVersion string) modernResourcesListResult {
+func newModernResourcesList(
+	resources []vmcp.Resource, serverName, serverVersion, nextCursor string,
+) modernResourcesListResult {
 	wireResources := make([]mcp.Resource, 0, len(resources))
 	for _, r := range resources {
 		wireResources = append(wireResources, modernResourceFromDomain(r))
@@ -317,6 +367,7 @@ func newModernResourcesList(resources []vmcp.Resource, serverName, serverVersion
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
 		Resources:       wireResources,
+		NextCursor:      nextCursor,
 		Meta:            newModernMeta(serverName, serverVersion),
 	}
 }
@@ -324,7 +375,7 @@ func newModernResourcesList(resources []vmcp.Resource, serverName, serverVersion
 // newModernResourceTemplatesList builds the resources/templates/list wire
 // result from the core's admission-filtered domain resource templates.
 func newModernResourceTemplatesList(
-	templates []vmcp.ResourceTemplate, serverName, serverVersion string,
+	templates []vmcp.ResourceTemplate, serverName, serverVersion, nextCursor string,
 ) modernResourceTemplatesListResult {
 	wireTemplates := make([]mcp.ResourceTemplate, 0, len(templates))
 	for _, t := range templates {
@@ -334,13 +385,16 @@ func newModernResourceTemplatesList(
 		ResultType:        modernResultTypeComplete,
 		modernCacheable:   newModernCacheable(),
 		ResourceTemplates: wireTemplates,
+		NextCursor:        nextCursor,
 		Meta:              newModernMeta(serverName, serverVersion),
 	}
 }
 
 // newModernPromptsList builds the prompts/list wire result from the core's
 // admission-filtered domain prompts.
-func newModernPromptsList(prompts []vmcp.Prompt, serverName, serverVersion string) modernPromptsListResult {
+func newModernPromptsList(
+	prompts []vmcp.Prompt, serverName, serverVersion, nextCursor string,
+) modernPromptsListResult {
 	wirePrompts := make([]mcp.Prompt, 0, len(prompts))
 	for _, p := range prompts {
 		wirePrompts = append(wirePrompts, modernPromptFromDomain(p))
@@ -349,6 +403,7 @@ func newModernPromptsList(prompts []vmcp.Prompt, serverName, serverVersion strin
 		ResultType:      modernResultTypeComplete,
 		modernCacheable: newModernCacheable(),
 		Prompts:         wirePrompts,
+		NextCursor:      nextCursor,
 		Meta:            newModernMeta(serverName, serverVersion),
 	}
 }
@@ -536,6 +591,44 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 		envelope["id"] = id
 	}
 	writeModernEnvelope(w, status, envelope)
+}
+
+// writeModernCodedError writes a JSON-RPC error envelope for a domain error
+// carrying its own stable code and data (mcpparser.CodedError), preserving
+// both on the wire: {"code":coded.Code(),"message":err.Error(),"data":...}.
+// message uses err.Error() rather than a canned string so callers can wrap a
+// coded error with context via %w without losing it (mirrors
+// conversion.CodedErrorResult, the Legacy seam's rendering of the same
+// errors).
+//
+// Status is HTTP 200 deliberately: go-sdk's streamable client
+// (v1.7.0-pre.3) rejects a non-200 POST response in checkResponse BEFORE
+// decoding its body, so on any 4xx the JSON-RPC error object below —
+// including data.retryAfterSeconds on the rate limiter's 429 — would be
+// discarded unread. 200 is the only status on which the client surfaces the
+// coded error to the caller. The request was accepted and processed; the
+// failure is an application-level JSON-RPC error riding the transport.
+// (writeModernMissingCapability in modern_dispatch.go documents a related
+// but distinct 200-over-4xx deviation for -32021.)
+//
+// id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
+// encoded by omitting the "id" key, never as null.
+func writeModernCodedError(w http.ResponseWriter, id any, err error, coded mcpparser.CodedError) {
+	errObj := map[string]any{
+		"code":    coded.Code(),
+		"message": err.Error(),
+	}
+	if data := coded.Data(); len(data) > 0 {
+		errObj["data"] = data
+	}
+	envelope := map[string]any{
+		"jsonrpc": "2.0",
+		"error":   errObj,
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
 }
 
 // writeModernDenied writes a JSON-RPC error envelope at HTTP 403 with

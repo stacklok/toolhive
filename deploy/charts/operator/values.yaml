@@ -63,15 +63,40 @@ operator:
     existingSecretKey: ""
 
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.40.1
+  image: ghcr.io/stacklok/toolhive/operator:v0.41.0
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.40.1
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.41.0
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.40.1
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.41.0
+
+  # -- Air-gap image-discovery aid. toolhiveRunnerImage, vmcpImage, and
+  # registryAPI.image are never rendered as chart `image:` keys — the operator
+  # only injects them into child workloads at runtime via env vars
+  # (TOOLHIVE_RUNNER_IMAGE / VMCP_IMAGE / TOOLHIVE_REGISTRY_API_IMAGE). Static
+  # manifest scanners used by air-gap tooling (e.g. a vendor portal's image
+  # list generator) discover images by reading `image:` keys out of
+  # `helm template` output, so they miss these three and an air-gapped
+  # customer can hit ImagePullBackOff on the first MCPServer /
+  # VirtualMCPServer / MCPRegistry create.
+  #
+  # Enabling this renders a `replicas: 0` Deployment
+  # (`<release-name>-image-discovery`) whose pod template references all
+  # three images. A zero-replica Deployment never has Kubernetes schedule a
+  # pod from it, so the images are never pulled or run — this exists purely
+  # to put the refs in front of a static manifest scan.
+  imageDiscovery:
+    # -- Render the zero-replica image-discovery Deployment described above.
+    enabled: false
+    # -- Resource requests/limits for the image-discovery Deployment's
+    # containers. Admission control (a LimitRange, an OPA/Kyverno policy
+    # requiring explicit requests) validates these at CREATE time even
+    # though replicas: 0 means nothing ever actually runs, so this is
+    # exposed separately from operator.resources for clusters that need it set.
+    resources: {}
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

@@ -20,11 +20,6 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-// modernDispatchEnvVar mirrors pkg/vmcp/cli/serve.go's modernDispatchEnvVar
-// constant (unexported there, so duplicated here rather than imported --
-// this suite only needs the string value, not the package).
-const modernDispatchEnvVar = "TOOLHIVE_VMCP_MODERN_STATELESS"
-
 // launchYardstickLegacyOnPort starts a non-stateless (Legacy-only) yardstick
 // backend on the given port in the given group. Deliberately structured as a
 // near-duplicate of launchYardstickModernOnPort below rather than reusing the
@@ -47,12 +42,32 @@ func launchYardstickLegacyOnPort(config *e2e.TestConfig, groupName, backendName 
 	).ExpectSuccess()
 }
 
+// startEraBackendOnPort launches a backend via launch and waits for it to
+// become ready, retrying once with a freshly allocated port if the container
+// lost a race binding its host port. allocateVMCPPort only probes that a port
+// is free at call time and closes its own listener immediately -- the actual
+// bind happens later, asynchronously, inside the container Docker starts for
+// the detached `thv run` process, so another workload's container can grab
+// the same ephemeral port in between (observed as "address already in use").
+func startEraBackendOnPort(config *e2e.TestConfig, backendName string, port int, launch func(port int)) {
+	launch(port)
+	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
+	if err != nil && strings.Contains(err.Error(), "address already in use") {
+		GinkgoWriter.Printf("%s lost a port-bind race on %d, retrying with a fresh port: %v\n", backendName, port, err)
+		e2e.NewTHVCommand(config, "rm", backendName).ExpectSuccess()
+		port = allocateVMCPPort()
+		launch(port)
+		err = e2e.WaitForMCPServer(config, backendName, 120*time.Second)
+	}
+	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("yardstick backend %q should become running", backendName))
+}
+
 // startYardstickLegacyOnPort runs launchYardstickLegacyOnPort and waits for
 // the backend to become ready.
 func startYardstickLegacyOnPort(config *e2e.TestConfig, groupName, backendName string, port int) {
-	launchYardstickLegacyOnPort(config, groupName, backendName, port)
-	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("legacy yardstick backend %q should become running", backendName))
+	startEraBackendOnPort(config, backendName, port, func(p int) {
+		launchYardstickLegacyOnPort(config, groupName, backendName, p)
+	})
 }
 
 // launchYardstickModernOnPort starts a stateless (Modern-capable) yardstick
@@ -87,9 +102,9 @@ func launchYardstickModernOnPort(config *e2e.TestConfig, groupName, backendName 
 // startYardstickModernOnPort runs launchYardstickModernOnPort and waits for
 // the backend to become ready.
 func startYardstickModernOnPort(config *e2e.TestConfig, groupName, backendName string, port int) {
-	launchYardstickModernOnPort(config, groupName, backendName, port)
-	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("modern yardstick backend %q should become running", backendName))
+	startEraBackendOnPort(config, backendName, port, func(p int) {
+		launchYardstickModernOnPort(config, groupName, backendName, p)
+	})
 }
 
 // healthCheckConfigYAML is appended to a `thv vmcp init`-generated config file
@@ -120,47 +135,21 @@ func appendHealthCheckConfig(path string) {
 	Expect(err).ToNot(HaveOccurred())
 }
 
-// startDualEraVMCP starts `thv vmcp serve`, with the Modern dispatcher
-// enabled or disabled per modernEnabled. Uses --config configPath when
-// configPath is non-empty, else falls back to quick mode (--group groupName).
-// This exists instead of reusing e2e.StartLongRunningTHVCommand solely to
-// control that one env var: StartLongRunningTHVCommand always inherits a plain
-// os.Environ() with no override hook.
-//
-// The variable is stripped from the inherited environment and then set
-// explicitly for BOTH cases, rather than only appended when enabling. Leaving
-// it inherited would make the kill-switch-off specs depend on the ambient
-// environment: a CI runner or developer shell exporting
-// TOOLHIVE_VMCP_MODERN_STATELESS=true would start those with Modern dispatch
-// ON, and the spec would fail for a reason that has nothing to do with the
-// code. Appending an override would also work (serve.go parses the value with
-// strconv.ParseBool, and exec dedups Env keeping the last entry), but relying
-// on that dedup order is too subtle to leave to a reader.
-func startDualEraVMCP(config *e2e.TestConfig, groupName, configPath string, port int, modernEnabled bool) *exec.Cmd {
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, modernDispatchEnvVar+"=") {
-			env = append(env, kv)
-		}
-	}
-	env = append(env, fmt.Sprintf("%s=%t", modernDispatchEnvVar, modernEnabled))
-
+// startDualEraVMCP starts `thv vmcp serve`, using --config configPath when
+// configPath is non-empty, else quick mode (--group groupName). vMCP serves both
+// MCP revisions whenever the capability gate is open (modern_gate.go), and these
+// specs configure no blockers, so this only assembles the arguments —
+// it no longer overrides the inherited environment, and so delegates the process
+// start to e2e.StartLongRunningTHVCommand.
+func startDualEraVMCP(config *e2e.TestConfig, groupName, configPath string, port int) *exec.Cmd {
+	GinkgoHelper()
 	args := []string{"vmcp", "serve", "--port", strconv.Itoa(port)}
 	if configPath != "" {
 		args = append(args, "--config", configPath)
 	} else {
 		args = append(args, "--group", groupName)
 	}
-
-	//nolint:gosec // fixed subcommand, test-controlled args
-	cmd := exec.Command(config.THVBinary, args...)
-	cmd.Env = env
-	cmd.Stdout = GinkgoWriter
-	cmd.Stderr = GinkgoWriter
-
-	err := cmd.Start()
-	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "failed to start thv vmcp serve")
-	return cmd
+	return e2e.StartLongRunningTHVCommand(config, args...)
 }
 
 // vmcpStatusResponse decodes the subset of pkg/vmcp/server.StatusResponse

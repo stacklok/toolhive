@@ -16,13 +16,14 @@ import (
 	"strings"
 	"time"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // LevelAudit is a custom audit log level - between Info and Warn
-const LevelAudit = slog.Level(2)
+const LevelAudit = coreaudit.LevelAudit
 
 // contextKey is an unexported type for context keys to avoid collisions
 type contextKey struct{}
@@ -50,27 +51,7 @@ func BackendInfoFromContext(ctx context.Context) (*BackendInfo, bool) {
 
 // NewAuditLogger creates a new structured audit logger that writes to the specified writer.
 func NewAuditLogger(w io.Writer) *slog.Logger {
-	if w == nil {
-		w = os.Stdout
-	}
-
-	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level: LevelAudit,
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			// Replace the custom audit level with "AUDIT" string for better
-			// compatibility with log aggregation systems (Loki, Elasticsearch, etc.)
-			// that expect standard level names. This prevents audit events from
-			// appearing as "INFO+2" which breaks level-based filtering.
-			if a.Key == slog.LevelKey {
-				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelAudit {
-					a.Value = slog.StringValue("AUDIT")
-				}
-			}
-			return a
-		},
-	})
-
-	return slog.New(handler)
+	return coreaudit.NewAuditLogger(w)
 }
 
 // Auditor handles audit logging for HTTP requests.
@@ -321,6 +302,9 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	// Create the audit event
 	event := NewAuditEvent(eventType, source, outcome, subjects, component)
 
+	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
+	event.WithDelegationChain(a.extractDelegationChain(r))
+
 	// Add target information
 	target := a.extractTarget(r, eventType)
 	if len(target) > 0 {
@@ -542,21 +526,74 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 	return subjects
 }
 
+// extractDelegationChainFromIdentity returns the RFC 8693 delegation chain
+// carried by the identity, bound to maxDepth, or nil when there is none.
+// The identity layer (auth.claimsToIdentity) always parses at
+// auth.DefaultMaxDelegationDepth, so a larger maxDepth requires re-parsing the
+// raw "act" claim — rebinding an already-parsed chain can only shrink it. The
+// re-parse is only trusted when it yields at least as many hops as are
+// already parsed, so it can widen the chain but never narrow it.
+func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *coreaudit.DelegationChain {
+	if identity == nil {
+		return nil
+	}
+	rawAct := identity.Claims["act"]
+	chain := identity.DelegationChain
+	existingHops := 0
+	if chain != nil {
+		existingHops = len(chain.Chain)
+	}
+	if rawAct != nil && (chain.IsZero() ||
+		(chain.Truncated && maxDepth > existingHops)) {
+		parsed := coreaudit.ParseDelegationChain(rawAct, maxDepth)
+		if !parsed.IsZero() && len(parsed.Chain) >= existingHops {
+			return parsed
+		}
+	}
+	if !chain.IsZero() {
+		return rebindDelegationChain(chain, maxDepth)
+	}
+	return nil
+}
+
+// rebindDelegationChain applies maxDepth to an already-parsed chain: hops
+// beyond the cap are dropped (keeping the outermost hops, so Chain[0] — the
+// current actor — is preserved), the chain is marked truncated, and the
+// omitted count accounts for both hops truncated at parse time and hops
+// dropped by this re-binding.
+func rebindDelegationChain(chain *coreaudit.DelegationChain, maxDepth int) *coreaudit.DelegationChain {
+	if maxDepth <= 0 {
+		maxDepth = auth.DefaultMaxDelegationDepth
+	}
+	bound := *chain
+	if len(bound.Chain) > maxDepth {
+		bound.Omitted += len(bound.Chain) - maxDepth
+		bound.Chain = bound.Chain[:maxDepth]
+		bound.Truncated = true
+	}
+	return &bound
+}
+
+// identityFromRequest resolves the authenticated identity for the request.
+// The context value is present when an auth middleware runs OUTSIDE audit;
+// the holder covers the audit-wraps-auth arrangement, where the identity
+// attached for inner handlers is published back up via auth.WithIdentity.
+func identityFromRequest(r *http.Request) (*auth.Identity, bool) {
+	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+		return identity, true
+	}
+	if holder, hok := auth.IdentityHolderFromContext(r.Context()); hok && holder.Identity != nil {
+		return holder.Identity, true
+	}
+	return nil, false
+}
+
 // extractSubjects extracts subject information from the HTTP request.
 func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
-	// Extract user information from Identity. The context value is present
-	// when an auth middleware runs OUTSIDE audit; the holder covers the
-	// audit-wraps-auth arrangement, where the identity attached for inner
-	// handlers is published back up via auth.WithIdentity.
-	identity, ok := auth.IdentityFromContext(r.Context())
-	if !ok {
-		if holder, hok := auth.IdentityHolderFromContext(r.Context()); hok && holder.Identity != nil {
-			identity, ok = holder.Identity, true
-		}
-	}
-	if ok {
+	// Extract user information from Identity.
+	if identity, ok := identityFromRequest(r); ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
 
@@ -566,6 +603,16 @@ func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	}
 
 	return subjects
+}
+
+// extractDelegationChain extracts the RFC 8693 delegation chain from the
+// HTTP request's identity, or nil when there is no identity or no chain.
+func (a *Auditor) extractDelegationChain(r *http.Request) *coreaudit.DelegationChain {
+	identity, ok := identityFromRequest(r)
+	if !ok {
+		return nil
+	}
+	return extractDelegationChainFromIdentity(identity, a.config.MaxDelegationDepthOrDefault())
 }
 
 // determineComponent determines the component name based on the request.
@@ -751,6 +798,9 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 
 	// Create the audit event for SSE connection
 	event := NewAuditEvent(EventTypeSSEConnection, source, a.determineOutcome(statusCode), subjects, component)
+
+	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
+	event.WithDelegationChain(a.extractDelegationChain(r))
 
 	// Add target information
 	target := map[string]string{

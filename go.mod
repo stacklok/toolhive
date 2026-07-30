@@ -352,3 +352,5 @@ require (
 	golang.org/x/sys v0.47.0
 	k8s.io/client-go v0.35.3
 )
+
+replace github.com/stacklok/toolhive-core => ../toolhive-core

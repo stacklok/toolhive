@@ -642,16 +642,31 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
-	// Capture the client-facing session ID before the backend SID rewrite below.
-	// Recovery and session cleanup paths must look up sessions by the client SID
-	// (the store key), not the backend SID that is written into the header.
+	// Capture the client-facing session ID before the header is rewritten or
+	// stripped below. Recovery and session cleanup paths must look up sessions by
+	// the client SID (the store key), not the backend SID that is written into the
+	// header.
 	clientSID := req.Header.Get("Mcp-Session-Id")
 
-	// Rewrite the outbound Mcp-Session-Id to the backend's assigned session ID when
-	// the proxy transparently re-initialized the backend session. This is done here
-	// (after the guard check above) so the guard always sees the original client
-	// session ID and can look it up correctly in the session store.
-	if clientSID != "" {
+	switch {
+	case sawInitialize:
+		// An initialize request must never carry a session ID. MCP requires a
+		// client that is re-initializing to "start a new session by sending a new
+		// InitializeRequest without a session ID attached", and a backend session
+		// that has already completed its handshake rejects a second initialize on
+		// it -- go-sdk v1.7+ answers `duplicate "initialize" received`. Forwarding
+		// the client's stale SID -- or, worse, the backend SID mapped from it --
+		// turns a client-side handshake retry into a hard failure. Strip it so the
+		// backend mints a fresh session instead; the response's Mcp-Session-Id is
+		// then adopted as a new session below. reinitializeAndReplay already does
+		// the same on the recovery path.
+		req.Header.Del("Mcp-Session-Id")
+	case clientSID != "":
+		// Rewrite the outbound Mcp-Session-Id to the backend's assigned session ID
+		// when the proxy transparently re-initialized the backend session. This is
+		// done here (after the guard check above) so the guard always sees the
+		// original client session ID and can look it up correctly in the session
+		// store.
 		if sess, ok := t.p.sessionManager.Get(normalizeSessionID(clientSID)); ok {
 			if backendSID, exists := sess.GetMetadataValue(sessionMetadataBackendSID); exists && backendSID != "" {
 				req.Header.Set("Mcp-Session-Id", backendSID)
@@ -681,10 +696,22 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		// Dial error against a stored pod IP means the pod has been replaced.
 		// Attempt transparent re-initialization so the client sees no error.
+		//
+		// An initialize request is excluded, as it already is on the 404 path
+		// below: reinitializeAndReplay sends its own initialize and then replays
+		// the original request, which for an initialize would hand the freshly
+		// created backend session a second handshake -- the very failure this
+		// function strips the session ID to avoid. The client is already starting
+		// a new session, so instead unpin it from the dead pod and let the error
+		// surface; the client's retry is then routed via the target service.
 		if isDialError(err) {
-			req.Header.Set("Mcp-Session-Id", clientSID)
-			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
-				return reInitResp, reInitErr
+			if sawInitialize {
+				t.recovery.unpinSession(clientSID)
+			} else {
+				req.Header.Set("Mcp-Session-Id", clientSID)
+				if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
+					return reInitResp, reInitErr
+				}
 			}
 		}
 		slog.Error("failed to forward request", "error", err)
@@ -989,6 +1016,29 @@ func isRedirectStatus(code int) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// unpinSession clears the backend_url pin on the session identified by
+// clientSID so the next request carrying it is routed to the target service
+// rather than to a pod address that is no longer reachable. It is a no-op for
+// an empty or unknown session ID.
+//
+// This is the same fallback reinitializeAndReplay applies when it has no stored
+// initialize body to replay, reused for the initialize case where issuing the
+// new handshake is the client's job, not the proxy's.
+func (r *backendRecovery) unpinSession(clientSID string) {
+	if clientSID == "" {
+		return
+	}
+	sess, ok := r.sessions.Get(normalizeSessionID(clientSID))
+	if !ok {
+		return
+	}
+	sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
+	if err := r.sessions.UpsertSession(sess); err != nil {
+		slog.Debug("failed to unpin session after dial error on initialize",
+			"session_id", clientSID, "error", err)
 	}
 }
 

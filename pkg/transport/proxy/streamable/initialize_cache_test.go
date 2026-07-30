@@ -88,6 +88,37 @@ func initializeResultFor(req *jsonrpc2.Request) jsonrpc2.Message {
 	return resp
 }
 
+// strictInitializeResponder returns a backend responder that reproduces
+// go-sdk v1.7+ server-session semantics: the first initialize is answered with
+// an InitializeResult and every later one is rejected with the same
+// `duplicate "initialize" received` error ServerSession.initialize returns
+// (go-sdk mcp/server.go:1978). go-sdk rejects a repeated
+// notifications/initialized the same way (mcp/server.go:1424).
+//
+// Tests use this rather than a permissive stub so they assert the outcome that
+// actually matters -- a later client's handshake succeeds -- instead of only
+// counting how many messages reached the backend. A duplicate that escapes the
+// cache fails the handshake here exactly as it does against a real server.
+func strictInitializeResponder() func(*jsonrpc2.Request) jsonrpc2.Message {
+	var mu sync.Mutex
+	var handshakeDone bool
+	return func(req *jsonrpc2.Request) jsonrpc2.Message {
+		if req.Method != "initialize" {
+			resp, _ := jsonrpc2.NewResponse(req.ID, map[string]any{}, nil)
+			return resp
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if handshakeDone {
+			resp, _ := jsonrpc2.NewResponse(req.ID, nil,
+				jsonrpc2.NewError(-32603, `duplicate "initialize" received`))
+			return resp
+		}
+		handshakeDone = true
+		return initializeResultFor(req)
+	}
+}
+
 // startInitTestProxy starts a proxy on a free port and returns it with its
 // /mcp endpoint URL.
 func startInitTestProxy(t *testing.T) (*HTTPProxy, string) {
@@ -122,27 +153,24 @@ func postInitialize(t *testing.T, url string, id string) map[string]any {
 	return decoded
 }
 
-// TestInitializeReachesBackendOnceAndIsCachedThereafter verifies that only the
-// first client handshake is forwarded to the single stdio session, and that
-// every later client is answered from the cached InitializeResult with its own
-// JSON-RPC id echoed back.
-//
-// Without the cache each handshake reaches the backend, and go-sdk v1.7+
-// rejects every one after the first with `duplicate "initialize" received`
-// (#5890).
-func TestInitializeReachesBackendOnceAndIsCachedThereafter(t *testing.T) {
+// TestEveryClientHandshakeSucceedsAgainstStrictBackend verifies the behaviour
+// #5890 reports: with a backend that rejects a repeated initialize, every
+// client after the first used to fail. Only the first handshake may reach the
+// single stdio session; the rest are answered from the cached InitializeResult
+// with their own JSON-RPC id echoed back.
+func TestEveryClientHandshakeSucceedsAgainstStrictBackend(t *testing.T) {
 	t.Parallel()
 
 	proxy, url := startInitTestProxy(t)
-	backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
-		return initializeResultFor(req)
-	})
+	backend := startFakeStdioBackend(t.Context(), proxy, strictInitializeResponder())
 
 	var results []any
 	for i := range 3 {
 		decoded := postInitialize(t, url, fmt.Sprintf("client-%d", i))
 		assert.Equal(t, fmt.Sprintf("client-%d", i), decoded["id"],
 			"each client must get its own JSON-RPC id back, not the first client's")
+		assert.Nil(t, decoded["error"],
+			"no client may see the backend's duplicate-initialize rejection")
 		require.NotNil(t, decoded["result"], "handshake should succeed")
 		results = append(results, decoded["result"])
 	}
@@ -161,10 +189,11 @@ func TestConcurrentInitializeReachesBackendOnce(t *testing.T) {
 	t.Parallel()
 
 	proxy, url := startInitTestProxy(t)
+	strict := strictInitializeResponder()
 	backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
 		// Slow the first handshake so the others pile up behind it.
 		time.Sleep(150 * time.Millisecond)
-		return initializeResultFor(req)
+		return strict(req)
 	})
 
 	const clients = 5
@@ -172,6 +201,8 @@ func TestConcurrentInitializeReachesBackendOnce(t *testing.T) {
 	for i := range clients {
 		wg.Go(func() {
 			decoded := postInitialize(t, url, fmt.Sprintf("client-%d", i))
+			assert.Nil(t, decoded["error"],
+				"a handshake that raced past the cache would be rejected by the backend")
 			assert.NotNil(t, decoded["result"], "every concurrent handshake should succeed")
 		})
 	}
@@ -226,9 +257,7 @@ func TestDuplicateInitializedNotificationIsNotForwarded(t *testing.T) {
 	t.Parallel()
 
 	proxy, url := startInitTestProxy(t)
-	backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
-		return initializeResultFor(req)
-	})
+	backend := startFakeStdioBackend(t.Context(), proxy, strictInitializeResponder())
 
 	for range 3 {
 		resp, err := http.Post(url, "application/json", //nolint:gosec // test-local URL

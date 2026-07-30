@@ -116,10 +116,11 @@ func (s *service) cloneAndCollectPlugin(
 	}
 	defer func() { _ = client.Cleanup(ctx, repoInfo) }()
 
-	commitHash, err := client.HeadCommitHash(repoInfo)
+	head, err := client.HeadCommit(repoInfo)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("getting commit hash: %w", err)
+		return nil, nil, "", fmt.Errorf("getting HEAD commit: %w", err)
 	}
+	commitHash := head.Hash
 
 	// Read the plugin manifest. It lives at <path>/.claude-plugin/plugin.json.
 	// We collect the whole file tree first, then locate the manifest among the

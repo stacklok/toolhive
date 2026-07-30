@@ -15,6 +15,7 @@ import (
 
 	mcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	server "github.com/stacklok/toolhive-core/mcpcompat/server"
+	types "github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -57,18 +58,18 @@ func (mr *MockToolStoreMockRecorder) Close() *gomock.Call {
 }
 
 // Search mocks base method.
-func (m *MockToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
+func (m *MockToolStore) Search(ctx context.Context, q types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Search", ctx, query, allowedTools)
+	ret := m.ctrl.Call(m, "Search", ctx, q, allowedTools)
 	ret0, _ := ret[0].([]mcp.Tool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Search indicates an expected call of Search.
-func (mr *MockToolStoreMockRecorder) Search(ctx, query, allowedTools any) *gomock.Call {
+func (mr *MockToolStoreMockRecorder) Search(ctx, q, allowedTools any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Search", reflect.TypeOf((*MockToolStore)(nil).Search), ctx, query, allowedTools)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Search", reflect.TypeOf((*MockToolStore)(nil).Search), ctx, q, allowedTools)
 }
 
 // UpsertTools mocks base method.

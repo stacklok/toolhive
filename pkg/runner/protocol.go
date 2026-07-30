@@ -149,6 +149,15 @@ func createTemplateData(
 	}
 	templateData.RuntimeConfig = runtimeConfig
 
+	// Build-time dependency constraints are interpreted per package
+	// ecosystem; only the uvx builder currently supports them. Reject
+	// rather than silently ignore for the others.
+	if transportType != templates.TransportTypeUVX && len(runtimeConfig.BuildWith) > 0 {
+		return templateData, fmt.Errorf(
+			"--build-with is not supported for %s:// builds (only uvx://)", transportType,
+		)
+	}
+
 	return templateData, nil
 }
 
@@ -216,6 +225,9 @@ func mergeRuntimeConfig(transportType templates.TransportType, override *templat
 	}
 
 	merged.RuntimeEnv = mergeEnvMaps(defaults.RuntimeEnv, override.RuntimeEnv)
+
+	// BuildWith has no defaults; the override's specifiers are used as-is.
+	merged.BuildWith = override.BuildWith
 
 	return merged
 }

@@ -437,11 +437,11 @@ func newMockStoreWithSubstringSearch(ctrl *gomock.Controller) *mocks.MockToolSto
 	).AnyTimes()
 
 	store.EXPECT().Search(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
+		func(_ context.Context, q types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 			if len(allowedTools) == 0 {
 				return nil, nil
 			}
-			searchTerm := strings.ToLower(query)
+			searchTerm := strings.ToLower(q.Description)
 			allowedSet := make(map[string]struct{}, len(allowedTools))
 			for _, name := range allowedTools {
 				allowedSet[name] = struct{}{}
@@ -483,8 +483,8 @@ func TestOptimizer_SearchDelegation(t *testing.T) {
 	}
 
 	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().Search(gomock.Any(), "query", gomock.Any()).DoAndReturn(
-		func(_ context.Context, _ string, allowedTools []string) ([]mcp.Tool, error) {
+	store.EXPECT().Search(gomock.Any(), types.SearchQuery{Description: "query"}, gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 			require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
 			return []mcp.Tool{
 				{Name: "tool_a", Description: "Tool A"},
@@ -686,6 +686,35 @@ func TestOptimizer_FindTool(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOptimizer_FindToolPassesKeywords is the regression guard for the bug
+// where ToolKeywords was decoded off the wire, logged, and then dropped
+// instead of reaching the store's Search call.
+func TestOptimizer_FindToolPassesKeywords(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	store := mocks.NewMockToolStore(ctrl)
+
+	tools := []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	}
+
+	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().Search(gomock.Any(), types.SearchQuery{
+		Description: "query",
+		Keywords:    []string{"list", "issues", "github"},
+	}, gomock.Any()).Return(nil, nil)
+
+	opt, err := newToolOptimizer(context.Background(), store, tokencounter.NewJSONByteCounter(), tools)
+	require.NoError(t, err)
+
+	_, err = opt.FindTool(context.Background(), FindToolInput{
+		ToolDescription: "query",
+		ToolKeywords:    []string{"list", "issues", "github"},
+	})
+	require.NoError(t, err)
 }
 
 func TestOptimizerFactoryWithStore(t *testing.T) {

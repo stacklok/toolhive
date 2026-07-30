@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 // OIDCMockServer represents a lightweight OIDC server using Ory Fosite
 type OIDCMockServer struct {
 	server   *http.Server
+	listener net.Listener
 	provider fosite.OAuth2Provider
 	store    *storage.MemoryStore
 	port     int
@@ -71,14 +73,31 @@ func WithClientAudience(audiences ...string) OIDCMockOption {
 // NewOIDCMockServer creates a new OIDC mock server using Ory Fosite.
 // Use WithClientAudience to set client-level options and WithAccessTokenLifespan
 // for Fosite-level settings. Both option kinds may be mixed in a single call.
+//
+// The listener is bound before anything else, closing the window between
+// port selection and bind that a separate "pick a port, then bind later"
+// step would leave open. Pass port 0 to let the OS choose an ephemeral port;
+// use Port() to read back the port actually bound.
 func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...OIDCMockOption) (*OIDCMockServer, error) {
-	config := defaultFositeConfig(port)
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen: %w", err)
+	}
+	realPort := listener.Addr().(*net.TCPAddr).Port
+
+	config := defaultFositeConfig(realPort)
 	for _, opt := range opts {
 		if opt.fositeOpt != nil {
 			opt.fositeOpt(config)
 		}
 	}
-	return newOIDCMockServer(port, clientID, clientSecret, config, opts...)
+	mockServer, err := newOIDCMockServer(realPort, clientID, clientSecret, config, opts...)
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	mockServer.listener = listener
+	return mockServer, nil
 }
 
 // defaultFositeConfig returns the standard Fosite config for the mock server.
@@ -174,7 +193,6 @@ func newOIDCMockServer(
 	mockServer.setupRoutes(mux)
 
 	mockServer.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
@@ -430,7 +448,7 @@ func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 // Start starts the OIDC mock server
 func (m *OIDCMockServer) Start() error {
 	go func() {
-		if err := m.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := m.server.Serve(m.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Printf("OIDC mock server error: %v\n", err)
 		}
 	}()
@@ -438,6 +456,11 @@ func (m *OIDCMockServer) Start() error {
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 	return nil
+}
+
+// Port returns the port the mock server is bound to.
+func (m *OIDCMockServer) Port() int {
+	return m.port
 }
 
 // Stop stops the OIDC mock server

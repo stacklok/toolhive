@@ -17,6 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	pluginsmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
+	"github.com/stacklok/toolhive/pkg/plugins/pluginsvc"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 )
 
@@ -155,11 +158,13 @@ func TestServerBuilderExtensionPoints(t *testing.T) {
 func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
 	t.Parallel()
 
-	// Inject a skill manager so Build() skips creating the default SQLite skill
-	// store, which is shared on disk and races under parallel tests (SQLITE_BUSY).
+	// Inject mock skill and plugin managers so Build() skips creating the default
+	// SQLite stores, which share a DB file on disk and race under parallel tests
+	// (SQLITE_BUSY).
 	ctrl := gomock.NewController(t)
 	b := NewServerBuilder().WithAddress("127.0.0.1:0")
 	b.skillManager = skillsmocks.NewMockSkillService(ctrl)
+	b.pluginManager = pluginsmocks.NewMockPluginService(ctrl)
 
 	s, err := NewServer(context.Background(), b)
 	require.NoError(t, err)
@@ -168,4 +173,117 @@ func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
 	require.NotNil(t, s.httpServer)
 	assert.Equal(t, readTimeout, s.httpServer.ReadTimeout)
 	assert.Zero(t, s.httpServer.WriteTimeout)
+}
+
+func TestPluginHitsFromRegistry(t *testing.T) {
+	t.Parallel()
+
+	skillPkg := func(identifier, registryType, digest string) regtypes.SkillPackage {
+		return regtypes.SkillPackage{Identifier: identifier, RegistryType: registryType, Digest: digest}
+	}
+
+	tests := []struct {
+		name   string
+		input  []regtypes.Plugin
+		assert func(t *testing.T, hits []pluginsvc.PluginSearchHit)
+	}{
+		{
+			name: "single plugin with one oci package",
+			input: []regtypes.Plugin{
+				{
+					Name:        "code-reviewer",
+					Namespace:   "io.github.user",
+					Version:     "1.0.0",
+					Description: "Reviews code for bugs",
+					Packages: []regtypes.SkillPackage{
+						skillPkg("ghcr.io/org/code-reviewer:v1", "oci", "sha256:abc"),
+					},
+				},
+			},
+			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
+				t.Helper()
+				require.Len(t, hits, 1)
+				assert.Equal(t, "code-reviewer", hits[0].Name)
+				assert.Equal(t, "io.github.user", hits[0].Namespace)
+				assert.Equal(t, "1.0.0", hits[0].Version)
+				assert.Equal(t, "Reviews code for bugs", hits[0].Description)
+				require.Len(t, hits[0].Packages, 1)
+				assert.Equal(t, "ghcr.io/org/code-reviewer:v1", hits[0].Packages[0].Reference)
+				assert.Equal(t, "oci", hits[0].Packages[0].Type)
+				assert.Equal(t, "sha256:abc", hits[0].Packages[0].Digest)
+			},
+		},
+		{
+			name: "multiple packages (oci + git)",
+			input: []regtypes.Plugin{
+				{
+					Name:        "multi-pkg",
+					Namespace:   "io.github.acme",
+					Version:     "2.1.0",
+					Description: "Has multiple packages",
+					Packages: []regtypes.SkillPackage{
+						skillPkg("ghcr.io/org/multi:latest", "oci", "sha256:def"),
+						skillPkg("https://github.com/org/repo.git", "git", ""),
+					},
+				},
+			},
+			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
+				t.Helper()
+				require.Len(t, hits, 1)
+				assert.Equal(t, "io.github.acme", hits[0].Namespace)
+				assert.Equal(t, "2.1.0", hits[0].Version)
+				require.Len(t, hits[0].Packages, 2)
+				assert.Equal(t, "ghcr.io/org/multi:latest", hits[0].Packages[0].Reference)
+				assert.Equal(t, "oci", hits[0].Packages[0].Type)
+				assert.Equal(t, "sha256:def", hits[0].Packages[0].Digest)
+				assert.Equal(t, "https://github.com/org/repo.git", hits[0].Packages[1].Reference)
+				assert.Equal(t, "git", hits[0].Packages[1].Type)
+				assert.Empty(t, hits[0].Packages[1].Digest)
+			},
+		},
+		{
+			name: "plugin with zero packages",
+			input: []regtypes.Plugin{
+				{Name: "no-pkgs", Namespace: "io.github.bare", Version: "0.1.0", Description: "No packages"},
+			},
+			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
+				t.Helper()
+				require.Len(t, hits, 1)
+				assert.Equal(t, "no-pkgs", hits[0].Name)
+				assert.Equal(t, "io.github.bare", hits[0].Namespace)
+				assert.Equal(t, "0.1.0", hits[0].Version)
+				assert.NotNil(t, hits[0].Packages)
+				assert.Empty(t, hits[0].Packages)
+			},
+		},
+		{
+			name:  "empty input returns non-nil empty slice",
+			input: []regtypes.Plugin{},
+			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
+				t.Helper()
+				assert.NotNil(t, hits)
+				assert.Empty(t, hits)
+			},
+		},
+		{
+			name: "Description empty maps to empty string",
+			input: []regtypes.Plugin{
+				{Name: "bare-plugin"},
+			},
+			assert: func(t *testing.T, hits []pluginsvc.PluginSearchHit) {
+				t.Helper()
+				require.Len(t, hits, 1)
+				assert.Equal(t, "bare-plugin", hits[0].Name)
+				assert.Empty(t, hits[0].Description)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			hits := pluginHitsFromRegistry(tt.input)
+			tt.assert(t, hits)
+		})
+	}
 }

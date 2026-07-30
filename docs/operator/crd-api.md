@@ -2428,8 +2428,6 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPAuthzConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPAuthzConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPAuthzConfig.<br />Each entry identifies the workload by kind and name. The map key is the<br />(kind, name) pair so two workloads of different kinds that share a name<br />(e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct<br />entries rather than colliding under merge-patch semantics. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPExternalAuthConfig
@@ -2519,8 +2517,6 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPExternalAuthConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. The map key is the<br />(kind, name) pair so two workloads of different kinds that share a name<br />(e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct<br />entries rather than colliding under merge-patch semantics. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPGroup
@@ -2764,8 +2760,6 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPOIDCConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. The map key is the<br />(kind, name) pair so two workloads of different kinds that share a name<br />(e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct<br />entries rather than colliding under merge-patch semantics. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPRegistry
@@ -3346,7 +3340,6 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPTelemetryConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPTelemetryConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPTelemetryOTelConfig
@@ -3459,8 +3452,6 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPToolConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPWebhookConfigSpec
@@ -3494,7 +3485,6 @@ MCPWebhookConfigStatus defines the observed state of MCPWebhookConfig
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the last observed generation corresponding to the current status |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the spec, used for detecting changes |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPWebhookConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ModelCacheConfig
@@ -4684,27 +4674,6 @@ _Appears in:_
 | `insecureSkipVerify` _boolean_ | InsecureSkipVerify disables server certificate verification.<br />WARNING: This should only be used for development/testing and not in production environments. |  | Optional: \{\} <br /> |
 
 
-#### api.v1beta1.WorkloadReference
-
-
-
-WorkloadReference identifies a workload that references a shared configuration resource.
-Namespace is implicit — cross-namespace references are not supported.
-
-
-
-_Appears in:_
-- [api.v1beta1.MCPAuthzConfigStatus](#apiv1beta1mcpauthzconfigstatus)
-- [api.v1beta1.MCPExternalAuthConfigStatus](#apiv1beta1mcpexternalauthconfigstatus)
-- [api.v1beta1.MCPOIDCConfigStatus](#apiv1beta1mcpoidcconfigstatus)
-- [api.v1beta1.MCPTelemetryConfigStatus](#apiv1beta1mcptelemetryconfigstatus)
-- [api.v1beta1.MCPToolConfigStatus](#apiv1beta1mcptoolconfigstatus)
-- [api.v1beta1.MCPWebhookConfigStatus](#apiv1beta1mcpwebhookconfigstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `kind` _string_ | Kind is the type of workload resource |  | Enum: [MCPServer VirtualMCPServer MCPRemoteProxy] <br />Required: \{\} <br /> |
-| `name` _string_ | Name is the name of the workload resource |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
 #### api.v1beta1.XAASpec

@@ -91,12 +91,17 @@ type coreVMCP struct {
 var _ VMCP = (*coreVMCP)(nil)
 
 // unregisterHealthLogged calls unregister and logs (rather than swallows) a
-// failure. Used both on New's error paths — after the backend-health gauge
-// callback has been registered but construction later fails, so it doesn't
-// stay attached to the shared meter provider for a coreVMCP that was never
-// returned to the caller and so never has Close called on it — and from
-// Close's normal shutdown path.
+// failure. Used from New's deferred cleanup — so a gauge callback registered
+// against the shared meter provider doesn't stay attached for a coreVMCP that
+// was never returned to the caller, and so never has Close called on it — and
+// from Close's normal shutdown path.
+// A nil unregister is a no-op: coreVMCP is also built by struct literal in-package
+// (tests), where the field is left nil, so the zero value must be safe to close —
+// matching the nil check on healthMonitor.
 func unregisterHealthLogged(unregister func() error) {
+	if unregister == nil {
+		return
+	}
 	if err := unregister(); err != nil {
 		slog.Warn("failed to unregister backend health gauge callback", "error", err)
 	}
@@ -131,6 +136,24 @@ func New(cfg *Config) (VMCP, error) {
 	// any later error path so Close always has a valid (possibly no-op) func to call.
 	unregisterBackendHealth := func() error { return nil }
 
+	// stopStore stops the state store's cleanup goroutine; reassigned once the
+	// store exists. Declared here so the deferred cleanup below can discharge it.
+	stopStore := func() {}
+
+	// New acquires two resources that must be released if construction later
+	// fails: the health-gauge callback (registered against a shared meter
+	// provider) and the state store's cleanup goroutine. Discharging them from a
+	// single deferred cleanup keyed on success makes every error path below —
+	// present and future — correct by construction, rather than requiring each
+	// new `return nil, err` to remember both.
+	constructed := false
+	defer func() {
+		if !constructed {
+			unregisterHealthLogged(unregisterBackendHealth)
+			stopStore()
+		}
+	}()
+
 	// healthProviderSetter lets the health monitor built below (buildHealthMonitor)
 	// attach itself to the already-registered gauge callback, so the gauge agrees
 	// with the same live health.StatusProvider filterHealthyBackends consults —
@@ -160,13 +183,11 @@ func New(cfg *Config) (VMCP, error) {
 	var workflowAuditor *audit.WorkflowAuditor
 	if cfg.AuditConfig != nil {
 		if err := cfg.AuditConfig.Validate(); err != nil {
-			unregisterHealthLogged(unregisterBackendHealth)
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		var err error
 		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
 		if err != nil {
-			unregisterHealthLogged(unregisterBackendHealth)
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}
 		slog.Info("workflow audit logging enabled")
@@ -185,7 +206,6 @@ func New(cfg *Config) (VMCP, error) {
 	// goroutine. Capture its Stop here so Close releases it; warn loudly (rather
 	// than a silent no-op, per go-style) if a future store swap drops the
 	// capability, so a leaked goroutine is diagnosable instead of invisible.
-	stopStore := func() {}
 	if s, ok := stateStore.(interface{ Stop() }); ok {
 		stopStore = s.Stop
 	} else {
@@ -200,8 +220,6 @@ func New(cfg *Config) (VMCP, error) {
 	// Prometheus counters and histograms.
 	instruments, err := newWorkflowInstruments(cfg.TelemetryProvider)
 	if err != nil {
-		stopStore()
-		unregisterHealthLogged(unregisterBackendHealth)
 		return nil, fmt.Errorf("failed to create workflow telemetry instruments: %w", err)
 	}
 
@@ -228,8 +246,6 @@ func New(cfg *Config) (VMCP, error) {
 	)
 	workflowDefs, err := validateWorkflowDefs(validationEngine, cfg.WorkflowDefs)
 	if err != nil {
-		stopStore()
-		unregisterHealthLogged(unregisterBackendHealth)
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
@@ -237,11 +253,9 @@ func New(cfg *Config) (VMCP, error) {
 	// lifecycle). The core filters capabilities with it and stops it in Close. It is started
 	// with context.Background() and torn down via Close — like the state store — since New has
 	// no request-scoped context. The monitor uses the undecorated backend client so health
-	// checks do not emit backend-call telemetry. Built last so few error paths must stop it.
+	// checks do not emit backend-call telemetry.
 	healthMonitor, healthProvider, err := buildHealthMonitor(cfg)
 	if err != nil {
-		stopStore()
-		unregisterHealthLogged(unregisterBackendHealth)
 		return nil, err
 	}
 
@@ -253,6 +267,8 @@ func New(cfg *Config) (VMCP, error) {
 	if healthProviderSetter != nil {
 		healthProviderSetter.Set(healthProvider)
 	}
+
+	constructed = true
 
 	return &coreVMCP{
 		aggregator:              cfg.Aggregator,
@@ -591,7 +607,11 @@ func (c *coreVMCP) InvalidateCapabilityCache() {
 // calls return nil.
 func (c *coreVMCP) Close() error {
 	c.closeOnce.Do(func() {
-		c.stopStore()
+		// Nil-checked for the same reason as unregisterBackendHealth below: an
+		// in-package struct literal leaves it unset.
+		if c.stopStore != nil {
+			c.stopStore()
+		}
 		if c.healthMonitor != nil {
 			if err := c.healthMonitor.Stop(); err != nil {
 				slog.Warn("failed to stop health monitor", "error", err)

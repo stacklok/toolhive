@@ -12,6 +12,7 @@ package backendtelemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sync"
@@ -89,10 +90,11 @@ func RecordRevisionReclassification(ctx context.Context) {
 // rebuild of the backend client does not accumulate callbacks against stale health state.
 //
 // The returned *HealthProviderSetter lets the caller attach a live health.StatusProvider
-// once it becomes available (health.Monitor is built after MonitorBackends is called in
-// core.New, since it depends on the decorated client already existing). Until it's set —
-// or if it's never set because health monitoring is disabled — the gauge falls back to
-// registry/record()-derived state exactly as before.
+// once it becomes available (core.New builds health.Monitor after this call; see
+// HealthProviderSetter for why the ordering is a resource-acquisition choice rather
+// than a data dependency). Until it's set — or if it's never set because health
+// monitoring is disabled — the gauge falls back to registry/record()-derived state
+// exactly as before.
 func MonitorBackends(
 	_ context.Context,
 	meterProvider metric.MeterProvider,
@@ -136,7 +138,10 @@ func MonitorBackends(
 		func(ctx context.Context, o metric.Observer) error {
 			states := recordedHealth.snapshot()
 			provider := providerSetter.get()
-			for _, backend := range registry.List(ctx) {
+			backends := registry.List(ctx)
+			live := make(map[string]struct{}, len(backends))
+			for _, backend := range backends {
+				live[backend.ID] = struct{}{}
 				current := currentHealthStatus(backend, states, provider)
 				for _, state := range healthStates {
 					value := int64(0)
@@ -149,6 +154,9 @@ func MonitorBackends(
 					))
 				}
 			}
+			// Bound the recorded-health map to the live backend set, so its growth
+			// matches the gauge's rather than the process lifetime.
+			recordedHealth.retain(live)
 			return nil
 		},
 		healthGauge,
@@ -203,11 +211,19 @@ func currentHealthStatus(
 }
 
 // HealthProviderSetter lets core.New attach a live health.StatusProvider to an
-// already-registered health gauge once the health.Monitor is built — which happens
-// after MonitorBackends is called, since the monitor is constructed from the
-// decorated backend client MonitorBackends returns. Safe for concurrent use: Set
-// is called at most once from New, and get() may run concurrently from the
-// gauge's observable callback.
+// already-registered health gauge once the health.Monitor is built.
+//
+// The ordering is not a data dependency: buildHealthMonitor deliberately
+// constructs the monitor from the UNDECORATED client so health checks emit no
+// backend telemetry, so the monitor could in principle be built first. The
+// two-phase init exists to keep the gauge's registration — and therefore its
+// unregister func, the resource New must release on failure — acquired at a
+// single point early in New, rather than ordering resource acquisition around
+// the monitor. Building the monitor first would move more of New's error paths
+// above the gauge registration.
+//
+// Safe for concurrent use: Set is called at most once from New, and get() may run
+// concurrently from the gauge's observable callback.
 type HealthProviderSetter struct {
 	mu       sync.RWMutex
 	provider health.StatusProvider
@@ -255,6 +271,22 @@ func (b *backendHealth) snapshot() map[string]vmcp.BackendHealthStatus {
 	return out
 }
 
+// retain drops every entry whose key is absent from live, bounding the map to the
+// backends the registry currently knows about. set() adds an entry per distinct
+// WorkloadID and nothing else removes one, so under dynamic discovery
+// (list_changed, K8s watcher churn) the map would otherwise grow for the process
+// lifetime over an ID space the process does not control — and snapshot() copies
+// all of it on every collection.
+func (b *backendHealth) retain(live map[string]struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for id := range b.states {
+		if _, ok := live[id]; !ok {
+			delete(b.states, id)
+		}
+	}
+}
+
 type telemetryBackendClient struct {
 	backendClient vmcp.BackendClient
 	tracer        trace.Tracer
@@ -283,6 +315,31 @@ func (t telemetryBackendClient) revisionLabel(workloadID string) string {
 		return rev.String()
 	}
 	return ""
+}
+
+// healthStatusForError classifies a failed backend call into the health state the
+// gauge should report, or (_, false) when the error says nothing about backend
+// liveness and the gauge must be left untouched.
+//
+// Not every error means the backend is unhealthy. A caller that disconnects
+// mid-call yields context.Canceled/DeadlineExceeded, which is caller-side; and an
+// auth failure has its own state in the gauge's vocabulary. Treating either as
+// BackendUnhealthy pins the gauge — and any alert reading it — until the next
+// successful call to that backend.
+//
+// Auth errors map to BackendUnauthenticated to match health.categorizeError's
+// vocabulary, though this cannot consult the target's AuthConfig the way
+// health.authErrorStatus does, so it does not distinguish an expected auth
+// challenge from a misconfiguration.
+func healthStatusForError(err error) (vmcp.BackendHealthStatus, bool) {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "", false
+	case errors.Is(err, vmcp.ErrAuthenticationFailed), errors.Is(err, vmcp.ErrAuthorizationFailed):
+		return vmcp.BackendUnauthenticated, true
+	default:
+		return vmcp.BackendUnhealthy, true
+	}
 }
 
 // mapActionToMCPMethod maps internal action names to MCP method names per the OTEL MCP spec.
@@ -372,7 +429,9 @@ func (t *telemetryBackendClient) record(
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)
 
-			t.health.set(target.WorkloadID, vmcp.BackendUnhealthy)
+			if status, ok := healthStatusForError(*err); ok {
+				t.health.set(target.WorkloadID, status)
+			}
 			span.RecordError(*err)
 			span.SetStatus(codes.Error, (*err).Error())
 		} else {

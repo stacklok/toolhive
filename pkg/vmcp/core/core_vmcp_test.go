@@ -214,7 +214,12 @@ func TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure(t *testi
 		{
 			name: "health monitor build fails",
 			mutate: func(c *Config, m *coreMocks) {
-				m.reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+				// Must return a NON-EMPTY list: the gauge callback emits one point
+				// per (mcp_server, state) pair from registry.List, so an empty list
+				// yields zero series whether or not the callback was unregistered,
+				// making the assertion below unable to fail.
+				m.reg.EXPECT().List(gomock.Any()).
+					Return([]vmcp.Backend{{ID: testBackendID, Name: testBackendID}}).AnyTimes()
 				c.HealthMonitorConfig = &health.MonitorConfig{CheckInterval: 0, UnhealthyThreshold: 1}
 			},
 		},
@@ -249,6 +254,50 @@ func TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure(t *testi
 				"health gauge callback must be unregistered when New fails after MonitorBackends succeeds")
 		})
 	}
+}
+
+// TestNew_BackendHealthGaugeEmitsThenStopsOnClose is the positive control for
+// TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure: it proves the
+// gauge actually appears in a scrape after a successful New, so that test's
+// NotContains assertions are capable of failing. It also covers the Close() path,
+// which every other test leaves as a no-op by building without a TelemetryProvider.
+func TestNew_BackendHealthGaugeEmitsThenStopsOnClose(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+		ServiceName:                 "core-health-gauge-positive",
+		ServiceVersion:              "0.0.0",
+		EnablePrometheusMetricsPath: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+
+	cfg, m := baseConfig(t)
+	cfg.TelemetryProvider = provider
+	m.reg.EXPECT().List(gomock.Any()).
+		Return([]vmcp.Backend{{ID: testBackendID, Name: testBackendID}}).AnyTimes()
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+
+	scrape := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		rec := httptest.NewRecorder()
+		provider.PrometheusHandler().ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+
+	assert.Contains(t, scrape(), "stacklok_vmcp_mcp_server_health",
+		"gauge must be emitted while the core is live")
+
+	require.NoError(t, c.Close())
+
+	assert.NotContains(t, scrape(), "stacklok_vmcp_mcp_server_health",
+		"gauge callback must be unregistered by Close")
+
+	// The SDK's Unregister is safe twice; prove a telemetry-enabled core survives it.
+	require.NoError(t, c.Close())
 }
 
 func TestNew_ElicitationRequiredWhenWorkflowElicits(t *testing.T) {

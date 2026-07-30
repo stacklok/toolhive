@@ -6,6 +6,7 @@ package backendtelemetry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -461,4 +462,75 @@ func TestBackendHealth_ConcurrentSetAndSnapshot(t *testing.T) {
 	// is non-deterministic, so only assert the key is present.
 	_, recorded := health.snapshot()["backend-1"]
 	assert.True(t, recorded)
+}
+
+func TestHealthStatusForError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus vmcp.BackendHealthStatus
+		wantOK     bool
+	}{
+		{
+			// A caller that disconnects mid-call says nothing about the backend.
+			name:   "context canceled leaves the gauge untouched",
+			err:    context.Canceled,
+			wantOK: false,
+		},
+		{
+			name:   "deadline exceeded leaves the gauge untouched",
+			err:    context.DeadlineExceeded,
+			wantOK: false,
+		},
+		{
+			name:   "wrapped cancellation is still recognized",
+			err:    fmt.Errorf("call backend: %w", context.Canceled),
+			wantOK: false,
+		},
+		{
+			name:       "authentication failure maps to unauthenticated",
+			err:        vmcp.ErrAuthenticationFailed,
+			wantStatus: vmcp.BackendUnauthenticated,
+			wantOK:     true,
+		},
+		{
+			name:       "authorization failure maps to unauthenticated",
+			err:        fmt.Errorf("wrapped: %w", vmcp.ErrAuthorizationFailed),
+			wantStatus: vmcp.BackendUnauthenticated,
+			wantOK:     true,
+		},
+		{
+			name:       "an unrecognized error means unhealthy",
+			err:        errors.New("connection refused"),
+			wantStatus: vmcp.BackendUnhealthy,
+			wantOK:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			status, ok := healthStatusForError(tt.err)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.wantStatus, status)
+			}
+		})
+	}
+}
+
+func TestBackendHealthRetainPrunesAbsentKeys(t *testing.T) {
+	t.Parallel()
+
+	b := &backendHealth{states: make(map[string]vmcp.BackendHealthStatus)}
+	b.set("live", vmcp.BackendHealthy)
+	b.set("removed", vmcp.BackendUnhealthy)
+
+	b.retain(map[string]struct{}{"live": {}})
+
+	got := b.snapshot()
+	assert.Equal(t, map[string]vmcp.BackendHealthStatus{"live": vmcp.BackendHealthy}, got,
+		"entries absent from the live set must be pruned so the map cannot grow unbounded")
 }

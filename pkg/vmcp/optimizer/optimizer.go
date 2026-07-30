@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -227,6 +228,30 @@ type CallToolInput struct {
 	// Parameters are the arguments to pass to the tool.
 	//nolint:lll // Long description tag provides essential context for LLM tool usage.
 	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
+}
+
+// ResolveCallToolTarget resolves the tool a call_tool invocation targets,
+// accepting the common LLM malformation where tool_name is nested inside
+// parameters instead of sitting alongside it. A top-level name always wins, so a
+// backend tool with its own tool_name argument still works.
+//
+// Every consumer of a call_tool payload must resolve the name through this
+// function. Authorization reads the name from the raw request while dispatch
+// reads it from the decoded struct, and a target the two disagree on is a tool
+// executing under a policy decision made for a different name.
+//
+// params is never modified; a copy is returned when a nested name is hoisted.
+func ResolveCallToolTarget(name string, params map[string]any) (string, map[string]any) {
+	if name != "" {
+		return name, params
+	}
+	nested, ok := params["tool_name"].(string)
+	if !ok || nested == "" {
+		return name, params
+	}
+	hoisted := maps.Clone(params)
+	delete(hoisted, "tool_name")
+	return nested, hoisted
 }
 
 // NewOptimizerFactory creates the embedding client and SQLite tool store from

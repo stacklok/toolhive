@@ -1150,6 +1150,33 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			expectHandlerHit: false,
 		},
 		{
+			// Without hoisting, the top-level lookup misses and the request falls
+			// through the pass-through branch entirely, reaching the backend with
+			// no policy check at all.
+			name:     "call_tool with nested unauthorized inner tool is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"parameters": map[string]interface{}{
+					"tool_name": "forbidden_backend",
+					"query":     "x",
+				},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			name:     "call_tool with nested authorized inner tool passes through",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"parameters": map[string]interface{}{
+					"tool_name": "allowed_backend",
+					"query":     "x",
+				},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
 			name:     "find_tool request reaches handler (response filtering applied separately)",
 			toolName: "find_tool",
 			arguments: map[string]interface{}{

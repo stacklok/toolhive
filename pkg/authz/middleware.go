@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
@@ -287,7 +288,8 @@ func authorizeAndServe(
 // It always fully handles the request (authorization, unauthorized response, or serving).
 //
 // For pass-through meta-tools (find_tool, call_tool):
-//   - call_tool: authorizes the real inner tool name from arguments["tool_name"].
+//   - call_tool: authorizes the real inner tool name from arguments["tool_name"],
+//     or from arguments["parameters"]["tool_name"] when the caller nested it there.
 //   - find_tool (and other pass-through tools without a tool_name): allowed through
 //     as a discovery operation with no policy check.
 //
@@ -303,9 +305,13 @@ func handleToolsCall(
 	next http.Handler,
 ) {
 	if _, isPassThrough := passThroughTools[parsedRequest.ResourceID]; isPassThrough {
-		if toolName, ok := parsedRequest.Arguments[optimizerdec.CallToolArgToolName].(string); ok && toolName != "" {
+		rawName, _ := parsedRequest.Arguments[optimizerdec.CallToolArgToolName].(string)
+		rawArgs, _ := parsedRequest.Arguments[optimizerdec.CallToolArgParameters].(map[string]interface{})
+		// Resolve the same way dispatch does, so a nested tool_name is authorized
+		// under the name that will actually run rather than skipping the check.
+		toolName, innerArgs := optimizer.ResolveCallToolTarget(rawName, rawArgs)
+		if toolName != "" {
 			// call_tool: authorize the real backend tool name.
-			innerArgs, _ := parsedRequest.Arguments[optimizerdec.CallToolArgParameters].(map[string]interface{})
 			authorizeAndServe(w, r, a, annotationCache,
 				featureOp.Feature, featureOp.Operation,
 				parsedRequest.ID, toolName, innerArgs, next)

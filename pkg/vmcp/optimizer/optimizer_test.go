@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
 
 func TestGetAndValidateConfig(t *testing.T) {
@@ -846,7 +847,7 @@ func TestOptimizer_CallTool(t *testing.T) {
 				Parameters: map[string]any{},
 			},
 			expectedError: true,
-			errorContains: "tool_name is required",
+			errorContains: `call_tool expects {"tool_name"`,
 		},
 	}
 
@@ -947,4 +948,17 @@ func TestResolveCallToolTarget(t *testing.T) {
 			require.Equal(t, original, tc.params, "input params must not be mutated")
 		})
 	}
+}
+
+// Both call_tool handlers decode via schema.Translate, so the hoist must survive
+// that round-trip and not just a direct json.Unmarshal.
+func TestCallToolInput_TranslateHoistsNestedToolName(t *testing.T) {
+	t.Parallel()
+
+	got, err := schema.Translate[CallToolInput](map[string]any{
+		"parameters": map[string]any{"tool_name": "search", "query": "weather"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "search", got.ToolName)
+	require.Equal(t, map[string]any{"query": "weather"}, got.Parameters)
 }

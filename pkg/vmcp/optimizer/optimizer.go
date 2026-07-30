@@ -14,10 +14,12 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -254,6 +256,19 @@ func ResolveCallToolTarget(name string, params map[string]any) (string, map[stri
 	return nested, hoisted
 }
 
+// UnmarshalJSON hoists a nested tool_name so dispatch targets the same tool
+// authorization approved. See ResolveCallToolTarget.
+func (in *CallToolInput) UnmarshalJSON(data []byte) error {
+	type rawCallToolInput CallToolInput // drops the method set to avoid recursion
+	var raw rawCallToolInput
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	raw.ToolName, raw.Parameters = ResolveCallToolTarget(raw.ToolName, raw.Parameters)
+	*in = CallToolInput(raw)
+	return nil
+}
+
 // NewOptimizerFactory creates the embedding client and SQLite tool store from
 // the given OptimizerConfig, then returns an OptimizerFactory and a cleanup
 // function that closes the store. The caller must invoke the cleanup function
@@ -405,7 +420,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 // is invoked directly with the given parameters.
 func (d *toolOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
 	if input.ToolName == "" {
-		return nil, fmt.Errorf("tool_name is required")
+		return nil, fmt.Errorf(
+			`tool_name is required: call_tool expects {"tool_name": "<name from find_tool>", `+
+				`"parameters": {<tool arguments>}}, got parameters keys %v`,
+			slices.Sorted(maps.Keys(input.Parameters)))
 	}
 
 	// Verify the tool exists

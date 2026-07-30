@@ -268,14 +268,14 @@ func TestValidateJWKSURL(t *testing.T) {
 			name:        "unsupported scheme",
 			rawURL:      "ftp://jwks.example.com",
 			wantErr:     true,
-			errContains: "HTTPS",
+			errContains: "unsupported scheme",
 		},
 		{
 			name:          "unsupported scheme rejected even with insecureAllowHTTP",
 			rawURL:        "ftp://jwks.example.com",
 			allowInsecure: true,
 			wantErr:       true,
-			errContains:   "HTTPS",
+			errContains:   "unsupported scheme",
 		},
 		{
 			name:        "missing host",

@@ -119,6 +119,9 @@ func validateHostNotInternal(host string) error {
 // HTTPS. If allowInsecure is true, HTTP is permitted (for development/testing
 // only), matching ValidateOIDCIssuerURL. An empty rawURL is allowed because
 // JWKS discovery can determine the endpoint automatically.
+//
+// Schemes other than http and https are always rejected, regardless of
+// allowInsecure.
 func ValidateJWKSURL(rawURL string, allowInsecure bool) error {
 	if rawURL == "" {
 		return nil
@@ -137,7 +140,7 @@ func ValidateJWKSURL(rawURL string, allowInsecure bool) error {
 	}
 
 	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
-		return fmt.Errorf("JWKS URL must use HTTPS scheme, got %q", u.Scheme)
+		return fmt.Errorf("JWKS URL %q has unsupported scheme %q; must be http or https", rawURL, u.Scheme)
 	}
 
 	if u.Host == "" {

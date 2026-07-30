@@ -52,6 +52,11 @@ ToolHive's telemetry has been updated across four areas:
 |----------|-------------|
 | `mcp.server.operation.duration` metric | OTEL MCP spec histogram for server-side operation latency |
 | `mcp.client.operation.duration` metric | OTEL MCP spec histogram for vMCP-to-backend latency |
+| `http.server.request.duration` metric | OTEL HTTP semconv histogram recorded for every request/response-cycle request, including those carrying no MCP method (session-terminate `DELETE`s). Total RPS is derivable from its `_count` series |
+| `stacklok.toolhive.proxy.sse_connection.duration` metric | Duration of SSE connections, recorded once the connection closes. Separate from `http.server.request.duration` because SSE connections live for minutes to hours and would pin every observation to that histogram's 10s top bucket |
+| `stacklok.build_info` metric | Build identity gauge: always observes 1, carrying `component`, `version`, and `commit` labels. Exported as `stacklok_build_info_ratio` (the `WithUnit("1")` → `_ratio` translation rule) |
+| `stacklok.vmcp.mcp_server.health` metric | Live per-backend health gauge, emitting one point per `(mcp_server, state)` pair across all five health states. Semantically new — not a rename of the fire-once `toolhive_vmcp_backends_discovered` |
+| `outcome` label vocabulary | `success`/`error`/`not_found` now splits counters that were previously separate metrics (workflow executions, optimizer `find_tool`/`call_tool`) |
 | MCP `_meta` trace context propagation | Extract/inject `traceparent`/`tracestate` from MCP `params._meta` |
 | MCP request parsing middleware | Dedicated middleware extracts method, resource ID, arguments, and `_meta` |
 | `--otel-custom-attributes` flag | Add custom resource attributes to all telemetry signals |

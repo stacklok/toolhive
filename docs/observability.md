@@ -227,10 +227,23 @@ termination) requests carry no MCP method and are not recorded here.
 | `gen_ai.tool.name` | string | For `tools/call` | Tool name |
 | `gen_ai.prompt.name` | string | For `prompts/get` | Prompt name |
 
-> **Note**: `mcp_resource_id` (tool name, resource URI, or prompt name) is
-> deliberately omitted from this metric's attributes to bound cardinality; it
-> feeds `gen_ai.tool.name`/`gen_ai.prompt.name` instead, which are themselves
-> only present for the method kinds that have a name to report.
+> **Note**: `mcp_resource_id` is not recorded under that key. For
+> `resources/read` the resource URI is dropped from this metric entirely, but for
+> `tools/call` and `prompts/get` the same value is recorded as
+> `gen_ai.tool.name`/`gen_ai.prompt.name` — so it moved keys rather than going
+> away.
+>
+> **Cardinality warning**: `gen_ai.tool.name` and `gen_ai.prompt.name` come from
+> `params.name` in the client's JSON-RPC request body and are **not** validated
+> against the server's resolved tool or prompt set. A client calling arbitrary
+> names therefore grows this metric's series count without bound, and since the
+> deleted `toolhive_mcp_*` twins made this the sole per-method metric, there is
+> no unaffected alternative. Bounding these attributes is tracked separately; in
+> the meantime, drop them with a Prometheus `metric_relabel_config` if untrusted
+> clients can reach the proxy.
+>
+> `mcp.method.name` and `http.request.method` are bounded: values outside the
+> known set are recorded as the semconv `_OTHER` sentinel.
 
 #### `http.server.request.duration` (Histogram, seconds)
 

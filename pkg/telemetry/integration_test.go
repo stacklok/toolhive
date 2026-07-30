@@ -136,23 +136,22 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 		},
 	}
 
+	// Served inline rather than as parallel subtests: the scrape below asserts on
+	// the metrics these requests produce, and parallel subtests would not run
+	// until after this function returns, leaving nothing to find.
 	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+		var req *http.Request
+		if tc.body != "" {
+			req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(tc.method, tc.path, nil)
+		}
 
-			var req *http.Request
-			if tc.body != "" {
-				req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
-				req.Header.Set("Content-Type", "application/json")
-			} else {
-				req = httptest.NewRequest(tc.method, tc.path, nil)
-			}
+		rec := httptest.NewRecorder()
+		wrappedHandler.ServeHTTP(rec, req)
 
-			rec := httptest.NewRecorder()
-			wrappedHandler.ServeHTTP(rec, req)
-
-			assert.Equal(t, tc.expectedStatus, rec.Code)
-		})
+		assert.Equal(t, tc.expectedStatus, rec.Code, "case %q", tc.name)
 	}
 
 	// Verify Prometheus handler is available
@@ -176,11 +175,12 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 		assert.NotContains(t, metricsBody, "toolhive_mcp_tool_calls")
 
 		// The renamed active-connections gauge and the semconv HTTP duration must
-		// be present (both are recorded for every handled request).
-		if strings.Contains(metricsBody, "stacklok_toolhive_proxy") {
-			assert.Contains(t, metricsBody, metricActiveConnections)
-			assert.Contains(t, metricsBody, metricHTTPServerDuration)
-		}
+		// be present (both are recorded for every handled request). Asserted
+		// unconditionally: the test already drove a real request through the
+		// middleware, so both series must exist. Guarding on a prefix of
+		// metricActiveConnections would make these assertions unable to fail.
+		assert.Contains(t, metricsBody, metricActiveConnections)
+		assert.Contains(t, metricsBody, metricHTTPServerDuration)
 	} else {
 		// If metrics endpoint fails, just log it but don't fail the test
 		t.Logf("Metrics endpoint returned status %d, body: %s", metricsRec.Code, metricsRec.Body.String())

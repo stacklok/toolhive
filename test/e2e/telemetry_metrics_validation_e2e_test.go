@@ -330,6 +330,11 @@ func validateTelemetryMetrics(config *e2e.TestConfig, workloadName, expectedServ
 func validateNoEmptyLabels(metricsContent, expectedServerName, expectedTransport string) {
 	lines := strings.Split(metricsContent, "\n")
 
+	// This scan narrowed from every toolhive_mcp line to a single gauge, so without
+	// a match counter the loop body never executing would pass silently — e.g. if
+	// instrument creation fell back to noop, or the metric were renamed again.
+	checkedLines := 0
+
 	for _, line := range lines {
 		// The active-connections gauge is the series that carries both mcp_server
 		// and transport labels, so validate label correctness there.
@@ -337,6 +342,7 @@ func validateNoEmptyLabels(metricsContent, expectedServerName, expectedTransport
 			// Skip comment lines and only check actual metric lines
 			if strings.Contains(line, "{") {
 				// This is a metric with labels
+				checkedLines++
 				Expect(line).ToNot(ContainSubstring(`mcp_server=""`),
 					fmt.Sprintf("Metric line should not have empty server: %s", line))
 				Expect(line).ToNot(ContainSubstring(`transport=""`),
@@ -354,37 +360,45 @@ func validateNoEmptyLabels(metricsContent, expectedServerName, expectedTransport
 			}
 		}
 	}
+
+	Expect(checkedLines).To(BeNumerically(">", 0),
+		"expected at least one stacklok_toolhive_proxy_active_connections series with labels in the scrape")
 }
 
 // validateMetricValues validates that metric values are reasonable
 func validateMetricValues(metricsContent, expectedServerName, expectedTransport string) {
 	// Request counts come from the semconv server operation-duration histogram's
-	// _count series (the toolhive_mcp_requests_total twin is deleted). This metric
-	// carries mcp_method_name but not the server/transport labels, which now live
-	// on the active-connections gauge.
+	// _count series (the toolhive_mcp_requests_total twin is deleted). The metric
+	// carries mcp_server, so the series is pinned to this workload rather than
+	// matching any operation-duration series in the scrape.
 	requestPattern := regexp.MustCompile(
-		`mcp_server_operation_duration_seconds_count\{[^}]*\} (\d+)`,
+		fmt.Sprintf(`mcp_server_operation_duration_seconds_count\{[^}]*mcp_server="%s"[^}]*\} (\d+)`,
+			regexp.QuoteMeta(expectedServerName)),
 	)
 
 	matches := requestPattern.FindAllStringSubmatch(metricsContent, -1)
 
-	if len(matches) > 0 {
-		totalRequests := 0
-		for _, match := range matches {
-			if len(match) >= 2 {
-				count, err := strconv.Atoi(match[1])
-				if err == nil {
-					totalRequests += count
-				}
+	// Asserted rather than guarded: a zero-match regex previously skipped the
+	// whole body, including the count assertion, so the helper passed silently.
+	Expect(matches).ToNot(BeEmpty(),
+		fmt.Sprintf("expected mcp_server_operation_duration_seconds_count series for mcp_server=%q in scrape",
+			expectedServerName))
+
+	totalRequests := 0
+	for _, match := range matches {
+		if len(match) >= 2 {
+			count, err := strconv.Atoi(match[1])
+			if err == nil {
+				totalRequests += count
 			}
 		}
-
-		Expect(totalRequests).To(BeNumerically(">", 0),
-			"Should have recorded at least some requests")
-
-		GinkgoWriter.Printf("Validated %d total requests for server '%s' with transport '%s'\n",
-			totalRequests, expectedServerName, expectedTransport)
 	}
+
+	Expect(totalRequests).To(BeNumerically(">", 0),
+		"Should have recorded at least some requests")
+
+	GinkgoWriter.Printf("Validated %d total requests for server '%s' with transport '%s'\n",
+		totalRequests, expectedServerName, expectedTransport)
 }
 
 // getMetricsURL constructs the metrics URL for a given workload

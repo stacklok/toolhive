@@ -365,6 +365,18 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		assert.Contains(t, metrics, "http_server_request_duration_seconds",
 			"Should record semconv HTTP server request-duration histogram")
 
+		// Server identity: the central server -> mcp_server rename this branch
+		// performs is verified end-to-end here, on the one test that scrapes a real
+		// vMCP /metrics. Without this the rename itself is unasserted anywhere.
+		assert.Contains(t, metrics, `mcp_server="telemetry-vmcp"`,
+			"renamed mcp_server label must carry the vMCP server name")
+		// Anchored on the leading label delimiter: a plain NotContains(`server="..."`)
+		// is satisfied by mcp_server="..." as a substring and so could never fail.
+		assert.NotRegexp(t, `[{,]server="telemetry-vmcp"`, metrics,
+			"the pre-rename server label must be gone")
+		assert.Contains(t, metrics, `transport="streamable-http"`,
+			"active-connections gauge must carry the transport label")
+
 		// --- Backend metrics (from backendtelemetry.MonitorBackends) ---
 
 		// mcp.client.operation.duration replaces the backend request/duration twins.

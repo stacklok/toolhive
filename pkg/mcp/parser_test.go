@@ -2010,3 +2010,28 @@ func TestRepublishParsedMCPRequestHolder(t *testing.T) {
 		require.NotNil(t, republished)
 	})
 }
+
+func TestIsKnownMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		want   bool
+	}{
+		{"handler-backed method", "tools/call", true},
+		{"list method", "tools/list", true},
+		{"static-resource method with no params", "ping", true},
+		{"static notification", "notifications/tools/list_changed", true},
+		{"unrecognized method", "evil/made-up-method", false},
+		{"empty method", "", false},
+		{"case mismatch is not a match", "Tools/Call", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsKnownMethod(tt.method))
+		})
+	}
+}

@@ -113,11 +113,13 @@ func MonitorBackends(
 	recordedHealth := &backendHealth{states: make(map[string]vmcp.BackendHealthStatus)}
 	providerSetter := &HealthProviderSetter{}
 
+	// Semconv-named metric, so it carries the semconv bucket set exactly rather
+	// than the coarser Stacklok proxy preset.
 	clientOperationDuration, err := meter.Float64Histogram(
 		"mcp.client.operation.duration",
 		metric.WithDescription("Duration of MCP client operations"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...),
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)

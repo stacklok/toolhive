@@ -2484,6 +2484,71 @@ func findHistogramByName(rm metricdata.ResourceMetrics, name string) *metricdata
 	return nil
 }
 
+// TestHTTPMiddleware_OperationDurationSemconvBuckets pins mcp.server.operation.duration
+// to the semconv bucket preset. A semconv-named metric must carry the semconv
+// boundary set: switching it to a coarser preset silently changes the layout, so
+// any histogram_quantile() spanning the change mixes two incompatible bucket sets
+// and returns wrong values with no error.
+func TestHTTPMiddleware_OperationDurationSemconvBuckets(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	middleware := NewHTTPMiddleware(Config{}, tracenoop.NewTracerProvider(), meterProvider, "github", "streamable-http")
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mcpparser.MCPRequestContextKey,
+		&mcpparser.ParsedMCPRequest{Method: "tools/list"}))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	hist := findHistogramByName(rm, metricOperationDuration)
+	require.NotNil(t, hist, "mcp.server.operation.duration must be emitted")
+	require.Len(t, hist.DataPoints, 1)
+
+	assert.Equal(t, coremetrics.BucketsMCPSemconv(), hist.DataPoints[0].Bounds,
+		"semconv-named metric must carry the semconv bucket preset, not the coarser proxy preset")
+}
+
+// TestHTTPMiddleware_OperationDurationUnknownMethodOther pins the cardinality
+// bound on mcp.method.name. The JSON-RPC method arrives verbatim from the request
+// body, so an unrecognized one must collapse to _OTHER rather than minting a new
+// time series per distinct string.
+func TestHTTPMiddleware_OperationDurationUnknownMethodOther(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	middleware := NewHTTPMiddleware(Config{}, tracenoop.NewTracerProvider(), meterProvider, "github", "streamable-http")
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mcpparser.MCPRequestContextKey,
+		&mcpparser.ParsedMCPRequest{Method: "evil/made-up-method"}))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	hist := findHistogramByName(rm, metricOperationDuration)
+	require.NotNil(t, hist, "mcp.server.operation.duration must be emitted")
+	require.Len(t, hist.DataPoints, 1)
+
+	mv, ok := hist.DataPoints[0].Attributes.Value(attribute.Key("mcp.method.name"))
+	require.True(t, ok, "mcp.method.name must be present")
+	assert.Equal(t, attrValueOther, mv.AsString(),
+		"an unrecognized JSON-RPC method must collapse to the _OTHER sentinel")
+}
+
 func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
 	t.Parallel()
 
@@ -2539,6 +2604,33 @@ func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
 			wantStatusCode: 502,
 			wantErrorType:  "502",
 		},
+		{
+			// The documented narrowing: error.type is set only for status >= 500,
+			// so a 4xx must leave it absent. Guards against a regression back to
+			// statusCode >= 400, which would silently start counting auth denials
+			// as errors again.
+			name:           "4xx leaves error.type absent",
+			method:         http.MethodPost,
+			path:           "/mcp",
+			parsedMCP:      &mcpparser.ParsedMCPRequest{Method: "tools/call"},
+			handlerStatus:  http.StatusForbidden,
+			wantMethod:     http.MethodPost,
+			wantStatusCode: 403,
+			wantErrorType:  "",
+		},
+		{
+			// Go's net/http accepts any RFC 7230 token as a method, so an
+			// unrecognized one must collapse to the semconv _OTHER sentinel
+			// rather than minting a new series per distinct string.
+			name:           "unknown method collapses to _OTHER",
+			method:         "ZZZZ1",
+			path:           "/mcp",
+			parsedMCP:      nil,
+			handlerStatus:  http.StatusOK,
+			wantMethod:     attrValueOther,
+			wantStatusCode: 200,
+			wantErrorType:  "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2571,10 +2663,20 @@ func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
 			assert.Equal(t, coremetrics.BucketsFastHTTP(), dp.Bounds,
 				"must use the fast-HTTP bucket preset")
 
+			// Data points are keyed by attribute set, so a double-record would
+			// still yield one data point — with Count == 2. Pin the count so
+			// double-counting transport-level request volume is detectable.
+			assert.Equal(t, uint64(1), dp.Count, "request must be recorded exactly once")
+
 			// semconv attributes only.
 			mv, ok := dp.Attributes.Value(attribute.Key("http.request.method"))
 			require.True(t, ok, "http.request.method must be present")
 			assert.Equal(t, tt.wantMethod, mv.AsString())
+
+			// url.scheme is Required on http.server.request.duration.
+			schemeV, ok := dp.Attributes.Value(attribute.Key("url.scheme"))
+			require.True(t, ok, "url.scheme must be present")
+			assert.Equal(t, "http", schemeV.AsString())
 
 			sv, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
 			require.True(t, ok, "http.response.status_code must be present")
@@ -2633,6 +2735,8 @@ func TestHTTPMiddleware_SSEConnectionDuration_SSEBranch(t *testing.T) {
 	require.NotNil(t, hist, "stacklok.toolhive.proxy.sse_connection.duration must be emitted for the SSE branch")
 	require.Len(t, hist.DataPoints, 1)
 	dp := hist.DataPoints[0]
+
+	assert.Equal(t, uint64(1), dp.Count, "SSE connection must be recorded exactly once")
 
 	assert.Equal(t, coremetrics.BucketsMCPProxy(), dp.Bounds,
 		"sse_connection.duration must use the MCP-proxy bucket preset (tops out at 300s), not the 10s-capped fast-HTTP preset")

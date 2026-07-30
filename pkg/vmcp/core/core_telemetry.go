@@ -56,7 +56,7 @@ func newWorkflowInstruments(provider *telemetry.Provider) (*workflowInstruments,
 		"stacklok.vmcp.composite_tool.duration",
 		metric.WithDescription("Duration of workflow executions in seconds"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsLongRunning()...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)

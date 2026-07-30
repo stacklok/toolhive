@@ -36,6 +36,10 @@ const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
 	// methodPromptsGet is the MCP method name for prompts/get
 	methodPromptsGet = "prompts/get"
+	// attrValueOther is the OTEL semconv sentinel for a value outside the
+	// known set. Used to bound the cardinality of metric attributes whose
+	// raw value comes from the client.
+	attrValueOther = "_OTHER"
 	// networkTransportTCP is the OTEL value for TCP transport
 	networkTransportTCP = "tcp"
 	// networkProtocolHTTP is the OTEL value for HTTP protocol
@@ -79,11 +83,13 @@ func NewHTTPMiddleware(
 		activeConnections = noop.Int64UpDownCounter{}
 	}
 
+	// Semconv-named metric, so it carries the semconv bucket set exactly rather
+	// than the coarser Stacklok proxy preset.
 	operationDuration, err := meter.Float64Histogram(
 		"mcp.server.operation.duration",
 		metric.WithDescription("Duration of MCP server operations"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...),
 	)
 	if err != nil {
 		slog.Debug("failed to create operation duration metric", "error", err)
@@ -717,7 +723,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	// counterpart that stays valid for DELETE (session terminate) requests
 	// carrying no MCP method. SSE-open GETs never reach recordMetrics — they
 	// return early in Handler and record into sseConnectionDuration instead.
-	m.recordHTTPServerDuration(ctx, r.Method, rw.statusCode, duration)
+	m.recordHTTPServerDuration(ctx, r, rw.statusCode, duration)
 
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
 	// Only POST requests carry a JSON-RPC body; GET (SSE stream open) and DELETE
@@ -735,23 +741,60 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 
 // recordHTTPServerDuration records the http.server.request.duration OTEL HTTP
 // semantic-convention metric. It carries the semconv attribute keys
-// (http.request.method, http.response.status_code, error.type set only on
-// failure) plus mcp_server, so a single Prometheus instance scraping several
-// proxies can still split this metric per backend without a join — the
+// (http.request.method, url.scheme, http.response.status_code, error.type set
+// only on failure) plus mcp_server, so a single Prometheus instance scraping
+// several proxies can still split this metric per backend without a join — the
 // deleted toolhive_mcp_requests/_request_duration twins this metric replaces
 // both carried an equivalent server label.
 func (m *HTTPMiddleware) recordHTTPServerDuration(
-	ctx context.Context, method string, statusCode int, duration time.Duration,
+	ctx context.Context, r *http.Request, statusCode int, duration time.Duration,
 ) {
 	specAttrs := []attribute.KeyValue{
-		attribute.String("http.request.method", method),
+		attribute.String("http.request.method", normalizeHTTPMethod(r.Method)),
+		attribute.String("url.scheme", requestScheme(r)),
 		attribute.Int("http.response.status_code", statusCode),
 		attribute.String(coremetrics.LabelMCPServer, m.serverName),
+	}
+	if pv := httpProtocolVersion(r); pv != "" {
+		specAttrs = append(specAttrs, attribute.String("network.protocol.version", pv))
 	}
 	if statusCode >= 500 {
 		specAttrs = append(specAttrs, attribute.String("error.type", strconv.Itoa(statusCode)))
 	}
 	m.httpServerReqDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(specAttrs...))
+}
+
+// knownHTTPMethods is the set semconv treats as recording-safe for
+// http.request.method. Anything else must be recorded as attrValueOther.
+var knownHTTPMethods = map[string]struct{}{
+	http.MethodGet: {}, http.MethodHead: {}, http.MethodPost: {},
+	http.MethodPut: {}, http.MethodPatch: {}, http.MethodDelete: {},
+	http.MethodConnect: {}, http.MethodOptions: {}, http.MethodTrace: {},
+}
+
+// normalizeHTTPMethod bounds http.request.method's cardinality. Go's net/http
+// accepts any RFC 7230 token as a method, so an unauthenticated caller can
+// otherwise mint a permanently-retained series per distinct method string.
+// Semconv mandates recording unrecognized methods as _OTHER, keeping the
+// original on spans only (as http.request.method_original).
+func normalizeHTTPMethod(method string) string {
+	if _, ok := knownHTTPMethods[method]; ok {
+		return method
+	}
+	return attrValueOther
+}
+
+// requestScheme reports the URL scheme for url.scheme, which semconv marks
+// Required on http.server.request.duration. Server-side request URLs are
+// typically scheme-less, so fall back to the TLS state.
+func requestScheme(r *http.Request) string {
+	if r.URL != nil && r.URL.Scheme != "" {
+		return r.URL.Scheme
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // recordOperationDuration records the mcp.server.operation.duration metric
@@ -760,6 +803,12 @@ func (m *HTTPMiddleware) recordOperationDuration(
 	ctx context.Context, r *http.Request, mcpMethod, resourceID string, statusCode int, duration time.Duration,
 ) {
 	networkTransport, protocolName, _ := mapTransport(m.transport)
+
+	// mcp.method.name arrives verbatim from the JSON-RPC body, so it is bounded
+	// against the parser's own method set; the raw value stays on the span.
+	if !mcpparser.IsKnownMethod(mcpMethod) {
+		mcpMethod = attrValueOther
+	}
 
 	specAttrs := []attribute.KeyValue{
 		attribute.String("mcp.method.name", mcpMethod),
@@ -783,7 +832,12 @@ func (m *HTTPMiddleware) recordOperationDuration(
 		specAttrs = append(specAttrs, attribute.String("error.type", strconv.Itoa(statusCode)))
 	}
 
-	// Method-specific attributes
+	// Method-specific attributes.
+	//
+	// NOTE: gen_ai.tool.name and gen_ai.prompt.name derive from params.name in
+	// the client's JSON-RPC body and are NOT bounded against a resolved
+	// capability set, so their cardinality is client-controlled. Bounding them
+	// is tracked separately; the proxy has no tool list in scope here.
 	switch mcpMethod {
 	case string(mcp.MethodToolsCall):
 		specAttrs = append(specAttrs, attribute.String("gen_ai.operation.name", "execute_tool"))

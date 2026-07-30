@@ -335,6 +335,21 @@ var staticResourceIDs = map[string]string{
 	"server/discover":                      "discover",
 }
 
+// IsKnownMethod reports whether method is a recognized MCP method. It is the
+// union of the methods the parser has handlers for and those with static
+// resource IDs, so it covers parameterless methods like "ping" too.
+//
+// Telemetry uses this to bound label cardinality: the JSON-RPC method arrives
+// verbatim from the request body, so recording it unvalidated lets a client
+// mint one time series per distinct string.
+func IsKnownMethod(method string) bool {
+	if _, exists := methodHandlers[method]; exists {
+		return true
+	}
+	_, exists := staticResourceIDs[method]
+	return exists
+}
+
 func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}, map[string]interface{}) {
 	if params == nil {
 		return getStaticResourceID(method), nil, nil

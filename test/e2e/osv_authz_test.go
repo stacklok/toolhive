@@ -245,31 +245,32 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 				Expect(metricsBody).To(ContainSubstring("http_server_request_duration_seconds"),
 					"Should contain semconv HTTP server request-duration metric")
 
-				// Authorization outcome is reflected in the HTTP response status code:
-				// authorized requests get 200, denied requests get 403.
-				status200Count := extractMetricValue(metricsBody, "http_server_request_duration_seconds_count", "http_response_status_code=\"200\"")
+				// Authorization outcome is reflected in the HTTP response status code
+				// for denied requests (403, written synchronously by the authz
+				// middleware). It is NOT reflected for authorized SSE tool calls: the
+				// POST to /messages gets a 202 Accepted immediately (the actual
+				// tools/call result is delivered async over the already-open SSE
+				// stream), so a successful call never produces an HTTP 200 here. The
+				// tools/call assertion below verifies the authorized call succeeded.
 				status403Count := extractMetricValue(metricsBody, "http_server_request_duration_seconds_count", "http_response_status_code=\"403\"")
 
-				GinkgoWriter.Printf("HTTP 200 responses: %d\n", status200Count)
 				GinkgoWriter.Printf("HTTP 403 responses: %d\n", status403Count)
 
-				// We should have at least 1 authorized request (200) and at least 2
-				// authorization denials (403).
-				Expect(status200Count).To(BeNumerically(">=", 1),
-					"Should have at least 1 successful (HTTP 200) request")
+				// We should have at least 2 authorization denials (403).
 				Expect(status403Count).To(BeNumerically(">=", 2),
 					"Should have at least 2 HTTP 403 responses for authorization denials")
 
 				// Tool calls surface via the semconv server operation-duration histogram
 				// with mcp_method_name="tools/call" (the toolhive_mcp_tool_calls_total twin
-				// is deleted).
-				if strings.Contains(metricsBody, "mcp_server_operation_duration_seconds") {
-					toolCallsCount := extractMetricValue(metricsBody, "mcp_server_operation_duration_seconds_count", "mcp_method_name=\"tools/call\"")
-					GinkgoWriter.Printf("Tool calls (tools/call): %d\n", toolCallsCount)
+				// is deleted). This is the authoritative signal that the authorized
+				// call succeeded, since it carries no HTTP-status-code caveat.
+				Expect(metricsBody).To(ContainSubstring("mcp_server_operation_duration_seconds"),
+					"Should contain semconv MCP server operation-duration metric")
+				toolCallsCount := extractMetricValue(metricsBody, "mcp_server_operation_duration_seconds_count", "mcp_method_name=\"tools/call\"")
+				GinkgoWriter.Printf("Tool calls (tools/call): %d\n", toolCallsCount)
 
-					Expect(toolCallsCount).To(BeNumerically(">=", 1),
-						"Should have at least 1 tools/call operation recorded")
-				}
+				Expect(toolCallsCount).To(BeNumerically(">=", 1),
+					"Should have at least 1 tools/call operation recorded")
 
 				By("Verifying server name is included in metrics")
 				Expect(metricsBody).To(ContainSubstring(fmt.Sprintf("mcp_server=\"%s\"", serverName)),

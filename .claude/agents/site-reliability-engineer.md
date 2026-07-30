@@ -20,7 +20,8 @@ Defer to: code-reviewer (general review), golang-code-writer (business logic), s
 
 ### Key Packages
 - **`pkg/telemetry/`**: Core infrastructure — middleware, OTEL provider setup, context propagation, exporters
-- **`pkg/vmcp/server/telemetry.go`**: vMCP telemetry — MCP request/response metrics, backend routing traces, session tracking
+- **`pkg/vmcp/internal/backendtelemetry/`**: vMCP backend telemetry — the backend-client decorator recording `mcp.client.operation.duration`, backend routing traces, and the live per-backend health gauge
+- **`pkg/vmcp/core/core_telemetry.go`**: vMCP composite-tool (workflow) execution metrics and traces
 
 ### Instrumentation Patterns
 

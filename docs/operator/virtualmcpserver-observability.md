@@ -91,11 +91,72 @@ Total number of composite tool workflow executions, split by outcome.
 
 Duration of composite tool workflow executions, recorded regardless of outcome.
 
-**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsLongRunning()`): `[0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `composite_tool` | string | Composite tool (workflow) name |
+
+### Tool Optimizer Metrics
+
+Emitted only when the tool optimizer is enabled
+(`pkg/vmcp/server/sessionmanager/factory.go`). The optimizer exposes two
+meta-tools, `find_tool` and `call_tool`, in place of the full aggregated tool
+list; these metrics describe their use.
+
+#### `stacklok.vmcp.optimizer.find_tool.requests` (Counter)
+
+Total number of `find_tool` calls, split by outcome.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `outcome` | string | `"success"` or `"error"` |
+
+#### `stacklok.vmcp.optimizer.find_tool.duration` (Histogram, seconds)
+
+Duration of `find_tool` calls.
+
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+
+#### `stacklok.vmcp.optimizer.find_tool.results` (Histogram, `{tools}`)
+
+Number of tools returned per `find_tool` call. The unit is a count, not
+seconds, so the Prometheus name carries no `_seconds` infix.
+
+**Bucket boundaries**: `[0, 1, 2, 3, 5, 10, 20, 50]`
+
+#### `stacklok.vmcp.optimizer.token_savings` (Histogram, percent)
+
+Token savings percentage per `find_tool` call, versus advertising the full
+tool list. Exported as `stacklok_vmcp_optimizer_token_savings_percent`.
+
+**Bucket boundaries**: `[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 100]`
+
+#### `stacklok.vmcp.optimizer.call_tool.requests` (Counter)
+
+Total number of `call_tool` calls, split by outcome.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | string | Resolved target tool name |
+| `outcome` | string | `"success"`, `"error"`, or `"not_found"` |
+
+#### `stacklok.vmcp.optimizer.call_tool.duration` (Histogram, seconds)
+
+Duration of `call_tool` calls.
+
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | string | Resolved target tool name |
+
+### Backend Revision Metrics
+
+#### `stacklok.vmcp.backend.revision_reclassifications` (Counter)
+
+Number of times a backend's MCP revision was reclassified after a call revealed
+the cached revision was wrong. Carries no attributes.
 
 ## Distributed Tracing
 

@@ -112,7 +112,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(mcp_server_operation_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m])",
+          "expr": "sum by (mcp_method_name) (rate(mcp_server_operation_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
           "legendFormat": "{{mcp_method_name}}",
           "range": true,
           "refId": "A"
@@ -212,7 +212,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, rate(mcp_server_operation_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le, mcp_method_name) (rate(mcp_server_operation_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m]))) * 1000",
           "legendFormat": "95th percentile - {{mcp_method_name}}",
           "range": true,
           "refId": "A"
@@ -223,7 +223,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, rate(mcp_server_operation_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
+          "expr": "histogram_quantile(0.50, sum by (le, mcp_method_name) (rate(mcp_server_operation_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m]))) * 1000",
           "legendFormat": "50th percentile - {{mcp_method_name}}",
           "range": true,
           "refId": "B"

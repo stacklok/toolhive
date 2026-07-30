@@ -3265,6 +3265,23 @@
                 },
                 "type": "object"
             },
+            "pkg_api_v1.pluginsV01Response": {
+                "description": "Paginated list of plugins from the registry",
+                "properties": {
+                    "metadata": {
+                        "$ref": "#/components/schemas/pkg_api_v1.paginationV01Metadata"
+                    },
+                    "plugins": {
+                        "description": "Plugins is the list of plugins on the current page",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Plugin"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.providerCapabilitiesResponse": {
                 "description": "Capabilities of the secrets provider",
                 "properties": {
@@ -4150,6 +4167,68 @@
                     "use_pkce": {
                         "description": "UsePKCE indicates whether to use PKCE for the OAuth flow\nDefaults to true for enhanced security",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.Plugin": {
+                "properties": {
+                    "_meta": {
+                        "additionalProperties": {},
+                        "description": "Meta is an opaque payload with extended meta data details of the plugin.",
+                        "type": "object"
+                    },
+                    "description": {
+                        "description": "Description is the description of the plugin.",
+                        "type": "string"
+                    },
+                    "icons": {
+                        "description": "Icons is the list of icons for the plugin.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillIcon"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier of the plugin.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "additionalProperties": {},
+                        "description": "Metadata is the official metadata of the plugin as reported in the\nplugin manifest file.",
+                        "type": "object"
+                    },
+                    "name": {
+                        "description": "Name is the name of the plugin.\nThe format is that of identifiers, e.g. \"my-plugin\".",
+                        "type": "string"
+                    },
+                    "namespace": {
+                        "description": "Namespace is the namespace of the plugin.\nThe format is reverse-DNS, e.g. \"io.github.user\".",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "description": "Packages is the list of packages for the plugin.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillPackage"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/registry.SkillRepository"
+                    },
+                    "status": {
+                        "description": "Status is the status of the plugin.\nCan be one of \"active\", \"deprecated\", or \"archived\".",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is the title of the plugin.\nThis is for human consumption, not an identifier.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the version of the plugin.\nAny non-empty string is valid, but ideally it should be either a\nsemantic version or a commit hash.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -9092,6 +9171,162 @@
                 "summary": "Get a registry server",
                 "tags": [
                     "registry-servers"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/plugins": {
+            "get": {
+                "description": "Get a paginated list of plugins from the registry. Supports optional full-text search and pagination.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Search filter — matches against plugin name, namespace, and description",
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Page number, 1-based (default: 1)",
+                        "in": "query",
+                        "name": "page",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Items per page, max 200 (default: 50)",
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.pluginsV01Response"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "List available registry plugins",
+                "tags": [
+                    "registry-plugins"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/plugins/{namespace}/{pluginName}": {
+            "get": {
+                "description": "Retrieve a single plugin by its namespace and name from the registry.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Plugin namespace in reverse-DNS format (e.g. io.github.stacklok)",
+                        "in": "path",
+                        "name": "namespace",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Plugin name",
+                        "in": "path",
+                        "name": "pluginName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/registry.Plugin"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Plugin not found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Get a registry plugin",
+                "tags": [
+                    "registry-plugins"
                 ]
             }
         },

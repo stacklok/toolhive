@@ -55,6 +55,7 @@ type HTTPMiddleware struct {
 	// Metrics
 	operationDuration     metric.Float64Histogram
 	httpServerReqDuration metric.Float64Histogram
+	sseConnectionDuration metric.Float64Histogram
 	activeConnections     metric.Int64UpDownCounter
 }
 
@@ -90,10 +91,14 @@ func NewHTTPMiddleware(
 	}
 
 	// OTEL HTTP semantic-convention metric. Name kept verbatim (no stacklok_
-	// prefix) so OTel-aware tooling recognizes it. Recorded for every request
-	// the middleware handles — including SSE-open GETs and session-delete
-	// DELETEs that carry no MCP method — restoring transport-level coverage
-	// that the MCP-scoped operation-duration metric misses.
+	// prefix) so OTel-aware tooling recognizes it. Recorded for every
+	// request/response-cycle request the middleware handles, including
+	// session-delete DELETEs that carry no MCP method — restoring
+	// transport-level coverage that the MCP-scoped operation-duration metric
+	// misses. SSE-open GETs are excluded: they block for the connection's
+	// full lifetime (minutes to hours), which would pin every observation to
+	// this histogram's 10s top bucket. Those go to sseConnectionDuration
+	// instead, below.
 	httpServerReqDuration, err := meter.Float64Histogram(
 		"http.server.request.duration",
 		metric.WithDescription("Duration of HTTP server requests"),
@@ -103,6 +108,20 @@ func NewHTTPMiddleware(
 	if err != nil {
 		slog.Debug("failed to create http server request duration metric", "error", err)
 		httpServerReqDuration = noop.Float64Histogram{}
+	}
+
+	// SSE connections live for minutes to hours, not milliseconds, so they get
+	// their own histogram on BucketsMCPProxy() (tops out at 300s) instead of
+	// sharing http.server.request.duration's 10s-capped buckets.
+	sseConnectionDuration, err := meter.Float64Histogram(
+		"stacklok.toolhive.proxy.sse_connection.duration",
+		metric.WithDescription("Duration of SSE connections, recorded once the connection closes"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
+	)
+	if err != nil {
+		slog.Debug("failed to create sse connection duration metric", "error", err)
+		sseConnectionDuration = noop.Float64Histogram{}
 	}
 
 	registerBuildInfo(meter)
@@ -117,6 +136,7 @@ func NewHTTPMiddleware(
 		transport:             transport,
 		operationDuration:     operationDuration,
 		httpServerReqDuration: httpServerReqDuration,
+		sseConnectionDuration: sseConnectionDuration,
 		activeConnections:     activeConnections,
 	}
 
@@ -157,13 +177,15 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			defer m.activeConnections.Add(ctx, -1, sseAttrs)
 
 			// Pass through to SSE handler - blocks for the lifetime of the SSE
-			// connection. Record the HTTP semconv duration on close so the
-			// long-lived SSE-open GET (which never reaches recordMetrics) still
-			// contributes a transport-level observation.
+			// connection. Record its duration on close, into sseConnectionDuration
+			// rather than http.server.request.duration — see the comment on that
+			// histogram's construction above for why the two are kept separate.
 			sseStart := time.Now()
 			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 			defer func() {
-				m.recordHTTPServerDuration(ctx, r.Method, rw.statusCode, time.Since(sseStart))
+				m.sseConnectionDuration.Record(ctx, time.Since(sseStart).Seconds(), metric.WithAttributes(
+					attribute.String(coremetrics.LabelMCPServer, m.serverName),
+				))
 			}()
 			next.ServeHTTP(rw, r)
 			return
@@ -690,10 +712,11 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		mcpResourceID = parsedMCP.ResourceID
 	}
 
-	// Record OTEL HTTP semconv duration for every request, regardless of MCP
-	// method. This is the transport-level counterpart that stays valid for
-	// GET (SSE open) and DELETE (session terminate) requests carrying no MCP
-	// method.
+	// Record OTEL HTTP semconv duration for every request/response-cycle
+	// request, regardless of MCP method. This is the transport-level
+	// counterpart that stays valid for DELETE (session terminate) requests
+	// carrying no MCP method. SSE-open GETs never reach recordMetrics — they
+	// return early in Handler and record into sseConnectionDuration instead.
 	m.recordHTTPServerDuration(ctx, r.Method, rw.statusCode, duration)
 
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
@@ -711,15 +734,19 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 }
 
 // recordHTTPServerDuration records the http.server.request.duration OTEL HTTP
-// semantic-convention metric. It carries only semconv attribute keys:
-// http.request.method, http.response.status_code, and error.type (set only on
-// failure, mirroring the 5xx convention used elsewhere in this middleware).
+// semantic-convention metric. It carries the semconv attribute keys
+// (http.request.method, http.response.status_code, error.type set only on
+// failure) plus mcp_server, so a single Prometheus instance scraping several
+// proxies can still split this metric per backend without a join — the
+// deleted toolhive_mcp_requests/_request_duration twins this metric replaces
+// both carried an equivalent server label.
 func (m *HTTPMiddleware) recordHTTPServerDuration(
 	ctx context.Context, method string, statusCode int, duration time.Duration,
 ) {
 	specAttrs := []attribute.KeyValue{
 		attribute.String("http.request.method", method),
 		attribute.Int("http.response.status_code", statusCode),
+		attribute.String(coremetrics.LabelMCPServer, m.serverName),
 	}
 	if statusCode >= 500 {
 		specAttrs = append(specAttrs, attribute.String("error.type", strconv.Itoa(statusCode)))
@@ -738,6 +765,7 @@ func (m *HTTPMiddleware) recordOperationDuration(
 		attribute.String("mcp.method.name", mcpMethod),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 		attribute.String("network.transport", networkTransport),
+		attribute.String(coremetrics.LabelMCPServer, m.serverName),
 	}
 	if protocolName != "" {
 		specAttrs = append(specAttrs, attribute.String("network.protocol.name", protocolName))

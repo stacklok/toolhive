@@ -169,12 +169,17 @@ func TestNew_ValidatesWorkflows(t *testing.T) {
 // callback attached to the shared meter provider forever, since the coreVMCP
 // it was built for is never returned to a caller and so never has Close
 // called on it. Table-driven over every error branch in New that runs after
-// MonitorBackends succeeds (invalid AuditConfig, workflow-auditor construction
-// failure, workflow-instrument creation failure, workflow validation failure,
-// health-monitor build failure) — each scrapes the same meter provider's
-// Prometheus handler after the failed New call and asserts the gauge produced
-// no series, proving the callback was unregistered, not merely that New
-// returned an error.
+// MonitorBackends succeeds and is exercisable through this constructor's
+// public inputs (invalid AuditConfig, workflow-auditor construction failure,
+// workflow validation failure, health-monitor build failure) — each scrapes
+// the same meter provider's Prometheus handler after the failed New call and
+// asserts the gauge produced no series, proving the callback was
+// unregistered, not merely that New returned an error.
+//
+// newWorkflowInstruments' error path (core_vmcp.go, invoked between the audit
+// and validation branches above) is not included: the OTel SDK does not
+// return an error for a same-name instrument-kind conflict, so there is no
+// input that reaches it through the public API.
 func TestNew_UnregistersBackendHealthCallbackOnLaterConstructionFailure(t *testing.T) {
 	t.Parallel()
 

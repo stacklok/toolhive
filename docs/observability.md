@@ -219,6 +219,7 @@ termination) requests carry no MCP method and are not recorded here.
 | `mcp.method.name` | string | Always | MCP method (`tools/call`, `resources/read`, etc.) |
 | `jsonrpc.protocol.version` | string | Always | Always `"2.0"` |
 | `network.transport` | string | Always | `"tcp"` or `"pipe"` |
+| `mcp_server` | string | Always | MCP server name |
 | `network.protocol.name` | string | If applicable | `"http"` for SSE/streamable-http |
 | `network.protocol.version` | string | If available | HTTP protocol version (`1.1`, `2`) |
 | `error.type` | string | On HTTP 5xx | HTTP status code as string |
@@ -233,12 +234,18 @@ termination) requests carry no MCP method and are not recorded here.
 
 #### `http.server.request.duration` (Histogram, seconds)
 
-Duration of every HTTP request the middleware handles, per the
+Duration of every HTTP request/response-cycle request the middleware
+handles, per the
 [OTEL HTTP semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/).
-Recorded for every request — including SSE-open GETs and session-delete
-DELETEs that carry no MCP method — so transport-level coverage doesn't depend
-on a resolvable MCP method the way `mcp.server.operation.duration` does. For
-SSE connections, recorded once the connection closes (not per-chunk).
+Recorded for session-delete DELETEs and other requests carrying no MCP
+method — as well as MCP-method-bearing ones — so transport-level coverage
+doesn't depend on a resolvable MCP method the way
+`mcp.server.operation.duration` does.
+
+SSE-open GETs are excluded: they block for the connection's full lifetime
+(minutes to hours), which would land every observation in this histogram's
+10-second top bucket and flatten any quantile query. Those go to
+`stacklok.toolhive.proxy.sse_connection.duration` instead, below.
 
 **Bucket boundaries** (`coremetrics.BucketsFastHTTP()`): `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
 
@@ -246,7 +253,20 @@ SSE connections, recorded once the connection closes (not per-chunk).
 |-----------|------|-----------|-------------|
 | `http.request.method` | string | Always | HTTP method (`GET`, `POST`, `DELETE`) |
 | `http.response.status_code` | int | Always | HTTP status code |
+| `mcp_server` | string | Always | MCP server name |
 | `error.type` | string | On HTTP 5xx | HTTP status code as string |
+
+#### `stacklok.toolhive.proxy.sse_connection.duration` (Histogram, seconds)
+
+Duration of SSE connections, recorded once the connection closes (not
+per-chunk). Kept separate from `http.server.request.duration` because SSE
+connections are long-lived — see that metric's description above.
+
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+
+| Attribute | Type | Condition | Description |
+|-----------|------|-----------|-------------|
+| `mcp_server` | string | Always | MCP server name |
 
 #### `stacklok.build_info` (Gauge)
 

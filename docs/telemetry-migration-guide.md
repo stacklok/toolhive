@@ -276,32 +276,43 @@ attributes.
 dashboard or alert querying an old metric or label name must be updated
 regardless of that flag's setting.
 
-| Legacy Metric/Label | New Metric/Label | Notes |
-|----------------------|-------------------|-------|
-| `server` (label, proxy + rate limit metrics) | `mcp_server` | |
-| `mcp_method` (label, deleted `toolhive_mcp_*` metrics) | `mcp.method.name` (`mcp_method_name`) | New attribute on `mcp.server.operation.duration`, not a same-metric label rename |
-| `tool` (label, deleted `toolhive_mcp_tool_calls`) | `gen_ai.tool.name` (`gen_ai_tool_name`) | New attribute on `mcp.server.operation.duration`; **not** `tool_name` — that label is used only by the unrelated vMCP optimizer `call_tool` metrics (see [vMCP Backend Client Attributes](#vmcp-backend-client-attributes)) |
-| `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | |
-| `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | Renamed, not deleted |
-| `toolhive_rate_limit_decisions` | `stacklok.toolhive.ratelimit.decisions` | Renamed, not deleted |
-| `toolhive_rate_limit_redis_errors` | `stacklok.toolhive.ratelimit.redis_errors` | Renamed, not deleted |
-| `toolhive_rate_limit_check_latency` | `stacklok.toolhive.ratelimit.check_latency` | Renamed, not deleted |
-| `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | Now split by `outcome` label instead of a separate errors counter |
-| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | Merged into the executions counter above, not a standalone metric |
-| `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | |
-| `toolhive_vmcp_backend_requests_duration` | `mcp.client.operation.duration` | OTEL MCP semconv histogram |
-| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count |
-| `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | Merged into one counter split by `outcome` label |
-| `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | |
-| `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | |
-| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | |
-| `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
-| `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | |
-| `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | Renamed, not deleted |
+The "New Metric/Label" column below gives the OTel instrument/attribute name
+(dotted form, matching what appears in code and in OTLP export). **Query
+against the "Prometheus Name" column instead** — that's what actually reaches
+PromQL: dots become underscores, and Prometheus appends `_total` to counters
+and `_seconds_bucket`/`_seconds_sum`/`_seconds_count` (or the instrument's
+declared unit, e.g. `_percent`) to histograms. A value pasted from the "New
+Metric/Label" column directly into PromQL returns zero results.
+
+| Legacy Metric/Label | New Metric/Label | Prometheus Name | Notes |
+|----------------------|-------------------|------------------|-------|
+| `server` (label, proxy + rate limit metrics) | `mcp_server` | `mcp_server` | |
+| `mcp_method` (label, deleted `toolhive_mcp_*` metrics) | `mcp.method.name` | `mcp_method_name` | New attribute on `mcp.server.operation.duration`, not a same-metric label rename |
+| `tool` (label, deleted `toolhive_mcp_tool_calls`) | `gen_ai.tool.name` | `gen_ai_tool_name` | New attribute on `mcp.server.operation.duration`; **not** `tool_name` — that label is used only by the unrelated vMCP optimizer `call_tool` metrics (see [vMCP Backend Client Attributes](#vmcp-backend-client-attributes)) |
+| `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | `composite_tool` | |
+| `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | `stacklok_toolhive_proxy_active_connections` | Renamed, not deleted. No `_total` suffix — it's an UpDownCounter, which Prometheus exposes as a gauge |
+| `toolhive_rate_limit_decisions` | `stacklok.toolhive.ratelimit.decisions` | `stacklok_toolhive_ratelimit_decisions_total` | Renamed, not deleted |
+| `toolhive_rate_limit_redis_errors` | `stacklok.toolhive.ratelimit.redis_errors` | `stacklok_toolhive_ratelimit_redis_errors_total` | Renamed, not deleted |
+| `toolhive_rate_limit_check_latency` | `stacklok.toolhive.ratelimit.check_latency` | `stacklok_toolhive_ratelimit_check_latency_seconds_bucket` / `_sum` / `_count` | Renamed, not deleted |
+| `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | `stacklok_vmcp_composite_tool_executions_total` | Now split by `outcome` label instead of a separate errors counter |
+| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | `stacklok_vmcp_composite_tool_executions_total{outcome="error"}` | Merged into the executions counter above, not a standalone metric |
+| `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | `stacklok_vmcp_composite_tool_duration_seconds_bucket` / `_sum` / `_count` | |
+| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | `stacklok_vmcp_mcp_server_health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count. No suffix — it's an ObservableGauge |
+| `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | `stacklok_vmcp_optimizer_find_tool_requests_total` | Merged into one counter split by `outcome` label |
+| `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | `stacklok_vmcp_optimizer_find_tool_duration_seconds_bucket` / `_sum` / `_count` | |
+| `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | `stacklok_vmcp_optimizer_find_tool_results_bucket` / `_sum` / `_count` | Unit is `{tools}` (a count), not seconds — no `_seconds` infix |
+| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | `stacklok_vmcp_optimizer_token_savings_percent_bucket` / `_sum` / `_count` | Unit `%` becomes the `_percent` infix, which happens to match the old Prometheus name exactly |
+| `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | `stacklok_vmcp_optimizer_call_tool_requests_total` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
+| `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | `stacklok_vmcp_optimizer_call_tool_duration_seconds_bucket` / `_sum` / `_count` | |
+| `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | `stacklok_vmcp_backend_revision_reclassifications_total` | Renamed, not deleted |
 
 The new `mcp.server.operation.duration` and `mcp.client.operation.duration`
 metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,
-`mcp.method.name` instead of `mcp_method`).
+`mcp.method.name` instead of `mcp_method`), and expose in PromQL as
+`mcp_server_operation_duration_seconds_{bucket,sum,count}` and
+`mcp_client_operation_duration_seconds_{bucket,sum,count}` respectively —
+see the [Deleted Legacy Metrics](#deleted-legacy-metrics) table below for
+their old→new mapping.
 
 ### Deleted Legacy Metrics
 

@@ -2464,9 +2464,17 @@ func TestRecordSSEConnection_DualEmission(t *testing.T) {
 // findHTTPServerDuration returns the http.server.request.duration histogram from
 // collected metrics, or nil if absent.
 func findHTTPServerDuration(rm metricdata.ResourceMetrics) *metricdata.Histogram[float64] {
+	return findHistogramByName(rm, "http.server.request.duration")
+}
+
+func findSSEConnectionDuration(rm metricdata.ResourceMetrics) *metricdata.Histogram[float64] {
+	return findHistogramByName(rm, "stacklok.toolhive.proxy.sse_connection.duration")
+}
+
+func findHistogramByName(rm metricdata.ResourceMetrics, name string) *metricdata.Histogram[float64] {
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name == "http.server.request.duration" {
+			if m.Name == name {
 				if h, ok := m.Data.(metricdata.Histogram[float64]); ok {
 					return &h
 				}
@@ -2572,6 +2580,10 @@ func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
 			require.True(t, ok, "http.response.status_code must be present")
 			assert.Equal(t, tt.wantStatusCode, sv.AsInt64())
 
+			serverV, ok := dp.Attributes.Value(attribute.Key(coremetrics.LabelMCPServer))
+			require.True(t, ok, "mcp_server must be present")
+			assert.Equal(t, "github", serverV.AsString())
+
 			ev, hasErr := dp.Attributes.Value(attribute.Key("error.type"))
 			if tt.wantErrorType == "" {
 				assert.False(t, hasErr, "error.type must be absent on non-5xx")
@@ -2587,13 +2599,15 @@ func TestHTTPMiddleware_HTTPServerRequestDuration(t *testing.T) {
 	}
 }
 
-// TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch exercises the SSE
-// branch of Handler specifically (path suffix "/sse"), which records
-// http.server.request.duration in its own deferred call on connection close
-// rather than through recordMetrics. TestHTTPMiddleware_HTTPServerRequestDuration
-// above only covers the non-SSE branch (its "/mcp" paths never take the "/sse"
-// suffix check), so this must be a separate test rather than another table case.
-func TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch(t *testing.T) {
+// TestHTTPMiddleware_SSEConnectionDuration_SSEBranch exercises the SSE branch
+// of Handler specifically (path suffix "/sse"), which records
+// stacklok.toolhive.proxy.sse_connection.duration in its own deferred call on
+// connection close rather than through recordMetrics. It must NOT emit
+// http.server.request.duration: SSE connections are long-lived (minutes to
+// hours), and that histogram's 10-second top bucket would flatten every
+// quantile query if SSE observations landed there — see the constructor
+// comment on sseConnectionDuration in middleware.go.
+func TestHTTPMiddleware_SSEConnectionDuration_SSEBranch(t *testing.T) {
 	t.Parallel()
 
 	reader := sdkmetric.NewManualReader()
@@ -2612,19 +2626,18 @@ func TestHTTPMiddleware_HTTPServerRequestDuration_SSEBranch(t *testing.T) {
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	hist := findHTTPServerDuration(rm)
-	require.NotNil(t, hist, "http.server.request.duration must be emitted for the SSE branch")
+	require.Nil(t, findHTTPServerDuration(rm),
+		"http.server.request.duration must not be emitted for the SSE branch")
+
+	hist := findSSEConnectionDuration(rm)
+	require.NotNil(t, hist, "stacklok.toolhive.proxy.sse_connection.duration must be emitted for the SSE branch")
 	require.Len(t, hist.DataPoints, 1)
 	dp := hist.DataPoints[0]
 
-	mv, ok := dp.Attributes.Value(attribute.Key("http.request.method"))
-	require.True(t, ok, "http.request.method must be present")
-	assert.Equal(t, http.MethodGet, mv.AsString())
+	assert.Equal(t, coremetrics.BucketsMCPProxy(), dp.Bounds,
+		"sse_connection.duration must use the MCP-proxy bucket preset (tops out at 300s), not the 10s-capped fast-HTTP preset")
 
-	sv, ok := dp.Attributes.Value(attribute.Key("http.response.status_code"))
-	require.True(t, ok, "http.response.status_code must be present")
-	assert.Equal(t, int64(http.StatusOK), sv.AsInt64())
-
-	_, hasErr := dp.Attributes.Value(attribute.Key("error.type"))
-	assert.False(t, hasErr, "error.type must be absent on a 2xx SSE close")
+	serverV, ok := dp.Attributes.Value(attribute.Key(coremetrics.LabelMCPServer))
+	require.True(t, ok, "mcp_server must be present")
+	assert.Equal(t, "github", serverV.AsString())
 }

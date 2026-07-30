@@ -467,6 +467,13 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 // prometheus.NewReader called directly with hardcoded labels (see prometheus_test.go).
 // A key/value swap or wrong-form key (e.g. an OTel dotted attribute key instead of a
 // Prometheus label name) in that construction would otherwise go undetected.
+//
+// Escaping is checked under two negotiated formats, not just the default: Prometheus's
+// name-escaping scheme is content-negotiated per scrape, and a dotted OTel attribute key
+// used as a Prometheus label name would pass under the default (UnderscoreEscaping)
+// negotiation while still exposing verbatim under escaping=allow-utf-8 (Prometheus 3.x) —
+// splitting one ownership label into two incompatible families depending on scraper. Only
+// testing the default negotiation would have let that regression through undetected.
 func TestUnifiedMeterStrategy_PrometheusOwnershipLabels(t *testing.T) {
 	t.Parallel()
 
@@ -478,23 +485,45 @@ func TestUnifiedMeterStrategy_PrometheusOwnershipLabels(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result.PrometheusHandler)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	rec := httptest.NewRecorder()
-	result.PrometheusHandler.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	body := rec.Body.String()
-	require.Contains(t, body, "go_goroutines")
-
-	foundRuntimeSeries := false
-	for line := range strings.SplitSeq(body, "\n") {
-		if strings.HasPrefix(line, "go_goroutines") || strings.HasPrefix(line, "process_cpu_seconds_total") {
-			foundRuntimeSeries = true
-			assert.Contains(t, line, `stacklok_component="toolhive"`)
-			assert.Contains(t, line, `stacklok_product="stacklok-platform"`)
-		}
+	tests := []struct {
+		name   string
+		accept string
+	}{
+		{name: "default negotiation", accept: ""},
+		{
+			name:   "escaping=allow-utf-8 negotiation",
+			accept: "text/plain;version=0.0.4;escaping=allow-utf-8,*/*;q=0.1",
+		},
 	}
-	assert.True(t, foundRuntimeSeries, "expected to find go_/process_ runtime series in scrape output")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+			rec := httptest.NewRecorder()
+			result.PrometheusHandler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			body := rec.Body.String()
+			require.Contains(t, body, "go_goroutines")
+
+			foundRuntimeSeries := false
+			for line := range strings.SplitSeq(body, "\n") {
+				if strings.HasPrefix(line, "go_goroutines") || strings.HasPrefix(line, "process_cpu_seconds_total") {
+					foundRuntimeSeries = true
+					assert.Contains(t, line, `stacklok_component="toolhive"`)
+					assert.Contains(t, line, `stacklok_product="stacklok-platform"`)
+					assert.NotContains(t, line, `"stacklok.component"`,
+						"ownership label must never expose in dotted OTel-attribute form")
+				}
+			}
+			assert.True(t, foundRuntimeSeries, "expected to find go_/process_ runtime series in scrape output")
+		})
+	}
 }
 
 // TestUnifiedMeterStrategyConfiguration tests the unified meter strategy configuration

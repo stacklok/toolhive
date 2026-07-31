@@ -200,10 +200,16 @@ func TestConcurrentInitializeReachesBackendOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range clients {
 		wg.Go(func() {
-			decoded := postInitialize(t, url, fmt.Sprintf("client-%d", i))
+			id := fmt.Sprintf("client-%d", i)
+			decoded := postInitialize(t, url, id)
 			assert.Nil(t, decoded["error"],
 				"a handshake that raced past the cache would be rejected by the backend")
 			assert.NotNil(t, decoded["result"], "every concurrent handshake should succeed")
+			// Waiters share one singleflight result, which carries the id of
+			// whichever caller performed the forward. Each response must be
+			// re-addressed to its own caller.
+			assert.Equal(t, id, decoded["id"],
+				"a waiter must never receive another caller's JSON-RPC id")
 		})
 	}
 	done := make(chan struct{})
@@ -275,4 +281,66 @@ func TestDuplicateInitializedNotificationIsNotForwarded(t *testing.T) {
 
 	assert.Equal(t, 1, backend.count("notifications/initialized"),
 		"only one initialized notification may reach the single stdio session")
+}
+
+// TestInitializeSurvivesFirstCallerDisconnect verifies that a client giving up
+// mid-handshake does not cancel the shared upstream call for everyone else.
+//
+// The handshake is collapsed by singleflight, and singleflight runs the shared
+// function with whichever context the first caller supplied. Passing that
+// context straight through would let one client's disconnect fail every waiter,
+// so interceptInitialize detaches it with context.WithoutCancel.
+func TestInitializeSurvivesFirstCallerDisconnect(t *testing.T) {
+	t.Parallel()
+
+	proxy, url := startInitTestProxy(t)
+	strict := strictInitializeResponder()
+	backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
+		// Long enough that the first caller aborts while the handshake is in
+		// flight, short enough to keep the test quick.
+		time.Sleep(400 * time.Millisecond)
+		return strict(req)
+	})
+
+	// First caller: gives up well before the backend replies.
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 80*time.Millisecond)
+		defer cancel()
+		body := fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":%q,"method":"initialize","params":{"protocolVersion":%q}}`,
+			"quitter", testProtocolVersion)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte(body)))
+		if !assert.NoError(t, err) {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // err path returns no body
+		assert.Error(t, err, "the first caller is expected to abort mid-handshake")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	})
+
+	// Give the first caller time to enter the flight and then abort.
+	time.Sleep(150 * time.Millisecond)
+
+	// Second caller arrives while the shared handshake is still running.
+	decoded := postInitialize(t, url, "survivor")
+	assert.Nil(t, decoded["error"],
+		"the shared handshake must not be cancelled by the first caller disconnecting")
+	require.NotNil(t, decoded["result"], "second caller should still complete its handshake")
+	assert.Equal(t, "survivor", decoded["id"])
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for the aborting caller to finish")
+	}
+
+	assert.Equal(t, 1, backend.count("initialize"),
+		"the disconnect must not cause a second upstream handshake")
 }

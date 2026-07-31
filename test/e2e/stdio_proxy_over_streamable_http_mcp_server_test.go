@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/stacklok/toolhive/test/e2e"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http", "e2e"), Serial, func() {
@@ -44,8 +45,9 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			By("Starting the time MCP server with streamable-http proxy")
 			e2e.NewTHVCommand(config, "run",
 				"--name", serverName,
+				"--transport", "stdio",
 				"--proxy-mode", "streamable-http",
-				"time").ExpectSuccess()
+				images.TimeMCPServerImage).ExpectSuccess()
 
 			By("Waiting for the server to be running")
 			err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)

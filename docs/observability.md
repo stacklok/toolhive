@@ -237,11 +237,12 @@ termination) requests carry no MCP method and are not recorded here.
 > **Cardinality warning**: `gen_ai.tool.name` and `gen_ai.prompt.name` come from
 > `params.name` in the client's JSON-RPC request body and are **not** validated
 > against the server's resolved tool or prompt set. A client calling arbitrary
-> names therefore grows this metric's series count without bound, and since the
-> deleted `toolhive_mcp_*` twins made this the sole per-method metric, there is
-> no unaffected alternative. Bounding these attributes is tracked separately; in
-> the meantime, drop them with a Prometheus `metric_relabel_config` if untrusted
-> clients can reach the proxy.
+> names therefore grows this metric's series count without bound. Once
+> `useLegacyMetrics` defaults to `false` and the retired `toolhive_mcp_*` twins
+> stop being emitted, this becomes the only per-method metric, so there will be
+> no unaffected alternative to fall back on. Bounding these attributes is tracked
+> separately; in the meantime, drop them with a Prometheus
+> `metric_relabel_config` if untrusted clients can reach the proxy.
 >
 > `mcp.method.name` and `http.request.method` are bounded: values outside the
 > known set are recorded as the semconv `_OTHER` sentinel.
@@ -265,9 +266,11 @@ SSE-open GETs are excluded: they block for the connection's full lifetime
 
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|
-| `http.request.method` | string | Always | HTTP method (`GET`, `POST`, `DELETE`) |
+| `http.request.method` | string | Always | HTTP method (`GET`, `POST`, `DELETE`, …). Methods outside the known set are recorded as the semconv `_OTHER` sentinel, since `net/http` accepts any RFC 7230 token and the raw value would otherwise be unbounded |
+| `url.scheme` | string | Always | `http` or `https` (semconv marks this Required) |
 | `http.response.status_code` | int | Always | HTTP status code |
 | `mcp_server` | string | Always | MCP server name |
+| `network.protocol.version` | string | If available | HTTP protocol version (`1.1`, `2`) |
 | `error.type` | string | On HTTP 5xx | HTTP status code as string |
 
 #### `stacklok.toolhive.proxy.sse_connection.duration` (Histogram, seconds)

@@ -188,9 +188,15 @@ func NewHTTPMiddleware(
 // same attribute set.
 //
 // This makes docs/observability.md's "registered once per process" claim true.
-// The durable fix is to register during provider assembly in
-// pkg/telemetry/providers, where ComponentName and the resource already live;
-// this is the cheap interim.
+//
+// The tradeoff: the guard is per-process, not per-meter-provider, so if a process
+// ever builds middlewares over two DISTINCT providers, only the first provider's
+// meter gets the gauge. That does not happen today — each proxy process builds one
+// telemetry middleware (the factory loop in pkg/runner/runner.go consumes one
+// telemetry MiddlewareConfig), and vMCP builds one from its single provider — but
+// it is why registering during provider assembly in pkg/telemetry/providers, where
+// ComponentName and the resource already live, is the durable fix. This is the
+// cheap interim. See registerBuildInfoNow for the test escape hatch.
 var buildInfoOnce sync.Once
 
 // registerBuildInfo registers the stacklok.build_info gauge via the shared
@@ -856,11 +862,12 @@ func (m *HTTPMiddleware) recordLegacyRequestMetrics(
 
 // recordHTTPServerDuration records the http.server.request.duration OTEL HTTP
 // semantic-convention metric. It carries the semconv attribute keys
-// (http.request.method, url.scheme, http.response.status_code, error.type set
-// only on failure) plus mcp_server, so a single Prometheus instance scraping
-// several proxies can still split this metric per backend without a join — the
-// deleted toolhive_mcp_requests/_request_duration twins this metric replaces
-// both carried an equivalent server label.
+// (http.request.method, url.scheme, http.response.status_code, plus
+// network.protocol.version when known and error.type only on failure) and
+// mcp_server, so a single Prometheus instance scraping several proxies can still
+// split this metric per backend without a join — the toolhive_mcp_requests /
+// _request_duration twins this metric replaces both carried an equivalent server
+// label.
 func (m *HTTPMiddleware) recordHTTPServerDuration(
 	ctx context.Context, r *http.Request, statusCode int, duration time.Duration,
 ) {

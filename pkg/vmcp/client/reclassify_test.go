@@ -355,7 +355,7 @@ func TestLegacyInit_SelfHealsRevisionCache(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
 
-	_, err = h.legacyInit(context.Background(), c, target.WorkloadID)
+	_, err = h.legacyInit(context.Background(), c, target)
 	require.NoError(t, err, "the SDK client negotiates Modern transparently on the Legacy path")
 
 	rev, _ := h.cachedRevision(target.WorkloadID)

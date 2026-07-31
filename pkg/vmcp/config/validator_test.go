@@ -592,6 +592,45 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 			wantErr: true,
 			errMsg:  "tool overrides are required",
 		},
+		{
+			// Omitted defaultVisibility keeps pre-existing configs valid.
+			name: "unset defaultVisibility is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "defaultVisibility deny is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultVisibility:        DefaultVisibilityDeny,
+			},
+			wantErr: false,
+		},
+		{
+			name: "defaultVisibility allow is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultVisibility:        DefaultVisibilityAllow,
+			},
+			wantErr: false,
+		},
+		{
+			// The CLI path has no admission webhook, so a typo must be rejected here
+			// rather than silently falling back to advertise-everything.
+			name: "defaultVisibility rejects an unknown value",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultVisibility:        "denied",
+			},
+			wantErr: true,
+			errMsg:  "defaultVisibility must be one of",
+		},
 	}
 
 	for _, tt := range tests {

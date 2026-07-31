@@ -29,6 +29,10 @@ type defaultAggregator struct {
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 	excludeAllTools  bool                                  // Global flag to exclude all tools
+	// denyUnlisted advertises no tools from a backend absent from toolConfigMap
+	// (config.DefaultVisibilityDeny). False — the default — preserves the
+	// advertise-everything behavior predating the setting.
+	denyUnlisted bool
 	// promptNaming controls how advertised prompt names are formed (see
 	// resolvePromptConflicts). Derived from the aggregation config at
 	// construction.
@@ -38,7 +42,8 @@ type defaultAggregator struct {
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
-// aggregationConfig specifies aggregation settings including tool filtering/overrides and excludeAllTools.
+// aggregationConfig specifies aggregation settings including tool filtering/overrides,
+// excludeAllTools, and defaultVisibility.
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
@@ -49,9 +54,13 @@ func NewDefaultAggregator(
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
 	var excludeAllTools bool
+	var denyUnlisted bool
 
 	if aggregationConfig != nil {
 		excludeAllTools = aggregationConfig.ExcludeAllTools
+		// Only the explicit "deny" opts in; "" (unset) and "allow" both advertise,
+		// so a config written before this setting existed is unaffected.
+		denyUnlisted = aggregationConfig.DefaultVisibility == config.DefaultVisibilityDeny
 		for _, wlConfig := range aggregationConfig.Tools {
 			if wlConfig != nil {
 				toolConfigMap[wlConfig.Workload] = wlConfig
@@ -72,6 +81,7 @@ func NewDefaultAggregator(
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
 		excludeAllTools:  excludeAllTools,
+		denyUnlisted:     denyUnlisted,
 		promptNaming:     promptNamingFromConfig(aggregationConfig),
 		tracer:           tracer,
 	}
@@ -632,10 +642,13 @@ func actualBackendCapabilityName(toolConfigMap map[string]*config.WorkloadToolCo
 // shouldAdvertiseTool returns true if a tool from the given backend should be
 // advertised to MCP clients (included in tools/list response).
 //
-// ExcludeAll, Filter, and per-workload settings control advertising, not routing:
-// - Tools excluded via ExcludeAll are NOT advertised to MCP clients
-// - Tools not matching Filter are NOT advertised to MCP clients
-// - BUT they ARE available in the routing table for composite tools to use
+// ExcludeAll, Filter, DefaultVisibility, and per-workload settings control
+// advertising, not routing:
+//   - Tools excluded via ExcludeAll are NOT advertised to MCP clients
+//   - Tools not matching Filter are NOT advertised to MCP clients
+//   - Under DefaultVisibility "deny", tools from a backend with no per-workload
+//     config are NOT advertised to MCP clients
+//   - BUT they ARE available in the routing table for composite tools to use
 //
 // This enables the use case where you want to hide raw backend tools from
 // direct client access while still allowing curated composite workflows to use them.
@@ -652,8 +665,11 @@ func (a *defaultAggregator) shouldAdvertiseTool(backendID, originalToolName stri
 	// Check per-workload settings
 	wlConfig, exists := a.toolConfigMap[backendID]
 	if !exists {
-		// No config for this backend, advertise the tool
-		return true
+		// No config for this backend. Under the default ("allow"), advertise the
+		// tool; under "deny", withhold it so only backends named in the config
+		// contribute tools. A backend WITH a config is opted in either way — its
+		// own ExcludeAll/Filter decide below.
+		return !a.denyUnlisted
 	}
 
 	// Check per-workload ExcludeAll setting

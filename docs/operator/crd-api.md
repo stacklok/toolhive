@@ -262,8 +262,8 @@ _Appears in:_
 AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 
 Tool Visibility vs Routing:
-  - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-    advertised to MCP clients (visible in tools/list responses).
+  - ExcludeAllTools, DefaultVisibility, per-workload ExcludeAll, and Filter control
+    which tools are advertised to MCP clients (visible in tools/list responses).
   - ALL backend tools remain available in the internal routing table, allowing
     composite tools to call hidden backend tools.
   - This enables curated experiences where raw backend tools are hidden from
@@ -280,6 +280,7 @@ _Appears in:_
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
 | `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
+| `defaultVisibility` _[vmcp.config.DefaultVisibility](#vmcpconfigdefaultvisibility)_ | DefaultVisibility controls whether a backend with NO entry in Tools has its<br />tools advertised to MCP clients.<br />  - allow (default): every tool from an unlisted backend is advertised, so<br />    adding a workload to the group exposes it without further configuration.<br />  - deny: an unlisted backend contributes no tools, so only backends named in<br />    Tools are advertised. Use this when the set of exposed tools must be<br />    enumerated deliberately rather than inherited from group membership.<br />A backend that DOES have a Tools entry is unaffected by this setting: the<br />entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like<br />every other visibility setting here, this controls advertising only — hidden<br />tools remain in the routing table for composite tools (see the type doc). | allow | Enum: [allow deny] <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.AuthzConfig
@@ -436,6 +437,8 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" tool strategy<br />and for backend-prefixed prompt names (the default for every prompt;<br />under the "priority" strategy, backends listed in priorityOrder keep<br />their own prompt names).<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ | Optional: \{\} <br /> |
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy.<br />Listed workloads also keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
+
+
 
 
 

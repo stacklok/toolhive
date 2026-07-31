@@ -732,6 +732,11 @@ func (c *Converter) convertAggregation(
 	agg := &vmcpconfig.AggregationConfig{
 		ConflictResolution: srcAgg.ConflictResolution,
 		ExcludeAllTools:    srcAgg.ExcludeAllTools,
+		// Carried through explicitly: this converter hand-copies fields rather than
+		// deep-copying, so a visibility setting omitted here would be accepted by the
+		// CRD and then silently dropped before the vMCP process ever sees it —
+		// failing OPEN on a setting users rely on to withhold tools.
+		DefaultVisibility: srcAgg.DefaultVisibility,
 	}
 
 	// Apply defaults for conflict resolution

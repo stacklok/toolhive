@@ -430,8 +430,8 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
-//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-//     advertised to MCP clients (visible in tools/list responses).
+//   - ExcludeAllTools, DefaultVisibility, per-workload ExcludeAll, and Filter control
+//     which tools are advertised to MCP clients (visible in tools/list responses).
 //   - ALL backend tools remain available in the internal routing table, allowing
 //     composite tools to call hidden backend tools.
 //   - This enables curated experiences where raw backend tools are hidden from
@@ -464,7 +464,38 @@ type AggregationConfig struct {
 	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
+
+	// DefaultVisibility controls whether a backend with NO entry in Tools has its
+	// tools advertised to MCP clients.
+	//   - allow (default): every tool from an unlisted backend is advertised, so
+	//     adding a workload to the group exposes it without further configuration.
+	//   - deny: an unlisted backend contributes no tools, so only backends named in
+	//     Tools are advertised. Use this when the set of exposed tools must be
+	//     enumerated deliberately rather than inherited from group membership.
+	//
+	// A backend that DOES have a Tools entry is unaffected by this setting: the
+	// entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+	// every other visibility setting here, this controls advertising only — hidden
+	// tools remain in the routing table for composite tools (see the type doc).
+	// +kubebuilder:validation:Enum=allow;deny
+	// +kubebuilder:default=allow
+	// +optional
+	DefaultVisibility DefaultVisibility `json:"defaultVisibility,omitempty" yaml:"defaultVisibility,omitempty"`
 }
+
+// DefaultVisibility names the advertising default applied to backends with no
+// per-workload Tools entry. The zero value is "" (unset), which behaves as
+// DefaultVisibilityAllow so existing configs keep today's behavior.
+type DefaultVisibility string
+
+const (
+	// DefaultVisibilityAllow advertises every tool from a backend with no Tools
+	// entry. This is the default and matches pre-DefaultVisibility behavior.
+	DefaultVisibilityAllow DefaultVisibility = "allow"
+
+	// DefaultVisibilityDeny advertises no tools from a backend with no Tools entry.
+	DefaultVisibilityDeny DefaultVisibility = "deny"
+)
 
 // ConflictResolutionConfig provides configuration for conflict resolution strategies.
 // +kubebuilder:object:generate=true

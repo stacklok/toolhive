@@ -1035,6 +1035,25 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultVisibility:
+                        default: allow
+                        description: |-
+                          DefaultVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -4499,6 +4518,25 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultVisibility:
+                        default: allow
+                        description: |-
+                          DefaultVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.

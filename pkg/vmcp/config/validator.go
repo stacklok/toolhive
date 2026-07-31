@@ -350,6 +350,15 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		return err
 	}
 
+	// Mirrors the CRD's enum for the CLI path, which has no API-server admission
+	// to reject a bad value. "" is accepted and means allow, so configs written
+	// before this setting existed stay valid.
+	switch agg.DefaultVisibility {
+	case "", DefaultVisibilityAllow, DefaultVisibilityDeny:
+	default:
+		return fmt.Errorf("defaultVisibility must be one of: allow, deny")
+	}
+
 	return v.validateToolConfigurations(agg.Tools)
 }
 

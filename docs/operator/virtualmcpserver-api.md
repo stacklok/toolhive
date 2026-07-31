@@ -231,6 +231,9 @@ Defines tool aggregation and conflict resolution strategies.
 - `conflictResolutionConfig` (ConflictResolutionConfig, optional): Configuration for the chosen strategy
 - `tools` ([]WorkloadToolConfig, optional): Per-workload tool filtering and overrides
 - `excludeAllTools` (bool, optional): Excludes all tools from aggregation when true
+- `defaultVisibility` (string, optional, default: "allow"): Whether a backend with no `tools` entry is advertised
+  - `allow`: every tool from an unlisted backend is advertised
+  - `deny`: an unlisted backend contributes no tools, so only backends named in `tools` are advertised
 
 **Example (prefix strategy)**:
 ```yaml
@@ -248,6 +251,39 @@ spec:
         toolConfigRef:
           name: jira-tool-config
 ```
+
+**Example (deny-by-default)**:
+
+By default, a workload in the group with no `tools` entry has all of its tools
+advertised, so adding a workload to the group exposes it. Set
+`defaultVisibility: deny` to invert that, so only the workloads you list
+contribute tools:
+
+```yaml
+spec:
+  groupRef:
+    name: my-services
+  aggregation:
+    conflictResolution: prefix
+    defaultVisibility: deny
+    tools:
+      # Only these two workloads are advertised. Any other workload in
+      # my-services contributes no tools, including ones added later.
+      - workload: github
+        filter: ["get_issue", "list_prs"]
+      - workload: jira
+        filter: ["get_issue"]
+```
+
+A workload that *is* listed is opted in by its entry: `excludeAll` and `filter`
+on that entry then decide which of its tools are advertised. An entry with
+neither advertises all of that workload's tools.
+
+> **Note**: `defaultVisibility` controls **advertising** only, as do
+> `excludeAllTools` and `excludeAll`. Tools hidden this way remain in the routing
+> table so composite tools can still call them, and `defaultVisibility` does not
+> affect resources or prompts, which are advertised regardless. For per-identity
+> authorization, use Cedar policies (see [Authorization](../authz.md)).
 
 **Example (priority strategy)**:
 ```yaml

@@ -344,3 +344,42 @@ func TestInitializeSurvivesFirstCallerDisconnect(t *testing.T) {
 	assert.Equal(t, 1, backend.count("initialize"),
 		"the disconnect must not cause a second upstream handshake")
 }
+
+// TestMalformedInitializeReplyBecomesInternalError pins an intentional
+// behaviour change made when the flight started sharing an id-free handshake
+// rather than a whole response.
+//
+// A JSON-RPC success carrying neither an error nor a result is malformed for
+// initialize -- InitializeResult requires protocolVersion, capabilities and
+// serverInfo. It used to be forwarded to the client verbatim; it is now
+// reported as an internal error, and nothing is cached, so the next client
+// still gets a real handshake attempt.
+func TestMalformedInitializeReplyBecomesInternalError(t *testing.T) {
+	t.Parallel()
+
+	proxy, url := startInitTestProxy(t)
+	var mu sync.Mutex
+	var calls int
+	backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			// Success envelope with no result and no error.
+			return &jsonrpc2.Response{ID: req.ID}
+		}
+		return initializeResultFor(req)
+	})
+
+	malformed := postInitialize(t, url, "client-0")
+	require.NotNil(t, malformed["error"], "a result-less success must not be replayed to the client")
+	assert.Equal(t, "client-0", malformed["id"])
+
+	recovered := postInitialize(t, url, "client-1")
+	assert.Nil(t, recovered["error"], "the malformed reply must not be cached")
+	require.NotNil(t, recovered["result"], "the next client should get a real handshake")
+
+	assert.Equal(t, 2, backend.count("initialize"),
+		"a malformed reply must leave the cache empty so the next client retries")
+}

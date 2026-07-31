@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
+	"sync/atomic"
 
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/sync/singleflight"
@@ -41,24 +41,41 @@ var errUnexpectedInitializeReply = errors.New("backend returned an unexpected re
 // InitializeResult carries the backend's protocol version, capabilities,
 // instructions and server info, none of which vary by client.
 type initializeCache struct {
-	// flight collapses concurrent first handshakes into a single upstream call
-	// whose outcome every waiter shares. Serializing them behind a mutex
-	// instead would queue each waiter's own round trip: with an unresponsive
-	// backend the Nth client waits N*requestTimeout (60s each) before it may
-	// even start.
+	// flight collapses concurrent handshakes into a single upstream call whose
+	// outcome every waiter shares. Serializing them behind a mutex instead
+	// would queue each waiter's own round trip: with an unresponsive backend
+	// the Nth client waits N*requestTimeout (60s each) before it may even
+	// start.
 	flight singleflight.Group
 
-	// mu guards the two fields below. It is never held across an upstream call.
-	mu sync.Mutex
-
 	// result is the raw InitializeResult of the first successful handshake,
-	// nil until one completes. Once assigned it is never mutated, so it is
-	// safe to hand the same bytes to concurrent responses.
+	// nil until one completes.
+	//
+	// UNSYNCHRONISED BY DESIGN: only the flight callback in interceptInitialize
+	// may read or write this field. singleflight runs at most one callback per
+	// key at a time and a later callback starts only after the previous one has
+	// completed through the group's own mutex, so callback-only access can
+	// never overlap. Reading it anywhere else -- a status endpoint, a helper
+	// accessor -- reintroduces a data race, which is why no accessor exists.
+	// Once assigned it is never mutated, so the same bytes may be handed to
+	// concurrent responses.
 	result json.RawMessage
 
 	// initializedForwarded records whether a notifications/initialized has
-	// already been passed to the backend.
-	initializedForwarded bool
+	// already been passed to the backend. This deliberately does NOT use the
+	// flight: singleflight de-duplicates rather than serializes, so two
+	// concurrent claims would share one callback's answer and both forward.
+	// CompareAndSwap gives exactly one winner.
+	initializedForwarded atomic.Bool
+}
+
+// handshake is the id-free half of an initialize outcome, shared by a flight
+// with all of its waiters. Exactly one of the fields is set. Sharing this
+// rather than a whole *jsonrpc2.Response means each caller builds its own
+// reply, so a waiter cannot receive the forwarding caller's JSON-RPC id.
+type handshake struct {
+	result json.RawMessage
+	rpcErr error
 }
 
 // initializeFlightKey is the sole singleflight key: the cached handshake is
@@ -68,23 +85,6 @@ const initializeFlightKey = "initialize"
 // newInitializeCache creates an empty initializeCache.
 func newInitializeCache() *initializeCache {
 	return &initializeCache{}
-}
-
-// cachedResult returns the cached InitializeResult, or nil if no handshake has
-// succeeded yet.
-func (c *initializeCache) cachedResult() json.RawMessage {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.result
-}
-
-// storeResult records the InitializeResult of the first successful handshake.
-func (c *initializeCache) storeResult(result json.RawMessage) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.result == nil {
-		c.result = result
-	}
 }
 
 // interceptInitialize answers a client's initialize request: the first caller's
@@ -117,44 +117,45 @@ func (c *initializeCache) storeResult(result json.RawMessage) {
 func (p *HTTPProxy) interceptInitialize(
 	ctx context.Context, sessID string, req *jsonrpc2.Request,
 ) jsonrpc2.Message {
-	if cached := p.initialize.cachedResult(); cached != nil {
-		return &jsonrpc2.Response{ID: req.ID, Result: cached}
-	}
-
-	v, err, _ := p.initialize.flight.Do(initializeFlightKey, func() (any, error) {
-		// A handshake may have completed between the read above and entering
-		// the flight.
-		if cached := p.initialize.cachedResult(); cached != nil {
-			return cached, nil
+	c := p.initialize
+	v, err, _ := c.flight.Do(initializeFlightKey, func() (any, error) {
+		// A handshake already succeeded: replay it, no backend round trip.
+		if c.result != nil {
+			return handshake{result: c.result}, nil
 		}
+
+		// Detached from the caller's context: this result belongs to every
+		// waiter, so whichever caller performs the forward must not cancel the
+		// handshake for the others by disconnecting. forwardUpstream still
+		// bounds it with p.requestTimeout.
 		msg, ferr := p.forwardUpstream(context.WithoutCancel(ctx), sessID, req)
 		if ferr != nil {
-			return nil, ferr
+			return nil, ferr // nothing cached; the next client retries for real
 		}
-		if resp, ok := msg.(*jsonrpc2.Response); ok && resp.Error == nil && len(resp.Result) > 0 {
-			p.initialize.storeResult(resp.Result)
-			return resp.Result, nil
+
+		resp, ok := msg.(*jsonrpc2.Response)
+		if !ok {
+			return nil, errUnexpectedInitializeReply
 		}
-		// A JSON-RPC error (or an unexpected shape) is shared with this
-		// flight's waiters but deliberately not cached, so the next client
-		// retries the handshake for real rather than being pinned to one bad
-		// response.
-		return msg, nil
+		if resp.Error != nil {
+			// Shared with this flight's waiters but deliberately not cached, so
+			// a transient failure cannot pin every future client to one
+			// response.
+			return handshake{rpcErr: resp.Error}, nil
+		}
+		if len(resp.Result) == 0 {
+			return nil, errUnexpectedInitializeReply // no result and no error
+		}
+
+		c.result = resp.Result
+		return handshake{result: resp.Result}, nil
 	})
 	if err != nil {
 		return upstreamErrorResponse(req.ID, err)
 	}
 
-	switch out := v.(type) {
-	case json.RawMessage:
-		return &jsonrpc2.Response{ID: req.ID, Result: out}
-	case *jsonrpc2.Response:
-		return &jsonrpc2.Response{ID: req.ID, Result: out.Result, Error: out.Error}
-	default:
-		// Not a response we can re-address to this caller; surface an error
-		// rather than replying with another caller's id.
-		return upstreamErrorResponse(req.ID, errUnexpectedInitializeReply)
-	}
+	h := v.(handshake) // the callback returns a handshake or a non-nil error
+	return &jsonrpc2.Response{ID: req.ID, Result: h.result, Error: h.rpcErr}
 }
 
 // claimInitializedForward reports whether a client's notifications/initialized
@@ -165,14 +166,7 @@ func (p *HTTPProxy) interceptInitialize(
 // swallowed. Swallowed notifications are still acknowledged with 202, which is
 // all the sending client expects -- notifications carry no response.
 func (p *HTTPProxy) claimInitializedForward() bool {
-	p.initialize.mu.Lock()
-	defer p.initialize.mu.Unlock()
-
-	if p.initialize.initializedForwarded {
-		return false
-	}
-	p.initialize.initializedForwarded = true
-	return true
+	return p.initialize.initializedForwarded.CompareAndSwap(false, true)
 }
 
 // isInitializedNotification reports whether msg is a client's

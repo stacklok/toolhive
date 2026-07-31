@@ -870,8 +870,9 @@ func (sm *Manager) listAllBackends(ctx context.Context) []*vmcp.Backend {
 //
 // A nil provider means health monitoring is disabled: every backend is
 // attempted, preserving the pre-#5861 behaviour. A backend the monitor does not
-// track (not yet probed) falls back to its registry status, so a cold monitor at
-// startup does not block every session.
+// track yet falls back to its registry status. Either way only confirmed-bad
+// statuses are skipped — see health.ShouldOpenSession for why "not yet
+// classified" must fail open rather than closed.
 func (sm *Manager) shouldOpenSession(backend *vmcp.Backend) bool {
 	if sm.backendHealth == nil {
 		return true

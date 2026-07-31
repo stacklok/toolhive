@@ -92,9 +92,24 @@ const (
 
 	idaProMCPServerImageURL = "ghcr.io/stacklok/dockyard/uvx/ida-pro-mcp"
 	idaProMCPServerImageTag = "1.4.0"
+	// idaProMCPServerImageDigest pins the 2026-07-27 build of tag 1.4.0.
+	//
+	// The tag is mutable: dockyard periodically rebuilds it and resolves Python
+	// dependencies fresh each time. ida-pro-mcp 1.4.0 declares an unbounded
+	// "mcp>=1.16.0" and imports mcp.server.fastmcp, which was removed in the
+	// mcp Python SDK 2.0.0 (released 2026-07-28). The 2026-07-31 rebuild picked
+	// up mcp 2.0.0, so the container now crashloops on startup with
+	// "ModuleNotFoundError: No module named 'mcp.server.fastmcp'".
+	//
+	// 1.4.0 is the newest ida-pro-mcp release on PyPI, so there is nothing to
+	// bump to. Pin the last build that resolved a 1.x mcp (1.28.1) until
+	// upstream caps the constraint or adopts the 2.x API. Every other backend
+	// in the optimizer test is unaffected -- pagerduty-mcp, the only other
+	// dockyard uvx image, caps "mcp[cli]~=1.8".
+	idaProMCPServerImageDigest = "sha256:5a596d965fe05052d615a41152213f93ebc72bf46b07304718de948833d73c70"
 	// IDAProMCPServerImage is used for testing multi-backend optimizer scenarios.
 	// Provides ~47 IDA Pro reverse engineering tools (decompile, disassemble, rename, etc.).
-	IDAProMCPServerImage = idaProMCPServerImageURL + ":" + idaProMCPServerImageTag
+	IDAProMCPServerImage = idaProMCPServerImageURL + ":" + idaProMCPServerImageTag + "@" + idaProMCPServerImageDigest
 
 	pagerdutyMCPServerImageURL = "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp"
 	pagerdutyMCPServerImageTag = "0.12.0"

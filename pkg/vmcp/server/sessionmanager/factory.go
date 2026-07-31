@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
@@ -83,6 +84,14 @@ type FactoryConfig struct {
 	// decorator branch the false case used to select is now unreachable — its
 	// deletion is tracked in #6103.
 	AdvertiseFromCore bool
+
+	// BackendHealth gates which backends a new session attempts to connect to.
+	//
+	// Optional: nil disables health gating and every backend is attempted, which
+	// is both the pre-#5861 behaviour and the correct fallback when health
+	// monitoring is switched off. See health.ShouldOpenSession for why session
+	// establishment applies a stricter predicate than capability advertising.
+	BackendHealth health.StatusProvider
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry

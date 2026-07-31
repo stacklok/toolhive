@@ -506,6 +506,13 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 		AdvertiseFromCore: true,
+		// Gate per-session backend connects on health status (#5861). Without this a
+		// backend the monitor already knows is bad is still re-attempted by every new
+		// session, and session creation blocks on it — so one slow backend sets the
+		// floor for the whole tenant's initialize latency. BackendHealth() returns a
+		// true nil interface when monitoring is disabled, which the session manager
+		// reads as "attempt every backend" (the prior behaviour).
+		BackendHealth: coreVMCP.BackendHealth(),
 	}
 
 	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, backendRegistry, sessMgrCfg))

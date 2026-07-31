@@ -795,9 +795,9 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 
 		// Include healthy, degraded, and empty/zero-value (assume healthy) backends.
 		// Explicitly exclude unhealthy, unknown, and unauthenticated backends.
-		if healthStatus == "" ||
-			healthStatus == vmcp.BackendHealthy ||
-			healthStatus == vmcp.BackendDegraded {
+		// The predicate is shared with session establishment's stricter
+		// counterpart — see health.ShouldAdvertise / health.ShouldOpenSession.
+		if health.ShouldAdvertise(healthStatus) {
 			healthy = append(healthy, *backend)
 		} else {
 			excluded++

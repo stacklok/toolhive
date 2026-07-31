@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -76,6 +77,11 @@ type Manager struct {
 	storage    transportsession.DataStorage
 	factory    vmcpsession.MultiSessionFactory
 	backendReg vmcp.BackendRegistry
+
+	// backendHealth gates which backends a new session connects to, or nil when
+	// health monitoring is disabled (every backend is attempted). Read-only here;
+	// the core owns the monitor's lifecycle. See shouldOpenSession.
+	backendHealth health.StatusProvider
 
 	// sessions is a node-local cache of live MultiSession objects, separate
 	// from storage because MultiSession contains un-serialisable runtime state
@@ -132,8 +138,9 @@ func New(
 	// Build the Manager first so we can reference sm.Terminate and sm.sessions
 	// directly in closures, eliminating the forward-reference variable pattern.
 	sm := &Manager{
-		storage:    storage,
-		backendReg: backendRegistry,
+		storage:       storage,
+		backendReg:    backendRegistry,
+		backendHealth: cfg.BackendHealth,
 	}
 
 	// Surface the resolved optimizer factory to the Serve path. The constructor
@@ -835,12 +842,43 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 	return nil
 }
 
-// listAllBackends returns all backends from the registry as a pointer slice.
+// listAllBackends returns the backends a new session should attempt to connect
+// to, skipping any the health monitor has already classified as not worth
+// blocking on (see shouldOpenSession).
 func (sm *Manager) listAllBackends(ctx context.Context) []*vmcp.Backend {
 	raw := sm.backendReg.List(ctx)
-	backends := make([]*vmcp.Backend, len(raw))
+	backends := make([]*vmcp.Backend, 0, len(raw))
+	skipped := 0
 	for i := range raw {
-		backends[i] = &raw[i]
+		if !sm.shouldOpenSession(&raw[i]) {
+			skipped++
+			continue
+		}
+		backends = append(backends, &raw[i])
+	}
+	if skipped > 0 {
+		//nolint:gosec // G706: values are internal counts, not user-controlled
+		slog.Debug("skipping backends for session establishment due to health status",
+			"skipped", skipped,
+			"attempted", len(backends))
 	}
 	return backends
+}
+
+// shouldOpenSession reports whether this session should attempt to connect to
+// backend, consulting the health monitor when one is wired.
+//
+// A nil provider means health monitoring is disabled: every backend is
+// attempted, preserving the pre-#5861 behaviour. A backend the monitor does not
+// track (not yet probed) falls back to its registry status, so a cold monitor at
+// startup does not block every session.
+func (sm *Manager) shouldOpenSession(backend *vmcp.Backend) bool {
+	if sm.backendHealth == nil {
+		return true
+	}
+	status, ok := sm.backendHealth.QueryBackendStatus(backend.ID)
+	if !ok {
+		status = backend.HealthStatus
+	}
+	return health.ShouldOpenSession(status)
 }

@@ -50,7 +50,13 @@ var schemaSQL string
 // and optional vector embedding-based semantic search.
 // It satisfies the types.ToolStore interface.
 type sqliteToolStore struct {
-	db                        *sql.DB
+	db *sql.DB
+
+	// pinnedConn is a single connection held open for the lifetime of the store.
+	// It is never used to run queries; it exists only to keep the in-memory
+	// database alive. See newSQLiteToolStore for why.
+	pinnedConn *sql.Conn
+
 	embeddingClient           types.EmbeddingClient // nil = FTS5-only
 	maxToolsToReturn          int
 	hybridSemanticRatio       float64
@@ -77,8 +83,28 @@ func newSQLiteToolStore(
 		return sqliteToolStore{}, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
+	// Pin one connection for the store's lifetime. A mode=memory database exists
+	// only while at least one connection to it is open, and the schema is applied
+	// once here and never re-applied, so if the pool ever drains to zero the
+	// database and its schema are gone and every later query fails with
+	// "no such table: llm_capabilities" until the process restarts (issue #5889).
+	//
+	// The pool does drain in practice: cancelling a request while a query is in
+	// flight makes the driver interrupt the connection and then report it
+	// unusable (modernc.org/sqlite conn.IsValid), so database/sql discards it
+	// instead of returning it to the pool. One disconnecting client is enough.
+	// Pinning a connection puts a floor of one under the pool, so the database
+	// outlives any such churn. Acquiring the pin before applying the schema also
+	// ensures the schema is written into the instance the pin holds open.
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		_ = db.Close()
+		return sqliteToolStore{}, fmt.Errorf("failed to pin sqlite connection: %w", err)
+	}
+
 	// Execute schema
-	if _, err := db.Exec(schemaSQL); err != nil {
+	if _, err := conn.ExecContext(context.Background(), schemaSQL); err != nil {
+		_ = conn.Close()
 		_ = db.Close()
 		return sqliteToolStore{}, fmt.Errorf("failed to initialize schema: %w", err)
 	}
@@ -100,6 +126,7 @@ func newSQLiteToolStore(
 
 	store := sqliteToolStore{
 		db:                        db,
+		pinnedConn:                conn,
 		embeddingClient:           embeddingClient,
 		maxToolsToReturn:          maxTools,
 		hybridSemanticRatio:       hybridRatio,
@@ -117,7 +144,16 @@ func newSQLiteToolStore(
 }
 
 // UpsertTools adds or updates tools in the store.
+// Embeddings are generated before the transaction opens. generateEmbeddings makes
+// a network call to the embedding service, so opening the transaction first held a
+// write transaction — and its pooled connection — for the length of an HTTP
+// round-trip, blocking other writers for no benefit.
 func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerTool) (retErr error) {
+	embBlobs, err := s.generateEmbeddings(ctx, tools)
+	if err != nil {
+		return err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -127,11 +163,6 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 			_ = tx.Rollback()
 		}
 	}()
-
-	embBlobs, err := s.generateEmbeddings(ctx, tools)
-	if err != nil {
-		return err
-	}
 
 	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO llm_capabilities (name, description, embedding) VALUES (?, ?, ?)")
 	if err != nil {
@@ -260,8 +291,17 @@ func (s sqliteToolStore) Close() error {
 	if s.embeddingClient != nil {
 		embErr = s.embeddingClient.Close()
 	}
+	// Release the pin before closing the pool: db.Close waits for checked-out
+	// connections to be returned. ErrConnDone is expected on a repeated Close,
+	// which the ToolStore contract requires to be safe.
+	var connErr error
+	if s.pinnedConn != nil {
+		if err := s.pinnedConn.Close(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+			connErr = err
+		}
+	}
 	dbErr := s.db.Close()
-	return errors.Join(embErr, dbErr)
+	return errors.Join(embErr, connErr, dbErr)
 }
 
 // searchFTS5 performs a full-text search using FTS5 MATCH with BM25 ranking.

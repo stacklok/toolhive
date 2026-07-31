@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -827,6 +828,74 @@ func TestSQLiteToolStore_SemanticDistanceThreshold(t *testing.T) {
 	// With such a tight threshold, very few (if any) results should pass
 	require.Less(t, len(results), len(tools),
 		"tight threshold should filter out some results")
+}
+
+// TestSQLiteToolStore_SchemaSurvivesPoolDrain is a regression test for #5889.
+//
+// A mode=memory SQLite database only exists while some connection to it is open.
+// The schema is written once at construction and never re-applied, so if the
+// connection pool ever empties the database — and its schema — is discarded and
+// every later query fails with "no such table: llm_capabilities" for the life of
+// the process. Setting MaxIdleConns to zero makes the pool release every
+// connection it is handed back, simulating that drain deterministically.
+func TestSQLiteToolStore_SchemaSurvivesPoolDrain(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, nil, nil)
+	ctx := context.Background()
+
+	tools := makeTools(mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")))
+	require.NoError(t, store.UpsertTools(ctx, tools))
+
+	// Every connection returned to the pool from here on is closed outright.
+	store.db.SetMaxIdleConns(0)
+	results, err := store.Search(ctx, types.SearchQuery{Description: "file"}, []string{"read_file"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+
+	// Only the pinned connection should remain; the database must have survived.
+	require.LessOrEqual(t, store.db.Stats().OpenConnections, 1, "pool should have drained to the pin")
+
+	require.NoError(t, store.UpsertTools(ctx, tools))
+	results, err = store.Search(ctx, types.SearchQuery{Description: "file"}, []string{"read_file"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+}
+
+// TestSQLiteToolStore_SurvivesCancelledQuery is a regression test for the
+// production trigger behind #5889.
+//
+// When a caller's context is cancelled while a query is executing, the SQLite
+// driver interrupts the connection and then reports it unusable, so the pool
+// discards rather than reuses it. Any MCP client that disconnects mid-find_tool
+// therefore destroyed the last pooled connection — and with it the in-memory
+// database — leaving every later request to fail permanently. The store must
+// stay usable after such a cancellation.
+func TestSQLiteToolStore_SurvivesCancelledQuery(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, nil, nil)
+	ctx := context.Background()
+
+	tools := makeTools(mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")))
+	require.NoError(t, store.UpsertTools(ctx, tools))
+
+	// A query long enough to still be running when its context expires.
+	cancelCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	var n int
+	err := store.db.QueryRowContext(cancelCtx,
+		`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 90000000) SELECT count(*) FROM c`,
+	).Scan(&n)
+	require.Error(t, err, "query should be interrupted by context expiry")
+
+	// The interrupted connection is discarded asynchronously; wait for the pool
+	// to settle before asserting the database survived.
+	require.Eventually(t, func() bool {
+		return store.db.Stats().OpenConnections <= 1
+	}, 5*time.Second, 10*time.Millisecond, "interrupted connection should be discarded")
+
+	results, searchErr := store.Search(ctx, types.SearchQuery{Description: "file"}, []string{"read_file"})
+	require.NoError(t, searchErr)
+	require.Len(t, results, 1)
 }
 
 // newFakeEmbeddingClient is a test helper that creates a deterministic embedding client.

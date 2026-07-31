@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
 const (
@@ -44,12 +45,20 @@ type rateLimitTelemetry struct {
 	decisions    metric.Int64Counter
 	redisErrors  metric.Int64Counter
 	checkLatency metric.Float64Histogram
+
+	// Legacy aliases under the pre-rename toolhive_rate_limit_* names, emitted
+	// alongside the current ones when useLegacyMetrics is set. No-op instruments
+	// otherwise, so record sites need no branch. Retired in a future minor.
+	legacyDecisions    metric.Int64Counter
+	legacyRedisErrors  metric.Int64Counter
+	legacyCheckLatency metric.Float64Histogram
 }
 
 func newRateLimitTelemetry(
 	meterProvider metric.MeterProvider,
 	namespace string,
 	serverName string,
+	useLegacyMetrics bool,
 ) (*rateLimitTelemetry, error) {
 	if meterProvider == nil {
 		return nil, nil
@@ -89,6 +98,14 @@ func newRateLimitTelemetry(
 		decisions:    decisions,
 		redisErrors:  redisErrors,
 		checkLatency: checkLatency,
+		legacyDecisions: telemetry.LegacyInt64Counter(meter, useLegacyMetrics, "toolhive_rate_limit_decisions",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.toolhive.ratelimit.decisions")),
+		legacyRedisErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics, "toolhive_rate_limit_redis_errors",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.toolhive.ratelimit.redis_errors")),
+		legacyCheckLatency: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics, "toolhive_rate_limit_check_latency",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.toolhive.ratelimit.check_latency"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
 	}, nil
 }
 
@@ -116,16 +133,30 @@ func (t *rateLimitTelemetry) recordDecision(ctx context.Context, decision string
 		attribute.String("scope", check.scope),
 		attribute.String("operation_type", check.operationType),
 	))
+	// Legacy alias: same values under the pre-rename "server" label key.
+	t.legacyDecisions.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("namespace", t.namespace),
+		attribute.String("server", t.serverName),
+		attribute.String("decision", decision),
+		attribute.String("scope", check.scope),
+		attribute.String("operation_type", check.operationType),
+	))
 }
 
 func (t *rateLimitTelemetry) recordRedisError(ctx context.Context, err error) {
 	if t == nil {
 		return
 	}
+	errorType := classifyRedisError(err)
 	t.redisErrors.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("namespace", t.namespace),
 		attribute.String(coremetrics.LabelMCPServer, t.serverName),
-		attribute.String(coremetrics.LabelErrorType, classifyRedisError(err)),
+		attribute.String(coremetrics.LabelErrorType, errorType),
+	))
+	t.legacyRedisErrors.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("namespace", t.namespace),
+		attribute.String("server", t.serverName),
+		attribute.String("error_type", errorType),
 	))
 }
 
@@ -136,6 +167,10 @@ func (t *rateLimitTelemetry) recordCheckLatency(ctx context.Context, duration ti
 	t.checkLatency.Record(ctx, duration.Seconds(), metric.WithAttributes(
 		attribute.String("namespace", t.namespace),
 		attribute.String(coremetrics.LabelMCPServer, t.serverName),
+	))
+	t.legacyCheckLatency.Record(ctx, duration.Seconds(), metric.WithAttributes(
+		attribute.String("namespace", t.namespace),
+		attribute.String("server", t.serverName),
 	))
 }
 

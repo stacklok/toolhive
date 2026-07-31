@@ -395,11 +395,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
 
 	namespace := vmcpNamespace()
+	// Legacy metric aliases follow the same setting as the rest of telemetry;
+	// default to emitting them when no telemetry config is present.
+	useLegacyMetrics := true
+	if vmcpCfg.Telemetry != nil {
+		useLegacyMetrics = vmcpCfg.Telemetry.UseLegacyMetrics
+	}
 	rateLimiter, rateLimitCleanup, err := ratelimitfactory.NewLimiter(ctx, ratelimitfactory.Config{
-		Namespace:      namespace,
-		ServerName:     vmcpCfg.Name,
-		RateLimiting:   vmcpCfg.RateLimiting,
-		SessionStorage: vmcpCfg.SessionStorage,
+		Namespace:        namespace,
+		ServerName:       vmcpCfg.Name,
+		RateLimiting:     vmcpCfg.RateLimiting,
+		SessionStorage:   vmcpCfg.SessionStorage,
+		UseLegacyMetrics: useLegacyMetrics,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create rate limiter: %w", err)

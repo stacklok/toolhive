@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -40,6 +41,10 @@ type MiddlewareParams struct {
 	Config     *v1beta1.RateLimitConfig `json:"config"`
 	RedisAddr  string                   `json:"redis_addr,omitempty"`
 	RedisDB    int32                    `json:"redis_db,omitempty"`
+
+	// UseLegacyMetrics re-emits the pre-rename toolhive_rate_limit_* metric
+	// names alongside the stacklok.* ones, giving dashboards an overlap window.
+	UseLegacyMetrics bool `json:"use_legacy_metrics,omitempty"`
 }
 
 // rateLimitMiddleware wraps rate limiting functionality for the factory pattern.
@@ -83,7 +88,8 @@ func NewRedisLimiter(params MiddlewareParams) (Limiter, io.Closer, error) {
 		return nil, nil, fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w", params.RedisAddr, err)
 	}
 
-	limiter, err := NewLimiter(client, params.Namespace, params.ServerName, params.Config)
+	limiter, err := newLimiter(client, params.Namespace, params.ServerName, params.Config,
+		otel.GetMeterProvider(), params.UseLegacyMetrics)
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("failed to create rate limiter: %w", err)

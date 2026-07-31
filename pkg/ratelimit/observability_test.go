@@ -39,7 +39,7 @@ func TestRateLimitMetrics_SharedDecisionsAndLatency(t *testing.T) {
 				},
 			},
 		},
-	}, meterProvider)
+	}, meterProvider, true)
 	require.NoError(t, err)
 
 	first, err := limiter.Allow(t.Context(), "search", "")
@@ -100,7 +100,7 @@ func TestRateLimitMetrics_PerUserDecisions(t *testing.T) {
 				},
 			},
 		},
-	}, meterProvider)
+	}, meterProvider, true)
 	require.NoError(t, err)
 
 	first, err := limiter.Allow(t.Context(), "search", "alice")
@@ -146,7 +146,7 @@ func TestRateLimitMetrics_RedisErrorAndFailedLatency(t *testing.T) {
 			MaxTokens:    1,
 			RefillPeriod: metav1.Duration{Duration: time.Minute},
 		},
-	}, meterProvider)
+	}, meterProvider, true)
 	require.NoError(t, err)
 
 	redisServer.Close()
@@ -184,7 +184,7 @@ func TestRateLimitMetrics_NoApplicableBucketRecordsNothing(t *testing.T) {
 				},
 			},
 		},
-	}, meterProvider)
+	}, meterProvider, true)
 	require.NoError(t, err)
 
 	decision, err := limiter.Allow(t.Context(), "other-tool", "")
@@ -204,7 +204,7 @@ func TestRateLimitMetrics_NilMeterProviderIsNoOp(t *testing.T) {
 			MaxTokens:    1,
 			RefillPeriod: metav1.Duration{Duration: time.Minute},
 		},
-	}, nil)
+	}, nil, true)
 	require.NoError(t, err)
 
 	decision, err := limiter.Allow(t.Context(), "", "")
@@ -250,11 +250,16 @@ func TestClassifyRedisError(t *testing.T) {
 	}
 }
 
+// TestRateLimitMetricNamesUseStacklokPrefix pins that the rename is complete:
+// with legacy emission off, nothing outside the stacklok.toolhive.ratelimit.*
+// namespace is emitted. Constructed with useLegacyMetrics=false, which doubles as
+// coverage that the flag actually suppresses the legacy aliases —
+// TestRateLimitMetrics_LegacyNamesDualEmitted covers the enabled case.
 func TestRateLimitMetricNamesUseStacklokPrefix(t *testing.T) {
 	t.Parallel()
 	reader, meterProvider := newRateLimitMeterProvider()
 
-	telemetry, err := newRateLimitTelemetry(meterProvider, "test-ns", "test-server")
+	telemetry, err := newRateLimitTelemetry(meterProvider, "test-ns", "test-server", false)
 	require.NoError(t, err)
 	telemetry.recordRejected(t.Context(), limitCheck{
 		scope:         rateLimitScopeShared,
@@ -346,4 +351,50 @@ func attributesMatch(attributes attribute.Set, want map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// TestRateLimitMetrics_LegacyNamesDualEmitted pins the overlap window for the
+// rate-limit renames: with useLegacyMetrics on, each metric appears under both its
+// stacklok.* name and its pre-rename toolhive_rate_limit_* name, so an operator can
+// run old and new queries side by side before cutting over.
+func TestRateLimitMetrics_LegacyNamesDualEmitted(t *testing.T) {
+	t.Parallel()
+	reader, meterProvider := newRateLimitMeterProvider()
+
+	telemetry, err := newRateLimitTelemetry(meterProvider, "test-ns", "test-server", true)
+	require.NoError(t, err)
+	telemetry.recordRejected(t.Context(), limitCheck{
+		scope:         rateLimitScopeShared,
+		operationType: rateLimitOperationServer,
+	})
+	telemetry.recordRedisError(t.Context(), errors.New("ERR script failed"))
+	telemetry.recordCheckLatency(t.Context(), time.Millisecond)
+
+	metrics := collectRateLimitMetrics(t, reader)
+	names := map[string]bool{}
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, measured := range scopeMetrics.Metrics {
+			names[measured.Name] = true
+		}
+	}
+
+	for _, pair := range [][2]string{
+		{"stacklok.toolhive.ratelimit.decisions", "toolhive_rate_limit_decisions"},
+		{"stacklok.toolhive.ratelimit.redis_errors", "toolhive_rate_limit_redis_errors"},
+		{"stacklok.toolhive.ratelimit.check_latency", "toolhive_rate_limit_check_latency"},
+	} {
+		assert.True(t, names[pair[0]], "current name %q must be emitted", pair[0])
+		assert.True(t, names[pair[1]], "legacy name %q must be dual-emitted", pair[1])
+	}
+
+	// The legacy series must carry the pre-rename "server" label key, or a
+	// dashboard grouping by it silently returns nothing.
+	legacy := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
+	assert.Equal(t, int64(1), counterValueWithAttributes(t, legacy, map[string]string{
+		"namespace":      "test-ns",
+		"server":         "test-server",
+		"decision":       rateLimitDecisionRejected,
+		"scope":          rateLimitScopeShared,
+		"operation_type": rateLimitOperationServer,
+	}))
 }

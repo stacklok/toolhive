@@ -578,12 +578,20 @@ func addRateLimitMiddleware(middlewares []types.MiddlewareConfig, config *RunCon
 	redisAddr := config.ScalingConfig.SessionRedis.Address
 	redisDB := config.ScalingConfig.SessionRedis.DB
 
+	// Legacy metric aliases follow the same setting as the rest of telemetry;
+	// default to emitting them when no telemetry config is present.
+	useLegacyMetrics := true
+	if config.TelemetryConfig != nil {
+		useLegacyMetrics = config.TelemetryConfig.UseLegacyMetrics
+	}
+
 	params := ratelimit.MiddlewareParams{
-		Namespace:  config.RateLimitNamespace,
-		ServerName: config.Name,
-		Config:     config.RateLimitConfig,
-		RedisAddr:  redisAddr,
-		RedisDB:    redisDB,
+		Namespace:        config.RateLimitNamespace,
+		ServerName:       config.Name,
+		Config:           config.RateLimitConfig,
+		RedisAddr:        redisAddr,
+		RedisDB:          redisDB,
+		UseLegacyMetrics: useLegacyMetrics,
 	}
 	mwConfig, err := types.NewMiddlewareConfig(ratelimit.MiddlewareType, params)
 	if err != nil {

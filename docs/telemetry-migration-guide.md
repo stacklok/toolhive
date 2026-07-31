@@ -29,8 +29,12 @@ ToolHive's telemetry has been updated across four areas:
    `stacklok.*`/OTel-semconv vocabulary (`mcp_server`, `mcp_method_name`,
    `gen_ai_tool_name`, `composite_tool`, …), and six legacy metric twins that
    duplicated an OTel-semconv equivalent have been deleted outright (see
-   [Deleted Legacy Metrics](#deleted-legacy-metrics) below). This is a breaking
-   change for any dashboard or alert querying the old metric/label names.
+   [Deleted Legacy Metrics](#deleted-legacy-metrics) below). Both the renamed and
+   the retired names are re-emitted while `useLegacyMetrics` is on (the current
+   default), so this is a scheduled deprecation rather than an immediate break —
+   but every dashboard or alert querying an old metric or label name must be
+   migrated before that default flips. See
+   [Backward Compatibility](#backward-compatibility).
 
    One narrowing to be aware of: the deleted `toolhive_mcp_requests`/
    `toolhive_mcp_request_duration` twins classified any HTTP status ≥400 as an
@@ -68,22 +72,46 @@ ToolHive's telemetry has been updated across four areas:
 
 ## Backward Compatibility
 
-Span attributes and metrics follow different backward-compatibility policies —
-the migration is not dual-emitted uniformly across both signal types:
+Both span attributes and metrics are dual-emitted during the migration, each
+behind its own flag:
 
 | Signal | Policy |
 |--------|--------|
 | Span (trace) attributes | Dual-emitted behind `useLegacyAttributes`, see below |
-| Metric names and labels | Hard cutover, no legacy fallback — see [Metric Name and Label Mapping](#metric-name-and-label-mapping) |
+| Metric names and labels | Dual-emitted behind `useLegacyMetrics`, see below |
 
-Span attributes get a compatibility window because they are additive
-key-value pairs on a span already being emitted — carrying both names costs
-a few extra bytes per span, and trace tooling often has saved queries
-hard-coded to the old attribute keys. Metrics don't get one: maintaining a
-full parallel metric family (separate series, separate cardinality, separate
-storage) is not free, and the RFC accepted the one-time break as cheaper
-than the ongoing cost of running two metric vocabularies side by side (see
-[Deleted Legacy Metrics](#deleted-legacy-metrics)).
+A rename empties a dashboard panel exactly as a deletion does, so the renamed
+metrics get the same overlap window the deleted twins had by accident — their
+semconv replacements were already emitting alongside them before this release.
+The window is what makes migration verifiable: an operator can run the old and
+new queries side by side, confirm they agree, and only then cut over.
+
+Dual emission is not free — each legacy alias is a second instrument with its
+own series and cardinality — which is why it is a flag with a stated removal
+release rather than a permanent second vocabulary.
+
+### The `useLegacyMetrics` Flag
+
+| Setting | Behavior |
+|---------|----------|
+| `useLegacyMetrics: true` **(current default)** | Emits **both** legacy and current metric names |
+| `useLegacyMetrics: false` | Emits **only** the current `stacklok.*`/semconv metric names |
+
+Set it via `--otel-use-legacy-metrics` on `thv run`, `use-legacy-metrics` in the
+config file, or `openTelemetry.useLegacyMetrics` on `MCPTelemetryConfig` /
+`VirtualMCPServer`.
+
+Legacy aliases keep their original label vocabulary, not the new one — a
+dashboard grouping by `server` or `workflow.name` keeps working, and one
+grouping by `mcp_server` reads the current series. Counters that were merged
+into an `outcome` label (workflow errors, optimizer `find_tool`/`call_tool`) are
+re-emitted as the separate counters they were, so existing alerts on them still
+fire.
+
+**Deprecation timeline:**
+- **Current release**: Default is `true`. Both old and new metric names emitted.
+- **Future release**: Default changes to `false`. Legacy names opt-in.
+- **Later release**: Legacy metric names removed entirely.
 
 ### The `useLegacyAttributes` Flag
 
@@ -211,11 +239,23 @@ These attributes are new and have no legacy predecessor:
 
 ## Migration Steps
 
-### Step 1: Upgrade with Defaults (No Action Required)
+### Step 1: Upgrade with Defaults
 
-When upgrading to this release, dual emission is enabled by default. Both old
-and new attribute names appear on spans. Your existing dashboards and alerts
-continue to work without changes.
+Dual emission is enabled by default for both signals: `useLegacyAttributes` puts
+old and new names on every span, and `useLegacyMetrics` emits each renamed or
+deleted metric under its original name alongside the current one.
+
+So an upgrade with defaults does not break existing dashboards and alerts — but
+this is a **migration window, not a permanent state**. Both flags default to
+`false` in a future release and the legacy names are removed after that, so the
+work in Steps 2–4 has to happen before then. Verify each rewritten query against
+the still-emitted legacy series while both are live; that overlap is the whole
+point of the window.
+
+One exception to plan for: bucket boundaries are not dual-emitted. Metrics whose
+names survive but whose histogram buckets changed will mix two layouts across
+the upgrade, so `histogram_quantile()` over a range spanning it returns
+misleading values until the range clears the boundary.
 
 ### Step 2: Update Dashboards and Alerts for Renamed/Deleted Metrics
 
@@ -250,16 +290,25 @@ http.request.method = "POST" AND mcp.method.name = "tools/call" AND gen_ai.tool.
 
 ### Step 4: Update Dashboard Panels
 
-For Grafana dashboards that visualize span attributes, update the attribute
-references using the mapping tables above. You can run both old and new queries
-side-by-side during migration to verify equivalence.
+Update attribute and metric references using the mapping tables above. While both
+flags are on, run the old and new queries side by side and confirm they agree
+before deleting the old panel — that is what the migration window is for.
 
-### Step 5: Disable Legacy Attributes
+Two things the comparison will not catch, so check them by hand:
 
-Once all dashboards, alerts, and queries have been migrated:
+- **Bucket boundaries.** Not dual-emitted; a quantile panel spanning the upgrade
+  mixes layouts regardless of which metric name it queries.
+- **Merged counters.** Where a counter was folded into an `outcome` label, the
+  legacy alias reproduces the original counter's semantics — including that it
+  counts attempts rather than completions where it originally did. The current
+  metric may therefore differ from its alias by design.
+
+### Step 5: Disable Legacy Emission
+
+Once all dashboards, alerts, and queries have been migrated, turn both flags off:
 
 ```bash
-thv run --otel-use-legacy-attributes=false ...
+thv run --otel-use-legacy-attributes=false --otel-use-legacy-metrics=false ...
 ```
 
 Or in `config.yaml`:
@@ -267,19 +316,24 @@ Or in `config.yaml`:
 ```yaml
 otel:
   use-legacy-attributes: false
+  use-legacy-metrics: false
 ```
 
-This reduces span size and improves performance by eliminating duplicate
-attributes.
+The two are independent, so they can be retired separately — disable the metric
+aliases once the PromQL is migrated, even if trace queries still need the legacy
+attribute keys.
+
+Disabling legacy attributes reduces span size; disabling legacy metrics drops a
+whole parallel set of series, which is the larger saving of the two.
 
 ---
 
 ## Metric Name and Label Mapping
 
-**Important**: Unlike span attributes, metric name and label changes are
-**not** gated by `useLegacyAttributes` — the rename is unconditional. A
-dashboard or alert querying an old metric or label name must be updated
-regardless of that flag's setting.
+**Important**: metric names and labels are gated by `useLegacyMetrics`, not by
+`useLegacyAttributes` — the two flags are independent. While `useLegacyMetrics`
+is on (the current default) a dashboard querying an old metric or label name
+keeps working, but it must still be migrated before that default flips.
 
 The "New Metric/Label" column below gives the OTel instrument/attribute name
 (dotted form, matching what appears in code and in OTLP export). **Query
@@ -321,9 +375,11 @@ their old→new mapping.
 
 ### Deleted Legacy Metrics
 
-The following metrics duplicated an OTel-semconv equivalent and have been
-deleted outright — there is no renamed successor to redirect a query to,
-only the semconv metric that already covered the same signal:
+The following metrics duplicated an OTel-semconv equivalent and are being
+retired: there is no renamed successor to redirect a query to, only the semconv
+metric that already covered the same signal. They are still emitted while
+`useLegacyMetrics` is on, so a dashboard built on them keeps working through the
+migration window, but they have no long-term replacement under their own name:
 
 | Deleted Metric | Semconv Replacement |
 |-----------------|----------------------|
@@ -335,7 +391,8 @@ only the semconv metric that already covered the same signal:
 | `toolhive_vmcp_backend_requests_duration` | `mcp.client.operation.duration` |
 
 A dashboard or alert built on any of these six metrics has no direct
-successor query — it must be rebuilt against the semconv histogram.
+successor query — it must be rebuilt against the semconv histogram before
+`useLegacyMetrics` defaults to `false`.
 
 For total HTTP request volume, use `http_server_request_duration_seconds_count`
 alone — it is recorded for every request the middleware handles, including

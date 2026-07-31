@@ -30,6 +30,14 @@ type workflowInstruments struct {
 	tracer            trace.Tracer
 	executionsTotal   metric.Int64Counter
 	executionDuration metric.Float64Histogram
+
+	// Legacy aliases under the pre-rename toolhive_vmcp_workflow_* names, emitted
+	// alongside the current ones when Config.UseLegacyMetrics is set. The errors
+	// counter was merged into executions' outcome label, so it is re-emitted as a
+	// standalone counter here. No-op instruments when disabled.
+	legacyExecutions metric.Int64Counter
+	legacyErrors     metric.Int64Counter
+	legacyDuration   metric.Float64Histogram
 }
 
 // newWorkflowInstruments creates the OTEL instruments for workflow execution
@@ -62,10 +70,21 @@ func newWorkflowInstruments(provider *telemetry.Provider) (*workflowInstruments,
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)
 	}
 
+	legacy := provider.UseLegacyMetrics()
+
 	return &workflowInstruments{
 		tracer:            provider.TracerProvider().Tracer(instrumentationName),
 		executionsTotal:   executions,
 		executionDuration: duration,
+		legacyExecutions: telemetry.LegacyInt64Counter(meter, legacy, "toolhive_vmcp_workflow_executions",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.vmcp.composite_tool.executions")),
+		legacyErrors: telemetry.LegacyInt64Counter(meter, legacy, "toolhive_vmcp_workflow_errors",
+			metric.WithDescription(
+				`DEPRECATED: merged into stacklok.vmcp.composite_tool.executions{outcome="error"}`)),
+		legacyDuration: telemetry.LegacyFloat64Histogram(meter, legacy, "toolhive_vmcp_workflow_duration",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.vmcp.composite_tool.duration"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
 	}, nil
 }
 
@@ -93,13 +112,31 @@ func (c *telemetryComposer) ExecuteWorkflow(
 	durationAttrs := metric.WithAttributes(attribute.String(coremetrics.LabelCompositeTool, def.Name))
 	start := time.Now()
 
+	// Legacy aliases carry the pre-rename workflow.name label key, and the legacy
+	// executions counter is incremented before the call as it was originally —
+	// so a dashboard reading it counts started executions, not completed ones.
+	//
+	// Nil-checked because workflowInstruments is also built by struct literal
+	// in-package (tests), where these fields are left unset;
+	// newWorkflowInstruments always populates them with at least a no-op.
+	legacyAttrs := metric.WithAttributes(attribute.String("workflow.name", def.Name))
+	if c.instruments.legacyExecutions != nil {
+		c.instruments.legacyExecutions.Add(ctx, 1, legacyAttrs)
+	}
+
 	result, err := c.base.ExecuteWorkflow(ctx, def, params)
 
 	c.instruments.executionDuration.Record(ctx, time.Since(start).Seconds(), durationAttrs)
+	if c.instruments.legacyDuration != nil {
+		c.instruments.legacyDuration.Record(ctx, time.Since(start).Seconds(), legacyAttrs)
+	}
 
 	outcome := coremetrics.OutcomeSuccess
 	if err != nil {
 		outcome = coremetrics.OutcomeError
+		if c.instruments.legacyErrors != nil {
+			c.instruments.legacyErrors.Add(ctx, 1, legacyAttrs)
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}

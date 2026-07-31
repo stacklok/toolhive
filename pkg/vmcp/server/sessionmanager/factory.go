@@ -109,6 +109,7 @@ func resolveOptimizer(cfg *FactoryConfig) (
 				cfg.TelemetryProvider.MeterProvider(),
 				cfg.TelemetryProvider.TracerProvider(),
 				factory,
+				cfg.TelemetryProvider.UseLegacyMetrics(),
 			)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to monitor optimizer: %w", err)
@@ -128,6 +129,7 @@ func resolveOptimizer(cfg *FactoryConfig) (
 				cfg.TelemetryProvider.MeterProvider(),
 				cfg.TelemetryProvider.TracerProvider(),
 				factory,
+				cfg.TelemetryProvider.UseLegacyMetrics(),
 			)
 			if err != nil {
 				if cleanupErr := rawCleanup(context.Background()); cleanupErr != nil {
@@ -271,6 +273,7 @@ func monitorOptimizer(
 	meterProvider metric.MeterProvider,
 	tracerProvider trace.TracerProvider,
 	factory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error),
+	useLegacyMetrics bool,
 ) (func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error), error) {
 	meter := meterProvider.Meter(instrumentationName)
 
@@ -346,6 +349,45 @@ func monitorOptimizer(
 			tokenSavingsPercent: tokenSavingsPercent,
 			callToolRequests:    callToolRequests,
 			callToolDuration:    callToolDuration,
+
+			legacyFindToolRequests: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_find_tool_requests",
+				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.requests")),
+			legacyFindToolErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_find_tool_errors",
+				metric.WithDescription(
+					`DEPRECATED: use stacklok.vmcp.optimizer.find_tool.requests{outcome="error"}`)),
+			legacyFindToolDuration: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_find_tool_duration",
+				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.duration"),
+				metric.WithUnit("s"),
+				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
+			legacyFindToolResults: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_find_tool_results",
+				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.results"),
+				metric.WithUnit("{tools}"),
+				metric.WithExplicitBucketBoundaries(0, 1, 2, 3, 5, 10, 20, 50)),
+			legacyTokenSavings: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_token_savings_percent",
+				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.token_savings"),
+				metric.WithUnit("%"),
+				metric.WithExplicitBucketBoundaries(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 100)),
+			legacyCallToolRequests: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_call_tool_requests",
+				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests")),
+			legacyCallToolErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_call_tool_errors",
+				metric.WithDescription(
+					`DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests{outcome="error"}`)),
+			legacyCallToolNotFound: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_call_tool_not_found",
+				metric.WithDescription(
+					`DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests{outcome="not_found"}`)),
+			legacyCallToolDuration: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
+				"toolhive_vmcp_optimizer_call_tool_duration",
+				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.duration"),
+				metric.WithUnit("s"),
+				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
 		}, nil
 	}
 
@@ -363,6 +405,19 @@ type telemetryOptimizer struct {
 
 	callToolRequests metric.Int64Counter
 	callToolDuration metric.Float64Histogram
+
+	// Legacy aliases under the pre-rename toolhive_vmcp_optimizer_* names. The
+	// outcome-label merges are split back into the separate counters they were,
+	// so a dashboard reading them sees its original series. No-ops when disabled.
+	legacyFindToolRequests metric.Int64Counter
+	legacyFindToolErrors   metric.Int64Counter
+	legacyFindToolDuration metric.Float64Histogram
+	legacyFindToolResults  metric.Float64Histogram
+	legacyTokenSavings     metric.Float64Histogram
+	legacyCallToolRequests metric.Int64Counter
+	legacyCallToolErrors   metric.Int64Counter
+	legacyCallToolNotFound metric.Int64Counter
+	legacyCallToolDuration metric.Float64Histogram
 }
 
 var _ optimizer.Optimizer = (*telemetryOptimizer)(nil)
@@ -374,14 +429,19 @@ func (t *telemetryOptimizer) FindTool(ctx context.Context, input optimizer.FindT
 	defer span.End()
 
 	start := time.Now()
+	// The legacy counter was incremented before the call and carried no outcome
+	// label, so it counts attempts rather than completions. Reproduced as-was.
+	t.legacyFindToolRequests.Add(ctx, 1)
 
 	result, err := t.optimizer.FindTool(ctx, input)
 
 	duration := time.Since(start)
 	t.findToolDuration.Record(ctx, duration.Seconds())
+	t.legacyFindToolDuration.Record(ctx, duration.Seconds())
 
 	if err != nil {
 		t.findToolRequests.Add(ctx, 1, metric.WithAttributes(attribute.String(coremetrics.LabelOutcome, coremetrics.OutcomeError)))
+		t.legacyFindToolErrors.Add(ctx, 1)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -390,6 +450,8 @@ func (t *telemetryOptimizer) FindTool(ctx context.Context, input optimizer.FindT
 	t.findToolRequests.Add(ctx, 1, metric.WithAttributes(attribute.String(coremetrics.LabelOutcome, coremetrics.OutcomeSuccess)))
 	t.findToolResults.Record(ctx, float64(len(result.Tools)))
 	t.tokenSavingsPercent.Record(ctx, result.TokenMetrics.SavingsPercent)
+	t.legacyFindToolResults.Record(ctx, float64(len(result.Tools)))
+	t.legacyTokenSavings.Record(ctx, result.TokenMetrics.SavingsPercent)
 
 	return result, nil
 }
@@ -403,16 +465,24 @@ func (t *telemetryOptimizer) CallTool(ctx context.Context, input optimizer.CallT
 	durationAttrs := metric.WithAttributes(attribute.String(coremetrics.LabelToolName, input.ToolName))
 	start := time.Now()
 
+	// The legacy counters carried only tool_name and were incremented before the
+	// call, so they count attempts rather than completions. Reproduced as-was.
+	legacyAttrs := metric.WithAttributes(attribute.String("tool_name", input.ToolName))
+	t.legacyCallToolRequests.Add(ctx, 1, legacyAttrs)
+
 	result, err := t.optimizer.CallTool(ctx, input)
 
 	duration := time.Since(start)
 	t.callToolDuration.Record(ctx, duration.Seconds(), durationAttrs)
+	t.legacyCallToolDuration.Record(ctx, duration.Seconds(), legacyAttrs)
 
 	outcome := coremetrics.OutcomeSuccess
 	if err != nil {
 		outcome = coremetrics.OutcomeError
+		t.legacyCallToolErrors.Add(ctx, 1, legacyAttrs)
 	} else if result != nil && result.IsError {
 		outcome = outcomeNotFound
+		t.legacyCallToolNotFound.Add(ctx, 1, legacyAttrs)
 	}
 	t.callToolRequests.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(coremetrics.LabelToolName, input.ToolName),

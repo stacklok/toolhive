@@ -353,6 +353,14 @@ func (p *Provider) PrometheusHandler() http.Handler {
 	return p.prometheusHandler
 }
 
+// UseLegacyMetrics reports whether legacy (pre-stacklok.*) metric names should be
+// emitted alongside the current ones. Instrument-creation sites that receive a
+// Provider read the setting here rather than taking it as a separate parameter,
+// so it cannot drift from the Config the provider was built with.
+func (p *Provider) UseLegacyMetrics() bool {
+	return p.config.UseLegacyMetrics
+}
+
 // validateOtelConfig validates the otel configuration
 func validateOtelConfig(config Config) error {
 	// If OTLP endpoint is configured but both tracing and metrics are disabled, that's an error

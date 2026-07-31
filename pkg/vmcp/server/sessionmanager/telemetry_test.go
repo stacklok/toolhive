@@ -293,7 +293,7 @@ func TestTelemetryOptimizer(t *testing.T) {
 				return fake, nil
 			}
 
-			wrappedFactory, err := monitorOptimizer(meterProvider, tracerProvider, factory)
+			wrappedFactory, err := monitorOptimizer(meterProvider, tracerProvider, factory, false)
 			require.NoError(t, err)
 
 			opt, err := wrappedFactory(context.Background(), nil)

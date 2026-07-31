@@ -109,6 +109,7 @@ maintaining the modular architecture of ToolHive's middleware system.
 | `--otel-env-vars` | string[] | `nil` | Environment variables to include in spans (comma-separated) |
 | `--otel-custom-attributes` | string | `""` | Custom resource attributes (`key1=value1,key2=value2`) |
 | `--otel-use-legacy-attributes` | bool | `true` | Emit legacy attribute names alongside new OTEL semantic convention names |
+| `--otel-use-legacy-metrics` | bool | `true` | Emit legacy (pre-`stacklok.*`) metric names alongside the current ones, with their original label vocabulary. See the [migration guide](./telemetry-migration-guide.md#the-uselegacymetrics-flag) |
 
 ### Configuration File
 

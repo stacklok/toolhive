@@ -192,7 +192,7 @@ func TestMonitorBackends_HealthGaugeReportsRegistryStatusBeyondHealthyUnhealthy(
 	// completes for these backends, the gauge must surface the registry's own
 	// finer-grained status rather than collapsing it to healthy/unhealthy.
 	_, _, unregister, err := MonitorBackends(
-		context.Background(), mp, tracenoop.NewTracerProvider(), registry, vmcpmocks.NewMockBackendClient(ctrl),
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, vmcpmocks.NewMockBackendClient(ctrl), false,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
@@ -220,7 +220,7 @@ func TestMonitorBackends_HealthGaugeNormalizesEmptyHealthStatusToHealthy(t *test
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	_, _, unregister, err := MonitorBackends(
-		context.Background(), mp, tracenoop.NewTracerProvider(), registry, vmcpmocks.NewMockBackendClient(ctrl),
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, vmcpmocks.NewMockBackendClient(ctrl), false,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
@@ -257,7 +257,7 @@ func TestMonitorBackends_HealthGaugeMatchesFilterHealthyBackendsPrecedence(t *te
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	decorated, setter, unregister, err := MonitorBackends(
-		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient, false,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
@@ -312,7 +312,7 @@ func TestMonitorBackends_HealthGaugeTransitionsOnRequestOutcome(t *testing.T) {
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	decorated, _, unregister, err := MonitorBackends(
-		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient, false,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
@@ -351,7 +351,7 @@ func TestMonitorBackends_HealthGaugeDropsBackendRemovedFromRegistry(t *testing.T
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	_, _, unregister, err := MonitorBackends(
-		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient, false,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })
@@ -409,7 +409,7 @@ func TestMonitorBackends_ClientOperationDurationCarriesBackendIdentity(t *testin
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	decorated, _, unregister, err := MonitorBackends(
-		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient,
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, baseClient, false,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, unregister()) })

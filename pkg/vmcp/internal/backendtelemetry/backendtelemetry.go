@@ -27,6 +27,7 @@ import (
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -101,6 +102,7 @@ func MonitorBackends(
 	tracerProvider trace.TracerProvider,
 	registry vmcp.BackendRegistry,
 	backendClient vmcp.BackendClient,
+	useLegacyMetrics bool,
 ) (vmcp.BackendClient, *HealthProviderSetter, func() error, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
@@ -170,6 +172,15 @@ func MonitorBackends(
 		tracer:                  tracerProvider.Tracer(instrumentationName),
 		health:                  recordedHealth,
 		clientOperationDuration: clientOperationDuration,
+		legacyRequests: telemetry.LegacyInt64Counter(meter, useLegacyMetrics, "toolhive_vmcp_backend_requests",
+			metric.WithDescription("DEPRECATED: use mcp.client.operation.duration")),
+		legacyErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics, "toolhive_vmcp_backend_errors",
+			metric.WithDescription(`DEPRECATED: use mcp.client.operation.duration filtered to error.type != ""`)),
+		legacyDurations: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
+			"toolhive_vmcp_backend_requests_duration",
+			metric.WithDescription("DEPRECATED: use mcp.client.operation.duration"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
 	}, providerSetter, registration.Unregister, nil
 }
 
@@ -293,6 +304,14 @@ type telemetryBackendClient struct {
 	health        *backendHealth
 
 	clientOperationDuration metric.Float64Histogram
+
+	// Legacy aliases for the deleted toolhive_vmcp_backend_* twins, emitted
+	// alongside mcp.client.operation.duration when Config.UseLegacyMetrics is set.
+	// They carry the full target.* attribute set the originals did. No-op
+	// instruments when disabled, so record sites need no branch.
+	legacyRequests  metric.Int64Counter
+	legacyErrors    metric.Int64Counter
+	legacyDurations metric.Float64Histogram
 }
 
 var _ vmcp.BackendClient = (*telemetryBackendClient)(nil)
@@ -413,10 +432,17 @@ func (t *telemetryBackendClient) record(
 		attribute.String(coremetrics.LabelMCPServer, target.WorkloadName),
 	)
 
+	// Legacy aliases carried the full target.* attribute set, and the requests
+	// counter was incremented before the call — reproduced here so a dashboard
+	// reading them sees the same numbers it did before the deletion.
+	legacyMetricAttrs := metric.WithAttributes(commonAttrs...)
+
 	start := time.Now()
+	t.legacyRequests.Add(ctx, 1, legacyMetricAttrs)
 
 	return ctx, func() {
 		duration := time.Since(start)
+		t.legacyDurations.Record(ctx, duration.Seconds(), legacyMetricAttrs)
 
 		// Record mcp.client.operation.duration with spec attributes
 		if err != nil && *err != nil {
@@ -428,6 +454,7 @@ func (t *telemetryBackendClient) record(
 				attribute.String("error.type", fmt.Sprintf("%T", *err)),
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)
+			t.legacyErrors.Add(ctx, 1, legacyMetricAttrs)
 
 			if status, ok := healthStatusForError(*err); ok {
 				t.health.set(target.WorkloadID, status)

@@ -853,7 +853,7 @@ func TestSQLiteToolStore_SchemaSurvivesPoolDrain(t *testing.T) {
 	require.Len(t, results, 1)
 
 	// Only the pinned connection should remain; the database must have survived.
-	require.LessOrEqual(t, store.db.Stats().OpenConnections, 1, "pool should have drained to the pin")
+	require.Equal(t, 1, store.db.Stats().OpenConnections, "pool should have drained to the pin")
 
 	require.NoError(t, store.UpsertTools(ctx, tools))
 	results, err = store.Search(ctx, types.SearchQuery{Description: "file"}, []string{"read_file"})
@@ -885,13 +885,17 @@ func TestSQLiteToolStore_SurvivesCancelledQuery(t *testing.T) {
 	err := store.db.QueryRowContext(cancelCtx,
 		`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 90000000) SELECT count(*) FROM c`,
 	).Scan(&n)
-	require.Error(t, err, "query should be interrupted by context expiry")
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"query must fail from context expiry, not some other query error, "+
+			"or the test would not be exercising the interrupt path")
 
-	// The interrupted connection is discarded asynchronously; wait for the pool
-	// to settle before asserting the database survived.
+	// The interrupted connection is discarded asynchronously. Waiting for the
+	// count to fall back to exactly one — the pin — proves it was discarded
+	// rather than returned to the pool, which is the condition that used to
+	// destroy the database.
 	require.Eventually(t, func() bool {
-		return store.db.Stats().OpenConnections <= 1
-	}, 5*time.Second, 10*time.Millisecond, "interrupted connection should be discarded")
+		return store.db.Stats().OpenConnections == 1
+	}, 5*time.Second, 10*time.Millisecond, "interrupted connection should be discarded, leaving only the pin")
 
 	results, searchErr := store.Search(ctx, types.SearchQuery{Description: "file"}, []string{"read_file"})
 	require.NoError(t, searchErr)

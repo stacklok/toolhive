@@ -94,6 +94,7 @@ type RunFlags struct {
 	OtelEnvironmentVariables        []string // renamed binding to otel-env-vars
 	OtelCustomAttributes            string   // Custom attributes in key=value format
 	OtelUseLegacyAttributes         bool     // Emit legacy attribute names alongside new ones
+	OtelUseLegacyMetrics            bool     // Emit legacy metric names alongside new ones
 
 	// Network isolation
 	IsolateNetwork     bool
@@ -275,6 +276,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)")
 	cmd.Flags().BoolVar(&config.OtelUseLegacyAttributes, "otel-use-legacy-attributes", true,
 		"Emit legacy attribute names alongside new OTEL semantic convention names (default true)")
+	cmd.Flags().BoolVar(&config.OtelUseLegacyMetrics, "otel-use-legacy-metrics", true,
+		"Emit legacy metric names alongside new stacklok.* names")
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
@@ -454,13 +457,13 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags, appConf
 		cmd, appConfig, runFlags.OtelEndpoint,
 		runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables, runFlags.OtelInsecure,
 		runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelUseLegacyAttributes,
-		runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled)
+		runFlags.OtelUseLegacyMetrics, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled)
 
 	return createTelemetryConfig(finalTelemetry.OtelEndpoint, finalTelemetry.OtelEnablePrometheusMetricsPath,
 		runFlags.OtelServiceName, finalTelemetry.OtelTracingEnabled, finalTelemetry.OtelMetricsEnabled,
 		finalTelemetry.OtelSamplingRate, runFlags.OtelHeaders, finalTelemetry.OtelInsecure,
 		finalTelemetry.OtelEnvironmentVariables, runFlags.OtelCustomAttributes,
-		finalTelemetry.OtelUseLegacyAttributes)
+		finalTelemetry.OtelUseLegacyAttributes, finalTelemetry.OtelUseLegacyMetrics)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator.
@@ -855,7 +858,7 @@ func configureMiddlewareAndOptions(
 		runner.WithTelemetryConfigFromFlags(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
 			finalTracingEnabled, finalMetricsEnabled, runFlags.OtelServiceName,
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
-			runFlags.OtelUseLegacyAttributes,
+			runFlags.OtelUseLegacyAttributes, runFlags.OtelUseLegacyMetrics,
 		),
 		runner.WithToolsFilter(runFlags.ToolsFilter))
 
@@ -1104,6 +1107,7 @@ type finalTelemetry struct {
 	OtelInsecure                    bool
 	OtelEnablePrometheusMetricsPath bool
 	OtelUseLegacyAttributes         bool
+	OtelUseLegacyMetrics            bool
 	OtelTracingEnabled              bool
 	OtelMetricsEnabled              bool
 }
@@ -1111,7 +1115,8 @@ type finalTelemetry struct {
 // getTelemetryFromFlags extracts telemetry configuration from command flags
 func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
 	otelEnvironmentVariables []string, otelInsecure bool, otelEnablePrometheusMetricsPath bool,
-	otelUseLegacyAttributes bool, otelTracingEnabled bool, otelMetricsEnabled bool) finalTelemetry {
+	otelUseLegacyAttributes bool, otelUseLegacyMetrics bool,
+	otelTracingEnabled bool, otelMetricsEnabled bool) finalTelemetry {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
 	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
@@ -1138,24 +1143,18 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelEnablePrometheusMetricsPath = config.OTEL.EnablePrometheusMetricsPath
 	}
 
-	finalOtelTracingEnabled := otelTracingEnabled
-	if !cmd.Flags().Changed("otel-tracing-enabled") && config.OTEL.TracingEnabled != nil {
-		finalOtelTracingEnabled = *config.OTEL.TracingEnabled
-	}
-
-	finalOtelMetricsEnabled := otelMetricsEnabled
-	if !cmd.Flags().Changed("otel-metrics-enabled") && config.OTEL.MetricsEnabled != nil {
-		finalOtelMetricsEnabled = *config.OTEL.MetricsEnabled
-	}
-
-	// UseLegacyAttributes defaults to true for this release to avoid breaking existing
-	// dashboards and alerts. When the config file explicitly sets this field (non-nil),
-	// use the config value. Otherwise, use the CLI flag value (which defaults to true).
-	// This default will change to false in a future release.
-	finalOtelUseLegacyAttributes := otelUseLegacyAttributes
-	if !cmd.Flags().Changed("otel-use-legacy-attributes") && config.OTEL.UseLegacyAttributes != nil {
-		finalOtelUseLegacyAttributes = *config.OTEL.UseLegacyAttributes
-	}
+	// The *bool config fields (tracing, metrics, and the two legacy-emission
+	// toggles) all default to true on the CLI, so an unset config value must not
+	// be allowed to override the flag. resolveOptionalBool applies the config
+	// value only when the user left the flag alone and the config set it
+	// explicitly. Both legacy-emission defaults will change to false in a future
+	// release; until then they preserve existing dashboards and alerts.
+	finalOtelTracingEnabled := resolveOptionalBool(cmd, "otel-tracing-enabled", otelTracingEnabled, config.OTEL.TracingEnabled)
+	finalOtelMetricsEnabled := resolveOptionalBool(cmd, "otel-metrics-enabled", otelMetricsEnabled, config.OTEL.MetricsEnabled)
+	finalOtelUseLegacyAttributes := resolveOptionalBool(
+		cmd, "otel-use-legacy-attributes", otelUseLegacyAttributes, config.OTEL.UseLegacyAttributes)
+	finalOtelUseLegacyMetrics := resolveOptionalBool(
+		cmd, "otel-use-legacy-metrics", otelUseLegacyMetrics, config.OTEL.UseLegacyMetrics)
 
 	return finalTelemetry{
 		OtelEndpoint:                    finalOtelEndpoint,
@@ -1164,9 +1163,21 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		OtelInsecure:                    finalOtelInsecure,
 		OtelEnablePrometheusMetricsPath: finalOtelEnablePrometheusMetricsPath,
 		OtelUseLegacyAttributes:         finalOtelUseLegacyAttributes,
+		OtelUseLegacyMetrics:            finalOtelUseLegacyMetrics,
 		OtelTracingEnabled:              finalOtelTracingEnabled,
 		OtelMetricsEnabled:              finalOtelMetricsEnabled,
 	}
+}
+
+// resolveOptionalBool layers an optional global config value under a CLI flag
+// value. The config value wins only when the user did not set the flag and the
+// config set the field explicitly (non-nil), so a config file that omits the
+// field never overrides a CLI default of true.
+func resolveOptionalBool(cmd *cobra.Command, flagName string, flagValue bool, configValue *bool) bool {
+	if !cmd.Flags().Changed(flagName) && configValue != nil {
+		return *configValue
+	}
+	return flagValue
 }
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
@@ -1199,7 +1210,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
 	otelInsecure bool, otelEnvironmentVariables []string, otelCustomAttributes string,
-	otelUseLegacyAttributes bool) *telemetry.Config {
+	otelUseLegacyAttributes bool, otelUseLegacyMetrics bool) *telemetry.Config {
 	return runner.BuildTelemetryConfigFromAppConfig(
 		cfg.OpenTelemetryConfig{
 			Endpoint:                    otelEndpoint,
@@ -1210,6 +1221,7 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 			Insecure:                    otelInsecure,
 			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 			UseLegacyAttributes:         &otelUseLegacyAttributes,
+			UseLegacyMetrics:            &otelUseLegacyMetrics,
 		},
 		otelServiceName,
 		otelHeaders,

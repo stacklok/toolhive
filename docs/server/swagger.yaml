@@ -4343,6 +4343,15 @@ components:
             +kubebuilder:default=true
             +optional
           type: boolean
+        useLegacyMetrics:
+          description: |-
+            UseLegacyMetrics controls whether legacy metric names are emitted alongside
+            the new standard stacklok.* metric names. When true, both old and new metric
+            names are recorded for backward compatibility with existing dashboards.
+            Currently defaults to true; this will change to false in a future release.
+            +kubebuilder:default=true
+            +optional
+          type: boolean
       type: object
     templates.RuntimeConfig:
       description: |-

@@ -62,6 +62,15 @@ type HTTPMiddleware struct {
 	httpServerReqDuration metric.Float64Histogram
 	sseConnectionDuration metric.Float64Histogram
 	activeConnections     metric.Int64UpDownCounter
+
+	// Legacy metric aliases, emitted alongside the names above when
+	// Config.UseLegacyMetrics is set so an operator has an overlap window to
+	// migrate dashboards. Each is a no-op instrument when the flag is off, so
+	// record sites need no branch. Retired in a future minor release.
+	legacyRequests          metric.Int64Counter
+	legacyRequestDuration   metric.Float64Histogram
+	legacyToolCalls         metric.Int64Counter
+	legacyActiveConnections metric.Int64UpDownCounter
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
@@ -133,18 +142,38 @@ func NewHTTPMiddleware(
 
 	registerBuildInfo(meter)
 
+	// Legacy aliases. toolhive_mcp_requests / _request_duration / _tool_calls were
+	// deleted in favour of their semconv equivalents, and _active_connections was
+	// renamed; all four are re-emitted here for one release so dashboards can be
+	// migrated against live data rather than after the fact.
+	legacy := config.UseLegacyMetrics
+	legacyRequests := LegacyInt64Counter(meter, legacy, "toolhive_mcp_requests",
+		metric.WithDescription("DEPRECATED: use http.server.request.duration's _count series"))
+	legacyRequestDuration := LegacyFloat64Histogram(meter, legacy, "toolhive_mcp_request_duration",
+		metric.WithDescription("DEPRECATED: use mcp.server.operation.duration"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...))
+	legacyToolCalls := LegacyInt64Counter(meter, legacy, "toolhive_mcp_tool_calls",
+		metric.WithDescription(`DEPRECATED: use mcp.server.operation.duration filtered to mcp.method.name="tools/call"`))
+	legacyActiveConnections := LegacyInt64UpDownCounter(meter, legacy, "toolhive_mcp_active_connections",
+		metric.WithDescription("DEPRECATED: renamed to stacklok.toolhive.proxy.active_connections"))
+
 	middleware := &HTTPMiddleware{
-		config:                config,
-		tracerProvider:        tracerProvider,
-		tracer:                tracerProvider.Tracer(instrumentationName),
-		meterProvider:         meterProvider,
-		meter:                 meter,
-		serverName:            serverName,
-		transport:             transport,
-		operationDuration:     operationDuration,
-		httpServerReqDuration: httpServerReqDuration,
-		sseConnectionDuration: sseConnectionDuration,
-		activeConnections:     activeConnections,
+		config:                  config,
+		tracerProvider:          tracerProvider,
+		tracer:                  tracerProvider.Tracer(instrumentationName),
+		meterProvider:           meterProvider,
+		meter:                   meter,
+		serverName:              serverName,
+		transport:               transport,
+		operationDuration:       operationDuration,
+		httpServerReqDuration:   httpServerReqDuration,
+		sseConnectionDuration:   sseConnectionDuration,
+		activeConnections:       activeConnections,
+		legacyRequests:          legacyRequests,
+		legacyRequestDuration:   legacyRequestDuration,
+		legacyToolCalls:         legacyToolCalls,
+		legacyActiveConnections: legacyActiveConnections,
 	}
 
 	return middleware.Handler
@@ -205,6 +234,15 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			m.activeConnections.Add(ctx, 1, sseAttrs)
 			defer m.activeConnections.Add(ctx, -1, sseAttrs)
 
+			// Legacy alias under the pre-rename label keys (server/transport).
+			legacySSEAttrs := metric.WithAttributes(
+				attribute.String("server", m.serverName),
+				attribute.String("transport", m.transport),
+				attribute.String("connection_type", "sse"),
+			)
+			m.legacyActiveConnections.Add(ctx, 1, legacySSEAttrs)
+			defer m.legacyActiveConnections.Add(ctx, -1, legacySSEAttrs)
+
 			// Pass through to SSE handler - blocks for the lifetime of the SSE
 			// connection. Record its duration on close, into sseConnectionDuration
 			// rather than http.server.request.duration — see the comment on that
@@ -242,6 +280,14 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			attribute.String(coremetrics.LabelMCPServer, m.serverName),
 			attribute.String(coremetrics.LabelTransport, m.transport),
 		))
+
+		// Legacy alias under the pre-rename label keys (server/transport).
+		legacyConnAttrs := metric.WithAttributes(
+			attribute.String("server", m.serverName),
+			attribute.String("transport", m.transport),
+		)
+		m.legacyActiveConnections.Add(ctx, 1, legacyConnAttrs)
+		defer m.legacyActiveConnections.Add(ctx, -1, legacyConnAttrs)
 
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
 		spanName := m.createSpanName(ctx)
@@ -748,6 +794,8 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	// return early in Handler and record into sseConnectionDuration instead.
 	m.recordHTTPServerDuration(ctx, r, rw.statusCode, duration)
 
+	m.recordLegacyRequestMetrics(ctx, r, rw, mcpMethod, mcpResourceID, duration)
+
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
 	// Only POST requests carry a JSON-RPC body; GET (SSE stream open) and DELETE
 	// (session termination) are valid Streamable HTTP lifecycle requests with no
@@ -759,6 +807,50 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		//nolint:gosec // G706: HTTP method and URL path from request
 		slog.Warn("mcp method could not be determined, middleware may be misconfigured",
 			"http_method", r.Method, "path", r.URL.Path)
+	}
+}
+
+// recordLegacyRequestMetrics re-emits the deleted toolhive_mcp_requests,
+// toolhive_mcp_request_duration and toolhive_mcp_tool_calls twins under their
+// original names and label vocabulary, so a dashboard written against them keeps
+// working for one release while it is migrated.
+//
+// The instruments are no-ops when Config.UseLegacyMetrics is false, so this runs
+// unconditionally. The attribute sets and the "any status >= 400 is an error"
+// classification deliberately reproduce the pre-rename behaviour rather than the
+// narrower semconv one — an alias that reports different numbers than the metric
+// it replaces is worse than no alias.
+func (m *HTTPMiddleware) recordLegacyRequestMetrics(
+	ctx context.Context, r *http.Request, rw *responseWriter,
+	mcpMethod, mcpResourceID string, duration time.Duration,
+) {
+	if !m.config.UseLegacyMetrics {
+		return
+	}
+
+	status := "success"
+	if rw.statusCode >= 400 {
+		status = "error"
+	}
+
+	attrs := metric.WithAttributes(
+		attribute.String("method", r.Method),
+		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
+		attribute.String("status", status),
+		attribute.String("mcp_method", mcpMethod),
+		attribute.String("mcp_resource_id", mcpResourceID),
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+	)
+	m.legacyRequests.Add(ctx, 1, attrs)
+	m.legacyRequestDuration.Record(ctx, duration.Seconds(), attrs)
+
+	if mcpMethod == string(mcp.MethodToolsCall) && mcpResourceID != "" {
+		m.legacyToolCalls.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("server", m.serverName),
+			attribute.String("tool", mcpResourceID),
+			attribute.String("status", status),
+		))
 	}
 }
 

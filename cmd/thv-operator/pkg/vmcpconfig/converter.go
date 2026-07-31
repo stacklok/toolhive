@@ -727,16 +727,20 @@ func (c *Converter) convertAggregation(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.AggregationConfig, error) {
-	// Start with a deep copy of the source config
+	// Field-by-field copy, NOT a deep copy: scalars are copied by value, slices
+	// (ConflictResolutionConfig.PriorityOrder, WorkloadToolConfig.Filter) are shared
+	// with the source, and only Overrides is deep-copied. Two consequences:
+	//   - Treat the source's slices as read-only; mutating them here would mutate the
+	//     CR's in-memory spec.
+	//   - Every new AggregationConfig field must be added HERE explicitly. A field
+	//     omitted from this literal is accepted by the CRD and then silently dropped
+	//     before the vMCP process ever sees it — which for a visibility setting means
+	//     failing OPEN on config users rely on to withhold tools.
 	srcAgg := vmcp.Spec.Config.Aggregation
 	agg := &vmcpconfig.AggregationConfig{
 		ConflictResolution: srcAgg.ConflictResolution,
 		ExcludeAllTools:    srcAgg.ExcludeAllTools,
-		// Carried through explicitly: this converter hand-copies fields rather than
-		// deep-copying, so a visibility setting omitted here would be accepted by the
-		// CRD and then silently dropped before the vMCP process ever sees it —
-		// failing OPEN on a setting users rely on to withhold tools.
-		DefaultVisibility: srcAgg.DefaultVisibility,
+		DefaultVisibility:  srcAgg.DefaultVisibility,
 	}
 
 	// Apply defaults for conflict resolution

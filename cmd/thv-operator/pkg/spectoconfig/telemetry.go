@@ -27,6 +27,18 @@ func NormalizeMCPTelemetryConfig(
 
 	config := &telemetry.Config{}
 
+	// The legacy-emission toggles govern the naming vocabulary of every signal,
+	// including Prometheus-only deployments, so they are read outside the
+	// OpenTelemetry.Enabled guard below. Scoping them to that guard would leave a
+	// Prometheus-only config on the Go zero value false and silently drop the
+	// legacy names the CRD defaults to emitting. Absent block means default-on.
+	config.UseLegacyAttributes = true
+	config.UseLegacyMetrics = true
+	if spec.OpenTelemetry != nil {
+		config.UseLegacyAttributes = spec.OpenTelemetry.UseLegacyAttributes
+		config.UseLegacyMetrics = spec.OpenTelemetry.UseLegacyMetrics
+	}
+
 	// Map nested OpenTelemetry fields to flat telemetry.Config.
 	// Only configure OTLP when Enabled is true.
 	if spec.OpenTelemetry != nil && spec.OpenTelemetry.Enabled {
@@ -35,8 +47,6 @@ func NormalizeMCPTelemetryConfig(
 		config.Insecure = otel.Insecure
 		config.Headers = otel.Headers
 		config.CustomAttributes = otel.ResourceAttributes
-		config.UseLegacyAttributes = otel.UseLegacyAttributes
-		config.UseLegacyMetrics = otel.UseLegacyMetrics
 
 		if otel.Tracing != nil {
 			config.TracingEnabled = otel.Tracing.Enabled

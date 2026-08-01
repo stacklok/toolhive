@@ -53,6 +53,11 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 		SamplingRate:                "1.0", // Sample everything for testing
 		Headers:                     make(map[string]string),
 		EnablePrometheusMetricsPath: true, // Enable Prometheus metrics
+		// Set explicitly: the assertions below require the legacy names to be
+		// absent, which is only true with dual emission off. Leaning on the Go
+		// zero value would assert the opposite of the documented default and turn
+		// into a confusing failure the moment this literal gains the field.
+		UseLegacyMetrics: false,
 	}
 
 	// Create provider
@@ -169,7 +174,9 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 		// At minimum, we should have some metrics
 		assert.True(t, len(metricsBody) > 0, "Metrics should not be empty")
 
-		// The deleted legacy twins must never reappear.
+		// The deleted legacy twins must not appear with UseLegacyMetrics off. They
+		// are re-emitted when it is on, which is the shipped default — see
+		// TestLegacyMetrics_DualEmittedWhenEnabled for that direction.
 		assert.NotContains(t, metricsBody, "toolhive_mcp_requests")
 		assert.NotContains(t, metricsBody, "toolhive_mcp_request_duration")
 		assert.NotContains(t, metricsBody, "toolhive_mcp_tool_calls")
@@ -207,6 +214,9 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 		ServiceName:         "test-service",
 		ServiceVersion:      "1.0.0",
 		UseLegacyAttributes: true,
+		// Explicit: the legacy-name assertions below only hold with dual
+		// emission off, and the documented default is on.
+		UseLegacyMetrics: false,
 	}
 
 	// Create middleware directly with real providers
@@ -405,6 +415,9 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	config := Config{
 		ServiceName:    "test-service",
 		ServiceVersion: "1.0.0",
+		// Explicit: the legacy-name assertions below only hold with dual
+		// emission off, and the documented default is on.
+		UseLegacyMetrics: false,
 	}
 
 	middleware := NewHTTPMiddleware(config, tracenoop.NewTracerProvider(), meterProvider, "github", "stdio")
@@ -492,6 +505,9 @@ func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 		ServiceName:                 "test-service",
 		ServiceVersion:              "1.0.0",
 		EnablePrometheusMetricsPath: true,
+		// Explicit: the legacy-name assertions below only hold with dual
+		// emission off, and the documented default is on.
+		UseLegacyMetrics: false,
 	}
 
 	provider, err := NewProvider(ctx, config)

@@ -4,6 +4,8 @@
 package telemetry
 
 import (
+	"log/slog"
+
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 )
@@ -16,7 +18,10 @@ import (
 // Each helper returns a working instrument when enabled and a no-op otherwise, so
 // callers record into the legacy instrument unconditionally instead of branching
 // at every record site. An instrument-creation failure also yields a no-op: a
-// legacy alias must never be the reason a process fails to start.
+// legacy alias must never be the reason a process fails to start. Such a failure
+// is logged rather than swallowed silently — the user asked for these aliases, so
+// an alias that never registers has to be diagnosable from the logs instead of
+// looking like the flag is broken.
 
 // LegacyInt64Counter creates a counter under legacyName when enabled, and a no-op
 // counter otherwise. The result is always safe to call.
@@ -28,9 +33,18 @@ func LegacyInt64Counter(
 	}
 	c, err := meter.Int64Counter(legacyName, opts...)
 	if err != nil {
+		warnLegacyInstrumentFailed(legacyName, err)
 		return noop.Int64Counter{}
 	}
 	return c
+}
+
+// warnLegacyInstrumentFailed reports an alias that could not be registered. The
+// caller still gets a no-op instrument, so this is the only signal that a
+// requested legacy name will be missing from the scrape.
+func warnLegacyInstrumentFailed(legacyName string, err error) {
+	slog.Warn("legacy metric alias could not be created and will not be emitted",
+		"metric", legacyName, "error", err)
 }
 
 // LegacyFloat64Histogram creates a histogram under legacyName when enabled, and a
@@ -43,6 +57,7 @@ func LegacyFloat64Histogram(
 	}
 	h, err := meter.Float64Histogram(legacyName, opts...)
 	if err != nil {
+		warnLegacyInstrumentFailed(legacyName, err)
 		return noop.Float64Histogram{}
 	}
 	return h
@@ -58,6 +73,7 @@ func LegacyInt64UpDownCounter(
 	}
 	c, err := meter.Int64UpDownCounter(legacyName, opts...)
 	if err != nil {
+		warnLegacyInstrumentFailed(legacyName, err)
 		return noop.Int64UpDownCounter{}
 	}
 	return c

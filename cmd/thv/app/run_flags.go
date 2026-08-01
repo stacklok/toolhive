@@ -836,16 +836,23 @@ func configureMiddlewareAndOptions(
 		oidcScopes := extractOIDCValues(oidcConfig)
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
 
-	// Extract resolved tracing/metrics values from the middleware telemetry config.
+	// Extract resolved telemetry values from the middleware telemetry config.
 	// These must match what setupTelemetryConfiguration resolved (with global config
 	// fallbacks) rather than the raw runFlags values, which ignore global config.
-	// Default to false when telemetryConfig is nil (both signals disabled or no endpoint)
-	// rather than falling back to runFlags defaults, which would re-enable signals
-	// that the user explicitly disabled via global config.
+	//
+	// The nil-telemetryConfig defaults differ by field. Tracing and metrics default
+	// to false (both signals disabled or no endpoint) rather than falling back to
+	// runFlags defaults, which would re-enable signals the user explicitly disabled
+	// via global config. The legacy-emission toggles default to true: a nil config
+	// means no telemetry was configured, not that the user opted out of dual
+	// emission, and their documented default is on.
 	var finalTracingEnabled, finalMetricsEnabled bool
+	finalUseLegacyAttributes, finalUseLegacyMetrics := true, true
 	if telemetryConfig != nil {
 		finalTracingEnabled = telemetryConfig.TracingEnabled
 		finalMetricsEnabled = telemetryConfig.MetricsEnabled
+		finalUseLegacyAttributes = telemetryConfig.UseLegacyAttributes
+		finalUseLegacyMetrics = telemetryConfig.UseLegacyMetrics
 	}
 
 	// Set additional configurations that are still needed in old format for other parts of the system
@@ -858,7 +865,7 @@ func configureMiddlewareAndOptions(
 		runner.WithTelemetryConfigFromFlags(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
 			finalTracingEnabled, finalMetricsEnabled, runFlags.OtelServiceName,
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
-			runFlags.OtelUseLegacyAttributes, runFlags.OtelUseLegacyMetrics,
+			finalUseLegacyAttributes, finalUseLegacyMetrics,
 		),
 		runner.WithToolsFilter(runFlags.ToolsFilter))
 

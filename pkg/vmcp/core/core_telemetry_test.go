@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
@@ -39,10 +40,17 @@ func newTestInstruments(t *testing.T) (*workflowInstruments, *sdkmetric.ManualRe
 	duration, err := meter.Float64Histogram("stacklok.vmcp.composite_tool.duration")
 	require.NoError(t, err)
 
+	// The legacy fields are populated as no-ops rather than left nil: production
+	// only builds workflowInstruments through newWorkflowInstruments, which always
+	// fills them, so ExecuteWorkflow records into them unconditionally. Tests that
+	// assert on the legacy series build their own real instruments instead.
 	return &workflowInstruments{
 		tracer:            tp.Tracer(instrumentationName),
 		executionsTotal:   executions,
 		executionDuration: duration,
+		legacyExecutions:  noop.Int64Counter{},
+		legacyDuration:    noop.Float64Histogram{},
+		legacyErrors:      noop.Int64Counter{},
 	}, reader
 }
 
@@ -169,6 +177,10 @@ func TestTelemetryComposer_Error(t *testing.T) {
 func TestTelemetryComposer_DelegatesNonExecuteMethods(t *testing.T) {
 	t.Parallel()
 
+	// Only the non-Execute methods are exercised here, so the instruments beyond
+	// the tracer are never touched. newWorkflowInstruments is the sole production
+	// constructor and always populates them, so ExecuteWorkflow records
+	// unconditionally rather than nil-checking each field.
 	tc := &telemetryComposer{
 		base:        stubComposer{},
 		instruments: &workflowInstruments{tracer: tracenoop.Tracer{}},

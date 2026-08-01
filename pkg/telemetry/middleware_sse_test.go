@@ -134,6 +134,10 @@ func TestHTTPMiddleware_RecordSSEConnection(t *testing.T) {
 		serverName:        "test-server",
 		transport:         "sse",
 		activeConnections: activeConnections,
+		// recordSSEConnection records the legacy toolhive_mcp_requests alias, so
+		// this field must be populated the way NewHTTPMiddleware does. The helper
+		// yields a no-op when the config disables legacy emission.
+		legacyRequests: LegacyInt64Counter(meter, config.UseLegacyMetrics, "toolhive_mcp_requests"),
 	}
 
 	// Create test request

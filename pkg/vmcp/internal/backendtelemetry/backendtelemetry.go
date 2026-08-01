@@ -52,8 +52,9 @@ var healthStates = []vmcp.BackendHealthStatus{
 }
 
 var (
-	reclassCounterOnce sync.Once
-	reclassCounter     metric.Int64Counter
+	reclassCounterOnce   sync.Once
+	reclassCounter       metric.Int64Counter
+	legacyReclassCounter metric.Int64Counter
 )
 
 // RecordRevisionReclassification increments the count of backends whose MCP
@@ -66,15 +67,30 @@ var (
 // NOTE: no labels yet — old/new revision labels (and the CRD status surface)
 // are deferred. If the global provider ever diverges from the injected one, thread
 // the meter down instead.
+//
+// The pre-rename toolhive_vmcp_backend_revision_reclassifications alias is emitted
+// unconditionally rather than behind UseLegacyMetrics: this is a free function with
+// no route to the telemetry config, and the alternative — threading the setting
+// through pkg/vmcp/client purely for one unlabelled counter — buys less than it
+// costs. Revisit when the flag's default flips, at which point this alias and the
+// rest go together.
 func RecordRevisionReclassification(ctx context.Context) {
 	reclassCounterOnce.Do(func() {
-		reclassCounter, _ = otel.GetMeterProvider().Meter(instrumentationName).Int64Counter(
+		meter := otel.GetMeterProvider().Meter(instrumentationName)
+		reclassCounter, _ = meter.Int64Counter(
 			"stacklok.vmcp.backend.revision_reclassifications",
 			metric.WithDescription("Number of times a backend's MCP revision was reclassified after a mismatch"),
+		)
+		legacyReclassCounter, _ = meter.Int64Counter(
+			"toolhive_vmcp_backend_revision_reclassifications",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.vmcp.backend.revision_reclassifications"),
 		)
 	})
 	if reclassCounter != nil {
 		reclassCounter.Add(ctx, 1)
+	}
+	if legacyReclassCounter != nil {
+		legacyReclassCounter.Add(ctx, 1)
 	}
 }
 
@@ -448,10 +464,21 @@ func (t *telemetryBackendClient) record(
 		attribute.String(coremetrics.LabelMCPServer, target.WorkloadName),
 	)
 
-	// Legacy aliases carried the full target.* attribute set, and the requests
-	// counter was incremented before the call — reproduced here so a dashboard
-	// reading them sees the same numbers it did before the deletion.
-	legacyMetricAttrs := metric.WithAttributes(commonAttrs...)
+	// Legacy aliases carried exactly these six attributes, and the requests counter
+	// was incremented before the call — reproduced here so a dashboard reading them
+	// sees the same numbers it did before the deletion. Built explicitly rather
+	// than from commonAttrs: that slice has since gained mcp.protocol.revision and
+	// also absorbs the caller's attrs, neither of which the originals carried, and
+	// reusing it would silently change these frozen series again on the next
+	// span-attribute addition.
+	legacyMetricAttrs := metric.WithAttributes(
+		attribute.String("target.workload_id", target.WorkloadID),
+		attribute.String("target.workload_name", target.WorkloadName),
+		attribute.String("target.base_url", target.BaseURL),
+		attribute.String("target.transport_type", target.TransportType),
+		attribute.String("action", action),
+		attribute.String("mcp.method.name", mcpMethod),
+	)
 
 	start := time.Now()
 	t.legacyRequests.Add(ctx, 1, legacyMetricAttrs)

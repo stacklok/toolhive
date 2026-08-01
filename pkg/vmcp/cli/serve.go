@@ -395,8 +395,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
 
 	namespace := vmcpNamespace()
-	// Legacy metric aliases follow the same setting as the rest of telemetry;
-	// default to emitting them when no telemetry config is present.
+	// Legacy metric aliases follow the same setting as the rest of telemetry.
+	// A telemetry block that omits the key has already been defaulted to true by
+	// Config.EnsureTelemetryLegacyDefaults at load; the fallback here covers an
+	// absent block.
 	useLegacyMetrics := true
 	if vmcpCfg.Telemetry != nil {
 		useLegacyMetrics = vmcpCfg.Telemetry.UseLegacyMetrics

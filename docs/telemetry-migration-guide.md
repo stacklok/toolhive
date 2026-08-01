@@ -333,7 +333,9 @@ whole parallel set of series, which is the larger saving of the two.
 **Important**: metric names and labels are gated by `useLegacyMetrics`, not by
 `useLegacyAttributes` — the two flags are independent. While `useLegacyMetrics`
 is on (the current default) a dashboard querying an old metric or label name
-keeps working, but it must still be migrated before that default flips.
+keeps working, but it must still be migrated before that default flips. The one
+exception is `toolhive_vmcp_backends_discovered`, whose replacement is a
+different kind of measurement and so has no alias — see its row below.
 
 The "New Metric/Label" column below gives the OTel instrument/attribute name
 (dotted form, matching what appears in code and in OTLP export). **Query
@@ -356,11 +358,11 @@ Metric/Label" column directly into PromQL returns zero results.
 | `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | `stacklok_vmcp_composite_tool_executions_total` | Now split by `outcome` label instead of a separate errors counter |
 | `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | `stacklok_vmcp_composite_tool_executions_total{outcome="error"}` | Merged into the executions counter above, not a standalone metric |
 | `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | `stacklok_vmcp_composite_tool_duration_seconds_bucket` / `_sum` / `_count` | |
-| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | `stacklok_vmcp_mcp_server_health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count. No suffix — it's an ObservableGauge |
+| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | `stacklok_vmcp_mcp_server_health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count. No suffix — it's an ObservableGauge. **The only old name not re-emitted under `useLegacyMetrics`** — there is no fire-once count to reproduce, so migrate this panel rather than waiting |
 | `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | `stacklok_vmcp_optimizer_find_tool_requests_total` | Merged into one counter split by `outcome` label |
 | `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | `stacklok_vmcp_optimizer_find_tool_duration_seconds_bucket` / `_sum` / `_count` | |
 | `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | `stacklok_vmcp_optimizer_find_tool_results_bucket` / `_sum` / `_count` | Unit is `{tools}` (a count), not seconds — no `_seconds` infix |
-| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | `stacklok_vmcp_optimizer_token_savings_percent_bucket` / `_sum` / `_count` | Unit `%` becomes the `_percent` infix, which happens to match the old Prometheus name exactly |
+| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | `stacklok_vmcp_optimizer_token_savings_percent_bucket` / `_sum` / `_count` | Unit `%` becomes the `_percent` infix, so the suffix coincides with the old name's trailing `_percent` — but the prefix still changed, so the query must be migrated. The alias keeps unit `%` and is not double-suffixed |
 | `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | `stacklok_vmcp_optimizer_call_tool_requests_total` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
 | `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | `stacklok_vmcp_optimizer_call_tool_duration_seconds_bucket` / `_sum` / `_count` | |
 | `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | `stacklok_vmcp_backend_revision_reclassifications_total` | Renamed, not deleted |

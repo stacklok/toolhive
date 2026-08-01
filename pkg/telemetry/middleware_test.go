@@ -756,6 +756,9 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 	config := Config{
 		ServiceName:    "test-service",
 		ServiceVersion: "1.0.0",
+		// Explicit: the legacy-name assertions below only hold with dual
+		// emission off, and the documented default is on.
+		UseLegacyMetrics: false,
 	}
 	tracerProvider := tracenoop.NewTracerProvider()
 
@@ -2434,6 +2437,10 @@ func TestRecordSSEConnection_DualEmission(t *testing.T) {
 				tracer:     mt,
 				serverName: "github",
 				transport:  tt.transport,
+				// This case asserts on span attributes only; recordSSEConnection
+				// also records the legacy request alias, so the instrument has to
+				// be non-nil. A no-op keeps metrics out of the assertions.
+				legacyRequests: noop.Int64Counter{},
 			}
 
 			req := httptest.NewRequest("GET", "/sse", nil)

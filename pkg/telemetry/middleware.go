@@ -793,8 +793,10 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	// Get the resource ID from the parsed MCP request if available.
 	// For tools/call this is the tool name, for resources/read the URI,
 	// and for prompts/get the prompt name. It feeds gen_ai.tool.name on the
-	// semconv operation-duration metric; it is deliberately kept off the
-	// custom request metrics to bound cardinality.
+	// semconv operation-duration metric and is deliberately kept off the current
+	// custom request metrics to bound cardinality. The legacy aliases carry it
+	// regardless: the pre-rename metrics had it, and reproducing them faithfully
+	// matters more than narrowing them for the overlap window's lifetime.
 	mcpResourceID := ""
 	if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil {
 		mcpResourceID = parsedMCP.ResourceID
@@ -1020,6 +1022,20 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	// End the span immediately since this is just the connection establishment
 	span.SetStatus(codes.Ok, "SSE connection established")
 	span.End()
+
+	// Legacy alias: toolhive_mcp_requests was incremented from here as well as
+	// from recordMetrics, under a distinct mcp_method="sse_connection" series
+	// carrying no mcp_resource_id. SSE-open requests return early in Handler and
+	// never reach recordLegacyRequestMetrics, so without this a dashboard
+	// counting connection establishments reads zero.
+	m.legacyRequests.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("method", r.Method),
+		attribute.String("status_code", "200"), // SSE connections start with 200
+		attribute.String("status", "success"),
+		attribute.String("mcp_method", "sse_connection"),
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+	))
 }
 
 // Factory middleware type constant

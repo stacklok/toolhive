@@ -4,9 +4,15 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -228,4 +234,83 @@ func TestCallTool_MisCachedLegacy_ForwardingAgainstStatelessBackend(t *testing.T
 	require.True(t, ok)
 	assert.Equal(t, mcpparser.RevisionModern, rev,
 		"a successful mis-cached-Legacy call self-heals the cache to Modern")
+}
+
+// newHintLyingServer emulates github-mcp-server v1.6.0's dual-era behaviour: a
+// backend that negotiates 2026-07-28 on the Legacy initialize handshake while
+// answering server/discover with a body that is NOT a valid Modern envelope
+// (no resultType), which modernCall rejects as Legacy-shaped.
+//
+// It delegates everything except server/discover to a real stateless go-sdk
+// backend -- which is what makes the handshake genuinely negotiate 2026-07-28
+// rather than a hand-rolled approximation -- and substitutes the resultType-less
+// discover body that produces the mismatch.
+func newHintLyingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	backend := newRealEchoServer(t, true, nil) // stateless => negotiates 2026-07-28
+	backendURL, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+	rp := httputil.NewSingleHostReverseProxy(backendURL)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		if !bytes.Contains(body, []byte(`"server/discover"`)) {
+			rp.ServeHTTP(w, r)
+			return
+		}
+
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.Unmarshal(body, &req)
+		id := req.ID
+		if len(id) == 0 {
+			id = json.RawMessage(`null`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{`+
+			`"capabilities":{"tools":{}},`+
+			`"supportedVersions":["2026-07-28","2025-11-25"],`+
+			`"serverInfo":{"name":"hint-liar","version":"1.0.0"}}}`, id)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestLegacyInit_DoesNotPromoteOnHandshakeHintAlone pins #6154.
+//
+// The backend negotiates 2026-07-28 on the Legacy initialize -- the SDK client
+// offers its own latest and the dual-era server accepts it -- while its
+// server/discover answer is not a valid Modern envelope. github-mcp-server
+// v1.6.0 behaves exactly this way in production.
+//
+// Promoting the cache to Modern on that handshake hint alone made the two
+// self-corrections fight: probeRevision cached Legacy, legacyInit promoted back
+// to Modern, the next Modern call failed on the non-Modern discover body and
+// reclassified to Legacy, and so on. Every other health check failed, forever.
+// The cached revision must therefore stay Legacy across repeated calls.
+func TestLegacyInit_DoesNotPromoteOnHandshakeHintAlone(t *testing.T) {
+	t.Parallel()
+
+	srv := newHintLyingServer(t)
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "b",
+		BaseURL:       srv.URL + "/mcp",
+		TransportType: "streamable-http",
+	}
+
+	for i := range 3 {
+		_, err := h.ListCapabilities(context.Background(), target)
+		require.NoError(t, err, "ListCapabilities call %d", i)
+
+		rev, ok := h.cachedRevision(target.WorkloadID)
+		require.True(t, ok, "revision should be cached after call %d", i)
+		assert.Equal(t, mcpparser.RevisionLegacy, rev,
+			"cached revision must stay Legacy after call %d; flipping to Modern is the #6154 oscillation", i)
+	}
 }

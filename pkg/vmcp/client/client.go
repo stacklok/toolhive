@@ -168,6 +168,20 @@ type httpBackendClient struct {
 	// TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation in
 	// reclassify_test.go).
 	revisions sync.Map // map[string]mcpparser.Revision
+
+	// modernHintRefuted records backends whose Legacy-handshake protocol-version
+	// hint was contradicted by an authoritative server/discover probe, keyed by
+	// target.WorkloadID. See legacyInit: a backend can negotiate 2026-07-28 on
+	// the Legacy initialize while its discover response is not a valid Modern
+	// envelope, and the hint must not override the probe in that case. Recording
+	// the refutation stops legacyInit re-probing on every subsequent call for a
+	// backend already known to lie.
+	//
+	// NOTE: never evicted, bounded by backend count like revisions. A backend
+	// that genuinely becomes Modern later is still corrected through the other
+	// paths -- probeRevision runs whenever the cache is absent, and dispatch
+	// reclassifies on a revision mismatch.
+	modernHintRefuted sync.Map // map[string]struct{}
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -1401,7 +1415,7 @@ func (h *httpBackendClient) legacyListCapabilities(
 	}()
 
 	// Initialize the client and get server capabilities
-	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
+	serverCaps, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
@@ -1472,15 +1486,51 @@ var errLegacyInitFailed = errors.New("legacy initialize step failed")
 // returned by initializeClient is genuine either way (discover or plain
 // initialize), so when it equals MCPVersionModern the cache is flipped here
 // instead of waiting for an error that will never come.
+//
+// The negotiated version is a HINT, not proof, and it is only allowed to
+// override an existing classification once server/discover has confirmed it.
+// The two genuinely disagree in the field: github-mcp-server v1.6.0 negotiates
+// 2026-07-28 on the Legacy initialize while answering server/discover with a
+// body carrying no resultType, which modernCall rightly rejects as
+// Legacy-shaped. Promoting on the hint alone made the two self-corrections
+// fight -- the probe cached Legacy, this promoted back to Modern, the next
+// Modern call failed on that same body and reclassified to Legacy -- so every
+// other health check failed indefinitely (#6154).
+//
+// So: with no cached revision the hint is trusted outright (that is the
+// uncached-Legacy fallback dispatch takes when a probe errors, and the case
+// this self-heal was written for). Against a cached Legacy classification the
+// hint must win a confirming probe first; probeRevision caches whatever it
+// finds, so a genuinely Modern backend still self-heals in one extra round
+// trip. A refuted hint is remembered (modernHintRefuted) so the confirming
+// probe runs once per backend rather than on every call.
 func (h *httpBackendClient) legacyInit(
-	ctx context.Context, c *client.Client, backendID string,
+	ctx context.Context, c *client.Client, target *vmcp.BackendTarget,
 ) (*mcp.ServerCapabilities, error) {
+	backendID := target.WorkloadID
 	caps, negotiatedVersion, err := initializeClient(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
 	}
-	if negotiatedVersion == mcpparser.MCPVersionModern {
+	if negotiatedVersion != mcpparser.MCPVersionModern {
+		return caps, nil
+	}
+
+	cached, isCached := h.cachedRevision(backendID)
+	switch {
+	case !isCached:
 		h.setRevision(backendID, mcpparser.RevisionModern)
+	case cached == mcpparser.RevisionLegacy:
+		if _, refuted := h.modernHintRefuted.Load(backendID); refuted {
+			break
+		}
+		// probeRevision caches its own verdict, so a confirmation needs no
+		// setRevision here. A probe error leaves the cache untouched.
+		if probed, perr := h.probeRevision(ctx, target); perr == nil && probed != mcpparser.RevisionModern {
+			slog.DebugContext(ctx, "legacy handshake negotiated Modern but discover disagrees; keeping Legacy",
+				"backend", backendID, "negotiated", negotiatedVersion)
+			h.modernHintRefuted.Store(backendID, struct{}{})
+		}
 	}
 	return caps, nil
 }
@@ -1689,7 +1739,7 @@ func (h *httpBackendClient) legacyCallTool(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
+	serverCaps, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
@@ -1887,7 +1937,7 @@ func (h *httpBackendClient) legacyReadResource(
 	}()
 
 	// Initialize the client
-	if _, err := h.legacyInit(ctx, c, target.WorkloadID); err != nil {
+	if _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2005,7 +2055,7 @@ func (h *httpBackendClient) legacyGetPrompt(
 	}()
 
 	// Initialize the client
-	if _, err := h.legacyInit(ctx, c, target.WorkloadID); err != nil {
+	if _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2146,7 +2196,7 @@ func (h *httpBackendClient) legacyComplete(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
+	serverCaps, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}

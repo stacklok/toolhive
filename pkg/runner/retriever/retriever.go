@@ -358,16 +358,25 @@ func VerifyImage(image string, server *types.ImageMetadata, verifySetting string
 			return verifier.ErrProvenanceServerInformationNotSet
 		}
 
-		// Create a new verifier
+		// Create a new verifier. In warn mode this must not block the run:
+		// construction reaches out to the sigstore TUF repository, so a CDN
+		// outage or connection reset would otherwise hard-fail a mode whose
+		// contract is "warn and continue" — an actual failed verification
+		// below only warns, so an unreachable verifier must not be stricter.
 		v, err := verifier.New(server.Provenance, images.NewCompositeKeychain())
 		if err != nil {
+			if verifySetting == VerifyImageWarn {
+				slog.Warn("image verification unavailable, continuing without it", "image", image, "reason", err)
+				return nil
+			}
 			return err
 		}
 
-		// Verify the image passing the provenance info
+		// Verify the image passing the provenance info. Warn mode downgrades
+		// every failure — signature mismatches and transient registry errors
+		// alike — to a warning; only enabled mode fails closed.
 		if err = v.VerifyServer(image, server.Provenance); err != nil {
-			if (errors.Is(err, verifier.ErrImageNotSigned) || errors.Is(err, verifier.ErrProvenanceMismatch)) &&
-				verifySetting == VerifyImageWarn {
+			if verifySetting == VerifyImageWarn {
 				slog.Warn("MCP server failed image verification", "image", image, "reason", err)
 				return nil
 			}

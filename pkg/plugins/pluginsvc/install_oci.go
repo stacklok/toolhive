@@ -42,6 +42,10 @@ func (s *service) installFromOCI(
 		)
 	}
 
+	if err := validateOCIRegistryHost(ref); err != nil {
+		return nil, err
+	}
+
 	ociRef := qualifiedOCIRef(ref)
 
 	pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)

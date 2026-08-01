@@ -5,6 +5,7 @@ package transparent
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -196,6 +197,100 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 	assert.Contains(t, string(body), `"code":-32001`)
 }
 
+// TestRoundTrip404EchoesRequestID pins #5945: the unknown-session 404 must echo
+// the incoming JSON-RPC id so a client correlating responses by id can match the
+// error to the request that caused it. Before the fix the transparent proxy
+// hardcoded a null id here, while the sibling classification-error path on the
+// same RoundTrip already echoed it.
+//
+// Note TestRoundTripReturns404ForUnknownSession above cannot catch this: its body
+// carries no "id" key either way, so it can't tell a present-but-omitted id apart
+// from this test's cases.
+func TestRoundTrip404EchoesRequestID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		body      string
+		wantIDKey bool
+		wantID    string // only checked when wantIDKey
+	}{
+		{
+			name:      "numeric id is echoed verbatim",
+			body:      `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`,
+			wantIDKey: true,
+			wantID:    `"id":7`,
+		},
+		{
+			name:      "string id is echoed verbatim",
+			body:      `{"jsonrpc":"2.0","id":"abc-123","method":"tools/list"}`,
+			wantIDKey: true,
+			wantID:    `"id":"abc-123"`,
+		},
+		{
+			// A notification has no id by definition. MCP encodes that by
+			// omitting the "id" key entirely, not by emitting null.
+			name:      "notification omits the id key",
+			body:      `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			wantIDKey: false,
+		},
+		{
+			// An explicit null id is not a correlatable id either, so it is
+			// also encoded by omitting the key.
+			name:      "explicit null id omits the id key",
+			body:      `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
+			wantIDKey: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// Reaching the backend would mean the guard did not fire; the
+				// assertions below would fail on the 200 that results.
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+
+			tt2 := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
+				"localhost", 0, backend.URL,
+				nil, nil, nil,
+				false, false, "sse",
+				nil, nil, "", false,
+				nil,
+			))
+
+			req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp", strings.NewReader(tt.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown to the store
+
+			resp, err := tt2.RoundTrip(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNotFound, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+
+			assert.Contains(t, string(body), `"code":-32001`)
+
+			// The body must remain a single valid JSON-RPC error object -- echoing
+			// a raw id must not corrupt the envelope.
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(body, &decoded))
+			assert.Equal(t, "2.0", decoded["jsonrpc"])
+
+			_, ok := decoded["id"]
+			assert.Equal(t, tt.wantIDKey, ok, `"id" key presence`)
+			if tt.wantIDKey {
+				assert.Contains(t, string(body), tt.wantID)
+			}
+		})
+	}
+}
+
 // TestRoundTripAllowsInitializeWithUnknownSession verifies that an initialize
 // call is forwarded even when its Mcp-Session-Id is not yet in the session store.
 func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
@@ -227,36 +322,79 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-// TestRoundTripAllowsBatchInitializeWithUnknownSession verifies that a JSON-RPC
-// batch payload containing an initialize call is forwarded even when its
-// Mcp-Session-Id is not yet in the session store.
-func TestRoundTripAllowsBatchInitializeWithUnknownSession(t *testing.T) {
+// TestRoundTripRejectsBatch verifies that the transparent proxy rejects JSON-RPC
+// batches with an HTTP 400 "Invalid Request" (-32600) instead of forwarding them
+// to the backend. Batching was removed in MCP 2025-06-18; forwarding a batch
+// would let its nested calls bypass authz/audit/tool-filtering (see #5745).
+// Rejection is Content-Type-independent: a batch under a non-JSON content type
+// must be rejected too (it skips the content-type-gated ParsingMiddleware). The
+// backend fails the test if it is ever reached.
+func TestRoundTripRejectsBatch(t *testing.T) {
 	t.Parallel()
 
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Mcp-Session-Id", uuid.New().String())
-		w.WriteHeader(http.StatusOK)
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("backend must not be reached: batch should be rejected at the proxy")
 	}))
-	defer backend.Close()
+	t.Cleanup(backend.Close)
 
-	tt := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
-		"localhost", 0, backend.URL,
-		nil, nil, nil,
-		false, false, "sse",
-		nil, nil, "", false,
-		nil,
-	))
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+	}{
+		{
+			name:        "batch containing initialize",
+			body:        `[{"method":"initialize"},{"method":"tools/list"}]`,
+			contentType: "application/json",
+		},
+		{
+			name:        "batch of tool calls",
+			body:        `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger"}}]`,
+			contentType: "application/json",
+		},
+		{
+			name:        "batch under non-json content type",
+			body:        `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger"}}]`,
+			contentType: "text/plain",
+		},
+	}
 
-	req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp",
-		strings.NewReader(`[{"method":"initialize"},{"method":"tools/list"}]`))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Mcp-Session-Id", uuid.New().String()) // unknown but batch contains initialize
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			transport := newTracingTransport(http.DefaultTransport, NewTransparentProxyWithOptions(
+				"localhost", 0, backend.URL,
+				nil, nil, nil,
+				false, false, "sse",
+				nil, nil, "", false,
+				nil,
+			))
 
-	resp, err := tt.RoundTrip(req)
-	require.NoError(t, err)
-	require.NotEqual(t, http.StatusBadRequest, resp.StatusCode)
-	_ = resp.Body.Close()
+			req, err := http.NewRequest(http.MethodPost, backend.URL+"/mcp", strings.NewReader(tt.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", tt.contentType)
+			req.Header.Set("Mcp-Session-Id", uuid.New().String())
+
+			resp, err := transport.RoundTrip(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), `"code":-32600`)
+
+			// A batch has no single request id to echo. MCP encodes that by
+			// omitting the "id" key entirely (schema/2025-11-25 types the
+			// error response id as optional, not nullable), never as null --
+			// a substring check for "id":null would miss the key being
+			// present-but-null, so the key's absence is checked directly.
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(body, &parsed))
+			_, hasID := parsed["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
+		})
+	}
 }
 
 // TestRoundTripStoresBackendURLOnInitialize verifies that when an initialize
@@ -573,4 +711,126 @@ func TestRoundTripReinitializesOnDialError(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "client should see 200 after transparent re-init on dial error")
 	assert.GreaterOrEqual(t, freshHit.Load(), int32(2), "fresh backend should receive initialize + replay")
+}
+
+// TestRoundTripStripsSessionIDFromInitialize verifies that a client-initiated
+// initialize reaches the backend with no Mcp-Session-Id header, whether or not
+// the session it carries maps to a backend session ID recorded by a prior
+// transparent re-initialization.
+//
+// MCP requires a re-initializing client to "start a new session by sending a
+// new InitializeRequest without a session ID attached". Forwarding the client's
+// session ID — or the backend SID mapped from it — hands an already-initialized
+// backend session a second handshake, which go-sdk v1.7+ rejects with
+// `duplicate "initialize" received`, turning a client-side handshake retry into
+// a hard failure.
+func TestRoundTripStripsSessionIDFromInitialize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		priorBackend bool // session carries a backend_sid from an earlier re-init
+	}{
+		{name: "session mapped to a backend SID", priorBackend: true},
+		{name: "session with no backend SID", priorBackend: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			var receivedSIDs []string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				receivedSIDs = append(receivedSIDs, r.Header.Get("Mcp-Session-Id"))
+				mu.Unlock()
+				w.Header().Set("Mcp-Session-Id", uuid.New().String())
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+
+			proxy, addr := startProxy(t, backend.URL)
+
+			clientSessionID := uuid.New().String()
+			sess := session.NewProxySession(clientSessionID)
+			if tt.priorBackend {
+				sess.SetMetadata(sessionMetadataBackendSID, uuid.New().String())
+			}
+			require.NoError(t, proxy.sessionManager.AddSession(sess))
+
+			ctx := context.Background()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				"http://"+addr+"/mcp",
+				strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Mcp-Session-Id", clientSessionID)
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, receivedSIDs, 1, "backend should receive exactly one request")
+			assert.Empty(t, receivedSIDs[0], "initialize must reach the backend with no Mcp-Session-Id")
+		})
+	}
+}
+
+// TestRoundTripDoesNotReplayInitializeOnDialError verifies that a dial error on
+// an initialize does not trigger transparent re-initialization.
+//
+// reinitializeAndReplay sends its own initialize and then replays the original
+// request; for an initialize that would give the freshly created backend session
+// a second handshake — the exact failure the session-ID strip exists to avoid.
+// The client is already starting a new session, so the proxy instead unpins the
+// session from the unreachable pod and lets the error surface, leaving the
+// client's retry to route via the target service.
+func TestRoundTripDoesNotReplayInitializeOnDialError(t *testing.T) {
+	t.Parallel()
+
+	// A server closed immediately after creation: its URL refuses connections.
+	dead := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		w.Header().Set("Mcp-Session-Id", uuid.New().String())
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	proxy, addr := startProxy(t, target.URL)
+
+	clientSessionID := uuid.New().String()
+	sess := session.NewProxySession(clientSessionID)
+	sess.SetMetadata(sessionMetadataBackendURL, deadURL)
+	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	require.NoError(t, proxy.sessionManager.AddSession(sess))
+
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+addr+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", clientSessionID)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	assert.Zero(t, targetHits.Load(),
+		"the proxy must not send its own initialize to the target service for an initialize dial error")
+
+	updated, ok := proxy.sessionManager.Get(normalizeSessionID(clientSessionID))
+	require.True(t, ok, "session should survive the dial error")
+	backendURL, exists := updated.GetMetadataValue(sessionMetadataBackendURL)
+	require.True(t, exists, "backend_url should still be set")
+	assert.Equal(t, target.URL, backendURL,
+		"session must be unpinned from the unreachable pod so the client's retry routes via the target service")
 }

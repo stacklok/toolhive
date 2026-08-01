@@ -115,6 +115,7 @@ type deployOps interface {
 		portBindings map[string][]runtime.PortBinding,
 		isolateNetwork bool,
 	) error
+	getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -323,9 +324,17 @@ func (c *Client) DeployWorkload(
 		return 0, err // extractFirstPort already wraps the error with context.
 	}
 	if effectiveIsolation {
-		// SetupIngress runs after createMcpContainer so the reverse-proxy upstream
-		// resolves on first probe (a squid ingress created earlier would cache the
-		// negative DNS lookup and never recover).
+		// Point the ingress reverse proxy at the MCP container's IP rather than
+		// its name. Ordering ingress after createMcpContainer is not enough: under
+		// concurrent startup the container's DNS record can still lag, and the
+		// squid cache_peer caches the failed lookup and never recovers within the
+		// readiness window (see #6063). An IP has no lookup, so a transient
+		// connection failure is retried instead of latching the peer dead.
+		upstreamIP, ipErr := c.ops.getContainerNetworkIP(ctx, name, networkName)
+		if ipErr != nil {
+			return 0, fmt.Errorf("failed to resolve MCP container IP for ingress: %w", ipErr)
+		}
+		pspec.UpstreamHost = upstreamIP
 		hostPort, err = c.proxy.SetupIngress(ctx, pspec, egress)
 		if err != nil {
 			return 0, fmt.Errorf("failed to set up ingress proxy: %w", err)
@@ -1184,9 +1193,36 @@ func (c *Client) createNetwork(
 
 	_, err = c.client.NetworkCreate(ctx, name, networkCreate)
 	if err != nil {
+		// The existence check above is not atomic with the create: another
+		// process (e.g. a second `thv run` sharing the "toolhive-external"
+		// network) can create the same network in between. Docker rejects a
+		// duplicate name with a conflict error, so treat that as success — the
+		// network is already in the state we wanted. Without this, workloads
+		// that start concurrently race here and all but one fail to launch.
+		if errdefs.IsConflict(err) {
+			return nil
+		}
 		return err
 	}
 	return nil
+}
+
+// getContainerNetworkIP returns a container's IP address on the named network.
+// Used to give the ingress proxy a DNS-free upstream address (see proxySpec.UpstreamHost).
+func (c *Client) getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error) {
+	inspectResult, err := c.client.ContainerInspect(ctx, containerName, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect container %s: %w", containerName, err)
+	}
+	netSettings, ok := inspectResult.Container.NetworkSettings.Networks[networkName]
+	if !ok {
+		return "", fmt.Errorf("network %s not found in container %s network settings", networkName, containerName)
+	}
+	// EndpointSettings.IPAddress is a netip.Addr; render it to string form.
+	if !netSettings.IPAddress.IsValid() {
+		return "", fmt.Errorf("container %s has no IP address on network %s", containerName, networkName)
+	}
+	return netSettings.IPAddress.String(), nil
 }
 
 // getDockerBridgeGatewayIP returns the gateway IP of the Docker default bridge
@@ -1422,7 +1458,34 @@ func (c *Client) createContainer(
 		EndpointsConfig: endpointsConfig,
 	}
 
-	// Create the container
+	id, err := c.createAndStartContainer(ctx, containerName, config, hostConfig, networkConfig)
+	if err != nil && errdefs.IsNotFound(err) {
+		if _, sharesExternalNetwork := endpointsConfig["toolhive-external"]; sharesExternalNetwork {
+			// "toolhive-external" is shared, concurrency-created infrastructure
+			// reused by every workload; deleteNetworks removes it opportunistically
+			// once it looks like no workload needs it anymore. Under concurrent
+			// `thv` processes that teardown can race this container's own creation,
+			// so the network can vanish between our create-time existence check and
+			// this container actually attaching to it, surfacing as a not-found
+			// error from either Create or Start. Recreate it and retry once instead
+			// of failing the whole workload for what is a transient condition.
+			if recreateErr := c.createExternalNetworks(ctx); recreateErr == nil {
+				id, err = c.createAndStartContainer(ctx, containerName, config, hostConfig, networkConfig)
+			}
+		}
+	}
+	return id, err
+}
+
+// createAndStartContainer creates and starts a container, wrapping any
+// Docker API error with contextual information.
+func (c *Client) createAndStartContainer(
+	ctx context.Context,
+	containerName string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	networkConfig *network.NetworkingConfig,
+) (string, error) {
 	resp, err := c.api.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
 		Config:           config,
 		HostConfig:       hostConfig,
@@ -1441,6 +1504,12 @@ func (c *Client) createContainer(
 	// Start the container
 	_, err = c.api.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{})
 	if err != nil {
+		// Docker leaves the container behind in a "created" state on a failed
+		// start (e.g. its network vanished underneath it). Clean it up so a
+		// caller-driven retry under the same name doesn't collide with it.
+		if _, rmErr := c.api.ContainerRemove(ctx, resp.ID, mobyclient.ContainerRemoveOptions{Force: true}); rmErr != nil {
+			slog.Debug("failed to remove container after failed start", "id", resp.ID, "error", rmErr)
+		}
 		return "", NewContainerError(err, resp.ID, fmt.Sprintf("failed to start container: %v", err))
 	}
 
@@ -1636,11 +1705,14 @@ func mergeEnvVars(base, extra map[string]string) map[string]string {
 
 // setupIngressContainer creates the ingress Squid reverse-proxy container for
 // the workload and returns the host-side port it is bound on.
-func (c *Client) setupIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
-	externalEndpointsConfig map[string]*network.EndpointSettings, networkPermissions *permissions.NetworkPermissions) (int, error) {
-	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
+func (c *Client) setupIngressContainer(ctx context.Context, containerName, upstreamHost string, upstreamPort int,
+	attachStdio bool, externalEndpointsConfig map[string]*network.EndpointSettings,
+	networkPermissions *permissions.NetworkPermissions) (int, error) {
+	// A random port avoids every same-image workload racing to bind the same
+	// preferred port when starting concurrently (see #6063).
+	squidPort, err := networking.FindOrUsePort(0)
 	if err != nil {
-		return 0, fmt.Errorf("failed to find or use port %d: %w", squidPort, err)
+		return 0, fmt.Errorf("failed to find an available port: %w", err)
 	}
 	squidExposedPorts := map[string]struct{}{
 		fmt.Sprintf("%d/tcp", squidPort): {},
@@ -1658,6 +1730,7 @@ func (c *Client) setupIngressContainer(ctx context.Context, containerName string
 		ctx,
 		c,
 		containerName,
+		upstreamHost,
 		ingressContainerName,
 		attachStdio,
 		upstreamPort,

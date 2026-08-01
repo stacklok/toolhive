@@ -249,6 +249,12 @@ type Config struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool
 
+	// StrictProtocolValidation enables strict MCP-Protocol-Version validation
+	// on the streamable HTTP proxy: a present-but-unsupported header value is
+	// rejected with HTTP 400. Default false accepts any version string. Only
+	// consulted for the stdio/streamable-HTTP proxy path (see factory.go).
+	StrictProtocolValidation bool
+
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
 

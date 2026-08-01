@@ -395,7 +395,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{
 				"result": "Sunny, 72°F",
@@ -463,8 +463,8 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	// table needed for tool calls and resource reads to be audit-logged correctly.
 	auditSessionFactory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	auditSessionFactory.EXPECT().
-		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()

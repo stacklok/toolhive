@@ -115,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file
+      --build-with stringArray                      Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem (uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); errors on ecosystems without constraint support (can be specified multiple times)
       --ca-cert string                              Path to a custom CA certificate file to use for container builds
       --enable-audit                                Enable audit logging with default configuration (default false)
       --endpoint-prefix string                      Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)
@@ -181,6 +182,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --secret stringArray                          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --session-ttl duration                        Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)
       --stateless                                   Declare the server as stateless (POST-only, no SSE). Use for MCP servers implementing streamable-HTTP stateless mode.
+      --strict-protocol-validation                  Reject client requests whose MCP-Protocol-Version header is an unknown/unsupported MCP revision with HTTP 400 (streamable-HTTP proxy only; an absent header is accepted). Off by default: any version is accepted.
       --target-host string                          Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                             Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
       --thv-ca-bundle string                        Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)

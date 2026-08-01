@@ -8,10 +8,6 @@ package e2e_test
 // as the Squid suite in network_isolation_test.go — egress allowlist, inbound
 // Host gating, docker-gateway deny/allow — plus Envoy-specific guards such as
 // the route-timeout regression test.
-//
-// All tests are currently skipped pending resolution of #5922 (Envoy isolated
-// server does not reach ready state on Linux Docker Engine). Remove the
-// BeforeEach(Skip(...)) call to activate them once #5922 is fixed.
 
 import (
 	"context"
@@ -39,11 +35,6 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 	)
 
 	BeforeEach(func() {
-		// TODO(#5922): Remove this skip once Envoy isolated-server readiness on
-		// Linux Docker Engine is fixed. The tests are correct; the backend is not
-		// yet ready on that platform.
-		Skip("Envoy isolated-server readiness on Linux Docker Engine is broken — see #5922")
-
 		config = e2e.NewTestConfig()
 
 		var err error
@@ -85,8 +76,8 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 		runArgs = append(runArgs, "fetch")
 
 		envoyRun(config, runArgs...).ExpectSuccess()
-		Expect(e2e.WaitForMCPServer(config, serverName, 120*time.Second)).
-			To(Succeed(), "Envoy server should be running within 120 seconds")
+		Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).
+			To(Succeed(), "Envoy server should be running within 180 seconds")
 		return serverName
 	}
 
@@ -157,7 +148,7 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			runArgs = append(runArgs, "--permission-profile", profilePath, "fetch")
 			envoyRun(config, runArgs...).ExpectSuccess()
 
-			Expect(e2e.WaitForMCPServer(config, serverName, 120*time.Second)).To(Succeed())
+			Expect(e2e.WaitForMCPServer(config, serverName, 180*time.Second)).To(Succeed())
 			serverURL, err := e2e.GetMCPServerURL(config, serverName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)).To(Succeed())
@@ -228,6 +219,59 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 
 	// ── Envoy-specific regression guards ─────────────────────────────────────
 
+	// ── AllowPort enforcement ─────────────────────────────────────────────────
+
+	Describe("AllowPort enforcement", func() {
+		// This test proves that AllowPort is honoured end-to-end through a real
+		// Envoy container, not just in the generated config. It uses a restrictive
+		// profile that allows example.com on port 443 only and asserts:
+		//   - HTTPS (port 443) succeeds
+		//   - HTTP  (port 80)  is blocked
+		// This was a parity gap vs Squid (see #5915): before the fix, Envoy
+		// ignored AllowPort and the HTTP request would have succeeded.
+		It("blocks a request on a non-allowed port while permitting the allowed port", func() {
+			profile := `{
+				"name": "port-test",
+				"network": {
+					"outbound": {
+						"insecure_allow_all": false,
+						"allow_host": ["example.com"],
+						"allow_port": [443]
+					}
+				}
+			}`
+			server := startFetchServer("port", profile)
+
+			By("HTTPS request (port 443) must succeed")
+			// The allowed leg needs a working DNS → TLS → example.com chain through
+			// Envoy's dynamic_forward_proxy. The very first egress request after
+			// startup can race the isolation stack's own warm-up (DFP DNS cache,
+			// the per-workload DNS container), failing instantly with a local 503
+			// long before anything has actually reached the network — observed in
+			// CI as an IsError result within ~40ms of readiness. The property this
+			// spec pins is steady-state reachability of an allowed port, not
+			// first-request-after-boot success (which Envoy does not promise), so
+			// retry until the deadline and surface the tool's error text — the one
+			// diagnostic that distinguishes a warm-up race from a broken AllowPort.
+			var lastHTTPSError string
+			Eventually(func() bool {
+				httpsResult := fetchThrough(server, "https://example.com", 30*time.Second)
+				if httpsResult.IsError {
+					lastHTTPSError = resultText(httpsResult)
+					return false
+				}
+				return true
+			}, 60*time.Second, 2*time.Second).Should(BeTrue(), func() string {
+				return "https://example.com must be allowed (port 443 is in AllowPort); last fetch error: " + lastHTTPSError
+			})
+
+			By("HTTP request (port 80) must be blocked")
+			httpResult := fetchThrough(server, "http://example.com", 30*time.Second)
+			Expect(httpResult.IsError).To(BeTrue(),
+				"http://example.com must be blocked (port 80 is not in AllowPort)")
+		})
+	})
+
 	Describe("Envoy route timeout disabled for long-lived streams", func() {
 		// Guards the timeout:"0s" fix. Envoy's default RouteAction.timeout is 15s;
 		// this test proves it was disabled by having the upstream sleep 16s (past
@@ -250,7 +294,9 @@ var _ = Describe("NetworkIsolationEnvoy", Label("proxy", "network", "isolation",
 			target := fmt.Sprintf("http://%s:%d/", dockerBridgeGatewayIP(), port)
 			server := startFetchServer("slow", "", "--allow-docker-gateway")
 
-			result := fetchThrough(server, target, 30*time.Second)
+			// 60s: 16s upstream sleep + generous MCP client round-trip headroom.
+			// The 30s default was too tight under CI infrastructure load.
+			result := fetchThrough(server, target, 60*time.Second)
 			if result.IsError {
 				Skip("docker bridge gateway is not routable to the host in this environment")
 			}

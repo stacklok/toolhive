@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // WriteClassificationError writes an HTTP 400 response with a JSON-RPC error
@@ -32,6 +34,14 @@ func WriteClassificationError(w http.ResponseWriter, requestID any, err error) {
 // RoundTripper-produced *http.Response is generally expected to carry the
 // request it answers, and httputil.ReverseProxy relies on that field.
 func ClassificationErrorResponse(req *http.Request, requestID any, err error) *http.Response {
+	return jsonRPCErrorResponse(req, requestID, err)
+}
+
+// jsonRPCErrorResponse builds an HTTP 400 *http.Response carrying the JSON-RPC
+// error rendered from a CodedError. It backs both ClassificationErrorResponse
+// and BatchUnsupportedResponse so the RoundTripper-layer error shape lives in
+// one place.
+func jsonRPCErrorResponse(req *http.Request, requestID any, err error) *http.Response {
 	body := classificationErrorBody(requestID, err)
 	hdr := make(http.Header)
 	hdr.Set("Content-Type", "application/json")
@@ -57,6 +67,11 @@ func ClassificationErrorResponse(req *http.Request, requestID any, err error) *h
 // the error implements CodedError, falling back to the standard JSON-RPC
 // Invalid Params code otherwise -- a fallback that is currently unreachable,
 // since every error ClassifyRevision returns implements CodedError.
+//
+// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
+// response as `id?: RequestId` where RequestId = string | number, so an
+// absent id is encoded by omitting the "id" key, never as null. See
+// session.HasJSONRPCID.
 func classificationErrorBody(requestID any, err error) []byte {
 	code := CodeInvalidParams
 	var coded CodedError
@@ -76,14 +91,16 @@ func classificationErrorBody(requestID any, err error) []byte {
 	resp := map[string]any{
 		"jsonrpc": "2.0",
 		"error":   errBody,
-		"id":      requestID,
+	}
+	if session.HasJSONRPCID(requestID) {
+		resp["id"] = requestID
 	}
 
 	body, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
 		// This should never happen with simple map types, but return a
 		// hand-crafted fallback to guarantee a valid JSON-RPC error.
-		return []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"},"id":null}`)
+		return []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"}}`)
 	}
 	return body
 }

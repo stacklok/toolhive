@@ -33,7 +33,7 @@ report unacceptable behavior to
 If you think you have found a security vulnerability in ToolHive please DO NOT
 disclose it publicly until we've had a chance to fix it. Please don't report
 security vulnerabilities using GitHub issues; instead, please follow this
-[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.md)
+[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.md).
 
 ## How to contribute
 
@@ -72,8 +72,8 @@ items first to build context.
 
 If you'd like to work on an existing issue:
 
-1. Leave a comment saying "I'd like to work on this"
-2. Wait for a team member to assign you before starting work
+1. Leave a comment saying "I'd like to work on this".
+2. Wait for a team member to assign you before starting work.
 
 This helps us avoid situations where multiple people work on the same thing.
 If you create an issue with the intent to implement it yourself, mention that

@@ -10,59 +10,106 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestClassificationError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		requestID any
-		err       error
-		wantCode  int64
-		wantData  bool
+		name       string
+		requestID  any
+		err        error
+		wantCode   int64
+		wantData   bool
+		wantIDKey  bool
+		wantIDEcho string // substring the body must contain, verbatim, when wantIDKey
 	}{
 		{
-			name:      "header mismatch",
-			requestID: "req-1",
-			err:       &HeaderMismatchError{Header: "2026-07-28", Body: "2025-11-25"},
-			wantCode:  CodeHeaderMismatch,
-			wantData:  true,
+			name:       "header mismatch",
+			requestID:  "req-1",
+			err:        &HeaderMismatchError{Header: "2026-07-28", Body: "2025-11-25"},
+			wantCode:   CodeHeaderMismatch,
+			wantData:   true,
+			wantIDKey:  true,
+			wantIDEcho: `"id":"req-1"`,
 		},
 		{
-			name:      "unsupported version",
-			requestID: float64(42),
-			err:       &UnsupportedVersionError{Requested: "1999-01-01", Supported: []string{MCPVersionModern}},
-			wantCode:  CodeUnsupportedProtocolVersion,
-			wantData:  true,
+			name:       "unsupported version",
+			requestID:  float64(42),
+			err:        &UnsupportedVersionError{Requested: "1999-01-01", Supported: []string{MCPVersionModern}},
+			wantCode:   CodeUnsupportedProtocolVersion,
+			wantData:   true,
+			wantIDKey:  true,
+			wantIDEcho: `"id":42`,
 		},
 		{
-			name:      "missing client capability",
-			requestID: "req-3",
-			err:       &MissingClientCapabilityError{RequiredCapabilities: map[string]any{}},
-			wantCode:  CodeMissingClientCapability,
-			wantData:  true,
+			name:       "missing client capability",
+			requestID:  "req-3",
+			err:        &MissingClientCapabilityError{RequiredCapabilities: map[string]any{}},
+			wantCode:   CodeMissingClientCapability,
+			wantData:   true,
+			wantIDKey:  true,
+			wantIDEcho: `"id":"req-3"`,
 		},
 		{
-			name:      "missing modern metadata",
-			requestID: "req-4",
-			err:       &MissingModernMetadataError{},
-			wantCode:  CodeInvalidParams,
-			wantData:  false, // Data() returns an empty (non-nil) map, so len(data) == 0
+			name:       "missing modern metadata",
+			requestID:  "req-4",
+			err:        &MissingModernMetadataError{},
+			wantCode:   CodeInvalidParams,
+			wantData:   false, // Data() returns an empty (non-nil) map, so len(data) == 0
+			wantIDKey:  true,
+			wantIDEcho: `"id":"req-4"`,
 		},
 		{
-			name:      "nil request id",
+			// A nil requestID means the caller couldn't determine an id at
+			// all (e.g. the request failed to parse). MCP narrows base
+			// JSON-RPC to omit the "id" key here rather than emit
+			// "id":null: see session.HasJSONRPCID.
+			name:      "nil request id omits the id key",
 			requestID: nil,
 			err:       &HeaderMismatchError{Header: "a", Body: "b"},
 			wantCode:  CodeHeaderMismatch,
 			wantData:  true,
+			wantIDKey: false,
 		},
 		{
-			name:      "plain non-coded error falls back to invalid params",
-			requestID: "req-6",
-			err:       errors.New("boom"),
-			wantCode:  CodeInvalidParams,
-			wantData:  false,
+			// The transparent proxy threads the incoming id through as raw
+			// bytes; literal null must be treated the same as a missing id.
+			name:      "raw null request id omits the id key",
+			requestID: json.RawMessage(`null`),
+			err:       &HeaderMismatchError{Header: "a", Body: "b"},
+			wantCode:  CodeHeaderMismatch,
+			wantData:  true,
+			wantIDKey: false,
+		},
+		{
+			name:      "nil RawMessage omits the id key",
+			requestID: json.RawMessage(nil),
+			err:       &HeaderMismatchError{Header: "a", Body: "b"},
+			wantCode:  CodeHeaderMismatch,
+			wantData:  true,
+			wantIDKey: false,
+		},
+		{
+			name:       "zero request id is still present",
+			requestID:  float64(0),
+			err:        &HeaderMismatchError{Header: "a", Body: "b"},
+			wantCode:   CodeHeaderMismatch,
+			wantData:   true,
+			wantIDKey:  true,
+			wantIDEcho: `"id":0`,
+		},
+		{
+			name:       "plain non-coded error falls back to invalid params",
+			requestID:  "req-6",
+			err:        errors.New("boom"),
+			wantCode:   CodeInvalidParams,
+			wantData:   false,
+			wantIDKey:  true,
+			wantIDEcho: `"id":"req-6"`,
 		},
 	}
 
@@ -115,7 +162,6 @@ func TestClassificationError(t *testing.T) {
 					Message string         `json:"message"`
 					Data    map[string]any `json:"data"`
 				} `json:"error"`
-				ID any `json:"id"`
 			}
 			if err := json.Unmarshal(wireBody, &decoded); err != nil {
 				t.Fatalf("unmarshaling response body: %v", err)
@@ -137,13 +183,19 @@ func TestClassificationError(t *testing.T) {
 				t.Errorf("expected no data, got %v", decoded.Error.Data)
 			}
 
-			gotID, wantID := decoded.ID, tt.requestID
-			if wantID == nil {
-				if gotID != nil {
-					t.Errorf("id = %v, want nil", gotID)
-				}
-			} else if gotID != wantID {
-				t.Errorf("id = %v (%T), want %v (%T)", gotID, gotID, wantID, wantID)
+			// Decoding into map[string]any (rather than a tagged struct) is
+			// the only way to tell an absent "id" key apart from a present
+			// null: a struct field would read as the zero value either way.
+			var asMap map[string]any
+			require.NoError(t, json.Unmarshal(wireBody, &asMap))
+			_, hasID := asMap["id"]
+			assert.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
+			if tt.wantIDKey {
+				require.NotEmpty(t, tt.wantIDEcho, "table entry must set wantIDEcho when wantIDKey is true")
+				// A map decode would coerce a numeric id to float64, losing
+				// the verbatim-echo guarantee #5945 pinned -- so check the
+				// raw wire bytes instead.
+				assert.Contains(t, string(wireBody), tt.wantIDEcho)
 			}
 		})
 	}
@@ -157,7 +209,7 @@ func TestClassificationError(t *testing.T) {
 func TestClassificationErrorBodyMarshalFallback(t *testing.T) {
 	t.Parallel()
 
-	const want = `{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"},"id":null}`
+	const want = `{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"}}`
 	got := classificationErrorBody(make(chan int), errors.New("boom"))
 	if string(got) != want {
 		t.Fatalf("fallback body = %s, want %s", got, want)

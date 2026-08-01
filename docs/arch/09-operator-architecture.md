@@ -249,7 +249,7 @@ MCPOIDCConfig eliminates OIDC configuration duplication — define an identity p
 - `scopes` (optional) — Defaults to `["openid"]`
 - `resourceUrl` (optional) — Public URL for OAuth protected resource metadata (RFC 9728); defaults to internal service URL
 
-**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking which resources reference this config. Deletion is blocked while references exist (finalizer pattern).
+**Status fields** include a `Ready` condition and `configHash` for change detection. Deletion is blocked while references exist (finalizer pattern): the controller recomputes the referencing workloads on demand at deletion time (a field-indexed lookup), rather than maintaining a stored list in status.
 
 **Referenced by**: MCPServer and MCPRemoteProxy (via `spec.oidcConfigRef`); VirtualMCPServer (via `spec.incomingAuth.oidcConfigRef`)
 
@@ -270,7 +270,7 @@ MCPTelemetryConfig centralises telemetry infrastructure settings (collector endp
 - CEL validation prevents header name overlap between `headers` and `sensitiveHeaders`
 - Per-server `serviceName` override in the workload's `telemetryConfigRef` (since `service.name` must be unique per server)
 
-**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking.
+**Status fields** include a `Ready` condition and `configHash` for change detection. Referencing workloads are recomputed on demand at deletion time (finalizer + field-indexed lookup), not stored in status.
 
 **Referenced by**: MCPServer, VirtualMCPServer, MCPRemoteProxy (via `telemetryConfigRef`)
 
@@ -291,7 +291,7 @@ MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (U
 - Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
 - Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
 
-**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads`.
+**Status fields** include a `Ready` condition and `configHash` for change detection. Referencing workloads are recomputed on demand at deletion time (finalizer + field-indexed lookup), not stored in status.
 
 **Referenced by**: MCPServer (via `webhookConfigRef`)
 

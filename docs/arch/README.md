@@ -127,6 +127,13 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Dynamic forward proxy with per-request DNS and native HTTPS CONNECT tunnelling
     - Squid-vs-Envoy comparison and known limitations (`AllowPort` gap, V4_ONLY DNS, deny-all on empty profile)
 
+16. **[vMCP Multi Round-Trip Requests (MRTR)](16-vmcp-mrtr.md)**
+    - MRTR (SEP-2322) design for the Modern (2026-07-28) elicitation/sampling path through vMCP
+    - The four client×backend bridge cells: stateless Modern↔Modern pass-through, in-request Legacy-client bridge
+    - Per-request capability mirroring and verbatim `requestState` relay
+    - Composite-workflow suspend/resume as the sole durable-state trigger (RFC-0083 D5 handles, owner binding, TTL)
+    - Sampling's deprecated-pass-through-only disposition (SEP-2577) and the go-sdk/mcpcompat gap list
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**

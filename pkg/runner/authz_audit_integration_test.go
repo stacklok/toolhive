@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/webhook"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
 
@@ -168,4 +169,65 @@ func TestAuthzDecisionIsAudited(t *testing.T) {
 			assert.Equal(t, tt.wantOutcome, event["outcome"])
 		})
 	}
+}
+
+// TestWebhookDenialIsAudited proves, through the full middleware chain built
+// by PopulateMiddlewareConfigs, that a validating-webhook policy denial (403)
+// still produces an audit event with outcome "denied". Webhooks run inside
+// the audit middleware, so the rejection must be captured like any other.
+func TestWebhookDenialIsAudited(t *testing.T) {
+	t.Parallel()
+
+	denyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req webhook.Request
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		resp := webhook.Response{
+			Version: webhook.APIVersion,
+			UID:     req.UID,
+			Allowed: false,
+			Reason:  "policy denied",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(denyServer.Close)
+
+	auditLogPath := filepath.Join(t.TempDir(), "audit.log")
+
+	runConfig := NewRunConfig()
+	runConfig.Name = "test-server"
+	runConfig.ValidatingWebhooks = []webhook.Config{{
+		Name:          "deny-all",
+		URL:           denyServer.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyFail,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+	}}
+	runConfig.AuditConfig = &audit.Config{
+		Component: "test-component",
+		LogFile:   auditLogPath,
+	}
+
+	handlerHit := false
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerHit = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := buildRunnerMiddlewareChain(t, runConfig, backend)
+
+	reqBody := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"target_tool","arguments":{}}}`
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code, "response body: %s", rr.Body.String())
+	assert.False(t, handlerHit, "a webhook-denied request must not reach the backend")
+
+	events := readAuditEvents(t, auditLogPath)
+	require.Len(t, events, 1, "a webhook policy denial must produce exactly one audit event")
+	assert.Equal(t, "mcp_tool_call", events[0]["type"])
+	assert.Equal(t, "denied", events[0]["outcome"])
 }

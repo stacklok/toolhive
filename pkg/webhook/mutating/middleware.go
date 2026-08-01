@@ -129,8 +129,30 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 				return
 			}
 
+			// A mutating webhook rewrote the body, so the parse cached by ParsingMiddleware
+			// now describes a request the backend will not execute. Refresh it before any
+			// downstream consumer (authorization, audit, telemetry) reads it.
+			if !bytes.Equal(bodyBytes, mutatedBody) {
+				republished, err := mcp.RepublishParsedMCPRequest(r, mutatedBody)
+				if err != nil {
+					var batchErr *mcp.BatchUnsupportedError
+					if errors.As(err, &batchErr) {
+						mcp.WriteBatchUnsupportedError(w)
+						return
+					}
+					slog.Error("Mutating webhook produced an unparsable MCP request", "error", err)
+					sendErrorResponse(w, http.StatusInternalServerError, "Webhook produced an invalid MCP request", parsedMCP.ID)
+					return
+				}
+				r = republished
+			}
+
 			// Replace the request body with the (potentially mutated) MCP body for downstream handlers.
+			// ContentLength must be updated alongside it: a patch almost always changes the body
+			// length, and the reverse proxy rejects a forwarded request whose declared length
+			// disagrees with the body it can actually read.
 			r.Body = io.NopCloser(bytes.NewBuffer(mutatedBody))
+			r.ContentLength = int64(len(mutatedBody))
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -316,18 +338,20 @@ func readSourceIP(r *http.Request) string {
 }
 
 func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, msgID interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
 	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails.
 	}
+	code := mcp.JSONRPCCodeForStatus(statusCode)
 
 	// Return a JSON-RPC 2.0 error so MCP clients can parse the denial.
 	errResp := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(int64(statusCode), message),
+		Error: jsonrpc2.NewError(code, message),
 	}
-	_ = json.NewEncoder(w).Encode(errResp)
+
+	// The helper encodes before writing any header, so an encode failure never
+	// leaves a half-written response (e.g. a status header followed by a
+	// second write). Nothing to do on a write error for a denial body.
+	_ = mcp.WriteJSONRPCError(w, statusCode, errResp)
 }

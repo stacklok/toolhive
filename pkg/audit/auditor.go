@@ -16,13 +16,14 @@ import (
 	"strings"
 	"time"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // LevelAudit is a custom audit log level - between Info and Warn
-const LevelAudit = slog.Level(2)
+const LevelAudit = coreaudit.LevelAudit
 
 // contextKey is an unexported type for context keys to avoid collisions
 type contextKey struct{}
@@ -50,27 +51,7 @@ func BackendInfoFromContext(ctx context.Context) (*BackendInfo, bool) {
 
 // NewAuditLogger creates a new structured audit logger that writes to the specified writer.
 func NewAuditLogger(w io.Writer) *slog.Logger {
-	if w == nil {
-		w = os.Stdout
-	}
-
-	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level: LevelAudit,
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			// Replace the custom audit level with "AUDIT" string for better
-			// compatibility with log aggregation systems (Loki, Elasticsearch, etc.)
-			// that expect standard level names. This prevents audit events from
-			// appearing as "INFO+2" which breaks level-based filtering.
-			if a.Key == slog.LevelKey {
-				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelAudit {
-					a.Value = slog.StringValue("AUDIT")
-				}
-			}
-			return a
-		},
-	})
-
-	return slog.New(handler)
+	return coreaudit.NewAuditLogger(w)
 }
 
 // Auditor handles audit logging for HTTP requests.
@@ -172,6 +153,12 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
+// Unwrap exposes the underlying ResponseWriter so http.ResponseController
+// can reach interfaces this wrapper does not re-implement (e.g. SetWriteDeadline).
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // isMCPStreamOpenRequest returns true only for MCP "stream" opens:
 // - SSE transport's SSE endpoint (GET + Accept: text/event-stream)
 // - Streamable HTTP's GET stream (same header pattern)
@@ -187,29 +174,55 @@ func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(accept), "text/event-stream")
 }
 
+// ensureAuditContext injects the mutable carriers the auditor reads after the
+// inner chain returns: BackendInfo (backend routing), an auth.IdentityHolder
+// (identity attached by an auth middleware running INSIDE audit), and an
+// mcp.ParsedRequestHolder (parsed MCP data from a parser running INSIDE
+// audit). Each is only injected when absent so nested auditors share carriers.
+func ensureAuditContext(r *http.Request) *http.Request {
+	ctx := r.Context()
+	changed := false
+	if _, ok := BackendInfoFromContext(ctx); !ok {
+		ctx = WithBackendInfo(ctx, &BackendInfo{})
+		changed = true
+	}
+	if _, ok := auth.IdentityHolderFromContext(ctx); !ok {
+		ctx = auth.WithIdentityHolder(ctx, &auth.IdentityHolder{})
+		changed = true
+	}
+	if _, ok := mcp.ParsedRequestHolderFromContext(ctx); !ok {
+		ctx = mcp.WithParsedRequestHolder(ctx, &mcp.ParsedRequestHolder{})
+		changed = true
+	}
+	if !changed {
+		return r
+	}
+	return r.WithContext(ctx)
+}
+
 // Middleware creates an HTTP middleware that logs audit events.
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Handle SSE endpoints specially - log the connection event immediately
-		// since SSE connections are long-lived and don't follow normal request/response pattern
-		if a.isMCPStreamOpenRequest(r) {
-			// Log SSE connection event immediately
-			a.logSSEConnectionEvent(r)
+		r = ensureAuditContext(r)
 
-			// Pass through to SSE handler without waiting
-			next.ServeHTTP(w, r)
+		// Handle MCP stream opens (SSE endpoint, streamable GET) specially:
+		// these connections are long-lived, so instead of waiting for the
+		// response to complete, the connection event is logged on the FIRST
+		// write. By then any inner auth middleware has run, so the event
+		// carries the authenticated identity (or records the 401/403 denial).
+		if a.isMCPStreamOpenRequest(r) {
+			sw := &streamOpenWriter{ResponseWriter: w, auditor: a, req: r}
+			// Deferred BEFORE ServeHTTP so a panic in an inner handler still
+			// produces the connection event during unwinding — some chains run
+			// the recovery middleware OUTSIDE audit (e.g. the vMCP Serve path),
+			// which would otherwise swallow the event entirely. If the stream
+			// already logged on first write this is a no-op.
+			defer sw.logOnce(http.StatusOK)
+			next.ServeHTTP(sw, r)
 			return
 		}
 
 		startTime := time.Now()
-
-		// Add BackendInfo to context if not already present
-		// (backend enrichment middleware may have already added it)
-		if _, ok := BackendInfoFromContext(r.Context()); !ok {
-			backendInfo := &BackendInfo{}
-			ctx := WithBackendInfo(r.Context(), backendInfo)
-			r = r.WithContext(ctx)
-		}
 
 		// Capture request data if configured
 		var requestData []byte
@@ -289,6 +302,9 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	// Create the audit event
 	event := NewAuditEvent(eventType, source, outcome, subjects, component)
 
+	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
+	event.WithDelegationChain(a.extractDelegationChain(r))
+
 	// Add target information
 	target := a.extractTarget(r, eventType)
 	if len(target) > 0 {
@@ -319,10 +335,35 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	event.LogTo(r.Context(), a.auditLogger, LevelAudit)
 }
 
+// mcpMethodFor returns the parsed MCP method for the request, whether the
+// parser ran outside audit (context value) or inside it (holder filled by
+// the parser and read back after the inner chain returns).
+func mcpMethodFor(r *http.Request) string {
+	if m := mcp.GetMCPMethod(r.Context()); m != "" {
+		return m
+	}
+	if holder, ok := mcp.ParsedRequestHolderFromContext(r.Context()); ok && holder.Parsed != nil {
+		return holder.Parsed.Method
+	}
+	return ""
+}
+
+// mcpResourceIDFor returns the parsed MCP resource ID for the request, with
+// the same context-then-holder fallback as mcpMethodFor.
+func mcpResourceIDFor(r *http.Request) string {
+	if id := mcp.GetMCPResourceID(r.Context()); id != "" {
+		return id
+	}
+	if holder, ok := mcp.ParsedRequestHolderFromContext(r.Context()); ok && holder.Parsed != nil {
+		return holder.Parsed.ResourceID
+	}
+	return ""
+}
+
 // determineEventType determines the event type based on the HTTP request.
 func (a *Auditor) determineEventType(r *http.Request) string {
-	// First, try to get the parsed MCP method from context
-	if mcpMethod := mcp.GetMCPMethod(r.Context()); mcpMethod != "" {
+	// First, try to get the parsed MCP method
+	if mcpMethod := mcpMethodFor(r); mcpMethod != "" {
 		return a.mapMCPMethodToEventType(mcpMethod)
 	}
 
@@ -485,12 +526,74 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 	return subjects
 }
 
+// extractDelegationChainFromIdentity returns the RFC 8693 delegation chain
+// carried by the identity, bound to maxDepth, or nil when there is none.
+// The identity layer (auth.claimsToIdentity) always parses at
+// auth.DefaultMaxDelegationDepth, so a larger maxDepth requires re-parsing the
+// raw "act" claim — rebinding an already-parsed chain can only shrink it. The
+// re-parse is only trusted when it yields at least as many hops as are
+// already parsed, so it can widen the chain but never narrow it.
+func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *coreaudit.DelegationChain {
+	if identity == nil {
+		return nil
+	}
+	rawAct := identity.Claims["act"]
+	chain := identity.DelegationChain
+	existingHops := 0
+	if chain != nil {
+		existingHops = len(chain.Chain)
+	}
+	if rawAct != nil && (chain.IsZero() ||
+		(chain.Truncated && maxDepth > existingHops)) {
+		parsed := coreaudit.ParseDelegationChain(rawAct, maxDepth)
+		if !parsed.IsZero() && len(parsed.Chain) >= existingHops {
+			return parsed
+		}
+	}
+	if !chain.IsZero() {
+		return rebindDelegationChain(chain, maxDepth)
+	}
+	return nil
+}
+
+// rebindDelegationChain applies maxDepth to an already-parsed chain: hops
+// beyond the cap are dropped (keeping the outermost hops, so Chain[0] — the
+// current actor — is preserved), the chain is marked truncated, and the
+// omitted count accounts for both hops truncated at parse time and hops
+// dropped by this re-binding.
+func rebindDelegationChain(chain *coreaudit.DelegationChain, maxDepth int) *coreaudit.DelegationChain {
+	if maxDepth <= 0 {
+		maxDepth = auth.DefaultMaxDelegationDepth
+	}
+	bound := *chain
+	if len(bound.Chain) > maxDepth {
+		bound.Omitted += len(bound.Chain) - maxDepth
+		bound.Chain = bound.Chain[:maxDepth]
+		bound.Truncated = true
+	}
+	return &bound
+}
+
+// identityFromRequest resolves the authenticated identity for the request.
+// The context value is present when an auth middleware runs OUTSIDE audit;
+// the holder covers the audit-wraps-auth arrangement, where the identity
+// attached for inner handlers is published back up via auth.WithIdentity.
+func identityFromRequest(r *http.Request) (*auth.Identity, bool) {
+	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+		return identity, true
+	}
+	if holder, hok := auth.IdentityHolderFromContext(r.Context()); hok && holder.Identity != nil {
+		return holder.Identity, true
+	}
+	return nil, false
+}
+
 // extractSubjects extracts subject information from the HTTP request.
 func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
-	// Extract user information from Identity
-	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+	// Extract user information from Identity.
+	if identity, ok := identityFromRequest(r); ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
 
@@ -500,6 +603,16 @@ func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	}
 
 	return subjects
+}
+
+// extractDelegationChain extracts the RFC 8693 delegation chain from the
+// HTTP request's identity, or nil when there is no identity or no chain.
+func (a *Auditor) extractDelegationChain(r *http.Request) *coreaudit.DelegationChain {
+	identity, ok := identityFromRequest(r)
+	if !ok {
+		return nil
+	}
+	return extractDelegationChainFromIdentity(identity, a.config.MaxDelegationDepthOrDefault())
 }
 
 // determineComponent determines the component name based on the request.
@@ -521,12 +634,12 @@ func (*Auditor) extractTarget(r *http.Request, eventType string) map[string]stri
 	target[TargetKeyMethod] = r.Method
 
 	// Add MCP method if available from parsed data
-	if mcpMethod := mcp.GetMCPMethod(r.Context()); mcpMethod != "" {
+	if mcpMethod := mcpMethodFor(r); mcpMethod != "" {
 		target[TargetKeyMethod] = mcpMethod
 	}
 
 	// Add resource ID if available from parsed data
-	if resourceID := mcp.GetMCPResourceID(r.Context()); resourceID != "" {
+	if resourceID := mcpResourceIDFor(r); resourceID != "" {
 		target[TargetKeyName] = resourceID
 	}
 
@@ -612,8 +725,68 @@ func (a *Auditor) addEventData(event *AuditEvent, _ *http.Request, rw *responseW
 	}
 }
 
+// streamOpenWriter wraps the ResponseWriter for MCP stream-open requests
+// (SSE endpoint, streamable GET). It logs the connection audit event exactly
+// once, on the first WriteHeader/Write, so the event reflects the actual
+// outcome (200 stream established, 401/403 denied by inner middleware) and
+// carries the identity the inner auth middleware attached by that point.
+type streamOpenWriter struct {
+	http.ResponseWriter
+	auditor *Auditor
+	req     *http.Request
+	logged  bool
+}
+
+func (sw *streamOpenWriter) WriteHeader(statusCode int) {
+	// Informational (1xx) responses are not the final status — don't consume
+	// the one-shot connection event on them.
+	if statusCode >= http.StatusOK {
+		sw.logOnce(statusCode)
+	}
+	sw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (sw *streamOpenWriter) Write(data []byte) (int, error) {
+	// An implicit WriteHeader(200) happens on first Write.
+	sw.logOnce(http.StatusOK)
+	return sw.ResponseWriter.Write(data)
+}
+
+// Flush implements http.Flusher if the underlying ResponseWriter supports it.
+// A flush commits the response headers with an implicit 200, so it counts as
+// the stream being established — log the connection event here too, otherwise
+// a handler that flushes before its first write would delay (or, on a stream
+// that only ever flushes, lose) the event.
+func (sw *streamOpenWriter) Flush() {
+	sw.logOnce(http.StatusOK)
+	if flusher, ok := sw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap exposes the underlying ResponseWriter so http.ResponseController
+// can reach interfaces this wrapper does not re-implement (e.g. SetWriteDeadline).
+func (sw *streamOpenWriter) Unwrap() http.ResponseWriter {
+	return sw.ResponseWriter
+}
+
+// logOnce logs the stream connection event with the given status on the first
+// call; subsequent calls are no-ops.
+func (sw *streamOpenWriter) logOnce(statusCode int) {
+	if sw.logged {
+		return
+	}
+	sw.logged = true
+	sw.auditor.logSSEConnectionEvent(sw.req, statusCode)
+}
+
 // logSSEConnectionEvent logs an audit event for SSE connection initiation.
-func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
+func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
+	// Honor the configured event-type filter, like logAuditEvent does.
+	if !a.config.ShouldAuditEvent(EventTypeSSEConnection) {
+		return
+	}
+
 	// Extract source information
 	source := a.extractSource(r)
 
@@ -624,7 +797,10 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
 	component := a.determineComponent(r)
 
 	// Create the audit event for SSE connection
-	event := NewAuditEvent(EventTypeSSEConnection, source, OutcomeSuccess, subjects, component)
+	event := NewAuditEvent(EventTypeSSEConnection, source, a.determineOutcome(statusCode), subjects, component)
+
+	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
+	event.WithDelegationChain(a.extractDelegationChain(r))
 
 	// Add target information
 	target := map[string]string{

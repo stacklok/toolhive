@@ -104,6 +104,34 @@ func TestCachingAggregator_DisabledWhenTTLNonPositive(t *testing.T) {
 	assert.Nil(t, aggregator.NewCachingAggregator(nilAgg, time.Hour))
 }
 
+// TestCachingAggregator_InvalidateAll verifies the CacheInvalidator seam
+// (#5748): the returned Aggregator satisfies aggregator.CacheInvalidator, and
+// calling InvalidateAll purges the entire cache so a subsequent call for the
+// SAME identity re-sweeps rather than serving the (still TTL-fresh) cached
+// view.
+func TestCachingAggregator_InvalidateAll(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mock := mocks.NewMockAggregator(ctrl)
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).
+		Return(&aggregator.AggregatedCapabilities{}, nil).Times(2)
+
+	c := aggregator.NewCachingAggregator(mock, time.Hour)
+	invalidator, ok := c.(aggregator.CacheInvalidator)
+	require.True(t, ok, "cachingAggregator must implement CacheInvalidator")
+
+	ctx := ctxWithSubject("alice")
+	_, err := c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err)
+
+	invalidator.InvalidateAll()
+
+	// Well within the TTL, so a hit would prove the purge did not happen; the
+	// mock's Times(2) expectation is the actual re-sweep assertion.
+	_, err = c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err, "the second call after InvalidateAll must re-sweep, not hit a stale entry")
+}
+
 // TestCachingAggregator_ErrorNotCached: a failed sweep is not cached, so the next call retries
 // the wrapped aggregator.
 func TestCachingAggregator_ErrorNotCached(t *testing.T) {

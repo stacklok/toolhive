@@ -719,3 +719,41 @@ func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
 	assert.Equal(t, customImage, got.BuilderImage)
 	assert.Equal(t, base.AdditionalPackages, got.AdditionalPackages)
 }
+
+func TestMergeRuntimeConfigCarriesBuildWith(t *testing.T) {
+	t.Parallel()
+
+	got := mergeRuntimeConfig(templates.TransportTypeUVX, &templates.RuntimeConfig{
+		BuildWith: []string{"mcp<2"},
+	})
+	if len(got.BuildWith) != 1 || got.BuildWith[0] != "mcp<2" {
+		t.Errorf("BuildWith = %v, want [mcp<2]", got.BuildWith)
+	}
+
+	// No override specifiers: merged config must not invent any.
+	got = mergeRuntimeConfig(templates.TransportTypeUVX, &templates.RuntimeConfig{})
+	if len(got.BuildWith) != 0 {
+		t.Errorf("BuildWith = %v, want empty", got.BuildWith)
+	}
+}
+
+func TestCreateTemplateDataRejectsBuildWithForNonUVX(t *testing.T) {
+	t.Parallel()
+
+	for _, transport := range []templates.TransportType{
+		templates.TransportTypeNPX, templates.TransportTypeGO,
+	} {
+		_, err := createTemplateData(transport, "some-package", "", nil,
+			&templates.RuntimeConfig{BuildWith: []string{"mcp<2"}})
+		if err == nil {
+			t.Errorf("createTemplateData(%s) with BuildWith should error, got nil", transport)
+		}
+	}
+
+	// uvx accepts constraints.
+	_, err := createTemplateData(templates.TransportTypeUVX, "some-package", "", nil,
+		&templates.RuntimeConfig{BuildWith: []string{"mcp<2"}})
+	if err != nil {
+		t.Errorf("createTemplateData(uvx) with BuildWith should succeed, got %v", err)
+	}
+}

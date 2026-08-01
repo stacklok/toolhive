@@ -51,6 +51,50 @@ func startRealMCPBackend(t *testing.T) string {
 	return ts.URL + "/mcp"
 }
 
+// startEchoPingBackend is startRealMCPBackend with a second "ping" tool
+// (returns "pong"). Two tools let a per-principal projection test give each
+// principal a DISTINCT positively-permitted tool, so it can wait for each
+// session to register its own permitted tool (proving registration completed
+// and the principal resolved) before asserting the ABSENCE of the other
+// principal's tool — closing the "empty list because filtered" vs "empty list
+// because registration still pending" ambiguity. Returns the /mcp URL.
+func startEchoPingBackend(t *testing.T) string {
+	t.Helper()
+
+	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0")
+	mcpSrv.AddTool(
+		mcpmcp.NewTool("echo",
+			mcpmcp.WithDescription("Echoes the input back"),
+			mcpmcp.WithString("input", mcpmcp.Required()),
+		),
+		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			args, _ := req.Params.Arguments.(map[string]any)
+			input, _ := args["input"].(string)
+			return &mcpmcp.CallToolResult{
+				Content: []mcpmcp.Content{mcpmcp.NewTextContent(input)},
+			}, nil
+		},
+	)
+	mcpSrv.AddTool(
+		mcpmcp.NewTool("ping",
+			mcpmcp.WithDescription("Returns pong"),
+		),
+		func(_ context.Context, _ mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			return &mcpmcp.CallToolResult{
+				Content: []mcpmcp.Content{mcpmcp.NewTextContent("pong")},
+			}, nil
+		},
+	)
+
+	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", streamableSrv)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts.URL + "/mcp"
+}
+
 // MCPTestClient provides higher-level test utilities for MCP protocol interactions.
 // This reduces boilerplate and improves test readability by providing semantic methods
 // instead of manual JSON-RPC construction.
@@ -59,6 +103,11 @@ type MCPTestClient struct {
 	sessionID string
 	t         *testing.T
 	nextID    int
+	// principal, when non-empty, is sent as the X-Test-Principal header on every
+	// POST so a test server whose identity middleware honors that header (see
+	// buildCedarAuthzServer) authenticates this client as a distinct principal.
+	// Existing callers never set this and are unaffected.
+	principal string
 }
 
 // NewMCPTestClient creates a new test client for the given server URL.
@@ -159,6 +208,15 @@ func (c *MCPTestClient) SessionID() string {
 	return c.sessionID
 }
 
+// WithPrincipal sets the X-Test-Principal header this client sends with every
+// subsequent request, so a server whose identity middleware honors that header
+// authenticates this client as principal rather than the fixed fallback
+// principal. Returns the client for chaining.
+func (c *MCPTestClient) WithPrincipal(principal string) *MCPTestClient {
+	c.principal = principal
+	return c
+}
+
 // Terminate sends a DELETE request to terminate the session.
 func (c *MCPTestClient) Terminate() *http.Response {
 	c.t.Helper()
@@ -199,6 +257,9 @@ func (c *MCPTestClient) postMCP(body map[string]any, sessionID string) *http.Res
 	req.Header.Set("Content-Type", "application/json")
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	if c.principal != "" {
+		req.Header.Set("X-Test-Principal", c.principal)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

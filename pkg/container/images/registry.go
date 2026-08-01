@@ -6,6 +6,7 @@ package images
 import (
 	"archive/tar"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,55 +71,89 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 	return true, nil
 }
 
-// PullImage pulls an image from a registry and saves it to the local daemon
+// PullImage pulls an image from a registry and saves it to the local daemon.
+//
+// For digest-pinned references (tag@digest or digest-only), the Docker daemon's
+// native ImagePull is used. The daemon registers the OCI manifest digest so that
+// subsequent container creates using a tag@digest reference can resolve the image.
+// go-containerregistry's daemon.Write stores images under a tag only, without
+// registering the manifest digest; Docker's tag@digest cross-check at
+// container-create time then fails with "No such image".
+//
+// For plain tag references, go-containerregistry is used for cross-platform
+// support and custom keychain auth.
 func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) error {
 	//nolint:gosec // G706: image name from user/config input
 	slog.Info("pulling image", "image", imageName)
 
-	// Parse the image reference
 	ref, err := name.ParseReference(imageName)
 	if err != nil {
 		return fmt.Errorf("failed to parse image reference %q: %w", imageName, err)
 	}
 
-	// Configure remote options
+	if _, ok := ref.(name.Digest); ok {
+		return r.pullDigestViaDockerDaemon(ctx, imageName, ref)
+	}
+
+	tag, ok := ref.(name.Tag)
+	if !ok {
+		return fmt.Errorf("unsupported image reference type %T", ref)
+	}
+
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(r.keychain),
 		remote.WithContext(ctx),
 	}
-
 	if r.platform != nil {
 		remoteOpts = append(remoteOpts, remote.WithPlatform(*r.platform))
 	}
 
-	// Pull the image from the registry
 	img, err := remote.Image(ref, remoteOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to pull image from registry: %w", err)
 	}
 
-	// Convert reference to tag for daemon.Write
-	tag, ok := ref.(name.Tag)
-	if !ok {
-		// If it's not a tag, try to convert to tag
-		tag, err = name.NewTag(ref.String())
-		if err != nil {
-			return fmt.Errorf("failed to convert reference to tag: %w", err)
-		}
-	}
-
-	// Save the image to the local daemon
 	response, err := daemon.Write(tag, img, daemon.WithClient(r.dockerClient))
 	if err != nil {
 		return fmt.Errorf("failed to write image to daemon: %w", err)
 	}
 
-	// Display success message
 	if _, err := fmt.Fprintf(os.Stdout, "Successfully pulled %s\n", imageName); err != nil {
 		slog.Debug("failed to write success message", "error", err)
 	}
 	//nolint:gosec // G706: image name and response from registry pull
 	slog.Debug("pull complete", "image", imageName, "response", response)
+
+	return nil
+}
+
+// pullDigestViaDockerDaemon pulls a digest-pinned image (tag@digest or
+// digest-only form) using the Docker daemon client so the OCI manifest digest
+// is stored and Docker can resolve the reference at container-create time.
+func (r *RegistryImageManager) pullDigestViaDockerDaemon(ctx context.Context, imageName string, ref name.Reference) error {
+	// Resolve auth from the keychain and encode for the daemon API.
+	var registryAuth string
+	if auth, err := r.keychain.Resolve(ref.Context().Registry); err == nil && auth != authn.Anonymous {
+		if authCfg, err := auth.Authorization(); err == nil {
+			if authJSON, err := json.Marshal(authCfg); err == nil {
+				registryAuth = base64.URLEncoding.EncodeToString(authJSON)
+			}
+		}
+	}
+
+	resp, err := r.dockerClient.ImagePull(ctx, imageName, mobyclient.ImagePullOptions{
+		RegistryAuth: registryAuth,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to pull image: %w", err)
+	}
+	if err := resp.Wait(ctx); err != nil {
+		return fmt.Errorf("failed waiting for image pull: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(os.Stdout, "Successfully pulled %s\n", imageName); err != nil {
+		slog.Debug("failed to write success message", "error", err)
+	}
 
 	return nil
 }

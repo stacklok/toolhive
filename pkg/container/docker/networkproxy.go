@@ -27,21 +27,26 @@ import (
 type networkProxy interface {
 	// SetupEgress provisions egress enforcement BEFORE the MCP container is
 	// created and returns the environment variables to inject into the workload
-	// (HTTP_PROXY etc.). A per-container backend (squid) creates its egress
-	// container here; a consolidated backend (envoy) creates its single
-	// dual-listener container here and reserves the ingress port, carried back in
-	// the egressResult for SetupIngress to return.
+	// (HTTP_PROXY etc.).
+	//
+	// Squid creates its egress container here. The Envoy backend creates no
+	// container in SetupEgress — it returns only env vars — and defers all
+	// container creation (both egress and ingress listeners, one container) to
+	// SetupIngress so the STRICT_DNS ingress cluster can resolve the MCP hostname
+	// on its first probe.
 	//
 	// It must run before createMcpContainer so the returned env vars land in the
-	// workload's environment and the egress proxy has a head start.
+	// workload's environment.
 	SetupEgress(ctx context.Context, spec proxySpec) (egressResult, error)
 
-	// SetupIngress finalizes the ingress proxy AFTER the MCP container exists and
-	// returns the host-side ingress port (0 for stdio / UpstreamPort==0). A
-	// per-container backend (squid) creates its ingress container here — now that
-	// the MCP container's hostname resolves, avoiding a cached negative DNS lookup
-	// that would leave the reverse proxy permanently unable to reach the upstream.
-	// A consolidated backend returns the port it reserved in SetupEgress.
+	// SetupIngress creates the ingress proxy AFTER the MCP container exists and
+	// returns the host-side ingress port (0 for stdio / UpstreamPort==0).
+	//
+	// Squid creates its ingress container here. The Envoy backend creates its
+	// single dual-listener container here (both egress forward-proxy and ingress
+	// reverse-proxy listeners). Running after createMcpContainer ensures the MCP
+	// container's hostname resolves on first probe, avoiding a cached negative DNS
+	// lookup that would leave the ingress permanently unable to reach the upstream.
 	//
 	// It must run after createMcpContainer.
 	SetupIngress(ctx context.Context, spec proxySpec, egress egressResult) (int, error)
@@ -52,6 +57,13 @@ type networkProxy interface {
 type proxySpec struct {
 	// WorkloadName is the base name of the MCP container (e.g. "myserver").
 	WorkloadName string
+	// UpstreamHost is the address the ingress reverse proxy connects to for the
+	// MCP container. It is the container's resolved IP on the internal network
+	// (not its name) so the ingress proxy has no DNS dependency: under
+	// concurrent startup the container's DNS record can lag, and a hostname-based
+	// Squid cache_peer caches the failed lookup and never recovers within the
+	// readiness window (see #6063). Empty falls back to WorkloadName.
+	UpstreamHost string
 	// Permissions holds the network permission profile from the workload's
 	// permission profile, governing what outbound traffic is allowed.
 	Permissions *permissions.NetworkPermissions
@@ -74,16 +86,12 @@ type proxySpec struct {
 }
 
 // egressResult is the output of a successful SetupEgress call. It is passed to
-// SetupIngress so a consolidated backend can carry state (e.g. a reserved
-// ingress port) forward without holding per-workload state on the shared proxy.
+// SetupIngress so backends can carry any state set up during egress forward
+// without holding per-workload state on the shared proxy.
 type egressResult struct {
 	// EnvVars contains environment variables that must be merged into the MCP
 	// container's environment (e.g. HTTP_PROXY, HTTPS_PROXY).
 	EnvVars map[string]string
-	// ingressPort is the host-side ingress port reserved by a consolidated
-	// backend (envoy) when it created its container in SetupEgress. Per-container
-	// backends (squid) leave it 0 and bind the ingress port later in SetupIngress.
-	ingressPort int
 }
 
 // newNetworkProxy reads the TOOLHIVE_NETWORK_PROXY environment variable and

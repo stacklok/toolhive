@@ -336,6 +336,14 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+
+	// resyncBaseCtx is the server-lifetime parent context for asynchronous
+	// tools/resources/prompts list_changed resync work (#5748, #5969). It is
+	// cancelled by a shutdownFunc on Stop, so an in-flight backend
+	// re-aggregation triggered by a late notification cannot outlive the
+	// server. Set by Serve; nil for direct-Serve callers that never register a
+	// list_changed sink.
+	resyncBaseCtx context.Context
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -537,8 +545,8 @@ func New(
 // This enables embedding the vmcp server inside another HTTP server or framework.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full middleware chain (recovery, body limit, header validation, auth,
-// rate limit, audit, MCP parsing, telemetry).
+// and the full middleware chain (recovery, body limit, header validation,
+// audit, auth, MCP parsing, telemetry).
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -598,14 +606,18 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry → classification
-	// Execution order: recovery → body-limit → header-val → auth →
-	//   rate-limit → audit → MCP-parsing → telemetry → classification → handler
+	// Code wraps: audit → auth → MCP-parsing → telemetry → classification
+	// Execution order: recovery → body-limit → header-val → audit → auth →
+	//   MCP-parsing → telemetry → classification → handler
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
 	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
 	// any upstream refresh fails, and the middleware short-circuits with
-	// HTTP 401 + WWW-Authenticate before the request reaches any inner layer.
+	// HTTP 401 + WWW-Authenticate. Audit wraps auth, so those 401s (and every
+	// other rejection from the inner chain) still produce an audit event; the
+	// authenticated identity and parsed MCP data are read back through the
+	// holder carriers (auth.IdentityHolder, mcp.ParsedRequestHolder) that the
+	// inner auth/parser middlewares fill.
 	//
 	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been
 	// removed: every caller now routes through Serve, so authorization is enforced by the
@@ -621,13 +633,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	var mcpHandler http.Handler = streamableServer
 
-	// Classify Modern (2026-07-28) vs Legacy at the decode seam and reject
-	// malformed Modern requests before dispatch. No routing change: Legacy
-	// and well-formed Modern requests both fall through to the same handler
-	// (Modern dispatch lands in Phase 2, #5756). Applied before telemetry
-	// (i.e. it runs closer to the handler) so a rejection is still recorded
-	// by the telemetry middleware instead of bypassing it entirely.
-	mcpHandler = classificationMiddleware(mcpHandler)
+	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
+	// malformed Modern requests before dispatch, and route well-formed Modern
+	// requests to the vMCP core (dispatchModern) instead of the SDK. Applied
+	// before telemetry (i.e. it runs closer to the handler) so a rejection or a
+	// dispatcher 403 is still recorded by the telemetry middleware instead of
+	// bypassing it entirely.
+	mcpHandler = s.classifyingHandler(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
@@ -643,7 +655,15 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
-	// Apply audit middleware if configured (runs after auth, before discovery)
+	// Apply authentication middleware if configured
+	if s.config.AuthMiddleware != nil {
+		mcpHandler = s.config.AuthMiddleware(mcpHandler)
+		slog.Info("authentication middleware enabled for MCP endpoints")
+	}
+
+	// Apply audit middleware if configured. It wraps authentication so auth
+	// failures (401) are audited too; the identity for successful requests is
+	// read back via the auth.IdentityHolder carrier.
 	if s.config.AuditConfig != nil {
 		if err := s.config.AuditConfig.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
@@ -657,12 +677,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		}
 		mcpHandler = auditor.Middleware(mcpHandler)
 		slog.Info("audit middleware enabled for MCP endpoints")
-	}
-
-	// Apply authentication middleware if configured (runs first in chain)
-	if s.config.AuthMiddleware != nil {
-		mcpHandler = s.config.AuthMiddleware(mcpHandler)
-		slog.Info("authentication middleware enabled for MCP endpoints")
 	}
 
 	mcpHandler = s.applyForwardedHeaderCapture(mcpHandler)
@@ -1211,7 +1225,19 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// after initialize may receive a "tool not found" error before AddSessionTools
 	// completes. Conforming MCP clients call tools/list before tools/call, so this
 	// window is expected to be harmless in practice.
-	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID); retErr != nil {
+	//
+	// The list_changed sink is built here, before CreateSession, so it can be
+	// threaded through to every backend connector this session opens (#5748).
+	// Capture BOTH the caller identity AND the per-request forwarded headers from
+	// the registration context: the asynchronous resync re-enumerates backends
+	// through the same identity+header-keyed path a live request uses (cache key
+	// and outbound backend auth are derived from the context, not passed
+	// explicitly), so it must reconstruct a faithful context or it would
+	// enumerate unauthenticated. See buildListChangedSink.
+	identity, _ := auth.IdentityFromContext(ctx)
+	forwardedHeaders := headerforward.ForwardedHeadersFromContext(ctx)
+	sink := s.buildListChangedSink(sessionID, session, identity, forwardedHeaders)
+	if _, retErr = s.vmcpSessionMgr.CreateSession(ctx, sessionID, sink); retErr != nil {
 		slog.Error("failed to create session-scoped backends",
 			"session_id", sessionID,
 			"error", retErr)

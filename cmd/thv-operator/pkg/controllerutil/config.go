@@ -54,14 +54,6 @@ func SortWorkloadRefs(refs []mcpv1beta1.WorkloadReference) {
 	slices.SortFunc(refs, CompareWorkloadRefs)
 }
 
-// WorkloadRefsEqual reports whether two WorkloadReference slices contain the same entries.
-// Both slices must already be sorted (use SortWorkloadRefs) for correct results.
-func WorkloadRefsEqual(a, b []mcpv1beta1.WorkloadReference) bool {
-	return slices.EqualFunc(a, b, func(x, y mcpv1beta1.WorkloadReference) bool {
-		return x.Kind == y.Kind && x.Name == y.Name
-	})
-}
-
 // GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy
 func GetToolConfigForMCPRemoteProxy(
 	ctx context.Context,

@@ -659,6 +659,8 @@ See `pkg/audit/mcp_events.go` for complete list of event types.
 **Event data:**
 - Timestamp, source, outcome
 - Subjects (user, session)
+- Delegation chain (`delegation`) — RFC 8693 `act` claim hops (issuer/subject
+  pairs), outermost first, when the caller used a delegated token
 - Target (endpoint, method, resource)
 - Request/response data (configurable)
 - Duration and metadata

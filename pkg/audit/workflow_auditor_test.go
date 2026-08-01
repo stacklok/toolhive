@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 )
 
@@ -592,6 +593,78 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkflowAuditor_DelegationChain(t *testing.T) {
+	t.Parallel()
+
+	delegatedChain := coreaudit.ParseDelegationChain(
+		map[string]any{
+			"sub": "agent-1",
+			"act": map[string]any{"sub": "agent-2"},
+		}, auth.DefaultMaxDelegationDepth)
+	delegatedIdentity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user-delegated",
+			Name:    "Delegated User",
+			Claims: map[string]any{
+				"act": map[string]any{
+					"sub": "agent-1",
+					"act": map[string]any{"sub": "agent-2"},
+				},
+			},
+			DelegationChain: delegatedChain,
+		},
+	}
+
+	// Every Log* method builds its event through newEvent, so testing the
+	// helper covers the delegation attachment for all of them by construction.
+	t.Run("newEvent attaches delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, _ := createTestAuditor(t, DefaultConfig())
+
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+		event := auditor.newEvent(ctx, EventTypeWorkflowStarted, OutcomeSuccess)
+
+		require.NotNil(t, event.DelegationChain, "delegation chain should be attached")
+		assert.Equal(t, delegatedChain, event.DelegationChain)
+	})
+
+	t.Run("no identity omits delegation chain", func(t *testing.T) {
+		t.Parallel()
+		auditor, writer := createTestAuditor(t, DefaultConfig())
+
+		auditor.LogWorkflowStarted(context.Background(), "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		_, exists := entry["delegation"]
+		assert.False(t, exists, "delegation should be omitted without an identity")
+	})
+
+	t.Run("configured max depth truncates chain", func(t *testing.T) {
+		t.Parallel()
+		maxDepth := 1
+		auditor, writer := createTestAuditor(t, &Config{MaxDelegationDepth: &maxDepth})
+
+		ctx := auth.WithIdentity(context.Background(), delegatedIdentity)
+		auditor.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
+
+		require.NotEmpty(t, writer.logs, "expected log entry")
+		entry := parseLogEntry(t, writer.getLastLog())
+
+		chain, ok := entry["delegation"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, true, chain["truncated"])
+		hops, ok := chain["chain"].([]any)
+		require.True(t, ok)
+		require.Len(t, hops, 1)
+		first, ok := hops[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "agent-1", first["sub"])
+		assert.Equal(t, float64(1), chain["omitted"])
+	})
 }
 
 func TestWorkflowAuditor_ExtractSource(t *testing.T) {

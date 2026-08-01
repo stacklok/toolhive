@@ -45,6 +45,46 @@ func toolNamesOnServer(t *testing.T, srv *server.MCPServer) []string {
 	return names
 }
 
+// resourceNamesOnServer returns the URIs of the resources currently registered
+// on the given local MCP server, by issuing a synthetic resources/list request
+// through the shim's HandleMessage dispatch path. Mirrors toolNamesOnServer;
+// call only after the bridge has fully stopped (run() returned).
+func resourceNamesOnServer(t *testing.T, srv *server.MCPServer) []string {
+	t.Helper()
+	resp := srv.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","method":"resources/list","id":1}`))
+	jr, ok := resp.(mcp.JSONRPCResponse)
+	require.True(t, ok, "resources/list should return a JSONRPCResponse, got %T", resp)
+	buf, err := json.Marshal(jr.Result)
+	require.NoError(t, err)
+	var lr mcp.ListResourcesResult
+	require.NoError(t, json.Unmarshal(buf, &lr))
+	uris := make([]string, 0, len(lr.Resources))
+	for _, res := range lr.Resources {
+		uris = append(uris, res.URI)
+	}
+	return uris
+}
+
+// promptNamesOnServer returns the names of the prompts currently registered on
+// the given local MCP server, by issuing a synthetic prompts/list request
+// through the shim's HandleMessage dispatch path. Mirrors toolNamesOnServer;
+// call only after the bridge has fully stopped (run() returned).
+func promptNamesOnServer(t *testing.T, srv *server.MCPServer) []string {
+	t.Helper()
+	resp := srv.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","method":"prompts/list","id":1}`))
+	jr, ok := resp.(mcp.JSONRPCResponse)
+	require.True(t, ok, "prompts/list should return a JSONRPCResponse, got %T", resp)
+	buf, err := json.Marshal(jr.Result)
+	require.NoError(t, err)
+	var lp mcp.ListPromptsResult
+	require.NoError(t, json.Unmarshal(buf, &lp))
+	names := make([]string, 0, len(lp.Prompts))
+	for _, p := range lp.Prompts {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
 func containsTool(names []string, want string) bool {
 	for _, n := range names {
 		if n == want {
@@ -206,6 +246,226 @@ func TestBridge_ToolsListChanged_TriggersReSync(t *testing.T) {
 		"alpha must be present after the re-fetch (forwardAll is additive), got %v", names)
 	assert.True(t, containsTool(names, "beta"),
 		"beta must be present after the re-sync, got %v", names)
+}
+
+// noopResourceHandler is a stand-in resource handler; the bridge re-fetch
+// tests never read resources, they only assert the advertised set.
+func noopResourceHandler(_ context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return nil, nil
+}
+
+// noopPromptHandler is a stand-in prompt handler; the bridge re-fetch tests
+// never fetch prompts, they only assert the advertised set.
+func noopPromptHandler(_ context.Context, _ mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	return nil, nil
+}
+
+// TestBridge_ResourcesListChanged_TriggersReSync verifies the bridge's
+// notifications/resources/list_changed re-fetch fix: when the upstream
+// backend's resource set changes after the bridge has connected, the upstream
+// emits a resources/list_changed notification, the bridge's OnNotification
+// handler re-runs forwardAll, and the newly added resource appears on the
+// bridge's local stdio server.
+//
+// Mirrors TestBridge_ToolsListChanged_TriggersReSync: the mutation is driven
+// through the per-session overlay (SessionWithResources.SetSessionResources).
+// forwardAll re-fetches tools, resources, resource templates, and prompts on
+// ANY *_list_changed notification, so the existing tools/list counter
+// (listToolsCounter, wired via hooks.AddBeforeListTools) remains the
+// race-free readiness/re-fetch signal even though this test mutates
+// resources, not tools.
+//
+//nolint:paralleltest // Swaps process-global os.Stdin; cannot run in parallel.
+func TestBridge_ResourcesListChanged_TriggersReSync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// --- upstream backend with an initial resource "res://alpha" ---
+	counter := &listToolsCounter{}
+	holder := &sessionHolder{}
+	hooks := &server.Hooks{}
+	hooks.AddOnRegisterSession(func(_ context.Context, s server.ClientSession) { holder.set(s) })
+	hooks.AddBeforeListTools(counter.hook())
+
+	backend := server.NewMCPServer(
+		"backend", "1.0",
+		// WithToolCapabilities is declared (though no tool is registered) so the
+		// backend unambiguously serves tools/list and fires the BeforeListTools
+		// hook — the counter is the readiness signal for the resource-triggered
+		// re-sync, since forwardAll re-fetches tools on ANY *_list_changed.
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithHooks(hooks),
+	)
+	backend.AddResource(mcp.Resource{URI: "res://alpha", Name: "alpha"}, noopResourceHandler)
+
+	httpSrv := server.NewStreamableHTTPServer(backend)
+	ts := httptest.NewServer(httpSrv)
+	t.Cleanup(ts.Close)
+
+	// --- bridge pointing at the backend (streamable-http) ---
+	bridge, err := NewStdioBridge("test", ts.URL, types.TransportTypeStreamableHTTP)
+	require.NoError(t, err)
+
+	// Swap os.Stdin ONLY for a pipe so ServeStdio does not touch the real
+	// process stdin and can be unblocked at teardown by closing the write end.
+	origIn := os.Stdin
+	pipeR, pipeW, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		os.Stdin = origIn
+		_ = pipeR.Close()
+		_ = pipeW.Close()
+	})
+	os.Stdin = pipeR
+
+	bridge.Start(ctx)
+	t.Cleanup(func() {
+		_ = pipeW.Close()
+		bridge.Shutdown()
+	})
+
+	// Step 1: wait for the bridge to connect and run its initial forwardAll
+	// (counter >= 1 from the tools/list call forwardAll always issues).
+	require.Eventually(t, func() bool {
+		return holder.get() != nil && counter.count.Load() >= 1
+	}, 5*time.Second, 50*time.Millisecond,
+		"bridge did not complete initial forwardAll (session=%v, listCalls=%d)",
+		holder.get() != nil, counter.count.Load())
+
+	// Step 2: mutate the upstream resource set — add "res://beta" via the
+	// per-session overlay. SetSessionResources syncs onto the live go-sdk
+	// server bound to this session, which emits
+	// notifications/resources/list_changed to the bridge's upstream client.
+	backendSession := holder.get()
+	swr, ok := backendSession.(server.SessionWithResources)
+	require.True(t, ok, "backend session must implement SessionWithResources")
+	swr.SetSessionResources(map[string]server.ServerResource{
+		"res://alpha": {Resource: mcp.Resource{URI: "res://alpha", Name: "alpha"}, Handler: noopResourceHandler},
+		"res://beta":  {Resource: mcp.Resource{URI: "res://beta", Name: "beta"}, Handler: noopResourceHandler},
+	})
+
+	// Step 3: wait for the re-fetch. forwardAll re-fetches tools on every
+	// *_list_changed notification (not just tools/list_changed), so the
+	// second tools/list call is the race-free signal that the resync ran.
+	require.Eventually(t, func() bool {
+		return counter.count.Load() >= 2
+	}, 5*time.Second, 50*time.Millisecond,
+		"bridge did not re-run forwardAll after resources/list_changed (listCalls=%d)",
+		counter.count.Load())
+
+	// Step 4: stop the bridge, then read bridge.srv. The re-sync forwardAll runs
+	// on the upstream client's OnNotification goroutine, not run(); Shutdown's
+	// b.up.Close() joins that goroutine before returning, which is the
+	// happens-before edge that makes reading bridge.srv here race-free.
+	_ = pipeW.Close()
+	bridge.Shutdown()
+
+	uris := resourceNamesOnServer(t, bridge.srv)
+	assert.Contains(t, uris, "res://alpha", "res://alpha must be present after the re-fetch (forwardAll is additive)")
+	assert.Contains(t, uris, "res://beta", "res://beta must be present after the re-sync")
+}
+
+// TestBridge_PromptsListChanged_TriggersReSync verifies the bridge's
+// notifications/prompts/list_changed re-fetch fix: when the upstream
+// backend's prompt set changes after the bridge has connected, the upstream
+// emits a prompts/list_changed notification, the bridge's OnNotification
+// handler re-runs forwardAll, and the newly added prompt appears on the
+// bridge's local stdio server.
+//
+// Mirrors TestBridge_ToolsListChanged_TriggersReSync/
+// TestBridge_ResourcesListChanged_TriggersReSync: the mutation is driven
+// through the per-session overlay (SessionWithPrompts.SetSessionPrompts), and
+// readiness/re-fetch is observed via the tools/list counter for the same
+// race-free reason (forwardAll always re-fetches tools too).
+//
+//nolint:paralleltest // Swaps process-global os.Stdin; cannot run in parallel.
+func TestBridge_PromptsListChanged_TriggersReSync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// --- upstream backend with an initial prompt "alpha" ---
+	counter := &listToolsCounter{}
+	holder := &sessionHolder{}
+	hooks := &server.Hooks{}
+	hooks.AddOnRegisterSession(func(_ context.Context, s server.ClientSession) { holder.set(s) })
+	hooks.AddBeforeListTools(counter.hook())
+
+	backend := server.NewMCPServer(
+		"backend", "1.0",
+		// WithToolCapabilities is declared (though no tool is registered) so the
+		// backend unambiguously serves tools/list and fires the BeforeListTools
+		// hook — the counter is the readiness signal for the prompt-triggered
+		// re-sync, since forwardAll re-fetches tools on ANY *_list_changed.
+		server.WithToolCapabilities(true),
+		server.WithPromptCapabilities(true),
+		server.WithHooks(hooks),
+	)
+	backend.AddPrompt(mcp.NewPrompt("alpha"), noopPromptHandler)
+
+	httpSrv := server.NewStreamableHTTPServer(backend)
+	ts := httptest.NewServer(httpSrv)
+	t.Cleanup(ts.Close)
+
+	// --- bridge pointing at the backend (streamable-http) ---
+	bridge, err := NewStdioBridge("test", ts.URL, types.TransportTypeStreamableHTTP)
+	require.NoError(t, err)
+
+	// Swap os.Stdin ONLY for a pipe so ServeStdio does not touch the real
+	// process stdin and can be unblocked at teardown by closing the write end.
+	origIn := os.Stdin
+	pipeR, pipeW, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		os.Stdin = origIn
+		_ = pipeR.Close()
+		_ = pipeW.Close()
+	})
+	os.Stdin = pipeR
+
+	bridge.Start(ctx)
+	t.Cleanup(func() {
+		_ = pipeW.Close()
+		bridge.Shutdown()
+	})
+
+	// Step 1: wait for the bridge to connect and run its initial forwardAll.
+	require.Eventually(t, func() bool {
+		return holder.get() != nil && counter.count.Load() >= 1
+	}, 5*time.Second, 50*time.Millisecond,
+		"bridge did not complete initial forwardAll (session=%v, listCalls=%d)",
+		holder.get() != nil, counter.count.Load())
+
+	// Step 2: mutate the upstream prompt set — add "beta" via the per-session
+	// overlay. SetSessionPrompts syncs onto the live go-sdk server bound to
+	// this session, which emits notifications/prompts/list_changed to the
+	// bridge's upstream client.
+	backendSession := holder.get()
+	swp, ok := backendSession.(server.SessionWithPrompts)
+	require.True(t, ok, "backend session must implement SessionWithPrompts")
+	swp.SetSessionPrompts(map[string]server.ServerPrompt{
+		"alpha": {Prompt: mcp.NewPrompt("alpha"), Handler: noopPromptHandler},
+		"beta":  {Prompt: mcp.NewPrompt("beta"), Handler: noopPromptHandler},
+	})
+
+	// Step 3: wait for the re-fetch, observed via the tools/list counter
+	// (forwardAll re-fetches tools on every *_list_changed notification).
+	require.Eventually(t, func() bool {
+		return counter.count.Load() >= 2
+	}, 5*time.Second, 50*time.Millisecond,
+		"bridge did not re-run forwardAll after prompts/list_changed (listCalls=%d)",
+		counter.count.Load())
+
+	// Step 4: stop the bridge, then read bridge.srv. The re-sync forwardAll runs
+	// on the upstream client's OnNotification goroutine, not run(); Shutdown's
+	// b.up.Close() joins that goroutine before returning, which is the
+	// happens-before edge that makes reading bridge.srv here race-free.
+	_ = pipeW.Close()
+	bridge.Shutdown()
+
+	names := promptNamesOnServer(t, bridge.srv)
+	assert.Contains(t, names, "alpha", "alpha must be present after the re-fetch (forwardAll is additive)")
+	assert.Contains(t, names, "beta", "beta must be present after the re-sync")
 }
 
 // TestBridge_ProgressAndLoggingNotifications_ForwardedByShim guards the premise

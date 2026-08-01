@@ -20,6 +20,7 @@ import (
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -160,7 +161,13 @@ func writeRateLimited(w http.ResponseWriter, requestID any, retryAfter time.Dura
 	_, _ = w.Write(rateLimitedBody(requestID, retryAfter))
 }
 
-// rateLimitedBody returns the JSON-encoded body for a rate-limited JSON-RPC error.
+// rateLimitedBody returns the JSON-encoded body for a rate-limited JSON-RPC
+// error.
+//
+// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the error
+// response as `id?: RequestId` where RequestId = string | number, so an
+// absent id is encoded by omitting the "id" key, never as null. See
+// session.HasJSONRPCID.
 func rateLimitedBody(requestID any, retryAfter time.Duration) []byte {
 	retrySeconds := math.Ceil(retryAfter.Seconds())
 	resp := map[string]any{
@@ -172,12 +179,14 @@ func rateLimitedBody(requestID any, retryAfter time.Duration) []byte {
 				"retryAfterSeconds": retrySeconds,
 			},
 		},
-		"id": requestID,
+	}
+	if session.HasJSONRPCID(requestID) {
+		resp["id"] = requestID
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return []byte(fmt.Sprintf(
-			`{"jsonrpc":"2.0","error":{"code":-32029,"message":"Rate limit exceeded","data":{"retryAfterSeconds":%.0f}},"id":null}`,
+			`{"jsonrpc":"2.0","error":{"code":429,"message":"Rate limit exceeded","data":{"retryAfterSeconds":%.0f}}}`,
 			retrySeconds,
 		))
 	}

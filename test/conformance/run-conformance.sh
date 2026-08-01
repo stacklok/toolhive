@@ -266,24 +266,32 @@ npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
 suite_rc=${PIPESTATUS[0]}
 set -e
 
-# Quarantine: tools-call-sampling flakes intermittently (~1/3) due to an upstream
-# reference-server bug, NOT a ToolHive defect. The everything-server sends its
-# server->client sampling/createMessage on the client's standalone GET SSE stream
-# without a relatedRequestId, so it races the tools/call handler; when the handler
-# wins, the request is dropped and the client times out at 60s. See:
+# Quarantine: the scenarios that drive a server->client request flake
+# intermittently (~1/3) due to an upstream reference-server bug, NOT a ToolHive
+# defect. The everything-server sends its server->client request
+# (sampling/createMessage or elicitation/create) on the client's standalone GET
+# SSE stream without a relatedRequestId, so it races the tools/call handler;
+# when the handler wins, the request is dropped and the client times out at 60s.
+# In suite v0.1.16 exactly four scenarios register client-side handlers for
+# server->client requests (src/scenarios/server/tools.ts and
+# elicitation-{defaults,enums}.ts) and are therefore exposed to the race:
+#   tools-call-sampling, tools-call-elicitation,
+#   elicitation-sep1034-defaults, elicitation-sep1330-enums
+# See:
 #   upstream: https://github.com/modelcontextprotocol/conformance/issues/407
 #   toolhive: #5886 (ingress Squid cold-start mitigation, reduces but can't
 #             eliminate the client-side ordering race)
 # We can't use expected-failures.yaml (a flaky entry stale-fails the ~2/3 of runs
-# where it passes), so ignore ONLY tools-call-sampling in the gating here; every
+# where it passes), so ignore ONLY these scenarios in the gating here; every
 # other scenario still fails the job. Remove this block once #407 is fixed
 # upstream and CONFORMANCE_VERSION is bumped to a release that contains the fix.
+quarantined='tools-call-sampling|tools-call-elicitation|elicitation-sep1034-defaults|elicitation-sep1330-enums'
 if [ "${suite_rc}" -ne 0 ]; then
   unexpected="$(sed -n '/Unexpected failures (not in baseline):/,$p' "${RESULTS_DIR}/suite-output.log" \
     | grep -oE '✗ [a-z0-9-]+' | sed 's/✗ //' | sort -u)"
-  others="$(printf '%s\n' "${unexpected}" | grep -vE '^(tools-call-sampling)?$' || true)"
+  others="$(printf '%s\n' "${unexpected}" | grep -vE "^(${quarantined})?\$" || true)"
   if [ -n "${unexpected}" ] && [ -z "${others}" ]; then
-    echo "==> Ignoring quarantined flaky scenario 'tools-call-sampling' (upstream conformance#407 / toolhive#5886); no other unexpected failures."
+    echo "==> Ignoring quarantined flaky server->client scenarios (${quarantined}) per upstream conformance#407 / toolhive#5886; no other unexpected failures."
     exit 0
   fi
   exit "${suite_rc}"

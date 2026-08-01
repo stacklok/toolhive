@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -58,7 +59,10 @@ type ParsedMCPRequest struct {
 	ProtocolVersion string
 	// IsRequest indicates if this is a JSON-RPC request (vs response or notification)
 	IsRequest bool
-	// IsBatch indicates if this is a batch request
+	// IsBatch indicates if this is a batch request. It is always false: JSON-RPC
+	// batches are rejected by ParsingMiddleware before a ParsedMCPRequest is ever
+	// constructed (batching was removed in MCP 2025-06-18; see batch.go). The
+	// field is retained for wire/telemetry compatibility.
 	IsBatch bool
 }
 
@@ -76,10 +80,10 @@ type ParsedMCPRequest struct {
 // Example usage:
 //
 //	middlewares := []types.Middleware{
-//	    authMiddleware,        // Authentication first
+//	    auditMiddleware,       // Audit wraps the chain; parsed data flows back via ParsedRequestHolder
+//	    authMiddleware,        // Authentication
 //	    mcp.ParsingMiddleware, // MCP parsing after auth
 //	    authzMiddleware,       // Authorization uses parsed data
-//	    auditMiddleware,       // Audit uses parsed data
 //	}
 func ParsingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,11 +111,28 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Restore the request body for downstream handlers
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
+		// Reject JSON-RPC batches before any downstream middleware or the
+		// transport proxy's batch executor can act on them. Batching was
+		// removed in MCP revision 2025-06-18; ToolHive serves only 2025-11-25
+		// and 2026-07-28. Authz, audit, and tool filtering each inspect a
+		// single parsed request per call, so a batch reaching the backend would
+		// smuggle every nested call past those controls (see #5745).
+		if IsBatchRequest(bodyBytes) {
+			WriteBatchUnsupportedError(w)
+			return
+		}
+
 		// Parse the MCP request and store in context
 		parsedRequest := parseMCPRequest(bodyBytes)
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
 			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
+			// Publish to a ParsedRequestHolder if one is present, so middleware
+			// wrapping the parser (e.g. audit) can observe the parsed request
+			// even though the derived context only flows downstream.
+			if holder, ok := ParsedRequestHolderFromContext(r.Context()); ok {
+				holder.Parsed = parsedRequest
+			}
 			ctx := context.WithValue(r.Context(), MCPRequestContextKey, parsedRequest)
 			r = r.WithContext(ctx)
 		}
@@ -119,6 +140,76 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RepublishParsedMCPRequest refreshes the cached parse after middleware has
+// rewritten the request body, returning the request to pass downstream.
+// ParsingMiddleware deliberately parses only once, so any middleware that
+// replaces r.Body MUST call this or downstream consumers (authorization,
+// audit, telemetry) will decide on the bytes that arrived rather than the
+// bytes the backend executes.
+//
+// On error, the returned request is nil and must not be passed downstream:
+// the caller is responsible for terminating the request (e.g. writing an
+// error response) instead of proceeding with a stale or absent parse.
+//
+// This only refreshes consumers that read the parse from the request context or
+// from a ParsedRequestHolder. Middleware that inspects the raw body from OUTSIDE
+// ParsingMiddleware — the tool-call filter and the rate limiter — has already
+// decided against the pre-rewrite body and is not corrected by republishing.
+//
+// The caller must also refresh r.ContentLength when it replaces r.Body, or the
+// reverse proxy will reject the forwarded request.
+func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, error) {
+	// Batch-reject before parsing, using the same guard ParsingMiddleware uses,
+	// so a mutation can never smuggle a batch past authz/audit by rewriting a
+	// single request into an array (see IsBatchRequest's doc comment).
+	if IsBatchRequest(body) {
+		return nil, &BatchUnsupportedError{}
+	}
+
+	parsed := parseMCPRequest(body)
+	if parsed == nil {
+		return nil, errors.New("republished body is not a valid JSON-RPC request")
+	}
+	parsed.MCPMethodHeader = r.Header.Get("Mcp-Method")
+	parsed.MCPNameHeader = r.Header.Get("Mcp-Name")
+
+	if holder, ok := ParsedRequestHolderFromContext(r.Context()); ok {
+		holder.Parsed = parsed
+	}
+
+	return r.WithContext(context.WithValue(r.Context(), MCPRequestContextKey, parsed)), nil
+}
+
+// parsedRequestHolderContextKey is the context key for ParsedRequestHolder.
+type parsedRequestHolderContextKey struct{}
+
+// ParsedRequestHolder is a mutable carrier that lets middleware running
+// OUTSIDE the parsing middleware observe the parsed MCP request. Context
+// values only flow downstream, so a wrapper such as the audit middleware
+// cannot read the parsed request that the parser attaches for inner handlers.
+// The wrapper injects an empty holder via WithParsedRequestHolder before
+// calling the inner chain; ParsingMiddleware fills it; the wrapper reads it
+// after the inner chain returns.
+//
+// The holder is written and read by the single request goroutine (writes
+// happen-before the wrapper's post-ServeHTTP read), so no synchronization is
+// needed.
+type ParsedRequestHolder struct {
+	Parsed *ParsedMCPRequest
+}
+
+// WithParsedRequestHolder returns a new context carrying the given holder.
+func WithParsedRequestHolder(ctx context.Context, holder *ParsedRequestHolder) context.Context {
+	return context.WithValue(ctx, parsedRequestHolderContextKey{}, holder)
+}
+
+// ParsedRequestHolderFromContext retrieves the ParsedRequestHolder from the
+// context. Returns (nil, false) if no holder is present.
+func ParsedRequestHolderFromContext(ctx context.Context) (*ParsedRequestHolder, bool) {
+	holder, ok := ctx.Value(parsedRequestHolderContextKey{}).(*ParsedRequestHolder)
+	return holder, ok && holder != nil
 }
 
 // GetParsedMCPRequest retrieves the parsed MCP request from the request context.
@@ -193,7 +284,9 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 		ClientInfo:      clientInfo,
 		ProtocolVersion: protocolVersion,
 		IsRequest:       true,
-		IsBatch:         false, // TODO: Add batch request support if needed
+		// Batches are rejected in ParsingMiddleware before reaching here, so a
+		// parsed request is always a single, non-batch message.
+		IsBatch: false,
 	}
 }
 

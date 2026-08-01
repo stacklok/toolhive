@@ -127,12 +127,11 @@ func MonitorBackends(
 	// pruned to the live backend set by the gauge callback below (membership at
 	// collection time comes from registry.List either way).
 	//
-	// record() classifies each outcome through healthStatusForError, so it can set
-	// BackendHealthy, BackendUnhealthy or BackendUnauthenticated. The remaining
-	// states (degraded, unknown) can only come from the registry's own
-	// HealthStatus (a health monitor's discovery-time assessment), used as a
-	// fallback below when no live StatusProvider is set or it doesn't track a
-	// given backend.
+	// record() classifies each failure through healthStatusForError, so it can set
+	// BackendHealthy, BackendUnhealthy, or BackendUnauthenticated. The remaining
+	// states (degraded, unknown) can only come from the registry's own HealthStatus
+	// (a health monitor's discovery-time assessment), used as a fallback below when
+	// no live StatusProvider is set or it doesn't track a given backend.
 	recordedHealth := &backendHealth{states: make(map[string]vmcp.BackendHealthStatus)}
 	providerSetter := &HealthProviderSetter{}
 
@@ -280,13 +279,14 @@ func (s *HealthProviderSetter) get() health.StatusProvider {
 // observable-gauge callback and written on each request's success/failure, so
 // the gauge reflects live health.
 //
-// set() receives BackendHealthy, BackendUnhealthy or BackendUnauthenticated (see
-// healthStatusForError); the remaining states come from the registry instead, as a
-// fallback for backends the map has no entry for yet (see MonitorBackends).
+// set() receives BackendHealthy, BackendUnhealthy, or BackendUnauthenticated —
+// whatever healthStatusForError classifies a failure as. The remaining states
+// (degraded, unknown) can only come from the registry's own HealthStatus, used as
+// a fallback for backends the map has no entry for yet (see MonitorBackends).
 //
 // The map is bounded by retain(), called from the gauge callback with the live
-// registry set — without it, set() would add an entry per distinct workload ID
-// and nothing would ever remove one.
+// registry set; without it set() would add an entry per distinct workload ID and
+// nothing would ever remove one.
 type backendHealth struct {
 	mu     sync.RWMutex
 	states map[string]vmcp.BackendHealthStatus

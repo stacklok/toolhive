@@ -8,6 +8,11 @@ on:
       - 'cmd/thv-operator/**'
       - 'pkg/**'
       - 'test/e2e/thv-operator/**'
+      # This job is the only one that runs the Ginkgo suite under
+      # test/e2e/thv-operator, and that suite sources every backend container
+      # image from test/e2e/images. A change there alters what these tests
+      # actually deploy, so it has to trigger them.
+      - 'test/e2e/images/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
 permissions:

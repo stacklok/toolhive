@@ -58,7 +58,7 @@ being reported instead of leaving a stale series behind. Emits one point per
 Duration of MCP client operations per the
 [OTEL MCP semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/mcp.md).
 
-**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsMCPSemconv()`): `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
 
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|
@@ -91,7 +91,7 @@ Total number of composite tool workflow executions, split by outcome.
 
 Duration of composite tool workflow executions, recorded regardless of outcome.
 
-**Bucket boundaries** (`coremetrics.BucketsLongRunning()`): `[0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsLongRunning()`): `[0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 180, 300]`
 
 | Attribute | Type | Description |
 |-----------|------|-------------|

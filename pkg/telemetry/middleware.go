@@ -131,7 +131,7 @@ func NewHTTPMiddleware(
 		sseConnectionDuration = noop.Float64Histogram{}
 	}
 
-	registerBuildInfo(meter)
+	registerBuildInfo(meterProvider, meter)
 
 	middleware := &HTTPMiddleware{
 		config:                config,
@@ -150,31 +150,43 @@ func NewHTTPMiddleware(
 	return middleware.Handler
 }
 
-// buildInfoOnce guards registerBuildInfo. build_info is process identity, not a
-// per-request or per-server measurement, and RegisterBuildInfo attaches an
-// observable callback while returning no handle to release it. NewHTTPMiddleware
-// is reachable from the public Provider.Middleware() with no arity constraint, so
-// without this guard a process instrumenting two proxies — or rebuilding its
-// middleware chain — would permanently attach duplicate callbacks observing the
-// same attribute set.
+// buildInfoProviders tracks the MeterProviders build_info has been registered on.
 //
-// This makes docs/observability.md's "registered once per process" claim true.
+// The dedup key is the provider, not the process. RegisterBuildInfo attaches an
+// observable callback while returning no handle to release it, so registering
+// twice on one provider permanently duplicates a callback observing the same
+// attribute set. But each provider owns its own reader and /metrics endpoint, so a
+// process-wide guard would leave every provider after the first exporting no
+// build_info at all — and absence is the harder failure to notice, since a fleet
+// dashboard joining on build_info just returns empty for that scrape target.
+// NewHTTPMiddleware is reachable from the public Provider.Middleware() and from
+// CreateMiddleware, which builds a fresh provider per call, so both cases are real.
+//
 // The durable fix is to register during provider assembly in
 // pkg/telemetry/providers, where ComponentName and the resource already live;
-// this is the cheap interim.
-var buildInfoOnce sync.Once
+// this keeps the guard correct until then.
+var buildInfoProviders = struct {
+	mu   sync.Mutex
+	seen map[metric.MeterProvider]struct{}
+}{seen: make(map[metric.MeterProvider]struct{})}
 
 // registerBuildInfo registers the stacklok.build_info gauge via the shared
 // toolhive-core helper, stamping this component's identity (toolhive) plus the
-// build version/commit. Registers at most once per process.
-func registerBuildInfo(meter metric.Meter) {
-	buildInfoOnce.Do(func() { registerBuildInfoNow(meter) })
+// build version/commit. Registers at most once per MeterProvider.
+func registerBuildInfo(meterProvider metric.MeterProvider, meter metric.Meter) {
+	buildInfoProviders.mu.Lock()
+	defer buildInfoProviders.mu.Unlock()
+	if _, done := buildInfoProviders.seen[meterProvider]; done {
+		return
+	}
+	buildInfoProviders.seen[meterProvider] = struct{}{}
+	registerBuildInfoNow(meter)
 }
 
-// registerBuildInfoNow performs the registration unconditionally, bypassing
-// buildInfoOnce. Exists so a test asserting on build_info can register against
-// its own meter provider regardless of whether an earlier test in the same
-// process already consumed the once-guard.
+// registerBuildInfoNow performs the registration unconditionally, bypassing the
+// per-provider guard. Exists so a test asserting on build_info can register
+// against its own meter provider regardless of what earlier tests in the same
+// process already registered.
 func registerBuildInfoNow(meter metric.Meter) {
 	info := versions.GetVersionInfo()
 	if err := coremetrics.RegisterBuildInfo(meter, providers.ComponentName, info.Version, info.Commit); err != nil {

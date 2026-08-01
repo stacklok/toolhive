@@ -84,8 +84,37 @@ func TestRegisterBuildInfoIsOncePerProcess(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
+	// Exactly one, not "at most one": LessOrEqual(…, 1) is satisfied by zero, so it
+	// passes both when the gauge is correctly deduped and when it is missing
+	// entirely — which is what a process-wide guard would do to this provider.
 	series := regexp.MustCompile(`(?m)^stacklok_build_info(_ratio)?\{`).
 		FindAllString(rw.Body.String(), -1)
-	require.LessOrEqual(t, len(series), 1,
-		"build_info must be registered at most once per process, got %d series", len(series))
+	require.Len(t, series, 1,
+		"build_info must be registered exactly once per MeterProvider, got %d series", len(series))
+}
+
+// TestRegisterBuildInfoIsPerProviderNotPerProcess pins the dedup key. A
+// process-wide guard leaves the second provider's /metrics endpoint with no
+// build_info at all, so any dashboard joining on it returns empty for that scrape
+// target — an absence that produces no error and no series.
+func TestRegisterBuildInfoIsPerProviderNotPerProcess(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"first", "second"} {
+		reader, handler, err := prometheus.NewReader(prometheus.Config{EnableMetricsPath: true})
+		require.NoError(t, err)
+		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+		_ = NewHTTPMiddleware(Config{}, tracenoop.NewTracerProvider(), mp, "github", "stdio")
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		rw := httptest.NewRecorder()
+		handler.ServeHTTP(rw, req)
+
+		series := regexp.MustCompile(`(?m)^stacklok_build_info(_ratio)?\{`).
+			FindAllString(rw.Body.String(), -1)
+		require.Len(t, series, 1,
+			"%s provider must export build_info exactly once; each provider owns its own "+
+				"reader and /metrics endpoint, so registration cannot be process-wide", name)
+	}
 }

@@ -810,8 +810,12 @@ var knownHTTPMethods = map[string]struct{}{
 // normalizeHTTPMethod bounds http.request.method's cardinality. Go's net/http
 // accepts any RFC 7230 token as a method, so an unauthenticated caller can
 // otherwise mint a permanently-retained series per distinct method string.
-// Semconv mandates recording unrecognized methods as _OTHER, keeping the
-// original on spans only (as http.request.method_original).
+// Semconv mandates recording unrecognized methods as _OTHER.
+//
+// The raw value is not lost: the span keeps it under http.request.method (spans
+// are not a cardinality surface). Semconv would have the span carry it as
+// http.request.method_original alongside an _OTHER http.request.method; that
+// rename is deferred with the rest of the span-attribute work (RFC D9).
 func normalizeHTTPMethod(method string) string {
 	if _, ok := knownHTTPMethods[method]; ok {
 		return method

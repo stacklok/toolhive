@@ -490,6 +490,20 @@ func TestHealthStatusForError(t *testing.T) {
 			wantOK: false,
 		},
 		{
+			// The shape the real client produces: wrapBackendError wraps only the
+			// domain sentinel with %w and formats the origin error with %v, so the
+			// context sentinel is NOT in the chain. Matching context.Canceled alone
+			// compiles and reads correctly while never firing on a real call.
+			name:   "client-shaped cancellation leaves the gauge untouched",
+			err:    fmt.Errorf("%w: failed to call tool for backend wl-1 (cancelled): %v", vmcp.ErrCancelled, context.Canceled),
+			wantOK: false,
+		},
+		{
+			name:   "client-shaped timeout leaves the gauge untouched",
+			err:    fmt.Errorf("%w: failed to call tool for backend wl-1 (timeout): %v", vmcp.ErrTimeout, context.DeadlineExceeded),
+			wantOK: false,
+		},
+		{
 			name:       "authentication failure maps to unauthenticated",
 			err:        vmcp.ErrAuthenticationFailed,
 			wantStatus: vmcp.BackendUnauthenticated,

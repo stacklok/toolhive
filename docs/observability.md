@@ -213,7 +213,7 @@ Recorded only for requests with a resolvable MCP method (`tools/call`,
 `resources/read`, etc.) — GET (SSE stream open) and DELETE (session
 termination) requests carry no MCP method and are not recorded here.
 
-**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsMCPSemconv()`): `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
 
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|

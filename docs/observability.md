@@ -287,9 +287,16 @@ connections are long-lived — see that metric's description above.
 
 #### `stacklok.build_info` (Gauge)
 
-Registered once per process via the shared `coremetrics.RegisterBuildInfo`
-helper (`pkg/telemetry/middleware.go`). Always reports `1`, carrying version
-metadata as attributes.
+Registered once per meter provider via the shared `coremetrics.RegisterBuildInfo`
+helper (`pkg/telemetry/middleware.go`), so every `/metrics` endpoint a process
+exposes carries it. Always reports `1`, carrying version metadata as attributes.
+
+> **Exported name**: `RegisterBuildInfo` sets the OTel unit to `1`, and the
+> Prometheus translator appends a unit suffix to a dimensionless gauge, so this
+> scrapes as **`stacklok_build_info_ratio`** — not `stacklok_build_info`. Query
+> the `_ratio` name. The `_ratio` suffix is wrong for an identity gauge and the
+> durable fix is upstream in `toolhive-core`; until then a dashboard joining on
+> `stacklok_build_info` returns empty.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|

@@ -327,13 +327,21 @@ func (t telemetryBackendClient) revisionLabel(workloadID string) string {
 // BackendUnhealthy pins the gauge — and any alert reading it — until the next
 // successful call to that backend.
 //
+// Caller-side cancellation is matched on vmcp.ErrCancelled/ErrTimeout, not on
+// context.Canceled/DeadlineExceeded: client.wrapBackendError formats the origin
+// error with %v and wraps only the domain sentinel with %w, so the context
+// sentinels are not in the chain by the time an error reaches here. Matching them
+// would compile and read correctly while never firing. health.categorizeError
+// checks the same domain sentinels for the same reason.
+//
 // Auth errors map to BackendUnauthenticated to match health.categorizeError's
 // vocabulary, though this cannot consult the target's AuthConfig the way
 // health.authErrorStatus does, so it does not distinguish an expected auth
 // challenge from a misconfiguration.
 func healthStatusForError(err error) (vmcp.BackendHealthStatus, bool) {
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, vmcp.ErrCancelled), errors.Is(err, vmcp.ErrTimeout),
+		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "", false
 	case errors.Is(err, vmcp.ErrAuthenticationFailed), errors.Is(err, vmcp.ErrAuthorizationFailed):
 		return vmcp.BackendUnauthenticated, true

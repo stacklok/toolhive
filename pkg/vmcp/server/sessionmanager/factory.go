@@ -361,7 +361,7 @@ func monitorOptimizer(
 				"toolhive_vmcp_optimizer_find_tool_duration",
 				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.duration"),
 				metric.WithUnit("s"),
-				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
+				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
 			legacyFindToolResults: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
 				"toolhive_vmcp_optimizer_find_tool_results",
 				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.results"),
@@ -387,7 +387,7 @@ func monitorOptimizer(
 				"toolhive_vmcp_optimizer_call_tool_duration",
 				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.duration"),
 				metric.WithUnit("s"),
-				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
+				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
 		}, nil
 	}
 

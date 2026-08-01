@@ -152,7 +152,7 @@ func NewHTTPMiddleware(
 	legacyRequestDuration := LegacyFloat64Histogram(meter, legacy, "toolhive_mcp_request_duration",
 		metric.WithDescription("DEPRECATED: use mcp.server.operation.duration"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...))
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...))
 	legacyToolCalls := LegacyInt64Counter(meter, legacy, "toolhive_mcp_tool_calls",
 		metric.WithDescription(`DEPRECATED: use mcp.server.operation.duration filtered to mcp.method.name="tools/call"`))
 	legacyActiveConnections := LegacyInt64UpDownCounter(meter, legacy, "toolhive_mcp_active_connections",

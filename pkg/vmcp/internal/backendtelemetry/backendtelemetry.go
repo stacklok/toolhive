@@ -183,7 +183,7 @@ func MonitorBackends(
 			"toolhive_vmcp_backend_requests_duration",
 			metric.WithDescription("DEPRECATED: use mcp.client.operation.duration"),
 			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
 	}, providerSetter, registration.Unregister, nil
 }
 

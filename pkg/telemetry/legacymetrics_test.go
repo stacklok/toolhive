@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
@@ -82,6 +83,42 @@ func TestLegacyMetrics_DualEmittedWhenEnabled(t *testing.T) {
 	} {
 		assert.True(t, names[current], "current metric %q must still be emitted", current)
 	}
+}
+
+// TestLegacyMetrics_KeepPreRenameBuckets pins the legacy histogram's boundaries to
+// the preset the metric shipped with.
+//
+// Buckets are not dual-emitted: there is one series per name, so an alias that
+// changes boundaries under an unchanged name silently breaks the very query the
+// overlap window exists to protect. histogram_quantile() over a range spanning the
+// upgrade would mix two layouts and return a plausible, wrong number -- no error,
+// no gap in the graph. toolhive_mcp_request_duration shipped on the semconv preset
+// (the pre-rename MCPHistogramBuckets was BucketsMCPSemconv), so the alias must
+// stay there even though the metric it replaces now uses a different one.
+func TestLegacyMetrics_KeepPreRenameBuckets(t *testing.T) {
+	t.Parallel()
+
+	reader := driveToolCall(t, Config{UseLegacyMetrics: true})
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	var got []float64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "toolhive_mcp_request_duration" {
+				continue
+			}
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			require.True(t, ok, "toolhive_mcp_request_duration must be a float64 histogram")
+			require.NotEmpty(t, hist.DataPoints)
+			got = hist.DataPoints[0].Bounds
+		}
+	}
+
+	require.NotNil(t, got, "toolhive_mcp_request_duration was not emitted")
+	assert.Equal(t, coremetrics.BucketsMCPSemconv(), got,
+		"legacy alias must keep the boundaries it shipped with; changing them under an "+
+			"unchanged name makes histogram_quantile() silently wrong across the upgrade")
 }
 
 // TestLegacyMetrics_AbsentWhenDisabled proves the flag actually gates emission,

@@ -105,7 +105,7 @@ func newRateLimitTelemetry(
 		legacyCheckLatency: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics, "toolhive_rate_limit_check_latency",
 			metric.WithDescription("DEPRECATED: renamed to stacklok.toolhive.ratelimit.check_latency"),
 			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
 	}, nil
 }
 

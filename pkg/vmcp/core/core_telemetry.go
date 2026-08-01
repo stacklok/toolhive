@@ -84,7 +84,7 @@ func newWorkflowInstruments(provider *telemetry.Provider) (*workflowInstruments,
 		legacyDuration: telemetry.LegacyFloat64Histogram(meter, legacy, "toolhive_vmcp_workflow_duration",
 			metric.WithDescription("DEPRECATED: renamed to stacklok.vmcp.composite_tool.duration"),
 			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...)),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
 	}, nil
 }
 

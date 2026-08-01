@@ -1,0 +1,45 @@
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: youcom-web
+  namespace: toolhive-system
+  labels:
+    app: youcom-web
+    category: web-search
+    provider: you.com
+spec:
+  # You.com MCP server endpoint  
+  remoteURL: https://api.you.com/mcp
+  transport: sse
+  proxyPort: 8080
+  
+  # Optional API key for enhanced features and higher quotas
+  # Without YDC_API_KEY: Uses keyless operation (100 free searches/day per IP)  
+  # With YDC_API_KEY: Higher quotas and enhanced features per You.com plan
+  secrets:
+    - name: youcom-api-key
+      key: api-key
+      targetEnvName: YDC_API_KEY
+      optional: true
+      
+  env:
+    - name: LOG_LEVEL
+      value: info
+      
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+      
+  # Metadata for ToolHive registry
+  metadata:
+    displayName: "You.com Web Search"
+    description: "Provides web search, content extraction, and research capabilities via You.com's search API. Supports both keyless operation (100 free searches/day) and API key authentication for higher quotas."
+    categories: ["web-search", "research", "content-extraction"]
+    tags: ["search", "web", "research", "citations", "content"]
+    homepage: "https://you.com"
+    documentation: "https://docs.you.com/api"
+    version: "1.0.0"

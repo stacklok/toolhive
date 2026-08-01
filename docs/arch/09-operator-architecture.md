@@ -181,6 +181,7 @@ MCPServer supports referencing shared configuration CRDs:
 
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
+- [`examples/operator/mcp-servers/mcpserver_youcom_web.yaml`](../../examples/operator/mcp-servers/mcpserver_youcom_web.yaml) - You.com web search with optional API key authentication
 - [`examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml`](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) - With shared MCPOIDCConfig reference
 - [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml) - With shared MCPTelemetryConfig reference
 - [`examples/operator/mcp-servers/mcpserver_with_pod_template.yaml`](../../examples/operator/mcp-servers/mcpserver_with_pod_template.yaml) - With pod customizations

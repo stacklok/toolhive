@@ -36,6 +36,10 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 		return nil, false, nil
 	}
 
+	// Both legacy-emission flags default to true when unset in the config, matching
+	// thv run (see runner.BuildTelemetryConfigFromAppConfig). Relying on the Go
+	// zero value here would silently disable dual emission on this path, since the
+	// zero value of a bool is false but the documented default is true.
 	telemetryCfg := Config{
 		ServiceName:                 "thv-api",
 		Endpoint:                    otelCfg.Endpoint,
@@ -44,6 +48,8 @@ func NewServeProvider(ctx context.Context) (provider *Provider, otelEnabled bool
 		Insecure:                    otelCfg.Insecure,
 		EnablePrometheusMetricsPath: otelCfg.EnablePrometheusMetricsPath,
 		EnvironmentVariables:        otelCfg.EnvVars,
+		UseLegacyAttributes:         boolOrDefaultTrue(otelCfg.UseLegacyAttributes),
+		UseLegacyMetrics:            boolOrDefaultTrue(otelCfg.UseLegacyMetrics),
 	}
 	if otelCfg.SamplingRate != 0.0 {
 		telemetryCfg.SetSamplingRateFromFloat(otelCfg.SamplingRate)
@@ -93,4 +99,12 @@ func handleUnusedEndpoint(otelCfg *config.OpenTelemetryConfig) {
 		enabled := true
 		otelCfg.TracingEnabled = &enabled
 	}
+}
+
+// boolOrDefaultTrue resolves an optional config bool whose documented default is
+// true. The fields are *bool precisely so "unset" is distinguishable from an
+// explicit false; reading the Go zero value instead would silently invert the
+// documented default.
+func boolOrDefaultTrue(v *bool) bool {
+	return v == nil || *v
 }

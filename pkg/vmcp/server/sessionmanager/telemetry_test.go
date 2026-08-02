@@ -5,7 +5,9 @@ package sessionmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -293,7 +295,7 @@ func TestTelemetryOptimizer(t *testing.T) {
 				return fake, nil
 			}
 
-			wrappedFactory, err := monitorOptimizer(meterProvider, tracerProvider, factory)
+			wrappedFactory, err := monitorOptimizer(meterProvider, tracerProvider, factory, false)
 			require.NoError(t, err)
 
 			opt, err := wrappedFactory(context.Background(), nil)
@@ -304,6 +306,172 @@ func TestTelemetryOptimizer(t *testing.T) {
 			var rm metricdata.ResourceMetrics
 			err = reader.Collect(context.Background(), &rm)
 			require.NoError(t, err)
+
+			tt.assertFunc(t, rm)
+		})
+	}
+}
+
+// counterTotal sums every data point on an int64 counter, ignoring attributes.
+// The legacy optimizer aliases carry either no attributes or only tool_name, so
+// the outcome-aware counterValueForOutcome does not apply to them.
+func counterTotal(m *metricdata.Metrics) int64 {
+	if m == nil {
+		return 0
+	}
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		return 0
+	}
+	var total int64
+	for _, dp := range sum.DataPoints {
+		total += dp.Value
+	}
+	return total
+}
+
+// attrKeys returns the exact attribute key set on a counter's first data point.
+// Compared as a set so a renamed key fails rather than passing on a substring:
+// tool_name is a substring of mcp_tool_name, so a contains-style assertion could
+// not catch the alias picking up the new vocabulary.
+func attrKeys(m *metricdata.Metrics) []string {
+	if m == nil {
+		return nil
+	}
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok || len(sum.DataPoints) == 0 {
+		return nil
+	}
+	var keys []string
+	for _, kv := range sum.DataPoints[0].Attributes.ToSlice() {
+		keys = append(keys, string(kv.Key))
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestTelemetryOptimizer_LegacyUnmergeFansOutToSeparateCounters pins the overlap
+// window for the optimizer renames, which merged four separate counters into two
+// outcome-labelled ones (RFC D4). The aliases have to fan back out, so an alert
+// on toolhive_vmcp_optimizer_call_tool_not_found keeps firing on exactly the
+// condition it fired on before — and not on a Go error, which was a different
+// counter. Each case also pins the legacy label vocabulary by exact key set.
+func TestTelemetryOptimizer_LegacyUnmergeFansOutToSeparateCounters(t *testing.T) {
+	t.Parallel()
+
+	const (
+		legacyFindRequests = "toolhive_vmcp_optimizer_find_tool_requests"
+		legacyFindErrors   = "toolhive_vmcp_optimizer_find_tool_errors"
+		legacyCallRequests = "toolhive_vmcp_optimizer_call_tool_requests"
+		legacyCallErrors   = "toolhive_vmcp_optimizer_call_tool_errors"
+		legacyCallNotFound = "toolhive_vmcp_optimizer_call_tool_not_found"
+	)
+
+	boom := errors.New("optimizer exploded")
+
+	tests := []struct {
+		name       string
+		setup      func() *fakeOptimizer
+		action     func(t *testing.T, opt optimizer.Optimizer)
+		assertFunc func(t *testing.T, rm metricdata.ResourceMetrics)
+	}{
+		{
+			name: "FindTool error increments the standalone legacy errors counter",
+			setup: func() *fakeOptimizer {
+				return &fakeOptimizer{
+					findToolFn: func(_ context.Context, _ optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
+						return nil, boom
+					},
+				}
+			},
+			action: func(t *testing.T, opt optimizer.Optimizer) {
+				t.Helper()
+				_, err := opt.FindTool(context.Background(), optimizer.FindToolInput{ToolDescription: "x"})
+				require.ErrorIs(t, err, boom)
+			},
+			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				assert.Equal(t, int64(1), counterTotal(findMetric(rm, legacyFindErrors)),
+					"the un-merged legacy find_tool_errors counter must increment on error")
+				// The legacy requests counter counted attempts, not completions, so
+				// it increments before the call and is 1 even though the call failed.
+				assert.Equal(t, int64(1), counterTotal(findMetric(rm, legacyFindRequests)),
+					"legacy find_tool_requests counted attempts, so a failed call still counts")
+				assert.Empty(t, attrKeys(findMetric(rm, legacyFindRequests)),
+					"legacy find_tool counters carried no attributes")
+			},
+		},
+		{
+			name: "CallTool IsError increments not_found only, never the errors counter",
+			setup: func() *fakeOptimizer {
+				return &fakeOptimizer{
+					callToolFn: func(_ context.Context, _ optimizer.CallToolInput) (*mcp.CallToolResult, error) {
+						return &mcp.CallToolResult{IsError: true}, nil
+					},
+				}
+			},
+			action: func(t *testing.T, opt optimizer.Optimizer) {
+				t.Helper()
+				_, err := opt.CallTool(context.Background(), optimizer.CallToolInput{ToolName: "tool_a"})
+				require.NoError(t, err)
+			},
+			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				assert.Equal(t, int64(1), counterTotal(findMetric(rm, legacyCallNotFound)),
+					`a tool-level error must land on the legacy _not_found counter (its pre-rename meaning)`)
+				assert.Equal(t, int64(0), counterTotal(findMetric(rm, legacyCallErrors)),
+					"a tool-level error is not a Go error and must not touch the legacy _errors counter")
+				assert.Equal(t, []string{"tool_name"}, attrKeys(findMetric(rm, legacyCallNotFound)),
+					"legacy call_tool aliases carry the pre-rename tool_name key, not mcp_tool_name")
+			},
+		},
+		{
+			name: "CallTool Go error increments errors only, never not_found",
+			setup: func() *fakeOptimizer {
+				return &fakeOptimizer{
+					callToolFn: func(_ context.Context, _ optimizer.CallToolInput) (*mcp.CallToolResult, error) {
+						return nil, boom
+					},
+				}
+			},
+			action: func(t *testing.T, opt optimizer.Optimizer) {
+				t.Helper()
+				_, err := opt.CallTool(context.Background(), optimizer.CallToolInput{ToolName: "tool_a"})
+				require.ErrorIs(t, err, boom)
+			},
+			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				assert.Equal(t, int64(1), counterTotal(findMetric(rm, legacyCallErrors)),
+					"a Go error must land on the legacy _errors counter")
+				assert.Equal(t, int64(0), counterTotal(findMetric(rm, legacyCallNotFound)),
+					"a Go error must not be miscounted as not_found")
+				assert.Equal(t, int64(1), counterTotal(findMetric(rm, legacyCallRequests)),
+					"legacy call_tool_requests counted attempts, so a failed call still counts")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := sdkmetric.NewManualReader()
+			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			fake := tt.setup()
+			factory := func(_ context.Context, _ []mcpserver.ServerTool) (optimizer.Optimizer, error) {
+				return fake, nil
+			}
+
+			wrappedFactory, err := monitorOptimizer(meterProvider, tracenoop.NewTracerProvider(), factory, true)
+			require.NoError(t, err)
+
+			opt, err := wrappedFactory(context.Background(), nil)
+			require.NoError(t, err)
+
+			tt.action(t, opt)
+
+			var rm metricdata.ResourceMetrics
+			require.NoError(t, reader.Collect(context.Background(), &rm))
 
 			tt.assertFunc(t, rm)
 		})

@@ -19,6 +19,10 @@ type Config struct {
 	ServerName     string
 	RateLimiting   *ratelimittypes.RateLimitConfig
 	SessionStorage *vmcpconfig.SessionStorageConfig
+
+	// UseLegacyMetrics re-emits the pre-rename toolhive_rate_limit_* metric names
+	// alongside the stacklok.* ones.
+	UseLegacyMetrics bool
 }
 
 // NewLimiter creates a Redis-backed limiter for vMCP.
@@ -37,11 +41,12 @@ func NewLimiter(
 	}
 
 	limiter, closer, err := ratelimit.NewRedisLimiter(ratelimit.MiddlewareParams{
-		Namespace:  cfg.Namespace,
-		ServerName: cfg.ServerName,
-		Config:     cfg.RateLimiting,
-		RedisAddr:  cfg.SessionStorage.Address,
-		RedisDB:    cfg.SessionStorage.DB,
+		Namespace:        cfg.Namespace,
+		ServerName:       cfg.ServerName,
+		Config:           cfg.RateLimiting,
+		RedisAddr:        cfg.SessionStorage.Address,
+		RedisDB:          cfg.SessionStorage.DB,
+		UseLegacyMetrics: cfg.UseLegacyMetrics,
 	})
 	if err != nil {
 		return nil, nil, err

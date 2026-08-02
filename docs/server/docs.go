@@ -4841,6 +4841,10 @@ const docTemplate = `{
                     "useLegacyAttributes": {
                         "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
                         "type": "boolean"
+                    },
+                    "useLegacyMetrics": {
+                        "description": "UseLegacyMetrics controls whether legacy metric names are emitted alongside\nthe new standard stacklok.* metric names. When true, both old and new metric\nnames are recorded for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"

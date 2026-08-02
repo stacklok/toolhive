@@ -202,6 +202,13 @@ spec:
                       the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
                       This will change to false in a future release and eventually be removed.
                     type: boolean
+                  useLegacyMetrics:
+                    default: true
+                    description: |-
+                      UseLegacyMetrics controls whether legacy metric names are emitted alongside
+                      the new stacklok.* metric names. Defaults to true for backward compatibility.
+                      This will change to false in a future release and eventually be removed.
+                    type: boolean
                 type: object
                 x-kubernetes-validations:
                 - message: a header name cannot appear in both headers and sensitiveHeaders
@@ -474,6 +481,13 @@ spec:
                     description: |-
                       UseLegacyAttributes controls whether legacy attribute names are emitted alongside
                       the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
+                      This will change to false in a future release and eventually be removed.
+                    type: boolean
+                  useLegacyMetrics:
+                    default: true
+                    description: |-
+                      UseLegacyMetrics controls whether legacy metric names are emitted alongside
+                      the new stacklok.* metric names. Defaults to true for backward compatibility.
                       This will change to false in a future release and eventually be removed.
                     type: boolean
                 type: object

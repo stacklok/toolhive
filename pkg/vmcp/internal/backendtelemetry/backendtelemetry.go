@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -51,8 +53,9 @@ var healthStates = []vmcp.BackendHealthStatus{
 }
 
 var (
-	reclassCounterOnce sync.Once
-	reclassCounter     metric.Int64Counter
+	reclassCounterOnce   sync.Once
+	reclassCounter       metric.Int64Counter
+	legacyReclassCounter metric.Int64Counter
 )
 
 // RecordRevisionReclassification increments the count of backends whose MCP
@@ -65,15 +68,30 @@ var (
 // NOTE: no labels yet — old/new revision labels (and the CRD status surface)
 // are deferred. If the global provider ever diverges from the injected one, thread
 // the meter down instead.
+//
+// The pre-rename toolhive_vmcp_backend_revision_reclassifications alias is emitted
+// unconditionally rather than behind UseLegacyMetrics: this is a free function with
+// no route to the telemetry config, and the alternative — threading the setting
+// through pkg/vmcp/client purely for one unlabelled counter — buys less than it
+// costs. Revisit when the flag's default flips, at which point this alias and the
+// rest go together.
 func RecordRevisionReclassification(ctx context.Context) {
 	reclassCounterOnce.Do(func() {
-		reclassCounter, _ = otel.GetMeterProvider().Meter(instrumentationName).Int64Counter(
+		meter := otel.GetMeterProvider().Meter(instrumentationName)
+		reclassCounter, _ = meter.Int64Counter(
 			"stacklok.vmcp.backend.revision_reclassifications",
 			metric.WithDescription("Number of times a backend's MCP revision was reclassified after a mismatch"),
+		)
+		legacyReclassCounter, _ = meter.Int64Counter(
+			"toolhive_vmcp_backend_revision_reclassifications",
+			metric.WithDescription("DEPRECATED: renamed to stacklok.vmcp.backend.revision_reclassifications"),
 		)
 	})
 	if reclassCounter != nil {
 		reclassCounter.Add(ctx, 1)
+	}
+	if legacyReclassCounter != nil {
+		legacyReclassCounter.Add(ctx, 1)
 	}
 }
 
@@ -101,6 +119,7 @@ func MonitorBackends(
 	tracerProvider trace.TracerProvider,
 	registry vmcp.BackendRegistry,
 	backendClient vmcp.BackendClient,
+	useLegacyMetrics bool,
 ) (vmcp.BackendClient, *HealthProviderSetter, func() error, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
@@ -172,6 +191,15 @@ func MonitorBackends(
 		tracer:                  tracerProvider.Tracer(instrumentationName),
 		health:                  recordedHealth,
 		clientOperationDuration: clientOperationDuration,
+		legacyRequests: telemetry.LegacyInt64Counter(meter, useLegacyMetrics, "toolhive_vmcp_backend_requests",
+			metric.WithDescription("DEPRECATED: use mcp.client.operation.duration")),
+		legacyErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics, "toolhive_vmcp_backend_errors",
+			metric.WithDescription(`DEPRECATED: use mcp.client.operation.duration filtered to error.type != ""`)),
+		legacyDurations: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
+			"toolhive_vmcp_backend_requests_duration",
+			metric.WithDescription("DEPRECATED: use mcp.client.operation.duration"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
 	}, providerSetter, registration.Unregister, nil
 }
 
@@ -301,6 +329,14 @@ type telemetryBackendClient struct {
 	health        *backendHealth
 
 	clientOperationDuration metric.Float64Histogram
+
+	// Legacy aliases for the deleted toolhive_vmcp_backend_* twins, emitted
+	// alongside mcp.client.operation.duration when Config.UseLegacyMetrics is set.
+	// They carry the full target.* attribute set the originals did. No-op
+	// instruments when disabled, so record sites need no branch.
+	legacyRequests  metric.Int64Counter
+	legacyErrors    metric.Int64Counter
+	legacyDurations metric.Float64Histogram
 }
 
 var _ vmcp.BackendClient = (*telemetryBackendClient)(nil)
@@ -429,10 +465,24 @@ func (t *telemetryBackendClient) record(
 		attribute.String(coremetrics.LabelMCPServer, target.WorkloadName),
 	)
 
+	// Legacy aliases carried the full commonAttrs set — the six target.*/action/
+	// mcp.method.name attributes, mcp.protocol.revision, and every per-method
+	// attribute the caller passed (tool_name and gen_ai.tool.name on CallTool,
+	// resource_uri on ReadResource, prompt_name on GetPrompt, completion.* on
+	// Complete, auth.authenticated on all four). Snapshotting after the append
+	// above reproduces that exactly, so a dashboard grouping by tool_name keeps
+	// its per-tool breakdown instead of collapsing to a single series.
+	//
+	// Cloned rather than aliased: commonAttrs is already handed to tracer.Start
+	// above, so the two must not share backing storage.
+	legacyMetricAttrs := metric.WithAttributes(slices.Clone(commonAttrs)...)
+
 	start := time.Now()
+	t.legacyRequests.Add(ctx, 1, legacyMetricAttrs)
 
 	return ctx, func() {
 		duration := time.Since(start)
+		t.legacyDurations.Record(ctx, duration.Seconds(), legacyMetricAttrs)
 
 		// Record mcp.client.operation.duration with spec attributes
 		if err != nil && *err != nil {
@@ -444,6 +494,7 @@ func (t *telemetryBackendClient) record(
 				attribute.String("error.type", fmt.Sprintf("%T", *err)),
 			)
 			t.clientOperationDuration.Record(ctx, duration.Seconds(), specMetricAttrsWithError)
+			t.legacyErrors.Add(ctx, 1, legacyMetricAttrs)
 
 			if status, ok := healthStatusForError(*err); ok {
 				t.health.set(target.WorkloadID, status)

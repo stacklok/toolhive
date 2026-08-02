@@ -1972,6 +1972,16 @@ func (in *MCPTelemetryOTelConfig) DeepCopyInto(out *MCPTelemetryOTelConfig) {
 		*out = new(OpenTelemetryTracingConfig)
 		**out = **in
 	}
+	if in.UseLegacyAttributes != nil {
+		in, out := &in.UseLegacyAttributes, &out.UseLegacyAttributes
+		*out = new(bool)
+		**out = **in
+	}
+	if in.UseLegacyMetrics != nil {
+		in, out := &in.UseLegacyMetrics, &out.UseLegacyMetrics
+		*out = new(bool)
+		**out = **in
+	}
 	if in.CABundleRef != nil {
 		in, out := &in.CABundleRef, &out.CABundleRef
 		*out = new(CABundleSource)

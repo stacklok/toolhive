@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dario.cat/mergo"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -87,6 +88,50 @@ func (c *Config) EnsureOperationalDefaults() {
 	// Merge defaults into target, only filling zero/nil values.
 	// User-provided values are preserved.
 	_ = mergo.Merge(c.Operational, DefaultOperationalConfig())
+}
+
+// legacyEmissionKeys probes whether the raw YAML set the legacy-emission
+// toggles. telemetry.Config carries them as plain bools, so after unmarshalling
+// an omitted key is indistinguishable from an explicit false — and false is the
+// wrong default here.
+type legacyEmissionKeys struct {
+	Telemetry *struct {
+		UseLegacyAttributes *bool `yaml:"useLegacyAttributes"`
+		UseLegacyMetrics    *bool `yaml:"useLegacyMetrics"`
+	} `yaml:"telemetry"`
+}
+
+// EnsureTelemetryLegacyDefaults turns the legacy-emission toggles on for any
+// telemetry block that omits them, so a standalone vMCP config keeps emitting
+// the pre-rename metric and attribute names it did before the rename. raw is the
+// YAML the config was decoded from; when a key is absent there the documented
+// default of true wins, and an explicit false is preserved.
+//
+// Without this, a config carrying any telemetry block without these keys would
+// take the Go zero value false and silently drop every legacy name — the
+// opposite of the documented default. The thv run and thv serve paths get the
+// same treatment via BuildTelemetryConfigFromAppConfig and boolOrDefaultTrue.
+func (c *Config) EnsureTelemetryLegacyDefaults(raw []byte) {
+	if c == nil || c.Telemetry == nil {
+		return
+	}
+
+	var probe legacyEmissionKeys
+	if err := yaml.Unmarshal(raw, &probe); err != nil || probe.Telemetry == nil {
+		// The probe cannot speak for keys it never saw: raw either failed to parse
+		// or carries no telemetry block, while the config in hand has one. That
+		// only happens if the caller built the config somewhere other than these
+		// bytes, so leave both toggles as the caller set them — forcing them on
+		// here would silently discard an explicit false.
+		return
+	}
+
+	if probe.Telemetry.UseLegacyAttributes == nil {
+		c.Telemetry.UseLegacyAttributes = true
+	}
+	if probe.Telemetry.UseLegacyMetrics == nil {
+		c.Telemetry.UseLegacyMetrics = true
+	}
 }
 
 // InjectSubjectProviderNames auto-populates SubjectProviderName on every

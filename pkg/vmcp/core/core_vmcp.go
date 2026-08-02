@@ -170,6 +170,7 @@ func New(cfg *Config) (VMCP, error) {
 			cfg.TelemetryProvider.TracerProvider(),
 			cfg.BackendRegistry,
 			backendClient,
+			cfg.TelemetryProvider.UseLegacyMetrics(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to monitor backends: %w", err)

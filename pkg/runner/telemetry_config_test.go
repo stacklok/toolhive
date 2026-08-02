@@ -90,6 +90,7 @@ func TestBuildTelemetryConfigFromAppConfig_AppliesAllFields(t *testing.T) {
 		Insecure:                    true,
 		EnablePrometheusMetricsPath: true,
 		UseLegacyAttributes:         boolPtr(false),
+		UseLegacyMetrics:            boolPtr(false),
 	}
 
 	cfg := BuildTelemetryConfigFromAppConfig(otel, "thv-osv", []string{"x=1"}, "")
@@ -102,6 +103,7 @@ func TestBuildTelemetryConfigFromAppConfig_AppliesAllFields(t *testing.T) {
 	assert.True(t, cfg.Insecure)
 	assert.True(t, cfg.EnablePrometheusMetricsPath)
 	assert.False(t, cfg.UseLegacyAttributes)
+	assert.False(t, cfg.UseLegacyMetrics)
 	assert.Equal(t, []string{"FOO", "BAR", "BAZ"}, cfg.EnvironmentVariables)
 	assert.Equal(t, map[string]string{"x": "1"}, cfg.Headers)
 	// Sampling rate is stored as a string; just verify it was set from the float.
@@ -157,8 +159,8 @@ func TestBuildTelemetryConfigFromAppConfig_OTLPHeadersFromEnvVars(t *testing.T) 
 
 // TestBuildTelemetryConfigFromAppConfig_DefaultsForNilBools verifies the CLI-style
 // defaults: when bool fields are not set in the config, tracing/metrics/legacy
-// attributes default to true. This is what makes "just configure an endpoint"
-// produce a working setup.
+// attributes/legacy metrics default to true. This is what makes "just configure
+// an endpoint" produce a working setup.
 func TestBuildTelemetryConfigFromAppConfig_DefaultsForNilBools(t *testing.T) {
 	t.Parallel()
 
@@ -172,4 +174,5 @@ func TestBuildTelemetryConfigFromAppConfig_DefaultsForNilBools(t *testing.T) {
 	assert.True(t, cfg.TracingEnabled, "TracingEnabled must default to true when not set in config")
 	assert.True(t, cfg.MetricsEnabled, "MetricsEnabled must default to true when not set in config")
 	assert.True(t, cfg.UseLegacyAttributes, "UseLegacyAttributes must default to true when not set in config")
+	assert.True(t, cfg.UseLegacyMetrics, "UseLegacyMetrics must default to true when not set in config")
 }

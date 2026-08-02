@@ -33,9 +33,9 @@ const otelHeadersEnvVar = "OTEL_EXPORTER_OTLP_HEADERS"
 // Prometheus metrics path, or both tracing and metrics disabled with no
 // Prometheus path.
 //
-// CLI-style defaults are applied: TracingEnabled, MetricsEnabled, and
-// UseLegacyAttributes default to true when unset in the config so that
-// configuring just an endpoint produces a working setup.
+// CLI-style defaults are applied: TracingEnabled, MetricsEnabled,
+// UseLegacyAttributes, and UseLegacyMetrics default to true when unset in the
+// config so that configuring just an endpoint produces a working setup.
 func BuildTelemetryConfigFromAppConfig(
 	otel appconfig.OpenTelemetryConfig,
 	serviceName string,
@@ -57,6 +57,10 @@ func BuildTelemetryConfigFromAppConfig(
 	useLegacyAttributes := true
 	if otel.UseLegacyAttributes != nil {
 		useLegacyAttributes = *otel.UseLegacyAttributes
+	}
+	useLegacyMetrics := true
+	if otel.UseLegacyMetrics != nil {
+		useLegacyMetrics = *otel.UseLegacyMetrics
 	}
 
 	if !tracingEnabled && !metricsEnabled && !otel.EnablePrometheusMetricsPath {
@@ -93,6 +97,7 @@ func BuildTelemetryConfigFromAppConfig(
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 		UseLegacyAttributes:         useLegacyAttributes,
+		UseLegacyMetrics:            useLegacyMetrics,
 	}
 	cfg.SetSamplingRateFromFloat(otel.SamplingRate)
 	return cfg

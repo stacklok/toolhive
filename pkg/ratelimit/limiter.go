@@ -66,8 +66,13 @@ func Allow(ctx context.Context, limiter Limiter, identity *auth.Identity, toolNa
 // NewLimiter constructs a Limiter from CRD configuration.
 // Returns a no-op limiter (always allows) when crd is nil.
 // namespace and name identify the MCP server for Redis key derivation.
+//
+// Legacy metric aliases are emitted, matching the default of
+// --otel-use-legacy-metrics. Callers that need to honour that flag should build
+// the limiter through NewRedisLimiter with MiddlewareParams.UseLegacyMetrics set;
+// this constructor takes no telemetry config and so cannot observe it.
 func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateLimitConfig) (Limiter, error) {
-	return newLimiter(client, namespace, name, crd, otel.GetMeterProvider())
+	return newLimiter(client, namespace, name, crd, otel.GetMeterProvider(), true)
 }
 
 func newLimiter(
@@ -76,12 +81,13 @@ func newLimiter(
 	name string,
 	crd *v1beta1.RateLimitConfig,
 	meterProvider metric.MeterProvider,
+	useLegacyMetrics bool,
 ) (Limiter, error) {
 	if crd == nil {
 		return noopLimiter{}, nil
 	}
 
-	telemetry, err := newRateLimitTelemetry(meterProvider, namespace, name)
+	telemetry, err := newRateLimitTelemetry(meterProvider, namespace, name, useLegacyMetrics)
 	if err != nil {
 		return nil, fmt.Errorf("rate limit telemetry: %w", err)
 	}

@@ -10,12 +10,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 )
 
@@ -38,10 +40,17 @@ func newTestInstruments(t *testing.T) (*workflowInstruments, *sdkmetric.ManualRe
 	duration, err := meter.Float64Histogram("stacklok.vmcp.composite_tool.duration")
 	require.NoError(t, err)
 
+	// The legacy fields are populated as no-ops rather than left nil: production
+	// only builds workflowInstruments through newWorkflowInstruments, which always
+	// fills them, so ExecuteWorkflow records into them unconditionally. Tests that
+	// assert on the legacy series build their own real instruments instead.
 	return &workflowInstruments{
 		tracer:            tp.Tracer(instrumentationName),
 		executionsTotal:   executions,
 		executionDuration: duration,
+		legacyExecutions:  noop.Int64Counter{},
+		legacyDuration:    noop.Float64Histogram{},
+		legacyErrors:      noop.Int64Counter{},
 	}, reader
 }
 
@@ -168,6 +177,10 @@ func TestTelemetryComposer_Error(t *testing.T) {
 func TestTelemetryComposer_DelegatesNonExecuteMethods(t *testing.T) {
 	t.Parallel()
 
+	// Only the non-Execute methods are exercised here, so the instruments beyond
+	// the tracer are never touched. newWorkflowInstruments is the sole production
+	// constructor and always populates them, so ExecuteWorkflow records
+	// unconditionally rather than nil-checking each field.
 	tc := &telemetryComposer{
 		base:        stubComposer{},
 		instruments: &workflowInstruments{tracer: tracenoop.Tracer{}},
@@ -177,4 +190,84 @@ func TestTelemetryComposer_DelegatesNonExecuteMethods(t *testing.T) {
 	_, err := tc.GetWorkflowStatus(context.Background(), "any-id")
 	require.NoError(t, err)
 	require.NoError(t, tc.CancelWorkflow(context.Background(), "any-id"))
+}
+
+// TestWorkflowInstruments_LegacyDualEmission pins the overlap window for the
+// composite-tool renames: with legacy emission on, each metric appears under both
+// its stacklok.* name and its pre-rename toolhive_vmcp_workflow_* name, and the
+// errors counter — merged into the outcome label — comes back as a standalone
+// series so an existing alert on it keeps firing. With it off, only the current
+// names are emitted.
+func TestWorkflowInstruments_LegacyDualEmission(t *testing.T) {
+	t.Parallel()
+
+	legacyNames := []string{
+		"toolhive_vmcp_workflow_executions",
+		"toolhive_vmcp_workflow_errors",
+		"toolhive_vmcp_workflow_duration",
+	}
+	currentNames := []string{
+		"stacklok.vmcp.composite_tool.executions",
+		"stacklok.vmcp.composite_tool.duration",
+	}
+
+	for _, legacyEnabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "enabled", false: "disabled"}[legacyEnabled], func(t *testing.T) {
+			t.Parallel()
+
+			reader := sdkmetric.NewManualReader()
+			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			meter := mp.Meter(instrumentationName)
+
+			executions, err := meter.Int64Counter("stacklok.vmcp.composite_tool.executions")
+			require.NoError(t, err)
+			duration, err := meter.Float64Histogram("stacklok.vmcp.composite_tool.duration")
+			require.NoError(t, err)
+
+			instruments := &workflowInstruments{
+				tracer:            tracesdk.NewTracerProvider().Tracer(instrumentationName),
+				executionsTotal:   executions,
+				executionDuration: duration,
+				legacyExecutions: telemetry.LegacyInt64Counter(meter, legacyEnabled,
+					"toolhive_vmcp_workflow_executions"),
+				legacyErrors: telemetry.LegacyInt64Counter(meter, legacyEnabled,
+					"toolhive_vmcp_workflow_errors"),
+				legacyDuration: telemetry.LegacyFloat64Histogram(meter, legacyEnabled,
+					"toolhive_vmcp_workflow_duration"),
+			}
+
+			// A failing workflow exercises executions, duration and errors at once.
+			tc := &telemetryComposer{
+				base:        stubComposer{err: errors.New("boom")},
+				instruments: instruments,
+			}
+			_, err = tc.ExecuteWorkflow(context.Background(), &composer.WorkflowDefinition{Name: "wf"}, nil)
+			require.Error(t, err)
+
+			rm := collectMetrics(t, reader)
+			for _, name := range currentNames {
+				assert.NotNil(t, findMetricByName(rm, name), "current metric %q must always be emitted", name)
+			}
+			for _, name := range legacyNames {
+				got := findMetricByName(rm, name)
+				if legacyEnabled {
+					assert.NotNil(t, got, "legacy metric %q must be dual-emitted", name)
+					continue
+				}
+				assert.Nil(t, got, "legacy metric %q must be suppressed", name)
+			}
+
+			// The legacy series must carry the pre-rename workflow.name label key.
+			if legacyEnabled {
+				m := findMetricByName(rm, "toolhive_vmcp_workflow_executions")
+				require.NotNil(t, m)
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				require.True(t, ok)
+				require.Len(t, sum.DataPoints, 1)
+				v, present := sum.DataPoints[0].Attributes.Value("workflow.name")
+				require.True(t, present, "legacy series must carry workflow.name")
+				assert.Equal(t, "wf", v.AsString())
+			}
+		})
+	}
 }

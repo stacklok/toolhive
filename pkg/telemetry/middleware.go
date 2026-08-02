@@ -62,6 +62,15 @@ type HTTPMiddleware struct {
 	httpServerReqDuration metric.Float64Histogram
 	sseConnectionDuration metric.Float64Histogram
 	activeConnections     metric.Int64UpDownCounter
+
+	// Legacy metric aliases, emitted alongside the names above when
+	// Config.UseLegacyMetrics is set so an operator has an overlap window to
+	// migrate dashboards. Each is a no-op instrument when the flag is off, so
+	// record sites need no branch. Retired in a future minor release.
+	legacyRequests          metric.Int64Counter
+	legacyRequestDuration   metric.Float64Histogram
+	legacyToolCalls         metric.Int64Counter
+	legacyActiveConnections metric.Int64UpDownCounter
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
@@ -133,18 +142,38 @@ func NewHTTPMiddleware(
 
 	registerBuildInfo(meterProvider, meter)
 
+	// Legacy aliases. toolhive_mcp_requests / _request_duration / _tool_calls were
+	// deleted in favour of their semconv equivalents, and _active_connections was
+	// renamed; all four are re-emitted here for one release so dashboards can be
+	// migrated against live data rather than after the fact.
+	legacy := config.UseLegacyMetrics
+	legacyRequests := LegacyInt64Counter(meter, legacy, "toolhive_mcp_requests",
+		metric.WithDescription("DEPRECATED: use http.server.request.duration's _count series"))
+	legacyRequestDuration := LegacyFloat64Histogram(meter, legacy, "toolhive_mcp_request_duration",
+		metric.WithDescription("DEPRECATED: use mcp.server.operation.duration"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...))
+	legacyToolCalls := LegacyInt64Counter(meter, legacy, "toolhive_mcp_tool_calls",
+		metric.WithDescription(`DEPRECATED: use mcp.server.operation.duration filtered to mcp.method.name="tools/call"`))
+	legacyActiveConnections := LegacyInt64UpDownCounter(meter, legacy, "toolhive_mcp_active_connections",
+		metric.WithDescription("DEPRECATED: renamed to stacklok.toolhive.proxy.active_connections"))
+
 	middleware := &HTTPMiddleware{
-		config:                config,
-		tracerProvider:        tracerProvider,
-		tracer:                tracerProvider.Tracer(instrumentationName),
-		meterProvider:         meterProvider,
-		meter:                 meter,
-		serverName:            serverName,
-		transport:             transport,
-		operationDuration:     operationDuration,
-		httpServerReqDuration: httpServerReqDuration,
-		sseConnectionDuration: sseConnectionDuration,
-		activeConnections:     activeConnections,
+		config:                  config,
+		tracerProvider:          tracerProvider,
+		tracer:                  tracerProvider.Tracer(instrumentationName),
+		meterProvider:           meterProvider,
+		meter:                   meter,
+		serverName:              serverName,
+		transport:               transport,
+		operationDuration:       operationDuration,
+		httpServerReqDuration:   httpServerReqDuration,
+		sseConnectionDuration:   sseConnectionDuration,
+		activeConnections:       activeConnections,
+		legacyRequests:          legacyRequests,
+		legacyRequestDuration:   legacyRequestDuration,
+		legacyToolCalls:         legacyToolCalls,
+		legacyActiveConnections: legacyActiveConnections,
 	}
 
 	return middleware.Handler
@@ -164,7 +193,8 @@ func NewHTTPMiddleware(
 //
 // The durable fix is to register during provider assembly in
 // pkg/telemetry/providers, where ComponentName and the resource already live;
-// this keeps the guard correct until then.
+// this keeps the guard correct until then. See registerBuildInfoNow for the test
+// escape hatch.
 var buildInfoProviders = struct {
 	mu   sync.Mutex
 	seen map[metric.MeterProvider]struct{}
@@ -217,6 +247,15 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			m.activeConnections.Add(ctx, 1, sseAttrs)
 			defer m.activeConnections.Add(ctx, -1, sseAttrs)
 
+			// Legacy alias under the pre-rename label keys (server/transport).
+			legacySSEAttrs := metric.WithAttributes(
+				attribute.String("server", m.serverName),
+				attribute.String("transport", m.transport),
+				attribute.String("connection_type", "sse"),
+			)
+			m.legacyActiveConnections.Add(ctx, 1, legacySSEAttrs)
+			defer m.legacyActiveConnections.Add(ctx, -1, legacySSEAttrs)
+
 			// Pass through to SSE handler - blocks for the lifetime of the SSE
 			// connection. Record its duration on close, into sseConnectionDuration
 			// rather than http.server.request.duration — see the comment on that
@@ -254,6 +293,14 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			attribute.String(coremetrics.LabelMCPServer, m.serverName),
 			attribute.String(coremetrics.LabelTransport, m.transport),
 		))
+
+		// Legacy alias under the pre-rename label keys (server/transport).
+		legacyConnAttrs := metric.WithAttributes(
+			attribute.String("server", m.serverName),
+			attribute.String("transport", m.transport),
+		)
+		m.legacyActiveConnections.Add(ctx, 1, legacyConnAttrs)
+		defer m.legacyActiveConnections.Add(ctx, -1, legacyConnAttrs)
 
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
 		spanName := m.createSpanName(ctx)
@@ -746,8 +793,10 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	// Get the resource ID from the parsed MCP request if available.
 	// For tools/call this is the tool name, for resources/read the URI,
 	// and for prompts/get the prompt name. It feeds gen_ai.tool.name on the
-	// semconv operation-duration metric; it is deliberately kept off the
-	// custom request metrics to bound cardinality.
+	// semconv operation-duration metric and is deliberately kept off the current
+	// custom request metrics to bound cardinality. The legacy aliases carry it
+	// regardless: the pre-rename metrics had it, and reproducing them faithfully
+	// matters more than narrowing them for the overlap window's lifetime.
 	mcpResourceID := ""
 	if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil {
 		mcpResourceID = parsedMCP.ResourceID
@@ -759,6 +808,8 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	// carrying no MCP method. SSE-open GETs never reach recordMetrics — they
 	// return early in Handler and record into sseConnectionDuration instead.
 	m.recordHTTPServerDuration(ctx, r, rw.statusCode, duration)
+
+	m.recordLegacyRequestMetrics(ctx, r, rw, mcpMethod, mcpResourceID, duration)
 
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
 	// Only POST requests carry a JSON-RPC body; GET (SSE stream open) and DELETE
@@ -774,13 +825,61 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	}
 }
 
+// recordLegacyRequestMetrics re-emits the deleted toolhive_mcp_requests,
+// toolhive_mcp_request_duration and toolhive_mcp_tool_calls twins under their
+// original names and label vocabulary, so a dashboard written against them keeps
+// working for one release while it is migrated.
+//
+// The instruments are already no-ops when Config.UseLegacyMetrics is false, so
+// the early return below is an optimization rather than a correctness guard: it
+// skips building three attribute sets per request on the proxy's hot path.
+//
+// The attribute sets and the "any status >= 400 is an error" classification
+// deliberately reproduce the pre-rename behaviour rather than the narrower
+// semconv one — an alias that reports different numbers than the metric it
+// replaces is worse than no alias.
+func (m *HTTPMiddleware) recordLegacyRequestMetrics(
+	ctx context.Context, r *http.Request, rw *responseWriter,
+	mcpMethod, mcpResourceID string, duration time.Duration,
+) {
+	if !m.config.UseLegacyMetrics {
+		return
+	}
+
+	status := "success"
+	if rw.statusCode >= 400 {
+		status = "error"
+	}
+
+	attrs := metric.WithAttributes(
+		attribute.String("method", r.Method),
+		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
+		attribute.String("status", status),
+		attribute.String("mcp_method", mcpMethod),
+		attribute.String("mcp_resource_id", mcpResourceID),
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+	)
+	m.legacyRequests.Add(ctx, 1, attrs)
+	m.legacyRequestDuration.Record(ctx, duration.Seconds(), attrs)
+
+	if mcpMethod == string(mcp.MethodToolsCall) && mcpResourceID != "" {
+		m.legacyToolCalls.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("server", m.serverName),
+			attribute.String("tool", mcpResourceID),
+			attribute.String("status", status),
+		))
+	}
+}
+
 // recordHTTPServerDuration records the http.server.request.duration OTEL HTTP
 // semantic-convention metric. It carries the semconv attribute keys
-// (http.request.method, url.scheme, http.response.status_code, error.type set
-// only on failure) plus mcp_server, so a single Prometheus instance scraping
-// several proxies can still split this metric per backend without a join — the
-// deleted toolhive_mcp_requests/_request_duration twins this metric replaces
-// both carried an equivalent server label.
+// (http.request.method, url.scheme, http.response.status_code, plus
+// network.protocol.version when known and error.type only on failure) and
+// mcp_server, so a single Prometheus instance scraping several proxies can still
+// split this metric per backend without a join — the toolhive_mcp_requests /
+// _request_duration twins this metric replaces both carried an equivalent server
+// label.
 func (m *HTTPMiddleware) recordHTTPServerDuration(
 	ctx context.Context, r *http.Request, statusCode int, duration time.Duration,
 ) {
@@ -926,6 +1025,20 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	// End the span immediately since this is just the connection establishment
 	span.SetStatus(codes.Ok, "SSE connection established")
 	span.End()
+
+	// Legacy alias: toolhive_mcp_requests was incremented from here as well as
+	// from recordMetrics, under a distinct mcp_method="sse_connection" series
+	// carrying no mcp_resource_id. SSE-open requests return early in Handler and
+	// never reach recordLegacyRequestMetrics, so without this a dashboard
+	// counting connection establishments reads zero.
+	m.legacyRequests.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("method", r.Method),
+		attribute.String("status_code", "200"), // SSE connections start with 200
+		attribute.String("status", "success"),
+		attribute.String("mcp_method", "sse_connection"),
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+	))
 }
 
 // Factory middleware type constant

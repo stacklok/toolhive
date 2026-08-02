@@ -108,7 +108,7 @@ cat <<'EOF'
 To access the UIs, run these port-forward commands:
 
   # Grafana (admin / admin)
-  kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:3000 --kubeconfig kconfig.yaml
+  kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80 --kubeconfig kconfig.yaml
 
   # Prometheus
   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 --kubeconfig kconfig.yaml

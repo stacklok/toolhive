@@ -97,6 +97,14 @@ type Config struct {
 	// +optional
 	UseLegacyAttributes bool `json:"useLegacyAttributes" yaml:"useLegacyAttributes"`
 
+	// UseLegacyMetrics controls whether legacy metric names are emitted alongside
+	// the new standard stacklok.* metric names. When true, both old and new metric
+	// names are recorded for backward compatibility with existing dashboards.
+	// Currently defaults to true; this will change to false in a future release.
+	// +kubebuilder:default=true
+	// +optional
+	UseLegacyMetrics bool `json:"useLegacyMetrics" yaml:"useLegacyMetrics"`
+
 	// CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.
 	// When set, the OTLP exporters use this CA to verify the collector's TLS certificate
 	// instead of relying solely on the system CA pool.
@@ -125,11 +133,11 @@ func (c Config) String() string {
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
 		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, "+
-		"UseLegacyAttributes: %t, CACertPath: %q}",
+		"UseLegacyAttributes: %t, UseLegacyMetrics: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
 		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes,
-		c.UseLegacyAttributes, c.CACertPath)
+		c.UseLegacyAttributes, c.UseLegacyMetrics, c.CACertPath)
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
@@ -167,6 +175,7 @@ func DefaultConfig() Config {
 		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
 		EnvironmentVariables:        []string{}, // No environment variables by default
 		UseLegacyAttributes:         true,       // Dual emission for backward compat
+		UseLegacyMetrics:            true,       // Dual emission for backward compat
 	}
 }
 
@@ -183,6 +192,7 @@ func MaybeMakeConfig(
 	otelInsecure bool,
 	otelEnvironmentVariables []string,
 	otelUseLegacyAttributes bool,
+	otelUseLegacyMetrics bool,
 ) *Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
@@ -220,6 +230,7 @@ func MaybeMakeConfig(
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		UseLegacyAttributes:         otelUseLegacyAttributes,
+		UseLegacyMetrics:            otelUseLegacyMetrics,
 	}
 }
 
@@ -340,6 +351,14 @@ func (p *Provider) MeterProvider() metric.MeterProvider {
 // Returns nil if no metrics port is configured.
 func (p *Provider) PrometheusHandler() http.Handler {
 	return p.prometheusHandler
+}
+
+// UseLegacyMetrics reports whether legacy (pre-stacklok.*) metric names should be
+// emitted alongside the current ones. Instrument-creation sites that receive a
+// Provider read the setting here rather than taking it as a separate parameter,
+// so it cannot drift from the Config the provider was built with.
+func (p *Provider) UseLegacyMetrics() bool {
+	return p.config.UseLegacyMetrics
 }
 
 // validateOtelConfig validates the otel configuration

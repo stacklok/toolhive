@@ -438,6 +438,11 @@ telemetry:
 		Headers:                     map[string]string{"Authorization": "Bearer token123", "X-Custom-Header": "custom-value"},
 		EnvironmentVariables:        []string{"NODE_ENV", "DEPLOYMENT_ENV"},
 		CustomAttributes:            nil,
+		// The YAML omits both legacy-emission keys, so load-time defaulting turns
+		// them on. Relying on the Go zero value here would assert the opposite of
+		// the documented default and let a regression pass.
+		UseLegacyAttributes: true,
+		UseLegacyMetrics:    true,
 	}, *cfg.Telemetry)
 }
 

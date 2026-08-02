@@ -48,7 +48,7 @@ func (l *YAMLLoader) Load() (*Config, error) {
 	}
 
 	// Post-process the config
-	if err := l.postProcess(&cfg); err != nil {
+	if err := l.postProcess(&cfg, data); err != nil {
 		return nil, fmt.Errorf("failed to process config: %w", err)
 	}
 
@@ -60,7 +60,10 @@ func (l *YAMLLoader) Load() (*Config, error) {
 // - Applies type inference for workflow steps
 // - Sets default timeouts
 // - Validates JSON schemas
-func (l *YAMLLoader) postProcess(cfg *Config) error {
+//
+// raw is the YAML cfg was decoded from, needed to tell an omitted key from an
+// explicit false on the plain-bool legacy-emission toggles.
+func (l *YAMLLoader) postProcess(cfg *Config, raw []byte) error {
 	// Process outgoing auth - resolve env vars
 	if cfg.OutgoingAuth != nil {
 		if err := l.processOutgoingAuth(cfg.OutgoingAuth); err != nil {
@@ -77,6 +80,7 @@ func (l *YAMLLoader) postProcess(cfg *Config) error {
 
 	// Apply operational defaults (fills missing values)
 	cfg.EnsureOperationalDefaults()
+	cfg.EnsureTelemetryLegacyDefaults(raw)
 
 	return nil
 }

@@ -90,7 +90,14 @@ type MCPTelemetryOTelConfig struct {
 	// This will change to false in a future release and eventually be removed.
 	// +kubebuilder:default=true
 	// +optional
-	UseLegacyAttributes bool `json:"useLegacyAttributes"`
+	UseLegacyAttributes *bool `json:"useLegacyAttributes,omitempty"`
+
+	// UseLegacyMetrics controls whether legacy metric names are emitted alongside
+	// the new stacklok.* metric names. Defaults to true for backward compatibility.
+	// This will change to false in a future release and eventually be removed.
+	// +kubebuilder:default=true
+	// +optional
+	UseLegacyMetrics *bool `json:"useLegacyMetrics,omitempty"`
 
 	// CABundleRef references a ConfigMap containing a CA certificate bundle for the OTLP endpoint.
 	// When specified, the operator mounts the ConfigMap into the proxyrunner pod and configures

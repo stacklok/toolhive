@@ -830,11 +830,14 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 // original names and label vocabulary, so a dashboard written against them keeps
 // working for one release while it is migrated.
 //
-// The instruments are no-ops when Config.UseLegacyMetrics is false, so this runs
-// unconditionally. The attribute sets and the "any status >= 400 is an error"
-// classification deliberately reproduce the pre-rename behaviour rather than the
-// narrower semconv one — an alias that reports different numbers than the metric
-// it replaces is worse than no alias.
+// The instruments are already no-ops when Config.UseLegacyMetrics is false, so
+// the early return below is an optimization rather than a correctness guard: it
+// skips building three attribute sets per request on the proxy's hot path.
+//
+// The attribute sets and the "any status >= 400 is an error" classification
+// deliberately reproduce the pre-rename behaviour rather than the narrower
+// semconv one — an alias that reports different numbers than the metric it
+// replaces is worse than no alias.
 func (m *HTTPMiddleware) recordLegacyRequestMetrics(
 	ctx context.Context, r *http.Request, rw *responseWriter,
 	mcpMethod, mcpResourceID string, duration time.Duration,

@@ -334,6 +334,7 @@ func monitorOptimizer(
 	}
 
 	tracer := tracerProvider.Tracer(instrumentationName)
+	legacy := newLegacyOptimizerInstruments(meter, useLegacyMetrics)
 
 	wrapped := func(ctx context.Context, tools []mcpserver.ServerTool) (optimizer.Optimizer, error) {
 		opt, err := factory(ctx, tools)
@@ -350,48 +351,82 @@ func monitorOptimizer(
 			callToolRequests:    callToolRequests,
 			callToolDuration:    callToolDuration,
 
-			legacyFindToolRequests: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_find_tool_requests",
-				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.requests")),
-			legacyFindToolErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_find_tool_errors",
-				metric.WithDescription(
-					`DEPRECATED: use stacklok.vmcp.optimizer.find_tool.requests{outcome="error"}`)),
-			legacyFindToolDuration: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_find_tool_duration",
-				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.duration"),
-				metric.WithUnit("s"),
-				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
-			legacyFindToolResults: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_find_tool_results",
-				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.results"),
-				metric.WithUnit("{tools}"),
-				metric.WithExplicitBucketBoundaries(0, 1, 2, 3, 5, 10, 20, 50)),
-			legacyTokenSavings: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_token_savings_percent",
-				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.token_savings"),
-				metric.WithUnit("%"),
-				metric.WithExplicitBucketBoundaries(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 100)),
-			legacyCallToolRequests: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_call_tool_requests",
-				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests")),
-			legacyCallToolErrors: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_call_tool_errors",
-				metric.WithDescription(
-					`DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests{outcome="error"}`)),
-			legacyCallToolNotFound: telemetry.LegacyInt64Counter(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_call_tool_not_found",
-				metric.WithDescription(
-					`DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests{outcome="not_found"}`)),
-			legacyCallToolDuration: telemetry.LegacyFloat64Histogram(meter, useLegacyMetrics,
-				"toolhive_vmcp_optimizer_call_tool_duration",
-				metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.duration"),
-				metric.WithUnit("s"),
-				metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
+			legacyFindToolRequests: legacy.findToolRequests,
+			legacyFindToolErrors:   legacy.findToolErrors,
+			legacyFindToolDuration: legacy.findToolDuration,
+			legacyFindToolResults:  legacy.findToolResults,
+			legacyTokenSavings:     legacy.tokenSavings,
+			legacyCallToolRequests: legacy.callToolRequests,
+			legacyCallToolErrors:   legacy.callToolErrors,
+			legacyCallToolNotFound: legacy.callToolNotFound,
+			legacyCallToolDuration: legacy.callToolDuration,
 		}, nil
 	}
 
 	return wrapped, nil
+}
+
+// legacyOptimizerInstruments holds the pre-rename optimizer aliases. They are
+// built once alongside the current instruments rather than inside the per-session
+// factory closure: the closure runs on every session decoration, so constructing
+// them there would re-enter the SDK's instrument registry per session.
+type legacyOptimizerInstruments struct {
+	findToolRequests metric.Int64Counter
+	findToolErrors   metric.Int64Counter
+	findToolDuration metric.Float64Histogram
+	findToolResults  metric.Float64Histogram
+	tokenSavings     metric.Float64Histogram
+	callToolRequests metric.Int64Counter
+	callToolErrors   metric.Int64Counter
+	callToolNotFound metric.Int64Counter
+	callToolDuration metric.Float64Histogram
+}
+
+// newLegacyOptimizerInstruments builds the nine optimizer aliases, each pinned to
+// the bucket layout its metric shipped with. The find_tool/call_tool errors and
+// not_found counters are the un-merge of the current requests counter's outcome
+// label, so each legacy counter tracks exactly one outcome value.
+func newLegacyOptimizerInstruments(meter metric.Meter, enabled bool) legacyOptimizerInstruments {
+	return legacyOptimizerInstruments{
+		findToolRequests: telemetry.LegacyInt64Counter(meter, enabled,
+			"toolhive_vmcp_optimizer_find_tool_requests",
+			metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.requests")),
+		findToolErrors: telemetry.LegacyInt64Counter(meter, enabled,
+			"toolhive_vmcp_optimizer_find_tool_errors",
+			metric.WithDescription(
+				`DEPRECATED: use stacklok.vmcp.optimizer.find_tool.requests{outcome="error"}`)),
+		findToolDuration: telemetry.LegacyFloat64Histogram(meter, enabled,
+			"toolhive_vmcp_optimizer_find_tool_duration",
+			metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.duration"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
+		findToolResults: telemetry.LegacyFloat64Histogram(meter, enabled,
+			"toolhive_vmcp_optimizer_find_tool_results",
+			metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.find_tool.results"),
+			metric.WithUnit("{tools}"),
+			metric.WithExplicitBucketBoundaries(0, 1, 2, 3, 5, 10, 20, 50)),
+		tokenSavings: telemetry.LegacyFloat64Histogram(meter, enabled,
+			"toolhive_vmcp_optimizer_token_savings_percent",
+			metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.token_savings"),
+			metric.WithUnit("%"),
+			metric.WithExplicitBucketBoundaries(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 100)),
+		callToolRequests: telemetry.LegacyInt64Counter(meter, enabled,
+			"toolhive_vmcp_optimizer_call_tool_requests",
+			metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests")),
+		callToolErrors: telemetry.LegacyInt64Counter(meter, enabled,
+			"toolhive_vmcp_optimizer_call_tool_errors",
+			metric.WithDescription(
+				`DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests{outcome="error"}`)),
+		callToolNotFound: telemetry.LegacyInt64Counter(meter, enabled,
+			"toolhive_vmcp_optimizer_call_tool_not_found",
+			metric.WithDescription(
+				`DEPRECATED: use stacklok.vmcp.optimizer.call_tool.requests{outcome="not_found"}`)),
+		callToolDuration: telemetry.LegacyFloat64Histogram(meter, enabled,
+			"toolhive_vmcp_optimizer_call_tool_duration",
+			metric.WithDescription("DEPRECATED: use stacklok.vmcp.optimizer.call_tool.duration"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...)),
+	}
 }
 
 type telemetryOptimizer struct {

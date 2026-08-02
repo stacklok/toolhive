@@ -95,11 +95,16 @@ release rather than a permanent second vocabulary.
 | Setting | Behavior |
 |---------|----------|
 | `useLegacyMetrics: true` **(current default)** | Emits **both** legacy and current metric names |
-| `useLegacyMetrics: false` | Emits **only** the current `stacklok.*`/semconv metric names |
+| `useLegacyMetrics: false` | Emits **only** the current `stacklok.*`/semconv metric names, with one exception below |
 
 Set it via `--otel-use-legacy-metrics` on `thv run`, `use-legacy-metrics` in the
 config file, or `openTelemetry.useLegacyMetrics` on `MCPTelemetryConfig` /
 `VirtualMCPServer`.
+
+One alias ignores the flag: `toolhive_vmcp_backend_revision_reclassifications` is
+recorded from a free function that has no route to the telemetry config, so it is
+emitted even when `useLegacyMetrics` is `false`. Verifying a cutover by grepping a
+scrape for `^toolhive_` will find that one series and no others.
 
 Legacy aliases keep their original label vocabulary, not the new one — a
 dashboard grouping by `server` or `workflow.name` keeps working, and one
@@ -356,16 +361,76 @@ Metric/Label" column directly into PromQL returns zero results.
 | `toolhive_rate_limit_redis_errors` | `stacklok.toolhive.ratelimit.redis_errors` | `stacklok_toolhive_ratelimit_redis_errors_total` | Renamed, not deleted |
 | `toolhive_rate_limit_check_latency` | `stacklok.toolhive.ratelimit.check_latency` | `stacklok_toolhive_ratelimit_check_latency_seconds_bucket` / `_sum` / `_count` | Renamed, not deleted |
 | `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | `stacklok_vmcp_composite_tool_executions_total` | Now split by `outcome` label instead of a separate errors counter |
-| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | `stacklok_vmcp_composite_tool_executions_total{outcome="error"}` | Merged into the executions counter above, not a standalone metric |
+| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | `stacklok_vmcp_composite_tool_executions_total{outcome="error"}` | Merged into the executions counter above. Still emitted as a standalone alias while `useLegacyMetrics` is on — only the replacement is merged |
 | `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | `stacklok_vmcp_composite_tool_duration_seconds_bucket` / `_sum` / `_count` | |
 | `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | `stacklok_vmcp_mcp_server_health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count. No suffix — it's an ObservableGauge. **The only old name not re-emitted under `useLegacyMetrics`** — there is no fire-once count to reproduce, so migrate this panel rather than waiting |
-| `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | `stacklok_vmcp_optimizer_find_tool_requests_total` | Merged into one counter split by `outcome` label |
+| `toolhive_vmcp_optimizer_find_tool_requests` | `stacklok.vmcp.optimizer.find_tool.requests` | `stacklok_vmcp_optimizer_find_tool_requests_total` | Merged into one counter split by `outcome` label |
+| `toolhive_vmcp_optimizer_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` (filtered to `outcome="error"`) | `stacklok_vmcp_optimizer_find_tool_requests_total{outcome="error"}` | Merged into the requests counter above. Still emitted as a standalone alias while `useLegacyMetrics` is on |
 | `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | `stacklok_vmcp_optimizer_find_tool_duration_seconds_bucket` / `_sum` / `_count` | |
 | `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | `stacklok_vmcp_optimizer_find_tool_results_bucket` / `_sum` / `_count` | Unit is `{tools}` (a count), not seconds — no `_seconds` infix |
 | `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | `stacklok_vmcp_optimizer_token_savings_percent_bucket` / `_sum` / `_count` | Unit `%` becomes the `_percent` infix, so the suffix coincides with the old name's trailing `_percent` — but the prefix still changed, so the query must be migrated. The alias keeps unit `%` and is not double-suffixed |
-| `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | `stacklok_vmcp_optimizer_call_tool_requests_total` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
+| `toolhive_vmcp_optimizer_call_tool_requests` | `stacklok.vmcp.optimizer.call_tool.requests` | `stacklok_vmcp_optimizer_call_tool_requests_total` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
+| `toolhive_vmcp_optimizer_call_tool_errors` | `stacklok.vmcp.optimizer.call_tool.requests` (filtered to `outcome="error"`) | `stacklok_vmcp_optimizer_call_tool_requests_total{outcome="error"}` | Merged into the requests counter above. Still emitted as a standalone alias while `useLegacyMetrics` is on |
+| `toolhive_vmcp_optimizer_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` (filtered to `outcome="not_found"`) | `stacklok_vmcp_optimizer_call_tool_requests_total{outcome="not_found"}` | Merged into the requests counter above. Still emitted as a standalone alias while `useLegacyMetrics` is on |
 | `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | `stacklok_vmcp_optimizer_call_tool_duration_seconds_bucket` / `_sum` / `_count` | |
-| `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | `stacklok_vmcp_backend_revision_reclassifications_total` | Renamed, not deleted |
+| `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | `stacklok_vmcp_backend_revision_reclassifications_total` | Renamed, not deleted. **The one alias emitted regardless of `useLegacyMetrics`** — it is recorded from a free function with no route to the telemetry config, so setting the flag to `false` does not silence it |
+
+#### Scraped Names of the Legacy Aliases
+
+The "Legacy Metric/Label" column above lists OTel instrument names, which is what
+the code registers — not what Prometheus exposes. The exporter appends a suffix
+per instrument kind, so a legacy alias is scraped under the name in the right
+column. Grepping `/metrics` for the left-hand name finds nothing for most rows.
+
+| Legacy instrument | Scraped as |
+|-------------------|------------|
+| `toolhive_mcp_requests` | `toolhive_mcp_requests_total` |
+| `toolhive_mcp_tool_calls` | `toolhive_mcp_tool_calls_total` |
+| `toolhive_mcp_request_duration` | `toolhive_mcp_request_duration_seconds_bucket` / `_sum` / `_count` |
+| `toolhive_mcp_active_connections` | `toolhive_mcp_active_connections` (UpDownCounter — no suffix) |
+| `toolhive_rate_limit_decisions` | `toolhive_rate_limit_decisions_total` |
+| `toolhive_rate_limit_redis_errors` | `toolhive_rate_limit_redis_errors_total` |
+| `toolhive_rate_limit_check_latency` | `toolhive_rate_limit_check_latency_seconds_bucket` / `_sum` / `_count` |
+| `toolhive_vmcp_workflow_executions` | `toolhive_vmcp_workflow_executions_total` |
+| `toolhive_vmcp_workflow_errors` | `toolhive_vmcp_workflow_errors_total` |
+| `toolhive_vmcp_workflow_duration` | `toolhive_vmcp_workflow_duration_seconds_bucket` / `_sum` / `_count` |
+| `toolhive_vmcp_backend_requests` | `toolhive_vmcp_backend_requests_total` |
+| `toolhive_vmcp_backend_errors` | `toolhive_vmcp_backend_errors_total` |
+| `toolhive_vmcp_backend_requests_duration` | `toolhive_vmcp_backend_requests_duration_seconds_bucket` / `_sum` / `_count` |
+| `toolhive_vmcp_backend_revision_reclassifications` | `toolhive_vmcp_backend_revision_reclassifications_total` |
+| `toolhive_vmcp_optimizer_find_tool_requests` | `toolhive_vmcp_optimizer_find_tool_requests_total` |
+| `toolhive_vmcp_optimizer_find_tool_errors` | `toolhive_vmcp_optimizer_find_tool_errors_total` |
+| `toolhive_vmcp_optimizer_find_tool_duration` | `toolhive_vmcp_optimizer_find_tool_duration_seconds_bucket` / `_sum` / `_count` |
+| `toolhive_vmcp_optimizer_find_tool_results` | `toolhive_vmcp_optimizer_find_tool_results_bucket` / `_sum` / `_count` (unit `{tools}` — no `_seconds` infix) |
+| `toolhive_vmcp_optimizer_token_savings_percent` | `toolhive_vmcp_optimizer_token_savings_percent_bucket` / `_sum` / `_count` (unit `%` is not double-suffixed) |
+| `toolhive_vmcp_optimizer_call_tool_requests` | `toolhive_vmcp_optimizer_call_tool_requests_total` |
+| `toolhive_vmcp_optimizer_call_tool_errors` | `toolhive_vmcp_optimizer_call_tool_errors_total` |
+| `toolhive_vmcp_optimizer_call_tool_not_found` | `toolhive_vmcp_optimizer_call_tool_not_found_total` |
+| `toolhive_vmcp_optimizer_call_tool_duration` | `toolhive_vmcp_optimizer_call_tool_duration_seconds_bucket` / `_sum` / `_count` |
+
+#### Translating a Merged Counter
+
+Four counters were folded into an `outcome` label. Their legacy aliases are still
+emitted as separate counters, so the old alert keeps firing — but the replacement
+query needs the label. Note which pairs can be expected to agree:
+
+| Legacy query | Current equivalent | Agreement |
+|--------------|--------------------|-----------|
+| `toolhive_vmcp_workflow_executions_total` | `sum(stacklok_vmcp_composite_tool_executions_total)` | Differs by in-flight calls — the legacy counter increments before the call, the current one after |
+| `toolhive_vmcp_workflow_errors_total` | `stacklok_vmcp_composite_tool_executions_total{outcome="error"}` | Exact |
+| `toolhive_vmcp_optimizer_find_tool_requests_total` | `sum(stacklok_vmcp_optimizer_find_tool_requests_total)` | Differs by in-flight calls |
+| `toolhive_vmcp_optimizer_find_tool_errors_total` | `stacklok_vmcp_optimizer_find_tool_requests_total{outcome="error"}` | Exact |
+| `toolhive_vmcp_optimizer_call_tool_requests_total` | `sum(stacklok_vmcp_optimizer_call_tool_requests_total)` | Differs by in-flight calls |
+| `toolhive_vmcp_optimizer_call_tool_errors_total` | `stacklok_vmcp_optimizer_call_tool_requests_total{outcome="error"}` | Exact |
+| `toolhive_vmcp_optimizer_call_tool_not_found_total` | `stacklok_vmcp_optimizer_call_tool_requests_total{outcome="not_found"}` | Exact |
+
+Summing across every `outcome` value — not filtering to `outcome="success"` — is
+the correct translation of a legacy requests counter, because the legacy counter
+counted attempts rather than completions.
+
+Histogram pairs cannot be compared with `histogram_quantile()`: the aliases keep
+the bucket boundaries their metric shipped with, while several replacements
+adopted different layouts. Compare `_count` and `_sum` instead.
 
 The new `mcp.server.operation.duration` and `mcp.client.operation.duration`
 metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,

@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -423,35 +424,123 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	return &config, nil
 }
 
+// legacyEmissionProbe mirrors the legacy-emission toggles wherever they are
+// persisted, so an absent key stays distinguishable from an explicit false.
+type legacyEmissionProbe struct {
+	Telemetry *legacyEmissionToggles `json:"telemetry_config"`
+
+	// The toggles are persisted twice: once on the top-level telemetry_config
+	// above, and again inside the middleware entry that actually configures the
+	// provider. Runner.Run skips PopulateMiddlewareConfigs whenever this slice is
+	// already populated, so the nested copy is what reaches the record sites.
+	Middlewares []struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			Config           *legacyEmissionToggles `json:"config"`
+			UseLegacyMetrics *bool                  `json:"use_legacy_metrics"`
+		} `json:"parameters"`
+	} `json:"middleware_configs"`
+}
+
+type legacyEmissionToggles struct {
+	UseLegacyAttributes *bool `json:"useLegacyAttributes"`
+	UseLegacyMetrics    *bool `json:"useLegacyMetrics"`
+}
+
 // defaultLegacyEmission turns on the legacy-emission toggles that the persisted
 // JSON does not mention, leaving an explicitly persisted value of either
 // polarity untouched.
 //
-// telemetry.Config carries both as plain bools whose intended default is true, so
-// the decoded struct cannot distinguish "absent" from "explicitly false" — hence
-// the second pass over the raw bytes. A malformed body cannot reach here: the
-// caller already decoded these same bytes successfully.
+// Both telemetry.Config and ratelimit.MiddlewareParams carry the toggles as
+// plain bools whose intended default is true, so a decoded struct cannot
+// distinguish "absent" from "explicitly false" — hence the second pass over the
+// raw bytes. A malformed body cannot reach here: the caller already decoded
+// these same bytes successfully.
+//
+// Healing the top-level telemetry_config alone is not enough. The telemetry and
+// rate-limit middleware entries carry their own copies, and those are the ones
+// CreateMiddleware reads, so a config persisted before the toggles existed would
+// still drop every toolhive_* series on the first restart after upgrade.
 func defaultLegacyEmission(config *RunConfig, raw []byte) {
-	if config.TelemetryConfig == nil {
+	var probe legacyEmissionProbe
+	if err := json.Unmarshal(raw, &probe); err != nil {
 		return
 	}
 
-	var probe struct {
-		Telemetry *struct {
-			UseLegacyAttributes *bool `json:"useLegacyAttributes"`
-			UseLegacyMetrics    *bool `json:"useLegacyMetrics"`
-		} `json:"telemetry_config"`
-	}
-	if err := json.Unmarshal(raw, &probe); err != nil || probe.Telemetry == nil {
-		return
+	if config.TelemetryConfig != nil && probe.Telemetry != nil {
+		applyLegacyEmissionDefaults(config.TelemetryConfig, probe.Telemetry)
 	}
 
-	if probe.Telemetry.UseLegacyAttributes == nil {
-		config.TelemetryConfig.UseLegacyAttributes = true
+	for i, persisted := range probe.Middlewares {
+		if i >= len(config.MiddlewareConfigs) {
+			break
+		}
+		switch persisted.Type {
+		case telemetry.MiddlewareType:
+			if persisted.Parameters.Config == nil {
+				continue
+			}
+			healed, err := healTelemetryMiddleware(config.MiddlewareConfigs[i], persisted.Parameters.Config)
+			if err != nil {
+				continue
+			}
+			config.MiddlewareConfigs[i] = healed
+		case ratelimit.MiddlewareType:
+			if persisted.Parameters.UseLegacyMetrics != nil {
+				continue
+			}
+			healed, err := healRateLimitMiddleware(config.MiddlewareConfigs[i])
+			if err != nil {
+				continue
+			}
+			config.MiddlewareConfigs[i] = healed
+		}
 	}
-	if probe.Telemetry.UseLegacyMetrics == nil {
-		config.TelemetryConfig.UseLegacyMetrics = true
+}
+
+// applyLegacyEmissionDefaults turns on whichever toggles the persisted bytes did
+// not mention.
+func applyLegacyEmissionDefaults(cfg *telemetry.Config, persisted *legacyEmissionToggles) {
+	if persisted.UseLegacyAttributes == nil {
+		cfg.UseLegacyAttributes = true
 	}
+	if persisted.UseLegacyMetrics == nil {
+		cfg.UseLegacyMetrics = true
+	}
+}
+
+// healTelemetryMiddleware re-encodes a telemetry middleware entry with the
+// legacy-emission toggles its persisted parameters omitted.
+func healTelemetryMiddleware(
+	mw types.MiddlewareConfig, persisted *legacyEmissionToggles,
+) (types.MiddlewareConfig, error) {
+	var params telemetry.FactoryMiddlewareParams
+	if err := json.Unmarshal(mw.Parameters, &params); err != nil || params.Config == nil {
+		return mw, fmt.Errorf("telemetry middleware parameters are not usable: %w", err)
+	}
+	applyLegacyEmissionDefaults(params.Config, persisted)
+
+	healed, err := types.NewMiddlewareConfig(mw.Type, params)
+	if err != nil {
+		return mw, err
+	}
+	return *healed, nil
+}
+
+// healRateLimitMiddleware re-encodes a rate-limit middleware entry whose
+// persisted parameters omitted use_legacy_metrics.
+func healRateLimitMiddleware(mw types.MiddlewareConfig) (types.MiddlewareConfig, error) {
+	var params ratelimit.MiddlewareParams
+	if err := json.Unmarshal(mw.Parameters, &params); err != nil {
+		return mw, fmt.Errorf("rate limit middleware parameters are not usable: %w", err)
+	}
+	params.UseLegacyMetrics = true
+
+	healed, err := types.NewMiddlewareConfig(mw.Type, params)
+	if err != nil {
+		return mw, err
+	}
+	return *healed, nil
 }
 
 // degradeNetworkIsolation drops network isolation from a loaded config when its

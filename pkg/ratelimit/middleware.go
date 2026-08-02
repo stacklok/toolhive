@@ -44,7 +44,12 @@ type MiddlewareParams struct {
 
 	// UseLegacyMetrics re-emits the pre-rename toolhive_rate_limit_* metric
 	// names alongside the stacklok.* ones, giving dashboards an overlap window.
-	UseLegacyMetrics bool `json:"use_legacy_metrics,omitempty"`
+	//
+	// Deliberately not omitempty: the default is true, so an explicit false has
+	// to stay on the wire. Dropping it would make "the user turned this off"
+	// indistinguishable from "persisted before this field existed", and
+	// ReadJSON's self-heal would then turn it back on.
+	UseLegacyMetrics bool `json:"use_legacy_metrics"`
 }
 
 // rateLimitMiddleware wraps rate limiting functionality for the factory pattern.

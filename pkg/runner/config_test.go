@@ -6,6 +6,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -25,6 +26,7 @@ import (
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -2733,4 +2735,83 @@ func TestReadJSON_LegacyEmissionDefaultingSkipsAbsentTelemetry(t *testing.T) {
 	config, err := ReadJSON(strings.NewReader(`{"schema_version":"v1","name":"test"}`))
 	require.NoError(t, err)
 	assert.Nil(t, config.TelemetryConfig)
+}
+
+// TestReadJSON_LegacyEmissionDefaultingHealsMiddlewareCopies pins the copies that
+// actually reach the record sites. Runner.Run skips PopulateMiddlewareConfigs when
+// middleware_configs is already populated, so CreateMiddleware reads the toggles
+// nested in the middleware entry rather than the top-level telemetry_config.
+// Healing only the latter left every pre-upgrade workload emitting no toolhive_*
+// series at all.
+func TestReadJSON_LegacyEmissionDefaultingHealsMiddlewareCopies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		telemetryParams  string
+		rateLimitParams  string
+		wantTelemetry    bool
+		wantRateLimiting bool
+	}{
+		{
+			name:             "persisted before the toggles existed defaults to true",
+			telemetryParams:  `{"config":{"endpoint":"localhost:4318"},"server_name":"s","transport":"sse"}`,
+			rateLimitParams:  `{"namespace":"n","server_name":"s","config":null}`,
+			wantTelemetry:    true,
+			wantRateLimiting: true,
+		},
+		{
+			name: "explicit false is preserved",
+			telemetryParams: `{"config":{"endpoint":"localhost:4318","useLegacyMetrics":false,` +
+				`"useLegacyAttributes":false},"server_name":"s","transport":"sse"}`,
+			rateLimitParams:  `{"namespace":"n","server_name":"s","config":null,"use_legacy_metrics":false}`,
+			wantTelemetry:    false,
+			wantRateLimiting: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := `{"schema_version":"v1","name":"test","middleware_configs":[` +
+				`{"type":"` + telemetry.MiddlewareType + `","parameters":` + tt.telemetryParams + `},` +
+				`{"type":"` + ratelimit.MiddlewareType + `","parameters":` + tt.rateLimitParams + `}]}`
+
+			config, err := ReadJSON(strings.NewReader(raw))
+			require.NoError(t, err)
+			require.Len(t, config.MiddlewareConfigs, 2)
+
+			var telemetryParams telemetry.FactoryMiddlewareParams
+			require.NoError(t, json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &telemetryParams))
+			require.NotNil(t, telemetryParams.Config)
+			assert.Equal(t, tt.wantTelemetry, telemetryParams.Config.UseLegacyMetrics, "UseLegacyMetrics")
+			assert.Equal(t, tt.wantTelemetry, telemetryParams.Config.UseLegacyAttributes, "UseLegacyAttributes")
+
+			var rateLimitParams ratelimit.MiddlewareParams
+			require.NoError(t, json.Unmarshal(config.MiddlewareConfigs[1].Parameters, &rateLimitParams))
+			assert.Equal(t, tt.wantRateLimiting, rateLimitParams.UseLegacyMetrics, "rate limit UseLegacyMetrics")
+
+			// Fields the heal must leave alone.
+			assert.Equal(t, "s", telemetryParams.ServerName)
+			assert.Equal(t, "sse", telemetryParams.Transport)
+			assert.Equal(t, "n", rateLimitParams.Namespace)
+		})
+	}
+}
+
+// TestRateLimitMiddlewareParamsKeepExplicitFalseOnTheWire guards the tag that makes
+// the heal above decidable: with omitempty, an explicit false marshals away and is
+// indistinguishable from a config persisted before the field existed, so the next
+// read would turn legacy emission back on against the user's wishes.
+func TestRateLimitMiddlewareParamsKeepExplicitFalseOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(ratelimit.MiddlewareParams{
+		Namespace:        "n",
+		ServerName:       "s",
+		UseLegacyMetrics: false,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"use_legacy_metrics":false`)
 }

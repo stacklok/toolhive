@@ -118,10 +118,11 @@ func (c *Config) EnsureTelemetryLegacyDefaults(raw []byte) {
 
 	var probe legacyEmissionKeys
 	if err := yaml.Unmarshal(raw, &probe); err != nil || probe.Telemetry == nil {
-		// A failed probe means the caller built the config in memory rather than
-		// from this YAML; default both on, matching an absent block.
-		c.Telemetry.UseLegacyAttributes = true
-		c.Telemetry.UseLegacyMetrics = true
+		// The probe cannot speak for keys it never saw: raw either failed to parse
+		// or carries no telemetry block, while the config in hand has one. That
+		// only happens if the caller built the config somewhere other than these
+		// bytes, so leave both toggles as the caller set them — forcing them on
+		// here would silently discard an explicit false.
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -318,6 +319,13 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 				assert.Nil(t, result)
 			} else {
 				require.NotNil(t, result)
+				// No case here sets the legacy-emission toggles, so every one of
+				// them expects the documented default. Spelling that out on the
+				// expectation rather than in each literal keeps these cases about
+				// the field they actually exercise; the defaulting itself is
+				// covered by TestNormalizeMCPTelemetryConfig_LegacyEmissionOutsideEnabledGuard.
+				tt.expected.UseLegacyAttributes = true
+				tt.expected.UseLegacyMetrics = true
 				assert.Equal(t, tt.expected, result)
 			}
 		})
@@ -389,6 +397,91 @@ func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
 			result := NormalizeMCPTelemetryConfig(spec, "test-service", "default")
 			require.NotNil(t, result)
 			assert.Equal(t, tt.expected, result.SamplingRate)
+		})
+	}
+}
+
+// TestNormalizeMCPTelemetryConfig_LegacyEmissionOutsideEnabledGuard pins the
+// legacy-emission toggles being read outside the OpenTelemetry.Enabled guard.
+//
+// Scoping them to that guard left a Prometheus-only MCPTelemetryConfig on the Go
+// zero value false, silently dropping every toolhive_* series on upgrade —
+// precisely where a legacy dashboard is most likely to exist. The
+// prometheus-only row below fails if that read moves back inside the guard.
+func TestNormalizeMCPTelemetryConfig_LegacyEmissionOutsideEnabledGuard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		spec           *v1beta1.MCPTelemetryConfigSpec
+		wantMetrics    bool
+		wantAttributes bool
+	}{
+		{
+			name: "prometheus-only with no openTelemetry block defaults both on",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true},
+			},
+			wantMetrics:    true,
+			wantAttributes: true,
+		},
+		{
+			name: "openTelemetry block present but toggles unset defaults both on",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus:    &v1beta1.PrometheusConfig{Enabled: true},
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{Enabled: false},
+			},
+			wantMetrics:    true,
+			wantAttributes: true,
+		},
+		{
+			name: "otel disabled but toggles explicitly on keeps both on",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true},
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
+					Enabled:             false,
+					UseLegacyMetrics:    ptr.To(true),
+					UseLegacyAttributes: ptr.To(true),
+				},
+			},
+			wantMetrics:    true,
+			wantAttributes: true,
+		},
+		{
+			name: "explicit false survives with otel disabled",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true},
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
+					Enabled:             false,
+					UseLegacyMetrics:    ptr.To(false),
+					UseLegacyAttributes: ptr.To(false),
+				},
+			},
+			wantMetrics:    false,
+			wantAttributes: false,
+		},
+		{
+			name: "explicit false survives with otel enabled",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
+					Enabled:             true,
+					Endpoint:            "otel:4318",
+					UseLegacyMetrics:    ptr.To(false),
+					UseLegacyAttributes: ptr.To(false),
+				},
+			},
+			wantMetrics:    false,
+			wantAttributes: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := NormalizeMCPTelemetryConfig(tt.spec, "", "svc")
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantMetrics, result.UseLegacyMetrics, "UseLegacyMetrics")
+			assert.Equal(t, tt.wantAttributes, result.UseLegacyAttributes, "UseLegacyAttributes")
 		})
 	}
 }

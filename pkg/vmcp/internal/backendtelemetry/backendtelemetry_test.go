@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -547,4 +548,85 @@ func TestBackendHealthRetainPrunesAbsentKeys(t *testing.T) {
 	got := b.snapshot()
 	assert.Equal(t, map[string]vmcp.BackendHealthStatus{"live": vmcp.BackendHealthy}, got,
 		"entries absent from the live set must be pruned so the map cannot grow unbounded")
+}
+
+// legacyAttrKeys returns the sorted attribute key set of the single data point
+// on the named legacy counter. Compared as an exact set rather than by
+// Contains: "action" is a substring of no other key here, but "tool_name" is a
+// substring of "mcp_tool_name", so a substring check could not catch a key
+// regressing to the current-vocabulary spelling.
+func legacyAttrKeys(t *testing.T, reader sdkmetric.Reader, name string) []string {
+	t.Helper()
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok, "%s must be a Sum", name)
+			require.Len(t, sum.DataPoints, 1, "%s must have exactly one data point", name)
+
+			var keys []string
+			for _, kv := range sum.DataPoints[0].Attributes.ToSlice() {
+				keys = append(keys, string(kv.Key))
+			}
+			slices.Sort(keys)
+			return keys
+		}
+	}
+	t.Fatalf("metric %q not found", name)
+	return nil
+}
+
+// TestMonitorBackends_LegacyAliasesCarryCallerAttributes pins the pre-rename
+// attribute set of the toolhive_vmcp_backend_* aliases.
+//
+// Before the rename these metrics were recorded from commonAttrs AFTER the
+// caller's per-method attributes were appended, so they carried tool_name,
+// gen_ai.tool.name and mcp.protocol.revision alongside the target.* set. An
+// alias rebuilt from a hand-written subset drops them, which silently collapses
+// `sum by (tool_name) (rate(toolhive_vmcp_backend_requests_total[5m]))` to a
+// single series — the breakage the overlap window exists to prevent.
+func TestMonitorBackends_LegacyAliasesCarryCallerAttributes(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+	registry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{}).AnyTimes()
+
+	backendClient := vmcpmocks.NewMockBackendClient(ctrl)
+	backendClient.EXPECT().
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{}, nil)
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	decorated, _, unregister, err := MonitorBackends(
+		context.Background(), mp, tracenoop.NewTracerProvider(), registry, backendClient, true,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, unregister()) })
+
+	_, err = decorated.CallTool(context.Background(),
+		&vmcp.BackendTarget{WorkloadID: "w1", WorkloadName: "backend1", TransportType: "sse"},
+		"my_tool", nil, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"action",
+		"gen_ai.tool.name",
+		"mcp.method.name",
+		"mcp.protocol.revision",
+		"target.base_url",
+		"target.transport_type",
+		"target.workload_id",
+		"target.workload_name",
+		"tool_name",
+	}, legacyAttrKeys(t, reader, "toolhive_vmcp_backend_requests"),
+		"legacy alias must carry the caller's per-method attributes, not a target.*-only subset")
 }

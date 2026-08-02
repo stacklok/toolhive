@@ -2667,3 +2667,70 @@ func TestReadJSON_DegradesNetworkIsolation(t *testing.T) {
 		})
 	}
 }
+
+// TestReadJSON_DefaultsLegacyEmissionForPreExistingConfigs pins the self-heal for
+// run configs persisted before the legacy-emission toggles existed.
+//
+// telemetry.Config carries both toggles as plain bools whose intended default is
+// true, so a config written before this field existed decodes to false and
+// silently drops every toolhive_* series on the first restart after upgrade —
+// hitting exactly the pre-upgrade workloads the compatibility window protects.
+func TestReadJSON_DefaultsLegacyEmissionForPreExistingConfigs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		telemetryJSON  string
+		wantMetrics    bool
+		wantAttributes bool
+	}{
+		{
+			name:           "both keys absent default to true",
+			telemetryJSON:  `{"endpoint":"localhost:4318","serviceName":"svc"}`,
+			wantMetrics:    true,
+			wantAttributes: true,
+		},
+		{
+			name:           "explicit false is preserved",
+			telemetryJSON:  `{"endpoint":"localhost:4318","useLegacyMetrics":false,"useLegacyAttributes":false}`,
+			wantMetrics:    false,
+			wantAttributes: false,
+		},
+		{
+			name:           "explicit true is preserved",
+			telemetryJSON:  `{"endpoint":"localhost:4318","useLegacyMetrics":true,"useLegacyAttributes":true}`,
+			wantMetrics:    true,
+			wantAttributes: true,
+		},
+		{
+			name:           "one key absent defaults independently of the other",
+			telemetryJSON:  `{"endpoint":"localhost:4318","useLegacyMetrics":false}`,
+			wantMetrics:    false,
+			wantAttributes: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := `{"schema_version":"v1","name":"test","telemetry_config":` + tt.telemetryJSON + `}`
+			config, err := ReadJSON(strings.NewReader(raw))
+			require.NoError(t, err)
+			require.NotNil(t, config.TelemetryConfig)
+
+			assert.Equal(t, tt.wantMetrics, config.TelemetryConfig.UseLegacyMetrics, "UseLegacyMetrics")
+			assert.Equal(t, tt.wantAttributes, config.TelemetryConfig.UseLegacyAttributes, "UseLegacyAttributes")
+		})
+	}
+}
+
+// TestReadJSON_LegacyEmissionDefaultingSkipsAbsentTelemetry guards the nil branch:
+// a config with no telemetry block at all must not gain one.
+func TestReadJSON_LegacyEmissionDefaultingSkipsAbsentTelemetry(t *testing.T) {
+	t.Parallel()
+
+	config, err := ReadJSON(strings.NewReader(`{"schema_version":"v1","name":"test"}`))
+	require.NoError(t, err)
+	assert.Nil(t, config.TelemetryConfig)
+}

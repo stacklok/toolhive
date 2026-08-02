@@ -5,6 +5,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -358,8 +359,16 @@ func (c *RunConfig) WriteJSON(w io.Writer) error {
 
 // ReadJSON deserializes the RunConfig from JSON read from the provided reader
 func ReadJSON(r io.Reader) (*RunConfig, error) {
+	// Buffered so the legacy-emission keys can be re-probed below: the toggles are
+	// plain bools whose intended default is true, so a decode alone cannot tell an
+	// absent key from an explicit false.
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read run config: %w", err)
+	}
+
 	var config RunConfig
-	if err := state.ReadJSON(r, &config); err != nil {
+	if err := state.ReadJSON(bytes.NewReader(raw), &config); err != nil {
 		return nil, err
 	}
 
@@ -405,7 +414,44 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	// reflect reality in memory for status/list. See issue #5775.
 	degradeNetworkIsolation(&config)
 
+	// Self-heal configs persisted before the legacy-emission toggles existed, which
+	// carry no such key and would otherwise decode to the zero value false —
+	// silently dropping every toolhive_* series on the first restart after upgrade,
+	// for exactly the workloads the compatibility window exists to protect.
+	defaultLegacyEmission(&config, raw)
+
 	return &config, nil
+}
+
+// defaultLegacyEmission turns on the legacy-emission toggles that the persisted
+// JSON does not mention, leaving an explicitly persisted value of either
+// polarity untouched.
+//
+// telemetry.Config carries both as plain bools whose intended default is true, so
+// the decoded struct cannot distinguish "absent" from "explicitly false" — hence
+// the second pass over the raw bytes. A malformed body cannot reach here: the
+// caller already decoded these same bytes successfully.
+func defaultLegacyEmission(config *RunConfig, raw []byte) {
+	if config.TelemetryConfig == nil {
+		return
+	}
+
+	var probe struct {
+		Telemetry *struct {
+			UseLegacyAttributes *bool `json:"useLegacyAttributes"`
+			UseLegacyMetrics    *bool `json:"useLegacyMetrics"`
+		} `json:"telemetry_config"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || probe.Telemetry == nil {
+		return
+	}
+
+	if probe.Telemetry.UseLegacyAttributes == nil {
+		config.TelemetryConfig.UseLegacyAttributes = true
+	}
+	if probe.Telemetry.UseLegacyMetrics == nil {
+		config.TelemetryConfig.UseLegacyMetrics = true
+	}
 }
 
 // degradeNetworkIsolation drops network isolation from a loaded config when its

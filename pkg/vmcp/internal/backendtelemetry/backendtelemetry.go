@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -464,21 +465,17 @@ func (t *telemetryBackendClient) record(
 		attribute.String(coremetrics.LabelMCPServer, target.WorkloadName),
 	)
 
-	// Legacy aliases carried exactly these six attributes, and the requests counter
-	// was incremented before the call — reproduced here so a dashboard reading them
-	// sees the same numbers it did before the deletion. Built explicitly rather
-	// than from commonAttrs: that slice has since gained mcp.protocol.revision and
-	// also absorbs the caller's attrs, neither of which the originals carried, and
-	// reusing it would silently change these frozen series again on the next
-	// span-attribute addition.
-	legacyMetricAttrs := metric.WithAttributes(
-		attribute.String("target.workload_id", target.WorkloadID),
-		attribute.String("target.workload_name", target.WorkloadName),
-		attribute.String("target.base_url", target.BaseURL),
-		attribute.String("target.transport_type", target.TransportType),
-		attribute.String("action", action),
-		attribute.String("mcp.method.name", mcpMethod),
-	)
+	// Legacy aliases carried the full commonAttrs set — the six target.*/action/
+	// mcp.method.name attributes, mcp.protocol.revision, and every per-method
+	// attribute the caller passed (tool_name and gen_ai.tool.name on CallTool,
+	// resource_uri on ReadResource, prompt_name on GetPrompt, completion.* on
+	// Complete, auth.authenticated on all four). Snapshotting after the append
+	// above reproduces that exactly, so a dashboard grouping by tool_name keeps
+	// its per-tool breakdown instead of collapsing to a single series.
+	//
+	// Cloned rather than aliased: commonAttrs is already handed to tracer.Start
+	// above, so the two must not share backing storage.
+	legacyMetricAttrs := metric.WithAttributes(slices.Clone(commonAttrs)...)
 
 	start := time.Now()
 	t.legacyRequests.Add(ctx, 1, legacyMetricAttrs)

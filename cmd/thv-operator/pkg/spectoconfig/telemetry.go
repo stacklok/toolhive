@@ -29,14 +29,24 @@ func NormalizeMCPTelemetryConfig(
 
 	// The legacy-emission toggles govern the naming vocabulary of every signal,
 	// including Prometheus-only deployments, so they are read outside the
-	// OpenTelemetry.Enabled guard below. Scoping them to that guard would leave a
-	// Prometheus-only config on the Go zero value false and silently drop the
-	// legacy names the CRD defaults to emitting. Absent block means default-on.
+	// OpenTelemetry.Enabled guard below. Scoping them to that guard would drop the
+	// legacy names on a Prometheus-only config, which is where a pre-rename
+	// dashboard is most likely to exist.
+	//
+	// Both toggles are *bool so "unset" stays distinguishable from "explicitly
+	// false" — for a toggle defaulting to true, a plain bool makes the Go zero
+	// value the wrong default and leaves correctness resting on admission having
+	// stamped +kubebuilder:default=true. Nil means unset, so a spec that never
+	// went through admission defaults on rather than silently disabling emission.
 	config.UseLegacyAttributes = true
 	config.UseLegacyMetrics = true
 	if spec.OpenTelemetry != nil {
-		config.UseLegacyAttributes = spec.OpenTelemetry.UseLegacyAttributes
-		config.UseLegacyMetrics = spec.OpenTelemetry.UseLegacyMetrics
+		if v := spec.OpenTelemetry.UseLegacyAttributes; v != nil {
+			config.UseLegacyAttributes = *v
+		}
+		if v := spec.OpenTelemetry.UseLegacyMetrics; v != nil {
+			config.UseLegacyMetrics = *v
+		}
 	}
 
 	// Map nested OpenTelemetry fields to flat telemetry.Config.

@@ -378,35 +378,61 @@ func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *mo
 
 // readModernSSE scans an SSE body for the response whose id matches wantID,
 // consuming (ignoring) any server->client requests/notifications interleaved on
-// the stream. A stream that ends without a matching response yields errWrongEra.
+// the stream. Consecutive data: lines in one SSE event are joined with "\n" per
+// the SSE spec before JSON decoding. A stream that ends without a matching
+// response yields errWrongEra.
 func readModernSSE(body io.Reader, wantID int64) (json.RawMessage, *modernRPCError, error) {
 	sc := bufio.NewScanner(body)
 	// Cap the token at maxResponseSize (the doc-promised bound) so a valid single
 	// data: event up to that size decodes; the outer io.LimitReader already bounds
 	// the total, so this cannot over-allocate.
 	sc.Buffer(make([]byte, 0, 64*1024), maxResponseSize)
+
+	var data [][]byte
+	flush := func() (json.RawMessage, *modernRPCError, bool, error) {
+		if len(data) == 0 {
+			return nil, nil, false, nil
+		}
+		payload := bytes.Join(data, []byte("\n"))
+		data = nil
+
+		var env modernRPCEnvelope
+		if json.Unmarshal(payload, &env) != nil {
+			return nil, nil, false, nil
+		}
+		if env.Method != "" {
+			return nil, nil, false, nil // server->client request/notification; not our response
+		}
+		if !modernIDMatches(env.ID, wantID) {
+			return nil, nil, false, nil
+		}
+		if env.Error == nil && len(env.Result) == 0 {
+			return nil, nil, true, errWrongEra
+		}
+		return env.Result, env.Error, true, nil
+	}
+
 	for sc.Scan() {
-		data, ok := strings.CutPrefix(sc.Text(), "data:")
+		line := sc.Text()
+		if line == "" {
+			result, rpcErr, matched, err := flush()
+			if matched || err != nil {
+				return result, rpcErr, err
+			}
+			continue
+		}
+		value, ok := strings.CutPrefix(line, "data:")
 		if !ok {
 			continue
 		}
-		var env modernRPCEnvelope
-		if json.Unmarshal([]byte(strings.TrimSpace(data)), &env) != nil {
-			continue
-		}
-		if env.Method != "" {
-			continue // server->client request/notification; not our response
-		}
-		if !modernIDMatches(env.ID, wantID) {
-			continue
-		}
-		if env.Error == nil && len(env.Result) == 0 {
-			return nil, nil, errWrongEra
-		}
-		return env.Result, env.Error, nil
+		data = append(data, []byte(strings.TrimPrefix(value, " ")))
 	}
 	if err := sc.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%w: reading SSE stream: %w", errModernTransient, err)
+	}
+	result, rpcErr, matched, err := flush()
+	if matched || err != nil {
+		return result, rpcErr, err
 	}
 	return nil, nil, errWrongEra
 }

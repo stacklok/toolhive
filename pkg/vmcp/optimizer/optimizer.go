@@ -232,39 +232,46 @@ type CallToolInput struct {
 	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
 }
 
-// ResolveCallToolTarget resolves the tool a call_tool invocation targets,
+// callToolArgToolName is the parameters key resolveCallToolTarget hoists a nested
+// name out of. It must match the json tag on CallToolInput.ToolName, since the
+// nested lookup is a map index while the top-level one goes through encoding/json;
+// TestCallToolArgToolNameMatchesStructTag guards the pair against drift.
+const callToolArgToolName = "tool_name"
+
+// resolveCallToolTarget resolves the tool a call_tool invocation targets,
 // accepting the common LLM malformation where tool_name is nested inside
 // parameters instead of sitting alongside it. A top-level name always wins, so a
 // backend tool with its own tool_name argument still works.
 //
-// Every consumer of a call_tool payload must resolve the name through this
-// function. Authorization reads the name from the raw request while dispatch
-// reads it from the decoded struct, and a target the two disagree on is a tool
-// executing under a policy decision made for a different name.
+// It is deliberately unexported: decoding a payload into a CallToolInput is the
+// only supported way to learn which tool a call_tool request names. Reading the
+// name out of a raw arguments map instead misses the case-variant keys
+// encoding/json accepts, and a target that authorization and dispatch disagree on
+// is a tool executing under a policy decision made for a different name.
 //
 // params is never modified; a copy is returned when a nested name is hoisted.
-func ResolveCallToolTarget(name string, params map[string]any) (string, map[string]any) {
+func resolveCallToolTarget(name string, params map[string]any) (string, map[string]any) {
 	if name != "" {
 		return name, params
 	}
-	nested, ok := params["tool_name"].(string)
+	nested, ok := params[callToolArgToolName].(string)
 	if !ok || nested == "" {
 		return name, params
 	}
 	hoisted := maps.Clone(params)
-	delete(hoisted, "tool_name")
+	delete(hoisted, callToolArgToolName)
 	return nested, hoisted
 }
 
 // UnmarshalJSON hoists a nested tool_name so dispatch targets the same tool
-// authorization approved. See ResolveCallToolTarget.
+// authorization approved. See resolveCallToolTarget.
 func (in *CallToolInput) UnmarshalJSON(data []byte) error {
 	type rawCallToolInput CallToolInput // drops the method set to avoid recursion
 	var raw rawCallToolInput
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	raw.ToolName, raw.Parameters = ResolveCallToolTarget(raw.ToolName, raw.Parameters)
+	raw.ToolName, raw.Parameters = resolveCallToolTarget(raw.ToolName, raw.Parameters)
 	*in = CallToolInput(raw)
 	return nil
 }

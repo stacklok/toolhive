@@ -178,15 +178,15 @@ func (s *Server) coreSessionResources(
 
 	sdkResources := make([]server.ServerResource, 0, len(domainResources))
 	for _, domainResource := range domainResources {
-		sdkResources = append(sdkResources, server.ServerResource{
-			Resource: mcp.Resource{
+		sdkResources = append(sdkResources, server.NewServerResourceWithResult(
+			mcp.Resource{
 				Name:        domainResource.Name,
 				URI:         domainResource.URI,
 				Description: domainResource.Description,
 				MIMEType:    domainResource.MimeType,
 			},
-			Handler: s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
-		})
+			s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
+		))
 	}
 	return sdkResources, nil
 }
@@ -211,16 +211,16 @@ func (s *Server) coreSessionResourceTemplates(
 
 	sdkTemplates := make([]server.ServerResourceTemplate, 0, len(domainTemplates))
 	for _, domainTemplate := range domainTemplates {
-		sdkTemplates = append(sdkTemplates, server.ServerResourceTemplate{
-			Template: mcp.ResourceTemplate{
+		sdkTemplates = append(sdkTemplates, server.NewServerResourceTemplateWithResult(
+			mcp.ResourceTemplate{
 				Name:        domainTemplate.Name,
 				URITemplate: domainTemplate.URITemplate,
 				Description: domainTemplate.Description,
 				MIMEType:    domainTemplate.MimeType,
 			},
-			Handler: s.coreResourceTemplateHandler(
+			s.coreResourceTemplateHandler(
 				sessionID, s.backendDisplayName(ctx, domainTemplate.BackendID)),
-		})
+		))
 	}
 	return sdkTemplates, nil
 }
@@ -335,10 +335,13 @@ func gateParsedArgs(ctx context.Context, toolName string) map[string]any {
 
 // coreResourceHandler builds the SDK handler for a Serve-path resource. It mirrors
 // coreToolHandler: audit label, binding check, then core.ReadResource with explicit identity.
+// The result-returning shape forwards the backend's non-reserved _meta (trace ids,
+// custom fields) onto the wire result — reserved io.modelcontextprotocol/* keys are
+// stripped by conversion.ToMCPMeta, matching every other Legacy egress (#5986).
 func (s *Server) coreResourceHandler(
 	sessionID, uri, backendName string,
-) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+) server.ResourceResultHandlerFunc {
+	return func(ctx context.Context, _ mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
 		}
@@ -356,7 +359,10 @@ func (s *Server) coreResourceHandler(
 			}
 			return nil, err
 		}
-		return conversion.ToMCPResourceContents(result.Contents), nil
+		return &mcp.ReadResourceResult{
+			Result:   mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
+			Contents: conversion.ToMCPResourceContents(result.Contents),
+		}, nil
 	}
 }
 
@@ -367,8 +373,8 @@ func (s *Server) coreResourceHandler(
 // core.ReadResource, which resolves it via the router's template-match fallback.
 func (s *Server) coreResourceTemplateHandler(
 	sessionID, backendName string,
-) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	return func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+) server.ResourceResultHandlerFunc {
+	return func(ctx context.Context, req mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
 		}
@@ -388,7 +394,10 @@ func (s *Server) coreResourceTemplateHandler(
 			}
 			return nil, err
 		}
-		return conversion.ToMCPResourceContents(result.Contents), nil
+		return &mcp.ReadResourceResult{
+			Result:   mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
+			Contents: conversion.ToMCPResourceContents(result.Contents),
+		}, nil
 	}
 }
 

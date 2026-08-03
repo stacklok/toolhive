@@ -154,10 +154,11 @@ type fakeCore struct {
 	completeValues  []string     // returned by Complete when completeErr is nil
 
 	callErr           error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
-	readErr           error // when set, ReadResource returns it
-	promptErr         error // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
-	completeErr       error // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
-	lookupResourceErr error // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
+	readErr           error
+	readMeta          map[string]any // when set, ReadResource returns it
+	promptErr         error          // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
+	completeErr       error          // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
+	lookupResourceErr error          // when set, LookupResource returns it for an ADVERTISED URI (admission denial)
 
 	// invalidateCacheCalls counts InvalidateCapabilityCache invocations, so tests
 	// covering the list_changed sink can assert the cache was re-swept (#5748).
@@ -271,7 +272,10 @@ func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string)
 	if f.readErr != nil {
 		return nil, f.readErr
 	}
-	return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: uri, Text: "resource-body"}}}, nil
+	return &vmcp.ResourceReadResult{
+		Contents: []vmcp.ResourceContent{{URI: uri, Text: "resource-body"}},
+		Meta:     f.readMeta,
+	}, nil
 }
 
 func (f *fakeCore) ListPrompts(ctx context.Context, _ *auth.Identity) ([]vmcp.Prompt, error) {
@@ -1315,6 +1319,26 @@ func TestServeCoreResourceHandler(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "read denied by authorization policy")
 		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+
+	t.Run("backend _meta is forwarded and reserved keys stripped", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			resources: []vmcp.Resource{{Name: "doc", URI: uri}},
+			readMeta: map[string]any{
+				"traceId": "trace-abc",
+				// Reserved protocol key: must be stripped on egress (#5986).
+				"io.modelcontextprotocol/protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
+			},
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		res, err := srv.coreResourceHandler(sessionID, uri, "")(context.Background(), mcp.ReadResourceRequest{})
+		require.NoError(t, err)
+		require.NotNil(t, res.Meta, "backend resource _meta must reach the wire result")
+		assert.Equal(t, "trace-abc", res.Meta.AdditionalFields["traceId"])
+		_, reservedPresent := res.Meta.AdditionalFields["io.modelcontextprotocol/protocolVersion"]
+		assert.False(t, reservedPresent, "reserved io.modelcontextprotocol/* keys must be stripped")
 	})
 }
 

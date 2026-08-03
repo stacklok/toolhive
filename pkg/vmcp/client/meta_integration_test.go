@@ -214,20 +214,14 @@ func TestMetaPreservation_GetPrompt(t *testing.T) {
 	assert.Equal(t, "Hello, World!", result.Messages[0].Content.Text)
 }
 
-// TestMetaPreservation_ReadResource documents the SDK limitation for resource _meta.
+// TestMetaPreservation_ReadResource verifies that backend resource-read _meta
+// survives the vMCP backend client: the test backend registers its resource via
+// mcpcompat's result-returning AddResourceWithResult (toolhive-core#194), and
+// the client must extract the meta on both the Legacy and Modern paths.
 //
-// KNOWN LIMITATION: Due to MCP SDK constraints, resource handlers return []ResourceContents
-// directly, not *ReadResourceResult with _meta. This prevents backends from including _meta
-// in resource responses at all.
-//
-// As a result:
-// - Backend MCP servers cannot include _meta in resource read responses (SDK limitation)
-// - vMCP client cannot extract _meta because it's not in the response
-// - vMCP handler cannot forward _meta to clients
-//
-// This test documents the expected behavior and ensures resource reads work correctly
-// even though _meta is not supported. Once the SDK adds _meta support for resource handlers,
-// this test can be updated to verify _meta preservation.
+// This used to document a "KNOWN LIMITATION" blaming MCP SDK constraints; that
+// framing was stale — go-sdk always supported the field, and the loss was
+// mcpcompat's mcp-go-shaped contents-only handler signature, fixed upstream.
 func TestMetaPreservation_ReadResource(t *testing.T) {
 	t.Parallel()
 
@@ -257,9 +251,10 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// Verify _meta is NOT present due to SDK limitation
-	// The SDK handler signature doesn't support returning _meta with resources
-	assert.Nil(t, result.Meta, "_meta cannot be included due to SDK limitation - handler returns []ResourceContents without _meta wrapper")
+	// Verify _meta is preserved end to end
+	require.NotNil(t, result.Meta, "backend resource _meta must be preserved")
+	assert.Equal(t, "resource-trace-789", result.Meta["traceId"])
+	assert.Equal(t, "resource-custom", result.Meta["customTag"])
 
 	// Verify resource content works correctly
 	require.NotEmpty(t, result.Contents)
@@ -510,21 +505,29 @@ func startTestMCPServer(t *testing.T) (string, *metaCapture, func()) {
 	)
 
 	// Add resource that returns _meta
-	mcpServer.AddResource(
+	mcpServer.AddResourceWithResult(
 		mcp.Resource{
 			URI:         "test://resource",
 			Name:        "Test Resource",
 			Description: "Test resource with metadata",
 			MIMEType:    "text/plain",
 		},
-		func(_ context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			// Note: The handler returns []ResourceContents, not *ReadResourceResult
-			// This is why _meta cannot be forwarded - SDK limitation
-			return []mcp.ResourceContents{
-				mcp.TextResourceContents{
-					URI:      "test://resource",
-					MIMEType: "text/plain",
-					Text:     "Test resource content",
+		func(_ context.Context, _ mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Result: mcp.Result{
+					Meta: &mcp.Meta{
+						AdditionalFields: map[string]any{
+							"traceId":   "resource-trace-789",
+							"customTag": "resource-custom",
+						},
+					},
+				},
+				Contents: []mcp.ResourceContents{
+					mcp.TextResourceContents{
+						URI:      "test://resource",
+						MIMEType: "text/plain",
+						Text:     "Test resource content",
+					},
 				},
 			}, nil
 		},

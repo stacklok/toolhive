@@ -62,6 +62,17 @@ func expectedIdentity(p *lockfile.Provenance) *coreverifier.Identity {
 	}
 }
 
+// resultFromKey builds a Result for a key-signed artifact. It carries no
+// certificate identity and no SigstoreURL — the key flow writes no
+// transparency-log entry, and recording an instance the signature never
+// touched would fabricate provenance.
+func resultFromKey(raw []byte) *Result {
+	return &Result{
+		Signed: true,
+		Bundle: raw,
+	}
+}
+
 // resultFromCore builds a Result from a core verification outcome.
 func resultFromCore(identity coreverifier.Identity, raw []byte) *Result {
 	return &Result{

@@ -77,7 +77,42 @@ func TestVerifyOCIWithKeyRoundTrip(t *testing.T) {
 	assert.True(t, result.Signed)
 	assert.NotEmpty(t, result.Bundle, "the bundle must be returned for durable storage")
 	assert.Empty(t, result.SignerIdentity, "key-signed artifacts carry no certificate identity")
+	assert.Empty(t, result.SigstoreURL,
+		"the key flow writes no transparency-log entry; recording one would fabricate provenance")
 	assert.Nil(t, result.ToLockProvenance(), "key-signed results must not fabricate lock provenance")
+
+	// The stored bundle re-verifies offline with the key, and rejects a
+	// different key.
+	require.NoError(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, ref, digest, pubPEM))
+	otherPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	otherPub, err := cryptoutils.MarshalPublicKeyToPEM(otherPriv.Public())
+	require.NoError(t, err)
+	require.ErrorIs(t, NewDefault(nil).VerifyBundleOfflineWithKey(result.Bundle, ref, digest, otherPub),
+		ErrSignatureInvalid)
+	require.ErrorIs(t, NewDefault(nil).VerifyBundleOfflineWithKey(
+		result.Bundle, ref, "sha256:"+strings.Repeat("e", 64), pubPEM), ErrSignatureInvalid,
+		"a different artifact digest reconstructs a different payload and must not verify")
+}
+
+func TestVerifyOCIDigestGuards(t *testing.T) {
+	t.Parallel()
+	host := startTestRegistry(t)
+	ref, digest := pushTestArtifact(t, host)
+	d := NewDefault(nil)
+
+	_, err := d.VerifyOCI(t.Context(), ref, "", nil)
+	require.ErrorContains(t, err, "digest is required",
+		"an empty digest would leave tag resolution to fetch time")
+
+	otherDigest := "sha256:" + strings.Repeat("f", 64)
+	_, err = d.VerifyOCI(t.Context(), ref+"@"+digest, otherDigest, nil)
+	require.ErrorContains(t, err, "refusing to verify ambiguous input",
+		"a ref-embedded digest disagreeing with the parameter is lock corruption")
+
+	// Agreement between the embedded digest and the parameter is fine.
+	_, err = d.VerifyOCI(t.Context(), ref+"@"+digest, digest, nil)
+	require.ErrorIs(t, err, ErrUnsigned, "consistent inputs proceed to retrieval")
 }
 
 func TestVerifyOCIWithKeyRejectsWrongKey(t *testing.T) {

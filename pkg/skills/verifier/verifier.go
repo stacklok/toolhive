@@ -46,6 +46,12 @@ type Verifier interface {
 	// like VerifyOCI.
 	VerifyBundleOffline(bundle []byte, digest string, expected *lockfile.Provenance) error
 
+	// VerifyBundleOfflineWithKey re-verifies a stored key-signed bundle
+	// against the signer's PEM public key without network access — the
+	// offline counterpart of VerifyOCIWithKey. imageRef and digest
+	// reconstruct the signed payload, binding the check to the artifact.
+	VerifyBundleOfflineWithKey(bundle []byte, imageRef, digest string, pubKeyPEM []byte) error
+
 	// ResultFromBundle verifies a stored bundle offline (chain of trust
 	// only) and returns the observed identity — used to back-fill
 	// provenance for adopted skills.

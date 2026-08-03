@@ -1619,6 +1619,9 @@ components:
       - digest-missing
       - validation-rejected
       - lock-write-failed
+      - signature-invalid
+      - signer-mismatch
+      - unsigned-rejected
       - unknown
       type: string
       x-enum-varnames:
@@ -1626,6 +1629,9 @@ components:
       - FailureReasonDigestMissing
       - FailureReasonValidationRejected
       - FailureReasonLockWriteFailed
+      - FailureReasonSignatureInvalid
+      - FailureReasonSignerMismatch
+      - FailureReasonUnsignedRejected
       - FailureReasonUnknown
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:
       description: Status is the current installation status.
@@ -2818,6 +2824,12 @@ components:
     pkg_api_v1.installSkillRequest:
       description: Request to install a skill
       properties:
+        allow_unsigned:
+          description: |-
+            AllowUnsigned permits installing a project-scoped skill without a
+            verified signature; the exception is recorded in the project's lock
+            file.
+          type: boolean
         clients:
           description: |-
             Clients lists target client identifiers (e.g., "claude-code"),

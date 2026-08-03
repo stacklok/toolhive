@@ -76,6 +76,11 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// Unsigned records the trust decision that this install proceeded
+	// without a verified signature (via AllowUnsigned). Set internally by
+	// install-time verification; recorded as `unsigned: true` in the lock
+	// entry.
+	Unsigned bool `json:"-"`
 	// Provenance carries the verified signer identity established during
 	// install-time verification, for recording into the lock entry. Set by
 	// the verification step, nil when the artifact is unsigned or
@@ -240,7 +245,16 @@ const (
 	FailureReasonDigestMissing       FailureReason = "digest-missing"
 	FailureReasonValidationRejected  FailureReason = "validation-rejected"
 	FailureReasonLockWriteFailed     FailureReason = "lock-write-failed"
-	FailureReasonUnknown             FailureReason = "unknown"
+	// FailureReasonSignatureInvalid means the artifact carries signature
+	// material that failed cryptographic verification.
+	FailureReasonSignatureInvalid FailureReason = "signature-invalid"
+	// FailureReasonSignerMismatch means the artifact verifies, but against
+	// an identity other than the one recorded in the lock file.
+	FailureReasonSignerMismatch FailureReason = "signer-mismatch"
+	// FailureReasonUnsignedRejected means the artifact is unsigned and the
+	// operation did not permit unsigned installs.
+	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"
+	FailureReasonUnknown          FailureReason = "unknown"
 )
 
 // SyncFailure describes a single skill that failed to sync.

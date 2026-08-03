@@ -1081,7 +1081,7 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 		Capabilities      mcp.ServerCapabilities `json:"capabilities"`
 		SupportedVersions []string               `json:"supportedVersions"`
 	}
-	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover); err != nil {
+	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover, "", nil); err != nil {
 		return nil, err
 	}
 	// Exact-match on MCPVersionModern (2026-07-28): vMCP's shim only speaks that
@@ -1263,7 +1263,7 @@ func modernListAll[T any](
 ) ([]T, error) {
 	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
 		var page map[string]json.RawMessage
-		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", nil, &page); err != nil {
+		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", nil, &page, "", nil); err != nil {
 			return nil, "", err
 		}
 		var items []T
@@ -1712,9 +1712,24 @@ func (h *httpBackendClient) modernCallTool(
 	if len(meta) > 0 {
 		params["_meta"] = meta
 	}
+
+	// Modern logging parity with the Legacy path (enableBackendLogging): when
+	// server->client forwarding is bound, opt the call in to the backend's
+	// notifications/message at debug level via the per-request logLevel _meta key
+	// (the Modern replacement for the removed logging/setLevel RPC), and relay any
+	// interleaved notifications to the downstream client. Both are no-ops when
+	// forwarding is unbound — no logLevel key is sent and no listener is attached.
+	fwd := h.forwarders.Load()
+	var logLevel string
+	var onNotification func(string, json.RawMessage)
+	if fwd != nil && fwd.notifier != nil {
+		logLevel = string(mcp.LoggingLevelDebug)
+		onNotification = newModernNotificationForwarder(ctx, fwd.notifier)
+	}
+
 	var result mcp.CallToolResult
 	if err := modernCall(
-		ctx, hc, target.BaseURL, "tools/call", params, backendToolName, paramHeaders, &result,
+		ctx, hc, target.BaseURL, "tools/call", params, backendToolName, paramHeaders, &result, logLevel, onNotification,
 	); err != nil {
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
@@ -1904,7 +1919,7 @@ func (h *httpBackendClient) modernReadResource(
 		Meta map[string]any `json:"_meta"`
 	}
 	params := map[string]any{"uri": backendURI}
-	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, nil, &res); err != nil {
+	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, nil, &res, "", nil); err != nil {
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 	mcpContents := make([]mcp.ResourceContents, len(res.Contents))
@@ -2022,7 +2037,7 @@ func (h *httpBackendClient) modernGetPrompt(
 		} `json:"messages"`
 		Meta map[string]any `json:"_meta"`
 	}
-	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, nil, &res); err != nil {
+	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, nil, &res, "", nil); err != nil {
 		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 	messages := make([]vmcp.PromptMessage, 0, len(res.Messages))
@@ -2144,7 +2159,7 @@ func (h *httpBackendClient) modernComplete(
 			HasMore bool     `json:"hasMore"`
 		} `json:"completion"`
 	}
-	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", nil, &res)
+	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", nil, &res, "", nil)
 	if errors.Is(err, mcp.ErrMethodNotFound) {
 		return &vmcp.CompletionResult{Values: []string{}}, nil
 	}

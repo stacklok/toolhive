@@ -101,18 +101,20 @@ func EnsureSecureDir() error {
 // chain; other platforms chmod only the server leaf so shared toolhive state
 // (runconfigs, toolhive.db) keeps its existing group permissions.
 func ensureSecureDirIn(base string) error {
-	chain := discoveryDirsToSecure(base)
+	secureDirs := discoveryDirsToSecure(base)
 	serverPath := discoveryFilePath(base)
+	fullChain := discoveryDirChain(base)
 
-	hadInsecureChain, err := discoveryChainWasInsecure(chain)
+	hadInsecureChain, err := discoveryChainWasInsecure(secureDirs)
 	if err != nil {
 		return err
 	}
 
-	for _, dir := range chain {
-		if err := os.MkdirAll(dir, dirPermissions); err != nil {
-			return fmt.Errorf("failed to create discovery directory: %w", err)
-		}
+	if err := mkdirDiscoveryChain(fullChain); err != nil {
+		return err
+	}
+
+	for _, dir := range secureDirs {
 		if err := restrictDiscoveryDirPermissions(dir); err != nil {
 			return err
 		}

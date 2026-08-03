@@ -13,19 +13,23 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
-	"github.com/stacklok/toolhive-core/telemetry/metrics"
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry/providers"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 const (
@@ -33,16 +37,15 @@ const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
 	// methodPromptsGet is the MCP method name for prompts/get
 	methodPromptsGet = "prompts/get"
+	// attrValueOther is the OTEL semconv sentinel for a value outside the
+	// known set. Used to bound the cardinality of metric attributes whose
+	// raw value comes from the client.
+	attrValueOther = "_OTHER"
 	// networkTransportTCP is the OTEL value for TCP transport
 	networkTransportTCP = "tcp"
 	// networkProtocolHTTP is the OTEL value for HTTP protocol
 	networkProtocolHTTP = "http"
 )
-
-// MCPHistogramBuckets are the bucket boundaries defined by the MCP OTEL semantic conventions
-// for MCP server histograms (e.g. mcp.server.operation.duration).
-// See https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/mcp.md
-var MCPHistogramBuckets = metrics.BucketsMCPSemconv()
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
 type HTTPMiddleware struct {
@@ -55,11 +58,10 @@ type HTTPMiddleware struct {
 	transport      string
 
 	// Metrics
-	requestCounter    metric.Int64Counter
-	requestDuration   metric.Float64Histogram
-	operationDuration metric.Float64Histogram
-	activeConnections metric.Int64UpDownCounter
-	toolCallCounter   metric.Int64Counter
+	operationDuration     metric.Float64Histogram
+	httpServerReqDuration metric.Float64Histogram
+	sseConnectionDuration metric.Float64Histogram
+	activeConnections     metric.Int64UpDownCounter
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
@@ -73,67 +75,123 @@ func NewHTTPMiddleware(
 ) types.MiddlewareFunction {
 	meter := meterProvider.Meter(instrumentationName)
 
-	// Initialize metrics
-	requestCounter, err := meter.Int64Counter(
-		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
-		metric.WithDescription("Total number of MCP requests"),
-	)
-	if err != nil {
-		slog.Debug("failed to create request counter metric", "error", err)
-	}
-
-	requestDuration, err := meter.Float64Histogram(
-		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
-		metric.WithDescription("Duration of MCP requests in seconds"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
-	)
-	if err != nil {
-		slog.Debug("failed to create request duration metric", "error", err)
-	}
-
 	activeConnections, err := meter.Int64UpDownCounter(
-		"toolhive_mcp_active_connections",
+		"stacklok.toolhive.proxy.active_connections",
 		metric.WithDescription("Number of active MCP connections"),
 	)
 	if err != nil {
 		slog.Debug("failed to create active connections metric", "error", err)
+		activeConnections = noop.Int64UpDownCounter{}
 	}
 
+	// Semconv-named metric, so it carries the semconv bucket set exactly rather
+	// than the coarser Stacklok proxy preset.
 	operationDuration, err := meter.Float64Histogram(
 		"mcp.server.operation.duration",
 		metric.WithDescription("Duration of MCP server operations"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPSemconv()...),
 	)
 	if err != nil {
 		slog.Debug("failed to create operation duration metric", "error", err)
+		operationDuration = noop.Float64Histogram{}
 	}
 
-	toolCallCounter, err := meter.Int64Counter(
-		"toolhive_mcp_tool_calls",
-		metric.WithDescription("Total number of MCP tool calls"),
+	// OTEL HTTP semantic-convention metric. Name kept verbatim (no stacklok_
+	// prefix) so OTel-aware tooling recognizes it. Recorded for every
+	// request/response-cycle request the middleware handles, including
+	// session-delete DELETEs that carry no MCP method — restoring
+	// transport-level coverage that the MCP-scoped operation-duration metric
+	// misses. SSE-open GETs are excluded: they block for the connection's
+	// full lifetime (minutes to hours), which would pin every observation to
+	// this histogram's 10s top bucket. Those go to sseConnectionDuration
+	// instead, below.
+	httpServerReqDuration, err := meter.Float64Histogram(
+		"http.server.request.duration",
+		metric.WithDescription("Duration of HTTP server requests"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsFastHTTP()...),
 	)
 	if err != nil {
-		slog.Debug("failed to create tool call counter metric", "error", err)
+		slog.Debug("failed to create http server request duration metric", "error", err)
+		httpServerReqDuration = noop.Float64Histogram{}
 	}
 
+	// SSE connections live for minutes to hours, not milliseconds, so they get
+	// their own histogram on BucketsMCPProxy() (tops out at 300s) instead of
+	// sharing http.server.request.duration's 10s-capped buckets.
+	sseConnectionDuration, err := meter.Float64Histogram(
+		"stacklok.toolhive.proxy.sse_connection.duration",
+		metric.WithDescription("Duration of SSE connections, recorded once the connection closes"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(coremetrics.BucketsMCPProxy()...),
+	)
+	if err != nil {
+		slog.Debug("failed to create sse connection duration metric", "error", err)
+		sseConnectionDuration = noop.Float64Histogram{}
+	}
+
+	registerBuildInfo(meterProvider, meter)
+
 	middleware := &HTTPMiddleware{
-		config:            config,
-		tracerProvider:    tracerProvider,
-		tracer:            tracerProvider.Tracer(instrumentationName),
-		meterProvider:     meterProvider,
-		meter:             meter,
-		serverName:        serverName,
-		transport:         transport,
-		requestCounter:    requestCounter,
-		requestDuration:   requestDuration,
-		operationDuration: operationDuration,
-		activeConnections: activeConnections,
-		toolCallCounter:   toolCallCounter,
+		config:                config,
+		tracerProvider:        tracerProvider,
+		tracer:                tracerProvider.Tracer(instrumentationName),
+		meterProvider:         meterProvider,
+		meter:                 meter,
+		serverName:            serverName,
+		transport:             transport,
+		operationDuration:     operationDuration,
+		httpServerReqDuration: httpServerReqDuration,
+		sseConnectionDuration: sseConnectionDuration,
+		activeConnections:     activeConnections,
 	}
 
 	return middleware.Handler
+}
+
+// buildInfoProviders tracks the MeterProviders build_info has been registered on.
+//
+// The dedup key is the provider, not the process. RegisterBuildInfo attaches an
+// observable callback while returning no handle to release it, so registering
+// twice on one provider permanently duplicates a callback observing the same
+// attribute set. But each provider owns its own reader and /metrics endpoint, so a
+// process-wide guard would leave every provider after the first exporting no
+// build_info at all — and absence is the harder failure to notice, since a fleet
+// dashboard joining on build_info just returns empty for that scrape target.
+// NewHTTPMiddleware is reachable from the public Provider.Middleware() and from
+// CreateMiddleware, which builds a fresh provider per call, so both cases are real.
+//
+// The durable fix is to register during provider assembly in
+// pkg/telemetry/providers, where ComponentName and the resource already live;
+// this keeps the guard correct until then.
+var buildInfoProviders = struct {
+	mu   sync.Mutex
+	seen map[metric.MeterProvider]struct{}
+}{seen: make(map[metric.MeterProvider]struct{})}
+
+// registerBuildInfo registers the stacklok.build_info gauge via the shared
+// toolhive-core helper, stamping this component's identity (toolhive) plus the
+// build version/commit. Registers at most once per MeterProvider.
+func registerBuildInfo(meterProvider metric.MeterProvider, meter metric.Meter) {
+	buildInfoProviders.mu.Lock()
+	defer buildInfoProviders.mu.Unlock()
+	if _, done := buildInfoProviders.seen[meterProvider]; done {
+		return
+	}
+	buildInfoProviders.seen[meterProvider] = struct{}{}
+	registerBuildInfoNow(meter)
+}
+
+// registerBuildInfoNow performs the registration unconditionally, bypassing the
+// per-provider guard. Exists so a test asserting on build_info can register
+// against its own meter provider regardless of what earlier tests in the same
+// process already registered.
+func registerBuildInfoNow(meter metric.Meter) {
+	info := versions.GetVersionInfo()
+	if err := coremetrics.RegisterBuildInfo(meter, providers.ComponentName, info.Version, info.Commit); err != nil {
+		slog.Debug("failed to register build info", "error", err)
+	}
 }
 
 // Handler implements the middleware function that wraps HTTP handlers.
@@ -152,15 +210,25 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 
 			// Track active SSE connections with defer to ensure decrement on close
 			sseAttrs := metric.WithAttributes(
-				attribute.String("server", m.serverName),
-				attribute.String("transport", m.transport),
+				attribute.String(coremetrics.LabelMCPServer, m.serverName),
+				attribute.String(coremetrics.LabelTransport, m.transport),
 				attribute.String("connection_type", "sse"),
 			)
 			m.activeConnections.Add(ctx, 1, sseAttrs)
 			defer m.activeConnections.Add(ctx, -1, sseAttrs)
 
-			// Pass through to SSE handler - blocks for the lifetime of the SSE connection
-			next.ServeHTTP(w, r)
+			// Pass through to SSE handler - blocks for the lifetime of the SSE
+			// connection. Record its duration on close, into sseConnectionDuration
+			// rather than http.server.request.duration — see the comment on that
+			// histogram's construction above for why the two are kept separate.
+			sseStart := time.Now()
+			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			defer func() {
+				m.sseConnectionDuration.Record(ctx, time.Since(sseStart).Seconds(), metric.WithAttributes(
+					attribute.String(coremetrics.LabelMCPServer, m.serverName),
+				))
+			}()
+			next.ServeHTTP(rw, r)
 			return
 		}
 
@@ -179,12 +247,12 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 
 		// Increment active connections
 		m.activeConnections.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("server", m.serverName),
-			attribute.String("transport", m.transport),
+			attribute.String(coremetrics.LabelMCPServer, m.serverName),
+			attribute.String(coremetrics.LabelTransport, m.transport),
 		))
 		defer m.activeConnections.Add(ctx, -1, metric.WithAttributes(
-			attribute.String("server", m.serverName),
-			attribute.String("transport", m.transport),
+			attribute.String(coremetrics.LabelMCPServer, m.serverName),
+			attribute.String(coremetrics.LabelTransport, m.transport),
 		))
 
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
@@ -675,36 +743,22 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		mcpMethod = "unknown"
 	}
 
-	// Determine status (success/error)
-	status := "success"
-	if rw.statusCode >= 400 {
-		status = "error"
-	}
-
 	// Get the resource ID from the parsed MCP request if available.
 	// For tools/call this is the tool name, for resources/read the URI,
-	// and for prompts/get the prompt name.
+	// and for prompts/get the prompt name. It feeds gen_ai.tool.name on the
+	// semconv operation-duration metric; it is deliberately kept off the
+	// custom request metrics to bound cardinality.
 	mcpResourceID := ""
 	if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil {
 		mcpResourceID = parsedMCP.ResourceID
 	}
 
-	// Common attributes for all metrics
-	attrs := metric.WithAttributes(
-		attribute.String("method", r.Method),
-		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
-		attribute.String("status", status),
-		attribute.String("mcp_method", mcpMethod),
-		attribute.String("mcp_resource_id", mcpResourceID),
-		attribute.String("server", m.serverName),
-		attribute.String("transport", m.transport),
-	)
-
-	// Record request count
-	m.requestCounter.Add(ctx, 1, attrs)
-
-	// Record request duration
-	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
+	// Record OTEL HTTP semconv duration for every request/response-cycle
+	// request, regardless of MCP method. This is the transport-level
+	// counterpart that stays valid for DELETE (session terminate) requests
+	// carrying no MCP method. SSE-open GETs never reach recordMetrics — they
+	// return early in Handler and record into sseConnectionDuration instead.
+	m.recordHTTPServerDuration(ctx, r, rw.statusCode, duration)
 
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
 	// Only POST requests carry a JSON-RPC body; GET (SSE stream open) and DELETE
@@ -718,18 +772,68 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		slog.Warn("mcp method could not be determined, middleware may be misconfigured",
 			"http_method", r.Method, "path", r.URL.Path)
 	}
+}
 
-	// For tools/call, record tool-specific metrics
-	if mcpMethod == string(mcp.MethodToolsCall) {
-		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
-			toolAttrs := metric.WithAttributes(
-				attribute.String("server", m.serverName),
-				attribute.String("tool", parsedMCP.ResourceID),
-				attribute.String("status", status),
-			)
-			m.toolCallCounter.Add(ctx, 1, toolAttrs)
-		}
+// recordHTTPServerDuration records the http.server.request.duration OTEL HTTP
+// semantic-convention metric. It carries the semconv attribute keys
+// (http.request.method, url.scheme, http.response.status_code, error.type set
+// only on failure) plus mcp_server, so a single Prometheus instance scraping
+// several proxies can still split this metric per backend without a join — the
+// deleted toolhive_mcp_requests/_request_duration twins this metric replaces
+// both carried an equivalent server label.
+func (m *HTTPMiddleware) recordHTTPServerDuration(
+	ctx context.Context, r *http.Request, statusCode int, duration time.Duration,
+) {
+	specAttrs := []attribute.KeyValue{
+		attribute.String("http.request.method", normalizeHTTPMethod(r.Method)),
+		attribute.String("url.scheme", requestScheme(r)),
+		attribute.Int("http.response.status_code", statusCode),
+		attribute.String(coremetrics.LabelMCPServer, m.serverName),
 	}
+	if pv := httpProtocolVersion(r); pv != "" {
+		specAttrs = append(specAttrs, attribute.String("network.protocol.version", pv))
+	}
+	if statusCode >= 500 {
+		specAttrs = append(specAttrs, attribute.String("error.type", strconv.Itoa(statusCode)))
+	}
+	m.httpServerReqDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(specAttrs...))
+}
+
+// knownHTTPMethods is the set semconv treats as recording-safe for
+// http.request.method. Anything else must be recorded as attrValueOther.
+var knownHTTPMethods = map[string]struct{}{
+	http.MethodGet: {}, http.MethodHead: {}, http.MethodPost: {},
+	http.MethodPut: {}, http.MethodPatch: {}, http.MethodDelete: {},
+	http.MethodConnect: {}, http.MethodOptions: {}, http.MethodTrace: {},
+}
+
+// normalizeHTTPMethod bounds http.request.method's cardinality. Go's net/http
+// accepts any RFC 7230 token as a method, so an unauthenticated caller can
+// otherwise mint a permanently-retained series per distinct method string.
+// Semconv mandates recording unrecognized methods as _OTHER.
+//
+// The raw value is not lost: the span keeps it under http.request.method (spans
+// are not a cardinality surface). Semconv would have the span carry it as
+// http.request.method_original alongside an _OTHER http.request.method; that
+// rename is deferred with the rest of the span-attribute work (RFC D9).
+func normalizeHTTPMethod(method string) string {
+	if _, ok := knownHTTPMethods[method]; ok {
+		return method
+	}
+	return attrValueOther
+}
+
+// requestScheme reports the URL scheme for url.scheme, which semconv marks
+// Required on http.server.request.duration. Server-side request URLs are
+// typically scheme-less, so fall back to the TLS state.
+func requestScheme(r *http.Request) string {
+	if r.URL != nil && r.URL.Scheme != "" {
+		return r.URL.Scheme
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // recordOperationDuration records the mcp.server.operation.duration metric
@@ -739,10 +843,17 @@ func (m *HTTPMiddleware) recordOperationDuration(
 ) {
 	networkTransport, protocolName, _ := mapTransport(m.transport)
 
+	// mcp.method.name arrives verbatim from the JSON-RPC body, so it is bounded
+	// against the parser's own method set; the raw value stays on the span.
+	if !mcpparser.IsKnownMethod(mcpMethod) {
+		mcpMethod = attrValueOther
+	}
+
 	specAttrs := []attribute.KeyValue{
 		attribute.String("mcp.method.name", mcpMethod),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 		attribute.String("network.transport", networkTransport),
+		attribute.String(coremetrics.LabelMCPServer, m.serverName),
 	}
 	if protocolName != "" {
 		specAttrs = append(specAttrs, attribute.String("network.protocol.name", protocolName))
@@ -760,7 +871,12 @@ func (m *HTTPMiddleware) recordOperationDuration(
 		specAttrs = append(specAttrs, attribute.String("error.type", strconv.Itoa(statusCode)))
 	}
 
-	// Method-specific attributes
+	// Method-specific attributes.
+	//
+	// NOTE: gen_ai.tool.name and gen_ai.prompt.name derive from params.name in
+	// the client's JSON-RPC body and are NOT bounded against a resolved
+	// capability set, so their cardinality is client-controlled. Bounding them
+	// is tracked separately; the proxy has no tool list in scope here.
 	switch mcpMethod {
 	case string(mcp.MethodToolsCall):
 		specAttrs = append(specAttrs, attribute.String("gen_ai.operation.name", "execute_tool"))
@@ -810,19 +926,6 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	// End the span immediately since this is just the connection establishment
 	span.SetStatus(codes.Ok, "SSE connection established")
 	span.End()
-
-	// Record SSE connection metrics
-	attrs := metric.WithAttributes(
-		attribute.String("method", r.Method),
-		attribute.String("status_code", "200"), // SSE connections start with 200
-		attribute.String("status", "success"),
-		attribute.String("mcp_method", "sse_connection"),
-		attribute.String("server", m.serverName),
-		attribute.String("transport", m.transport),
-	)
-
-	// Record the connection establishment
-	m.requestCounter.Add(ctx, 1, attrs)
 }
 
 // Factory middleware type constant

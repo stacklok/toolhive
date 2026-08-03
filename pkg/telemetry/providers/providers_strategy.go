@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 	"github.com/stacklok/toolhive/pkg/telemetry/providers/otlp"
 	"github.com/stacklok/toolhive/pkg/telemetry/providers/prometheus"
 )
@@ -146,6 +147,19 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 		promConfig := prometheus.Config{
 			EnableMetricsPath:     true,
 			IncludeRuntimeMetrics: true,
+			// Prometheus label names, not OTel attribute keys — coremetrics.AttrStacklokComponent/
+			// AttrStacklokProduct ("stacklok.component"/"stacklok.product") are dotted OTel resource-
+			// attribute names and must not be used here. This map goes straight into
+			// promclient.WrapRegistererWith, and Prometheus's own name-escaping scheme is
+			// content-negotiated per scrape: a client negotiating escaping=allow-utf-8 (Prometheus
+			// 3.x) gets a dotted key back verbatim, while every OTel-native series on this same
+			// provider is unconditionally converted to underscore form by the OTel exporter's own
+			// attribute-to-label conversion — splitting one ownership label into two incompatible
+			// families depending on how a given scraper negotiates.
+			OwnershipLabels: map[string]string{
+				"stacklok_component": ComponentName,
+				"stacklok_product":   coremetrics.ProductStacklokPlatform,
+			},
 		}
 		reader, handler, err := prometheus.NewReader(promConfig)
 		if err != nil {

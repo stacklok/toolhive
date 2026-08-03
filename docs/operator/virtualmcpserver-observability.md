@@ -24,91 +24,139 @@ The vMCP uses a decorator pattern to wrap backend clients and workflow executors
 with telemetry instrumentation. This approach provides consistent metrics and
 tracing without modifying the core business logic.
 
-The implementation of both metrics and traces can be found in `pkg/vmcp/server/telemetry.go`.
+The implementation of backend metrics and traces can be found in
+`pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`; composite tool
+(workflow) telemetry is in `pkg/vmcp/core/core_telemetry.go` and
+`pkg/vmcp/server/sessionmanager/factory.go`.
 
 ## Metrics
 
+Metric and label names follow the shared `stacklok.*`/OTel semantic-convention
+vocabulary (Metrics Standardization RFC); see the
+[Telemetry Migration Guide](../telemetry-migration-guide.md) for the mapping
+from the legacy `toolhive_vmcp_*` names these replace.
+
 ### Backend Metrics
 
-Backend metrics track requests to individual backend MCP servers.
+Backend metrics track requests to individual backend MCP servers
+(`pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`).
 
-#### `toolhive_vmcp_backends_discovered` (Gauge)
+#### `stacklok.vmcp.mcp_server.health` (Gauge)
 
-Number of backends discovered. Recorded once at startup.
-
-#### `toolhive_vmcp_backend_requests` (Counter)
-
-Total number of requests sent to backend MCP servers.
+Per-backend health, re-derived from the live backend registry on every
+collection so a backend removed at runtime (e.g. via `list_changed`) stops
+being reported instead of leaving a stale series behind. Emits one point per
+`(mcp_server, state)` pair — the observed state reports `1`, the other `0`.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `target.workload_id` | string | Backend workload ID |
-| `target.workload_name` | string | Backend workload name |
-| `target.base_url` | string | Backend base URL |
-| `target.transport_type` | string | Backend transport type (`stdio`, `sse`, `streamable-http`) |
-| `action` | string | Internal action name (`call_tool`, `read_resource`, `get_prompt`, `list_capabilities`) |
-| `mcp.method.name` | string | MCP method name (`tools/call`, `resources/read`, `prompts/get`, `list_capabilities`) |
-
-Method-specific attributes (added in addition to the above):
-
-| Attribute | Method | Description |
-|-----------|--------|-------------|
-| `tool_name` | `call_tool` | Tool name (ToolHive-specific) |
-| `gen_ai.tool.name` | `call_tool` | Tool name (OTEL MCP semconv) |
-| `resource_uri` | `read_resource` | Resource URI (ToolHive-specific) |
-| `mcp.resource.uri` | `read_resource` | Resource URI (OTEL MCP semconv) |
-| `prompt_name` | `get_prompt` | Prompt name (ToolHive-specific) |
-| `gen_ai.prompt.name` | `get_prompt` | Prompt name (OTEL MCP semconv) |
-
-#### `toolhive_vmcp_backend_errors` (Counter)
-
-Total number of errors from backend MCP servers.
-
-**Attributes**: Same as `toolhive_vmcp_backend_requests`.
-
-#### `toolhive_vmcp_backend_requests_duration` (Histogram, seconds)
-
-Duration of requests to backend MCP servers. Uses default histogram bucket
-boundaries.
-
-**Attributes**: Same as `toolhive_vmcp_backend_requests`.
+| `mcp_server` | string | Backend workload name |
+| `state` | string | One of `"healthy"`, `"degraded"`, `"unhealthy"`, `"unknown"`, `"unauthenticated"` |
 
 #### `mcp.client.operation.duration` (Histogram, seconds)
 
 Duration of MCP client operations per the
 [OTEL MCP semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/mcp.md).
 
-**Bucket boundaries**: `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsMCPSemconv()`): `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
 
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|
 | `mcp.method.name` | string | Always | MCP method name |
+| `mcp_server` | string | Always | Backend workload name |
 | `network.transport` | string | Always | `"tcp"` or `"pipe"` |
 | `error.type` | string | On error | Go error type (e.g., `*url.Error`) |
 
-### Workflow Metrics
+Backend operation spans carry additional ToolHive-specific and OTEL MCP
+semconv attributes (`target.workload_id`, `target.workload_name`,
+`target.base_url`, `target.transport_type`, `action`, `gen_ai.tool.name`,
+`mcp.resource.uri`, `gen_ai.prompt.name`) — see
+[Backend Operation Spans](#backend-operation-spans) below.
 
-Workflow metrics track composite tool workflow executions.
+### Composite Tool (Workflow) Metrics
 
-#### `toolhive_vmcp_workflow_executions` (Counter)
+Composite tool metrics track workflow executions
+(`pkg/vmcp/core/core_telemetry.go`, `pkg/vmcp/server/sessionmanager/factory.go`).
 
-Total number of workflow executions.
+#### `stacklok.vmcp.composite_tool.executions` (Counter)
+
+Total number of composite tool workflow executions, split by outcome.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `workflow.name` | string | Workflow name |
+| `composite_tool` | string | Composite tool (workflow) name |
+| `outcome` | string | `"success"` or `"error"` |
 
-#### `toolhive_vmcp_workflow_errors` (Counter)
+#### `stacklok.vmcp.composite_tool.duration` (Histogram, seconds)
 
-Total number of workflow execution errors.
+Duration of composite tool workflow executions, recorded regardless of outcome.
 
-**Attributes**: Same as `toolhive_vmcp_workflow_executions`.
+**Bucket boundaries** (`coremetrics.BucketsLongRunning()`): `[0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 180, 300]`
 
-#### `toolhive_vmcp_workflow_duration` (Histogram, seconds)
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `composite_tool` | string | Composite tool (workflow) name |
 
-Duration of workflow executions.
+### Tool Optimizer Metrics
 
-**Attributes**: Same as `toolhive_vmcp_workflow_executions`.
+Emitted only when the tool optimizer is enabled
+(`pkg/vmcp/server/sessionmanager/factory.go`). The optimizer exposes two
+meta-tools, `find_tool` and `call_tool`, in place of the full aggregated tool
+list; these metrics describe their use.
+
+#### `stacklok.vmcp.optimizer.find_tool.requests` (Counter)
+
+Total number of `find_tool` calls, split by outcome.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `outcome` | string | `"success"` or `"error"` |
+
+#### `stacklok.vmcp.optimizer.find_tool.duration` (Histogram, seconds)
+
+Duration of `find_tool` calls.
+
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+
+#### `stacklok.vmcp.optimizer.find_tool.results` (Histogram, `{tools}`)
+
+Number of tools returned per `find_tool` call. The unit is a count, not
+seconds, so the Prometheus name carries no `_seconds` infix.
+
+**Bucket boundaries**: `[0, 1, 2, 3, 5, 10, 20, 50]`
+
+#### `stacklok.vmcp.optimizer.token_savings` (Histogram, percent)
+
+Token savings percentage per `find_tool` call, versus advertising the full
+tool list. Exported as `stacklok_vmcp_optimizer_token_savings_percent`.
+
+**Bucket boundaries**: `[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 100]`
+
+#### `stacklok.vmcp.optimizer.call_tool.requests` (Counter)
+
+Total number of `call_tool` calls, split by outcome.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | string | Resolved target tool name |
+| `outcome` | string | `"success"`, `"error"`, or `"not_found"` |
+
+#### `stacklok.vmcp.optimizer.call_tool.duration` (Histogram, seconds)
+
+Duration of `call_tool` calls.
+
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | string | Resolved target tool name |
+
+### Backend Revision Metrics
+
+#### `stacklok.vmcp.backend.revision_reclassifications` (Counter)
+
+Number of times a backend's MCP revision was reclassified after a call revealed
+the cached revision was wrong. Carries no attributes.
 
 ## Distributed Tracing
 

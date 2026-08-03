@@ -188,43 +188,38 @@ For VirtualMCPServer telemetry, see the
 ### MCP Proxy Metrics
 
 These metrics are emitted by the telemetry middleware (`pkg/telemetry/middleware.go`)
-for each MCP server proxy.
+for each MCP server proxy. Metric and label names follow the shared
+`stacklok.*`/OTel semantic-convention vocabulary (Metrics Standardization RFC);
+see the [Telemetry Migration Guide](./telemetry-migration-guide.md) for the
+mapping from the legacy `toolhive_mcp_*` names these replace.
 
-#### `toolhive_mcp_requests` (Counter)
+#### `stacklok.toolhive.proxy.active_connections` (UpDownCounter)
 
-Total number of MCP requests processed.
+Number of currently active MCP connections. Prometheus exposes this as
+`stacklok_toolhive_proxy_active_connections`.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `method` | string | HTTP method (`POST`, `GET`) |
-| `status_code` | string | HTTP status code (`200`, `500`) |
-| `status` | string | `"success"` or `"error"` (error if status >= 400) |
-| `mcp_method` | string | MCP method name (`tools/call`, `resources/read`, etc.) |
-| `mcp_resource_id` | string | Tool name, resource URI, or prompt name |
-| `server` | string | MCP server name |
-| `transport` | string | Backend transport type (`stdio`, `sse`, `streamable-http`) |
-
-> **Note**: SSE connection establishment events also increment this counter
-> with `mcp_method="sse_connection"` and do not include `mcp_resource_id`.
-
-#### `toolhive_mcp_request_duration` (Histogram, seconds)
-
-Duration of MCP requests. Uses default histogram bucket boundaries.
-
-**Attributes**: Same as `toolhive_mcp_requests`.
+| `mcp_server` | string | MCP server name |
+| `transport` | string | Backend transport type |
+| `connection_type` | string | `"sse"` (only present for SSE connections) |
 
 #### `mcp.server.operation.duration` (Histogram, seconds)
 
 Duration of MCP server operations per the
 [OTEL MCP semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/mcp.md).
+Recorded only for requests with a resolvable MCP method (`tools/call`,
+`resources/read`, etc.) — GET (SSE stream open) and DELETE (session
+termination) requests carry no MCP method and are not recorded here.
 
-**Bucket boundaries**: `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
+**Bucket boundaries** (`coremetrics.BucketsMCPSemconv()`): `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
 
 | Attribute | Type | Condition | Description |
 |-----------|------|-----------|-------------|
 | `mcp.method.name` | string | Always | MCP method (`tools/call`, `resources/read`, etc.) |
 | `jsonrpc.protocol.version` | string | Always | Always `"2.0"` |
 | `network.transport` | string | Always | `"tcp"` or `"pipe"` |
+| `mcp_server` | string | Always | MCP server name |
 | `network.protocol.name` | string | If applicable | `"http"` for SSE/streamable-http |
 | `network.protocol.version` | string | If available | HTTP protocol version (`1.1`, `2`) |
 | `error.type` | string | On HTTP 5xx | HTTP status code as string |
@@ -232,25 +227,104 @@ Duration of MCP server operations per the
 | `gen_ai.tool.name` | string | For `tools/call` | Tool name |
 | `gen_ai.prompt.name` | string | For `prompts/get` | Prompt name |
 
-#### `toolhive_mcp_tool_calls` (Counter)
+> **Note**: `mcp_resource_id` is not recorded under that key. For
+> `resources/read` the resource URI is dropped from this metric entirely, but for
+> `tools/call` and `prompts/get` the same value is recorded as
+> `gen_ai.tool.name`/`gen_ai.prompt.name` — so it moved keys rather than going
+> away.
+>
+> **Cardinality warning**: `gen_ai.tool.name` and `gen_ai.prompt.name` come from
+> `params.name` in the client's JSON-RPC request body and are **not** validated
+> against the server's resolved tool or prompt set. A client calling arbitrary
+> names therefore grows this metric's series count without bound, and since the
+> deleted `toolhive_mcp_*` twins made this the sole per-method metric, there is
+> no unaffected alternative. Bounding these attributes is tracked separately; in
+> the meantime, drop them with a Prometheus `metric_relabel_config` if untrusted
+> clients can reach the proxy.
+>
+> `mcp.method.name` and `http.request.method` are bounded: values outside the
+> known set are recorded as the semconv `_OTHER` sentinel.
 
-Total number of MCP tool invocations (only recorded for `tools/call` requests).
+#### `http.server.request.duration` (Histogram, seconds)
+
+Duration of every HTTP request/response-cycle request the middleware
+handles, per the
+[OTEL HTTP semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/).
+Recorded for session-delete DELETEs and other requests carrying no MCP
+method — as well as MCP-method-bearing ones — so transport-level coverage
+doesn't depend on a resolvable MCP method the way
+`mcp.server.operation.duration` does.
+
+SSE-open GETs are excluded: they block for the connection's full lifetime
+(minutes to hours), which would land every observation in this histogram's
+10-second top bucket and flatten any quantile query. Those go to
+`stacklok.toolhive.proxy.sse_connection.duration` instead, below.
+
+**Bucket boundaries** (`coremetrics.BucketsFastHTTP()`): `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
+
+| Attribute | Type | Condition | Description |
+|-----------|------|-----------|-------------|
+| `http.request.method` | string | Always | HTTP method (`GET`, `POST`, `DELETE`) |
+| `http.response.status_code` | int | Always | HTTP status code |
+| `mcp_server` | string | Always | MCP server name |
+| `error.type` | string | On HTTP 5xx | HTTP status code as string |
+
+#### `stacklok.toolhive.proxy.sse_connection.duration` (Histogram, seconds)
+
+Duration of SSE connections, recorded once the connection closes (not
+per-chunk). Kept separate from `http.server.request.duration` because SSE
+connections are long-lived — see that metric's description above.
+
+**Bucket boundaries** (`coremetrics.BucketsMCPProxy()`): `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]`
+
+| Attribute | Type | Condition | Description |
+|-----------|------|-----------|-------------|
+| `mcp_server` | string | Always | MCP server name |
+
+#### `stacklok.build_info` (Gauge)
+
+Registered once per meter provider via the shared `coremetrics.RegisterBuildInfo`
+helper (`pkg/telemetry/middleware.go`), so every `/metrics` endpoint a process
+exposes carries it. Always reports `1`, carrying version metadata as attributes.
+
+> **Exported name**: `RegisterBuildInfo` sets the OTel unit to `1`, and the
+> Prometheus translator appends a unit suffix to a dimensionless gauge, so this
+> scrapes as **`stacklok_build_info_ratio`** — not `stacklok_build_info`. Query
+> the `_ratio` name. The `_ratio` suffix is wrong for an identity gauge and the
+> durable fix is upstream in `toolhive-core`; until then a dashboard joining on
+> `stacklok_build_info` returns empty.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `server` | string | MCP server name |
-| `tool` | string | Tool name |
-| `status` | string | `"success"` or `"error"` |
+| `component` | string | Always `"toolhive"`. A bare `component` label distinct from the promoted `stacklok_component` below — it exists so this metric's identity doesn't collide with the D8 constant label. |
+| `version` | string | ToolHive version |
+| `commit` | string | Build commit SHA |
 
-#### `toolhive_mcp_active_connections` (UpDownCounter)
+Like every other metric ToolHive emits, `stacklok.build_info` also carries
+`stacklok_component`/`stacklok_product` as constant labels — see
+[D8 Ownership Labels](#d8-ownership-labels). Those two are universal, not
+specific to this metric.
 
-Number of currently active MCP connections.
+### D8 Ownership Labels
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `server` | string | MCP server name |
-| `transport` | string | Backend transport type |
-| `connection_type` | string | `"sse"` (only present for SSE connections) |
+Every metric emitted by ToolHive carries `stacklok_component="toolhive"` and
+`stacklok_product="stacklok-platform"`. These are set as OTel resource
+attributes, applied as the last OTel resource detector so they cannot be
+overridden by `--otel-custom-attributes` or `OTEL_RESOURCE_ATTRIBUTES` (OTel
+resource merge is last-detector-wins). See `pkg/telemetry/providers/providers.go`.
+
+The Prometheus exporter is configured with `WithResourceAsConstantLabels` to
+promote exactly these two resource attributes onto every exported series as
+constant labels (`pkg/telemetry/providers/prometheus/prometheus.go`) — so in
+scraped Prometheus output they appear as per-series labels on every metric,
+not only on a separate `target_info`/`stacklok_build_info` line.
+
+The Go/process runtime metrics (`go_*`, `process_*`) are native Prometheus
+collectors registered directly on the raw registry rather than through the
+OTel SDK, so `WithResourceAsConstantLabels` does not reach them. They carry
+the same two labels via a separate `prometheus.WrapRegistererWith` applied
+only to the runtime-metrics registerer, so the D8 labels are consistently
+present on every series, including runtime/process metrics.
 
 ### Rate Limit Metrics
 
@@ -259,7 +333,7 @@ and VirtualMCPServer. Prometheus appends `_total` to counter names. The latency
 histogram is exported with the `_seconds` unit suffix and the standard
 `_bucket`, `_sum`, and `_count` series suffixes.
 
-#### `toolhive_rate_limit_decisions` (Counter)
+#### `stacklok.toolhive.ratelimit.decisions` (Counter)
 
 Total number of rate limit bucket decisions. An allowed request increments once
 for every applicable bucket. A rejected request increments only for the first
@@ -269,22 +343,22 @@ do not increment this counter.
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `namespace` | string | Kubernetes namespace associated with the server |
-| `server` | string | MCPServer or VirtualMCPServer name |
+| `mcp_server` | string | MCPServer or VirtualMCPServer name |
 | `decision` | string | `"allowed"` or `"rejected"` |
 | `scope` | string | `"shared"` or `"per_user"` |
 | `operation_type` | string | `"server"` or `"tool"` |
 
-#### `toolhive_rate_limit_redis_errors` (Counter)
+#### `stacklok.toolhive.ratelimit.redis_errors` (Counter)
 
 Total number of Redis errors encountered while checking rate limits.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `namespace` | string | Kubernetes namespace associated with the server |
-| `server` | string | MCPServer or VirtualMCPServer name |
+| `mcp_server` | string | MCPServer or VirtualMCPServer name |
 | `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
 
-#### `toolhive_rate_limit_check_latency` (Histogram, seconds)
+#### `stacklok.toolhive.ratelimit.check_latency` (Histogram, seconds)
 
 Duration of each attempted atomic Redis Lua rate limit check, including failed
 checks.
@@ -292,7 +366,7 @@ checks.
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `namespace` | string | Kubernetes namespace associated with the server |
-| `server` | string | MCPServer or VirtualMCPServer name |
+| `mcp_server` | string | MCPServer or VirtualMCPServer name |
 
 ## Span Attributes
 
@@ -399,7 +473,9 @@ Only variables explicitly listed in the configuration are captured.
 
 **Custom resource attributes** (`--otel-custom-attributes` or
 `OTEL_RESOURCE_ATTRIBUTES`): Key-value pairs added as OTEL resource attributes
-to all telemetry signals.
+to all telemetry signals. `stacklok.component`/`stacklok.product` are
+reserved and cannot be set this way — see
+[D8 Ownership Labels](#d8-ownership-labels).
 
 ### SSE Connection Attributes
 

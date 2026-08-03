@@ -14,17 +14,37 @@ documentation.
 
 ## What Changed
 
-ToolHive's telemetry has been updated across two areas:
+ToolHive's telemetry has been updated across four areas:
 
 1. **Span attribute names** — Renamed to follow OTEL semantic conventions
    (HTTP, RPC, MCP/gen_ai namespaces).
-2. **New metrics** — Two new histogram metrics following the OTEL MCP spec:
-   `mcp.server.operation.duration` and `mcp.client.operation.duration`.
+2. **New metrics** — Three new histogram metrics following OTEL semantic
+   conventions: `mcp.server.operation.duration` and `mcp.client.operation.duration`
+   (OTEL MCP spec), and `http.server.request.duration` (OTEL HTTP spec, covering
+   transport-level requests that don't carry an MCP method — SSE connection opens,
+   session-terminate DELETEs, etc.).
+3. **Metric name and label standardization** — The legacy `toolhive_mcp_*` and
+   `toolhive_vmcp_*` metric names and their label vocabulary (`server`,
+   `mcp_method`, `tool`, `workflow.name`, …) have been replaced by the shared
+   `stacklok.*`/OTel-semconv vocabulary (`mcp_server`, `mcp_method_name`,
+   `gen_ai_tool_name`, `composite_tool`, …), and six legacy metric twins that
+   duplicated an OTel-semconv equivalent have been deleted outright (see
+   [Deleted Legacy Metrics](#deleted-legacy-metrics) below). This is a breaking
+   change for any dashboard or alert querying the old metric/label names.
 
-Existing metrics (`toolhive_mcp_requests`, `toolhive_mcp_request_duration`,
-`toolhive_mcp_tool_calls`, `toolhive_mcp_active_connections`, and all
-`toolhive_vmcp_*` metrics) are **unchanged** — their names and label names
-remain the same.
+   One narrowing to be aware of: the deleted `toolhive_mcp_requests`/
+   `toolhive_mcp_request_duration` twins classified any HTTP status ≥400 as an
+   error. The new `http.server.request.duration` metric's `error.type` attribute
+   follows OTEL HTTP semconv and is only set for status ≥500 (see
+   [Known Limitations](#known-limitations)). Any dashboard or alert computing
+   "error rate" from `error.type` presence will stop counting 4xx client errors
+   (e.g. auth denials) after upgrade. Query `http_response_status_code=~"[45].."`
+   directly instead if 4xx should still count toward error rate.
+4. **D8 ownership labels hardened** — `stacklok_component`/`stacklok_product`
+   are now reserved and cannot be overridden via `--otel-custom-attributes` or
+   `OTEL_RESOURCE_ATTRIBUTES` (see [D8 Ownership Labels](./observability.md#d8-ownership-labels)).
+   Any deployment previously setting a custom value for either key will see
+   that value silently replaced by the frozen ToolHive default.
 
 ### What Is New
 
@@ -32,6 +52,11 @@ remain the same.
 |----------|-------------|
 | `mcp.server.operation.duration` metric | OTEL MCP spec histogram for server-side operation latency |
 | `mcp.client.operation.duration` metric | OTEL MCP spec histogram for vMCP-to-backend latency |
+| `http.server.request.duration` metric | OTEL HTTP semconv histogram recorded for every request/response-cycle request, including those carrying no MCP method (session-terminate `DELETE`s). Total RPS is derivable from its `_count` series |
+| `stacklok.toolhive.proxy.sse_connection.duration` metric | Duration of SSE connections, recorded once the connection closes. Separate from `http.server.request.duration` because SSE connections live for minutes to hours and would pin every observation to that histogram's 10s top bucket |
+| `stacklok.build_info` metric | Build identity gauge: always observes 1, carrying `component`, `version`, and `commit` labels. Exported as `stacklok_build_info_ratio` (the `WithUnit("1")` → `_ratio` translation rule) |
+| `stacklok.vmcp.mcp_server.health` metric | Live per-backend health gauge, emitting one point per `(mcp_server, state)` pair across all five health states. Semantically new — not a rename of the fire-once `toolhive_vmcp_backends_discovered` |
+| `outcome` label vocabulary | `success`/`error`/`not_found` now splits counters that were previously separate metrics (workflow executions, optimizer `find_tool`/`call_tool`) |
 | MCP `_meta` trace context propagation | Extract/inject `traceparent`/`tracestate` from MCP `params._meta` |
 | MCP request parsing middleware | Dedicated middleware extracts method, resource ID, arguments, and `_meta` |
 | `--otel-custom-attributes` flag | Add custom resource attributes to all telemetry signals |
@@ -43,10 +68,24 @@ remain the same.
 
 ## Backward Compatibility
 
-### The `useLegacyAttributes` Flag
+Span attributes and metrics follow different backward-compatibility policies —
+the migration is not dual-emitted uniformly across both signal types:
 
-To avoid breaking existing dashboards and alerts, ToolHive uses a **dual
-emission** strategy:
+| Signal | Policy |
+|--------|--------|
+| Span (trace) attributes | Dual-emitted behind `useLegacyAttributes`, see below |
+| Metric names and labels | Hard cutover, no legacy fallback — see [Metric Name and Label Mapping](#metric-name-and-label-mapping) |
+
+Span attributes get a compatibility window because they are additive
+key-value pairs on a span already being emitted — carrying both names costs
+a few extra bytes per span, and trace tooling often has saved queries
+hard-coded to the old attribute keys. Metrics don't get one: maintaining a
+full parallel metric family (separate series, separate cardinality, separate
+storage) is not free, and the RFC accepted the one-time break as cheaper
+than the ongoing cost of running two metric vocabularies side by side (see
+[Deleted Legacy Metrics](#deleted-legacy-metrics)).
+
+### The `useLegacyAttributes` Flag
 
 | Setting | Behavior |
 |---------|----------|
@@ -178,15 +217,17 @@ When upgrading to this release, dual emission is enabled by default. Both old
 and new attribute names appear on spans. Your existing dashboards and alerts
 continue to work without changes.
 
-### Step 2: Adopt New Metrics (Optional)
+### Step 2: Update Dashboards and Alerts for Renamed/Deleted Metrics
 
-Consider adopting the new spec-compliant metrics alongside your existing ones:
+Update any PromQL, alert rule, or dashboard panel that references a legacy
+metric or label name (see [Metric Name and Label Mapping](#metric-name-and-label-mapping)
+and [Deleted Legacy Metrics](#deleted-legacy-metrics) below):
 
 ```promql
-# Existing metric (unchanged)
+# Before (deleted)
 rate(toolhive_mcp_requests_total{mcp_method="tools/call"}[5m])
 
-# New spec-compliant metric for operation duration
+# After: OTEL MCP spec-compliant metric for operation duration
 histogram_quantile(0.95,
   rate(mcp_server_operation_duration_seconds_bucket{
     mcp_method_name="tools/call"
@@ -233,21 +274,82 @@ attributes.
 
 ---
 
-## Metric Label Changes
+## Metric Name and Label Mapping
 
-**Important**: The metric *label names* on existing `toolhive_mcp_*` and
-`toolhive_vmcp_*` metrics have **not** changed. The `useLegacyAttributes` flag
-only affects **span attributes** (trace data), not metric labels.
+**Important**: Unlike span attributes, metric name and label changes are
+**not** gated by `useLegacyAttributes` — the rename is unconditional. A
+dashboard or alert querying an old metric or label name must be updated
+regardless of that flag's setting.
+
+The "New Metric/Label" column below gives the OTel instrument/attribute name
+(dotted form, matching what appears in code and in OTLP export). **Query
+against the "Prometheus Name" column instead** — that's what actually reaches
+PromQL: dots become underscores, and Prometheus appends `_total` to counters
+and `_seconds_bucket`/`_seconds_sum`/`_seconds_count` (or the instrument's
+declared unit, e.g. `_percent`) to histograms. A value pasted from the "New
+Metric/Label" column directly into PromQL returns zero results.
+
+| Legacy Metric/Label | New Metric/Label | Prometheus Name | Notes |
+|----------------------|-------------------|------------------|-------|
+| `server` (label, proxy + rate limit metrics) | `mcp_server` | `mcp_server` | |
+| `mcp_method` (label, deleted `toolhive_mcp_*` metrics) | `mcp.method.name` | `mcp_method_name` | New attribute on `mcp.server.operation.duration`, not a same-metric label rename |
+| `tool` (label, deleted `toolhive_mcp_tool_calls`) | `gen_ai.tool.name` | `gen_ai_tool_name` | New attribute on `mcp.server.operation.duration`; **not** `tool_name` — that label is used only by the unrelated vMCP optimizer `call_tool` metrics (see [vMCP Backend Client Attributes](#vmcp-backend-client-attributes)) |
+| `workflow.name` (label, vMCP workflow metrics) | `composite_tool` | `composite_tool` | |
+| `toolhive_mcp_active_connections` | `stacklok.toolhive.proxy.active_connections` | `stacklok_toolhive_proxy_active_connections` | Renamed, not deleted. No `_total` suffix — it's an UpDownCounter, which Prometheus exposes as a gauge |
+| `toolhive_rate_limit_decisions` | `stacklok.toolhive.ratelimit.decisions` | `stacklok_toolhive_ratelimit_decisions_total` | Renamed, not deleted |
+| `toolhive_rate_limit_redis_errors` | `stacklok.toolhive.ratelimit.redis_errors` | `stacklok_toolhive_ratelimit_redis_errors_total` | Renamed, not deleted |
+| `toolhive_rate_limit_check_latency` | `stacklok.toolhive.ratelimit.check_latency` | `stacklok_toolhive_ratelimit_check_latency_seconds_bucket` / `_sum` / `_count` | Renamed, not deleted |
+| `toolhive_vmcp_workflow_executions` | `stacklok.vmcp.composite_tool.executions` | `stacklok_vmcp_composite_tool_executions_total` | Now split by `outcome` label instead of a separate errors counter |
+| `toolhive_vmcp_workflow_errors` | `stacklok.vmcp.composite_tool.executions` (filtered to `outcome="error"`) | `stacklok_vmcp_composite_tool_executions_total{outcome="error"}` | Merged into the executions counter above, not a standalone metric |
+| `toolhive_vmcp_workflow_duration` | `stacklok.vmcp.composite_tool.duration` | `stacklok_vmcp_composite_tool_duration_seconds_bucket` / `_sum` / `_count` | |
+| `toolhive_vmcp_backends_discovered` | `stacklok.vmcp.mcp_server.health` | `stacklok_vmcp_mcp_server_health` | Semantic change, not a plain rename: a live per-`(mcp_server, state)` health gauge, not a fire-once discovery count. No suffix — it's an ObservableGauge |
+| `toolhive_vmcp_optimizer_find_tool_requests` / `_find_tool_errors` | `stacklok.vmcp.optimizer.find_tool.requests` | `stacklok_vmcp_optimizer_find_tool_requests_total` | Merged into one counter split by `outcome` label |
+| `toolhive_vmcp_optimizer_find_tool_duration` | `stacklok.vmcp.optimizer.find_tool.duration` | `stacklok_vmcp_optimizer_find_tool_duration_seconds_bucket` / `_sum` / `_count` | |
+| `toolhive_vmcp_optimizer_find_tool_results` | `stacklok.vmcp.optimizer.find_tool.results` | `stacklok_vmcp_optimizer_find_tool_results_bucket` / `_sum` / `_count` | Unit is `{tools}` (a count), not seconds — no `_seconds` infix |
+| `toolhive_vmcp_optimizer_token_savings_percent` | `stacklok.vmcp.optimizer.token_savings` | `stacklok_vmcp_optimizer_token_savings_percent_bucket` / `_sum` / `_count` | Unit `%` becomes the `_percent` infix, which happens to match the old Prometheus name exactly |
+| `toolhive_vmcp_optimizer_call_tool_requests` / `_call_tool_errors` / `_call_tool_not_found` | `stacklok.vmcp.optimizer.call_tool.requests` | `stacklok_vmcp_optimizer_call_tool_requests_total` | Merged into one counter split by `outcome` label (`success`, `error`, or `not_found`) |
+| `toolhive_vmcp_optimizer_call_tool_duration` | `stacklok.vmcp.optimizer.call_tool.duration` | `stacklok_vmcp_optimizer_call_tool_duration_seconds_bucket` / `_sum` / `_count` | |
+| `toolhive_vmcp_backend_revision_reclassifications` | `stacklok.vmcp.backend.revision_reclassifications` | `stacklok_vmcp_backend_revision_reclassifications_total` | Renamed, not deleted |
 
 The new `mcp.server.operation.duration` and `mcp.client.operation.duration`
 metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,
-`mcp.method.name` instead of `mcp_method`).
+`mcp.method.name` instead of `mcp_method`), and expose in PromQL as
+`mcp_server_operation_duration_seconds_{bucket,sum,count}` and
+`mcp_client_operation_duration_seconds_{bucket,sum,count}` respectively —
+see the [Deleted Legacy Metrics](#deleted-legacy-metrics) table below for
+their old→new mapping.
+
+### Deleted Legacy Metrics
+
+The following metrics duplicated an OTel-semconv equivalent and have been
+deleted outright — there is no renamed successor to redirect a query to,
+only the semconv metric that already covered the same signal:
+
+| Deleted Metric | Semconv Replacement |
+|-----------------|----------------------|
+| `toolhive_mcp_requests` | `http.server.request.duration` (total request count is derivable via `_count`; see note below) |
+| `toolhive_mcp_request_duration` | `mcp.server.operation.duration` |
+| `toolhive_mcp_tool_calls` | `mcp.server.operation.duration` filtered to `mcp.method.name="tools/call"` |
+| `toolhive_vmcp_backend_requests` | `mcp.client.operation.duration` |
+| `toolhive_vmcp_backend_errors` | `mcp.client.operation.duration` filtered to `error.type != ""` |
+| `toolhive_vmcp_backend_requests_duration` | `mcp.client.operation.duration` |
+
+A dashboard or alert built on any of these six metrics has no direct
+successor query — it must be rebuilt against the semconv histogram.
+
+For total HTTP request volume, use `http_server_request_duration_seconds_count`
+alone — it is recorded for every request the middleware handles, including
+GET (SSE-open) and DELETE (session-terminate) requests that carry no MCP
+method. Do not also sum `mcp_server_operation_duration_seconds_count`: every
+MCP-method-bearing request increments both metrics, so summing them
+double-counts those requests. Use `mcp_server_operation_duration_seconds_count`
+only for a per-`mcp_method_name` breakdown of the MCP-bearing subset.
 
 ---
 
 ## vMCP Backend Client Attributes
 
-The vMCP backend client (`pkg/vmcp/server/telemetry.go`) emits both
+The vMCP backend client (`pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`) emits both
 ToolHive-specific and OTEL spec attributes on spans. These are always emitted
 regardless of `useLegacyAttributes` since they serve different purposes:
 
@@ -262,9 +364,11 @@ regardless of `useLegacyAttributes` since they serve different purposes:
 | `resource_uri` | `mcp.resource.uri` | Resource URI (for `read_resource`) |
 | `prompt_name` | `gen_ai.prompt.name` | Prompt name (for `get_prompt`) |
 
-The `mcp.client.operation.duration` metric uses only `mcp.method.name` and
-`network.transport` as labels (plus `error.type` on error), following the OTEL
-MCP semantic conventions.
+The `mcp.client.operation.duration` metric uses `mcp.method.name`,
+`network.transport`, and `mcp_server` (the backend workload name) as labels
+(plus `error.type` on error), following the OTEL MCP semantic conventions.
+`mcp_server` preserves the per-backend breakdown the deleted
+`toolhive_vmcp_backend_requests_duration` twin had.
 
 ---
 

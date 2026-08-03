@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,6 +33,10 @@ func TestNewReader(t *testing.T) {
 			config: Config{
 				EnableMetricsPath:     true,
 				IncludeRuntimeMetrics: true,
+				OwnershipLabels: map[string]string{
+					"stacklok_component": "toolhive",
+					"stacklok_product":   "stacklok-platform",
+				},
 			},
 			wantErr:             false,
 			checkHandler:        true,
@@ -87,8 +92,19 @@ func TestNewReader(t *testing.T) {
 
 					// Check for runtime metrics if expected
 					if tt.checkRuntimeMetrics {
-						assert.Contains(t, rec.Body.String(), "go_")
-						assert.Contains(t, rec.Body.String(), "process_")
+						body := rec.Body.String()
+						assert.Contains(t, body, "go_")
+						assert.Contains(t, body, "process_")
+
+						// D8 ownership labels must be promoted onto runtime/process series too,
+						// since they're registered on the raw registry and never pass through
+						// the OTel exporter's WithResourceAsConstantLabels.
+						for line := range strings.SplitSeq(body, "\n") {
+							if strings.HasPrefix(line, "go_goroutines") || strings.HasPrefix(line, "process_cpu_seconds_total") {
+								assert.Contains(t, line, `stacklok_component="toolhive"`)
+								assert.Contains(t, line, `stacklok_product="stacklok-platform"`)
+							}
+						}
 					}
 				}
 			}

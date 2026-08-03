@@ -882,7 +882,7 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
 | 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
 | 9 | Backend Enrichment | Optional | Adds backend name to audit context (only when Audit is configured) |
-| 10 | MCP Parsing | Always | Second application is a no-op when auth already parsed; ensures telemetry can label metrics with `mcp_method` when auth is nil |
+| 10 | MCP Parsing | Always | Second application is a no-op when auth already parsed; ensures telemetry can label metrics with `mcp_method_name` when auth is nil |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 

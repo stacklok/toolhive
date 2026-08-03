@@ -120,13 +120,8 @@ func TestHTTPMiddleware_RecordSSEConnection(t *testing.T) {
 	// We need to create the middleware manually to access the method
 	meter := meterProvider.Meter(instrumentationName)
 
-	requestCounter, _ := meter.Int64Counter(
-		"toolhive_mcp_requests",
-		metric.WithDescription("Total number of MCP requests"),
-	)
-
 	activeConnections, _ := meter.Int64UpDownCounter(
-		"toolhive_mcp_active_connections",
+		"stacklok.toolhive.proxy.active_connections",
 		metric.WithDescription("Number of active MCP connections"),
 	)
 
@@ -138,7 +133,6 @@ func TestHTTPMiddleware_RecordSSEConnection(t *testing.T) {
 		meter:             meter,
 		serverName:        "test-server",
 		transport:         "sse",
-		requestCounter:    requestCounter,
 		activeConnections: activeConnections,
 	}
 

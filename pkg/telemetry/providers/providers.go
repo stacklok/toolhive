@@ -19,7 +19,14 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	coremetrics "github.com/stacklok/toolhive-core/telemetry/metrics"
 )
+
+// ComponentName is toolhive's stacklok.component value (D8). toolhive-core
+// defines the AttrStacklokComponent key but leaves the value to each component.
+// Exported so pkg/telemetry's build-info registration uses the same value.
+const ComponentName = "toolhive"
 
 // Config holds the telemetry configuration for all providers.
 // It contains service information, OTLP settings, and Prometheus configuration.
@@ -177,8 +184,7 @@ func NewCompositeProvider(
 		}
 	}
 
-	// Create resource for all providers
-	// Start with base attributes
+	// Create resource for all providers.
 	baseAttrs := []attribute.KeyValue{
 		semconv.ServiceName(config.ServiceName),
 		semconv.ServiceVersion(config.ServiceVersion),
@@ -196,11 +202,23 @@ func NewCompositeProvider(
 		}
 	}
 
+	// stacklok.component/stacklok.product identify the emitter across the platform
+	// (D8); the product value is frozen as "stacklok-platform". These are applied
+	// as the last detector so they win over any collision from CustomAttributes or
+	// OTEL_RESOURCE_ATTRIBUTES — the ownership labels must not be user-overridable.
+	ownershipAttrs := []attribute.KeyValue{
+		attribute.String(coremetrics.AttrStacklokComponent, ComponentName),
+		attribute.String(coremetrics.AttrStacklokProduct, coremetrics.ProductStacklokPlatform),
+	}
+
+	warnIfOwnershipAttrsOverridden(ctx, baseAttrs)
+
 	// Create resource with base attributes and support for OTEL_RESOURCE_ATTRIBUTES env var
 	res, err := resource.New(ctx,
 		resource.WithAttributes(baseAttrs...),
-		resource.WithFromEnv(), // This reads OTEL_RESOURCE_ATTRIBUTES automatically
-		resource.WithHost(),    // Add host information
+		resource.WithFromEnv(),                     // This reads OTEL_RESOURCE_ATTRIBUTES automatically
+		resource.WithHost(),                        // Add host information
+		resource.WithAttributes(ownershipAttrs...), // Reserved D8 labels; last so they cannot be overridden
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource with service name '%s' and version '%s': %w",
@@ -218,6 +236,39 @@ func NewCompositeProvider(
 
 	// Build composite provider using strategies
 	return buildProviders(ctx, config, selector, res)
+}
+
+// warnIfOwnershipAttrsOverridden logs a warning for each reserved D8 key
+// (stacklok.component, stacklok.product) that a user attempted to set via
+// CustomAttributes or OTEL_RESOURCE_ATTRIBUTES. Both sources are silently
+// discarded in favor of the frozen ToolHive-owned value (see ownershipAttrs
+// in NewCompositeProvider) — this only makes that discard observable so an
+// operator debugging a missing custom value isn't left with no signal.
+func warnIfOwnershipAttrsOverridden(ctx context.Context, baseAttrs []attribute.KeyValue) {
+	reserved := map[attribute.Key]struct{}{
+		attribute.Key(coremetrics.AttrStacklokComponent): {},
+		attribute.Key(coremetrics.AttrStacklokProduct):   {},
+	}
+
+	for _, attr := range baseAttrs {
+		if _, ok := reserved[attr.Key]; ok {
+			slog.Warn("ignoring user-supplied custom attribute: reserved by ToolHive and cannot be overridden",
+				"key", string(attr.Key))
+		}
+	}
+
+	// OTEL_RESOURCE_ATTRIBUTES isn't part of baseAttrs (WithFromEnv reads it
+	// directly inside resource.New), so probe it independently.
+	envRes, err := resource.New(ctx, resource.WithFromEnv())
+	if err != nil {
+		return
+	}
+	for _, attr := range envRes.Attributes() {
+		if _, ok := reserved[attr.Key]; ok {
+			slog.Warn("ignoring OTEL_RESOURCE_ATTRIBUTES entry: reserved by ToolHive and cannot be overridden",
+				"key", string(attr.Key))
+		}
+	}
 }
 
 func createNoOpProvider() *CompositeProvider {

@@ -4,8 +4,12 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -184,6 +188,103 @@ func TestAssembler_Assemble_WithEverything(t *testing.T) {
 	assert.NotNil(t, provider.MeterProvider())
 	assert.NotNil(t, provider.PrometheusHandler())
 	assert.NotEmpty(t, provider.shutdownFuncs) // Should have multiple shutdown functions
+}
+
+// TestReservedOwnershipAttributesNotOverridable verifies the D8 ownership labels
+// (stacklok.component / stacklok.product) cannot be overridden by user-supplied
+// CustomAttributes or the OTEL_RESOURCE_ATTRIBUTES env var. The Prometheus
+// exporter renders resource attributes onto the target_info gauge, so scraping
+// it reveals the final resource state.
+func TestReservedOwnershipAttributesNotOverridable(t *testing.T) {
+	// Not parallel: mutates the OTEL_RESOURCE_ATTRIBUTES process env var.
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "stacklok.product=evil-product,deployment=prod")
+
+	ctx := context.Background()
+	provider, err := NewCompositeProvider(ctx,
+		WithServiceName("test-service"),
+		WithServiceVersion("1.0.0"),
+		WithMetricsEnabled(false),
+		WithTracingEnabled(false),
+		WithEnablePrometheusMetricsPath(true),
+		// A CLI custom attribute attempting to override the reserved component key.
+		WithCustomAttributes(map[string]string{
+			"stacklok.component": "evil-component",
+			"deployment":         "prod",
+		}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, provider.PrometheusHandler())
+
+	// Emit a metric so the exporter renders target_info with the resource attrs.
+	meter := provider.MeterProvider().Meter("test")
+	counter, err := meter.Int64Counter("test.counter")
+	require.NoError(t, err)
+	counter.Add(ctx, 1)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rw := httptest.NewRecorder()
+	provider.PrometheusHandler().ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	// The frozen ownership labels must survive both override attempts.
+	assert.Contains(t, body, `stacklok_component="toolhive"`,
+		"reserved component label must not be overridable by CustomAttributes")
+	assert.Contains(t, body, `stacklok_product="stacklok-platform"`,
+		"reserved product label must not be overridable by OTEL_RESOURCE_ATTRIBUTES")
+	assert.NotContains(t, body, "evil-component",
+		"user-supplied component override must be discarded")
+	assert.NotContains(t, body, "evil-product",
+		"env-supplied product override must be discarded")
+	// Non-reserved custom/env attributes are still applied.
+	assert.Contains(t, body, `deployment="prod"`,
+		"non-reserved custom attributes should still pass through")
+}
+
+// captureSlogWarn redirects slog's default logger to a bytes.Buffer for the
+// duration of f, then restores the original default. Returns the captured
+// output. This helper exists because slog.SetDefault is a process-global
+// side effect — tests that use it must NOT run in parallel.
+func captureSlogWarn(t *testing.T, f func()) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	f()
+
+	return buf.String()
+}
+
+// TestReservedOwnershipAttributeOverrideIsLogged verifies that an attempted
+// override of a reserved D8 key — via CustomAttributes or
+// OTEL_RESOURCE_ATTRIBUTES — produces a WARN log naming the rejected key, so
+// an operator debugging a missing custom value has a signal to find.
+//
+//nolint:paralleltest,tparallel // Subtest uses slog.SetDefault, which is process-global
+func TestReservedOwnershipAttributeOverrideIsLogged(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "stacklok.product=evil-product")
+
+	ctx := context.Background()
+	output := captureSlogWarn(t, func() {
+		_, err := NewCompositeProvider(ctx,
+			WithServiceName("test-service"),
+			WithServiceVersion("1.0.0"),
+			WithMetricsEnabled(false),
+			WithTracingEnabled(false),
+			WithCustomAttributes(map[string]string{
+				"stacklok.component": "evil-component",
+			}),
+		)
+		require.NoError(t, err)
+	})
+
+	assert.Contains(t, output, "stacklok.component",
+		"WARN log must name the rejected CustomAttributes key")
+	assert.Contains(t, output, "stacklok.product",
+		"WARN log must name the rejected OTEL_RESOURCE_ATTRIBUTES key")
 }
 
 func TestCompositeProvider_Accessors(t *testing.T) {

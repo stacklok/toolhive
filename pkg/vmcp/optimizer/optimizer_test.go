@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
 
 func TestGetAndValidateConfig(t *testing.T) {
@@ -845,7 +847,7 @@ func TestOptimizer_CallTool(t *testing.T) {
 				Parameters: map[string]any{},
 			},
 			expectedError: true,
-			errorContains: "tool_name is required",
+			errorContains: `call_tool expects {"tool_name"`,
 		},
 	}
 
@@ -876,4 +878,87 @@ func TestOptimizer_CallTool(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCallToolTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		toolName       string
+		params         map[string]any
+		expectedName   string
+		expectedParams map[string]any
+	}{
+		{
+			name:           "top-level name is returned unchanged",
+			toolName:       "search",
+			params:         map[string]any{"query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nested name is hoisted and removed from params",
+			params:         map[string]any{"tool_name": "search", "query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "top-level name wins and params are left untouched",
+			toolName:       "search",
+			params:         map[string]any{"tool_name": "other", "query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"tool_name": "other", "query": "weather"},
+		},
+		{
+			name:           "nested empty name is not hoisted",
+			params:         map[string]any{"tool_name": ""},
+			expectedName:   "",
+			expectedParams: map[string]any{"tool_name": ""},
+		},
+		{
+			name:           "nested non-string name is not hoisted",
+			params:         map[string]any{"tool_name": 123},
+			expectedName:   "",
+			expectedParams: map[string]any{"tool_name": 123},
+		},
+		{
+			name:           "no name anywhere",
+			params:         map[string]any{"query": "weather"},
+			expectedName:   "",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nil params",
+			expectedName:   "",
+			expectedParams: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Callers share this map with downstream consumers, so it must survive intact.
+			original := maps.Clone(tc.params)
+
+			gotName, gotParams := ResolveCallToolTarget(tc.toolName, tc.params)
+			require.Equal(t, tc.expectedName, gotName)
+			require.Equal(t, tc.expectedParams, gotParams)
+			require.Equal(t, original, tc.params, "input params must not be mutated")
+		})
+	}
+}
+
+// Both call_tool handlers decode via schema.Translate, so the hoist must survive
+// that round-trip and not just a direct json.Unmarshal.
+func TestCallToolInput_TranslateHoistsNestedToolName(t *testing.T) {
+	t.Parallel()
+
+	got, err := schema.Translate[CallToolInput](map[string]any{
+		"parameters": map[string]any{"tool_name": "search", "query": "weather"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "search", got.ToolName)
+	require.Equal(t, map[string]any{"query": "weather"}, got.Parameters)
 }

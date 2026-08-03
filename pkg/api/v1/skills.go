@@ -405,11 +405,12 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	result, err := s.lockService.Sync(r.Context(), skills.SyncOptions{
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Prune:       req.Prune,
-		Check:       req.Check,
-		Adopt:       req.Adopt,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Prune:         req.Prune,
+		Check:         req.Check,
+		Adopt:         req.Adopt,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err

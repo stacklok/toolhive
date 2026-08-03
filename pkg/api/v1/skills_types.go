@@ -88,6 +88,9 @@ type syncSkillsRequest struct {
 	Check bool `json:"check,omitempty"`
 	// Adopt writes lock entries for existing unmanaged project-scope installs
 	Adopt bool `json:"adopt,omitempty"`
+	// AllowUnsigned permits adopting skills whose signature state cannot be
+	// established, recording them as unsigned
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 // upgradeSkillsRequest represents the request to upgrade a project's skills.

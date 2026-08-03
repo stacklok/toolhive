@@ -70,6 +70,10 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver, extra ...Option
 		AnyTimes().Return(signedResult(), nil)
 	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
 
 	opts := append([]Option{WithPathResolver(pr), WithGitResolver(gr), WithVerifier(mv)}, extra...)
 	svc := New(store, opts...)

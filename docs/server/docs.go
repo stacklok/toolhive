@@ -3569,6 +3569,10 @@ const docTemplate = `{
                         "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
                         "type": "boolean"
                     },
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits adopting skills whose signature state cannot be\nestablished, recording them as unsigned",
+                        "type": "boolean"
+                    },
                     "check": {
                         "description": "Check verifies on-disk content against the lock file without installing or writing anything",
                         "type": "boolean"

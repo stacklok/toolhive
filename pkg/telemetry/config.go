@@ -17,7 +17,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/stacklok/toolhive/pkg/telemetry/providers"
+	"github.com/stacklok/toolhive-core/telemetry/providers"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )

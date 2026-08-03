@@ -28,17 +28,11 @@ import (
 )
 
 // TestWriteDiscoveryFile_RestrictsDirBeforeTrustingExistingFile pins the
-// production ordering. writeDiscoveryFile takes server.json.lock and runs
-// Discover before it ever writes, so restricting the directory as part of the
-// write is too late: when Discover reports StateRunning from a pre-planted
-// server.json, the function returns first and the loose directory is never
-// repaired. Startup keeps trusting an attacker-writable discovery file (and
-// keeps taking its lock file inside a directory other accounts can write to)
-// for as long as that file looks healthy.
-//
-// The test drives the real startup path with a planted, healthy-looking
-// discovery file and asserts the whole chain is already locked down on the
-// failing return.
+// production ordering. writeDiscoveryFile must lock down the discovery chain
+// before it acquires server.json.lock or calls Discover. A pre-planted file
+// written while the chain was still loose must be invalidated during that
+// lockdown so a victim-owned server.json cannot keep redirecting clients after
+// the DACL is repaired.
 //
 //nolint:paralleltest // t.Setenv and xdg.Reload mutate process-wide state
 func TestWriteDiscoveryFile_RestrictsDirBeforeTrustingExistingFile(t *testing.T) {
@@ -85,20 +79,18 @@ func TestWriteDiscoveryFile_RestrictsDirBeforeTrustingExistingFile(t *testing.T)
 	s := &Server{listener: listener, address: listener.Addr().String(), nonce: "our-nonce"}
 
 	err = s.writeDiscoveryFile(context.Background())
-	require.Error(t, err, "a healthy planted file must abort startup")
-	assert.Contains(t, err.Error(), "already running")
+	require.NoError(t, err, "planted file must be invalidated before Discover trusts it")
 
-	// The early return must not skip the lockdown, on the leaf or on the
+	// The chain must already be locked down, on the leaf and on the
 	// intermediate directory.
 	assertRestrictedDACL(t, toolhiveDir)
 	assertRestrictedDACL(t, serverDir)
 
-	// Ordering, not just the end state: WriteServerInfo never ran, so the
-	// planted contents are still there. If the DACL above had been applied by
-	// the write, this assertion would fail instead.
+	// The forged record must not survive the upgrade path.
 	onDisk, err := os.ReadFile(discovery.FilePath())
 	require.NoError(t, err)
-	assert.JSONEq(t, string(planted), string(onDisk))
+	assert.NotEqual(t, string(planted), string(onDisk))
+	assert.Contains(t, string(onDisk), "our-nonce")
 }
 
 func grantEveryone(t *testing.T, path string) {

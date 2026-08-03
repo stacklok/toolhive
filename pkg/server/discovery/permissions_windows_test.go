@@ -107,6 +107,34 @@ func TestEnsureSecureDirIn_ProtectsIntermediateToolhiveDir(t *testing.T) {
 	assertDiscoveryDACLRestricted(t, serverDir)
 }
 
+// TestEnsureSecureDirIn_InvalidatesForgedDiscoveryFile covers the upgrade path
+// where another user truncated and rewrote a victim-owned server.json while
+// the directory chain was still loose. Tightening the DACL is not enough:
+// ownership stayed with the victim, so the planted URL would still be trusted
+// unless the record is invalidated.
+func TestEnsureSecureDirIn_InvalidatesForgedDiscoveryFile(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	grantEveryone(t, base)
+
+	chain := discoveryDirChain(base)
+	serverDir := chain[len(chain)-1]
+	require.NoError(t, os.MkdirAll(serverDir, 0700))
+
+	planted := []byte(`{"url":"npipe://attacker","pid":1,"nonce":"forged","started_at":"2026-08-03T00:00:00Z"}`)
+	require.NoError(t, os.WriteFile(filepath.Join(serverDir, "server.json"), planted, 0600))
+	require.Contains(t, strings.ToUpper(discoveryDirSDDL(t, serverDir)), "WD",
+		"precondition: server dir must inherit Everyone (WD)")
+
+	require.NoError(t, ensureSecureDirIn(base))
+
+	assertDiscoveryDACLRestricted(t, chain[0])
+	assertDiscoveryDACLRestricted(t, serverDir)
+	_, err := os.Stat(filepath.Join(serverDir, "server.json"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 // TestRestrictDiscoveryDir_FailsClosedOnUntrustedOwner covers hostile
 // ownership. Replacing the DACL is not enough when another account owns the
 // directory: owners keep WRITE_DAC implicitly and can make the ACL permissive
@@ -257,19 +285,4 @@ func discoveryDirSDDL(t *testing.T, dir string) string {
 	)
 	require.NoError(t, err)
 	return sd.String()
-}
-
-func allowACEsFromACL(acl *windows.ACL) ([]*windows.ACCESS_ALLOWED_ACE, error) {
-	aces := make([]*windows.ACCESS_ALLOWED_ACE, 0, acl.AceCount)
-	for i := uint16(0); i < acl.AceCount; i++ {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
-			return nil, err
-		}
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
-			continue
-		}
-		aces = append(aces, ace)
-	}
-	return aces, nil
 }

@@ -173,15 +173,22 @@ func TestEnsureSecureDirIn_CreatesAndRestrictsChain(t *testing.T) {
 
 	chain := discoveryDirChain(base)
 	require.Len(t, chain, 2)
+	toolhiveDir, serverDir := chain[0], chain[1]
 	for _, dir := range chain {
 		fi, err := os.Stat(dir)
 		require.NoError(t, err)
 		require.True(t, fi.IsDir(), "%s must be a directory", dir)
-		if runtime.GOOS == "windows" {
-			continue
-		}
-		assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", dir)
 	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	fi, err := os.Stat(toolhiveDir)
+	require.NoError(t, err)
+	assert.NotEqual(t, os.FileMode(dirPermissions), fi.Mode().Perm(),
+		"intermediate toolhive dir must keep its existing mode on POSIX")
+	fi, err = os.Stat(serverDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", serverDir)
 }
 
 // TestEnsureSecureDirIn_TightensExistingChain covers the upgrade path: a chain
@@ -202,11 +209,13 @@ func TestEnsureSecureDirIn_TightensExistingChain(t *testing.T) {
 
 	require.NoError(t, ensureSecureDirIn(base))
 
-	for _, dir := range chain {
-		fi, err := os.Stat(dir)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", dir)
-	}
+	toolhiveDir, serverDir := chain[0], chain[1]
+	fi, err := os.Stat(toolhiveDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0755), fi.Mode().Perm(), "intermediate toolhive dir must stay loose on POSIX")
+	fi, err = os.Stat(serverDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", serverDir)
 }
 
 func TestWriteServerInfo_RejectsSymlink(t *testing.T) {

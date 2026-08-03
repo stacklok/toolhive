@@ -58,6 +58,17 @@ func discoveryDirChain(base string) []string {
 	return []string{toolhiveDir, filepath.Join(toolhiveDir, "server")}
 }
 
+// discoveryServerDir returns the leaf directory that holds server.json.
+func discoveryServerDir(base string) string {
+	chain := discoveryDirChain(base)
+	return chain[len(chain)-1]
+}
+
+// discoveryFilePath returns server.json under base.
+func discoveryFilePath(base string) string {
+	return filepath.Join(discoveryServerDir(base), "server.json")
+}
+
 // defaultDiscoveryDir returns the default directory for the discovery file
 // based on the XDG Base Directory Specification.
 func defaultDiscoveryDir() string {
@@ -86,15 +97,54 @@ func EnsureSecureDir() error {
 }
 
 // ensureSecureDirIn creates the discovery directory chain under base and
-// restricts each directory ToolHive owns in it, outermost first.
+// restricts the directories ToolHive owns in it. Windows hardens the full
+// chain; other platforms chmod only the server leaf so shared toolhive state
+// (runconfigs, toolhive.db) keeps its existing group permissions.
 func ensureSecureDirIn(base string) error {
-	for _, dir := range discoveryDirChain(base) {
+	chain := discoveryDirsToSecure(base)
+	serverPath := discoveryFilePath(base)
+
+	hadInsecureChain, err := discoveryChainWasInsecure(chain)
+	if err != nil {
+		return err
+	}
+
+	for _, dir := range chain {
 		if err := os.MkdirAll(dir, dirPermissions); err != nil {
 			return fmt.Errorf("failed to create discovery directory: %w", err)
 		}
 		if err := restrictDiscoveryDirPermissions(dir); err != nil {
 			return err
 		}
+	}
+
+	if hadInsecureChain {
+		if err := invalidateDiscoveryFileAfterInsecureChain(serverPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func discoveryChainWasInsecure(chain []string) (bool, error) {
+	for _, dir := range chain {
+		loose, err := discoveryDirPermissionsLoose(dir)
+		if err != nil {
+			return false, err
+		}
+		if loose {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// invalidateDiscoveryFileAfterInsecureChain removes a discovery file that may
+// have been tampered with while the directory chain was still writable.
+func invalidateDiscoveryFileAfterInsecureChain(path string) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to invalidate untrusted discovery file: %w", err)
 	}
 	return nil
 }

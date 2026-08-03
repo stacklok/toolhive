@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -39,6 +40,75 @@ func restrictDiscoveryDirPermissions(dir string) error {
 		return err
 	}
 	return restrictDiscoveryDir(dir, trusted)
+}
+
+// discoveryDirPermissionsLoose reports whether dir carries an unprotected DACL
+// or grants access to accounts outside the process user and SYSTEM.
+func discoveryDirPermissionsLoose(dir string) (bool, error) {
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to stat discovery directory: %w", err)
+	}
+
+	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false, fmt.Errorf("failed to read discovery directory DACL: %w", err)
+	}
+
+	control, _, err := sd.Control()
+	if err != nil {
+		return false, fmt.Errorf("failed to read discovery directory DACL control: %w", err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return true, nil
+	}
+
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return false, fmt.Errorf("failed to read discovery directory DACL entries: %w", err)
+	}
+	if dacl == nil {
+		return true, nil
+	}
+
+	userSID, err := currentProcessUserSID()
+	if err != nil {
+		return false, err
+	}
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return false, err
+	}
+
+	aces, err := allowACEsFromACL(dacl)
+	if err != nil {
+		return false, err
+	}
+	for _, ace := range aces {
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if userSID.Equals(sid) || systemSID.Equals(sid) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func allowACEsFromACL(acl *windows.ACL) ([]*windows.ACCESS_ALLOWED_ACE, error) {
+	aces := make([]*windows.ACCESS_ALLOWED_ACE, 0, acl.AceCount)
+	for i := uint16(0); i < acl.AceCount; i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
+			return nil, err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			continue
+		}
+		aces = append(aces, ace)
+	}
+	return aces, nil
 }
 
 // restrictDiscoveryDir is the injectable core of

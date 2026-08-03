@@ -6,6 +6,7 @@
 package discovery
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -18,6 +19,19 @@ func restrictDiscoveryDirPermissions(dir string) error {
 		return fmt.Errorf("failed to set discovery directory permissions: %w", err)
 	}
 	return nil
+}
+
+// discoveryDirPermissionsLoose reports whether dir exists with looser than
+// expected POSIX mode bits.
+func discoveryDirPermissionsLoose(dir string) (bool, error) {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to stat discovery directory: %w", err)
+	}
+	return fi.Mode().Perm() != dirPermissions, nil
 }
 
 // validateDiscoveryFileOwner is a no-op outside Windows. POSIX mode bits are

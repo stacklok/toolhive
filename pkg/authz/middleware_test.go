@@ -1080,15 +1080,21 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 
 // TestMiddlewareOptimizerMetaTools tests the optimizer meta-tool interception logic.
 // When a tool is in the passThroughTools set, the middleware handles it specially:
-//   - call_tool (has "tool_name" in arguments): authorize the inner backend tool
-//   - find_tool (no "tool_name" in arguments): allow through as a discovery operation
+//   - call_tool (arguments decode to a tool_name): authorize the inner backend tool
+//   - find_tool (arguments name no tool): allow through as a discovery operation
+//
+// The arguments are decoded exactly as dispatch decodes them, so the name authorized
+// here and the name that runs are always the same one.
 func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 	t.Parallel()
 
-	// Cedar policy that only permits "allowed_backend" — not "call_tool" or "find_tool".
+	// Cedar policies permitting "allowed_backend" unconditionally and "args_backend"
+	// only when the inner arguments reach the authorizer. Neither permits "call_tool"
+	// or "find_tool" themselves.
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"allowed_backend");`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"args_backend") when { context.arg_query == "x" };`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
@@ -1150,9 +1156,8 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			expectHandlerHit: false,
 		},
 		{
-			// Without hoisting, the top-level lookup misses and the request falls
-			// through the pass-through branch entirely, reaching the backend with
-			// no policy check at all.
+			// Dispatch hoists a nested name and runs the tool, so authorization must
+			// see the same target rather than treating the request as naming no tool.
 			name:     "call_tool with nested unauthorized inner tool is blocked",
 			toolName: "call_tool",
 			arguments: map[string]interface{}{
@@ -1175,6 +1180,45 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			},
 			expectStatus:     http.StatusOK,
 			expectHandlerHit: true,
+		},
+		{
+			// encoding/json matches struct fields case-insensitively, so dispatch
+			// resolves and runs this tool. A map index on "tool_name" does not see it
+			// and would wave the request through with no policy check at all.
+			name:     "call_tool with a case-variant tool_name key is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"Tool_Name":  "forbidden_backend",
+				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			// The policy for args_backend only permits the call when the inner
+			// arguments reach the authorizer. A map index on "parameters" drops them
+			// here, so the tool would be denied a call the policy allows.
+			name:     "call_tool with a case-variant parameters key still carries the inner arguments",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "args_backend",
+				"PARAMETERS": map[string]interface{}{"query": "x"},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
+			// The target cannot be established, so the middleware refuses rather than
+			// passing through. Dispatch decodes the same arguments with the same call
+			// and rejects them too, so no legitimate invocation is lost.
+			name:     "call_tool with undecodable arguments is denied",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "allowed_backend",
+				"parameters": "not an object",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
 		},
 		{
 			name:     "find_tool request reaches handler (response filtering applied separately)",

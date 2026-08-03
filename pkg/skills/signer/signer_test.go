@@ -108,7 +108,7 @@ func TestSignOCIRoundTrip(t *testing.T) {
 
 	// The returned bundle verifies against the signing key over the
 	// simple-signing payload digest.
-	payload, err := simpleSigningPayload(ref, digestStr)
+	payload, err := SimpleSigningPayload(ref, digestStr)
 	require.NoError(t, err)
 	payloadDigest := sha256.Sum256(payload)
 	require.NoError(t, verifyKeyBundle(t, raw, pubPEM, payloadDigest[:]),
@@ -163,7 +163,7 @@ func TestSignOCIRejectsWrongKeyVerification(t *testing.T) {
 	raw, err := NewDefault(nil).SignOCI(t.Context(), ref, digestStr, Options{Key: keyPath})
 	require.NoError(t, err)
 
-	payload, err := simpleSigningPayload(ref, digestStr)
+	payload, err := SimpleSigningPayload(ref, digestStr)
 	require.NoError(t, err)
 	payloadDigest := sha256.Sum256(payload)
 	require.Error(t, verifyKeyBundle(t, raw, otherPub, payloadDigest[:]),
@@ -275,7 +275,7 @@ func TestParseManifestDigestNormalizesBareHex(t *testing.T) {
 func TestSimpleSigningPayloadBindsDigestAndRepo(t *testing.T) {
 	t.Parallel()
 	digestStr := "sha256:" + strings.Repeat("b", 64)
-	payload, err := simpleSigningPayload("example.com/org/skill:v1", digestStr)
+	payload, err := SimpleSigningPayload("example.com/org/skill:v1", digestStr)
 	require.NoError(t, err)
 
 	var got cosignSimpleSigning

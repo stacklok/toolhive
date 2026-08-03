@@ -41,6 +41,13 @@ type Verifier interface {
 	// Key-signed bundles carry no certificate identity: trust is the key.
 	VerifyOCIWithKey(ctx context.Context, imageRef, digest string, pubKeyPEM []byte) (*Result, error)
 
+	// VerifyGit cryptographically verifies a gitsign commit signature over
+	// the commit payload against the embedded Fulcio roots. A non-nil
+	// expected identity must match the certificate identity; nil expected
+	// is the trust-on-first-use case. Returns ErrUnsigned for an empty
+	// signature.
+	VerifyGit(ctx context.Context, payload, signature []byte, expected *lockfile.Provenance) (*Result, error)
+
 	// VerifyBundleOffline re-verifies a stored bundle against the artifact
 	// digest ("sha256:<hex>") without network access, enforcing expected
 	// like VerifyOCI.

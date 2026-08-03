@@ -85,6 +85,21 @@ func (mr *MockVerifierMockRecorder) VerifyBundleOfflineWithKey(bundle, imageRef,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyBundleOfflineWithKey", reflect.TypeOf((*MockVerifier)(nil).VerifyBundleOfflineWithKey), bundle, imageRef, digest, pubKeyPEM)
 }
 
+// VerifyGit mocks base method.
+func (m *MockVerifier) VerifyGit(ctx context.Context, payload, signature []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "VerifyGit", ctx, payload, signature, expected)
+	ret0, _ := ret[0].(*verifier.Result)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// VerifyGit indicates an expected call of VerifyGit.
+func (mr *MockVerifierMockRecorder) VerifyGit(ctx, payload, signature, expected any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyGit", reflect.TypeOf((*MockVerifier)(nil).VerifyGit), ctx, payload, signature, expected)
+}
+
 // VerifyOCI mocks base method.
 func (m *MockVerifier) VerifyOCI(ctx context.Context, imageRef, digest string, expected *lockfile.Provenance) (*verifier.Result, error) {
 	m.ctrl.T.Helper()

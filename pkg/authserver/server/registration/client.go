@@ -18,69 +18,65 @@ package registration
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/ory/fosite"
 	"golang.org/x/crypto/bcrypt"
-
-	"github.com/stacklok/toolhive/pkg/networking"
 )
 
-// LoopbackClient is a fosite.Client implementation that supports RFC 8252 Section 7.3
-// compliant loopback redirect URI matching for native OAuth clients.
+// RegisteredLoopbackRedirectURI returns the registered redirect URI of c that
+// requestedURI matches -- exactly, or under RFC 8252 Section 7.3 loopback
+// dynamic-port rules -- or ("", false) if none matches.
 //
-// RFC 8252 Section 7.3 specifies that:
-//   - Loopback redirect URIs use "http" (not "https")
-//   - The host must be "127.0.0.1", "[::1]", or "localhost"
-//   - The authorization server MUST allow any port
-//   - The path and query components must match exactly
-//
-// This client extends fosite's built-in loopback support to also handle "localhost"
-// as a loopback address. Fosite's isMatchingAsLoopback uses isLoopbackAddress()
-// which only supports IP addresses (net.ParseIP().IsLoopback()), not the "localhost"
-// hostname. This is needed for DCR with clients like VS Code, Claude Code, and other
-// native apps that register redirect URIs like "http://localhost/callback" and then
-// request authorization with dynamic ports like "http://localhost:57403/callback".
-type LoopbackClient struct {
-	*fosite.DefaultOpenIDConnectClient
+// Loopback dynamic-port matching is restricted to public clients: RFC 8252
+// loopback redirects are a native-app pattern and a confidential client must
+// never get dynamic-port flexibility on its registered redirect_uri. Keeping
+// that guard here rather than in a per-client method means no storage backend
+// can reconstruct a client that silently skips it.
+func RegisteredLoopbackRedirectURI(c fosite.Client, requestedURI string) (string, bool) {
+	if !c.IsPublic() {
+		return "", false
+	}
+	return matchLoopbackRedirectURI(c.GetRedirectURIs(), requestedURI)
 }
 
-// NewLoopbackClient creates a new LoopbackClient wrapping the provided client.
-// The wrapper preserves all OIDC fields (including TokenEndpointAuthMethod)
-// while adding RFC 8252 §7.3 dynamic port matching for loopback redirect URIs.
-func NewLoopbackClient(client *fosite.DefaultOpenIDConnectClient) *LoopbackClient {
-	return &LoopbackClient{DefaultOpenIDConnectClient: client}
+// IsLocalhostHostname reports whether host (as returned by url.Hostname()) is
+// the string "localhost", matched case-insensitively -- the same definition
+// hostnamesMatch and isLoopbackHostname use. Exported so callers outside this
+// package that need to know "is this specifically localhost, not an IP
+// loopback literal" (e.g. deciding whether fosite's own IP-literal-only
+// loopback matching already handles a redirect_uri, or whether it needs this
+// package's help) share this package's one definition instead of
+// re-implementing it and risking drift.
+func IsLocalhostHostname(host string) bool {
+	return strings.EqualFold(host, "localhost")
 }
 
-// MatchRedirectURI checks if the given redirect URI matches one of the client's
-// registered redirect URIs, with RFC 8252 Section 7.3 loopback support.
+// matchLoopbackRedirectURI returns the registered URI (from registeredURIs)
+// that requestedURI matches, either exactly or under RFC 8252 Section 7.3
+// loopback dynamic-port rules, or ("", false) if none matches.
 //
-// For loopback URIs (127.0.0.1, [::1], or localhost), the port is allowed to
-// vary while the scheme, host, path, and query must match exactly.
-func (c *LoopbackClient) MatchRedirectURI(requestedURI string) bool {
-	for _, registeredURI := range c.GetRedirectURIs() {
-		if matchesRedirectURI(requestedURI, registeredURI) {
-			return true
+// Exact matches take precedence over loopback matches: a full pass over
+// registeredURIs checks for an exact match first, and only then falls back to
+// loopback matching. Without this, a client registered with both
+// "http://localhost/callback" and "http://localhost:54321/callback" would
+// have a request for the second rewritten to the first, because loopback
+// matching against the first entry succeeds before the loop ever reaches the
+// second entry's exact match. A client that registered a specific port must
+// not have its request silently redirected to a different registered entry.
+func matchLoopbackRedirectURI(registeredURIs []string, requestedURI string) (string, bool) {
+	if slices.Contains(registeredURIs, requestedURI) {
+		return requestedURI, true
+	}
+	for _, registeredURI := range registeredURIs {
+		if matchesAsLoopback(requestedURI, registeredURI) {
+			return registeredURI, true
 		}
 	}
-	return false
-}
-
-// GetMatchingRedirectURI returns the matching redirect URI if found, or an empty string.
-// For loopback URIs, returns the requested URI (with its port) if it matches a registered
-// loopback pattern.
-func (c *LoopbackClient) GetMatchingRedirectURI(requestedURI string) string {
-	for _, registeredURI := range c.GetRedirectURIs() {
-		if matchesRedirectURI(requestedURI, registeredURI) {
-			// For loopback matches, return the requested URI to preserve the dynamic port
-			if isLoopbackURI(requestedURI) {
-				return requestedURI
-			}
-			return registeredURI
-		}
-	}
-	return ""
+	return "", false
 }
 
 // DefaultScopes are the default OAuth 2.0 scopes for registered clients.
@@ -121,8 +117,9 @@ type Config struct {
 }
 
 // New creates a fosite.Client from the given configuration.
-// Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
-// compliant loopback redirect URI matching for native OAuth clients.
+// Public clients get TokenEndpointAuthMethod "none" via DefaultOpenIDConnectClient;
+// RFC 8252 Section 7.3 loopback redirect URI matching for native OAuth clients is
+// provided separately by RegisteredLoopbackRedirectURI, not by the client type itself.
 // Confidential clients with secrets have their Secret field bcrypt-hashed
 // as required by fosite for credential validation.
 func New(cfg Config) (fosite.Client, error) {
@@ -167,34 +164,17 @@ func New(cfg Config) (fosite.Client, error) {
 		defaultClient.Secret = hashedSecret
 	}
 
-	// Wrap public clients in LoopbackClient for RFC 8252 Section 7.3
-	// dynamic port matching for native app loopback redirect URIs.
-	// Use DefaultOpenIDConnectClient so TokenEndpointAuthMethod ("none" for
-	// public clients) is preserved through the LoopbackClient wrapper.
+	// Use DefaultOpenIDConnectClient for public clients so TokenEndpointAuthMethod
+	// ("none") is set; RegisteredLoopbackRedirectURI provides RFC 8252 §7.3
+	// dynamic port matching for these clients' loopback redirect URIs.
 	if cfg.Public {
-		oidcClient := &fosite.DefaultOpenIDConnectClient{
+		return &fosite.DefaultOpenIDConnectClient{
 			DefaultClient:           defaultClient,
 			TokenEndpointAuthMethod: "none",
-		}
-		return NewLoopbackClient(oidcClient), nil
+		}, nil
 	}
 
 	return defaultClient, nil
-}
-
-// Compile-time interface compliance check
-var _ fosite.Client = (*LoopbackClient)(nil)
-
-// matchesRedirectURI checks if a requested URI matches a registered URI.
-// Implements RFC 8252 Section 7.3 loopback matching.
-func matchesRedirectURI(requestedURI, registeredURI string) bool {
-	// Exact match always works
-	if requestedURI == registeredURI {
-		return true
-	}
-
-	// Try loopback matching
-	return matchesAsLoopback(requestedURI, registeredURI)
 }
 
 // matchesAsLoopback checks if the requested URI matches the registered URI
@@ -216,6 +196,17 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 		return false
 	}
 
+	// RFC 6749 Section 3.1.2: the redirection endpoint URI MUST NOT include a
+	// fragment component, and must not carry userinfo. Fosite's own
+	// IsValidRedirectURI enforces this on whatever redirect_uri it actually
+	// validates -- but a loopback match here is what causes the ORIGINAL
+	// requested URI (not fosite's validated one) to become the effective
+	// redirect target, so the same check must run here too, or an invalid
+	// requested URI could reach storage/token-issuance unvalidated.
+	if requested.Fragment != "" || requested.User != nil {
+		return false
+	}
+
 	// RFC 8252 Section 7.3: Loopback redirect URIs use the "http" scheme.
 	// Dynamic port matching only applies to http loopback URIs, not https.
 	if requested.Scheme != "http" || registered.Scheme != "http" {
@@ -223,7 +214,7 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	}
 
 	// Both must be loopback addresses
-	if !networking.IsLocalhost(requested.Hostname()) || !networking.IsLocalhost(registered.Hostname()) {
+	if !isLoopbackHostname(requested.Hostname()) || !isLoopbackHostname(registered.Hostname()) {
 		return false
 	}
 
@@ -232,13 +223,18 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 		return false
 	}
 
-	// Path must match exactly
-	if requested.Path != registered.Path {
+	// Path must match exactly. EscapedPath() (not Path) is compared: Path is
+	// percent-decoded, so an encoded separator (e.g. registered
+	// "/callback%2Fchild") would otherwise compare equal to a literal,
+	// unencoded path ("/callback/child") that was never actually registered.
+	if requested.EscapedPath() != registered.EscapedPath() {
 		return false
 	}
 
-	// Query must match exactly
-	if requested.RawQuery != registered.RawQuery {
+	// Query must match exactly, including whether a bare "?" was present at
+	// all (ForceQuery): RawQuery alone can't distinguish "/callback" from
+	// "/callback?", since both parse to an empty RawQuery.
+	if requested.RawQuery != registered.RawQuery || requested.ForceQuery != registered.ForceQuery {
 		return false
 	}
 
@@ -246,13 +242,23 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	return true
 }
 
-// isLoopbackURI checks if the URI uses a loopback address.
-func isLoopbackURI(uri string) bool {
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return false
+// isLoopbackHostname reports whether host (as returned by url.Hostname(), so
+// already stripped of brackets and port) is one of the RFC 8252 §7.3 loopback
+// forms: "localhost" (case-insensitive, matching hostnamesMatch below) or an
+// IP loopback literal (127.0.0.1, ::1).
+//
+// This is deliberately self-contained rather than delegating to
+// networking.IsLocalhost: that helper (via oauthproto.IsLoopbackHost) is a
+// case-SENSITIVE prefix check requiring the bracketed "[::1]" form, which
+// url.Hostname() never produces -- using it here would silently make
+// "LOCALHOST" and "::1" both unmatchable despite hostnamesMatch's own
+// case-insensitive "localhost" contract.
+func isLoopbackHostname(host string) bool {
+	if IsLocalhostHostname(host) {
+		return true
 	}
-	return networking.IsLocalhost(parsed.Hostname())
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // hostnamesMatch checks if two hostnames (as returned by url.Hostname()) should

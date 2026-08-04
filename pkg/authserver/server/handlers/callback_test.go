@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,49 @@ func TestCallbackHandler_UpstreamError(t *testing.T) {
 	// Pending authorization should be deleted
 	_, ok := storState.pendingAuths[internalState]
 	assert.False(t, ok, "pending authorization should be deleted")
+}
+
+// TestCallbackHandler_UpstreamError_LoopbackLocalhostRedirectsToDynamicPort
+// proves that an upstream-IDP error (e.g. the user denies consent) for a
+// "localhost" loopback client redirects to the client's real dynamic-port
+// listener from pending.RedirectURI, not the registered portless literal and
+// not a bare JSON body. See loopbackAuthorizeRequester (authorize.go) and
+// wrapLoopbackErrorRequester's use in buildAuthorizeRequesterFromPending for
+// the mechanism.
+func TestCallbackHandler_UpstreamError_LoopbackLocalhostRedirectsToDynamicPort(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	const clientID = "loopback-callback-error-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	internalState := testInternalState
+	pending := &storage.PendingAuthorization{
+		ClientID:             clientID,
+		RedirectURI:          "http://localhost:54321/callback",
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        internalState,
+		SessionID:            "session-loopback-upstream-error",
+		UpstreamProviderName: "test-upstream",
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[internalState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&error_description=User+denied&state="+internalState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	require.Equal(t, http.StatusSeeOther, rec.Code,
+		"the error must redirect to the client's real listener, not fall back to a JSON body; body: %s", rec.Body.String())
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=access_denied")
+	assert.Contains(t, location, "state=client-state")
+	assert.True(t, strings.HasPrefix(location, "http://localhost:54321/callback"),
+		"error redirect must target the client's real dynamic-port listener, got: %s", location)
 }
 
 func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {

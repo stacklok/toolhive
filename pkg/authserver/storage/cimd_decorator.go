@@ -6,7 +6,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -108,6 +107,17 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 	// context detached from the caller so that one caller cancelling does not
 	// abort the in-flight request for other waiters. The HTTP client inside
 	// FetchClientMetadataDocument enforces its own 5-second timeout.
+	//
+	// Deliberately NOT negatively cached: an unreachable/invalid client_id is
+	// refetched on every call (including the authorize handler's own
+	// loopback-redirect_uri pre-check on top of fosite's internal client
+	// lookup, doubling that specific cost) rather than caching the failure.
+	// Two reasons: the CIMD draft (client-id-metadata-document §5.2) requires
+	// error responses and invalid/malformed documents not be cached, and a
+	// shared failure+success cache lets an unauthenticated caller evict
+	// legitimate entries for free by cycling through bogus client_ids up to
+	// the LRU's bound -- a cheaper, more effective attack than the modest
+	// double-fetch this would have saved.
 	fetchCtx := context.WithoutCancel(ctx)
 	result, err, _ := d.sf.Do(id, func() (interface{}, error) {
 		// Re-check cache inside singleflight (another goroutine may have populated it)
@@ -221,8 +231,6 @@ var defaultCIMDResponseTypes = []string{"code"}
 const defaultCIMDTokenEndpointAuthMethod = "none"
 
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
-// Redirect URIs containing http://localhost are wrapped in a LoopbackClient
-// so that RFC 8252 §7.3 dynamic port matching applies.
 // resolvedScopes is the already-validated scope list computed by fetch() via
 // registration.ValidateScopes; when empty, DefaultScopes is used — this occurs when
 // the decorator has no ScopesSupported restriction (unconstrained AS).
@@ -262,34 +270,8 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument, resolvedScopes []string
 		Public:   true,
 	}
 
-	openIDClient := &fosite.DefaultOpenIDConnectClient{
+	return &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:           defaultClient,
 		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
 	}
-
-	// Wrap in LoopbackClient when any redirect URI targets localhost so that
-	// RFC 8252 §7.3 dynamic port matching works for native app clients.
-	// Pass openIDClient directly so TokenEndpointAuthMethod is preserved —
-	// LoopbackClient now embeds *fosite.DefaultOpenIDConnectClient.
-	if hasLoopbackRedirectURI(doc.RedirectURIs) {
-		return registration.NewLoopbackClient(openIDClient)
-	}
-
-	return openIDClient
-}
-
-// hasLoopbackRedirectURI returns true when any of the redirect URIs in the
-// list targets a loopback address over HTTP. The host is parsed from each URI
-// to prevent bypass via hosts like "http://localhost.evil.com/".
-func hasLoopbackRedirectURI(uris []string) bool {
-	for _, uri := range uris {
-		parsed, err := url.Parse(uri)
-		if err != nil {
-			continue
-		}
-		if parsed.Scheme == "http" && oauthproto.IsLoopbackHost(parsed.Hostname()) {
-			return true
-		}
-	}
-	return false
 }

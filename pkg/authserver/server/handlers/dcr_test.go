@@ -303,13 +303,10 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
 	require.NotNil(t, storedClient)
-	loopbackClient, ok := storedClient.(*registration.LoopbackClient)
-	require.True(t, ok, "expected *registration.LoopbackClient, got %T", storedClient)
-
-	assert.Equal(t, resp.ClientID, loopbackClient.GetID())
-	assert.True(t, loopbackClient.IsPublic())
-	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, loopbackClient.GetRedirectURIs())
-	assert.Equal(t, fosite.Arguments(allowedAudiences), loopbackClient.GetAudience(),
+	assert.Equal(t, resp.ClientID, storedClient.GetID())
+	assert.True(t, storedClient.IsPublic())
+	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, storedClient.GetRedirectURIs())
+	assert.Equal(t, fosite.Arguments(allowedAudiences), storedClient.GetAudience(),
 		"DCR client must inherit server's AllowedAudiences so refresh token requests with resource= succeed")
 }
 

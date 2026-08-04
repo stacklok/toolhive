@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
@@ -270,6 +271,58 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, client.GetID(), retrieved.GetID())
 		assert.Equal(t, client.GetScopes(), retrieved.GetScopes())
+	})
+}
+
+// TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching pins that a
+// public client round-tripped through Redis still supports RFC 8252 §7.3
+// loopback dynamic-port redirect_uri matching via
+// registration.RegisteredLoopbackRedirectURI. Redis reconstructs GetClient's
+// result as its own *redisClient type, so this only holds because
+// RegisteredLoopbackRedirectURI works against any fosite.Client regardless of
+// concrete type. A regression here would silently
+// disable the embedded auth server's localhost-loopback fix for any client
+// registered via DCR against Redis-backed storage.
+func TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.New(registration.Config{
+			ID:           "loopback-redis-client",
+			RedirectURIs: []string{"http://localhost/callback"},
+			Public:       true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "loopback-redis-client")
+		require.NoError(t, err)
+
+		registered, ok := registration.RegisteredLoopbackRedirectURI(retrieved, "http://localhost:54321/callback")
+		require.True(t, ok, "a dynamic-port localhost request must still match the registered portless URI")
+		assert.Equal(t, "http://localhost/callback", registered)
+	})
+}
+
+// TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback pins that
+// a confidential (non-public) client stored in Redis never matches as a
+// loopback client, even if its redirect_uris happen to look loopback-shaped --
+// RegisteredLoopbackRedirectURI restricts dynamic-port matching to public
+// clients, since RFC 8252 loopback redirects are a native-app pattern.
+func TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.New(registration.Config{
+			ID:           "confidential-redis-client",
+			Secret:       "s3cr3t",
+			RedirectURIs: []string{"http://localhost/callback"},
+			Public:       false,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "confidential-redis-client")
+		require.NoError(t, err)
+
+		_, ok := registration.RegisteredLoopbackRedirectURI(retrieved, "http://localhost:54321/callback")
+		assert.False(t, ok, "a confidential client must not get loopback dynamic-port matching")
 	})
 }
 

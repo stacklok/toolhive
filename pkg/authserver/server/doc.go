@@ -22,8 +22,8 @@
 //
 // The server package is organized into focused sub-packages:
 //
-//   - server/registration: OAuth client types including RFC 8252 compliant LoopbackClient
-//     for native applications with dynamic port matching
+//   - server/registration: OAuth client construction plus RFC 8252 loopback
+//     redirect_uri matching for native applications with dynamic ports
 //   - server/crypto: Cryptographic utilities for key loading, PKCE, and signing
 //   - server/session: Session management linking issued tokens to upstream IdP tokens
 //

@@ -941,8 +941,8 @@ go.opentelemetry.io/otel/trace v1.45.0 h1:l/mP6Uv7oNO7/TblbhpbgMidxhq1uO/rPsikOy
 go.opentelemetry.io/otel/trace v1.45.0/go.mod h1:qoJJA2xNMnxRrdISU/kLtfUH2wNeQbiv+jhs/CxI8bc=
 go.opentelemetry.io/proto/otlp v1.11.0 h1:5rrYs0Ykyj50sdU/JU0x8etU+LubXWb+gED6TbEdMIk=
 go.opentelemetry.io/proto/otlp v1.11.0/go.mod h1:SmVizdCOAm3XBtG1g1NnOdhW6jtddT72hLMhv8VwA8E=
-go.starlark.net v0.0.0-20260630144053-529d8e869a14 h1:w4krPU6GwY87DdwH30fr/GygfD3ROuoBq3YWilzFe6A=
-go.starlark.net v0.0.0-20260630144053-529d8e869a14/go.mod h1:Iue6g6iirlfLoVi/DYCi5/x0h/bAOuWF3dULTKpt2Vo=
+go.starlark.net v0.0.0-20260708150628-5395d018f003 h1:cAxcqHgW8fnmT0cEBU3TzvVYHIFt8IIGDMWUF6rImk4=
+go.starlark.net v0.0.0-20260708150628-5395d018f003/go.mod h1:Iue6g6iirlfLoVi/DYCi5/x0h/bAOuWF3dULTKpt2Vo=
 go.step.sm/crypto v0.77.7 h1:6azC+pD678Vjju8yXnMDHCZJ+HzFaEmL3sCryiezTIA=
 go.step.sm/crypto v0.77.7/go.mod h1:OW/2sEHwTtDKq70PvSQ5B0JGy/CrLyDKOiVy3YvZMTQ=
 go.uber.org/atomic v1.3.2/go.mod h1:gD2HeocX3+yG+ygLZcrzQJaqmWj9AIm7n08wl/qW/PE=

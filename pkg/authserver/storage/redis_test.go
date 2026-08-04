@@ -623,6 +623,50 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching pins that a
+// public client round-tripped through Redis still supports RFC 8252 §7.3
+// loopback dynamic-port redirect_uri matching.
+func TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.New(registration.Config{
+			ID:           "loopback-redis-client",
+			RedirectURIs: []string{"http://localhost/callback"},
+			Public:       true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "loopback-redis-client")
+		require.NoError(t, err)
+
+		registered, ok := registration.RegisteredLoopbackRedirectURI(retrieved, "http://localhost:54321/callback")
+		require.True(t, ok, "a dynamic-port localhost request must still match the registered portless URI")
+		assert.Equal(t, "http://localhost/callback", registered)
+	})
+}
+
+// TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback pins that
+// a confidential client stored in Redis never matches as a loopback client,
+// even if its redirect URIs happen to look loopback-shaped.
+func TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.New(registration.Config{
+			ID:           "confidential-redis-client",
+			Secret:       "s3cr3t",
+			RedirectURIs: []string{"http://localhost/callback"},
+			Public:       false,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "confidential-redis-client")
+		require.NoError(t, err)
+
+		_, ok := registration.RegisteredLoopbackRedirectURI(retrieved, "http://localhost:54321/callback")
+		assert.False(t, ok, "a confidential client must not get loopback dynamic-port matching")
+	})
+}
+
 // TestRedisStorage_RenewClientTTL pins the RenewClientTTL contract: it refreshes
 // a DCR-issued client's TTL to DefaultDCRClientTTL on proven use, leaves
 // pre-provisioned clients (no DCRIssued marker) untouched so a permanent client

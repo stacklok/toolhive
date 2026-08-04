@@ -357,14 +357,18 @@ func newDownstreamClientOpts(
 	})
 
 	require.NoError(t, c.Start(ctx))
-	t.Cleanup(func() { _ = c.Close() })
 	if !listen {
-		// Without a standalone stream, client Close leaves the HTTP client's
-		// idle keep-alive connection to the test server open, and
-		// httptest.Server.Close then blocks ~30s waiting for it. Force-close
-		// idle connections at teardown instead.
+		// Force-close this downstream client's idle keep-alive connections at
+		// teardown. Registration order matters: t.Cleanup runs
+		// last-added-first, and c.Close() sends the session-terminating DELETE
+		// over hc, opening a fresh connection that goes idle — so
+		// CloseIdleConnections must be registered FIRST to run AFTER c.Close().
+		// Note the vMCP server holds its own backend-client connection, so the
+		// suite's ~30s httptest.Server.Close stall persists regardless; this
+		// only covers the connection this helper owns.
 		t.Cleanup(hc.CloseIdleConnections)
 	}
+	t.Cleanup(func() { _ = c.Close() })
 
 	_, err = c.Initialize(ctx, mcpmcp.InitializeRequest{
 		Params: mcpmcp.InitializeParams{
@@ -600,6 +604,11 @@ func TestForwarding_Elicitation_NoDownstreamCapability(t *testing.T) {
 // the standalone stream, and a missing stream rejects the write
 // ("rejected by transport: stream not connected or already closed").
 //
+// Legacy-pinned like its siblings, for the same vacuous-pass reason: on Modern
+// the call fails with the sessionless error regardless of stream state, so a
+// Modern run would satisfy the assertions without exercising the delivery
+// path this test exists for.
+//
 // The assertion is timing-structural, not string-matching: with a generous
 // outer deadline, the call must fail as a tool error FAR below it (a hang-to-
 // timeout regression blows the full deadline instead). This documents and pins
@@ -628,7 +637,7 @@ func TestForwarding_Elicitation_AdvertisedButNoStream_FastFails(t *testing.T) {
 	require.NotNil(t, res)
 	assert.True(t, res.IsError,
 		"backend elicitation must fail when the downstream holds no standalone stream")
-	assert.Less(t, elapsed, 15*time.Second,
+	assert.Less(t, elapsed, forwardingRealBackendTimeout/4,
 		"elicitation without a standalone stream must fail fast, not hang to the deadline")
 }
 

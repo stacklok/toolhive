@@ -182,7 +182,10 @@ func (rc *RuntimeConfig) Clone() *RuntimeConfig {
 //   - AdditionalPackages: the union, rc's entries first, then any override
 //     entries not already present.
 //   - RuntimeEnv: merged, with override's value winning on a shared key.
-//   - BuildWith: taken from override as-is; no defaults exist for it.
+//   - BuildWith: override wins if non-empty, else falls back to rc's — the
+//     same "override wins if set" rule as BuilderImage. Fallback rather than
+//     union: unioning two constraint sets could hand PEP 508 contradictory
+//     specifiers to uv.
 //
 // WithOverrides(nil) returns rc.Clone() — a distinct object, never rc itself.
 // A nil receiver returns override.Clone().
@@ -214,7 +217,11 @@ func (rc *RuntimeConfig) WithOverrides(override *RuntimeConfig) *RuntimeConfig {
 	}
 
 	merged.RuntimeEnv = mergeEnvMaps(rc.RuntimeEnv, override.RuntimeEnv)
-	merged.BuildWith = slices.Clone(override.BuildWith)
+	if len(override.BuildWith) > 0 {
+		merged.BuildWith = slices.Clone(override.BuildWith)
+	} else {
+		merged.BuildWith = slices.Clone(rc.BuildWith)
+	}
 
 	return &merged
 }
@@ -233,6 +240,15 @@ func (rc *RuntimeConfig) ValidateFor(transportType TransportType) error {
 		)
 	}
 	return rc.Validate()
+}
+
+// IsEmpty reports whether rc has no field set. A nil receiver is empty.
+func (rc *RuntimeConfig) IsEmpty() bool {
+	if rc == nil {
+		return true
+	}
+	return rc.BuilderImage == "" && len(rc.AdditionalPackages) == 0 &&
+		len(rc.BuildWith) == 0 && len(rc.RuntimeEnv) == 0
 }
 
 // RuntimeDefaults provides default configurations for each runtime type

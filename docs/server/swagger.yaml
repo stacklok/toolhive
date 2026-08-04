@@ -6449,7 +6449,11 @@ paths:
       tags:
       - workloads
     post:
-      description: Create and start a new workload
+      description: |-
+        Create and start a new workload
+        runtime_config is only accepted for protocol-scheme images
+        (uvx://, npx://, go://); supplying it with an ordinary image
+        reference or a remote url is rejected with 400.
       requestBody:
         content:
           application/json:
@@ -6544,7 +6548,12 @@ paths:
       - workloads
   /api/v1beta/workloads/{name}/edit:
     post:
-      description: Update an existing workload configuration
+      description: |-
+        Update an existing workload configuration
+        runtime_config on a non-protocol-scheme image is accepted only when it
+        exactly matches the workload's persisted config and the image and url
+        are unchanged (an inert echo, e.g. from a prior GET); otherwise it is
+        rejected with 400.
       parameters:
       - description: Workload name
         in: path

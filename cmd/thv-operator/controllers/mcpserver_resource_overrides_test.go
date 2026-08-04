@@ -1217,3 +1217,104 @@ func TestDeploymentForMCPServer_MCPServerGenerationDownwardAPI(t *testing.T) {
 	assert.Equal(t, "v1", got.ValueFrom.FieldRef.APIVersion,
 		"FieldRef.APIVersion must match the API server default of v1 to avoid false drift")
 }
+
+func TestDeploymentForMCPServer_ProxyDeploymentScheduling(t *testing.T) {
+	t.Parallel()
+
+	nodeSelector := map[string]string{"workload-class": "mcp-warm"}
+	tolerations := []corev1.Toleration{{
+		Key:      "workload-class",
+		Operator: corev1.TolerationOpEqual,
+		Value:    "mcp-warm",
+		Effect:   corev1.TaintEffectNoSchedule,
+	}}
+	affinity := &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{{
+				Weight: 100,
+				Preference: corev1.NodeSelectorTerm{
+					MatchExpressions: []corev1.NodeSelectorRequirement{{
+						Key:      "workload-class",
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{"mcp-warm"},
+					}},
+				},
+			}},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		overrides        *mcpv1beta1.ProxyDeploymentOverrides
+		wantNodeSelector map[string]string
+		wantTolerations  []corev1.Toleration
+		wantAffinity     *corev1.Affinity
+	}{
+		{
+			// The default path must stay untouched: no overrides means the proxy pod
+			// carries no scheduling constraints at all.
+			name:      "no overrides leaves scheduling unset",
+			overrides: nil,
+		},
+		{
+			name:             "nodeSelector only",
+			overrides:        &mcpv1beta1.ProxyDeploymentOverrides{NodeSelector: nodeSelector},
+			wantNodeSelector: nodeSelector,
+		},
+		{
+			name:            "tolerations only",
+			overrides:       &mcpv1beta1.ProxyDeploymentOverrides{Tolerations: tolerations},
+			wantTolerations: tolerations,
+		},
+		{
+			name:         "affinity only",
+			overrides:    &mcpv1beta1.ProxyDeploymentOverrides{Affinity: affinity},
+			wantAffinity: affinity,
+		},
+		{
+			// The pre-warmed-pool case this surface exists for: taint toleration plus
+			// affinity to steer the proxy onto the same nodes as the MCP server pod.
+			name: "all three together",
+			overrides: &mcpv1beta1.ProxyDeploymentOverrides{
+				NodeSelector: nodeSelector,
+				Tolerations:  tolerations,
+				Affinity:     affinity,
+			},
+			wantNodeSelector: nodeSelector,
+			wantTolerations:  tolerations,
+			wantAffinity:     affinity,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+			client := fake.NewClientBuilder().WithScheme(scheme).Build()
+			r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "test-image",
+					ProxyPort: 8080,
+				},
+			}
+			if tt.overrides != nil {
+				mcpServer.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: tt.overrides,
+				}
+			}
+
+			deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+			require.NoError(t, err)
+			require.NotNil(t, deployment)
+
+			podSpec := deployment.Spec.Template.Spec
+			assert.Equal(t, tt.wantNodeSelector, podSpec.NodeSelector)
+			assert.Equal(t, tt.wantTolerations, podSpec.Tolerations)
+			assert.Equal(t, tt.wantAffinity, podSpec.Affinity)
+		})
+	}
+}

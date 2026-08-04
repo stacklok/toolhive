@@ -1041,7 +1041,19 @@ func logOBOSecretEnvVarError(ctx context.Context, err error) {
 
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
+// proxyDeploymentScheduling returns the scheduling constraints for the proxy pod
+// from resourceOverrides.proxyDeployment. The operator sets no proxy scheduling of
+// its own, so these are authoritative rather than merged.
+//
 //nolint:gocyclo
+func proxyDeploymentScheduling(m *mcpv1beta1.MCPServer) (map[string]string, []corev1.Toleration, *corev1.Affinity) {
+	if m.Spec.ResourceOverrides == nil || m.Spec.ResourceOverrides.ProxyDeployment == nil {
+		return nil, nil, nil
+	}
+	o := m.Spec.ResourceOverrides.ProxyDeployment
+	return o.NodeSelector, o.Tolerations, o.Affinity
+}
+
 func (r *MCPServerReconciler) deploymentForMCPServer(
 	ctx context.Context, m *mcpv1beta1.MCPServer, runConfigChecksum string,
 ) (*appsv1.Deployment, error) {
@@ -1381,6 +1393,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
 
 	imagePullSecrets := r.imagePullSecretsForMCPServer(m)
+	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(m)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1402,6 +1415,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				Spec: corev1.PodSpec{
 					ServiceAccountName:            ctrlutil.ProxyRunnerServiceAccountName(m.Name),
 					ImagePullSecrets:              imagePullSecrets,
+					NodeSelector:                  proxyNodeSelector,
+					Tolerations:                   proxyTolerations,
+					Affinity:                      proxyAffinity,
 					TerminationGracePeriodSeconds: int64Ptr(defaultTerminationGracePeriodSeconds),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),

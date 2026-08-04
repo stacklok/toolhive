@@ -65,11 +65,6 @@ func discoveryServerDir(base string) string {
 	return chain[len(chain)-1]
 }
 
-// discoveryFilePath returns server.json under base.
-func discoveryFilePath(base string) string {
-	return filepath.Join(discoveryServerDir(base), "server.json")
-}
-
 // defaultDiscoveryDir returns the default directory for the discovery file
 // based on the XDG Base Directory Specification.
 func defaultDiscoveryDir() string {
@@ -188,7 +183,8 @@ func ReconcileDiscoveryAfterInsecureUpgrade(ctx context.Context, repaired bool) 
 		return nil
 	case StateNotFound:
 		return fmt.Errorf(
-			"refusing to start: discovery record %s exists after security upgrade but could not be validated; remove it manually or stop the other server",
+			"refusing to start: discovery record %s exists after security upgrade but could not be validated; "+
+				"remove it manually or stop the other server",
 			path,
 		)
 	default:

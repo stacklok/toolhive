@@ -1318,3 +1318,89 @@ func TestDeploymentForMCPServer_ProxyDeploymentScheduling(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPServerDeploymentNeedsUpdate_ProxySchedulingDrift(t *testing.T) {
+	t.Parallel()
+
+	nodeSelector := map[string]string{"workload-class": "mcp-warm"}
+	tolerations := []corev1.Toleration{{
+		Key:      "workload-class",
+		Operator: corev1.TolerationOpEqual,
+		Value:    "mcp-warm",
+		Effect:   corev1.TaintEffectNoSchedule,
+	}}
+
+	tests := []struct {
+		name              string
+		specOverrides     *mcpv1beta1.ProxyDeploymentOverrides // set on mcpServer.Spec.ResourceOverrides
+		mutateDeployment  func(*corev1.PodSpec)                // simulates the stored state
+		expectNeedsUpdate bool
+	}{
+		{
+			name:              "no overrides, deployment unset - no update",
+			specOverrides:     nil,
+			mutateDeployment:  func(*corev1.PodSpec) {},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:          "spec gains nodeSelector, deployment stale - needs update",
+			specOverrides: &mcpv1beta1.ProxyDeploymentOverrides{NodeSelector: nodeSelector},
+			mutateDeployment: func(ps *corev1.PodSpec) {
+				ps.NodeSelector = nil
+			},
+			expectNeedsUpdate: true,
+		},
+		{
+			name:          "spec cleared, deployment has stale tolerations - needs update",
+			specOverrides: nil,
+			mutateDeployment: func(ps *corev1.PodSpec) {
+				ps.Tolerations = tolerations
+			},
+			expectNeedsUpdate: true,
+		},
+		{
+			name:          "nil vs empty map is not drift",
+			specOverrides: nil,
+			mutateDeployment: func(ps *corev1.PodSpec) {
+				ps.NodeSelector = map[string]string{}
+				ps.Tolerations = []corev1.Toleration{}
+			},
+			expectNeedsUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "test-image",
+					ProxyPort: 8080,
+				},
+			}
+			if tt.specOverrides != nil {
+				mcpServer.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: tt.specOverrides,
+				}
+			}
+
+			ctx := t.Context()
+			deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+			require.NoError(t, err)
+			require.NotNil(t, deployment)
+
+			// Simulate the "stored" state by mutating scheduling fields only, so any
+			// detected drift is caused solely by them.
+			tt.mutateDeployment(&deployment.Spec.Template.Spec)
+
+			needsUpdate := r.deploymentNeedsUpdate(ctx, deployment, mcpServer, "test-checksum")
+			assert.Equal(t, tt.expectNeedsUpdate, needsUpdate, "proxy scheduling drift detection mismatch")
+		})
+	}
+}

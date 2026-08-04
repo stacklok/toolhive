@@ -1039,13 +1039,10 @@ func logOBOSecretEnvVarError(ctx context.Context, err error) {
 			"see the referenced MCPExternalAuthConfig status for details")
 }
 
-// deploymentForMCPServer returns a MCPServer Deployment object
-//
 // proxyDeploymentScheduling returns the scheduling constraints for the proxy pod
 // from resourceOverrides.proxyDeployment. The operator sets no proxy scheduling of
-// its own, so these are authoritative rather than merged.
-//
-//nolint:gocyclo
+// its own, so these are authoritative rather than merged. Used by both
+// deploymentForMCPServer and deploymentNeedsUpdate so the two cannot drift apart.
 func proxyDeploymentScheduling(m *mcpv1beta1.MCPServer) (map[string]string, []corev1.Toleration, *corev1.Affinity) {
 	if m.Spec.ResourceOverrides == nil || m.Spec.ResourceOverrides.ProxyDeployment == nil {
 		return nil, nil, nil
@@ -1054,6 +1051,9 @@ func proxyDeploymentScheduling(m *mcpv1beta1.MCPServer) (map[string]string, []co
 	return o.NodeSelector, o.Tolerations, o.Affinity
 }
 
+// deploymentForMCPServer returns a MCPServer Deployment object
+//
+//nolint:gocyclo
 func (r *MCPServerReconciler) deploymentForMCPServer(
 	ctx context.Context, m *mcpv1beta1.MCPServer, runConfigChecksum string,
 ) (*appsv1.Deployment, error) {
@@ -1968,6 +1968,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// nil and empty slices are treated as equal.
 		expectedPullSecrets := r.imagePullSecretsForMCPServer(mcpServer)
 		if !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.ImagePullSecrets, expectedPullSecrets) {
+			return true
+		}
+
+		// Check if the proxy pod scheduling overrides have changed.
+		// Mirrors the construction site via the shared proxyDeploymentScheduling
+		// helper; equality.Semantic.DeepEqual treats nil and empty as equal.
+		expectedNodeSelector, expectedTolerations, expectedAffinity := proxyDeploymentScheduling(mcpServer)
+		if !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.NodeSelector, expectedNodeSelector) ||
+			!equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.Tolerations, expectedTolerations) ||
+			!equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.Affinity, expectedAffinity) {
 			return true
 		}
 

@@ -1040,15 +1040,37 @@ func logOBOSecretEnvVarError(ctx context.Context, err error) {
 }
 
 // proxyDeploymentScheduling returns the scheduling constraints for the proxy pod
-// from resourceOverrides.proxyDeployment. The operator sets no proxy scheduling of
-// its own, so these are authoritative rather than merged. Used by both
-// deploymentForMCPServer and deploymentNeedsUpdate so the two cannot drift apart.
-func proxyDeploymentScheduling(m *mcpv1beta1.MCPServer) (map[string]string, []corev1.Toleration, *corev1.Affinity) {
-	if m.Spec.ResourceOverrides == nil || m.Spec.ResourceOverrides.ProxyDeployment == nil {
+// from resourceOverrides.proxyDeployment. Takes ResourceOverrides directly because
+// MCPServer and MCPRemoteProxy share that type, so both get identical behaviour
+// from one implementation.
+//
+// The operator sets no proxy scheduling of its own, so these are authoritative
+// rather than merged. Used by both the deployment builders and their
+// deploymentNeedsUpdate drift checks so construction and comparison cannot
+// diverge.
+func proxyDeploymentScheduling(
+	overrides *mcpv1beta1.ResourceOverrides,
+) (map[string]string, []corev1.Toleration, *corev1.Affinity) {
+	if overrides == nil || overrides.ProxyDeployment == nil {
 		return nil, nil, nil
 	}
-	o := m.Spec.ResourceOverrides.ProxyDeployment
+	o := overrides.ProxyDeployment
 	return o.NodeSelector, o.Tolerations, o.Affinity
+}
+
+// proxySchedulingNeedsUpdate reports whether the Deployment's proxy pod scheduling
+// has drifted from what resourceOverrides.proxyDeployment asks for. Shared by both
+// controllers' drift checks; equality.Semantic treats nil and empty as equal so an
+// unset override does not read as perpetual drift.
+func proxySchedulingNeedsUpdate(
+	deployment *appsv1.Deployment,
+	overrides *mcpv1beta1.ResourceOverrides,
+) bool {
+	wantNodeSelector, wantTolerations, wantAffinity := proxyDeploymentScheduling(overrides)
+	podSpec := deployment.Spec.Template.Spec
+	return !equality.Semantic.DeepEqual(podSpec.NodeSelector, wantNodeSelector) ||
+		!equality.Semantic.DeepEqual(podSpec.Tolerations, wantTolerations) ||
+		!equality.Semantic.DeepEqual(podSpec.Affinity, wantAffinity)
 }
 
 // deploymentForMCPServer returns a MCPServer Deployment object
@@ -1393,7 +1415,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
 
 	imagePullSecrets := r.imagePullSecretsForMCPServer(m)
-	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(m)
+	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(m.Spec.ResourceOverrides)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1972,12 +1994,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Check if the proxy pod scheduling overrides have changed.
-		// Mirrors the construction site via the shared proxyDeploymentScheduling
-		// helper; equality.Semantic.DeepEqual treats nil and empty as equal.
-		expectedNodeSelector, expectedTolerations, expectedAffinity := proxyDeploymentScheduling(mcpServer)
-		if !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.NodeSelector, expectedNodeSelector) ||
-			!equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.Tolerations, expectedTolerations) ||
-			!equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.Affinity, expectedAffinity) {
+		if proxySchedulingNeedsUpdate(deployment, mcpServer.Spec.ResourceOverrides) {
 			return true
 		}
 

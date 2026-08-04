@@ -236,3 +236,69 @@ func TestMCPRemoteProxyPodTemplateSpecDriftDetection(t *testing.T) {
 	proxy.Spec.PodTemplateSpec = nil
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
 }
+
+// Scheduling can arrive from either resourceOverrides.proxyDeployment or
+// podTemplateSpec. Drift detection must account for both, so an override-only
+// comparison would report false drift on a podTemplateSpec-supplied value.
+func TestMCPRemoteProxySchedulingOverridesAndPodTemplateSpec(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	reconciler := &MCPRemoteProxyReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	t.Run("overrides applied and stable", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := &mcpv1beta1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "sched-proxy", Namespace: "default"},
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL: "https://mcp.example.com",
+				ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						NodeSelector: map[string]string{"workload-class": "mcp-warm"},
+						Tolerations: []corev1.Toleration{{
+							Key:      "workload-class",
+							Operator: corev1.TolerationOpEqual,
+							Value:    "mcp-warm",
+							Effect:   corev1.TaintEffectNoSchedule,
+						}},
+					},
+				},
+			},
+		}
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		assert.Equal(t, map[string]string{"workload-class": "mcp-warm"},
+			deployment.Spec.Template.Spec.NodeSelector)
+		require.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"freshly built deployment must not report drift")
+
+		// Clearing the overrides must be detected.
+		proxy.Spec.ResourceOverrides = nil
+		assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"clearing the overrides must be detected as drift")
+	})
+
+	t.Run("podTemplateSpec-supplied scheduling is not false drift", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := &mcpv1beta1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "tmpl-sched-proxy", Namespace: "default"},
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL:       "https://mcp.example.com",
+				PodTemplateSpec: rawPodTemplateSpecJSON(t, `{"spec":{"nodeSelector":{"disk":"ssd"}}}`),
+			},
+		}
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		assert.Equal(t, map[string]string{"disk": "ssd"}, deployment.Spec.Template.Spec.NodeSelector)
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"scheduling from podTemplateSpec must not be mistaken for drift against empty overrides")
+	})
+}

@@ -62,6 +62,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
+	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(proxy.Spec.ResourceOverrides)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -86,6 +87,9 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
 					ImagePullSecrets:   r.imagePullSecretsForRemoteProxy(proxy),
+					NodeSelector:       proxyNodeSelector,
+					Tolerations:        proxyTolerations,
+					Affinity:           proxyAffinity,
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
 						Name:            mcpRemoteProxyContainerName,

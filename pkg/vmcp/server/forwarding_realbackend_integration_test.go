@@ -286,6 +286,16 @@ type downstreamClient struct {
 // registers an OnNotification collector.
 func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, withHandlers bool) *downstreamClient {
 	t.Helper()
+	return newDownstreamClientOpts(ctx, t, vmcpURL, withHandlers, true)
+}
+
+// newDownstreamClientOpts is newDownstreamClient with explicit control over
+// the standalone SSE stream (listen): pass listen=false to model a client that
+// advertises elicitation/sampling but never opens the standalone stream.
+func newDownstreamClientOpts(
+	ctx context.Context, t *testing.T, vmcpURL string, withHandlers, listen bool,
+) *downstreamClient {
+	t.Helper()
 
 	dc := &downstreamClient{
 		notifCh:  make(chan mcpmcp.JSONRPCNotification, 8),
@@ -325,12 +335,15 @@ func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, with
 	}
 
 	hc, pinRT := newLegacyPinnedHTTPClient()
+	transportOpts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPBasicClient(hc),
+	}
+	if listen {
+		transportOpts = append(transportOpts, transport.WithContinuousListening())
+	}
 	c, err := client.NewStreamableHttpClientWithOpts(
 		vmcpURL,
-		[]transport.StreamableHTTPCOption{
-			transport.WithContinuousListening(),
-			transport.WithHTTPBasicClient(hc),
-		},
+		transportOpts,
 		clientOpts,
 	)
 	require.NoError(t, err)
@@ -345,6 +358,13 @@ func newDownstreamClient(ctx context.Context, t *testing.T, vmcpURL string, with
 
 	require.NoError(t, c.Start(ctx))
 	t.Cleanup(func() { _ = c.Close() })
+	if !listen {
+		// Without a standalone stream, client Close leaves the HTTP client's
+		// idle keep-alive connection to the test server open, and
+		// httptest.Server.Close then blocks ~30s waiting for it. Force-close
+		// idle connections at teardown instead.
+		t.Cleanup(hc.CloseIdleConnections)
+	}
 
 	_, err = c.Initialize(ctx, mcpmcp.InitializeRequest{
 		Params: mcpmcp.InitializeParams{
@@ -570,6 +590,46 @@ func TestForwarding_Elicitation_NoDownstreamCapability(t *testing.T) {
 		"the call must round-trip on the live session, not die at transport level")
 	require.NotNil(t, res)
 	assert.True(t, res.IsError, "backend elicitation must fail when downstream lacks the capability")
+}
+
+// TestForwarding_Elicitation_AdvertisedButNoStream_FastFails pins the runtime
+// twin of TestForwarding_Elicitation_NoDownstreamCapability (#5975): a client
+// that ADVERTISED the elicitation capability but holds NO open standalone SSE
+// stream passes go-sdk's capability gate, yet the elicitation cannot be
+// delivered — under JSONResponse the go-sdk routes server->client requests to
+// the standalone stream, and a missing stream rejects the write
+// ("rejected by transport: stream not connected or already closed").
+//
+// The assertion is timing-structural, not string-matching: with a generous
+// outer deadline, the call must fail as a tool error FAR below it (a hang-to-
+// timeout regression blows the full deadline instead). This documents and pins
+// the fail-fast until an upstream mcpcompat stream-presence accessor lets vMCP
+// fail before dispatch with a cleaner error.
+func TestForwarding_Elicitation_AdvertisedButNoStream_FastFails(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)
+	defer cancel()
+
+	backendURL := startForwardingBackend(t)
+	vmcpTS := newRealTestServer(t, backendURL)
+	// withHandlers=true (capability advertised) but listen=false (no stream).
+	dc := newDownstreamClientOpts(ctx, t, vmcpTS.URL+"/mcp", true, false)
+
+	start := time.Now()
+	res, err := dc.c.CallTool(ctx, mcpmcp.CallToolRequest{
+		Params: mcpmcp.CallToolParams{Name: fwdElicitTool},
+	})
+	elapsed := time.Since(start)
+
+	// Same structural shape as the capability-gate twin — see the rationale
+	// there — plus the timing assertion that distinguishes fail-fast from hang.
+	require.NoError(t, err,
+		"the call must round-trip on the live session, not die at transport level")
+	require.NotNil(t, res)
+	assert.True(t, res.IsError,
+		"backend elicitation must fail when the downstream holds no standalone stream")
+	assert.Less(t, elapsed, 15*time.Second,
+		"elicitation without a standalone stream must fail fast, not hang to the deadline")
 }
 
 // samplingClient is a downstream client whose sampling handler returns a

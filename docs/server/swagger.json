@@ -8334,7 +8334,7 @@
                 ]
             },
             "post": {
-                "description": "Create and start a new workload",
+                "description": "Create and start a new workload\nruntime_config is only accepted for protocol-scheme images\n(uvx://, npx://, go://); supplying it with an ordinary image\nreference or a remote url is rejected with 400.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -8699,7 +8699,7 @@
         },
         "/api/v1beta/workloads/{name}/edit": {
             "post": {
-                "description": "Update an existing workload configuration",
+                "description": "Update an existing workload configuration\nruntime_config on a non-protocol-scheme image is accepted only when it\nexactly matches the workload's persisted config and the image and url\nare unchanged (an inert echo, e.g. from a prior GET); otherwise it is\nrejected with 400.",
                 "parameters": [
                     {
                         "description": "Workload name",

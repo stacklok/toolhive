@@ -413,6 +413,8 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			RuntimeConfig: &templates.RuntimeConfig{
 				BuilderImage:       "node:20-alpine",
 				AdditionalPackages: []string{"git"},
+				BuildWith:          []string{"mcp<2"},
+				RuntimeEnv:         map[string]string{"NODE_ENV": "production"},
 			},
 		}
 
@@ -422,6 +424,8 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		require.NotNil(t, result.RuntimeConfig)
 		assert.Equal(t, "node:20-alpine", result.RuntimeConfig.BuilderImage)
 		assert.Equal(t, []string{"git"}, result.RuntimeConfig.AdditionalPackages)
+		assert.Equal(t, []string{"mcp<2"}, result.RuntimeConfig.BuildWith)
+		assert.Equal(t, map[string]string{"NODE_ENV": "production"}, result.RuntimeConfig.RuntimeEnv)
 	})
 
 	t.Run("preserves runtime config for non protocol image", func(t *testing.T) {
@@ -433,6 +437,8 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			RuntimeConfig: &templates.RuntimeConfig{
 				BuilderImage:       "node:20-alpine",
 				AdditionalPackages: []string{"git"},
+				BuildWith:          []string{"mcp<2"},
+				RuntimeEnv:         map[string]string{"NODE_ENV": "production"},
 			},
 		}
 
@@ -442,6 +448,8 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		require.NotNil(t, result.RuntimeConfig)
 		assert.Equal(t, "node:20-alpine", result.RuntimeConfig.BuilderImage)
 		assert.Equal(t, []string{"git"}, result.RuntimeConfig.AdditionalPackages)
+		assert.Equal(t, []string{"mcp<2"}, result.RuntimeConfig.BuildWith)
+		assert.Equal(t, map[string]string{"NODE_ENV": "production"}, result.RuntimeConfig.RuntimeEnv)
 	})
 
 	t.Run("nil runConfig", func(t *testing.T) {

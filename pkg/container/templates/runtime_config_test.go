@@ -570,15 +570,18 @@ func TestRuntimeConfigClone_Detached(t *testing.T) {
 func TestRuntimeConfigClone_DoesNotAliasRuntimeDefaults(t *testing.T) {
 	t.Parallel()
 
+	wantPackages := slices.Clone(RuntimeDefaults[TransportTypeNPX].AdditionalPackages)
+
+	// Mutate the value GetDefaultRuntimeConfig hands back directly - not a
+	// Clone() of it - so this fails if GetDefaultRuntimeConfig ever reverts
+	// to a shallow `return config` instead of `return *config.Clone()`.
 	original := GetDefaultRuntimeConfig(TransportTypeNPX)
-	wantPackages := slices.Clone(original.AdditionalPackages)
+	original.AdditionalPackages[0] = "mutated"
 
-	clone := original.Clone()
-	clone.AdditionalPackages[0] = "mutated"
-
-	fresh := GetDefaultRuntimeConfig(TransportTypeNPX)
-	assert.Equal(t, wantPackages, fresh.AdditionalPackages,
-		"mutating a Clone() must not reach RuntimeDefaults")
+	assert.Equal(t, wantPackages, RuntimeDefaults[TransportTypeNPX].AdditionalPackages,
+		"mutating a GetDefaultRuntimeConfig() result must not reach RuntimeDefaults")
+	assert.Equal(t, wantPackages, GetDefaultRuntimeConfig(TransportTypeNPX).AdditionalPackages,
+		"a fresh GetDefaultRuntimeConfig() call must not observe the earlier mutation")
 }
 
 func TestRuntimeConfigWithOverrides(t *testing.T) {
@@ -671,6 +674,29 @@ func TestRuntimeConfigWithOverrides_RuntimeEnvNilWhenBothEmpty(t *testing.T) {
 	assert.Nil(t, base.WithOverrides(&RuntimeConfig{}).RuntimeEnv)
 }
 
+// TestRuntimeConfigWithOverrides_BuildWithFallsBackToBase pins the API's
+// exact scenario: getBaseRuntimeConfig reads the user's config file as the
+// base, so a global runtime_configs.uvx.build_with pin must survive a
+// request whose runtime_config sets unrelated fields only.
+func TestRuntimeConfigWithOverrides_BuildWithFallsBackToBase(t *testing.T) {
+	t.Parallel()
+
+	base := &RuntimeConfig{
+		BuilderImage: "python:3.14-slim",
+		BuildWith:    []string{"mcp<2"},
+	}
+	override := &RuntimeConfig{BuilderImage: "python:3.11-slim"}
+
+	got := base.WithOverrides(override)
+	assert.Equal(t, []string{"mcp<2"}, got.BuildWith)
+
+	// Detachment: the merge must clone on the fallback path too, not just
+	// the override-wins path — otherwise merged.BuildWith aliases base's
+	// slice via the `merged := *rc` struct copy.
+	base.BuildWith[0] = "mutated"
+	assert.Equal(t, []string{"mcp<2"}, got.BuildWith)
+}
+
 func TestRuntimeConfigWithOverrides_NilEqualsClone(t *testing.T) {
 	t.Parallel()
 
@@ -737,11 +763,35 @@ func TestRuntimeConfigWithOverrides_OutputIsDetachedFromInputs(t *testing.T) {
 }
 
 // TestRuntimeConfigFieldCount guards against a field being added to
-// RuntimeConfig without updating Clone and WithOverrides, both of which
-// enumerate every field individually.
+// RuntimeConfig without updating Clone, WithOverrides, and IsEmpty, all of
+// which enumerate every field individually.
 func TestRuntimeConfigFieldCount(t *testing.T) {
 	t.Parallel()
 
-	// Adding a field? Update Clone and WithOverrides, then bump this.
+	// Adding a field? Update Clone, WithOverrides, and IsEmpty, then bump this.
 	require.Equal(t, 4, reflect.TypeOf(RuntimeConfig{}).NumField())
+}
+
+func TestRuntimeConfigIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rc   *RuntimeConfig
+		want bool
+	}{
+		{name: "nil receiver", rc: nil, want: true},
+		{name: "zero value", rc: &RuntimeConfig{}, want: true},
+		{name: "builder image set", rc: &RuntimeConfig{BuilderImage: "golang:1.26-alpine"}, want: false},
+		{name: "additional packages set", rc: &RuntimeConfig{AdditionalPackages: []string{"git"}}, want: false},
+		{name: "build with set", rc: &RuntimeConfig{BuildWith: []string{"mcp<2"}}, want: false},
+		{name: "runtime env set", rc: &RuntimeConfig{RuntimeEnv: map[string]string{"FOO": "bar"}}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.rc.IsEmpty())
+		})
+	}
 }

@@ -71,6 +71,11 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
+	// Key is the path to a cosign private key used to sign the pushed
+	// artifact
+	Key string `json:"key,omitempty"`
+	// NoSign pushes without signing
+	NoSign bool `json:"no_sign,omitempty"`
 }
 
 // syncSkillsRequest represents the request to sync a project's skills.

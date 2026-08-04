@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/skills/signer"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
@@ -120,6 +121,15 @@ type service struct {
 	skillLookup  SkillLookup
 	gitResolver  gitresolver.Resolver
 	sigVerifier  verifier.Verifier
+	sigSigner    signer.Signer
+}
+
+// WithSigner sets the artifact signer used by Push. Defaults to the
+// Sigstore signer with the composite registry keychain.
+func WithSigner(sg signer.Signer) Option {
+	return func(s *service) {
+		s.sigSigner = sg
+	}
 }
 
 // WithVerifier sets the signature verifier used for install-time

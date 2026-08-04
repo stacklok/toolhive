@@ -4,7 +4,6 @@
 package skillsvc
 
 import (
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,24 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
-
-//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestSync_FeatureDisabledReturnsForbidden(t *testing.T) {
-	gr, _ := newGitResolverMock(t)
-	svc, projectRoot := newLockTestService(t, gr)
-	t.Setenv(skills.LockFileEnvVar, "false")
-
-	_, err := svc.(*service).Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
-	require.Error(t, err)
-	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-}
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
@@ -289,16 +276,26 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	fx.register("unmanaged-skill", gitSkill("unmanaged-skill"))
 	svc, projectRoot := newLockTestService(t, gr)
 
-	// Disable the feature for the initial install so it lands unmanaged
-	// (no lock entry, Managed=false) — simulating a pre-existing install
-	// from before the lock feature was ever enabled.
-	t.Setenv(skills.LockFileEnvVar, "false")
+	// Simulate a pre-existing install from before lock tracking: install
+	// normally, then strip the lock entry and managed flag — the state a
+	// legacy install would be in.
 	ref, _ := gitRef("unmanaged-skill")
 	_, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, AllowUnsigned: true,
 	})
 	require.NoError(t, err)
-	t.Setenv(skills.LockFileEnvVar, "true")
+	root := mustOpenRoot(t, projectRoot)
+	require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+		lf.Remove("unmanaged-skill")
+		return nil
+	}))
+	syncSvc := svc.(*service) //nolint:forcetypeassert
+	legacySk, err := syncSvc.store.Get(t.Context(), "unmanaged-skill", skills.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacySk.Managed = false
+	legacySk.SigstoreBundle = nil
+	require.NoError(t, syncSvc.store.Update(t.Context(), legacySk))
 
 	syncer := svc.(*service) //nolint:forcetypeassert
 	result, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
@@ -366,13 +363,11 @@ func TestSync_PrunesRemovedFromLock(t *testing.T) {
 // client's copy would leave tampering with any other client's materialized
 // files invisible to --check — and which directory got checked would depend
 // on install order.
-//
-//nolint:paralleltest // uses t.Setenv, incompatible with t.Parallel
 func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
+	t.Parallel()
 	gr, fx := newGitResolverMock(t)
 	fx.register("multi-skill", gitSkill("multi-skill"))
 
-	t.Setenv(skills.LockFileEnvVar, "true")
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
 	require.NoError(t, err)

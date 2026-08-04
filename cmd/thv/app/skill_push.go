@@ -9,6 +9,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
+var (
+	skillPushKey    string
+	skillPushNoSign bool
+)
+
 var skillPushCmd = &cobra.Command{
 	Use:   "push [reference]",
 	Short: "Push a built skill",
@@ -19,6 +24,10 @@ var skillPushCmd = &cobra.Command{
 
 func init() {
 	skillCmd.AddCommand(skillPushCmd)
+	skillPushCmd.Flags().StringVar(&skillPushKey, "key", "",
+		"Path to a cosign private key to sign the pushed artifact (COSIGN_PASSWORD decrypts encrypted keys)")
+	skillPushCmd.Flags().BoolVar(&skillPushNoSign, "no-sign", false,
+		"Push without signing (consumers will need an explicit unsigned exception to install project-scoped)")
 }
 
 func skillPushCmdFunc(cmd *cobra.Command, args []string) error {
@@ -26,6 +35,8 @@ func skillPushCmdFunc(cmd *cobra.Command, args []string) error {
 
 	err := c.Push(cmd.Context(), skills.PushOptions{
 		Reference: args[0],
+		Key:       skillPushKey,
+		NoSign:    skillPushNoSign,
 	})
 	if err != nil {
 		return formatSkillError("push skill", err)

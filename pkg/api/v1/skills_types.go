@@ -107,6 +107,9 @@ type upgradeSkillsRequest struct {
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// AllowSignerChange permits upgrading to an artifact signed by a
+	// different identity than the recorded one
+	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
 	// Clients lists target client identifiers. Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`

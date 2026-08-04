@@ -153,9 +153,9 @@ type fakeCore struct {
 	lastCompleteRef atomic.Value // vmcp.CompletionRef
 	completeValues  []string     // returned by Complete when completeErr is nil
 
-	callErr           error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
-	readErr           error
-	readMeta          map[string]any // when set, ReadResource returns it
+	callErr           error          // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	readErr           error          // when set, ReadResource returns it
+	readMeta          map[string]any // when set, ReadResource sets it as result.Meta on success
 	promptErr         error          // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
 	completeErr       error          // when set, Complete returns it (e.g. vmcp.ErrAuthorizationFailed)
 	lookupResourceErr error          // when set, LookupResource returns it for an ADVERTISED URI (admission denial)

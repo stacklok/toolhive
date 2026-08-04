@@ -367,37 +367,16 @@ func (s *Server) coreResourceHandler(
 }
 
 // coreResourceTemplateHandler builds the SDK handler for a Serve-path resource
-// template. It mirrors coreResourceHandler but reads the concrete URI from the
-// request (req.Params.URI) rather than a fixed URI captured at registration,
-// because one template serves a whole family of URIs. It routes that URI through
-// core.ReadResource, which resolves it via the router's template-match fallback.
+// template. It delegates to coreResourceHandler with the concrete URI read from
+// the request (req.Params.URI) rather than a fixed URI captured at registration,
+// because one template serves a whole family of URIs. coreResourceHandler routes
+// that URI through core.ReadResource, which resolves it via the router's
+// template-match fallback.
 func (s *Server) coreResourceTemplateHandler(
 	sessionID, backendName string,
 ) server.ResourceResultHandlerFunc {
 	return func(ctx context.Context, req mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
-			bi.BackendName = backendName
-		}
-
-		uri := req.Params.URI
-
-		caller, _ := auth.IdentityFromContext(ctx)
-		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
-			s.terminateOnBindingFailure(sessionID, uri, err)
-			return nil, fmt.Errorf("unauthorized: %w", err)
-		}
-
-		result, err := s.core.ReadResource(ctx, caller, uri)
-		if err != nil {
-			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return nil, errors.New(vmcp.DenyMessageResourceRead)
-			}
-			return nil, err
-		}
-		return &mcp.ReadResourceResult{
-			Result:   mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
-			Contents: conversion.ToMCPResourceContents(result.Contents),
-		}, nil
+		return s.coreResourceHandler(sessionID, req.Params.URI, backendName)(ctx, req)
 	}
 }
 

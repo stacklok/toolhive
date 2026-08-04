@@ -1978,8 +1978,6 @@ func (h *httpBackendClient) legacyReadResource(
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
-	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
-	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
 		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,

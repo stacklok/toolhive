@@ -277,8 +277,8 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 // today. The code changes are still correct and forward-compatible: they will
 // start working the moment mcpcompat forwards Meta the same way it already
 // does for CallTool, with no further change needed on our side. This is
-// analogous to the pre-existing SDK limitation documented in
-// TestMetaPreservation_ReadResource (inbound resource _meta).
+// analogous to the inbound resource-_meta drop that existed before
+// mcpcompat's result-returning resource handler (toolhive-core#211).
 //
 // This test mutates the global OTEL propagator, so it must NOT run in
 // parallel with the other tests in this file (see propagation_test.go for the

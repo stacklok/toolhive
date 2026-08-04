@@ -1621,6 +1621,9 @@ components:
       - digest-missing
       - validation-rejected
       - lock-write-failed
+      - signature-invalid
+      - signer-mismatch
+      - unsigned-rejected
       - unknown
       type: string
       x-enum-varnames:
@@ -1628,6 +1631,9 @@ components:
       - FailureReasonDigestMissing
       - FailureReasonValidationRejected
       - FailureReasonLockWriteFailed
+      - FailureReasonSignatureInvalid
+      - FailureReasonSignerMismatch
+      - FailureReasonUnsignedRejected
       - FailureReasonUnknown
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:
       description: Status is the current installation status.
@@ -1871,6 +1877,11 @@ components:
         new_resolved_reference:
           description: NewResolvedReference is the new resolvedReference when it changed.
           type: string
+        new_signer_identity:
+          description: |-
+            NewSignerIdentity is the candidate's signer identity when it differs
+            from the recorded one (empty when the candidate is unsigned).
+          type: string
         old_digest:
           description: OldDigest is the digest pinned in the lock file before this
             operation.
@@ -1896,6 +1907,7 @@ components:
       - up-to-date
       - not-upgradable
       - ref-change-blocked
+      - signer-change-blocked
       - failed
       type: string
       x-enum-varnames:
@@ -1903,6 +1915,7 @@ components:
       - UpgradeStatusUpToDate
       - UpgradeStatusNotUpgradable
       - UpgradeStatusRefChangeBlocked
+      - UpgradeStatusSignerChangeBlocked
       - UpgradeStatusFailed
     github_com_stacklok_toolhive_pkg_skills.ValidationResult:
       properties:
@@ -2820,6 +2833,12 @@ components:
     pkg_api_v1.installSkillRequest:
       description: Request to install a skill
       properties:
+        allow_unsigned:
+          description: |-
+            AllowUnsigned permits installing a project-scoped skill without a
+            verified signature; the exception is recorded in the project's lock
+            file.
+          type: boolean
         clients:
           description: |-
             Clients lists target client identifiers (e.g., "claude-code"),
@@ -3161,6 +3180,11 @@ components:
           description: Adopt writes lock entries for existing unmanaged project-scope
             installs
           type: boolean
+        allow_unsigned:
+          description: |-
+            AllowUnsigned permits adopting skills whose signature state cannot be
+            established, recording them as unsigned
+          type: boolean
         check:
           description: Check verifies on-disk content against the lock file without
             installing or writing anything
@@ -3355,6 +3379,11 @@ components:
       properties:
         allow_ref_change:
           description: AllowRefChange permits resolvedReference changes during upgrade
+          type: boolean
+        allow_signer_change:
+          description: |-
+            AllowSignerChange permits upgrading to an artifact signed by a
+            different identity than the recorded one
           type: boolean
         clients:
           description: |-

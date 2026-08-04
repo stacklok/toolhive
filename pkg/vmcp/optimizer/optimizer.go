@@ -14,9 +14,12 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -229,6 +232,50 @@ type CallToolInput struct {
 	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
 }
 
+// callToolArgToolName is the parameters key resolveCallToolTarget hoists a nested
+// name out of. It must match the json tag on CallToolInput.ToolName, since the
+// nested lookup is a map index while the top-level one goes through encoding/json;
+// TestCallToolArgToolNameMatchesStructTag guards the pair against drift.
+const callToolArgToolName = "tool_name"
+
+// resolveCallToolTarget resolves the tool a call_tool invocation targets,
+// accepting the common LLM malformation where tool_name is nested inside
+// parameters instead of sitting alongside it. A top-level name always wins, so a
+// backend tool with its own tool_name argument still works.
+//
+// It is deliberately unexported: decoding a payload into a CallToolInput is the
+// only supported way to learn which tool a call_tool request names. Reading the
+// name out of a raw arguments map instead misses the case-variant keys
+// encoding/json accepts, and a target that authorization and dispatch disagree on
+// is a tool executing under a policy decision made for a different name.
+//
+// params is never modified; a copy is returned when a nested name is hoisted.
+func resolveCallToolTarget(name string, params map[string]any) (string, map[string]any) {
+	if name != "" {
+		return name, params
+	}
+	nested, ok := params[callToolArgToolName].(string)
+	if !ok || nested == "" {
+		return name, params
+	}
+	hoisted := maps.Clone(params)
+	delete(hoisted, callToolArgToolName)
+	return nested, hoisted
+}
+
+// UnmarshalJSON hoists a nested tool_name so dispatch targets the same tool
+// authorization approved. See resolveCallToolTarget.
+func (in *CallToolInput) UnmarshalJSON(data []byte) error {
+	type rawCallToolInput CallToolInput // drops the method set to avoid recursion
+	var raw rawCallToolInput
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	raw.ToolName, raw.Parameters = resolveCallToolTarget(raw.ToolName, raw.Parameters)
+	*in = CallToolInput(raw)
+	return nil
+}
+
 // NewOptimizerFactory creates the embedding client and SQLite tool store from
 // the given OptimizerConfig, then returns an OptimizerFactory and a cleanup
 // function that closes the store. The caller must invoke the cleanup function
@@ -380,7 +427,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 // is invoked directly with the given parameters.
 func (d *toolOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
 	if input.ToolName == "" {
-		return nil, fmt.Errorf("tool_name is required")
+		return nil, fmt.Errorf(
+			`tool_name is required: call_tool expects {"tool_name": "<name from find_tool>", `+
+				`"parameters": {<tool arguments>}}, got parameters keys %v`,
+			slices.Sorted(maps.Keys(input.Parameters)))
 	}
 
 	// Verify the tool exists

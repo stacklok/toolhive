@@ -474,15 +474,19 @@ func TestForwarding_Progress_RealBackend(t *testing.T) {
 // to the downstream client, which has itself set a logging level.
 //
 // Legacy-pinned. The one fact worth keeping AT this test so nobody "fixes"
-// vMCP to make it pass on Modern: go-sdk's SetLoggingLevel (v1.7.0-pre.3)
-// omits the per-request _meta injection every other Modern-aware method
-// performs, so the Modern request it sends is MALFORMED (header without
-// _meta.protocolVersion) and vMCP's -32020 rejection is CORRECT — accepting
-// it would be worse than the failing call. Upstream bug, filed separately.
-// The rest of the disposition (the RPC is removed on Modern, logLevel _meta
-// replaces it, SEP-2577 deprecates logging) lives in the client-edge
-// limitation in docs/arch/10-virtual-mcp-architecture.md; today's Modern
-// contract is pinned by TestIntegration_Modern_RealBackend_LoggingContract.
+// vMCP to make it pass on Modern: go-sdk's SetLoggingLevel omits the per-request
+// _meta injection every other Modern-aware method performs, so the Modern
+// request it sends is MALFORMED (header without _meta.protocolVersion) and
+// vMCP's -32020 rejection is CORRECT — accepting it would be worse than the
+// failing call. This is a PERMANENT fixture of go-sdk v1.7.x, not a bug to wait
+// out: modelcontextprotocol/go-sdk#1116 was closed wont-fix-by-design because
+// the 2026-07-28 revision REMOVED the logging/setLevel RPC (the maintainer's
+// answer: use the per-request logLevel _meta key instead). The rest of the
+// disposition (the RPC removal, the logLevel _meta replacement, SEP-2577's
+// deprecation of logging) lives in the client-edge limitation in
+// docs/arch/10-virtual-mcp-architecture.md; today's Modern contract is pinned
+// by TestIntegration_Modern_RealBackend_LoggingContract, and the Modern log
+// opt-in + relay is exercised by TestModernCallTool_LogLevelGating.
 func TestForwarding_Logging_RealBackend(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), forwardingRealBackendTimeout)

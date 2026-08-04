@@ -1596,6 +1596,9 @@ const docTemplate = `{
                     "digest-missing",
                     "validation-rejected",
                     "lock-write-failed",
+                    "signature-invalid",
+                    "signer-mismatch",
+                    "unsigned-rejected",
                     "unknown"
                 ],
                 "type": "string",
@@ -1604,6 +1607,9 @@ const docTemplate = `{
                     "FailureReasonDigestMissing",
                     "FailureReasonValidationRejected",
                     "FailureReasonLockWriteFailed",
+                    "FailureReasonSignatureInvalid",
+                    "FailureReasonSignerMismatch",
+                    "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
             },
@@ -1903,6 +1909,10 @@ const docTemplate = `{
                         "description": "NewResolvedReference is the new resolvedReference when it changed.",
                         "type": "string"
                     },
+                    "new_signer_identity": {
+                        "description": "NewSignerIdentity is the candidate's signer identity when it differs\nfrom the recorded one (empty when the candidate is unsigned).",
+                        "type": "string"
+                    },
                     "old_digest": {
                         "description": "OldDigest is the digest pinned in the lock file before this operation.",
                         "type": "string"
@@ -1936,6 +1946,7 @@ const docTemplate = `{
                     "up-to-date",
                     "not-upgradable",
                     "ref-change-blocked",
+                    "signer-change-blocked",
                     "failed"
                 ],
                 "type": "string",
@@ -1944,6 +1955,7 @@ const docTemplate = `{
                     "UpgradeStatusUpToDate",
                     "UpgradeStatusNotUpgradable",
                     "UpgradeStatusRefChangeBlocked",
+                    "UpgradeStatusSignerChangeBlocked",
                     "UpgradeStatusFailed"
                 ]
             },
@@ -3111,6 +3123,10 @@ const docTemplate = `{
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits installing a project-scoped skill without a\nverified signature; the exception is recorded in the project's lock\nfile.",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
                         "items": {
@@ -3561,6 +3577,10 @@ const docTemplate = `{
                         "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
                         "type": "boolean"
                     },
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits adopting skills whose signature state cannot be\nestablished, recording them as unsigned",
+                        "type": "boolean"
+                    },
                     "check": {
                         "description": "Check verifies on-disk content against the lock file without installing or writing anything",
                         "type": "boolean"
@@ -3793,6 +3813,10 @@ const docTemplate = `{
                 "properties": {
                     "allow_ref_change": {
                         "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
+                    "allow_signer_change": {
+                        "description": "AllowSignerChange permits upgrading to an artifact signed by a\ndifferent identity than the recorded one",
                         "type": "boolean"
                     },
                     "clients": {

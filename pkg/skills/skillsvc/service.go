@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -118,6 +119,16 @@ type service struct {
 	registry     ociskills.RegistryClient
 	skillLookup  SkillLookup
 	gitResolver  gitresolver.Resolver
+	sigVerifier  verifier.Verifier
+}
+
+// WithVerifier sets the signature verifier used for install-time
+// verification. Defaults to the Sigstore verifier with the composite
+// registry keychain.
+func WithVerifier(v verifier.Verifier) Option {
+	return func(s *service) {
+		s.sigVerifier = v
+	}
 }
 
 // New creates a new SkillService backed by the given store.

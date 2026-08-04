@@ -22,7 +22,7 @@ import (
 // same-commit no-op and upgrade detection.
 func (s *service) installFromGit(
 	ctx context.Context,
-	opts skills.InstallOptions,
+	opts *skills.InstallOptions,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
 	if s.gitResolver == nil {
@@ -70,6 +70,7 @@ func (s *service) installFromGit(
 	opts.Name = resolved.SkillConfig.Name
 	opts.Reference = gitURL
 	opts.Digest = resolved.CommitHash
+
 	if opts.Version == "" && resolved.SkillConfig.Version != "" {
 		opts.Version = resolved.SkillConfig.Version
 	}
@@ -77,12 +78,25 @@ func (s *service) installFromGit(
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	clientTypes, clientDirs, err := s.resolveAndValidateClients(opts, opts.Name, scope, opts.ProjectRoot)
+	// Verify the commit signature before anything is written or recorded.
+	// This runs under the per-skill lock so concurrent first installs
+	// cannot both read an absent lock entry and race their TOFU anchors.
+	if shouldVerifyInstall(*opts, scope) {
+		decision, verifyErr := s.verifyGitInstall(
+			ctx, *opts, resolved.SkillConfig.Name, resolved.CommitPayload, resolved.CommitSignature,
+		)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(opts, decision)
+	}
+
+	clientTypes, clientDirs, err := s.resolveAndValidateClients(*opts, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.applyGitInstall(ctx, opts, scope, clientTypes, clientDirs, resolved.Files)
+	return s.applyGitInstall(ctx, *opts, scope, clientTypes, clientDirs, resolved.Files)
 }
 
 // applyGitInstall handles the create/upgrade/no-op logic for a git-based skill

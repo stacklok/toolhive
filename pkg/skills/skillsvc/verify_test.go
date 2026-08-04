@@ -1,0 +1,321 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package skillsvc
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
+)
+
+const (
+	testSignerIdentity = "/.github/workflows/release.yml"
+	testCertIssuer     = "https://token.actions.githubusercontent.com"
+)
+
+func signedResult() *verifier.Result {
+	return &verifier.Result{
+		Signed:         true,
+		SignerIdentity: testSignerIdentity,
+		CertIssuer:     testCertIssuer,
+		RepositoryURI:  "https://github.com/org/repo",
+		SigstoreURL:    "https://rekor.sigstore.dev",
+		Bundle:         []byte(`{"bundle":true}`),
+	}
+}
+
+// loadLockEntry reads the lock entry for name from projectRoot.
+func loadLockEntry(t *testing.T, projectRoot, name string) (lockfile.Entry, bool) {
+	t.Helper()
+	root, err := lockfile.OpenRoot(projectRoot)
+	require.NoError(t, err)
+	lf, err := lockfile.Load(root)
+	require.NoError(t, err)
+	return lf.Get(name)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_TOFURecordsProvenance(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("signed-skill")
+	fixtures.register("signed-skill", gitSkill("signed-skill"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	// First install: no lock entry yet — trust on first use, nil expected.
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(signedResult(), nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	result, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	entry, ok := loadLockEntry(t, projectRoot, "signed-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance, "TOFU must record the observed identity")
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+	assert.Equal(t, testCertIssuer, entry.Provenance.CertIssuer)
+	assert.False(t, entry.Unsigned)
+	assert.Equal(t, []byte(`{"bundle":true}`), result.Skill.SigstoreBundle,
+		"the bundle must be persisted with the install record")
+
+	// Second install: the recorded identity must flow into the verifier as
+	// the expected identity.
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+			require.NotNil(t, expected, "the second install must enforce the recorded identity")
+			assert.Equal(t, testSignerIdentity, expected.SignerIdentity)
+			return signedResult(), nil
+		})
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+		Force:       true,
+	})
+	require.NoError(t, err)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_UnsignedRejectedWithoutFlag(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("unsigned-skill")
+	fixtures.register("unsigned-skill", gitSkill("unsigned-skill"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+
+	_, ok := loadLockEntry(t, projectRoot, "unsigned-skill")
+	assert.False(t, ok, "a rejected install must not write a lock entry")
+	_, err = svc.Info(t.Context(), skills.InfoOptions{
+		Name: "unsigned-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "a rejected install must not create a DB record")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_UnsignedAcceptedWithFlag(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("unsigned-ok")
+	fixtures.register("unsigned-ok", gitSkill("unsigned-ok"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:          ref,
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+
+	entry, ok := loadLockEntry(t, projectRoot, "unsigned-ok")
+	require.True(t, ok)
+	assert.True(t, entry.Unsigned, "the unsigned exception must be recorded")
+	assert.Nil(t, entry.Provenance)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("pinned-skill")
+	fixtures.register("pinned-skill", gitSkill("pinned-skill"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(signedResult(), nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	// The re-install is signed by someone else: the verifier reports a
+	// mismatch (the expected identity was bound into its policy).
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, verifier.ErrSignerMismatch)
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+		Force:       true,
+	})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+
+	// The prior trusted state is untouched.
+	entry, ok := loadLockEntry(t, projectRoot, "pinned-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_LockedUnsignedRequiresFlagAgain(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("unsigned-locked")
+	fixtures.register("unsigned-locked", gitSkill("unsigned-locked"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(nil, verifier.ErrUnsigned)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:          ref,
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+
+	// Reinstall without the flag: the locked unsigned exception does not
+	// silently renew — the verifier is not even consulted.
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+		Force:       true,
+	})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_UserScopeSkipsVerification(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("user-skill")
+	fixtures.register("user-skill", gitSkill("user-skill"))
+
+	// The mock has no expectations: any verifier call fails the test.
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+
+	svc, _ := newLockTestService(t, gr, WithVerifier(mv))
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name:    ref,
+		Scope:   skills.ScopeUser,
+		Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+}
+
+func TestVerifyLocalInstall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     skills.InstallOptions
+		entry    *lockfile.Entry
+		wantErr  bool
+		unsigned bool
+	}{
+		{
+			name:    "no flag rejected",
+			opts:    skills.InstallOptions{},
+			wantErr: true,
+		},
+		{
+			name:     "flag records unsigned",
+			opts:     skills.InstallOptions{AllowUnsigned: true},
+			unsigned: true,
+		},
+		{
+			name: "locked identity refuses local replacement even with flag",
+			opts: skills.InstallOptions{AllowUnsigned: true},
+			entry: &lockfile.Entry{
+				Name:              "local-skill",
+				Source:            "example.com/org/local-skill",
+				ResolvedReference: "example.com/org/local-skill:v1",
+				Digest:            "sha256:" + strings.Repeat("a", 64),
+				Provenance: &lockfile.Provenance{
+					SignerIdentity: testSignerIdentity,
+					CertIssuer:     testCertIssuer,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "locked unsigned honored with flag",
+			opts: skills.InstallOptions{AllowUnsigned: true},
+			entry: &lockfile.Entry{
+				Name:              "local-skill",
+				Source:            "example.com/org/local-skill",
+				ResolvedReference: "example.com/org/local-skill:v1",
+				Digest:            "sha256:" + strings.Repeat("a", 64),
+				Unsigned:          true,
+			},
+			unsigned: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projectRoot := makeProjectRoot(t)
+			if tc.entry != nil {
+				root, err := lockfile.OpenRoot(projectRoot)
+				require.NoError(t, err)
+				require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+					lf.Upsert(*tc.entry)
+					return nil
+				}))
+			}
+			opts := tc.opts
+			opts.ProjectRoot = projectRoot
+
+			decision, err := verifyLocalInstall(opts, "local-skill")
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.unsigned, decision.unsigned)
+		})
+	}
+}
+
+func TestClassifySignatureError(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, skills.FailureReasonSignerMismatch, classifySignatureError(verifier.ErrSignerMismatch))
+	assert.Equal(t, skills.FailureReasonUnsignedRejected, classifySignatureError(verifier.ErrUnsigned))
+	assert.Equal(t, skills.FailureReasonSignatureInvalid, classifySignatureError(verifier.ErrSignatureInvalid))
+	assert.Equal(t, skills.FailureReason(""), classifySignatureError(assert.AnError))
+}

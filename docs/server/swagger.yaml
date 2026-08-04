@@ -1711,6 +1711,33 @@ components:
             if available.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo:
+      description: |-
+        Provenance is the signer identity the project's lock file records
+        for this skill, when project-scoped and lock-managed.
+      properties:
+        cert_issuer:
+          description: CertIssuer is the OIDC issuer that authenticated the signer.
+          type: string
+        provisional:
+          description: |-
+            Provisional marks provenance with a documented verification gap
+            (git signatures until transparency-log validation lands).
+          type: boolean
+        repository_uri:
+          description: |-
+            RepositoryURI is the source repository from the certificate
+            extensions, when present.
+          type: string
+        signer_identity:
+          description: |-
+            SignerIdentity is the certificate subject identity (workflow path for
+            GitHub Actions certificates, SAN verbatim otherwise).
+          type: string
+        sigstore_url:
+          description: SigstoreURL is the Sigstore instance the signature chains to.
+          type: string
+      type: object
     github_com_stacklok_toolhive_pkg_skills.Scope:
       description: Scope for the installation
       enum:
@@ -1760,6 +1787,13 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill'
         metadata:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata'
+        provenance:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo'
+        unsigned:
+          description: |-
+            Unsigned reports that the lock file records an explicit unsigned
+            exception for this skill.
+          type: boolean
       type: object
     github_com_stacklok_toolhive_pkg_skills.SkillMetadata:
       description: Metadata contains the skill's metadata.

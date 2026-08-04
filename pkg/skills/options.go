@@ -102,14 +102,17 @@ type InstallOptions struct {
 type ProvenanceInfo struct {
 	// SignerIdentity is the certificate subject identity (workflow path for
 	// GitHub Actions certificates, SAN verbatim otherwise).
-	SignerIdentity string `json:"-"`
+	SignerIdentity string `json:"signer_identity"`
 	// CertIssuer is the OIDC issuer that authenticated the signer.
-	CertIssuer string `json:"-"`
+	CertIssuer string `json:"cert_issuer"`
 	// RepositoryURI is the source repository from the certificate
 	// extensions, when present.
-	RepositoryURI string `json:"-"`
+	RepositoryURI string `json:"repository_uri,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
-	SigstoreURL string `json:"-"`
+	SigstoreURL string `json:"sigstore_url,omitempty"`
+	// Provisional marks provenance with a documented verification gap
+	// (git signatures until transparency-log validation lands).
+	Provisional bool `json:"provisional,omitempty"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -121,6 +124,12 @@ type InstallResult struct {
 	// previous state instead of destructively deleting a record this call
 	// did not create. Internal use only — NOT exposed via HTTP API.
 	PreExisting *InstalledSkill `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -155,6 +164,12 @@ type SkillInfo struct {
 	Metadata SkillMetadata `json:"metadata"`
 	// InstalledSkill contains the full installation record.
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
+	// Provenance is the signer identity the project's lock file records
+	// for this skill, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this skill.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation.

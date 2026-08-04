@@ -7,6 +7,7 @@
 package discovery
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +83,12 @@ func FilePath() string {
 	return filepath.Join(defaultDiscoveryDir(), "server.json")
 }
 
+// SecureDirResult reports whether ensureSecureDirIn repaired a previously
+// insecure discovery directory chain.
+type SecureDirResult struct {
+	RepairedInsecureChain bool
+}
+
 // EnsureSecureDir creates the discovery directory chain and locks it down.
 // Callers must invoke it before they read, lock, or otherwise trust anything
 // under the discovery directory, not just before they write.
@@ -93,6 +100,14 @@ func FilePath() string {
 // whole startup cycle, and a Discover result of StateRunning returns before
 // the write is reached at all.
 func EnsureSecureDir() error {
+	_, err := EnsureSecureDirEx()
+	return err
+}
+
+// EnsureSecureDirEx is like EnsureSecureDir but reports whether the chain was
+// repaired from an insecure state. pkg/api uses this under the discovery
+// file lock to fail closed on an existing record instead of deleting it.
+func EnsureSecureDirEx() (SecureDirResult, error) {
 	return ensureSecureDirIn(xdg.StateHome)
 }
 
@@ -100,32 +115,31 @@ func EnsureSecureDir() error {
 // restricts the directories ToolHive owns in it. Windows hardens the full
 // chain; other platforms chmod only the server leaf so shared toolhive state
 // (runconfigs, toolhive.db) keeps its existing group permissions.
-func ensureSecureDirIn(base string) error {
+//
+// A discovery file that existed while the chain was still loose is not removed
+// here: it cannot be classified as legitimate or forged without the startup
+// lock and a health check. pkg/api calls ReconcileDiscoveryAfterInsecureUpgrade
+// under that lock instead.
+func ensureSecureDirIn(base string) (SecureDirResult, error) {
 	secureDirs := discoveryDirsToSecure(base)
-	serverPath := discoveryFilePath(base)
-	fullChain := discoveryDirChain(base)
 
 	hadInsecureChain, err := discoveryChainWasInsecure(secureDirs)
 	if err != nil {
-		return err
+		return SecureDirResult{}, err
 	}
 
+	fullChain := discoveryDirChain(base)
 	if err := mkdirDiscoveryChain(fullChain); err != nil {
-		return err
+		return SecureDirResult{}, err
 	}
 
 	for _, dir := range secureDirs {
 		if err := restrictDiscoveryDirPermissions(dir); err != nil {
-			return err
+			return SecureDirResult{}, err
 		}
 	}
 
-	if hadInsecureChain {
-		if err := invalidateDiscoveryFileAfterInsecureChain(serverPath); err != nil {
-			return err
-		}
-	}
-	return nil
+	return SecureDirResult{RepairedInsecureChain: hadInsecureChain}, nil
 }
 
 func discoveryChainWasInsecure(chain []string) (bool, error) {
@@ -141,14 +155,45 @@ func discoveryChainWasInsecure(chain []string) (bool, error) {
 	return false, nil
 }
 
-// invalidateDiscoveryFileAfterInsecureChain removes a discovery file that may
-// have been tampered with while the directory chain was still writable.
-func invalidateDiscoveryFileAfterInsecureChain(path string) error {
-	err := os.Remove(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("failed to invalidate untrusted discovery file: %w", err)
+// ReconcileDiscoveryAfterInsecureUpgrade runs under the discovery file lock
+// after EnsureSecureDirEx repaired an insecure chain. An existing record cannot
+// be classified as legitimate or forged from directory permissions alone, so
+// startup fails closed when a healthy server answers, removes stale records, or
+// leaves an unhealthy record for the caller to overwrite. It never deletes a
+// record that might belong to a still-running peer.
+func ReconcileDiscoveryAfterInsecureUpgrade(ctx context.Context, repaired bool) error {
+	if !repaired {
+		return nil
 	}
-	return nil
+
+	path := FilePath()
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	result, err := Discover(ctx)
+	if err != nil {
+		return err
+	}
+
+	switch result.State {
+	case StateRunning:
+		return fmt.Errorf("another ToolHive server is already running at %s (PID %d)", result.Info.URL, result.Info.PID)
+	case StateStale:
+		return CleanupStale()
+	case StateUnhealthy:
+		return nil
+	case StateNotFound:
+		return fmt.Errorf(
+			"refusing to start: discovery record %s exists after security upgrade but could not be validated; remove it manually or stop the other server",
+			path,
+		)
+	default:
+		return fmt.Errorf("refusing to start: unexpected discovery state %q after security upgrade", result.State)
+	}
 }
 
 // WriteServerInfo atomically writes the server discovery file.

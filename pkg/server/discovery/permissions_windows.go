@@ -255,3 +255,78 @@ func currentProcessUserSID() (*windows.SID, error) {
 	}
 	return tokenUser.User.Sid, nil
 }
+
+// ValidateRestrictedDiscoveryDACL reports whether dir carries a protected DACL
+// that grants FILE access only to the current process user and SYSTEM.
+func ValidateRestrictedDiscoveryDACL(dir string) error {
+	userSID, err := currentProcessUserSID()
+	if err != nil {
+		return err
+	}
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return err
+	}
+	everyoneSID, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	if err != nil {
+		return err
+	}
+	authUsersSID, err := windows.CreateWellKnownSid(windows.WinAuthenticatedUserSid)
+	if err != nil {
+		return err
+	}
+
+	sd, err := windows.GetNamedSecurityInfo(
+		dir,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to read discovery directory DACL: %w", err)
+	}
+
+	control, _, err := sd.Control()
+	if err != nil {
+		return fmt.Errorf("failed to read discovery directory DACL control: %w", err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return fmt.Errorf("DACL of %s must be protected against inheritance", dir)
+	}
+
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return fmt.Errorf("failed to read discovery directory DACL entries: %w", err)
+	}
+	if dacl == nil {
+		return fmt.Errorf("DACL of %s must not be empty", dir)
+	}
+
+	aces, err := allowACEsFromACL(dacl)
+	if err != nil {
+		return err
+	}
+
+	var userSeen, systemSeen bool
+	for _, ace := range aces {
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		switch {
+		case userSID.Equals(sid):
+			userSeen = true
+		case systemSID.Equals(sid):
+			systemSeen = true
+		case everyoneSID.Equals(sid):
+			return fmt.Errorf("DACL still grants Everyone (%s)", sid)
+		case authUsersSID.Equals(sid):
+			return fmt.Errorf("DACL still grants Authenticated Users (%s)", sid)
+		default:
+			return fmt.Errorf("unexpected allow ACE for SID %s (want only current user + SYSTEM)", sid)
+		}
+	}
+	if !userSeen {
+		return fmt.Errorf("DACL of %s must grant the current process user", dir)
+	}
+	if !systemSeen {
+		return fmt.Errorf("DACL of %s must grant SYSTEM", dir)
+	}
+	return nil
+}

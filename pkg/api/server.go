@@ -614,12 +614,17 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 	// would be too late: a StateRunning result returns before the write, and
 	// the lock file itself would be taken in a directory other accounts can
 	// still write to.
-	if err := discovery.EnsureSecureDir(); err != nil {
+	secure, err := discovery.EnsureSecureDirEx()
+	if err != nil {
 		return err
 	}
 	discoveryPath := discovery.FilePath()
 
 	return fileutils.WithFileLock(discoveryPath, func() error {
+		if err := discovery.ReconcileDiscoveryAfterInsecureUpgrade(ctx, secure.RepairedInsecureChain); err != nil {
+			return err
+		}
+
 		// Guard against overwriting another server's discovery file.
 		result, err := discovery.Discover(ctx)
 		if err != nil {

@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -30,9 +29,8 @@ import (
 // TestWriteDiscoveryFile_RestrictsDirBeforeTrustingExistingFile pins the
 // production ordering. writeDiscoveryFile must lock down the discovery chain
 // before it acquires server.json.lock or calls Discover. A pre-planted file
-// written while the chain was still loose must be invalidated during that
-// lockdown so a victim-owned server.json cannot keep redirecting clients after
-// the DACL is repaired.
+// written while the chain was still loose must not be deleted during lockdown;
+// startup fails closed when the planted record answers healthy.
 //
 //nolint:paralleltest // t.Setenv and xdg.Reload mutate process-wide state
 func TestWriteDiscoveryFile_RestrictsDirBeforeTrustingExistingFile(t *testing.T) {
@@ -79,18 +77,18 @@ func TestWriteDiscoveryFile_RestrictsDirBeforeTrustingExistingFile(t *testing.T)
 	s := &Server{listener: listener, address: listener.Addr().String(), nonce: "our-nonce"}
 
 	err = s.writeDiscoveryFile(context.Background())
-	require.NoError(t, err, "planted file must be invalidated before Discover trusts it")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already running")
 
 	// The chain must already be locked down, on the leaf and on the
 	// intermediate directory.
-	assertRestrictedDACL(t, toolhiveDir)
-	assertRestrictedDACL(t, serverDir)
+	require.NoError(t, discovery.ValidateRestrictedDiscoveryDACL(toolhiveDir))
+	require.NoError(t, discovery.ValidateRestrictedDiscoveryDACL(serverDir))
 
-	// The forged record must not survive the upgrade path.
+	// The forged record must survive lockdown so a healthy predecessor is not erased.
 	onDisk, err := os.ReadFile(discovery.FilePath())
 	require.NoError(t, err)
-	assert.NotEqual(t, string(planted), string(onDisk))
-	assert.Contains(t, string(onDisk), "our-nonce")
+	assert.Equal(t, string(planted), string(onDisk))
 }
 
 func grantEveryone(t *testing.T, path string) {
@@ -99,31 +97,6 @@ func grantEveryone(t *testing.T, path string) {
 	// PowerShell from expanding (OI)/(CI).
 	out, err := exec.Command("icacls", path, "/grant", "*S-1-1-0:(OI)(CI)M").CombinedOutput()
 	require.NoError(t, err, "icacls grant Everyone failed: %s", out)
-}
-
-// aceTrusteePattern captures the trustee of each ACE in an SDDL DACL, which is
-// the last of the six semicolon-separated ACE fields.
-var aceTrusteePattern = regexp.MustCompile(`\(([^)]*)\)`)
-
-// assertRestrictedDACL asserts dir carries a protected DACL that grants nobody
-// but SYSTEM and the process user. The per-ACE permission checks live in the
-// discovery package's own Windows tests; this is the pkg/api view of the same
-// contract.
-func assertRestrictedDACL(t *testing.T, dir string) {
-	t.Helper()
-
-	tokenUser, err := windows.GetCurrentProcessToken().GetTokenUser()
-	require.NoError(t, err)
-	allowed := []string{"SY", tokenUser.User.Sid.String()}
-
-	sddl := dirSDDL(t, dir)
-	assert.Contains(t, sddl, "D:P", "DACL of %s must be protected against inheritance: %s", dir, sddl)
-	for _, ace := range aceTrusteePattern.FindAllStringSubmatch(sddl, -1) {
-		fields := strings.Split(ace[1], ";")
-		trustee := fields[len(fields)-1]
-		assert.Contains(t, allowed, trustee,
-			"DACL of %s must grant only SYSTEM and the process user, found %s: %s", dir, trustee, sddl)
-	}
 }
 
 func dirSDDL(t *testing.T, dir string) string {

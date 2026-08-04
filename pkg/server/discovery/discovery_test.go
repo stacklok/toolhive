@@ -169,7 +169,11 @@ func TestEnsureSecureDirIn_CreatesAndRestrictsChain(t *testing.T) {
 	t.Parallel()
 
 	base := t.TempDir()
-	require.NoError(t, ensureSecureDirIn(base))
+	toolhiveDir := filepath.Join(base, "toolhive")
+	require.NoError(t, os.MkdirAll(toolhiveDir, 0750))
+
+	_, err := ensureSecureDirIn(base)
+	require.NoError(t, err)
 
 	chain := discoveryDirChain(base)
 	require.Len(t, chain, 2)
@@ -184,7 +188,7 @@ func TestEnsureSecureDirIn_CreatesAndRestrictsChain(t *testing.T) {
 	}
 	fi, err := os.Stat(toolhiveDir)
 	require.NoError(t, err)
-	assert.NotEqual(t, os.FileMode(dirPermissions), fi.Mode().Perm(),
+	assert.Equal(t, os.FileMode(0750), fi.Mode().Perm(),
 		"intermediate toolhive dir must keep its existing mode on POSIX")
 	fi, err = os.Stat(serverDir)
 	require.NoError(t, err)
@@ -207,7 +211,8 @@ func TestEnsureSecureDirIn_TightensExistingChain(t *testing.T) {
 		require.NoError(t, os.Chmod(dir, 0755))
 	}
 
-	require.NoError(t, ensureSecureDirIn(base))
+	_, err := ensureSecureDirIn(base)
+	require.NoError(t, err)
 
 	toolhiveDir, serverDir := chain[0], chain[1]
 	fi, err := os.Stat(toolhiveDir)

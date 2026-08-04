@@ -101,18 +101,17 @@ func TestEnsureSecureDirIn_ProtectsIntermediateToolhiveDir(t *testing.T) {
 	require.Contains(t, strings.ToUpper(discoveryDirSDDL(t, toolhiveDir)), "WD",
 		"precondition: intermediate toolhive dir must inherit Everyone (WD)")
 
-	require.NoError(t, ensureSecureDirIn(base))
+	_, err := ensureSecureDirIn(base)
+	require.NoError(t, err)
 
 	assertDiscoveryDACLRestricted(t, toolhiveDir)
 	assertDiscoveryDACLRestricted(t, serverDir)
 }
 
-// TestEnsureSecureDirIn_InvalidatesForgedDiscoveryFile covers the upgrade path
-// where another user truncated and rewrote a victim-owned server.json while
-// the directory chain was still loose. Tightening the DACL is not enough:
-// ownership stayed with the victim, so the planted URL would still be trusted
-// unless the record is invalidated.
-func TestEnsureSecureDirIn_InvalidatesForgedDiscoveryFile(t *testing.T) {
+// TestEnsureSecureDirIn_PreservesDiscoveryFileOnUpgrade ensures repairing an
+// insecure chain does not delete an existing server.json. pkg/api decides
+// under the startup lock whether the record is safe to keep.
+func TestEnsureSecureDirIn_PreservesDiscoveryFileOnUpgrade(t *testing.T) {
 	t.Parallel()
 
 	base := t.TempDir()
@@ -127,12 +126,14 @@ func TestEnsureSecureDirIn_InvalidatesForgedDiscoveryFile(t *testing.T) {
 	require.Contains(t, strings.ToUpper(discoveryDirSDDL(t, serverDir)), "WD",
 		"precondition: server dir must inherit Everyone (WD)")
 
-	require.NoError(t, ensureSecureDirIn(base))
+	_, err := ensureSecureDirIn(base)
+	require.NoError(t, err)
 
 	assertDiscoveryDACLRestricted(t, chain[0])
 	assertDiscoveryDACLRestricted(t, serverDir)
-	_, err := os.Stat(filepath.Join(serverDir, "server.json"))
-	require.ErrorIs(t, err, os.ErrNotExist)
+	got, err := os.ReadFile(filepath.Join(serverDir, "server.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(planted), string(got))
 }
 
 // TestRestrictDiscoveryDir_FailsClosedOnUntrustedOwner covers hostile

@@ -76,6 +76,11 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// AllowSignerChange lets install-time verification re-record the
+	// observed identity instead of enforcing the lock file's recorded one.
+	// Internal use only — set by upgrade when its signer-change guard was
+	// explicitly overridden.
+	AllowSignerChange bool `json:"-"`
 	// Unsigned records the trust decision that this install proceeded
 	// without a verified signature (via AllowUnsigned). Set internally by
 	// install-time verification; recorded as `unsigned: true` in the lock
@@ -311,6 +316,10 @@ type UpgradeOptions struct {
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade.
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// AllowSignerChange permits upgrading to an artifact signed by a
+	// different identity than the one recorded in the lock file; the new
+	// identity is recorded in its place.
+	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
 	// Clients lists target clients (e.g., "claude-code"). Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`
@@ -329,6 +338,10 @@ const (
 	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
 	// UpgradeStatusRefChangeBlocked indicates re-resolution changed resolvedReference.
 	UpgradeStatusRefChangeBlocked UpgradeStatus = "ref-change-blocked"
+	// UpgradeStatusSignerChangeBlocked indicates the candidate artifact is
+	// signed by a different identity (or unsigned) versus the identity the
+	// lock file records.
+	UpgradeStatusSignerChangeBlocked UpgradeStatus = "signer-change-blocked"
 	// UpgradeStatusFailed indicates the upgrade attempt failed.
 	UpgradeStatusFailed UpgradeStatus = "failed"
 )
@@ -346,6 +359,9 @@ type UpgradeOutcome struct {
 	NewDigest string `json:"new_digest,omitempty"`
 	// NewResolvedReference is the new resolvedReference when it changed.
 	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	// NewSignerIdentity is the candidate's signer identity when it differs
+	// from the recorded one (empty when the candidate is unsigned).
+	NewSignerIdentity string `json:"new_signer_identity,omitempty"`
 	// Reason is a typed failure reason when Status is UpgradeStatusFailed.
 	Reason FailureReason `json:"reason,omitempty"`
 	// Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.

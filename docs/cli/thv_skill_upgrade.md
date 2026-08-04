@@ -41,6 +41,7 @@ thv skill upgrade [skill-name...] [flags]
 
 ```
       --allow-ref-change      Permit the resolved reference itself to change during upgrade
+      --allow-signer-change   Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --fail-on-changes       Report what would change without installing anything; a CI freshness gate
       --format string         Output format (json, text) (default "text")

@@ -1907,6 +1907,10 @@ const docTemplate = `{
                         "description": "NewResolvedReference is the new resolvedReference when it changed.",
                         "type": "string"
                     },
+                    "new_signer_identity": {
+                        "description": "NewSignerIdentity is the candidate's signer identity when it differs\nfrom the recorded one (empty when the candidate is unsigned).",
+                        "type": "string"
+                    },
                     "old_digest": {
                         "description": "OldDigest is the digest pinned in the lock file before this operation.",
                         "type": "string"
@@ -1940,6 +1944,7 @@ const docTemplate = `{
                     "up-to-date",
                     "not-upgradable",
                     "ref-change-blocked",
+                    "signer-change-blocked",
                     "failed"
                 ],
                 "type": "string",
@@ -1948,6 +1953,7 @@ const docTemplate = `{
                     "UpgradeStatusUpToDate",
                     "UpgradeStatusNotUpgradable",
                     "UpgradeStatusRefChangeBlocked",
+                    "UpgradeStatusSignerChangeBlocked",
                     "UpgradeStatusFailed"
                 ]
             },
@@ -3805,6 +3811,10 @@ const docTemplate = `{
                 "properties": {
                     "allow_ref_change": {
                         "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
+                    "allow_signer_change": {
+                        "description": "AllowSignerChange permits upgrading to an artifact signed by a\ndifferent identity than the recorded one",
                         "type": "boolean"
                     },
                     "clients": {

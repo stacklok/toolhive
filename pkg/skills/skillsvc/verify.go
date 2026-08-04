@@ -67,6 +67,11 @@ func (s *service) verifyOCIInstall(
 	if err != nil {
 		return nil, err
 	}
+	if opts.AllowSignerChange {
+		// The signer-change guard was explicitly overridden: verify the
+		// chain of trust only and re-record whatever identity is observed.
+		expected, expectUnsigned = nil, false
+	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, skillName)
 	}
@@ -96,6 +101,9 @@ func (s *service) verifyGitInstall(
 	expected, expectUnsigned, err := expectedLockTrust(opts.ProjectRoot, skillName)
 	if err != nil {
 		return nil, err
+	}
+	if opts.AllowSignerChange {
+		expected, expectUnsigned = nil, false
 	}
 	if expectUnsigned {
 		return unsignedLockedDecision(opts, skillName)

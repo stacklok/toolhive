@@ -1875,6 +1875,11 @@ components:
         new_resolved_reference:
           description: NewResolvedReference is the new resolvedReference when it changed.
           type: string
+        new_signer_identity:
+          description: |-
+            NewSignerIdentity is the candidate's signer identity when it differs
+            from the recorded one (empty when the candidate is unsigned).
+          type: string
         old_digest:
           description: OldDigest is the digest pinned in the lock file before this
             operation.
@@ -1900,6 +1905,7 @@ components:
       - up-to-date
       - not-upgradable
       - ref-change-blocked
+      - signer-change-blocked
       - failed
       type: string
       x-enum-varnames:
@@ -1907,6 +1913,7 @@ components:
       - UpgradeStatusUpToDate
       - UpgradeStatusNotUpgradable
       - UpgradeStatusRefChangeBlocked
+      - UpgradeStatusSignerChangeBlocked
       - UpgradeStatusFailed
     github_com_stacklok_toolhive_pkg_skills.ValidationResult:
       properties:
@@ -3370,6 +3377,11 @@ components:
       properties:
         allow_ref_change:
           description: AllowRefChange permits resolvedReference changes during upgrade
+          type: boolean
+        allow_signer_change:
+          description: |-
+            AllowSignerChange permits upgrading to an artifact signed by a
+            different identity than the recorded one
           type: boolean
         clients:
           description: |-

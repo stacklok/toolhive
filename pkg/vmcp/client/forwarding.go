@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/client"
@@ -48,6 +49,12 @@ func (h *httpBackendClient) BindForwarders(
 // relays to the downstream client. It is a no-op when no forwarders are bound or
 // the backend does not advertise the logging capability. Best-effort: a failure
 // is logged at debug and does not fail the caller.
+//
+// This RPC (logging/setLevel) exists only on the LEGACY revision: the 2026-07-28
+// (Modern) revision removed it — go-sdk#1116 was closed wont-fix-by-design — so
+// this is only ever called from legacyCallTool. The Modern equivalent is the
+// per-request io.modelcontextprotocol/logLevel _meta key, which modernCallTool
+// overlays onto the request it mints (see TestModernCallTool_LogLevelGating).
 func (h *httpBackendClient) enableBackendLogging(
 	ctx context.Context, c *client.Client, caps *mcp.ServerCapabilities, backendID string,
 ) {
@@ -244,6 +251,55 @@ func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotif
 		default:
 			// Other notifications (list_changed, resources/updated, ...) are not
 			// mid-call server->client traffic this forwarder relays.
+		}
+	}
+}
+
+// newModernNotificationForwarder builds the onNotification callback modernCall
+// invokes for each server->client notification a Modern (2026-07-28) backend
+// interleaves on the SSE stream ahead of the tool-call response. It is the
+// Modern analogue of newNotificationForwarder: the wire shape differs (raw
+// method + params instead of a typed mcp.JSONRPCNotification), but the relay is
+// the same best-effort NotifyLog/NotifyProgress to the downstream client via the
+// bound notifier, using the captured per-call downstream context. Only the two
+// mid-call methods vMCP opts into (log via the logLevel _meta key, progress via
+// a progressToken) are relayed; anything else is ignored.
+func newModernNotificationForwarder(
+	callCtx context.Context, notifier vmcp.ClientNotifier,
+) func(method string, params json.RawMessage) {
+	// Same WithoutCancel rationale as newNotificationForwarder: notifications can
+	// arrive just after the tool call context is cancelled, but forwarding should
+	// still run best-effort.
+	forwardCtx := context.WithoutCancel(callCtx)
+
+	return func(method string, params json.RawMessage) {
+		switch method {
+		case vmcp.MethodProgressNotification, vmcp.MethodLogNotification:
+		default:
+			return // not a mid-call method this forwarder relays
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(params, &fields); err != nil {
+			slog.Debug("failed to decode modern notification params", "method", method, "error", err)
+			return
+		}
+		if method == vmcp.MethodProgressNotification {
+			if err := notifier.NotifyProgress(forwardCtx, vmcp.ProgressNotification{
+				ProgressToken: fields["progressToken"],
+				Progress:      toFloat(fields["progress"]),
+				Total:         toFloat(fields["total"]),
+				Message:       toString(fields["message"]),
+			}); err != nil {
+				slog.Debug("failed to forward progress notification", "error", err)
+			}
+			return
+		}
+		if err := notifier.NotifyLog(forwardCtx, vmcp.LogMessage{
+			Level:  toString(fields["level"]),
+			Logger: toString(fields["logger"]),
+			Data:   fields["data"],
+		}); err != nil {
+			slog.Debug("failed to forward log notification", "error", err)
 		}
 	}
 }

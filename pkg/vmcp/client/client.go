@@ -64,6 +64,14 @@ const (
 	// Note: This limit is enforced per HTTP response, not per MCP request.
 	// A tools/list response with 1000 tools would be limited to 100MB total.
 	maxResponseSize = 100 * 1024 * 1024 // 100 MB
+
+	// defaultRefutationTTL is the default lifetime of a modernHintRefuted
+	// entry. Chosen to be long enough that a persistently hint-lying backend
+	// (#6154) pays a negligible probe cost (one server/discover per backend
+	// per 5 minutes, only when calls are flowing), and short enough that a
+	// backend redeployed genuinely Modern self-heals its reported revision
+	// within minutes rather than never.
+	defaultRefutationTTL = 5 * time.Minute
 )
 
 // Option configures an httpBackendClient.
@@ -106,6 +114,18 @@ type Option func(*httpBackendClient)
 func WithDialControl(control func(network, address string, c syscall.RawConn) error) Option {
 	return func(h *httpBackendClient) {
 		h.dialControl = control
+	}
+}
+
+// WithRefutationTTL overrides how long a refuted Modern-handshake hint
+// suppresses the confirming server/discover probe in legacyInit. Zero or
+// negative restores the default. Production callers should not set this; it
+// exists so tests can shrink the window.
+func WithRefutationTTL(d time.Duration) Option {
+	return func(h *httpBackendClient) {
+		if d > 0 {
+			h.refutationTTL = d
+		}
 	}
 }
 
@@ -168,6 +188,27 @@ type httpBackendClient struct {
 	// TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation in
 	// reclassify_test.go).
 	revisions sync.Map // map[string]mcpparser.Revision
+
+	// modernHintRefuted records backends whose Legacy-handshake protocol-version
+	// hint was contradicted by an authoritative server/discover probe, keyed by
+	// target.WorkloadID. See legacyInit: a backend can negotiate 2026-07-28 on
+	// the Legacy initialize while its discover response is not a valid Modern
+	// envelope, and the hint must not override the probe in that case. Recording
+	// the refutation stops legacyInit re-probing on every subsequent call for a
+	// backend already known to lie.
+	//
+	// The refutation EXPIRES after refutationTTL: a permanently refuted flag
+	// would pin a redeemed backend (one that lied once but was later redeployed
+	// genuinely Modern) to Legacy forever, because legacyInit skips the
+	// confirming probe while the flag stands. With the TTL, a persistent liar
+	// pays one confirming probe per window instead of per call, and a redeemed
+	// backend self-heals within one window.
+	modernHintRefuted sync.Map // map[string]time.Time (refuted-at)
+
+	// refutationTTL bounds how long a modernHintRefuted entry suppresses the
+	// confirming probe in legacyInit. Defaults to defaultRefutationTTL;
+	// configurable via WithRefutationTTL (tests).
+	refutationTTL time.Duration
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -190,6 +231,7 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry, opts ...Option
 	c := &httpBackendClient{
 		registry:        registry,
 		secretsProvider: secrets.NewEnvironmentProvider(),
+		refutationTTL:   defaultRefutationTTL,
 	}
 	for _, o := range opts {
 		o(c)
@@ -1067,7 +1109,7 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 		Capabilities      mcp.ServerCapabilities `json:"capabilities"`
 		SupportedVersions []string               `json:"supportedVersions"`
 	}
-	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover); err != nil {
+	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover, "", nil); err != nil {
 		return nil, err
 	}
 	// Exact-match on MCPVersionModern (2026-07-28): vMCP's shim only speaks that
@@ -1249,7 +1291,7 @@ func modernListAll[T any](
 ) ([]T, error) {
 	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
 		var page map[string]json.RawMessage
-		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", nil, &page); err != nil {
+		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", nil, &page, "", nil); err != nil {
 			return nil, "", err
 		}
 		var items []T
@@ -1401,7 +1443,7 @@ func (h *httpBackendClient) legacyListCapabilities(
 	}()
 
 	// Initialize the client and get server capabilities
-	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
+	serverCaps, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
@@ -1472,17 +1514,71 @@ var errLegacyInitFailed = errors.New("legacy initialize step failed")
 // returned by initializeClient is genuine either way (discover or plain
 // initialize), so when it equals MCPVersionModern the cache is flipped here
 // instead of waiting for an error that will never come.
+//
+// The negotiated version is a HINT, not proof, and it is only allowed to
+// override an existing classification once server/discover has confirmed it.
+// The two genuinely disagree in the field: github-mcp-server v1.6.0 negotiates
+// 2026-07-28 on the Legacy initialize while answering server/discover with a
+// body carrying no resultType, which modernCall rightly rejects as
+// Legacy-shaped. Promoting on the hint alone made the two self-corrections
+// fight -- the probe cached Legacy, this promoted back to Modern, the next
+// Modern call failed on that same body and reclassified to Legacy -- so every
+// other health check failed indefinitely (#6154).
+//
+// So: with no cached revision the hint is trusted outright (that is the
+// uncached-Legacy fallback dispatch takes when a probe errors, and the case
+// this self-heal was written for). Against a cached Legacy classification the
+// hint must win a confirming probe first; probeRevision caches whatever it
+// finds, so a genuinely Modern backend still self-heals in one extra round
+// trip. A refuted hint is remembered (modernHintRefuted) so the confirming
+// probe runs at most once per refutationTTL window per backend rather than on
+// every call — and a redeemed backend (refuted once, later genuinely Modern)
+// self-heals within one window instead of never.
 func (h *httpBackendClient) legacyInit(
-	ctx context.Context, c *client.Client, backendID string,
+	ctx context.Context, c *client.Client, target *vmcp.BackendTarget,
 ) (*mcp.ServerCapabilities, error) {
+	backendID := target.WorkloadID
 	caps, negotiatedVersion, err := initializeClient(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
 	}
-	if negotiatedVersion == mcpparser.MCPVersionModern {
+	if negotiatedVersion != mcpparser.MCPVersionModern {
+		return caps, nil
+	}
+
+	cached, isCached := h.cachedRevision(backendID)
+	switch {
+	case !isCached:
 		h.setRevision(backendID, mcpparser.RevisionModern)
+	case cached == mcpparser.RevisionLegacy:
+		if h.hintRefuted(backendID) {
+			break
+		}
+		// probeRevision caches its own verdict, so a confirmation needs no
+		// setRevision here. A probe error leaves the cache untouched.
+		if probed, perr := h.probeRevision(ctx, target); perr == nil && probed != mcpparser.RevisionModern {
+			slog.DebugContext(ctx, "legacy handshake negotiated Modern but discover disagrees; keeping Legacy",
+				"backend", backendID, "negotiated", negotiatedVersion)
+			h.modernHintRefuted.Store(backendID, time.Now())
+		}
 	}
 	return caps, nil
+}
+
+// hintRefuted reports whether backendID's Modern-handshake hint is currently
+// refuted: a refutation was recorded and has not yet aged past refutationTTL.
+// An expired entry is deleted so the map stays bounded by live backends.
+func (h *httpBackendClient) hintRefuted(backendID string) bool {
+	v, ok := h.modernHintRefuted.Load(backendID)
+	if !ok {
+		return false
+	}
+	refutedAt, ok := v.(time.Time)
+	if !ok || time.Since(refutedAt) > h.refutationTTL {
+		h.modernHintRefuted.Delete(backendID)
+		return false
+	}
+	return true
 }
 
 // dispatch resolves the backend's MCP revision (cache hit, else probeRevision)
@@ -1662,9 +1758,24 @@ func (h *httpBackendClient) modernCallTool(
 	if len(meta) > 0 {
 		params["_meta"] = meta
 	}
+
+	// Modern logging parity with the Legacy path (enableBackendLogging): when
+	// server->client forwarding is bound, opt the call in to the backend's
+	// notifications/message at debug level via the per-request logLevel _meta key
+	// (the Modern replacement for the removed logging/setLevel RPC), and relay any
+	// interleaved notifications to the downstream client. Both are no-ops when
+	// forwarding is unbound — no logLevel key is sent and no listener is attached.
+	fwd := h.forwarders.Load()
+	var logLevel string
+	var onNotification func(string, json.RawMessage)
+	if fwd != nil && fwd.notifier != nil {
+		logLevel = string(mcp.LoggingLevelDebug)
+		onNotification = newModernNotificationForwarder(ctx, fwd.notifier)
+	}
+
 	var result mcp.CallToolResult
 	if err := modernCall(
-		ctx, hc, target.BaseURL, "tools/call", params, backendToolName, paramHeaders, &result,
+		ctx, hc, target.BaseURL, "tools/call", params, backendToolName, paramHeaders, &result, logLevel, onNotification,
 	); err != nil {
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
@@ -1689,7 +1800,7 @@ func (h *httpBackendClient) legacyCallTool(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
+	serverCaps, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
@@ -1854,7 +1965,7 @@ func (h *httpBackendClient) modernReadResource(
 		Meta map[string]any `json:"_meta"`
 	}
 	params := map[string]any{"uri": backendURI}
-	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, nil, &res); err != nil {
+	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, nil, &res, "", nil); err != nil {
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 	mcpContents := make([]mcp.ResourceContents, len(res.Contents))
@@ -1887,7 +1998,7 @@ func (h *httpBackendClient) legacyReadResource(
 	}()
 
 	// Initialize the client
-	if _, err := h.legacyInit(ctx, c, target.WorkloadID); err != nil {
+	if _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -1913,8 +2024,6 @@ func (h *httpBackendClient) legacyReadResource(
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
-	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
-	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
 		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,
@@ -1972,7 +2081,7 @@ func (h *httpBackendClient) modernGetPrompt(
 		} `json:"messages"`
 		Meta map[string]any `json:"_meta"`
 	}
-	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, nil, &res); err != nil {
+	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, nil, &res, "", nil); err != nil {
 		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 	messages := make([]vmcp.PromptMessage, 0, len(res.Messages))
@@ -2005,7 +2114,7 @@ func (h *httpBackendClient) legacyGetPrompt(
 	}()
 
 	// Initialize the client
-	if _, err := h.legacyInit(ctx, c, target.WorkloadID); err != nil {
+	if _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2094,7 +2203,7 @@ func (h *httpBackendClient) modernComplete(
 			HasMore bool     `json:"hasMore"`
 		} `json:"completion"`
 	}
-	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", nil, &res)
+	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", nil, &res, "", nil)
 	if errors.Is(err, mcp.ErrMethodNotFound) {
 		return &vmcp.CompletionResult{Values: []string{}}, nil
 	}
@@ -2146,7 +2255,7 @@ func (h *httpBackendClient) legacyComplete(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := h.legacyInit(ctx, c, target.WorkloadID)
+	serverCaps, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}

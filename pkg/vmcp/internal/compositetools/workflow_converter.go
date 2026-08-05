@@ -5,11 +5,12 @@ package compositetools
 
 import (
 	"fmt"
-	"strings"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
 // FilterWorkflowDefsForSession returns only the workflow definitions whose every
@@ -40,11 +41,6 @@ func FilterWorkflowDefsForSession(
 // references a backend tool that is present in the session routing table.
 // Returns false if rt is nil and the workflow contains any tool steps,
 // since a nil routing table means no tools are routable in this session.
-//
-// Composite tool step names use the convention "{workloadID}.{toolName}" where
-// workloadID is a Kubernetes resource name (no dots). The routing table may store
-// tools under resolved/prefixed names (e.g. "{workloadID}_echo" with prefix strategy),
-// so we look up by BackendTarget.WorkloadID rather than the resolved key directly.
 func allToolStepsAccessible(def *composer.WorkflowDefinition, rt *vmcp.RoutingTable) bool {
 	for _, step := range def.Steps {
 		if step.Type == composer.StepTypeTool {
@@ -71,38 +67,12 @@ func allToolStepsAccessible(def *composer.WorkflowDefinition, rt *vmcp.RoutingTa
 }
 
 // isToolStepAccessible reports whether a composite tool step's tool name can be
-// resolved to an accessible backend tool in the given routing table.
-//
-// Step tool names use the "{workloadID}.{toolName}" convention. Since conflict
-// resolution strategies (e.g. prefix) may rename tools in the routing table
-// (e.g. "echo" → "yardstick-backend_echo"), we check for accessibility by
-// matching on WorkloadID and the original backend capability name rather than
-// the resolved routing table key.
+// resolved to an accessible backend tool in the given routing table. It is a
+// thin nil-safe wrapper around the shared router.ResolveToolRef primitive so
+// accessibility filtering and annotation resolution cannot drift.
 func isToolStepAccessible(stepTool string, rt *vmcp.RoutingTable) bool {
-	// Fast path: exact match in the routing table.
-	if _, ok := rt.Tools[stepTool]; ok {
-		return true
-	}
-
-	// Parse "{workloadID}.{toolName}" convention.
-	// Workload IDs are Kubernetes resource names and cannot contain dots,
-	// so the first dot separates the workload ID from the tool name.
-	dotIdx := strings.Index(stepTool, ".")
-	if dotIdx <= 0 {
-		return false
-	}
-	workloadID := stepTool[:dotIdx]
-	originalName := stepTool[dotIdx+1:]
-
-	for resolvedName, target := range rt.Tools {
-		if target.WorkloadID != workloadID {
-			continue
-		}
-		if target.GetBackendCapabilityName(resolvedName) == originalName {
-			return true
-		}
-	}
-	return false
+	_, ok := router.ResolveToolRef(rt, stepTool)
+	return ok
 }
 
 // ConvertWorkflowDefsToTools converts workflow definitions to vmcp.Tool format.
@@ -116,9 +86,24 @@ func isToolStepAccessible(stepTool string, rt *vmcp.RoutingTable) bool {
 //   - Description: workflow.Description
 //   - InputSchema: workflow.Parameters (JSON Schema format)
 //   - OutputSchema: workflow.Output (JSON Schema format, if defined)
+//   - Annotations: the safety floor derived from the step tools' annotations,
+//     merged with the workflow's explicit annotations, if any. When a workflow
+//     has at least one tool step the floor is always non-nil (fail-closed):
+//     backends that declare no annotations produce a conservative floor rather
+//     than no floor.
+//
+// stepResolver may be nil (or return nil for every step), in which case each
+// tool step's annotations are treated as unknown and taint the floor
+// conservatively. When a workflow's explicit annotations contradict the derived
+// safety floor, the composite tool is DROPPED (not advertised) with a warning
+// that names the offending step tool(s) — an explicit declaration must never
+// make a tool look safer than its steps allow.
 //
 // Returns a slice of vmcp.Tool ready for aggregation and exposure to clients.
-func ConvertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []vmcp.Tool {
+func ConvertWorkflowDefsToTools(
+	defs map[string]*composer.WorkflowDefinition,
+	stepResolver StepAnnotationResolver,
+) []vmcp.Tool {
 	if len(defs) == 0 {
 		return nil // Idiomatic Go: nil slice for empty result
 	}
@@ -136,10 +121,82 @@ func ConvertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []
 			tool.OutputSchema = buildOutputSchema(def.Output)
 		}
 
+		// Derive the safety floor from the step tools, merge explicit
+		// annotations over it, and drop the tool on a contradiction.
+		if ann, ok := resolveCompositeAnnotations(def, stepResolver); ok {
+			tool.Annotations = ann
+		} else {
+			continue
+		}
+
 		tools = append(tools, tool)
 	}
 
 	return tools
+}
+
+// resolveCompositeAnnotations computes the advertised annotations for a
+// composite tool: the floor derived from the step tools merged with the
+// workflow's explicit annotations. It returns ok=false when the explicit
+// annotations contradict the floor, in which case the caller must not
+// advertise the tool.
+//
+// stepRefs (the tool references of the steps that produced the floor) is
+// threaded into the drop warning so the author can locate the offending step.
+func resolveCompositeAnnotations(
+	def *composer.WorkflowDefinition,
+	stepResolver StepAnnotationResolver,
+) (ann *vmcp.ToolAnnotations, ok bool) {
+	// No resolver and no explicit annotations: nothing to derive or merge.
+	// (A workflow whose backends declare no annotations but has explicit
+	// annotations still runs through Derive + the contradiction guard below.)
+	if stepResolver == nil && def.Annotations == nil {
+		return nil, true
+	}
+
+	stepAnn, stepRefs := resolveStepAnnotations(def, stepResolver)
+	floor := DeriveCompositeAnnotations(stepAnn)
+	explicit := def.Annotations.ToAnnotations()
+	if err := CheckAnnotationContradiction(explicit, floor); err != nil {
+		slog.Warn("composite tool annotations contradict the safety floor; omitting composite tool",
+			"tool", def.Name, "step_tools", stepRefs, "error", err)
+		return nil, false
+	}
+	return MergeAnnotations(floor, explicit), true
+}
+
+// resolveStepAnnotations collects the annotations of every tool step in the
+// workflow, including forEach inner steps, mirroring the traversal in
+// allToolStepsAccessible. It returns the annotations and, in parallel, the
+// step tool references that produced them — so a contradiction warning can name
+// the offending step(s). A nil resolver (or an unknown step tool) yields a nil
+// entry, which the derivation treats conservatively as "unknown". A forEach
+// step with a nil InnerStep contributes nothing and never panics.
+func resolveStepAnnotations(
+	def *composer.WorkflowDefinition,
+	stepResolver StepAnnotationResolver,
+) (anns []*vmcp.ToolAnnotations, refs []string) {
+	resolve := func(stepTool string) {
+		var ann *vmcp.ToolAnnotations
+		if stepResolver != nil {
+			ann = stepResolver(stepTool)
+		}
+		anns = append(anns, ann)
+		refs = append(refs, stepTool)
+	}
+	for i := range def.Steps {
+		step := &def.Steps[i]
+		if step.Type == composer.StepTypeTool {
+			resolve(step.Tool)
+		}
+		// A forEach step whose InnerStep is nil is structurally invalid (caught
+		// earlier by validation); guard against a nil deref here regardless.
+		if step.Type == composer.StepTypeForEach && step.InnerStep != nil &&
+			step.InnerStep.Type == composer.StepTypeTool {
+			resolve(step.InnerStep.Tool)
+		}
+	}
+	return anns, refs
 }
 
 // ValidateNoToolConflicts validates that composite tool names don't conflict with backend tool names.
@@ -150,6 +207,12 @@ func ConvertWorkflowDefsToTools(defs map[string]*composer.WorkflowDefinition) []
 //
 // This validation ensures clear separation and prevents runtime confusion.
 // Returns an error listing all conflicting tool names if any conflicts are found.
+//
+// Note: this path builds composite Tool values only to detect name collisions,
+// so it passes a noop annotation resolver and ignores the derived annotations.
+// (D4 — extracting a CompositeToolNames primitive shared with the advertise
+// path is tracked as a low-priority follow-up; the noop resolver keeps the
+// collision check free of annotation-resolution cost.)
 func ValidateNoToolConflicts(backendTools, compositeTools []vmcp.Tool) error {
 	// Build set of backend tool names for O(1) lookups
 	backendNames := make(map[string]bool, len(backendTools))

@@ -76,6 +76,42 @@ func compileResourceTemplates(rt *vmcp.RoutingTable) []compiledResourceTemplate 
 	return compiled
 }
 
+// ResolveToolRef resolves a composite-tool step reference ("{workloadID}.{toolName}")
+// to its routing-table key, returning ok=false when the reference does not
+// resolve. It is the shared primitive behind both composite-tool accessibility
+// filtering (compositetools.isToolStepAccessible) and per-step annotation
+// resolution (core.stepAnnotationResolver), so the two paths cannot drift.
+//
+// rt may be nil (returns "", false). Resolution order mirrors ResolveToolName:
+//  1. Exact key: the resolved/conflict-resolved name stored in rt.Tools.
+//  2. Dot convention "{workloadID}.{originalCapabilityName}": workload IDs
+//     are Kubernetes resource names (no dots), so the first dot separates the
+//     workload ID from the original backend capability name. A leading dot
+//     (dotIdx == 0) is rejected so an empty workload ID never matches.
+func ResolveToolRef(rt *vmcp.RoutingTable, stepTool string) (resolvedName string, ok bool) {
+	if rt == nil || rt.Tools == nil || stepTool == "" {
+		return "", false
+	}
+
+	// Fast path: exact key match.
+	if _, exists := rt.Tools[stepTool]; exists {
+		return stepTool, true
+	}
+
+	// Fallback: dot convention "{workloadID}.{toolName}".
+	if dotIdx := strings.Index(stepTool, "."); dotIdx > 0 {
+		workloadID := stepTool[:dotIdx]
+		capName := stepTool[dotIdx+1:]
+		for resolvedName, target := range rt.Tools {
+			if target.WorkloadID == workloadID && target.GetBackendCapabilityName(resolvedName) == capName {
+				return resolvedName, true
+			}
+		}
+	}
+
+	return "", false
+}
+
 // RouteTool resolves a tool name to its backend target using the session's
 // routing table directly.
 //

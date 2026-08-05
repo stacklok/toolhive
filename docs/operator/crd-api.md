@@ -365,6 +365,7 @@ _Appears in:_
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
+| `annotations` _[vmcp.config.ToolAnnotationsOverride](#vmcpconfigtoolannotationsoverride)_ | Annotations declares MCP tool annotations for the composite tool.<br />Annotation derivation runs at ADVERTISE TIME (when tools/list is served<br />and the backend tools are aggregated), not at CRD admission — thv vmcp<br />validate does NOT check annotation contradictions. The derived floor is<br />fail-closed: when the workflow has one or more tool steps the floor is<br />always non-nil, and any step whose annotations are nil/unknown taints the<br />floor conservatively (readOnly=false, destructive=true, openWorld=true).<br />A workflow with no tool steps (e.g. only elicitation) has no floor.<br />When nil, annotations are derived from the annotations of the backend tools<br />referenced by the workflow's steps (e.g. readOnlyHint is true only when every<br />step tool is read-only). When set, the values are an explicit author<br />declaration merged over the derived floor — subject to a safety-floor<br />guardrail that drops the composite tool (with a warning naming the offending<br />step tools) if an explicit hint would make the tool look safer than its<br />steps allow. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.CompositeToolRef
@@ -760,7 +761,9 @@ All fields use pointers so nil means "don't override" while zero values
 
 
 _Appears in:_
+- [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
 - [vmcp.config.ToolOverride](#vmcpconfigtooloverride)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)
 
 
 
@@ -4441,6 +4444,7 @@ _Appears in:_
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
+| `annotations` _[vmcp.config.ToolAnnotationsOverride](#vmcpconfigtoolannotationsoverride)_ | Annotations declares MCP tool annotations for the composite tool.<br />Annotation derivation runs at ADVERTISE TIME (when tools/list is served<br />and the backend tools are aggregated), not at CRD admission — thv vmcp<br />validate does NOT check annotation contradictions. The derived floor is<br />fail-closed: when the workflow has one or more tool steps the floor is<br />always non-nil, and any step whose annotations are nil/unknown taints the<br />floor conservatively (readOnly=false, destructive=true, openWorld=true).<br />A workflow with no tool steps (e.g. only elicitation) has no floor.<br />When nil, annotations are derived from the annotations of the backend tools<br />referenced by the workflow's steps (e.g. readOnlyHint is true only when every<br />step tool is read-only). When set, the values are an explicit author<br />declaration merged over the derived floor — subject to a safety-floor<br />guardrail that drops the composite tool (with a warning naming the offending<br />step tools) if an explicit hint would make the tool look safer than its<br />steps allow. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.VirtualMCPCompositeToolDefinitionStatus

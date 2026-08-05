@@ -1322,6 +1322,47 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: DestructiveHint overrides the destructive
+                                hint annotation.
+                              type: boolean
+                            idempotentHint:
+                              description: IdempotentHint overrides the idempotent
+                                hint annotation.
+                              type: boolean
+                            openWorldHint:
+                              description: OpenWorldHint overrides the open-world
+                                hint annotation.
+                              type: boolean
+                            readOnlyHint:
+                              description: ReadOnlyHint overrides the read-only hint
+                                annotation.
+                              type: boolean
+                            title:
+                              description: Title overrides the human-readable title
+                                annotation.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string
@@ -4786,6 +4827,47 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: DestructiveHint overrides the destructive
+                                hint annotation.
+                              type: boolean
+                            idempotentHint:
+                              description: IdempotentHint overrides the idempotent
+                                hint annotation.
+                              type: boolean
+                            openWorldHint:
+                              description: OpenWorldHint overrides the open-world
+                                hint annotation.
+                              type: boolean
+                            readOnlyHint:
+                              description: ReadOnlyHint overrides the read-only hint
+                                annotation.
+                              type: boolean
+                            title:
+                              description: Title overrides the human-readable title
+                                annotation.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string

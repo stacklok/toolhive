@@ -638,7 +638,7 @@ func (c *coreVMCP) advertisedTools(agg *aggregator.AggregatedCapabilities) []vmc
 		return agg.Tools
 	}
 
-	composite := compositetools.ConvertWorkflowDefsToTools(defs)
+	composite := compositetools.ConvertWorkflowDefsToTools(defs, stepAnnotationResolver(agg))
 	out := make([]vmcp.Tool, 0, len(agg.Tools)+len(composite))
 	out = append(out, agg.Tools...)
 	out = append(out, composite...)
@@ -665,11 +665,38 @@ func (c *coreVMCP) accessibleComposites(
 	if len(defs) == 0 {
 		return nil
 	}
-	if err := compositetools.ValidateNoToolConflicts(agg.Tools, compositetools.ConvertWorkflowDefsToTools(defs)); err != nil {
+	// Annotations are irrelevant to name-conflict detection, so derivation is
+	// skipped here via a noop resolver.
+	noopResolver := func(string) *vmcp.ToolAnnotations { return nil }
+	if err := compositetools.ValidateNoToolConflicts(
+		agg.Tools, compositetools.ConvertWorkflowDefsToTools(defs, noopResolver)); err != nil {
 		slog.Warn("composite tool name conflict detected; omitting composite tools", "error", err)
 		return nil
 	}
 	return defs
+}
+
+// stepAnnotationResolver returns a StepAnnotationResolver that maps a composite
+// tool's step reference ("{workloadID}.{toolName}") to the backend tool's
+// annotations, using agg's routing table and aggregated tools. Resolution goes
+// through the shared router.ResolveToolRef primitive (the same path
+// isToolStepAccessible uses), so accessibility filtering and annotation
+// resolution cannot drift. Unknown step tools resolve to nil annotations
+// (treated conservatively by the derivation).
+func stepAnnotationResolver(agg *aggregator.AggregatedCapabilities) compositetools.StepAnnotationResolver {
+	annByName := make(map[string]*vmcp.ToolAnnotations, len(agg.Tools))
+	for i := range agg.Tools {
+		if agg.Tools[i].Annotations != nil {
+			annByName[agg.Tools[i].Name] = agg.Tools[i].Annotations
+		}
+	}
+	return func(stepTool string) *vmcp.ToolAnnotations {
+		resolvedName, ok := router.ResolveToolRef(agg.RoutingTable, stepTool)
+		if !ok {
+			return nil
+		}
+		return annByName[resolvedName]
+	}
 }
 
 // validateConfig checks New's required inputs and the elicitation contract,

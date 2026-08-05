@@ -252,7 +252,9 @@ Steps can be of three types:
 - **elicitation**: Request user input via MCP elicitation protocol
 - **forEach**: Iterate over a collection from a previous step, executing an inner tool step per item with bounded parallelism
 
-**Implementation**: `pkg/vmcp/composer/`
+**Tool annotations**: Composite tools advertise MCP tool annotations computed at advertise time via a derive-then-merge ordering. First, a safety floor is derived from the annotations of the step tools (including `forEach` inner steps): `readOnlyHint` is the AND across steps, `destructiveHint` and `openWorldHint` are the OR across steps (unknown steps taint conservatively), and `idempotentHint` is never derived. Then any explicit `annotations` declared on the composite tool definition are merged over the floor, with explicitly set fields winning. An explicit hint may be more conservative than the floor, but if it would make the tool look safer than its steps allow (e.g. `readOnlyHint: true` when a step is not read-only), the composite tool is dropped from `tools/list` with a warning rather than advertised misleadingly.
+
+**Implementation**: `pkg/vmcp/composer/` (execution), `pkg/vmcp/internal/compositetools/` (advertised tool conversion and annotation derivation)
 
 ## Backend MCP Revision Classification
 

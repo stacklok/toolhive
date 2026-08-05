@@ -143,6 +143,51 @@ func TestCallTool_CompositeNotAccessible(t *testing.T) {
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
 }
 
+// TestStepAnnotationResolver_DottedNameResolution (Q5) verifies that a
+// composite-tool step reference using the "{workloadID}.{toolName}" dot
+// convention resolves to the correct backend annotations through the routing
+// table's resolved (prefixed) key. With prefix conflict resolution the routing
+// table stores "be1_echo" while the step still references "be1.echo"; the
+// resolver must match via WorkloadID + original capability name and return the
+// annotations registered under the resolved name.
+func TestStepAnnotationResolver_DottedNameResolution(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+	backendAnn := &vmcp.ToolAnnotations{
+		ReadOnlyHint:    &trueVal,
+		DestructiveHint: &falseVal,
+		OpenWorldHint:   &falseVal,
+	}
+
+	agg := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{
+			{Name: "be1_echo", BackendID: testBackendID, Annotations: backendAnn},
+		},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{
+			"be1_echo": {
+				WorkloadID:             testBackendID,
+				BaseURL:                "http://" + testBackendID + ":8080",
+				OriginalCapabilityName: "echo",
+			},
+		}},
+	}
+
+	resolver := stepAnnotationResolver(agg)
+	require.NotNil(t, resolver)
+
+	// Dotted reference resolves to the prefixed routing-table key's annotations.
+	got := resolver("be1.echo")
+	require.NotNil(t, got, "dotted step ref must resolve through the routing table")
+	assert.Same(t, backendAnn, got, "resolved annotations must come from the resolved (prefixed) tool name")
+
+	// The resolved key itself also resolves (exact-match fast path).
+	assert.Same(t, backendAnn, resolver("be1_echo"))
+
+	// An unknown step tool resolves to nil (treated conservatively upstream).
+	assert.Nil(t, resolver("be1.unknown"))
+}
+
 func TestReadResource(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)

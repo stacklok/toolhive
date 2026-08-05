@@ -720,6 +720,26 @@ type CompositeToolConfig struct {
 	// If not specified, the workflow returns the last step's output (backward compatible).
 	// +optional
 	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
+
+	// Annotations declares MCP tool annotations for the composite tool.
+	//
+	// Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+	// and the backend tools are aggregated), not at CRD admission — thv vmcp
+	// validate does NOT check annotation contradictions. The derived floor is
+	// fail-closed: when the workflow has one or more tool steps the floor is
+	// always non-nil, and any step whose annotations are nil/unknown taints the
+	// floor conservatively (readOnly=false, destructive=true, openWorld=true).
+	// A workflow with no tool steps (e.g. only elicitation) has no floor.
+	//
+	// When nil, annotations are derived from the annotations of the backend tools
+	// referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+	// step tool is read-only). When set, the values are an explicit author
+	// declaration merged over the derived floor — subject to a safety-floor
+	// guardrail that drops the composite tool (with a warning naming the offending
+	// step tools) if an explicit hint would make the tool look safer than its
+	// steps allow.
+	// +optional
+	Annotations *ToolAnnotationsOverride `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
 // CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.

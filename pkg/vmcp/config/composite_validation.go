@@ -41,6 +41,13 @@ const (
 // ValidateCompositeToolConfig validates a CompositeToolConfig.
 // This is the primary entry point for composite tool validation, used by both
 // webhooks (VirtualMCPServer, VirtualMCPCompositeToolDefinition) and runtime validation.
+//
+// Note: the tool.Annotations field requires no structural check here — all of
+// its fields are optional pointers with no invalid value. The annotations
+// safety-floor guardrail (rejecting explicit hints that would make the
+// composite tool look safer than its step tools allow) runs at runtime
+// (advertise time), not config-load, because step-tool annotations are only
+// known once backends are aggregated.
 func ValidateCompositeToolConfig(pathPrefix string, tool *CompositeToolConfig) error {
 	var errors []string
 

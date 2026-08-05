@@ -646,6 +646,28 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid composite tool with annotations",
+			tools: []CompositeToolConfig{
+				{
+					Name:        "report_workflow",
+					Description: "Read-only report workflow",
+					Timeout:     Duration(30 * time.Minute),
+					Steps: []WorkflowStepConfig{
+						{
+							ID:   "fetch",
+							Type: "tool",
+							Tool: "github.get_pr",
+						},
+					},
+					Annotations: &ToolAnnotationsOverride{
+						Title:        ptrTo("Report Workflow"),
+						ReadOnlyHint: ptrTo(true),
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "missing tool name",
 			tools: []CompositeToolConfig{
 				{

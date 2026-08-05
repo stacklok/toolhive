@@ -348,7 +348,7 @@ func TestConvertWorkflowDefsToToolsWithOutputSchema(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tools := ConvertWorkflowDefsToTools(tt.defs)
+			tools := ConvertWorkflowDefsToTools(tt.defs, nil)
 
 			if len(tools) != tt.want {
 				t.Errorf("ConvertWorkflowDefsToTools() returned %d tools, want %d", len(tools), tt.want)
@@ -535,6 +535,505 @@ func TestFilterWorkflowDefsForSession(t *testing.T) {
 		})
 	}
 }
+
+func TestDeriveCompositeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+
+	tests := []struct {
+		name    string
+		stepAnn []*vmcp.ToolAnnotations
+		want    *vmcp.ToolAnnotations
+	}{
+		{
+			name:    "empty input (no tool steps) yields nil floor",
+			stepAnn: nil,
+			want:    nil,
+		},
+		{
+			// Fail-closed (issue #6192): ≥1 tool step exists but none declares
+			// annotations → conservative floor, NOT nil. An explicit readOnlyHint:true
+			// against this floor is dropped by CheckAnnotationContradiction.
+			name:    "all nil annotations (tool steps exist, none declare) yields conservative floor",
+			stepAnn: []*vmcp.ToolAnnotations{nil, nil},
+			want: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &falseVal,
+				DestructiveHint: &trueVal,
+				OpenWorldHint:   &trueVal,
+			},
+		},
+		{
+			name: "all steps read-only",
+			stepAnn: []*vmcp.ToolAnnotations{
+				{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+				{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &trueVal},
+			},
+			want: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &trueVal,
+				DestructiveHint: &falseVal,
+				OpenWorldHint:   &trueVal,
+			},
+		},
+		{
+			name: "one non-read-only step makes floor not read-only",
+			stepAnn: []*vmcp.ToolAnnotations{
+				{ReadOnlyHint: &trueVal},
+				{ReadOnlyHint: &falseVal},
+			},
+			want: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &falseVal,
+				DestructiveHint: &trueVal, // nil hints taint conservatively
+				OpenWorldHint:   &trueVal,
+			},
+		},
+		{
+			name: "nil step annotations taint destructive and open-world",
+			stepAnn: []*vmcp.ToolAnnotations{
+				{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+				nil,
+			},
+			want: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &falseVal,
+				DestructiveHint: &trueVal,
+				OpenWorldHint:   &trueVal,
+			},
+		},
+		{
+			name: "destructive OR across steps",
+			stepAnn: []*vmcp.ToolAnnotations{
+				{ReadOnlyHint: &falseVal, DestructiveHint: &trueVal, OpenWorldHint: &falseVal},
+				{ReadOnlyHint: &falseVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			},
+			want: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &falseVal,
+				DestructiveHint: &trueVal,
+				OpenWorldHint:   &falseVal,
+			},
+		},
+		{
+			name: "idempotent hint is never derived",
+			stepAnn: []*vmcp.ToolAnnotations{
+				{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal, IdempotentHint: &trueVal},
+			},
+			want: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &trueVal,
+				DestructiveHint: &falseVal,
+				OpenWorldHint:   &falseVal,
+				IdempotentHint:  nil,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := DeriveCompositeAnnotations(tt.stepAnn)
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("DeriveCompositeAnnotations() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCheckAnnotationContradiction(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+
+	tests := []struct {
+		name     string
+		explicit *vmcp.ToolAnnotations
+		floor    *vmcp.ToolAnnotations
+		wantErr  bool
+	}{
+		{
+			name:     "nil explicit",
+			explicit: nil,
+			floor:    &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+			wantErr:  false,
+		},
+		{
+			name:     "nil floor",
+			explicit: &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+			floor:    nil,
+			wantErr:  false,
+		},
+		{
+			name:     "readOnly true against non-read-only floor",
+			explicit: &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+			floor:    &vmcp.ToolAnnotations{ReadOnlyHint: &falseVal},
+			wantErr:  true,
+		},
+		{
+			name:     "readOnly true against unknown read-only floor",
+			explicit: &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+			floor:    &vmcp.ToolAnnotations{ReadOnlyHint: nil},
+			wantErr:  true,
+		},
+		{
+			name:     "destructive false against destructive floor",
+			explicit: &vmcp.ToolAnnotations{DestructiveHint: &falseVal},
+			floor:    &vmcp.ToolAnnotations{DestructiveHint: &trueVal},
+			wantErr:  true,
+		},
+		{
+			name:     "openWorld false against open-world floor",
+			explicit: &vmcp.ToolAnnotations{OpenWorldHint: &falseVal},
+			floor:    &vmcp.ToolAnnotations{OpenWorldHint: &trueVal},
+			wantErr:  true,
+		},
+		{
+			name:     "equal annotations",
+			explicit: &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal},
+			floor:    &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal, DestructiveHint: &falseVal},
+			wantErr:  false,
+		},
+		{
+			name:     "more conservative readOnly false when floor is true",
+			explicit: &vmcp.ToolAnnotations{ReadOnlyHint: &falseVal},
+			floor:    &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+			wantErr:  false,
+		},
+		{
+			name:     "more conservative destructive true when floor is false",
+			explicit: &vmcp.ToolAnnotations{DestructiveHint: &trueVal},
+			floor:    &vmcp.ToolAnnotations{DestructiveHint: &falseVal},
+			wantErr:  false,
+		},
+		{
+			name:     "idempotent never contradicts",
+			explicit: &vmcp.ToolAnnotations{IdempotentHint: &trueVal},
+			floor:    &vmcp.ToolAnnotations{IdempotentHint: &falseVal},
+			wantErr:  false,
+		},
+		{
+			// Q1: explicit destructiveHint:false against a floor whose destructiveHint
+			// is nil (unknown) is allowed — the floor does not assert the tool is
+			// destructive, so the explicit claim does not contradict it.
+			name:     "destructiveHint:false against nil-floor destructiveHint (nil-floor-hint guard)",
+			explicit: &vmcp.ToolAnnotations{DestructiveHint: &falseVal},
+			floor:    &vmcp.ToolAnnotations{DestructiveHint: nil},
+			wantErr:  false,
+		},
+		{
+			// Q2: explicit openWorldHint:false against a floor whose openWorldHint is
+			// nil (unknown) is allowed for the same reason.
+			name:     "openWorldHint:false against nil-floor openWorldHint (nil-floor-hint guard)",
+			explicit: &vmcp.ToolAnnotations{OpenWorldHint: &falseVal},
+			floor:    &vmcp.ToolAnnotations{OpenWorldHint: nil},
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := CheckAnnotationContradiction(tt.explicit, tt.floor)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CheckAnnotationContradiction() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMergeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+
+	tests := []struct {
+		name     string
+		floor    *vmcp.ToolAnnotations
+		explicit *vmcp.ToolAnnotations
+		want     *vmcp.ToolAnnotations
+	}{
+		{
+			name:     "both nil",
+			floor:    nil,
+			explicit: nil,
+			want:     nil,
+		},
+		{
+			name:     "floor only",
+			floor:    &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+			explicit: nil,
+			want:     &vmcp.ToolAnnotations{ReadOnlyHint: &trueVal},
+		},
+		{
+			name:     "explicit only",
+			floor:    nil,
+			explicit: &vmcp.ToolAnnotations{Title: "T", IdempotentHint: &trueVal},
+			want:     &vmcp.ToolAnnotations{Title: "T", IdempotentHint: &trueVal},
+		},
+		{
+			name: "explicit non-nil fields win per hint",
+			floor: &vmcp.ToolAnnotations{
+				Title:           "Floor",
+				ReadOnlyHint:    &trueVal,
+				DestructiveHint: &trueVal,
+				OpenWorldHint:   &trueVal,
+			},
+			explicit: &vmcp.ToolAnnotations{
+				Title:           "Explicit",
+				ReadOnlyHint:    &falseVal,
+				IdempotentHint:  &trueVal,
+				DestructiveHint: nil, // nil keeps floor
+			},
+			want: &vmcp.ToolAnnotations{
+				Title:           "Explicit",
+				ReadOnlyHint:    &falseVal,
+				DestructiveHint: &trueVal,
+				IdempotentHint:  &trueVal,
+				OpenWorldHint:   &trueVal,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := MergeAnnotations(tt.floor, tt.explicit)
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("MergeAnnotations() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestConvertWorkflowDefsToToolsAnnotations(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+
+	resolver := func(ann map[string]*vmcp.ToolAnnotations) StepAnnotationResolver {
+		return func(stepTool string) *vmcp.ToolAnnotations { return ann[stepTool] }
+	}
+
+	tests := []struct {
+		name         string
+		defs         map[string]*composer.WorkflowDefinition
+		stepResolver StepAnnotationResolver
+		want         map[string]*vmcp.ToolAnnotations // tool name -> expected annotations (absent = dropped)
+	}{
+		{
+			name: "derives annotations from step tools",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+						{ID: "s2", Type: composer.StepTypeTool, Tool: "backend.list"},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+				"backend.list": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			}),
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			},
+		},
+		{
+			name: "forEach inner step contributes to derivation",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+						{
+							ID:   "s2",
+							Type: composer.StepTypeForEach,
+							InnerStep: &composer.WorkflowStep{
+								ID: "inner", Type: composer.StepTypeTool, Tool: "backend.write",
+							},
+						},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read":  {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+				"backend.write": {ReadOnlyHint: &falseVal, DestructiveHint: &trueVal, OpenWorldHint: &trueVal},
+			}),
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf": {ReadOnlyHint: &falseVal, DestructiveHint: &trueVal, OpenWorldHint: &trueVal},
+			},
+		},
+		{
+			name: "explicit annotations merge over the derived floor",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+					},
+					Annotations: &config.ToolAnnotationsOverride{
+						Title:          ptr("My Tool"),
+						IdempotentHint: &trueVal,
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			}),
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf": {
+					Title:           "My Tool",
+					ReadOnlyHint:    &trueVal,
+					DestructiveHint: &falseVal,
+					OpenWorldHint:   &falseVal,
+					IdempotentHint:  &trueVal,
+				},
+			},
+		},
+		{
+			name: "contradicting tool is dropped, others kept",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf_bad": {
+					Name:        "wf_bad",
+					Description: "contradicting workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.write"},
+					},
+					Annotations: &config.ToolAnnotationsOverride{ReadOnlyHint: &trueVal},
+				},
+				"wf_ok": {
+					Name:        "wf_ok",
+					Description: "valid workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read":  {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+				"backend.write": {ReadOnlyHint: &falseVal, DestructiveHint: &trueVal, OpenWorldHint: &trueVal},
+			}),
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf_ok": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			},
+		},
+		{
+			name: "unknown step tool taints the floor",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+						{ID: "s2", Type: composer.StepTypeTool, Tool: "backend.unknown"},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			}),
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf": {ReadOnlyHint: &falseVal, DestructiveHint: &trueVal, OpenWorldHint: &trueVal},
+			},
+		},
+		{
+			name: "nil resolver with no explicit annotations yields no annotations",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+					},
+				},
+			},
+			stepResolver: nil,
+			want:         map[string]*vmcp.ToolAnnotations{"wf": nil},
+		},
+		{
+			// Q4: with a nil stepResolver the floor cannot be derived (all steps are
+			// unknown), but an explicit annotation that does not tighten safety
+			// against the conservative floor still passes through.
+			name: "nil resolver with explicit annotations passes explicit through",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+					},
+					Annotations: &config.ToolAnnotationsOverride{
+						Title:          ptr("Explicit Tool"),
+						IdempotentHint: &trueVal,
+					},
+				},
+			},
+			stepResolver: nil,
+			// Conservative floor (readOnly=false, destructive=true, openWorld=true)
+			// merged with the explicit Title + IdempotentHint.
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf": {
+					Title:           "Explicit Tool",
+					ReadOnlyHint:    &falseVal,
+					DestructiveHint: &trueVal,
+					OpenWorldHint:   &trueVal,
+					IdempotentHint:  &trueVal,
+				},
+			},
+		},
+		{
+			// Q3: a forEach step with a nil InnerStep is structurally invalid but must
+			// be skipped (no panic) during annotation resolution.
+			name: "forEach with nil InnerStep is skipped without panic",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name:        "wf",
+					Description: "workflow",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+						{ID: "s2", Type: composer.StepTypeForEach, InnerStep: nil},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			}),
+			want: map[string]*vmcp.ToolAnnotations{
+				"wf": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tools := ConvertWorkflowDefsToTools(tt.defs, tt.stepResolver)
+
+			if len(tools) != len(tt.want) {
+				t.Fatalf("ConvertWorkflowDefsToTools() returned %d tools, want %d", len(tools), len(tt.want))
+			}
+			for _, tool := range tools {
+				wantAnn, ok := tt.want[tool.Name]
+				if !ok {
+					t.Errorf("unexpected tool %q in result", tool.Name)
+					continue
+				}
+				if diff := cmp.Diff(wantAnn, tool.Annotations); diff != "" {
+					t.Errorf("tool %q annotations mismatch (-want +got):\n%s", tool.Name, diff)
+				}
+			}
+		})
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
 
 func TestBuildOutputPropertySchema(t *testing.T) {
 	t.Parallel()

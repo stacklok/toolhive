@@ -96,10 +96,14 @@ func (w *listChangedResyncWorker) loop() {
 }
 
 // buildListChangedSink returns the sink passed to
-// SessionManager.CreateSession for a newly-registered session. The returned
-// sink runs on the backend receive-loop goroutine and only hands work off to a
-// per-(session, kind) coalescing worker (see listChangedResyncWorker) — it
-// never does the cache purge or backend re-aggregation inline.
+// SessionManager.CreateSession for a newly-registered session, plus the
+// session's KindTools worker so registration can also register it for
+// backend-health-driven fan-out (#5786, serve_health_resync.go) — health
+// transitions reuse the exact same coalescing worker a backend tools
+// list_changed notification drives. The returned sink runs on the backend
+// receive-loop goroutine and only hands work off to a per-(session, kind)
+// coalescing worker (see listChangedResyncWorker) — it never does the cache
+// purge or backend re-aggregation inline.
 //
 // It builds one listChangedResyncWorker per ChangeKind (tools, resources,
 // prompts) rather than a single shared worker: each worker's run closure
@@ -131,7 +135,7 @@ func (w *listChangedResyncWorker) loop() {
 // otherwise be denied.
 func (s *Server) buildListChangedSink(
 	sessionID string, session server.ClientSession, identity *auth.Identity, forwardedHeaders map[string]string,
-) vmcpsession.ListChangedSink {
+) (vmcpsession.ListChangedSink, *listChangedResyncWorker) {
 	newWorker := func(kind vmcpsession.ChangeKind) *listChangedResyncWorker {
 		return &listChangedResyncWorker{
 			baseCtx: s.resyncBaseCtx,
@@ -145,7 +149,7 @@ func (s *Server) buildListChangedSink(
 		vmcpsession.KindResources: newWorker(vmcpsession.KindResources),
 		vmcpsession.KindPrompts:   newWorker(vmcpsession.KindPrompts),
 	}
-	return func(_ context.Context, backendWorkloadID string, kind vmcpsession.ChangeKind) {
+	sink := func(_ context.Context, backendWorkloadID string, kind vmcpsession.ChangeKind) {
 		worker, ok := workers[kind]
 		if !ok {
 			slog.Debug("ignoring list_changed notification of unknown kind",
@@ -156,6 +160,7 @@ func (s *Server) buildListChangedSink(
 			"session_id", sessionID, "backend_id", backendWorkloadID, "kind", kind)
 		worker.trigger()
 	}
+	return sink, workers[vmcpsession.KindTools]
 }
 
 // runListChangedResync performs one coalesced resync for a session, for the
@@ -182,7 +187,11 @@ func (s *Server) runListChangedResync(
 ) {
 	// Liveness guard: if the session is gone (terminated/expired) there is
 	// nothing to resync, and doing the work would waste a full backend sweep.
+	// Also prune the session's health-driven fan-out registration (#5786):
+	// TTL expiry and SDK-initiated termination end sessions without server
+	// involvement, so this lazy prune is what keeps the registry bounded.
 	if _, ok := s.vmcpSessionMgr.GetMultiSession(baseCtx, sessionID); !ok {
+		s.healthResync.remove(sessionID)
 		slog.Debug("skipping list_changed resync for terminated session", "session_id", sessionID, "kind", kind)
 		return
 	}

@@ -32,7 +32,7 @@ const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
 // metadata and layer data, then delegates to the standard extraction flow.
 func (s *service) installFromOCI(
 	ctx context.Context,
-	opts skills.InstallOptions,
+	opts *skills.InstallOptions,
 	scope skills.Scope,
 	ref nameref.Reference,
 ) (*skills.InstallResult, error) {
@@ -104,6 +104,7 @@ func (s *service) installFromOCI(
 	opts.LayerData = layerData
 	opts.Reference = ociRef
 	opts.Digest = pulledDigest.String()
+
 	if opts.Version == "" && skillConfig.Version != "" {
 		opts.Version = skillConfig.Version
 	}
@@ -112,7 +113,20 @@ func (s *service) installFromOCI(
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	return s.installWithExtraction(ctx, opts, scope)
+	// Verify the artifact signature before anything is extracted or
+	// recorded; the decision (verified identity or explicit unsigned
+	// exception) travels on opts into the DB record and lock entry. This
+	// runs under the per-skill lock so concurrent first installs cannot
+	// both read an absent lock entry and race their TOFU anchors.
+	if shouldVerifyInstall(*opts, scope) {
+		decision, verifyErr := s.verifyOCIInstall(ctx, *opts, skillConfig.Name, ociRef, opts.Digest)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(opts, decision)
+	}
+
+	return s.installWithExtraction(ctx, *opts, scope)
 }
 
 // resolveFromLocalStore attempts to resolve a skill name against the local

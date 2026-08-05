@@ -740,3 +740,51 @@ type failReader struct{}
 func (*failReader) Read([]byte) (int, error) {
 	return 0, errors.New("simulated read error")
 }
+
+// TestInstallCarriesAllowUnsigned round-trips the unsigned exception through
+// the client's request body — without this, the CLI flag silently never
+// reaches the server (every --allow-unsigned install would 403 telling the
+// user to pass the flag they passed).
+func TestInstallCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	var got installRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(installResponse{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Install(t.Context(), skills.InstallOptions{
+		Name:          "my-skill",
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   "/tmp/project",
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}
+
+// TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for
+// the sync/adopt path.
+func TestSyncCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	var got syncRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(skills.SyncResult{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot:   "/tmp/project",
+		Adopt:         true,
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}

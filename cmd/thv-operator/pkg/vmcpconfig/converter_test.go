@@ -1424,23 +1424,23 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 	}
 }
 
-// TestConvert_DefaultVisibilityPreserved guards against silently dropping the
+// TestConvert_DefaultToolVisibilityPreserved guards against silently dropping the
 // aggregation visibility setting. convertAggregation hand-copies fields rather
-// than deep-copying, so omitting DefaultVisibility there would let the CRD accept
-// `defaultVisibility: deny` while the rendered vMCP config falls back to
+// than deep-copying, so omitting DefaultToolVisibility there would let the CRD accept
+// `defaultToolVisibility: deny` while the rendered vMCP config falls back to
 // advertise-everything — a security-relevant setting that looks applied and is
 // not. An empty value must survive as empty (the aggregator treats it as allow),
 // so pre-existing CRs keep today's behavior.
-func TestConvert_DefaultVisibilityPreserved(t *testing.T) {
+func TestConvert_DefaultToolVisibilityPreserved(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		set  vmcpconfig.DefaultVisibility
-		want vmcpconfig.DefaultVisibility
+		set  vmcpconfig.DefaultToolVisibility
+		want vmcpconfig.DefaultToolVisibility
 	}{
-		{name: "deny is carried through to the rendered config", set: vmcpconfig.DefaultVisibilityDeny, want: vmcpconfig.DefaultVisibilityDeny},
-		{name: "allow is carried through to the rendered config", set: vmcpconfig.DefaultVisibilityAllow, want: vmcpconfig.DefaultVisibilityAllow},
+		{name: "deny is carried through to the rendered config", set: vmcpconfig.DefaultToolVisibilityDeny, want: vmcpconfig.DefaultToolVisibilityDeny},
+		{name: "allow is carried through to the rendered config", set: vmcpconfig.DefaultToolVisibilityAllow, want: vmcpconfig.DefaultToolVisibilityAllow},
 		{name: "unset stays unset (treated as allow downstream)", set: "", want: ""},
 	}
 
@@ -1454,8 +1454,8 @@ func TestConvert_DefaultVisibilityPreserved(t *testing.T) {
 				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
 				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
 					Aggregation: &vmcpconfig.AggregationConfig{
-						DefaultVisibility: tt.set,
-						Tools:             []*vmcpconfig.WorkloadToolConfig{{Workload: "backend1"}},
+						DefaultToolVisibility: tt.set,
+						Tools:                 []*vmcpconfig.WorkloadToolConfig{{Workload: "backend1"}},
 					},
 				}),
 			)
@@ -1468,8 +1468,8 @@ func TestConvert_DefaultVisibilityPreserved(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, got)
 			require.NotNil(t, got.Aggregation)
-			assert.Equal(t, tt.want, got.Aggregation.DefaultVisibility,
-				"defaultVisibility must survive CRD-to-config conversion")
+			assert.Equal(t, tt.want, got.Aggregation.DefaultToolVisibility,
+				"defaultToolVisibility must survive CRD-to-config conversion")
 		})
 	}
 }

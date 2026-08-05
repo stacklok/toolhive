@@ -1032,10 +1032,9 @@ spec:
                               type: string
                             type: array
                         type: object
-                      defaultVisibility:
-                        default: allow
+                      defaultToolVisibility:
                         description: |-
-                          DefaultVisibility controls whether a backend with NO entry in Tools has its
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
                           tools advertised to MCP clients.
                             - allow (default): every tool from an unlisted backend is advertised, so
                               adding a workload to the group exposes it without further configuration.
@@ -1047,6 +1046,17 @@ spec:
                           entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
                           every other visibility setting here, this controls advertising only — hidden
                           tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+
+                          No kubebuilder default: "" already behaves as allow everywhere that reads this
+                          field, so defaulting would change only the serialized bytes — and apiextensions
+                          applies structural defaults on decode, so every existing VirtualMCPServer would
+                          come back with the field set, changing config.yaml, its ConfigMap checksum, and
+                          the pod template that stamps it. That restarts every vMCP deployment once for a
+                          no-op field.
                         enum:
                         - allow
                         - deny
@@ -4515,10 +4525,9 @@ spec:
                               type: string
                             type: array
                         type: object
-                      defaultVisibility:
-                        default: allow
+                      defaultToolVisibility:
                         description: |-
-                          DefaultVisibility controls whether a backend with NO entry in Tools has its
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
                           tools advertised to MCP clients.
                             - allow (default): every tool from an unlisted backend is advertised, so
                               adding a workload to the group exposes it without further configuration.
@@ -4530,6 +4539,17 @@ spec:
                           entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
                           every other visibility setting here, this controls advertising only — hidden
                           tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+
+                          No kubebuilder default: "" already behaves as allow everywhere that reads this
+                          field, so defaulting would change only the serialized bytes — and apiextensions
+                          applies structural defaults on decode, so every existing VirtualMCPServer would
+                          come back with the field set, changing config.yaml, its ConfigMap checksum, and
+                          the pod template that stamps it. That restarts every vMCP deployment once for a
+                          no-op field.
                         enum:
                         - allow
                         - deny

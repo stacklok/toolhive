@@ -262,7 +262,7 @@ _Appears in:_
 AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 
 Tool Visibility vs Routing:
-  - ExcludeAllTools, DefaultVisibility, per-workload ExcludeAll, and Filter control
+  - ExcludeAllTools, DefaultToolVisibility, per-workload ExcludeAll, and Filter control
     which tools are advertised to MCP clients (visible in tools/list responses).
   - ALL backend tools remain available in the internal routing table, allowing
     composite tools to call hidden backend tools.
@@ -280,7 +280,7 @@ _Appears in:_
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
 | `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
-| `defaultVisibility` _[vmcp.config.DefaultVisibility](#vmcpconfigdefaultvisibility)_ | DefaultVisibility controls whether a backend with NO entry in Tools has its<br />tools advertised to MCP clients.<br />  - allow (default): every tool from an unlisted backend is advertised, so<br />    adding a workload to the group exposes it without further configuration.<br />  - deny: an unlisted backend contributes no tools, so only backends named in<br />    Tools are advertised. Use this when the set of exposed tools must be<br />    enumerated deliberately rather than inherited from group membership.<br />A backend that DOES have a Tools entry is unaffected by this setting: the<br />entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like<br />every other visibility setting here, this controls advertising only — hidden<br />tools remain in the routing table for composite tools (see the type doc). | allow | Enum: [allow deny] <br />Optional: \{\} <br /> |
+| `defaultToolVisibility` _[vmcp.config.DefaultToolVisibility](#vmcpconfigdefaulttoolvisibility)_ | DefaultToolVisibility controls whether a backend with NO entry in Tools has its<br />tools advertised to MCP clients.<br />  - allow (default): every tool from an unlisted backend is advertised, so<br />    adding a workload to the group exposes it without further configuration.<br />  - deny: an unlisted backend contributes no tools, so only backends named in<br />    Tools are advertised. Use this when the set of exposed tools must be<br />    enumerated deliberately rather than inherited from group membership.<br />A backend that DOES have a Tools entry is unaffected by this setting: the<br />entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like<br />every other visibility setting here, this controls advertising only — hidden<br />tools remain in the routing table for composite tools (see the type doc).<br />This gates TOOLS only. An unlisted backend's resources, resource templates,<br />and prompts are still advertised under deny; mergeResources/mergePrompts have<br />no equivalent check.<br />No kubebuilder default: "" already behaves as allow everywhere that reads this<br />field, so defaulting would change only the serialized bytes — and apiextensions<br />applies structural defaults on decode, so every existing VirtualMCPServer would<br />come back with the field set, changing config.yaml, its ConfigMap checksum, and<br />the pod template that stamps it. That restarts every vMCP deployment once for a<br />no-op field. |  | Enum: [allow deny] <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.AuthzConfig
@@ -439,6 +439,23 @@ _Appears in:_
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy.<br />Listed workloads also keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
 
 
+#### vmcp.config.DefaultToolVisibility
+
+_Underlying type:_ _string_
+
+DefaultToolVisibility names the advertising default applied to backends with no
+per-workload Tools entry. The zero value is "" (unset), which behaves as
+DefaultToolVisibilityAllow so existing configs keep today's behavior.
+
+
+
+_Appears in:_
+- [vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)
+
+| Field | Description |
+| --- | --- |
+| `allow` | DefaultToolVisibilityAllow advertises every tool from a backend with no Tools<br />entry. This is the default and matches pre-DefaultToolVisibility behavior.<br /> |
+| `deny` | DefaultToolVisibilityDeny advertises no tools from a backend with no Tools entry.<br /> |
 
 
 

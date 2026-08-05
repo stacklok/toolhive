@@ -738,9 +738,9 @@ func (c *Converter) convertAggregation(
 	//     failing OPEN on config users rely on to withhold tools.
 	srcAgg := vmcp.Spec.Config.Aggregation
 	agg := &vmcpconfig.AggregationConfig{
-		ConflictResolution: srcAgg.ConflictResolution,
-		ExcludeAllTools:    srcAgg.ExcludeAllTools,
-		DefaultVisibility:  srcAgg.DefaultVisibility,
+		ConflictResolution:    srcAgg.ConflictResolution,
+		ExcludeAllTools:       srcAgg.ExcludeAllTools,
+		DefaultToolVisibility: srcAgg.DefaultToolVisibility,
 	}
 
 	// Apply defaults for conflict resolution

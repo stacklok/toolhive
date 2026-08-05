@@ -593,8 +593,8 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 			errMsg:  "tool overrides are required",
 		},
 		{
-			// Omitted defaultVisibility keeps pre-existing configs valid.
-			name: "unset defaultVisibility is valid",
+			// Omitted defaultToolVisibility keeps pre-existing configs valid.
+			name: "unset defaultToolVisibility is valid",
 			agg: &AggregationConfig{
 				ConflictResolution:       vmcp.ConflictStrategyPrefix,
 				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
@@ -602,34 +602,78 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "defaultVisibility deny is valid",
+			name: "defaultToolVisibility deny is valid",
 			agg: &AggregationConfig{
 				ConflictResolution:       vmcp.ConflictStrategyPrefix,
 				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
-				DefaultVisibility:        DefaultVisibilityDeny,
+				DefaultToolVisibility:    DefaultToolVisibilityDeny,
 			},
 			wantErr: false,
 		},
 		{
-			name: "defaultVisibility allow is valid",
+			name: "defaultToolVisibility allow is valid",
 			agg: &AggregationConfig{
 				ConflictResolution:       vmcp.ConflictStrategyPrefix,
 				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
-				DefaultVisibility:        DefaultVisibilityAllow,
+				DefaultToolVisibility:    DefaultToolVisibilityAllow,
 			},
 			wantErr: false,
 		},
 		{
 			// The CLI path has no admission webhook, so a typo must be rejected here
 			// rather than silently falling back to advertise-everything.
-			name: "defaultVisibility rejects an unknown value",
+			name: "defaultToolVisibility rejects an unknown value",
 			agg: &AggregationConfig{
 				ConflictResolution:       vmcp.ConflictStrategyPrefix,
 				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
-				DefaultVisibility:        "denied",
+				DefaultToolVisibility:    "denied",
 			},
 			wantErr: true,
-			errMsg:  "defaultVisibility must be one of",
+			errMsg:  "defaultToolVisibility must be one of",
+		},
+		{
+			// An unlisted priority backend can win a conflict and then be withheld,
+			// hiding the tool from every backend that offered it.
+			name: "deny with priority rejects an unlisted priorityOrder entry",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools:                 []*WorkloadToolConfig{{Workload: "github"}},
+				DefaultToolVisibility: DefaultToolVisibilityDeny,
+			},
+			wantErr: true,
+			errMsg:  `priorityOrder entry "jira" has no tools entry`,
+		},
+		{
+			name: "deny with priority accepts a fully listed priorityOrder",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools: []*WorkloadToolConfig{
+					{Workload: "github"},
+					{Workload: "jira"},
+				},
+				DefaultToolVisibility: DefaultToolVisibilityDeny,
+			},
+			wantErr: false,
+		},
+		{
+			// Under allow the unlisted winner is still advertised, so the
+			// combination is harmless and must stay valid.
+			name: "allow with priority permits an unlisted priorityOrder entry",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools:                 []*WorkloadToolConfig{{Workload: "github"}},
+				DefaultToolVisibility: DefaultToolVisibilityAllow,
+			},
+			wantErr: false,
 		},
 	}
 

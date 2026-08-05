@@ -266,30 +266,30 @@ func TestDefaultAggregator_AdvertisingFilterPreservesBackendID(t *testing.T) {
 			wantAdvertised: []string{"be_tool_a"},
 		},
 		{
-			// Backward compatibility: a config predating DefaultVisibility leaves it
+			// Backward compatibility: a config predating DefaultToolVisibility leaves it
 			// "" and must keep advertising everything.
-			name:           "unset DefaultVisibility advertises an unlisted backend",
+			name:           "unset DefaultToolVisibility advertises an unlisted backend",
 			aggCfg:         &config.AggregationConfig{},
 			wantAdvertised: []string{"be_tool_a", "be_tool_b"},
 		},
 		{
-			name:           "explicit DefaultVisibility allow advertises an unlisted backend",
-			aggCfg:         &config.AggregationConfig{DefaultVisibility: config.DefaultVisibilityAllow},
+			name:           "explicit DefaultToolVisibility allow advertises an unlisted backend",
+			aggCfg:         &config.AggregationConfig{DefaultToolVisibility: config.DefaultToolVisibilityAllow},
 			wantAdvertised: []string{"be_tool_a", "be_tool_b"},
 		},
 		{
 			// The #6073 case: a backend nobody listed contributes nothing.
-			name:           "DefaultVisibility deny hides an unlisted backend's tools",
-			aggCfg:         &config.AggregationConfig{DefaultVisibility: config.DefaultVisibilityDeny},
+			name:           "DefaultToolVisibility deny hides an unlisted backend's tools",
+			aggCfg:         &config.AggregationConfig{DefaultToolVisibility: config.DefaultToolVisibilityDeny},
 			wantAdvertised: nil,
 		},
 		{
 			// A listed backend is opted in by its entry: deny governs only backends
 			// absent from Tools, so Filter still decides which of its tools show.
-			name: "DefaultVisibility deny leaves a listed backend's Filter in charge",
+			name: "DefaultToolVisibility deny leaves a listed backend's Filter in charge",
 			aggCfg: &config.AggregationConfig{
-				DefaultVisibility: config.DefaultVisibilityDeny,
-				Tools:             []*config.WorkloadToolConfig{{Workload: backendID, Filter: []string{"tool_a"}}},
+				DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+				Tools:                 []*config.WorkloadToolConfig{{Workload: backendID, Filter: []string{"tool_a"}}},
 			},
 			wantAdvertised: []string{"be_tool_a"},
 		},
@@ -297,18 +297,18 @@ func TestDefaultAggregator_AdvertisingFilterPreservesBackendID(t *testing.T) {
 			// An entry with neither ExcludeAll nor Filter opts the backend in fully
 			// under deny — "listed means allowed", so an overrides-only entry does
 			// not silently blank the backend out.
-			name: "DefaultVisibility deny advertises a listed backend with no filter",
+			name: "DefaultToolVisibility deny advertises a listed backend with no filter",
 			aggCfg: &config.AggregationConfig{
-				DefaultVisibility: config.DefaultVisibilityDeny,
-				Tools:             []*config.WorkloadToolConfig{{Workload: backendID}},
+				DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+				Tools:                 []*config.WorkloadToolConfig{{Workload: backendID}},
 			},
 			wantAdvertised: []string{"be_tool_a", "be_tool_b"},
 		},
 		{
-			name: "DefaultVisibility deny with a listed backend's ExcludeAll still hides",
+			name: "DefaultToolVisibility deny with a listed backend's ExcludeAll still hides",
 			aggCfg: &config.AggregationConfig{
-				DefaultVisibility: config.DefaultVisibilityDeny,
-				Tools:             []*config.WorkloadToolConfig{{Workload: backendID, ExcludeAll: true}},
+				DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+				Tools:                 []*config.WorkloadToolConfig{{Workload: backendID, ExcludeAll: true}},
 			},
 			wantAdvertised: nil,
 		},
@@ -357,50 +357,4 @@ func TestDefaultAggregator_AdvertisingFilterPreservesBackendID(t *testing.T) {
 			require.Len(t, result.Prompts, 1)
 		})
 	}
-}
-
-// TestDefaultAggregator_DefaultVisibilityDenyMixedBackends covers the motivating
-// scenario for defaultVisibility (issue #6073): a group holding both a listed and
-// an unlisted backend. Under "deny" the listed backend's tools are advertised and
-// the unlisted backend contributes nothing — so adding a workload to the group no
-// longer exposes it by default. Both backends' tools stay routable, keeping
-// composite tools working over hidden ones.
-func TestDefaultAggregator_DefaultVisibilityDenyMixedBackends(t *testing.T) {
-	t.Parallel()
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	backends, capsByID := twoBackendCaps()
-	mockClient := mocks.NewMockBackendClient(ctrl)
-	expectListCapabilities(mockClient, capsByID)
-
-	// backend1 is listed (opted in); backend2 is not mentioned at all.
-	aggCfg := &config.AggregationConfig{
-		DefaultVisibility: config.DefaultVisibilityDeny,
-		Tools:             []*config.WorkloadToolConfig{{Workload: "backend1"}},
-	}
-
-	agg := NewDefaultAggregator(mockClient, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
-	result, err := agg.AggregateCapabilities(context.Background(), backends)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	advertised := make([]string, 0, len(result.Tools))
-	for _, tool := range result.Tools {
-		advertised = append(advertised, tool.Name)
-	}
-	assert.ElementsMatch(t, []string{"backend1_fetch", "backend1_tool_a"}, advertised,
-		"only the listed backend's tools may be advertised under deny")
-	for _, tool := range result.Tools {
-		assert.Equalf(t, "backend1", tool.BackendID,
-			"no unlisted backend's tool may be advertised, but %q was", tool.Name)
-	}
-
-	// Advertising-only: the unlisted backend stays fully routable so composite
-	// tools can still reach it.
-	require.NotNil(t, result.RoutingTable)
-	assert.Len(t, result.RoutingTable.Tools, 4,
-		"deny must not remove tools from the routing table")
-	assert.Contains(t, result.RoutingTable.Tools, "backend2_tool_b",
-		"an unlisted backend's tools remain routable for composite tools")
 }

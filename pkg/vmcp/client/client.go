@@ -64,6 +64,14 @@ const (
 	// Note: This limit is enforced per HTTP response, not per MCP request.
 	// A tools/list response with 1000 tools would be limited to 100MB total.
 	maxResponseSize = 100 * 1024 * 1024 // 100 MB
+
+	// defaultRefutationTTL is the default lifetime of a modernHintRefuted
+	// entry. Chosen to be long enough that a persistently hint-lying backend
+	// (#6154) pays a negligible probe cost (one server/discover per backend
+	// per 5 minutes, only when calls are flowing), and short enough that a
+	// backend redeployed genuinely Modern self-heals its reported revision
+	// within minutes rather than never.
+	defaultRefutationTTL = 5 * time.Minute
 )
 
 // Option configures an httpBackendClient.
@@ -106,6 +114,18 @@ type Option func(*httpBackendClient)
 func WithDialControl(control func(network, address string, c syscall.RawConn) error) Option {
 	return func(h *httpBackendClient) {
 		h.dialControl = control
+	}
+}
+
+// WithRefutationTTL overrides how long a refuted Modern-handshake hint
+// suppresses the confirming server/discover probe in legacyInit. Zero or
+// negative restores the default. Production callers should not set this; it
+// exists so tests can shrink the window.
+func WithRefutationTTL(d time.Duration) Option {
+	return func(h *httpBackendClient) {
+		if d > 0 {
+			h.refutationTTL = d
+		}
 	}
 }
 
@@ -177,11 +197,18 @@ type httpBackendClient struct {
 	// the refutation stops legacyInit re-probing on every subsequent call for a
 	// backend already known to lie.
 	//
-	// NOTE: never evicted, bounded by backend count like revisions. A backend
-	// that genuinely becomes Modern later is still corrected through the other
-	// paths -- probeRevision runs whenever the cache is absent, and dispatch
-	// reclassifies on a revision mismatch.
-	modernHintRefuted sync.Map // map[string]struct{}
+	// The refutation EXPIRES after refutationTTL: a permanently refuted flag
+	// would pin a redeemed backend (one that lied once but was later redeployed
+	// genuinely Modern) to Legacy forever, because legacyInit skips the
+	// confirming probe while the flag stands. With the TTL, a persistent liar
+	// pays one confirming probe per window instead of per call, and a redeemed
+	// backend self-heals within one window.
+	modernHintRefuted sync.Map // map[string]time.Time (refuted-at)
+
+	// refutationTTL bounds how long a modernHintRefuted entry suppresses the
+	// confirming probe in legacyInit. Defaults to defaultRefutationTTL;
+	// configurable via WithRefutationTTL (tests).
+	refutationTTL time.Duration
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -204,6 +231,7 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry, opts ...Option
 	c := &httpBackendClient{
 		registry:        registry,
 		secretsProvider: secrets.NewEnvironmentProvider(),
+		refutationTTL:   defaultRefutationTTL,
 	}
 	for _, o := range opts {
 		o(c)
@@ -1503,7 +1531,9 @@ var errLegacyInitFailed = errors.New("legacy initialize step failed")
 // hint must win a confirming probe first; probeRevision caches whatever it
 // finds, so a genuinely Modern backend still self-heals in one extra round
 // trip. A refuted hint is remembered (modernHintRefuted) so the confirming
-// probe runs once per backend rather than on every call.
+// probe runs at most once per refutationTTL window per backend rather than on
+// every call — and a redeemed backend (refuted once, later genuinely Modern)
+// self-heals within one window instead of never.
 func (h *httpBackendClient) legacyInit(
 	ctx context.Context, c *client.Client, target *vmcp.BackendTarget,
 ) (*mcp.ServerCapabilities, error) {
@@ -1521,7 +1551,7 @@ func (h *httpBackendClient) legacyInit(
 	case !isCached:
 		h.setRevision(backendID, mcpparser.RevisionModern)
 	case cached == mcpparser.RevisionLegacy:
-		if _, refuted := h.modernHintRefuted.Load(backendID); refuted {
+		if h.hintRefuted(backendID) {
 			break
 		}
 		// probeRevision caches its own verdict, so a confirmation needs no
@@ -1529,10 +1559,26 @@ func (h *httpBackendClient) legacyInit(
 		if probed, perr := h.probeRevision(ctx, target); perr == nil && probed != mcpparser.RevisionModern {
 			slog.DebugContext(ctx, "legacy handshake negotiated Modern but discover disagrees; keeping Legacy",
 				"backend", backendID, "negotiated", negotiatedVersion)
-			h.modernHintRefuted.Store(backendID, struct{}{})
+			h.modernHintRefuted.Store(backendID, time.Now())
 		}
 	}
 	return caps, nil
+}
+
+// hintRefuted reports whether backendID's Modern-handshake hint is currently
+// refuted: a refutation was recorded and has not yet aged past refutationTTL.
+// An expired entry is deleted so the map stays bounded by live backends.
+func (h *httpBackendClient) hintRefuted(backendID string) bool {
+	v, ok := h.modernHintRefuted.Load(backendID)
+	if !ok {
+		return false
+	}
+	refutedAt, ok := v.(time.Time)
+	if !ok || time.Since(refutedAt) > h.refutationTTL {
+		h.modernHintRefuted.Delete(backendID)
+		return false
+	}
+	return true
 }
 
 // dispatch resolves the backend's MCP revision (cache hit, else probeRevision)
@@ -1978,8 +2024,6 @@ func (h *httpBackendClient) legacyReadResource(
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
-	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
-	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
 		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,

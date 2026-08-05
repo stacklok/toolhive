@@ -15,7 +15,9 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,6 +26,9 @@ import (
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // newRealEchoServer stands up a real go-sdk v1.7-backed streamable-HTTP MCP
@@ -313,4 +318,96 @@ func TestLegacyInit_DoesNotPromoteOnHandshakeHintAlone(t *testing.T) {
 		assert.Equal(t, mcpparser.RevisionLegacy, rev,
 			"cached revision must stay Legacy after call %d; flipping to Modern is the #6154 oscillation", i)
 	}
+}
+
+// TestLegacyInit_RefutedHintExpires covers #5992: a backend that lied once
+// (Modern on the Legacy initialize, Legacy-shaped discover) is recorded in
+// modernHintRefuted so the confirming probe does not run on every call. That
+// memory must NOT be permanent: if the backend is later redeployed genuinely
+// Modern (hint and discover now agree), the refutation expires after
+// refutationTTL and the next call's confirming probe flips the cache.
+//
+// The redeeming server flips its discover answer mid-test: Legacy-shaped until
+// redeemed.Store(true), then a valid Modern envelope.
+func TestLegacyInit_RefutedHintExpires(t *testing.T) {
+	t.Parallel()
+
+	var redeemed atomic.Bool
+	backend := newRealEchoServer(t, true, nil) // stateless => negotiates 2026-07-28
+	backendURL, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+	rp := httputil.NewSingleHostReverseProxy(backendURL)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		if !bytes.Contains(body, []byte(`"server/discover"`)) {
+			rp.ServeHTTP(w, r)
+			return
+		}
+		if redeemed.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(discoverEnvelope(t, r))
+			return
+		}
+
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.Unmarshal(body, &req)
+		id := req.ID
+		if len(id) == 0 {
+			id = json.RawMessage(`null`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{`+
+			`"capabilities":{"tools":{}},`+
+			`"supportedVersions":["2026-07-28","2025-11-25"],`+
+			`"serverInfo":{"name":"hint-liar","version":"1.0.0"}}}`, id)
+	}))
+	t.Cleanup(ts.Close)
+
+	reg := vmcpauth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, reg.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{}))
+	c, err := NewHTTPBackendClient(reg, WithRefutationTTL(50*time.Millisecond))
+	require.NoError(t, err)
+	h := c.(*httpBackendClient)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "b",
+		BaseURL:       ts.URL + "/mcp",
+		TransportType: "streamable-http",
+	}
+
+	// Phase 1: the backend lies. The refutation is recorded and the cache
+	// stays Legacy (#6154 behavior is preserved within the window).
+	_, err = h.ListCapabilities(context.Background(), target)
+	require.NoError(t, err)
+	rev, ok := h.cachedRevision(target.WorkloadID)
+	require.True(t, ok)
+	require.Equal(t, mcpparser.RevisionLegacy, rev)
+	_, refuted := h.modernHintRefuted.Load(target.WorkloadID)
+	require.True(t, refuted, "the refutation should be recorded after the confirming probe disagrees")
+
+	// Phase 2: the backend is "redeployed" genuinely Modern. Within the TTL
+	// the refutation still suppresses the confirming probe...
+	_, err = h.ListCapabilities(context.Background(), target)
+	require.NoError(t, err)
+	rev, _ = h.cachedRevision(target.WorkloadID)
+	require.Equal(t, mcpparser.RevisionLegacy, rev,
+		"within the TTL the refutation still suppresses re-probing")
+
+	// Phase 3: ...but once the window lapses the next call re-probes and the
+	// cache self-heals to Modern.
+	redeemed.Store(true)
+	time.Sleep(2 * 50 * time.Millisecond)
+
+	_, err = h.ListCapabilities(context.Background(), target)
+	require.NoError(t, err)
+	rev, ok = h.cachedRevision(target.WorkloadID)
+	require.True(t, ok)
+	assert.Equal(t, mcpparser.RevisionModern, rev,
+		"after the refutation expires, a redeemed backend must self-heal to Modern")
 }

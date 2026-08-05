@@ -6,6 +6,7 @@ package discovery
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -115,6 +116,12 @@ func TestRemoveServerInfo_NotFound(t *testing.T) {
 
 func TestWriteServerInfo_FilePermissions(t *testing.T) {
 	t.Parallel()
+	// POSIX file modes are advisory on NTFS; Windows reports 0666 for
+	// newly written files regardless of the mode passed to AtomicWriteFile.
+	// Directory ACL coverage for Windows lives in permissions_windows_test.go.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not meaningful on Windows")
+	}
 	dir := t.TempDir()
 
 	info := &ServerInfo{
@@ -132,6 +139,11 @@ func TestWriteServerInfo_FilePermissions(t *testing.T) {
 
 func TestWriteServerInfo_CreatesDirectoryWithCorrectPermissions(t *testing.T) {
 	t.Parallel()
+	// On Windows, writeServerInfoTo sets an explicit DACL instead of relying
+	// on os.Chmod; see TestWriteServerInfo_WindowsDACL_NoOtherInteractiveUsers.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory modes are not meaningful on Windows; see DACL tests")
+	}
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "nested", "server")
 
@@ -146,6 +158,69 @@ func TestWriteServerInfo_CreatesDirectoryWithCorrectPermissions(t *testing.T) {
 	fi, err := os.Stat(dir)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm())
+}
+
+// TestEnsureSecureDirIn_CreatesAndRestrictsChain asserts the chain contract
+// startup depends on: both the intermediate toolhive directory and the server
+// leaf exist and are restricted before anything reads or locks inside them.
+// The Windows DACL half is asserted in
+// TestEnsureSecureDirIn_ProtectsIntermediateToolhiveDir.
+func TestEnsureSecureDirIn_CreatesAndRestrictsChain(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	toolhiveDir := filepath.Join(base, "toolhive")
+	require.NoError(t, os.MkdirAll(toolhiveDir, 0750))
+
+	_, err := ensureSecureDirIn(base)
+	require.NoError(t, err)
+
+	chain := discoveryDirChain(base)
+	require.Len(t, chain, 2)
+	toolhiveDir, serverDir := chain[0], chain[1]
+	for _, dir := range chain {
+		fi, err := os.Stat(dir)
+		require.NoError(t, err)
+		require.True(t, fi.IsDir(), "%s must be a directory", dir)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	fi, err := os.Stat(toolhiveDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0750), fi.Mode().Perm(),
+		"intermediate toolhive dir must keep its existing mode on POSIX")
+	fi, err = os.Stat(serverDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", serverDir)
+}
+
+// TestEnsureSecureDirIn_TightensExistingChain covers the upgrade path: a chain
+// left behind by an earlier run with loose permissions must be tightened, since
+// startup trusts the discovery file inside it.
+func TestEnsureSecureDirIn_TightensExistingChain(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory modes are not meaningful on Windows; see DACL tests")
+	}
+
+	base := t.TempDir()
+	chain := discoveryDirChain(base)
+	require.NoError(t, os.MkdirAll(chain[len(chain)-1], 0755))
+	for _, dir := range chain {
+		require.NoError(t, os.Chmod(dir, 0755))
+	}
+
+	_, err := ensureSecureDirIn(base)
+	require.NoError(t, err)
+
+	toolhiveDir, serverDir := chain[0], chain[1]
+	fi, err := os.Stat(toolhiveDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0755), fi.Mode().Perm(), "intermediate toolhive dir must stay loose on POSIX")
+	fi, err = os.Stat(serverDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(dirPermissions), fi.Mode().Perm(), "mode of %s", serverDir)
 }
 
 func TestWriteServerInfo_RejectsSymlink(t *testing.T) {
@@ -195,6 +270,11 @@ func TestReadServerInfo_RejectsSymlink(t *testing.T) {
 
 func TestWriteServerInfo_TightensExistingDirPermissions(t *testing.T) {
 	t.Parallel()
+	// On Windows the equivalent "tighten existing" path is covered by
+	// TestRestrictDiscoveryDirPermissions_ReplacesExistingLooseACL.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory modes are not meaningful on Windows; see DACL tests")
+	}
 
 	// Create a directory with deliberately too-loose permissions.
 	dir := t.TempDir()

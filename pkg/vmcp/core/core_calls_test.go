@@ -294,8 +294,10 @@ func TestGetPrompt_NotFound(t *testing.T) {
 // router/session_router.go:105), but an alias is not an ADVERTISED name, so a
 // direct CallTool on it is ErrNotFound. The alias exists for composite workflow
 // step definitions and still resolves there, inside the composer — the step path
-// never enters CallTool (see TestCallTool_CompositeWorkflow, whose step targets
-// "be1.echo").
+// never enters CallTool. Note that TestCallTool_CompositeWorkflow does NOT cover
+// the alias fallback: it registers "be1.echo" as an exact routing-table key, so
+// RouteTool's fast path answers and the fallback never runs. The third leg below
+// is what actually drives it.
 func TestCallTool_ResolvesRenamedTool(t *testing.T) {
 	t.Parallel()
 
@@ -337,6 +339,36 @@ func TestCallTool_ResolvesRenamedTool(t *testing.T) {
 		_, err = c.CallTool(context.Background(), nil, "be1.echo", nil, nil)
 		assert.ErrorIs(t, err, vmcp.ErrNotFound,
 			"the routing-table alias is not an advertised name, so a direct call must not resolve it")
+	})
+
+	// The guarantee the alias actually exists for, and the only test in the suite
+	// that drives RouteTool's dot-convention FALLBACK (session_router.go:110-118)
+	// rather than its exact-key fast path: a workflow step written "be1.echo"
+	// still resolves after conflict resolution rekeyed the table to "be1_echo".
+	// Without this leg, rejecting the alias for direct calls would leave the
+	// fallback with no coverage at all.
+	t.Run("composite step reaches the backend through the dot-alias fallback", func(t *testing.T) {
+		t.Parallel()
+		cfg, m := baseConfig(t)
+		cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+			"wf": {Name: "wf", Steps: []composer.WorkflowStep{
+				{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.echo"},
+			}},
+		}
+		expectAggregation(m, caps())
+
+		// The step's "be1.echo" is NOT a routing-table key (the table holds only
+		// "be1_echo"), so reaching the backend here proves the fallback resolved it.
+		m.client.EXPECT().
+			CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(&vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}, nil)
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+
+		_, err = c.CallTool(context.Background(), nil, "wf", nil, nil)
+		require.NoError(t, err)
 	})
 }
 

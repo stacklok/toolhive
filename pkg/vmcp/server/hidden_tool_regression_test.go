@@ -4,6 +4,7 @@
 package server_test
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"sync"
@@ -167,19 +168,22 @@ func TestRegression_HiddenToolNotDirectlyCallable(t *testing.T) {
 		baseURL, rec := newFixture(t, factory)
 		sessionID := legacyInitialize(t, baseURL)
 
-		listBody := legacyCall(t, baseURL, sessionID, 2, "tools/list", nil)
-		assert.Contains(t, listBody, visibleTool)
-		assert.NotContains(t, listBody, hiddenTool,
+		names := listToolNames(t, baseURL, sessionID)
+		assert.Contains(t, names, visibleTool)
+		assert.NotContains(t, names, hiddenTool,
 			"a tool hidden by excludeAll/filter must not appear in tools/list")
 
 		// Legacy has no dispatcher-level classification: the SDK simply never
-		// registered the hidden tool on the session, so it answers -32602 "unknown
-		// tool". Asserting the code (not just "some error") is what keeps the two
-		// eras from drifting apart on the same input.
-		hiddenBody := legacyCall(t, baseURL, sessionID, 3, "tools/call",
-			map[string]any{"name": hiddenTool, "arguments": map[string]any{}})
-		assert.Contains(t, hiddenBody, "-32602",
-			"Legacy must also refuse a hidden tool as an unknown tool: %s", hiddenBody)
+		// registered the hidden tool on the session, so it answers -32602. Asserting
+		// the decoded error.code (not a substring of the body) is what keeps the two
+		// eras from drifting apart on the same input -- this is the same assertion
+		// the Modern leg makes above, so a divergence in either direction fails.
+		// The message text does differ by era: toolhive-core's mcpcompat rewrites
+		// go-sdk's `unknown tool "X"` to `tool "X" not found`, so only the code is
+		// compared.
+		hiddenErr := legacyCallError(t, baseURL, sessionID, 3, hiddenTool)
+		assert.Equal(t, float64(-32602), hiddenErr["code"],
+			"Legacy must also refuse a hidden tool as an unknown tool: %+v", hiddenErr)
 		assert.NotContains(t, rec.got(), hiddenTool,
 			"vMCP must never forward a direct call to a tool hidden from tools/list")
 
@@ -231,9 +235,9 @@ func legacyInitialize(t *testing.T, baseURL string) string {
 }
 
 // legacyCall sends a Legacy JSON-RPC request on an established session and returns
-// the raw response body. The body is returned as a string rather than a decoded
-// envelope because the SDK's streamable transport may answer as SSE, and these
-// assertions only need substring presence/absence of tool names and error codes.
+// the raw response body. Used where only "the call was answered" matters (the
+// composite counterweight); assertions on an error envelope go through
+// legacyCallError, which decodes.
 func legacyCall(t *testing.T, baseURL, sessionID string, id int, method string, params map[string]any) string {
 	t.Helper()
 	body := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
@@ -248,4 +252,29 @@ func legacyCall(t *testing.T, baseURL, sessionID string, id int, method string, 
 	// Sanity: the body must be a JSON-RPC payload (possibly SSE-framed), not empty.
 	require.NotEmpty(t, raw, "%s returned an empty body", method)
 	return string(raw)
+}
+
+// legacyCallError issues a Legacy tools/call for toolName and returns the decoded
+// JSON-RPC `error` object, failing the test if the response carries no error.
+// Decoding (rather than substring-matching the body) is what makes this assertion
+// as strong as the Modern leg's: it pins error.code for THIS request rather than
+// accepting the digits appearing anywhere in the payload.
+func legacyCallError(t *testing.T, baseURL, sessionID string, id int, toolName string) map[string]any {
+	t.Helper()
+	resp := postMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": toolName, "arguments": map[string]any{}},
+	}, sessionID)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var env struct {
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &env), "tools/call response was not JSON: %s", string(raw))
+	require.NotNil(t, env.Error, "expected a JSON-RPC error envelope, got: %s", string(raw))
+	return env.Error
 }

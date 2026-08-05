@@ -15,10 +15,11 @@ func TestValidateRemoteURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		rawURL      string
-		wantErr     bool
-		errContains string
+		name                 string
+		rawURL               string
+		allowPrivateEndpoint bool
+		wantErr              bool
+		errContains          string
 	}{
 		{
 			name:    "valid https URL",
@@ -212,13 +213,188 @@ func TestValidateRemoteURL(t *testing.T) {
 			rawURL:  "http://172.15.255.255/",
 			wantErr: false,
 		},
+		// A ".svc" hostname without the cluster domain is not blocked (no DNS
+		// resolution happens), with or without AllowPrivateEndpoint.
+		{
+			name:    ".svc hostname allowed without AllowPrivateEndpoint",
+			rawURL:  "http://my-svc.my-ns.svc:8080/",
+			wantErr: false,
+		},
+		{
+			name:                 ".svc hostname allowed with AllowPrivateEndpoint",
+			rawURL:               "http://my-svc.my-ns.svc:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		// AllowPrivateEndpoint relaxes RFC 1918, ULA, and cluster.local
+		{
+			name:                 "private 10.x.x.x allowed with AllowPrivateEndpoint",
+			rawURL:               "http://10.0.0.5:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		{
+			name:                 "private 172.16.x.x allowed with AllowPrivateEndpoint",
+			rawURL:               "http://172.16.0.1/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		{
+			name:                 "private 192.168.x.x allowed with AllowPrivateEndpoint",
+			rawURL:               "http://192.168.1.1/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		{
+			name:                 "IPv6 ULA allowed with AllowPrivateEndpoint",
+			rawURL:               "http://[fd12:3456::1]/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		{
+			name:                 "cluster.local service allowed with AllowPrivateEndpoint",
+			rawURL:               "http://my-svc.my-ns.svc.cluster.local/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		{
+			name:                 "IPv4-mapped IPv6 private allowed with AllowPrivateEndpoint",
+			rawURL:               "http://[::ffff:10.0.0.5]:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
+		// AllowPrivateEndpoint never relaxes loopback, link-local, unspecified,
+		// or metadata endpoints
+		{
+			name:                 "IPv4 loopback blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://127.0.0.1:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv6 loopback blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://[::1]:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv4 link-local metadata blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://169.254.169.254/latest/meta-data/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv6 link-local blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://[fe80::1]/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv4 unspecified 0.0.0.0 blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://0.0.0.0:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv6 unspecified blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://[::]/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv4-mapped IPv6 loopback blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://[::ffff:127.0.0.1]:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "localhost blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://localhost:8080/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			name:                 "GCP metadata hostname blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://metadata.google.internal/computeMetadata/v1/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			name:                 "kubernetes.default blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://kubernetes.default/api",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			name:                 "kubernetes.default.svc blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://kubernetes.default.svc/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			name:                 "kubernetes.default.svc.cluster.local blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://kubernetes.default.svc.cluster.local/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			// Sharpest ordering case: suffix-matches both the always-blocked
+			// kubernetes.default.svc.cluster.local entry and the relaxable
+			// cluster.local entry; the always-blocked match must win.
+			name:                 "kubernetes.default subdomain blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://api.kubernetes.default.svc.cluster.local/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			name:                 "localhost subdomain blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://something.localhost/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked internal hostname",
+		},
+		{
+			name:                 "IPv4-mapped IPv6 link-local blocked despite AllowPrivateEndpoint",
+			rawURL:               "http://[::ffff:169.254.169.254]/",
+			allowPrivateEndpoint: true,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "IPv4-mapped IPv6 private blocked without AllowPrivateEndpoint",
+			rawURL:               "http://[::ffff:10.0.0.5]:8080/",
+			allowPrivateEndpoint: false,
+			wantErr:              true,
+			errContains:          "blocked range",
+		},
+		{
+			name:                 "RFC 1918 172.16/12 upper boundary allowed with AllowPrivateEndpoint",
+			rawURL:               "http://172.31.255.255/",
+			allowPrivateEndpoint: true,
+			wantErr:              false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validation.ValidateRemoteURL(tt.rawURL)
+			err := validation.ValidateRemoteURL(tt.rawURL, validation.ValidateRemoteURLOptions{
+				AllowPrivateEndpoint: tt.allowPrivateEndpoint,
+			})
 
 			if tt.wantErr {
 				require.Error(t, err)

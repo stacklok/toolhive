@@ -592,9 +592,8 @@ type ResourceReadResult struct {
 	Contents []ResourceContent
 
 	// Meta contains protocol-level metadata from the backend (_meta field).
-	// NOTE: Due to MCP SDK limitations, resources/read handlers cannot forward _meta
-	// because they return []ResourceContents directly, not a result wrapper.
-	// This field is preserved for future SDK improvements but may be nil.
+	// Populated on both the Legacy and Modern client paths; forwarded to the
+	// client by the vMCP Serve handlers (non-reserved keys only).
 	Meta map[string]any
 
 	// BackendID is the logical backend that served the read, set by the core

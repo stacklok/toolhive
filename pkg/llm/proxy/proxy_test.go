@@ -26,9 +26,18 @@ import (
 type stubTokenSource struct {
 	token string
 	err   error
+	// block, if non-nil, is invoked from Token. Tests use it to observe the
+	// ctx the proxy passed in and to control timing at the observable boundary
+	// (when the fetch resolves). It receives the token-fetch ctx and the token
+	// the stub will return once it unblocks. This is test-only instrumentation;
+	// production structs are unchanged.
+	block func(ctx context.Context, token string)
 }
 
-func (s *stubTokenSource) Token(_ context.Context) (string, error) {
+func (s *stubTokenSource) Token(ctx context.Context) (string, error) {
+	if s.block != nil {
+		s.block(ctx, s.token)
+	}
 	return s.token, s.err
 }
 
@@ -407,5 +416,147 @@ func TestProxy_PassesThroughErrorResponses(t *testing.T) {
 
 			assert.Equal(t, statusCode, resp.StatusCode, "error response must pass through unmodified")
 		})
+	}
+}
+
+// newBlockingTokenProxy builds a Proxy whose token source blocks inside Token
+// until the returned release channel is closed (or the fetch ctx is cancelled,
+// whichever is first). It also hands the fetch ctx to sawCtx, exactly once,
+// so the caller can inspect the context the proxy rooted the fetch in.
+//
+// The gateway returns 200 so that, once the token is delivered, the handler
+// completes normally; tests that only care about the fetch phase never reach it.
+func newBlockingTokenProxy(t *testing.T) (p *Proxy, release chan struct{}, sawCtx chan context.Context) {
+	t.Helper()
+
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(gateway.Close)
+
+	cfg := &llm.Config{
+		GatewayURL: gateway.URL,
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
+	}
+	release = make(chan struct{})
+	sawCtx = make(chan context.Context, 1)
+	src := &stubTokenSource{
+		token: "fresh-token",
+		block: func(ctx context.Context, _ string) {
+			select {
+			case sawCtx <- ctx:
+			default:
+			}
+			// Block until the test releases us or the proxy cancels the fetch.
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		},
+	}
+	p, err := New(cfg, src)
+	require.NoError(t, err)
+	p.transport = gateway.Client().Transport
+	t.Cleanup(func() { _ = p.listener.Close() })
+	return p, release, sawCtx
+}
+
+// waitForFetchCtx waits for the stubbed Token to report the fetch ctx, failing
+// fast on timeout so a miswire never hangs the suite.
+func waitForFetchCtx(t *testing.T, sawCtx <-chan context.Context) context.Context {
+	t.Helper()
+	select {
+	case ctx := <-sawCtx:
+		return ctx
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for token fetch to start")
+		return nil
+	}
+}
+
+// TestHandler_TokenFetchSurvivesClientDisconnect pins the Step 1 contract that a
+// client disconnecting mid-request does NOT cancel the token fetch: the fetch is
+// rooted in the proxy-lifetime baseCtx, not the inbound request's context.
+func TestHandler_TokenFetchSurvivesClientDisconnect(t *testing.T) {
+	t.Parallel()
+	p, release, sawCtx := newBlockingTokenProxy(t)
+
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	t.Cleanup(baseCancel)
+
+	// Inbound request carries its own cancellable context, as a real
+	// disconnected client would. Host is loopback to pass the DNS-rebinding guard.
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	t.Cleanup(reqCancel)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(""))
+	req = req.WithContext(reqCtx)
+	req.Host = "127.0.0.1"
+
+	handlerDone := make(chan struct{})
+	go func() {
+		w := httptest.NewRecorder()
+		p.handler(baseCtx).ServeHTTP(w, req)
+		close(handlerDone)
+	}()
+
+	fetchCtx := waitForFetchCtx(t, sawCtx)
+
+	// Disconnect the client while the fetch is still in flight.
+	reqCancel()
+
+	// Give the cancellation a moment to propagate, then assert the fetch ctx is
+	// untouched: under the Step 1 contract the fetch is rooted in baseCtx, which
+	// is still alive, so the fetch must keep running.
+	select {
+	case <-fetchCtx.Done():
+		t.Fatal("fetch ctx was cancelled by request ctx — fetch must be rooted in baseCtx, not r.Context()")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Releasing the stub delivers the token and the handler finishes normally.
+	close(release)
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after token was delivered")
+	}
+}
+
+// TestHandler_TokenFetchCancelsWithStartContext pins the other half of the
+// Step 1 contract: cancelling Start's ctx (baseCtx) — e.g. via Ctrl+C — DOES
+// cancel the in-flight token fetch.
+func TestHandler_TokenFetchCancelsWithStartContext(t *testing.T) {
+	t.Parallel()
+	p, _, sawCtx := newBlockingTokenProxy(t)
+
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	t.Cleanup(baseCancel)
+
+	req := loopbackRequest("/v1/models")
+	handlerDone := make(chan struct{})
+	go func() {
+		w := httptest.NewRecorder()
+		p.handler(baseCtx).ServeHTTP(w, req)
+		close(handlerDone)
+	}()
+
+	fetchCtx := waitForFetchCtx(t, sawCtx)
+
+	// Cancel Start's lifetime context, exactly as Ctrl+C would.
+	baseCancel()
+
+	// The fetch ctx is derived from baseCtx, so it must be cancelled now.
+	select {
+	case <-fetchCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch ctx was not cancelled when baseCtx was cancelled")
+	}
+
+	// And the handler must unwind: the stub also returns on ctx.Done(), so the
+	// token is delivered and the handler completes via the 200 proxy path.
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after baseCtx cancellation")
 	}
 }

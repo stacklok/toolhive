@@ -296,6 +296,25 @@ func (s *Server) dispatchModernToolCall(
 	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.CallTool(ctx, identity, parsed.ResourceID, parsed.Arguments, parsed.Meta)
 	if err != nil {
+		// An unadvertised tool name is caller input, not a server fault, so it must
+		// not launder into writeModernCallFailure's generic -32603. core.CallTool
+		// holds tools/call to the advertised view (core_calls.go), so this is the
+		// answer for a name hidden from tools/list by excludeAllTools/excludeAll/
+		// filter -- matching what the Legacy SDK path already returns for a tool it
+		// never registered on the session (-32602 "unknown tool", go-sdk
+		// server.go:957), which writeModernError maps to HTTP 400.
+		//
+		// Deliberately NOT folded into writeModernDispatchError: that helper is
+		// shared with resources/read, prompts/get and completion/complete, whose
+		// not-found classification is a separate decision. The message names no
+		// tool: an authorization denial is classified ahead of this (in
+		// core.CallTool, which authorizes before checking the advertised view), and
+		// echoing the name back here would turn the pair of answers into a probe
+		// for which denied tools exist.
+		if errors.Is(err, vmcp.ErrNotFound) {
+			writeModernError(w, parsed.ID, jsonRPCCodeInvalidParams, "unknown tool")
+			return
+		}
 		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageToolCall, err)
 		return
 	}

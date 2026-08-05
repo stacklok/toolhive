@@ -62,12 +62,54 @@ func TestCallTool_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
 }
 
+// TestCallTool_RejectsUnadvertisedRoutableTool is the hidden-tool regression
+// guard at the core boundary. The routing table intentionally holds EVERY backend
+// tool, including ones hidden from tools/list by excludeAllTools, per-workload
+// excludeAll, or filter, so that composite workflow steps can still reach them
+// (#3636, aggregator/default_aggregator.go:349). Before this guard, CallTool
+// resolved a name straight against that table, so a hidden tool was directly
+// callable by name — its ErrNotFound contract was documented but unenforced.
+//
+// The Times(0) on the backend client is the real security assertion: an
+// ErrNotFound alone would still pass if the call had already been forwarded to
+// the backend and only the response discarded.
+func TestCallTool_RejectsUnadvertisedRoutableTool(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	target := backendTarget()
+	expectAggregation(m, &aggregator.AggregatedCapabilities{
+		// "hidden" is routable but NOT advertised — exactly the shape excludeAll
+		// and filter produce.
+		Tools: []vmcp.Tool{backendTool("visible")},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{
+			"visible": target,
+			"hidden":  target,
+		}},
+	})
+
+	m.client.EXPECT().
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Times(0)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = c.CallTool(context.Background(), nil, "hidden", nil, nil)
+	assert.ErrorIs(t, err, vmcp.ErrNotFound,
+		"a routable-but-unadvertised tool must not be directly callable")
+}
+
 func TestCallTool_CopyBeforeMutate(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
 
 	target := backendTarget()
 	expectAggregation(m, &aggregator.AggregatedCapabilities{
+		// Advertised as well as routable: CallTool holds a direct call to the
+		// advertised view, so a routing-table-only entry would not reach the backend.
+		Tools:        []vmcp.Tool{backendTool("tool_a")},
 		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"tool_a": target}},
 	})
 
@@ -242,31 +284,60 @@ func TestGetPrompt_NotFound(t *testing.T) {
 }
 
 // TestCallTool_ResolvesRenamedTool exercises the conflict-resolution name path:
-// the advertised name uses the dot convention ("be1.echo") while the routing
-// table is keyed by the prefixed resolved name ("be1_echo") whose target carries
-// a non-empty OriginalCapabilityName. The session router resolves it via
-// GetBackendCapabilityName, and the core forwards the advertised name to the
-// client (the client owns the translation to the backend's capability name).
+// the advertised and routing-table name is the prefixed resolved name
+// ("be1_echo") whose target carries a non-empty OriginalCapabilityName. The core
+// forwards the advertised name to the client, which owns the translation to the
+// backend's capability name ("echo").
+//
+// The second leg pins the narrowing this test used to contradict: RouteTool also
+// accepts the "{workloadID}.{toolName}" alias ("be1.echo",
+// router/session_router.go:105), but an alias is not an ADVERTISED name, so a
+// direct CallTool on it is ErrNotFound. The alias exists for composite workflow
+// step definitions and still resolves there, inside the composer — the step path
+// never enters CallTool (see TestCallTool_CompositeWorkflow, whose step targets
+// "be1.echo").
 func TestCallTool_ResolvesRenamedTool(t *testing.T) {
 	t.Parallel()
-	cfg, m := baseConfig(t)
 
 	target := &vmcp.BackendTarget{WorkloadID: "be1", OriginalCapabilityName: "echo", BaseURL: "http://be1:8080"}
-	expectAggregation(m, &aggregator.AggregatedCapabilities{
-		Tools:        []vmcp.Tool{{Name: "be1_echo", BackendID: "be1"}},
-		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"be1_echo": target}},
+	caps := func() *aggregator.AggregatedCapabilities {
+		return &aggregator.AggregatedCapabilities{
+			Tools:        []vmcp.Tool{{Name: "be1_echo", BackendID: "be1"}},
+			RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"be1_echo": target}},
+		}
+	}
+
+	t.Run("advertised resolved name routes to the backend", func(t *testing.T) {
+		t.Parallel()
+		cfg, m := baseConfig(t)
+		expectAggregation(m, caps())
+
+		m.client.EXPECT().
+			CallTool(gomock.Any(), target, "be1_echo", gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(&vmcp.ToolCallResult{}, nil)
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+
+		_, err = c.CallTool(context.Background(), nil, "be1_echo", nil, nil)
+		require.NoError(t, err)
 	})
 
-	m.client.EXPECT().
-		CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(&vmcp.ToolCallResult{}, nil)
+	t.Run("dot alias of an advertised tool is not directly callable", func(t *testing.T) {
+		t.Parallel()
+		cfg, m := baseConfig(t)
+		expectAggregation(m, caps())
 
-	c, err := New(cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
+		// No client EXPECT: the alias must be rejected before any backend call.
+		c, err := New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
 
-	_, err = c.CallTool(context.Background(), nil, "be1.echo", nil, nil)
-	require.NoError(t, err)
+		_, err = c.CallTool(context.Background(), nil, "be1.echo", nil, nil)
+		assert.ErrorIs(t, err, vmcp.ErrNotFound,
+			"the routing-table alias is not an advertised name, so a direct call must not resolve it")
+	})
 }
 
 // TestCompositeNameConflict_AdvertisedEqualsExecuted is the F1 parity guard: when a

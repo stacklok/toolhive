@@ -33,10 +33,12 @@ import (
 // knob that determines whether the backend answers server/discover with
 // 2026-07-28 in supportedVersions (Modern) or negotiates it away (Legacy); see
 // TestProbeRevision_RealBackends.
-func newRealEchoServer(t *testing.T, stateless bool, onCallTool func(mcpmcp.CallToolRequest)) *httptest.Server {
+func newRealEchoServer(
+	t *testing.T, stateless bool, onCallTool func(mcpmcp.CallToolRequest), srvOpts ...mcpserver.ServerOption,
+) *httptest.Server {
 	t.Helper()
 
-	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0")
+	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0", srvOpts...)
 	mcpSrv.AddTool(
 		mcpmcp.NewTool("echo",
 			mcpmcp.WithDescription("Echoes the input back"),
@@ -236,6 +238,34 @@ func TestCallTool_MisCachedLegacy_ForwardingAgainstStatelessBackend(t *testing.T
 		"a successful mis-cached-Legacy call self-heals the cache to Modern")
 }
 
+// newRecordingEchoServer is a real go-sdk backend that advertises the logging
+// capability and reports every JSON-RPC method it receives.
+func newRecordingEchoServer(t *testing.T, onMethod func(method string)) *httptest.Server {
+	t.Helper()
+
+	backend := newRealEchoServer(t, false, nil, mcpserver.WithLogging())
+	backendURL, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+	rp := httputil.NewSingleHostReverseProxy(backendURL)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		var probe struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &probe)
+		if probe.Method != "" && onMethod != nil {
+			onMethod(probe.Method)
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 // newHintLyingServer emulates github-mcp-server v1.6.0's dual-era behaviour: a
 // backend that negotiates 2026-07-28 on the Legacy initialize handshake while
 // answering server/discover with a body that is NOT a valid Modern envelope
@@ -247,8 +277,18 @@ func TestCallTool_MisCachedLegacy_ForwardingAgainstStatelessBackend(t *testing.T
 // discover body that produces the mismatch.
 func newHintLyingServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	return newHintLyingServerRecording(t, nil)
+}
 
-	backend := newRealEchoServer(t, true, nil) // stateless => negotiates 2026-07-28
+// newHintLyingServerRecording is newHintLyingServer with a hook invoked for
+// every JSON-RPC method the backend receives.
+func newHintLyingServerRecording(t *testing.T, onMethod func(method string)) *httptest.Server {
+	t.Helper()
+
+	// WithLogging so the backend advertises the logging capability: without it
+	// enableBackendLogging returns before ever reaching the version check, and
+	// a test asserting setLevel is not sent would pass vacuously.
+	backend := newRealEchoServer(t, true, nil, mcpserver.WithLogging()) // stateless => negotiates 2026-07-28
 	backendURL, err := url.Parse(backend.URL)
 	require.NoError(t, err)
 	rp := httputil.NewSingleHostReverseProxy(backendURL)
@@ -257,6 +297,16 @@ func newHintLyingServer(t *testing.T) *httptest.Server {
 		body, readErr := io.ReadAll(r.Body)
 		require.NoError(t, readErr)
 		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		if onMethod != nil {
+			var probe struct {
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(body, &probe)
+			if probe.Method != "" {
+				onMethod(probe.Method)
+			}
+		}
 
 		if !bytes.Contains(body, []byte(`"server/discover"`)) {
 			rp.ServeHTTP(w, r)
@@ -312,5 +362,80 @@ func TestLegacyInit_DoesNotPromoteOnHandshakeHintAlone(t *testing.T) {
 		require.True(t, ok, "revision should be cached after call %d", i)
 		assert.Equal(t, mcpparser.RevisionLegacy, rev,
 			"cached revision must stay Legacy after call %d; flipping to Modern is the #6154 oscillation", i)
+	}
+}
+
+// TestEnableBackendLogging_SkipsRemovedRPCOnModernSession pins the fix for
+// tool calls dying against a dual-era backend.
+//
+// A backend that negotiates 2026-07-28 over the LEGACY initialize handshake
+// leaves the session obliged to carry that version on every request. go-sdk
+// still sends logging/setLevel as a Legacy-shaped call, so it arrives with a
+// Modern protocol header and no Modern _meta -- a shape ToolHive's classifier
+// rejects with -32020 by a deliberate, pinned contract (see
+// TestIntegration_Modern_RealBackend_LoggingContract in pkg/vmcp/server).
+// go-sdk treats that rejection as fatal, so the session closes and the tool
+// call the logging was only meant to decorate dies with it.
+//
+// The RPC was removed in 2026-07-28, so issuing it on a session that
+// negotiated that revision is the defect. Legacy sessions must still get it.
+func TestEnableBackendLogging_SkipsRemovedRPCOnModernSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		negotiated       string
+		wantSetLevelSent bool
+	}{
+		{
+			name:             "modern negotiated: removed RPC is skipped",
+			negotiated:       mcpparser.MCPVersionModern,
+			wantSetLevelSent: false,
+		},
+		{
+			name:             "legacy negotiated: RPC is still sent",
+			negotiated:       mcpparser.MCPVersionLegacy,
+			wantSetLevelSent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			var sawSetLevel bool
+			srv := newRecordingEchoServer(t, func(method string) {
+				if method == "logging/setLevel" {
+					mu.Lock()
+					sawSetLevel = true
+					mu.Unlock()
+				}
+			})
+
+			h := newProbeClient(t)
+			h.BindForwarders(&stubElicitationRequester{}, &stubSamplingRequester{}, stubClientNotifier{})
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "b",
+				BaseURL:       srv.URL + "/mcp",
+				TransportType: "streamable-http",
+			}
+
+			c, err := h.clientFactory(context.Background(), target, true)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+
+			// The session must be live before SetLoggingLevel can reach the
+			// wire; an unconnected client fails inside the SDK instead.
+			_, _, err = h.legacyInit(context.Background(), c, target)
+			require.NoError(t, err)
+
+			caps := &mcpmcp.ServerCapabilities{Logging: &struct{}{}}
+			h.enableBackendLogging(context.Background(), c, caps, tt.negotiated, target.WorkloadID)
+
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.wantSetLevelSent, sawSetLevel)
+		})
 	}
 }

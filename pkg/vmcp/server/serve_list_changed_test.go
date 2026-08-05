@@ -590,7 +590,7 @@ func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 		}
 		sess := &fakeCapsSession{id: "sess-1"}
 
-		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink, _ := srv.buildListChangedSink("sess-1", sess, nil, nil)
 		sink(context.Background(), "backend-1", vmcpsession.KindResources)
 
 		require.Eventually(t, func() bool { return fc.invalidateCacheCalls.Load() >= 1 },
@@ -611,7 +611,7 @@ func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 		}
 		sess := &fakeCapsSession{id: "sess-1"}
 
-		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink, _ := srv.buildListChangedSink("sess-1", sess, nil, nil)
 		sink(context.Background(), "backend-1", vmcpsession.KindPrompts)
 
 		require.Eventually(t, func() bool { return fc.invalidateCacheCalls.Load() >= 1 },
@@ -632,7 +632,7 @@ func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 		}
 		sess := &fakeToolsSession{id: "sess-1"}
 
-		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink, _ := srv.buildListChangedSink("sess-1", sess, nil, nil)
 		sink(context.Background(), "backend-1", vmcpsession.ChangeKind("unknown"))
 
 		assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "unknown kind must not invalidate the cache")

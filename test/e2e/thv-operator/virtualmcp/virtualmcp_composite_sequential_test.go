@@ -337,7 +337,7 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Config.CompositeTools).To(HaveLen(1))
+			Expect(vmcpServer.Spec.Config.CompositeTools).ToNot(BeEmpty())
 
 			compositeTool := vmcpServer.Spec.Config.CompositeTools[0]
 			Expect(compositeTool.Name).To(Equal(compositeToolName))

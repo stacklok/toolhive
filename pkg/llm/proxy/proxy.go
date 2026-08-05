@@ -21,12 +21,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
-// tokenFetchTimeout bounds the per-request token fetch. It is deliberately
-// generous: the first request after a lazy setup ("thv llm setup --lazy") drives
-// the interactive OIDC browser login through the token source, and a human needs
-// time to complete it. Once a token is cached, subsequent requests are served
-// from cache and return well within this bound, so the only request that ever
-// approaches it is the initial login.
+// tokenFetchTimeout bounds the per-request token fetch. The bound is achievable
+// because the fetch is rooted in the proxy-lifetime context passed to Start, not
+// in the inbound request's context: the first request after a lazy setup
+// ("thv llm setup --lazy") drives the interactive OIDC browser login through the
+// token source, and a human needs time to complete it. An impatient client
+// disconnecting no longer cancels the login, but Ctrl+C (cancelling Start's ctx)
+// still does. Once a token is cached, subsequent requests are served from cache
+// and return well within this bound, so the only request that ever approaches it
+// is the initial login.
 const tokenFetchTimeout = 3 * time.Minute
 
 // TokenSource obtains fresh OIDC access tokens for the LLM gateway.
@@ -155,8 +158,10 @@ func (p *Proxy) Addr() string {
 }
 
 // handler returns an http.Handler that injects a fresh OIDC token and proxies
-// the request to the upstream gateway.
-func (p *Proxy) handler() http.Handler {
+// the request to the upstream gateway. The token fetch is bounded by baseCtx
+// (the proxy lifetime context passed to Start), not the inbound request's
+// context, so a client disconnect cannot abort an in-flight interactive login.
+func (p *Proxy) handler(baseCtx context.Context) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Guard against DNS-rebinding attacks: reject requests whose Host header
 		// does not resolve to a loopback address. A loopback-only bind prevents
@@ -167,7 +172,7 @@ func (p *Proxy) handler() http.Handler {
 			return
 		}
 
-		tokenCtx, cancel := context.WithTimeout(r.Context(), tokenFetchTimeout)
+		tokenCtx, cancel := context.WithTimeout(baseCtx, tokenFetchTimeout)
 		defer cancel()
 		token, err := p.tokenSource.Token(tokenCtx)
 		if err != nil {
@@ -206,7 +211,7 @@ func (p *Proxy) handler() http.Handler {
 // cancelled, then performs a graceful shutdown with a 5-second timeout.
 func (p *Proxy) Start(ctx context.Context) error {
 	p.server = &http.Server{
-		Handler:           p.handler(),
+		Handler:           p.handler(ctx),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 

@@ -119,7 +119,7 @@ func TestHandler_InjectsToken(t *testing.T) {
 	req := loopbackRequest("/v1/models")
 	req.Header.Set("Authorization", "Bearer old-token")
 	w := httptest.NewRecorder()
-	p.handler().ServeHTTP(w, req)
+	p.handler(context.Background()).ServeHTTP(w, req)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -145,7 +145,7 @@ func TestHandler_StripsIncomingAuthorization(t *testing.T) {
 	req := loopbackRequest("/v1/models")
 	req.Header.Set("Authorization", "Bearer user-supplied-token")
 	w := httptest.NewRecorder()
-	p.handler().ServeHTTP(w, req)
+	p.handler(context.Background()).ServeHTTP(w, req)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -168,7 +168,7 @@ func TestHandler_RejectsDNSRebindingHost(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		req.Host = host
 		w := httptest.NewRecorder()
-		p.handler().ServeHTTP(w, req)
+		p.handler(context.Background()).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusForbidden, w.Code, "host %q should be rejected", host)
 	}
 
@@ -177,7 +177,7 @@ func TestHandler_RejectsDNSRebindingHost(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		req.Host = host
 		w := httptest.NewRecorder()
-		p.handler().ServeHTTP(w, req)
+		p.handler(context.Background()).ServeHTTP(w, req)
 		assert.NotEqual(t, http.StatusForbidden, w.Code, "host %q should be allowed", host)
 	}
 }
@@ -194,7 +194,7 @@ func TestHandler_Returns502OnTokenError(t *testing.T) {
 
 	req := loopbackRequest("/v1/chat/completions")
 	w := httptest.NewRecorder()
-	p.handler().ServeHTTP(w, req)
+	p.handler(context.Background()).ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
@@ -215,7 +215,7 @@ func TestHandler_Returns401WithActionableMessageOnErrTokenRequired(t *testing.T)
 
 	req := loopbackRequest("/v1/chat/completions")
 	w := httptest.NewRecorder()
-	p.handler().ServeHTTP(w, req)
+	p.handler(context.Background()).ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
@@ -364,7 +364,7 @@ func TestWithTLSSkipVerify(t *testing.T) {
 
 		req := loopbackRequest("/v1/models")
 		w := httptest.NewRecorder()
-		p.handler().ServeHTTP(w, req)
+		p.handler(context.Background()).ServeHTTP(w, req)
 
 		// Certificate verification failure surfaces as 502 Bad Gateway.
 		assert.Equal(t, http.StatusBadGateway, w.Code)
@@ -382,7 +382,7 @@ func TestWithTLSSkipVerify(t *testing.T) {
 
 		req := loopbackRequest("/v1/models")
 		w := httptest.NewRecorder()
-		p.handler().ServeHTTP(w, req)
+		p.handler(context.Background()).ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
 	})

@@ -179,7 +179,7 @@ func TestRepositoryMoved(t *testing.T) {
 			want:   true,
 		},
 		{
-			name:   "unparseable input fails closed",
+			name:   "unparsable input fails closed",
 			oldRef: "ghcr.io/org/skill:v1",
 			newRef: "not a valid reference at all",
 			want:   true,

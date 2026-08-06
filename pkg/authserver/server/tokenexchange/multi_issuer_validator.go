@@ -60,23 +60,15 @@ const (
 	jwksFetchFailureBackoff = 30 * time.Second
 
 	// jwksRefreshInterval is the fixed interval at which each issuer's
-	// jwk.Cache re-fetches its JWKS in the background, restoring the
-	// pre-jwk.Cache jwksCacheTTL constant this validator used before moving
-	// to httprc. It is passed to Register via jwk.WithConstantInterval,
-	// which makes the resource ignore the response's Cache-Control/Expires
-	// headers entirely (see calculateNextRefreshTime in
-	// httprc/resource.go) rather than merely bounding them with
-	// WithMaxInterval — deliberately: absent this override, httprc derives
-	// the interval from those headers, clamped to [DefaultMinInterval,
-	// DefaultMaxInterval] = [15m, 30 days], so a hostile or misconfigured
-	// issuer could otherwise extend our own key-retention window up to a
-	// month simply by setting a long max-age. This only bounds, not closes,
-	// the revocation-lag window: a key revoked at the IdP but still cached
-	// here keeps validating tokens until the next refresh, since
-	// refreshOnUnknownKid only fires on an unknown kid, not a
-	// still-cached-but-revoked one. Closing that would need a refresh on
-	// every successful-kidMatched verification too, which is a per-request
-	// fetch amplifier and out of scope here.
+	// jwk.Cache re-fetches its JWKS in the background. It is passed to
+	// Register via jwk.WithConstantInterval, which makes the resource
+	// ignore the response's Cache-Control/Expires headers entirely rather
+	// than merely bounding them with WithMaxInterval — deliberately:
+	// absent this override, httprc derives the interval from those
+	// headers, clamped to [DefaultMinInterval, DefaultMaxInterval] =
+	// [15m, 30 days], so a hostile or misconfigured issuer could otherwise
+	// extend our own key-retention window up to a month simply by setting
+	// a long max-age.
 	jwksRefreshInterval = 5 * time.Minute
 
 	// defaultActorClaim is the claim read to identify the client that
@@ -126,127 +118,64 @@ type TrustedIssuer struct {
 	// IssuerURL is the expected "iss" claim value (exact match).
 	IssuerURL string `json:"issuer_url" yaml:"issuer_url"`
 	// ExpectedAudience is the expected "aud" claim value that must appear
-	// in the token's audience list. Required; NewMultiIssuerTokenValidator
-	// rejects any TrustedIssuer with an empty ExpectedAudience.
-	//
-	// MUST be a resource/API identifier (e.g. an App ID URI or resource
-	// server identifier) and MUST NOT be a client ID. An ID token's "aud" is
-	// the requesting client's ID, while an access token's "aud" names the
-	// resource it's for — ExpectedAudience being a resource identifier is
-	// what makes this check reject an ID token presented as a subject token
-	// (together with rejectIDTokenClaims's at_hash/c_hash check), per the
-	// audience-based discriminator RFC 8725 §3.12 recommends in place of a
-	// "typ" header check.
-	//
-	// This is operator-dependent and NOT enforced: nothing here can tell a
-	// resource identifier from a client ID by inspecting the string alone,
-	// since Entra v1 legitimately uses a bare app-ID GUID (no URI scheme) as
-	// an access token's "aud" too. NewMultiIssuerTokenValidator emits a
-	// slog.Warn (looksLikeResourceIdentifier) when ExpectedAudience has no
-	// URI scheme, but does not reject it — a hard rejection would break that
-	// real, supported provider. An operator who sets this to a client ID
-	// anyway silently loses this layer of ID/access-token discrimination for
-	// that issuer.
+	// in the token's audience list (a resource/API identifier, not a
+	// client ID — required, but not enforced; see looksLikeResourceIdentifier).
+	// See docs/arch/17-token-exchange-delegation.md ("ID/access-token
+	// discrimination") for why and its limits.
 	ExpectedAudience string `json:"expected_audience" yaml:"expected_audience"`
 	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.
 	// If empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.
 	JWKSURL string `json:"jwks_url,omitempty" yaml:"jwks_url,omitempty"`
 	// InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
 	// for THIS issuer only. Development and testing only — never set in
-	// production. Does not relax the private-IP guard; see AllowPrivateIPs
-	// for that. Deliberately per-issuer rather than a validator-wide or
-	// self-issuer setting: this authorization server's own InsecureAllowHTTP
-	// (e.g. for an in-cluster issuer) must not silently permit plaintext
-	// discovery for every trusted external issuer too — a network attacker
-	// who can intercept that traffic could substitute a JWKS and thereafter
-	// forge subject tokens for that issuer's namespace.
+	// production. Does not relax the private-IP guard; see AllowPrivateIPs.
+	// Deliberately per-issuer: this server's own InsecureAllowHTTP must not
+	// silently permit plaintext discovery for every trusted external issuer
+	// too — a network attacker who can intercept that traffic could
+	// substitute a JWKS and forge subject tokens for that issuer's
+	// namespace.
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 	// AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS
 	// issuer to resolve to a private or loopback address. Use only when the
 	// issuer is hosted inside the same cluster and has no public endpoint.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
-	// ActorClaim names the claim that identifies the client that requested the
-	// subject token from THIS EXTERNAL ISSUER, used for the AllowedActors consent
-	// check below. Values are in the external issuer's client namespace — they are
-	// NOT ToolHive client IDs, and listing a ToolHive client ID in AllowedActors
-	// does not bind delegation to that client (see AllowedActors). Defaults to
-	// "azp" when empty. Set to "appid" for Microsoft Entra v1 tokens, or "cid"
-	// for Okta tokens. The special value "client_id" reads ValidatedClaims.ClientID
-	// instead of Extra, since that claim is routed to a structured field rather
-	// than left in Extra — it is still the external token's client_id claim, not
-	// a ToolHive one.
+	// ActorClaim names the claim identifying the client that requested the
+	// subject token from THIS EXTERNAL ISSUER (used by AllowedActors below).
+	// Values are in the external issuer's namespace, NOT ToolHive client
+	// IDs. Defaults to "azp"; use "appid" for Microsoft Entra v1, "cid" for
+	// Okta. The special value "client_id" reads ValidatedClaims.ClientID
+	// instead of Extra (assignClaim routes it to that field) — it is still
+	// the external token's client_id claim, not a ToolHive one.
 	ActorClaim string `json:"actor_claim,omitempty" yaml:"actor_claim,omitempty"`
 	// AllowedActors is the allowlist of ActorClaim values authorized to
-	// exchange a subject token from this issuer, when the token does not
-	// carry a "may_act" claim. Empty means only may_act-bearing tokens from
-	// this issuer are accepted — every other token from it is rejected
-	// (mirrors the empty-AllowedAudiences convention documented on
-	// NewSelfIssuedTokenValidator).
-	//
-	// By itself, an allowlisted actor names no ToolHive client at all —
-	// AllowedDelegateClients below is what binds it to one or more specific
-	// clients (or, via its wildcard, to any of them explicitly). See #5989
-	// and checkDelegationConsent's doc comment in handler.go for why that
-	// binding is mandatory rather than opt-in. Bounded either way by: the
-	// calling client must already possess a valid subject token, and
-	// scope/audience narrowing still applies to the exchanged result.
+	// exchange a subject token from this issuer when it carries no
+	// "may_act" claim; empty means only may_act-bearing tokens are
+	// accepted. By itself names no ToolHive client — see
+	// AllowedDelegateClients and docs/arch/17-token-exchange-delegation.md
+	// ("Accepted limitations" #1).
 	AllowedActors []string `json:"allowed_actors,omitempty" yaml:"allowed_actors,omitempty"`
 	// AllowedDelegateClients restricts which ToolHive client IDs may
-	// exchange a subject token from this issuer — for BOTH consent paths
-	// (may_act and the AllowedActors allowlist), closing the gap documented
-	// on AllowedActors above. Checked against the authenticated ToolHive
-	// client (checkDelegationConsent's actorID in handler.go), not against
-	// anything in the subject token itself.
-	//
-	// Required — validateTrustedIssuer rejects an empty or absent value:
-	// permissiveness must be declared, not left to an omitted field. Set it
-	// to []string{"*"} to permit any ToolHive confidential client holding
-	// the token-exchange grant (this issuer's original, and only previous,
-	// behavior); list specific client IDs to bind delegation to them once
-	// the operator knows which ToolHive client(s) legitimately act as this
-	// issuer's delegate. The wildcard "*" must not be combined with other
-	// entries — validateTrustedIssuer rejects that too, since silently
-	// ignoring the specific IDs alongside it would be worse than rejecting
-	// the config outright.
-	//
-	// Nothing can reach this code path in production today: the
-	// token-exchange grant requires a confidential client, and no supported
-	// deployment path provisions one (see TrustedIssuers's doc comment on
-	// authserver.RunConfig and issue #6082). That makes flipping the
-	// default from permissive-by-omission to fail-closed free right now —
-	// it would be a breaking change once a client can actually reach this
-	// grant.
-	//
-	// A may_act claim still bypasses AllowedActors — it remains the
-	// authoritative consent signal, checked only against actorID directly
-	// (see checkDelegationConsent) — but it does NOT bypass this field: an
-	// issuer that can emit may_act but has no way to populate AllowedActors
-	// (e.g. Entra, Okta) would otherwise have no per-client containment at
-	// all.
+	// exchange a subject token from this issuer, for BOTH consent paths.
+	// Required (validateTrustedIssuer rejects empty/absent); "*" permits
+	// any confidential client holding the grant. See
+	// docs/arch/17-token-exchange-delegation.md ("Accepted limitations" #1).
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowedDelegateClients []string `json:"allowed_delegate_clients,omitempty" yaml:"allowed_delegate_clients,omitempty"`
 }
 
 // MultiIssuerTokenValidator validates subject tokens from the authorization
-// server itself or from configured external OIDC issuers.
-//
-// For self-issued tokens (where the "iss" claim matches selfIssuer), validation
-// is delegated to the SelfIssuedTokenValidator. For tokens from trusted external
-// issuers, the validator resolves the issuer's JWKS (via OIDC discovery if needed),
-// verifies the JWT signature, and validates standard claims.
+// server itself or from configured external OIDC issuers, delegating
+// self-issued tokens to SelfIssuedTokenValidator and resolving external
+// issuers' JWKS (via OIDC discovery if needed) to verify signature and
+// claims.
 //
 // A valid signature and audience alone would authorize ToolHive as a
-// resource, not any particular client, as a delegate — a confused-deputy risk
-// (CWE-863). An external token's "client_id" claim, when present, names a
-// client in the EXTERNAL issuer's namespace, not a ToolHive client ID, so it
-// cannot serve as the client_id-binding consent signal the self-issued path
-// uses (checkDelegationConsent's client_id case in handler.go).
-// validateExternalToken therefore requires one of two consent signals before
-// returning successfully: a "may_act" claim (authoritative; enforced by the
-// caller against the authenticated client), or the issuer's configured actor
-// claim matching an entry in that issuer's AllowedActors — surfaced as
-// ValidatedClaims.ExternalActor, which checkDelegationConsent must check
-// before its client_id fallback.
+// resource, not any particular client, as a delegate — a confused-deputy
+// risk (CWE-863). validateExternalToken therefore requires a "may_act"
+// claim or a matching AllowedActors entry (surfaced as
+// ValidatedClaims.ExternalActor) before returning successfully. See
+// docs/arch/17-token-exchange-delegation.md for the full consent-signal
+// precedence and trust model.
 type MultiIssuerTokenValidator struct {
 	selfIssuer    string
 	selfValidator *SelfIssuedTokenValidator
@@ -290,9 +219,8 @@ type externalIssuerConfig struct {
 	// the *endpoint URL* an issuer serves its keys from requires a process
 	// restart to pick up. Neither Microsoft Entra nor Okta documents rotating
 	// that URL, only the keys served at it, and every other TrustedIssuer
-	// field already requires a restart to take effect — so this is
-	// consistent with the rest of this config's lifecycle, not a new
-	// limitation introduced by the cache rewrite.
+	// field already requires a restart to take effect, so this is
+	// consistent with the rest of this config's lifecycle.
 	jwksURL string
 	// fetched is true once at least one JWKS fetch has succeeded for this
 	// issuer since process start. Until then, ensureRegistered forces a
@@ -348,21 +276,12 @@ func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
-// NewMultiIssuerTokenValidator creates a validator that accepts tokens from the
-// authorization server itself and from the provided list of trusted external issuers.
-// Returns an error if selfValidator is nil, selfIssuer is empty, any TrustedIssuer
-// is invalid (empty IssuerURL or ExpectedAudience, an IssuerURL equal to selfIssuer
-// or duplicated across entries, or an ActorClaim naming a claim assignClaim never
-// leaves in Extra — see actorClaimsNotInExtra), or an issuer's dedicated HTTP
-// client cannot be built.
-//
-// Each issuer gets its own *http.Client, built by
-// networking.NewHttpClientBuilder from that issuer's own
-// InsecureAllowHTTP/AllowPrivateIPs — never from a validator-wide flag,
-// from this authorization server's own equivalent settings, or from any
-// environment-variable bypass (see the comment where the client is built).
-// See the doc comment on TrustedIssuer.InsecureAllowHTTP for why the
-// per-issuer separation matters.
+// NewMultiIssuerTokenValidator creates a validator that accepts tokens from
+// the authorization server itself and from the provided trusted external
+// issuers. Returns an error if selfValidator is nil, selfIssuer is empty,
+// any TrustedIssuer is invalid (see validateTrustedIssuer), or an issuer's
+// dedicated HTTP client cannot be built (see newExternalIssuerConfig for
+// why each issuer gets its own).
 func NewMultiIssuerTokenValidator(
 	selfValidator *SelfIssuedTokenValidator,
 	selfIssuer string,
@@ -396,108 +315,96 @@ func NewMultiIssuerTokenValidator(
 			)
 		}
 
-		// Clone AllowedActors and AllowedDelegateClients so a caller mutating
-		// their original slices in place (e.g. a future config reload) cannot
-		// race with the unsynchronized reads in resolveAllowedActor and
-		// validateExternalToken, which run on every validation without
-		// holding externalIssuerConfig.mu (that mutex guards JWKS state only).
-		ti.AllowedActors = slices.Clone(ti.AllowedActors)
-		ti.AllowedDelegateClients = slices.Clone(ti.AllowedDelegateClients)
-
-		// Deliberately networking.NewHttpClientBuilder(), not
-		// NewHostScopedClientBuilder: that helper ORs
-		// INSECURE_DISABLE_URL_VALIDATION and an auto-localhost exemption
-		// into BOTH the HTTP-scheme and private-IP gates, so an unrelated
-		// env var — or a trusted issuer that merely happens to be on
-		// localhost — would silently widen AllowPrivateIPs regardless of
-		// what the operator set. That defeats the point of splitting the
-		// two flags per issuer. Passing InsecureAllowHTTP/AllowPrivateIPs
-		// straight through keeps both gates independent and, for the
-		// private-IP gate, env-independent (Build only installs the
-		// dial-time private-IP guard when AllowPrivateIPs is false; that
-		// guard itself never reads the environment).
-		//
-		// One residual: the built client's ValidatingTransport still skips
-		// its HTTPS-scheme check when INSECURE_DISABLE_URL_VALIDATION is
-		// set — that env read is baked into every builder-made client in
-		// this repo. It is backstopped here: ValidateJWKSURL, called from
-		// ensureRegistered before every registration, enforces the scheme
-		// independently of any environment variable, so it must stay there
-		// rather than being treated as redundant with this client's own
-		// check.
-		//
-		// Unlike the sibling newHTTPClientForHost (upstream/oauth2.go),
-		// keep-alive connections are disabled: that client dials one operator-configured
-		// host repeatedly on a hot path, so it deliberately keeps them on.
-		// This one dials jwks_uri — a host taken from an untrusted discovery
-		// document — at the fixed pace of jwksRefreshInterval (see its doc
-		// comment for why that overrides the response's own Cache-Control/
-		// Expires headers) plus the occasional on-demand refresh on an
-		// unknown kid, so it's the "caller-varying host" case that comment's
-		// own doc says to revisit for; there's no hot path here to trade the
-		// per-dial SSRF check away for.
-		httpClient, err := networking.NewHttpClientBuilder().
-			WithInsecureAllowHTTP(ti.InsecureAllowHTTP).
-			WithPrivateIPs(ti.AllowPrivateIPs).
-			WithTimeout(httpTimeout).
-			WithDisableKeepAlives(true).
-			Build()
+		issuerConfig, err := newExternalIssuerConfig(ti)
 		if err != nil {
-			return nil, fmt.Errorf("issuer_url %q: failed to build HTTP client: %w", ti.IssuerURL, err)
+			return nil, err
 		}
-		// Guard against a discovery/JWKS redirect hop landing on a
-		// different, unvetted host — the same policy the transparent proxy
-		// data path applies to a response derived from an untrusted remote
-		// server (see SameHostRedirectPolicy's doc comment).
-		httpClient.CheckRedirect = networking.SameHostRedirectPolicy()
-
-		// Cap every response body this client reads at maxResponseBodySize —
-		// discovery already enforces this itself via io.LimitReader
-		// (discoverJWKSURL), but the JWKS fetch is handed to jwx's jwk.Cache
-		// below, which has no equivalent cap of its own (httprc.MaxBufferSize
-		// is ~1000 MiB, and its transformer does an unbounded io.ReadAll under
-		// that ceiling before parsing). Wrapped OUTSIDE httpClient.Transport
-		// (which Build() always sets — see networking's builder) so the
-		// private-IP dial guard and ValidatingTransport's scheme check still
-		// run first, on the inner, unwrapped transport.
-		httpClient.Transport = &limitedBodyTransport{
-			base: httpClient.Transport,
-			max:  maxResponseBodySize,
-		}
-
-		// One jwk.Cache per issuer, not one shared across all of them — see
-		// externalIssuerConfig.jwksCache's doc comment for why. Each starts
-		// its own background worker pool (jwk.NewCache -> httprc.Client.Start)
-		// that runs for the life of the process; WithWorkers(1) holds that
-		// pool to one worker rather than httprc's default of five, since N
-		// issuers now each pay this cost instead of one validator-wide pool
-		// paying it once. One worker is not one goroutine: httprc also runs
-		// its controller loop and a wait-group waiter, so budget roughly
-		// three per issuer. context.Background() is
-		// deliberate, not a placeholder for a caller-supplied context:
-		// NewMultiIssuerTokenValidator has no request context of its own to
-		// root this in, and the cache's background refresh loop is meant to
-		// outlive any single call anyway — it stops only via
-		// jwk.Cache.Shutdown, which nothing in this codebase currently calls,
-		// matching the equivalent long-lived cache in pkg/auth/token.go's
-		// TokenValidator.
-		jwksCache, err := jwk.NewCache(context.Background(), httprc.NewClient(httprc.WithWorkers(1)))
-		if err != nil {
-			return nil, fmt.Errorf("issuer_url %q: failed to create JWKS cache: %w", ti.IssuerURL, err)
-		}
-
-		issuers[ti.IssuerURL] = &externalIssuerConfig{
-			TrustedIssuer: ti,
-			jwksURL:       ti.JWKSURL,
-			httpClient:    httpClient,
-			jwksCache:     jwksCache,
-		}
+		issuers[ti.IssuerURL] = issuerConfig
 	}
 
 	return &MultiIssuerTokenValidator{
 		selfIssuer:    selfIssuer,
 		selfValidator: selfValidator,
 		issuers:       issuers,
+	}, nil
+}
+
+// newExternalIssuerConfig builds the *externalIssuerConfig for a single
+// already-validated TrustedIssuer: a dedicated HTTP client (scoped to that
+// issuer's own InsecureAllowHTTP/AllowPrivateIPs), its body-size-capped
+// transport, and its own jwk.Cache. Called once per issuer from
+// NewMultiIssuerTokenValidator's constructor loop, after validateTrustedIssuer
+// and the startup warnings have already run for ti.
+func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
+	// Clone AllowedActors and AllowedDelegateClients so a caller mutating
+	// their original slices in place (e.g. a future config reload) cannot
+	// race with the unsynchronized reads in resolveAllowedActor and
+	// validateExternalToken, which run on every validation without
+	// holding externalIssuerConfig.mu (that mutex guards JWKS state only).
+	ti.AllowedActors = slices.Clone(ti.AllowedActors)
+	ti.AllowedDelegateClients = slices.Clone(ti.AllowedDelegateClients)
+
+	// Deliberately networking.NewHttpClientBuilder(), not
+	// NewHostScopedClientBuilder: that helper ORs
+	// INSECURE_DISABLE_URL_VALIDATION and an auto-localhost exemption into
+	// BOTH the HTTP-scheme and private-IP gates, so an unrelated env var —
+	// or a trusted issuer that merely happens to be on localhost — would
+	// silently widen AllowPrivateIPs regardless of what the operator set,
+	// defeating the point of splitting the two flags per issuer.
+	//
+	// Keep-alives are disabled: this client dials jwks_uri, a host taken
+	// from an untrusted discovery document, only on the fixed
+	// jwksRefreshInterval schedule plus occasional on-demand refreshes —
+	// no hot path here to trade the per-dial SSRF check away for.
+	httpClient, err := networking.NewHttpClientBuilder().
+		WithInsecureAllowHTTP(ti.InsecureAllowHTTP).
+		WithPrivateIPs(ti.AllowPrivateIPs).
+		WithTimeout(httpTimeout).
+		WithDisableKeepAlives(true).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("issuer_url %q: failed to build HTTP client: %w", ti.IssuerURL, err)
+	}
+	// Guard against a discovery/JWKS redirect hop landing on a
+	// different, unvetted host — the same policy the transparent proxy
+	// data path applies to a response derived from an untrusted remote
+	// server (see SameHostRedirectPolicy's doc comment).
+	httpClient.CheckRedirect = networking.SameHostRedirectPolicy()
+
+	// Cap every response body this client reads at maxResponseBodySize —
+	// discovery already enforces this itself via io.LimitReader
+	// (discoverJWKSURL), but the JWKS fetch is handed to jwx's jwk.Cache
+	// below, which has no equivalent cap of its own (httprc.MaxBufferSize
+	// is ~1000 MiB, and its transformer does an unbounded io.ReadAll under
+	// that ceiling before parsing). Wrapped OUTSIDE httpClient.Transport
+	// (which Build() always sets — see networking's builder) so the
+	// private-IP dial guard and ValidatingTransport's scheme check still
+	// run first, on the inner, unwrapped transport.
+	httpClient.Transport = &limitedBodyTransport{
+		base: httpClient.Transport,
+		max:  maxResponseBodySize,
+	}
+
+	// One jwk.Cache per issuer (see externalIssuerConfig.jwksCache's doc
+	// comment for why), each running its own background worker pool
+	// (jwk.NewCache -> httprc.Client.Start) for the life of the process.
+	// WithWorkers(1) caps that pool to one worker per issuer instead of
+	// httprc's default five — budget roughly three goroutines per issuer
+	// including its controller loop and wait-group waiter.
+	// context.Background() is deliberate: there's no per-call context to
+	// root this in, and the loop is meant to outlive any single call,
+	// stopped only via jwk.Cache.Shutdown — which nothing here calls,
+	// matching pkg/auth/token.go's TokenValidator.
+	jwksCache, err := jwk.NewCache(context.Background(), httprc.NewClient(httprc.WithWorkers(1)))
+	if err != nil {
+		return nil, fmt.Errorf("issuer_url %q: failed to create JWKS cache: %w", ti.IssuerURL, err)
+	}
+
+	return &externalIssuerConfig{
+		TrustedIssuer: ti,
+		jwksURL:       ti.JWKSURL,
+		httpClient:    httpClient,
+		jwksCache:     jwksCache,
 	}, nil
 }
 
@@ -532,12 +439,10 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 		return nil, fmt.Errorf("failed to determine token issuer: %w", err)
 	}
 
-	// Self-issued tokens are delegated to the existing validator.
 	if issuer == v.selfIssuer {
 		return v.selfValidator.Validate(ctx, rawToken)
 	}
 
-	// Look up the external issuer configuration.
 	issuerConfig, ok := v.issuers[issuer]
 	if !ok {
 		return nil, fmt.Errorf("untrusted issuer: %q", issuer)
@@ -602,9 +507,8 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, errors.New("subject token is missing required 'exp' claim")
 	}
 
-	// Leeway above tolerates clock skew on nbf/iat, but an expired subject
-	// token is never acceptable: it cannot bound the delegated token's
-	// lifetime.
+	// An expired subject token is never acceptable, despite the leeway
+	// above: it cannot bound the delegated token's lifetime.
 	if standardClaims.Expiry.Time().Before(time.Now()) {
 		return nil, errors.New("subject token has expired")
 	}
@@ -615,58 +519,41 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, err
 	}
 
-	// If may_act is present, it must be well-formed — see validateMayActShape.
 	// selfIssuer (not issuerConfig.IssuerURL) is the correct comparison for
-	// may_act's own optional "iss" member: that member identifies the
-	// namespace of may_act.sub, which checkDelegationConsent always compares
-	// against a ToolHive client ID, regardless of which issuer validated the
-	// surrounding token. requireIss is true here — see validateMayActShape's
-	// doc comment for why the external path cannot leave "iss" optional the
-	// way the self-issued path does.
+	// may_act's optional "iss": that member identifies the namespace of
+	// may_act.sub, always compared against a ToolHive client ID regardless
+	// of which issuer validated the surrounding token. requireIss is true
+	// here — unlike the self-issued path, the external path cannot leave
+	// "iss" optional; see validateMayActShape's doc comment.
 	if err := validateMayActShape(extraClaims, v.selfIssuer, true); err != nil {
 		return nil, err
 	}
 
 	claims := buildValidatedClaims(standardClaims, extraClaims)
 
-	// Record provenance for every external token, regardless of which
-	// consent path grants it below — including a may_act-bearing one, which
-	// leaves ExternalActor unset. Without this, a may_act-authorized
-	// external token was indistinguishable from a self-issued exchange
-	// downstream (see ExternalIssuer's doc comment), which is backwards: the
-	// path that bypasses the AllowedActors allowlist is the one that most
-	// needs an audit trail. Set from issuerConfig, already matched against
-	// the validated "iss" claim above — never from token content.
+	// Recorded for every external token, even a may_act-bearing one that
+	// leaves ExternalActor unset — without this, a may_act-authorized
+	// external token would be indistinguishable from a self-issued exchange
+	// downstream, which is backwards: this is the path that most needs an
+	// audit trail. Set from issuerConfig, already matched against the
+	// validated "iss" claim above — never from token content.
 	claims.ExternalIssuer = issuerConfig.IssuerURL
 
-	// Surfaced from issuerConfig — the operator's config, already keyed by
-	// the validated "iss" claim above — never from token content, so
-	// checkDelegationConsent can enforce it against the authenticated
-	// ToolHive client without this validator ever seeing that client ID. Set
-	// unconditionally, for every external token including a may_act-bearing
-	// one: an issuer that can emit may_act but has no way to populate
-	// AllowedActors (e.g. Entra, Okta, whose only consent path is
-	// AllowedActors-equivalent) would otherwise have no per-client
-	// containment at all for that path (see #5989).
+	// Set unconditionally, including for a may_act-bearing token: an issuer
+	// that can emit may_act but has no way to populate AllowedActors (e.g.
+	// Entra, Okta) would otherwise have no per-client containment on that
+	// path (see #5989). checkDelegationConsent enforces it against the
+	// authenticated client; this validator never sees that client ID.
 	claims.AllowedDelegateClients = issuerConfig.AllowedDelegateClients
 
-	// Delegation consent for the external path: a may_act claim is
-	// authoritative and is enforced by the caller (checkDelegationConsent)
+	// A may_act claim is authoritative and enforced by checkDelegationConsent
 	// against the authenticated client — validateMayActShape above has
-	// already confirmed its optional "iss" (if any) names this
-	// authorization server, so may_act.sub is guaranteed to be in ToolHive's
-	// own client namespace by the time checkDelegationConsent reads it. The
-	// AllowedActors allowlist below is skipped entirely whenever MayAct is
-	// set — it must not be treated as a value in the external issuer's
-	// namespace the way the actor claim below is.
-	//
-	// Otherwise, the resolved actor claim must be present in this issuer's
-	// AllowedActors — this is the consent signal for tokens without
-	// may_act. Even when the resolved claim is "client_id" (ActorClaim:
-	// "client_id"), it names a client in the external issuer's namespace,
-	// not a ToolHive client ID, so it cannot be compared against the
-	// authenticated ToolHive client the way ValidatedClaims.ClientID is in
-	// the self-issued path.
+	// already confirmed its own "iss" (if any) names this server, so
+	// may_act.sub is in ToolHive's own client namespace. AllowedActors below
+	// is skipped entirely when MayAct is set. Otherwise, the resolved actor
+	// claim (even "client_id") is in the EXTERNAL issuer's namespace and
+	// must match AllowedActors — it can never be compared against the
+	// authenticated ToolHive client directly.
 	if claims.MayAct == nil {
 		actor, err := resolveAllowedActor(issuerConfig, claims)
 		if err != nil {
@@ -679,38 +566,26 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 }
 
 // ensureRegistered resolves issuerConfig.jwksURL — via OIDC discovery on
-// first use, if it isn't already known — and registers it with
-// issuerConfig's own jwk.Cache.
+// first use — and registers it with issuerConfig's own jwk.Cache (see
+// registerOrRefresh for the Register-vs-Refresh decision). Discovery
+// happens at most once per issuer for the life of the process; see
+// externalIssuerConfig's jwksURL doc comment.
 //
-// Discovery happens at most once per issuer for the life of the process —
-// see externalIssuerConfig's jwksURL doc comment. Registration is retried
-// until issuerConfig.jwksCache.IsRegistered reports issuerConfig.jwksURL as already
-// known to the cache; see registerOrRefresh's doc comment for why that live
-// check, and not a flag this type remembers itself, is what decides between
-// Register and Refresh. The JWKS *fetch* is retried until one succeeds
-// (fetched stays false otherwise), but gated by jwksFetchFailureBackoff: key
-// resolution runs before the subject token's signature is checked, so
-// without this gate an authenticated client holding the token-exchange
-// grant could force a real outbound attempt — discovery, or the JWKS fetch
-// itself — on every single request to an issuer whose endpoint is down.
-// While the gate is closed, the last error is replayed directly rather than
-// attempted again. The gate is consulted here only, before fetched is known
-// to be false; it never applies once a fetch has ever succeeded (fetched
-// true), so a healthy issuer, or one serving stale-but-valid keys through a
-// later background-refresh failure, is unaffected.
+// The JWKS fetch is retried until one succeeds (fetched stays false
+// otherwise), gated by jwksFetchFailureBackoff: key resolution runs before
+// the subject token's signature is checked, so without this gate an
+// authenticated client could force a real outbound attempt on every
+// request to an issuer whose endpoint is down. The gate only applies
+// before the first successful fetch — once fetched is true, a healthy
+// issuer or one serving stale-but-valid keys through a later refresh
+// failure is unaffected. While closed, the last error is replayed
+// directly rather than retried.
 //
-// jwx's own httprc.Resource caps a JWKS response body at
-// httprc.MaxBufferSize (~1000 MiB), far above what this file needs — so
-// every issuer's *http.Client wraps its Transport (see
-// NewMultiIssuerTokenValidator) to enforce the same maxResponseBodySize (1
-// MiB) that already bounds OIDC discovery. This is not merely a
-// request-driven exposure: only the first registration is triggered by an
-// incoming token-exchange request. Every fetch after that is dispatched
-// autonomously by httprc's own background refresh timer (jwksRefreshInterval)
-// for as long as the process runs, with no request or client authentication
-// involved — so an unbounded read here would let a hostile or compromised
-// issuer force an oversized allocation on every refresh indefinitely, not
-// just once per authenticated call.
+// Every background refresh, not just the first request-triggered one,
+// goes through the maxResponseBodySize-capped transport (see
+// limitedBodyTransport) despite having no request or client authentication
+// of its own — without that cap a compromised issuer could force an
+// oversized allocation on every autonomous refresh, indefinitely.
 func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuerConfig *externalIssuerConfig) error {
 	issuerConfig.mu.Lock()
 	defer issuerConfig.mu.Unlock()
@@ -732,36 +607,27 @@ func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuer
 	return nil
 }
 
-// registerOrRefresh performs the actual discovery/registration/fetch attempt
-// for issuerConfig — the gate and its bookkeeping are ensureRegistered's job,
-// its only caller, which already holds issuerConfig.mu across this call
-// (single-flighted per issuer, same as the rest of this file's fetch paths).
-// With the gate above bounding how often this runs for a persistently broken
-// issuer, holding the lock for the duration of one fetch here is an
-// acceptable, rare stall — the alternative, releasing it around the network
-// call, would let concurrent validations pile up N redundant fetches instead
-// of one.
+// registerOrRefresh performs the actual discovery/registration/fetch
+// attempt for issuerConfig; ensureRegistered holds issuerConfig.mu across
+// this call, single-flighting it per issuer so concurrent validations
+// don't pile up N redundant fetches.
 //
-// Whether issuerConfig.jwksURL is already registered with issuerConfig's
-// cache is asked of issuerConfig.jwksCache.IsRegistered directly, rather than
-// remembered in a field on this type. httprc.Controller.Add does register the resource in
-// its internal registry before it ever waits on the first fetch — but that
-// registration step is itself a send over a channel to the cache's backend
-// goroutine, bounded by fetchCtx below, and can fail (context deadline)
-// before the backend ever receives it, in which case nothing was
-// registered. A locally remembered "we called Register" flag can't tell that
-// case apart from "Register succeeded, only the fetch failed", and would
-// wrongly keep retrying via Refresh — which errors on a URL the cache has
-// never heard of — forever after. Asking the cache directly is authoritative
-// either way.
+// Whether jwksURL is already registered is asked of
+// issuerConfig.jwksCache.IsRegistered directly, never remembered in a
+// field: Register's own registration step is a channel send to the
+// cache's backend goroutine and can fail after enqueue but before receipt
+// (context deadline), in which case nothing was actually registered. A
+// locally remembered "we called Register" flag can't distinguish that
+// from "registered, only the fetch failed", and would wrongly keep
+// retrying via Refresh — which errors on a URL the cache never heard of —
+// forever after. Asking the cache directly is authoritative either way.
 //
-// IsRegistered makes no network call, but it is not free either: it is a
-// request/reply round-trip over the same channel to the same backend
-// goroutine, so it blocks if that goroutine is busy and returns false (not an
-// error) if its context expires first. Hence its own timeout below — a false
-// from an expired context routes to Register, whose "already registered"
-// error is transient and absorbed by ensureRegistered's backoff gate. Do not
-// drop that timeout on the assumption this is a plain map read.
+// IsRegistered makes no network call but isn't free: it's a round-trip
+// over that same channel, so it blocks if the backend is busy and returns
+// false (not an error) on context expiry. Its own timeout below matters
+// for that reason — a false from an expired context just routes to
+// Register, whose "already registered" error is transient and absorbed by
+// ensureRegistered's backoff gate.
 func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issuerConfig *externalIssuerConfig) error {
 	// Detach from the caller's request context throughout this function: net/http
 	// cancels ctx when the client disconnects, and this runs before the subject
@@ -827,7 +693,7 @@ func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issue
 // last successfully fetched Set even while a later background refresh is
 // failing (httprc only stores a value after a successful fetch), so a
 // transient outage at an issuer that has already been reached once no longer
-// surfaces as a validation failure the way the old TTL/backoff cache did.
+// surfaces as a validation failure.
 // Each call converts the cached Set into a fresh *jose.JSONWebKeySet — the
 // two libraries' key representations aren't shared, so nothing here is
 // visible to, or mutable by, any other concurrent caller.
@@ -849,8 +715,6 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, err
 	}
 
-	// Relocated from the old fetchJWKS: these are properties of the JWKS
-	// content, independent of how it was fetched or cached.
 	if len(jwks.Keys) == 0 {
 		return nil, errors.New("JWKS contains no keys")
 	}
@@ -1080,9 +944,9 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 	// external issuer itself — choose the private target the dial is
 	// allowed to reach. Requiring jwks_url pins that target to
 	// operator-supplied config. Mirrors the config-time check in
-	// pkg/authserver/config.go:924-929; duplicated here so a caller that
-	// builds the validator directly (factory, tests) without running
-	// Config.Validate cannot bypass it.
+	// pkg/authserver/config.go's validateTrustedIssuers; duplicated here so
+	// a caller that builds the validator directly (factory, tests) without
+	// running Config.Validate cannot bypass it.
 	if ti.AllowPrivateIPs && ti.JWKSURL == "" {
 		return fmt.Errorf(
 			"issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+

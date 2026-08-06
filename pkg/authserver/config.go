@@ -124,56 +124,18 @@ type RunConfig struct {
 	// subject tokens during RFC 8693 token exchange. Empty (the default) means
 	// only self-issued subject tokens are accepted.
 	//
-	// Prerequisite: the token-exchange grant requires a confidential client.
-	// No supported deployment path provisions one today — DCR only ever mints
-	// public clients, CIMD clients are public-only, and there is no
-	// client-seeding field on this RunConfig — so this grant is not yet
-	// usable end to end for self-issued or external subject tokens alike.
-	// Discovery also does not yet advertise the grant or secret-based client
-	// auth, so a metadata-driven client won't attempt it either. Tracked in
+	// Prerequisite: the token-exchange grant requires a confidential client,
+	// and no supported deployment path provisions one today (DCR and CIMD
+	// clients are both public-only, and there is no client-seeding field on
+	// this RunConfig), so this grant is not yet usable end to end for
+	// self-issued or external subject tokens alike. Tracked in
 	// https://github.com/stacklok/toolhive/issues/6082.
 	//
-	// Fail-closed consent per issuer: an empty AllowedActors accepts only
-	// subject tokens carrying a "may_act" claim; every other token from that
-	// issuer is rejected. See tokenexchange.TrustedIssuer for the full field
-	// reference, and the operator-facing constraints below that are not
-	// visible from the config shape alone:
-	//
-	//  1. Audience: the token-exchange handler bounds the requested audience
-	//     by the subject token's own "aud" claim. An external IdP's "aud" is
-	//     typically an app-ID GUID or "api://<app-id>", not one of ToolHive's
-	//     http(s) AllowedAudiences URIs, so an ordinary
-	//     resource=https://mcp.example.com request will fail with
-	//     invalid_target on every call. The external path only works if the
-	//     operator configures the external IdP's API identifier to be exactly
-	//     one of ToolHive's AllowedAudiences URIs.
-	//  2. Scopes: the handler rejects any requested scope absent from the
-	//     subject token's granted scopes with invalid_scope — it does not
-	//     intersect down to a reduced grant. Both the "scope" string claim
-	//     (RFC 9068) and the "scp" array claim are read ("scope" wins if
-	//     both are present), so a subject token with neither claim rejects
-	//     every scoped request; only a scopeless request succeeds. "scp" is
-	//     not an Entra-specific quirk — it's what fosite's own default JWT
-	//     claims strategy writes for a self-issued ToolHive access token, so
-	//     this matters even for the self-issued token-exchange path.
-	//     Microsoft Entra v2 access tokens carry scopes under "scp" too.
-	//  3. Subject namespace: the delegated token's "sub" is qualified as
-	//     "<issuerURL>#<externalSub>" for every trusted-issuer exchange (see
-	//     tokenexchange.delegatedSubject), never the external token's "sub"
-	//     copied verbatim. This exists because downstream authorizers key on
-	//     "sub" alone (Cedar's extractClientIDFromClaims does not read "iss"),
-	//     and ToolHive's own native subjects are UUIDs minted by
-	//     UserResolver.ResolveUser — never an upstream IdP's raw subject
-	//     value — so an unqualified external "sub" could otherwise collide
-	//     with a native user's UUID with no malice on either issuer's part.
-	//     Scope names are not qualified this way and remain the operator's
-	//     responsibility to keep disjoint across issuers.
-	//  4. Client binding: AllowedDelegateClients is a required field —
-	//     TrustedIssuer.AllowedDelegateClients must list either the wildcard
-	//     "*" (any ToolHive confidential client holding the token-exchange
-	//     grant) or specific ToolHive client IDs to bind delegation to them.
-	//     See TrustedIssuer.AllowedActors and .AllowedDelegateClients for the
-	//     full rationale.
+	// See tokenexchange.TrustedIssuer for the per-issuer field reference, and
+	// docs/arch/17-token-exchange-delegation.md for the trust model, consent
+	// signals, and operator-facing constraints (audience/scope bounding,
+	// subject namespace qualification, required client binding) that aren't
+	// visible from the config shape alone.
 	//nolint:lll // field tags require full JSON+YAML names
 	TrustedIssuers []tokenexchange.TrustedIssuer `json:"trusted_issuers,omitempty" yaml:"trusted_issuers,omitempty"`
 }
@@ -872,42 +834,19 @@ func (c *Config) validateDelegationTokenLifespan() error {
 }
 
 // validateTrustedIssuers checks every configured TrustedIssuer as early as
-// RunConfig.Validate can catch it: URL-shape checks below (issuer_url/
-// jwks_url scheme, and the private-IP-literal guard on jwks_url), the
-// allow_private_ips/jwks_url pairing (see the check itself for why), plus
-// every structural check tokenexchange.ValidateTrustedIssuers performs
-// (required fields, self-issuer collision, duplicate issuers, an ActorClaim
-// assignClaim can actually surface in Extra). Shared by RunConfig.Validate()
-// and Config.Validate() — see the comments at both call sites for why the
-// same check must run at both layers (mirrors validateBaselineClientScopes).
+// RunConfig.Validate can catch it, so a bad actor_claim or duplicate
+// issuer_url fails before buildUpstreamConfigs performs live RFC 7591
+// registration against upstream IdPs — not after it, on a crash loop that
+// orphans an upstream registration on every restart. Shared by
+// RunConfig.Validate() and Config.Validate() (mirrors
+// validateBaselineClientScopes); NewMultiIssuerTokenValidator repeats these
+// checks again at server startup as defence in depth.
 //
-// Catching the structural checks here — not only in
-// NewMultiIssuerTokenValidator's constructor — matters because
-// buildUpstreamConfigs performs live RFC 7591 registration against upstream
-// IdPs before the constructor is ever reached: a bad actor_claim or a
-// duplicate issuer_url must fail before that side-effecting work runs, not
-// after it on a crash loop that orphans an upstream registration on every
-// restart. NewMultiIssuerTokenValidator still repeats all of this at server
-// startup as defence in depth.
-//
-// IssuerURL is an OIDC issuer identifier, so it is held to nearly the same
-// rules as the server's own Issuer via validateTrustedIssuerURL (https, or
-// http when the issuer's own InsecureAllowHTTP permits it; no query or
-// fragment — but, unlike the server's own Issuer, a trailing slash IS
-// permitted; see validateTrustedIssuerURL's doc comment) — except that,
-// unlike validateIssuerURL, a loopback host gets NO free pass on scheme: a
-// trusted issuer is not this server's own issuer, and exempting it from
-// HTTPS the way the self-issuer development convenience does would let
-// "issuer_url: http://localhost:9000" with insecure_allow_http: false pass
-// here yet fail at runtime, since the per-issuer HTTP client is still built
-// with InsecureAllowHTTP=false — see validateTrustedIssuerURL's doc comment.
-// JWKSURL, when set, is an ordinary
-// endpoint URL rather than an issuer identifier — real-world jwks_uri values
-// legitimately carry a query string (e.g. Azure AD B2C's includes "?p=...")
-// — so it is checked by validateJWKSEndpointURL instead, which also rejects
-// a private/loopback IP literal unless the issuer's own AllowPrivateIPs
-// permits it: failing at config time beats failing on the first token
-// exchange.
+// issuer_url is checked by validateTrustedIssuerURL, jwks_url (when set) by
+// validateJWKSEndpointURL — see their doc comments for the URL rules each
+// enforces. The remaining structural checks (required fields, self-issuer
+// collision, duplicate issuers, ActorClaim reachability) run via
+// tokenexchange.ValidateTrustedIssuers.
 func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string) error {
 	for _, ti := range issuers {
 		if err := validateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {

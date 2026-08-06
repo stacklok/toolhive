@@ -916,11 +916,17 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 		// discovery — a document fetched from, and thus influenceable by,
 		// the external issuer itself — choose the private target the dial
 		// is allowed to reach. Requiring jwks_url pins that target to
-		// operator-supplied config instead. This is the only enforcement of
-		// that invariant: trustedIssuers has no operator/CRD surface yet
-		// (see #6082), so it is reachable only via a hand-written RunConfig,
-		// and this config-time check is what prevents such a RunConfig from
-		// letting discovery choose a private dial target.
+		// operator-supplied config instead.
+		//
+		// This is the fail-fast layer, not the only one: validateTrustedIssuer
+		// (multi_issuer_validator.go) enforces the same invariant inside
+		// NewMultiIssuerTokenValidator, so a caller constructing a validator
+		// without routing through Config.Validate is still covered. Note that
+		// ensureRegistered's ValidateJWKSURL does NOT cover it — that check is
+		// gated on net.ParseIP, so it only rejects private IP *literals*, and a
+		// discovery document advertising a private *hostname* passes it
+		// cleanly. Checking here and in the constructor is deliberate
+		// duplication, not redundancy.
 		if ti.AllowPrivateIPs && ti.JWKSURL == "" {
 			return fmt.Errorf(
 				"trusted_issuers: issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+

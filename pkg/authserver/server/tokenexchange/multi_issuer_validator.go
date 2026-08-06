@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -304,18 +303,6 @@ type externalIssuerConfig struct {
 	// never be gated.
 	fetchFailedAt time.Time
 	fetchErr      error
-
-	// bridgeMu guards bridgeSource/bridgeJWKS only. Separate from mu (which
-	// serializes JWKS fetches across a 20s Refresh) so a signature
-	// verification on the hot path doesn't block on a concurrent refresh.
-	bridgeMu sync.Mutex
-	// bridgeSource is the jwk.Set identity that bridgeJWKS was last
-	// converted from. nil until the first conversion. Lookup returns a new
-	// pointer only after a refresh, so a changed identity is the invalidation
-	// signal that triggers a re-conversion.
-	bridgeSource jwk.Set
-	// bridgeJWKS is the converted jose.JSONWebKeySet for bridgeSource.
-	bridgeJWKS *jose.JSONWebKeySet
 }
 
 // NewMultiIssuerTokenValidator creates a validator that accepts tokens from the
@@ -770,22 +757,44 @@ func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issue
 	defer cancel()
 	if err := v.jwksCache.Register(fetchCtx, issuerConfig.jwksURL, jwk.WithHTTPClient(issuerConfig.httpClient)); err != nil {
 		// Roll back this issuer's policy claim — but only if the URL was
-		// genuinely never registered with the cache. httprc.Controller.Add
-		// registers the resource with its backend before waiting on the first
-		// fetch, so a Register error covers two distinct failure modes (see
-		// registerOrRefresh's doc comment):
-		//   - the addRequest never reached the backend (e.g. fetchCtx expired
-		//     first), so nothing was registered — IsRegistered is false, and
-		//     the claim above must be released or a different-policy issuer
-		//     resolving to the same jwksURL would stay blocked for the life of
-		//     the process;
-		//   - the resource WAS registered but its first fetch failed — the
-		//     claim correctly reflects a URL the cache is tracking, so it must
-		//     be kept (the retry path refreshes this registration).
-		probeCtx, probeCancel := context.WithTimeout(detached, httpTimeout)
-		registered := v.jwksCache.IsRegistered(probeCtx, issuerConfig.jwksURL)
-		probeCancel()
-		if !registered {
+		// genuinely never registered with the cache. httprc.ErrNotReady and
+		// httprc.ErrResourceAlreadyExists are the two outcomes where the
+		// resource IS tracked (registration succeeded, only the first
+		// fetch/transform failed, or something else already registered it) —
+		// on either, the claim must be KEPT. Any other error means
+		// registration itself never took effect, so the claim must be
+		// released or a different-policy issuer resolving to the same
+		// jwksURL would stay blocked for the life of the process. Asking the
+		// error rather than re-probing IsRegistered: IsRegistered discards
+		// its own error, so it can't distinguish "not registered" from "my
+		// probe's context expired" (see registerOrRefresh's doc comment).
+		if !errors.Is(err, httprc.ErrNotReady()) && !errors.Is(err, httprc.ErrResourceAlreadyExists()) {
+			// Narrows a residual TOCTOU: sendBackend's select can observe
+			// ctx.Done() after the backend already inserted the resource,
+			// so Register can return a plain ctx.Err() for a URL that IS
+			// tracked. Unregister reaps such a zombie registration so the
+			// claim release below does not leave a resource behind under
+			// this issuer's client.
+			//
+			// Two honest limits. The error is discarded, so a Remove failure
+			// still releases the claim while the resource may be tracked —
+			// the original fail-open, much rarer. And when a DIFFERENT
+			// issuer shares this jwksURL under a matching policy, it may
+			// already have refreshed and set fetched=true; this Unregister
+			// then tears down the resource it depends on, and
+			// ensureRegistered's early return on fetched means it never
+			// re-registers. Narrow (needs the deadline to land between the
+			// backend's insert and our reply) and availability-only, but it
+			// is not impossible — see #6082 follow-up on per-issuer caches,
+			// which removes the shared-URL case entirely.
+			//
+			// Bounded like every other backend round-trip here: Remove is a
+			// two-phase channel handshake that blocks until its context is
+			// done, and this runs while holding issuerConfig.mu, precisely
+			// when the backend has already proven slow.
+			unregCtx, unregCancel := context.WithTimeout(detached, httpTimeout)
+			_ = v.jwksCache.Unregister(unregCtx, issuerConfig.jwksURL)
+			unregCancel()
 			v.releaseJWKSURLPolicy(issuerConfig)
 		}
 		return fmt.Errorf("failed to register JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
@@ -850,6 +859,9 @@ func (v *MultiIssuerTokenValidator) releaseJWKSURLPolicy(issuerConfig *externalI
 // failing (httprc only stores a value after a successful fetch), so a
 // transient outage at an issuer that has already been reached once no longer
 // surfaces as a validation failure the way the old TTL/backoff cache did.
+// Each call converts the cached Set into a fresh *jose.JSONWebKeySet — the
+// two libraries' key representations aren't shared, so nothing here is
+// visible to, or mutable by, any other concurrent caller.
 func (v *MultiIssuerTokenValidator) lookupJWKS(
 	ctx context.Context,
 	issuerConfig *externalIssuerConfig,
@@ -863,7 +875,7 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
 	}
 
-	jwks, err := v.bridgedJWKS(set, issuerConfig)
+	jwks, err := bridgeJWKSet(set)
 	if err != nil {
 		return nil, err
 	}
@@ -878,41 +890,6 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 	}
 
 	return jwks, nil
-}
-
-// bridgedJWKS returns issuerConfig's current JWKS as a *jose.JSONWebKeySet,
-// reusing a cached conversion when the underlying jwk.Cache Set has not
-// changed. The conversion runs OUTSIDE bridgeMu: two concurrent callers that
-// both miss may each convert and the later one loses the CAS — wasteful but
-// correct, since the conversion is a pure function of the source Set.
-func (*MultiIssuerTokenValidator) bridgedJWKS(set jwk.Set, issuerConfig *externalIssuerConfig) (*jose.JSONWebKeySet, error) {
-	issuerConfig.bridgeMu.Lock()
-	if issuerConfig.bridgeSource != nil && sameSetIdentity(issuerConfig.bridgeSource, set) && issuerConfig.bridgeJWKS != nil {
-		cached := issuerConfig.bridgeJWKS
-		issuerConfig.bridgeMu.Unlock()
-		return cached, nil
-	}
-	issuerConfig.bridgeMu.Unlock()
-
-	converted, err := bridgeJWKSet(set)
-	if err != nil {
-		return nil, err
-	}
-
-	issuerConfig.bridgeMu.Lock()
-	defer issuerConfig.bridgeMu.Unlock()
-	if issuerConfig.bridgeSource == nil || sameSetIdentity(issuerConfig.bridgeSource, set) {
-		issuerConfig.bridgeSource = set
-		issuerConfig.bridgeJWKS = converted
-	}
-	return converted, nil
-}
-
-// sameSetIdentity reports whether two jwk.Set values reference the same
-// underlying Set. Uses reflect data-pointer comparison rather than
-// interface ==, which is fragile to jwx returning a value type in future.
-func sameSetIdentity(a, b jwk.Set) bool {
-	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
 }
 
 // bridgeJWKSet converts a jwx jwk.Set into the go-jose jose.JSONWebKeySet

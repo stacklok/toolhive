@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2084,6 +2085,32 @@ func (s *urlErrorOnCloseStorage) Close() error {
 	return s.closeErr
 }
 
+// syncBuffer is a concurrency-safe io.Writer over a bytes.Buffer, used by the
+// slog-capturing tests below. slog.SetDefault is process-global, so while a
+// capturing handler is installed, any goroutine in the test binary — not just
+// the capturing test's own subtests — can write a record into it; a plain
+// bytes.Buffer is a data race waiting for some concurrently running test to
+// log, which is exactly what it became once a parallel parent was added.
+// Mirrors the identically-named helper in pkg/authz/authorizers/cedar/
+// core_test.go; kept as a separate copy since it is an unexported test type
+// and not worth exporting across packages.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
 // NewEmbeddedAuthServerWithStorage routes both closeErr and retErr through
@@ -2099,11 +2126,11 @@ func (s *urlErrorOnCloseStorage) Close() error {
 //   - the captured log record DOES contain the host components, so
 //     operators retain enough context to correlate the failure.
 //
-// NOT t.Parallel(): the test swaps slog.Default() to capture output and
-// restores it via t.Cleanup. Running in parallel would race with any other
-// test in this package that emits a log record. Confirmed against the
-// paralleltest rule on a sample run — every other test failed with a
-// data-race report on slog's internal default-logger handle.
+// NOT t.Parallel(): the test swaps slog.Default() and restores it via
+// t.Cleanup. The capturing buffer is a syncBuffer, so a concurrent writer is
+// not itself a data race — the reason to stay sequential is the swap/restore
+// pair, which two overlapping capturing tests would interleave, leaving
+// whichever restored last as the default and clobbering the other's capture.
 //
 //nolint:paralleltest // see comment above; mutates the package-global slog.Default()
 func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
@@ -2156,7 +2183,7 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 
 	// Capture slog output by swapping the default logger for the duration
 	// of this test. Restore on cleanup so parallel tests are unaffected.
-	var buf bytes.Buffer
+	var buf syncBuffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
@@ -2245,11 +2272,13 @@ func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
 		require.NoError(t, srv.Close())
 	})
 
-	// NOT t.Parallel(): captures the package-global slog.Default(); see
-	// TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog above for the
-	// same pattern. Runs to completion (including the t.Cleanup restore)
-	// before the parallel sibling subtest above executes, so there's no
-	// race on slog's default handle.
+	// NOT t.Parallel(): captures the package-global slog.Default() via
+	// slog.SetDefault, which is atomic, and restores it via t.Cleanup.
+	// The buffer itself is the only unsynchronized object in that swap, and
+	// it's mutex-guarded (syncBuffer), so records emitted by any other test
+	// running concurrently in this parallel phase land harmlessly. That's
+	// fine here because the assertion below is Contains-only, which
+	// tolerates foreign records mixed into the buffer.
 	//nolint:paralleltest // see comment above
 	t.Run("valid trusted issuers reach the Factory closure and validator constructor", func(t *testing.T) {
 		cfg := base()
@@ -2263,7 +2292,7 @@ func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
 			},
 		}
 
-		var buf bytes.Buffer
+		var buf syncBuffer
 		prev := slog.Default()
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 		t.Cleanup(func() { slog.SetDefault(prev) })

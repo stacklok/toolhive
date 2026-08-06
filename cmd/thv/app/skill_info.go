@@ -45,10 +45,15 @@ func init() {
 func skillInfoCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newSkillClient(cmd.Context())
 
+	projectRoot, err := absProjectRoot(skillInfoProjectRoot)
+	if err != nil {
+		return err
+	}
+
 	info, err := c.Info(cmd.Context(), skills.InfoOptions{
 		Name:        args[0],
 		Scope:       skills.Scope(skillInfoScope),
-		ProjectRoot: skillInfoProjectRoot,
+		ProjectRoot: projectRoot,
 	})
 	if err != nil {
 		return formatSkillError("get skill info", err)

@@ -50,6 +50,9 @@ type ResolveResult struct {
 	// the install-time verifier checks it cryptographically before it is
 	// trusted or recorded as provenance.
 	CommitSignature string
+	// CommitPayload is the encoded commit object without its signature —
+	// the bytes CommitSignature signs.
+	CommitPayload []byte
 }
 
 // FileEntry represents a single file from the cloned repository.
@@ -183,6 +186,7 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 		Files:           files,
 		CommitHash:      head.Hash,
 		CommitSignature: head.Signature,
+		CommitPayload:   head.Payload,
 	}, nil
 }
 

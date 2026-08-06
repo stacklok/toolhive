@@ -314,7 +314,9 @@ type UpgradeOptions struct {
 	Preview bool `json:"preview,omitempty"`
 	// FailOnChanges exits with an error when any mutable source would upgrade.
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
-	// AllowRefChange permits resolvedReference changes during upgrade.
+	// AllowRefChange permits an upgrade whose candidate lives in a different
+	// repository. Tag moves within the same repository are always allowed —
+	// they are how a mutable source advances.
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
 	// AllowSignerChange permits upgrading to an artifact signed by a
 	// different identity than the one recorded in the lock file; the new

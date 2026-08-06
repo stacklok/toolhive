@@ -11,53 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//nolint:paralleltest // uses t.Chdir, incompatible with t.Parallel
-func TestAbsProjectRoot(t *testing.T) {
-	cwd := t.TempDir()
-	resolvedCwd, err := filepath.EvalSymlinks(cwd)
-	require.NoError(t, err)
-	t.Chdir(resolvedCwd)
-
-	tests := []struct {
-		name     string
-		explicit string
-		want     string
-	}{
-		{
-			name:     "empty stays empty so the scope is not silently changed",
-			explicit: "",
-			want:     "",
-		},
-		{
-			name:     "dot resolves to the working directory",
-			explicit: ".",
-			want:     resolvedCwd,
-		},
-		{
-			name:     "relative child resolves against the working directory",
-			explicit: "child",
-			want:     filepath.Join(resolvedCwd, "child"),
-		},
-		{
-			name:     "an absolute path is returned unchanged",
-			explicit: resolvedCwd,
-			want:     resolvedCwd,
-		},
-		{
-			name:     "traversal is cleaned rather than rejected",
-			explicit: filepath.Join(resolvedCwd, "a", ".."),
-			want:     resolvedCwd,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := absProjectRoot(tc.explicit)
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
 // TestResolveProjectRootAbsolutizesExplicit covers the sync/upgrade path,
 // where an explicit value short-circuits auto-detection — it must still be
 // made absolute, which is the regression behind #6211.

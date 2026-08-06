@@ -48,10 +48,15 @@ func init() {
 func aiPluginInfoCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newAIPluginClient(cmd.Context())
 
+	projectRoot, err := absProjectRoot(aiPluginInfoProjectRoot)
+	if err != nil {
+		return err
+	}
+
 	info, err := c.Info(cmd.Context(), plugins.InfoOptions{
 		Name:        args[0],
 		Scope:       plugins.Scope(aiPluginInfoScope),
-		ProjectRoot: aiPluginInfoProjectRoot,
+		ProjectRoot: projectRoot,
 	})
 	if err != nil {
 		return formatAIPluginError("get plugin info", err)

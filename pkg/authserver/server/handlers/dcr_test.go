@@ -431,10 +431,10 @@ func TestRegisterClientHandler_ScopeAsJSONArray(t *testing.T) {
 var confidentialClientSecretRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // confidentialSecretTTLSeconds is the client_secret_expires_at offset,
-// mirroring storage.DefaultPublicClientTTL so the test asserts against the
+// mirroring storage.DefaultDCRClientTTL so the test asserts against the
 // same value the production handler writes. It is a const (not derived at call
 // time) so it can be used inside subtests; the value is load-bearing and
-// documented at storage.DefaultPublicClientTTL.
+// documented at storage.DefaultDCRClientTTL.
 const confidentialSecretTTLSeconds = int64(30 * 24 * 60 * 60)
 
 // confidentialConfig builds an AuthorizationServerConfig with
@@ -540,7 +540,7 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 		expiresAt, ok := raw["client_secret_expires_at"].(float64)
 		require.True(t, ok, "client_secret_expires_at must be present in raw body")
 		assert.Equal(t, issuedAt+float64(confidentialSecretTTLSeconds), expiresAt,
-			"client_secret_expires_at must equal client_id_issued_at + DefaultPublicClientTTL")
+			"client_secret_expires_at must equal client_id_issued_at + DefaultDCRClientTTL")
 	})
 
 	t.Run("two consecutive registrations yield different secrets", func(t *testing.T) {

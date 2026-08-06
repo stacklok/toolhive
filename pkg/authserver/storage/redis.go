@@ -266,12 +266,18 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
-	// Public clients (from DCR) expire to prevent unbounded growth; RenewClientTTL
-	// refreshes this on proven use so actively-used clients are not evicted.
-	// Confidential clients don't expire.
+	// DCR-issued clients (public and confidential) expire to prevent unbounded
+	// growth from unauthenticated dynamic registration; RenewClientTTL refreshes
+	// this on proven use so actively-used clients are not evicted. The TTL is
+	// keyed on the registration.DCRIssued marker, not IsPublic: a confidential
+	// client minted via DCR is exactly the registration an attacker would pile
+	// up, while a pre-provisioned confidential client (no marker) must never
+	// acquire a TTL — Redis EXPIRE on a key with no TTL creates one, so gating
+	// on IsPublic would give an existing permanent client an expiry on its
+	// first token request after upgrade.
 	ttl := time.Duration(0)
-	if client.IsPublic() {
-		ttl = DefaultPublicClientTTL
+	if registration.DCRIssued(client) {
+		ttl = DefaultDCRClientTTL
 	}
 
 	return s.client.Set(ctx, key, data, ttl).Err()
@@ -297,24 +303,27 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 	return clientFromStored(stored), nil
 }
 
-// RenewClientTTL extends a public client's registration TTL to DefaultPublicClientTTL.
+// RenewClientTTL extends a DCR-issued client's registration TTL to DefaultDCRClientTTL.
 //
 // Call this on a proven-use signal — a successful token exchange/refresh — not on a
 // client read. GetClient is reached from the unauthenticated front-channel
-// /oauth/authorize handler before any authentication, and public clients have no
-// secret, so renewing there would let any caller who knows a public client_id keep
-// its row alive indefinitely and defeat the anti-bloat TTL. Renewing on token
+// /oauth/authorize handler before any authentication, and DCR-issued public clients
+// have no secret, so renewing there would let any caller who knows a public client_id
+// keep its row alive indefinitely and defeat the anti-bloat TTL. Renewing on token
 // issuance ties registration survival to actual use.
 //
-// Only public clients carry a TTL; confidential clients are stored without one and
-// are left untouched. EXPIRE on a missing key is a no-op, so a client whose row has
-// already been evicted (or a non-persisted CIMD client) is safely ignored.
+// Only DCR-issued clients carry a TTL; pre-provisioned clients are stored without one
+// and are left untouched. The gate is the registration.DCRIssued marker, not IsPublic:
+// EXPIRE on a key with no TTL creates one, so keying on IsPublic would hand an
+// existing permanent confidential client an expiry on its first token request after
+// upgrade. EXPIRE on a missing key is a no-op, so a client whose row has already been
+// evicted (or a non-persisted CIMD client) is safely ignored.
 func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client) error {
-	if client == nil || !client.IsPublic() {
+	if client == nil || !registration.DCRIssued(client) {
 		return nil
 	}
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
-	return s.client.Expire(ctx, key, DefaultPublicClientTTL).Err()
+	return s.client.Expire(ctx, key, DefaultDCRClientTTL).Err()
 }
 
 // ClientAssertionJWTValid returns an error if the JTI is known.

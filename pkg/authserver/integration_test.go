@@ -3324,6 +3324,43 @@ func TestIntegration_ConfidentialClientDCR_FullFlow_Redis(t *testing.T) {
 			runConfidentialHappyPath(t, ts.Server.URL, authMethod)
 		})
 	}
+
+	// Criterion 4: evicting the client secret (FastForward past the
+	// registration TTL) makes the token endpoint reject the client with 401
+	// invalid_client. Wrong-secret and unknown-client responses are
+	// indistinguishable; a missing secret is the unknown-client path.
+	t.Run("PostEviction", func(t *testing.T) {
+		clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+			oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+		// Confirm the client authenticates before eviction.
+		preEvict := makeTokenRequestWithBasicAuth(t, ts.Server.URL, url.Values{
+			"grant_type": {"authorization_code"},
+			"code":       {"some-code"},
+		}, clientID, clientSecret)
+		preEvict.Body.Close()
+		require.NotEqual(t, http.StatusUnauthorized, preEvict.StatusCode,
+			"pre-eviction authentication must not be a client-auth failure")
+
+		// Evict the client secret: the registration store writes secrets with
+		// the DefaultDCRClientTTL (30 days), so FastForward past it drops the key.
+		ts.Miniredis(t).FastForward(storage.DefaultDCRClientTTL + time.Hour)
+
+		resp := makeTokenRequestWithBasicAuth(t, ts.Server.URL, url.Values{
+			"grant_type": {"authorization_code"},
+			"code":       {"some-code"},
+		}, clientID, clientSecret)
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		resp.Body.Close()
+
+		require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+			"post-eviction authentication must be 401, got %d (body: %s)", resp.StatusCode, string(bodyBytes))
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(bodyBytes, &body))
+		assert.Equal(t, "invalid_client", body["error"])
+		assert.NotContains(t, string(bodyBytes), clientSecret, "error response must not leak the secret")
+	})
 }
 
 // TestIntegration_ConfidentialClientDCR_FlagOffRejected proves the feature is

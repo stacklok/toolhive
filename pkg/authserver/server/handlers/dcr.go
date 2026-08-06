@@ -201,13 +201,13 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	if clientSecret != "" {
 		// client_secret_expires_at mirrors the registration's storage TTL so
 		// the value is truthful at issuance: an idle registration is evicted
-		// after DefaultPublicClientTTL and re-registration is the documented
+		// after DefaultDCRClientTTL and re-registration is the documented
 		// recovery path. It is never 0 for a confidential registration, so
 		// the int64 + omitempty field emits the key correctly — but if that
 		// ever changes, omitempty would silently drop the RFC 7591-required
 		// key; the raw-JSON handler test guards against that regression.
 		response.ClientSecret = clientSecret
-		response.ClientSecretExpiresAt = issuedAt + int64(storage.DefaultPublicClientTTL.Seconds())
+		response.ClientSecretExpiresAt = issuedAt + int64(storage.DefaultDCRClientTTL.Seconds())
 	}
 
 	w.Header().Set("Content-Type", "application/json")

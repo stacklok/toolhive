@@ -708,8 +708,11 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Attempt registration
-	if err := v.jwksClient.Register(registrationCtx, v.jwksURL); err != nil {
+	// Attempt registration. The CA-aware client must be passed per-resource:
+	// jwx >= 3.1.0 injects its own default client at the resource level when
+	// none is given here, which takes precedence over the client-level one
+	// configured in NewTokenValidator and silently drops custom CA support.
+	if err := v.jwksClient.Register(registrationCtx, v.jwksURL, jwk.WithHTTPClient(v.client)); err != nil {
 		v.jwksRegistrationErr = fmt.Errorf("failed to register JWKS URL: %w", err)
 		// Do NOT set jwksRegistered = true -- allow retry on next call
 		return v.jwksRegistrationErr

@@ -50,12 +50,17 @@ func init() {
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newSkillClient(cmd.Context())
 
-	_, err := c.Install(cmd.Context(), skills.InstallOptions{
+	projectRoot, err := absProjectRoot(skillInstallProjectRoot)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.Install(cmd.Context(), skills.InstallOptions{
 		Name:          args[0],
 		Scope:         skills.Scope(skillInstallScope),
 		Clients:       parseSkillInstallClients(skillInstallClientsRaw),
 		Force:         skillInstallForce,
-		ProjectRoot:   skillInstallProjectRoot,
+		ProjectRoot:   projectRoot,
 		Group:         skillInstallGroup,
 		AllowUnsigned: skillInstallAllowUnsigned,
 	})

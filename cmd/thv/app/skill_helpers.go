@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -67,13 +68,31 @@ func validateProjectRootForScope(scopeVar, projectRootVar *string) func(*cobra.C
 	}
 }
 
+// absProjectRoot makes a user-supplied --project-root absolute, leaving an
+// empty value empty — for most commands that means "not project-scoped", and
+// substituting the working directory there would silently change the scope.
+//
+// The API server requires an absolute project root, so a relative value would
+// otherwise travel all the way to the server and come back as a validation
+// error naming the wire field rather than the flag the user typed.
+func absProjectRoot(explicit string) (string, error) {
+	if explicit == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(explicit)
+	if err != nil {
+		return "", fmt.Errorf("resolving --project-root %q: %w", explicit, err)
+	}
+	return abs, nil
+}
+
 // resolveProjectRoot returns explicit if set, otherwise auto-detects the
 // project root by walking up from the current directory looking for .git —
 // used by commands (sync, upgrade) that operate on "the project you're in"
 // rather than requiring --project-root on every invocation.
 func resolveProjectRoot(explicit string) (string, error) {
 	if explicit != "" {
-		return explicit, nil
+		return absProjectRoot(explicit)
 	}
 	root, err := tclient.DetectProjectRoot("")
 	if err != nil {

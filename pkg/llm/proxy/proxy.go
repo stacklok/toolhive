@@ -30,6 +30,12 @@ import (
 // still does. Once a token is cached, subsequent requests are served from cache
 // and return well within this bound, so the only request that ever approaches it
 // is the initial login.
+//
+// The token source serializes Token() internally, so requests that arrive while
+// that initial login is in flight queue behind it and are then served from the
+// resulting cached token — one browser flow, however many concurrent requests.
+// Their own clients may time out and disconnect first; that is fine, since the
+// login they were waiting on completes regardless and their retry hits the cache.
 const tokenFetchTimeout = 3 * time.Minute
 
 // TokenSource obtains fresh OIDC access tokens for the LLM gateway.

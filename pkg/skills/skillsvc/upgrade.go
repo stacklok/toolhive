@@ -139,13 +139,17 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	if newRef != entry.ResolvedReference && !opts.AllowRefChange {
-		outcome.Status = skills.UpgradeStatusRefChangeBlocked
-		outcome.NewResolvedReference = newRef
-		return upgradePlan{entry: entry, outcome: outcome}
-	}
 	if newRef != entry.ResolvedReference {
 		outcome.NewResolvedReference = newRef
+		// Only a move to a different repository is a supply-chain event. A
+		// tag moving within the same repository is how a catalog-sourced
+		// skill advances at all, and blocking it would force automation to
+		// pass --allow-ref-change on every routine upgrade — which would
+		// also disable the repository check this guard exists for.
+		if repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
+			outcome.Status = skills.UpgradeStatusRefChangeBlocked
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
 	}
 
 	// Signer-change guard: when the entry records a signer identity, the

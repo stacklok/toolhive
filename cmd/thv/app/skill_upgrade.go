@@ -35,8 +35,9 @@ Skills pinned to an immutable reference (an OCI digest or a full git commit
 hash) are reported not-upgradable — there is nothing newer to resolve to.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
-and --allow-ref-change to permit the resolved reference itself changing
-(e.g. a registry entry repointed at a different repository).
+and --allow-ref-change to permit the artifact moving to a different
+repository (a version bump within the same repository is not a change
+this guard blocks).
 --fail-on-changes evaluates the same plan and never installs: it is a CI
 freshness gate.
 
@@ -63,7 +64,7 @@ func init() {
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowSignerChange, "allow-signer-change", false,
 		"Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowRefChange, "allow-ref-change", false,
-		"Permit the resolved reference itself to change during upgrade")
+		"Permit the artifact to move to a different repository during upgrade")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
 	AddFormatFlag(skillUpgradeCmd, &skillUpgradeFormat)
@@ -164,7 +165,7 @@ func upgradeExitError(result *skills.UpgradeResult, preview, failOnChanges bool)
 	}
 	if !preview && !failOnChanges && refBlocked > 0 {
 		return withExitCode(
-			fmt.Errorf("%d skill(s) blocked by a reference change; use --allow-ref-change", refBlocked),
+			fmt.Errorf("%d skill(s) blocked by a repository change; use --allow-ref-change", refBlocked),
 			ExitCodePolicyRejection,
 		)
 	}
@@ -201,7 +202,8 @@ func printUpgradeResult(result *skills.UpgradeResult, format string, planOnly bo
 		case skills.UpgradeStatusNotUpgradable:
 			fmt.Printf("%s: not upgradable (pinned to an immutable reference)\n", o.Name)
 		case skills.UpgradeStatusRefChangeBlocked:
-			fmt.Printf("%s: reference change blocked (would move to %s; use --allow-ref-change)\n", o.Name, o.NewResolvedReference)
+			fmt.Printf("%s: repository change blocked (would move to %s; use --allow-ref-change)\n",
+				o.Name, o.NewResolvedReference)
 		case skills.UpgradeStatusSignerChangeBlocked:
 			newSigner := o.NewSignerIdentity
 			if newSigner == "" {

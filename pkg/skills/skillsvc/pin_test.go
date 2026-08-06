@@ -118,3 +118,77 @@ func hexDigestForTest() string {
 	const s = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	return s[:64]
 }
+
+func TestRepositoryMoved(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		oldRef string
+		newRef string
+		want   bool
+	}{
+		{
+			name:   "identical references have not moved",
+			oldRef: "ghcr.io/org/skill:v1",
+			newRef: "ghcr.io/org/skill:v1",
+		},
+		{
+			name:   "a version bump is not a move",
+			oldRef: "ghcr.io/org/skill:0.1.0",
+			newRef: "ghcr.io/org/skill:0.2.0",
+		},
+		{
+			name:   "moving to a digest in the same repository is not a move",
+			oldRef: "ghcr.io/org/skill:0.1.0",
+			newRef: "ghcr.io/org/skill@" + ociTestDigest(1),
+		},
+		{
+			name:   "an implicit latest tag matches an explicit one",
+			oldRef: "ghcr.io/org/skill",
+			newRef: "ghcr.io/org/skill:latest",
+		},
+		{
+			name:   "a different repository path is a move",
+			oldRef: "ghcr.io/org/skill:v1",
+			newRef: "ghcr.io/org/other-skill:v1",
+			want:   true,
+		},
+		{
+			name:   "a different org on the same registry is a move",
+			oldRef: "ghcr.io/org/skill:v1",
+			newRef: "ghcr.io/attacker/skill:v1",
+			want:   true,
+		},
+		{
+			name:   "a different registry is a move",
+			oldRef: "ghcr.io/org/skill:v1",
+			newRef: "elsewhere.io/org/skill:v1",
+			want:   true,
+		},
+		{
+			name:   "git references fall back to exact comparison",
+			oldRef: "git://github.com/org/repo#skills/a",
+			newRef: "git://github.com/org/repo#skills/b",
+			want:   true,
+		},
+		{
+			name:   "an OCI reference replaced by a git one is a move",
+			oldRef: "ghcr.io/org/skill:v1",
+			newRef: "git://github.com/org/repo",
+			want:   true,
+		},
+		{
+			name:   "unparseable input fails closed",
+			oldRef: "ghcr.io/org/skill:v1",
+			newRef: "not a valid reference at all",
+			want:   true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, repositoryMoved(tc.oldRef, tc.newRef))
+		})
+	}
+}

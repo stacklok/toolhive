@@ -150,13 +150,15 @@ type Identity struct {
 	//     exchange and surfaces the resulting `invalid_grant`. So such a caller must
 	//     either check `exp` first or be prepared to handle that failure.
 	//   - READING identity claims out of it — as the Cedar authorizer does for the
-	//     profile claims an upstream access token omits — is not subject to expiry at
-	//     all. The token is evidence that the upstream asserted something at login,
-	//     and expiry says nothing about whether that assertion happened. Rejecting it
-	//     once expired would flip an authorization decision mid-session, since
-	//     sessions outlive ID tokens by days; and the claims are no staler than the
-	//     alternative, since the profile claims mirrored into the ToolHive-issued
-	//     token are likewise captured once at login and never refreshed.
+	//     claims an upstream access token omits, profile and group alike — is not
+	//     subject to expiry at all. The token is evidence that the upstream asserted
+	//     something at login, and expiry says nothing about whether that assertion
+	//     happened. Rejecting it once expired would flip an authorization decision
+	//     mid-session, since sessions outlive ID tokens by days — and it would do so
+	//     for every user at once, which is worse than the staleness it would avoid.
+	//     Read the claims as login-time facts and size the session accordingly: a
+	//     group revoked upstream keeps evaluating as granted until the session ends,
+	//     because a stored ID token is replaced only when a refresh rotates one.
 	//
 	// Either way the token is NOT re-validated for signature or freshness here, so
 	// treat its claims as login-time facts rather than current state.

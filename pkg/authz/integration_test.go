@@ -970,8 +970,10 @@ func TestIntegrationTransitiveGroupHierarchy(t *testing.T) {
 }
 
 // TestIntegrationUpstreamProviderGroupAuth verifies that when
-// PrimaryUpstreamProvider is configured, group extraction uses the upstream
-// token's claims — not the direct request claims — through the full middleware.
+// PrimaryUpstreamProvider is configured, group extraction uses the pinned
+// provider's own tokens — its access token, or its id_token for the claims that
+// access token omits (#6049) — and never the direct request claims, through the
+// full middleware.
 func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 	t.Parallel()
 
@@ -991,7 +993,10 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 		name          string
 		directClaims  jwt.MapClaims
 		upstreamToken string
-		expectAllowed bool
+		// upstreamIDToken is the pinned provider's stored id_token. Empty means the
+		// provider has none stored (an OAuth 2.0 upstream never asked for `openid`).
+		upstreamIDToken string
+		expectAllowed   bool
 	}{
 		{
 			name:         "upstream_groups_authorize",
@@ -1012,12 +1017,47 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 			expectAllowed: false,
 		},
 		{
+			// #6049 through the full middleware: the pinned upstream asserts group
+			// membership in its id_token only, so the resolved claim set had no
+			// `groups` key and tools/call returned 403 for every user.
+			name:         "upstream_id_token_groups_authorize",
+			directClaims: jwt.MapClaims{"sub": "thv-user"},
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub": "upstream-user",
+			}),
+			upstreamIDToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub":    "upstream-user",
+				"groups": []interface{}{"platform-eng"},
+			}),
+			expectAllowed: true,
+		},
+		{
 			name: "direct_groups_ignored_when_upstream_configured",
 			directClaims: jwt.MapClaims{
 				"sub":    "thv-user",
 				"groups": []interface{}{"platform-eng"},
 			},
 			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub":    "upstream-user",
+				"groups": []interface{}{"other"},
+			}),
+			expectAllowed: false,
+		},
+		{
+			// The same invariant with the #6049 id_token path live: opening the
+			// pinned provider's id_token as a group source did not open the
+			// ToolHive-issued token. Neither of the provider's own tokens names the
+			// permitted group, so the request stays 403 even though the token the
+			// client presented does.
+			name: "direct_groups_still_ignored_when_an_id_token_is_present",
+			directClaims: jwt.MapClaims{
+				"sub":    "thv-user",
+				"groups": []interface{}{"platform-eng"},
+			},
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub": "upstream-user",
+			}),
+			upstreamIDToken: makeUnsignedJWT(t, jwt.MapClaims{
 				"sub":    "upstream-user",
 				"groups": []interface{}{"other"},
 			}),
@@ -1046,6 +1086,9 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 					Claims:  tt.directClaims,
 				},
 				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
+			}
+			if tt.upstreamIDToken != "" {
+				identity.UpstreamIDTokens = map[string]string{providerName: tt.upstreamIDToken}
 			}
 			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
 

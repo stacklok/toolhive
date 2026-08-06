@@ -1033,10 +1033,11 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 				// AllowPrivateIPs is unavoidable here; "explicit jwks_url
 				// resolution path" below is the dedicated test for the
 				// discovery-vs-explicit distinction this used to also cover.
-				JWKSURL:           idpServer.URL + "/jwks",
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				JWKSURL:                idpServer.URL + "/jwks",
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1103,12 +1104,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		ts := setupTestServerWithMockOIDC(t, m,
 			withExtraClient(newAgentClient(t)),
 			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-				IssuerURL:         idpServer.URL,
-				ExpectedAudience:  testAudience,
-				JWKSURL:           idpServer.URL + "/jwks",
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       testAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1158,6 +1160,7 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 				AllowPrivateIPs:   true,
 				// AllowedActors deliberately empty: may_act must be honored
 				// without any actor being allowlisted.
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1303,12 +1306,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		ts := setupTestServerWithMockOIDC(t, m,
 			withExtraClient(newAgentClient(t)),
 			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-				IssuerURL:         idpServer.URL,
-				ExpectedAudience:  testAudience,
-				JWKSURL:           idpServer.URL + "/jwks",
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       testAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1358,12 +1362,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		ts := setupTestServerWithMockOIDC(t, m,
 			withExtraClient(newAgentClient(t)),
 			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-				IssuerURL:         idpServer.URL,
-				ExpectedAudience:  testAudience,
-				JWKSURL:           idpServer.URL + "/jwks",
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       testAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1427,11 +1432,12 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 				// Set directly rather than relying on discovery: this exercises
 				// ensureRegistered's pre-configured-URL branch instead of
 				// discoverJWKSURL.
-				JWKSURL:           idpServer.URL + "/jwks",
-				ExpectedAudience:  testAudience,
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				JWKSURL:                idpServer.URL + "/jwks",
+				ExpectedAudience:       testAudience,
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1468,12 +1474,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		ts := setupTestServerWithMockOIDC(t, m,
 			withExtraClient(newAgentClient(t)),
 			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-				IssuerURL:         idpServer.URL,
-				ExpectedAudience:  testAudience,
-				JWKSURL:           idpServer.URL + "/jwks",
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       testAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 
@@ -1535,12 +1542,13 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		ts := setupTestServerWithMockOIDC(t, m,
 			withExtraClient(newAgentClient(t)),
 			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
-				IssuerURL:         idpServer.URL,
-				ExpectedAudience:  foreignAudience,
-				JWKSURL:           idpServer.URL + "/jwks",
-				AllowedActors:     []string{allowedActor},
-				InsecureAllowHTTP: true,
-				AllowPrivateIPs:   true,
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       foreignAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				AllowedActors:          []string{allowedActor},
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
 			}}),
 		)
 

@@ -32,6 +32,15 @@ var _ fosite.TokenEndpointHandler = (*Handler)(nil)
 // parse it.
 const maxDelegationDepth = 10
 
+// anyDelegateClient is the TrustedIssuer.AllowedDelegateClients entry that
+// explicitly opts an issuer into "any ToolHive confidential client holding
+// the token-exchange grant may act as its delegate" — the behavior that used
+// to be the implicit default whenever the field was left empty. See
+// checkDelegationConsent's doc comment for why that default was removed:
+// permissiveness must now be declared with this wildcard, not left to an
+// absent field.
+const anyDelegateClient = "*"
+
 // Handler implements RFC 8693 token exchange for user-to-agent delegation.
 //
 // When an authenticated OAuth client (the acting agent) presents a user's JWT
@@ -413,6 +422,22 @@ func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string
 	return act, nil
 }
 
+// delegateClientAllowed reports whether actorID may use an issuer's
+// AllowedDelegateClients-bound consent grant (a may_act.sub match or an
+// AllowedActors match): either the list contains the wildcard
+// anyDelegateClient, or it contains actorID directly. An empty list denies
+// every client — validateTrustedIssuer rejects that configuration outright
+// for any TrustedIssuer, so the empty case here is an extra fail-closed
+// backstop, not the path an operator is expected to reach. Callers must only
+// invoke this for a claim that actually went through that per-issuer
+// validation (ExternalIssuer != ""); a self-issued token's
+// AllowedDelegateClients is always nil, since that field has no equivalent
+// concept on the self-issued path.
+func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool {
+	return slices.Contains(allowedDelegateClients, anyDelegateClient) ||
+		slices.Contains(allowedDelegateClients, actorID)
+}
+
 // checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.
 //
 // There are three consent sources, checked in order:
@@ -421,11 +446,13 @@ func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string
 //     party named in may_act.sub may delegate. The client_id binding is
 //     skipped in this case because may_act enables cross-client delegation
 //     (the token was issued to client A but authorizes client B to act).
-//     ValidatedClaims.AllowedDelegateClients, when the external issuer
-//     configured it (TrustedIssuer.AllowedDelegateClients), is still
-//     enforced here too — may_act bypasses AllowedActors, not per-client
-//     containment. It is always nil for self-issued tokens, so this is a
-//     no-op there.
+//     ValidatedClaims.AllowedDelegateClients is additionally enforced here,
+//     but ONLY when ExternalIssuer is set: that field is a TrustedIssuer
+//     concept with no self-issued equivalent, so a self-issued may_act (a
+//     ToolHive user token delegating to a ToolHive client directly) is
+//     bound by may_act.sub alone, the same as before this check existed.
+//     On the external path, may_act bypasses AllowedActors, not per-client
+//     containment — delegateClientAllowed still applies there.
 //
 //  2. ExternalActor: if may_act is absent but the multi-issuer validator has
 //     already established consent for this token (multi_issuer_validator.go),
@@ -439,16 +466,18 @@ func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string
 //     takes priority whenever it is set, even if ClientID also happens to be
 //     populated.
 //
-//     By default (ValidatedClaims.AllowedDelegateClients nil — the issuer
-//     did not configure TrustedIssuer.AllowedDelegateClients), the allowlist
-//     authorizes "this external client's tokens may be exchanged", not
-//     "...by this particular ToolHive client": every ToolHive confidential
-//     client holding the token-exchange grant is delegation-equivalent with
-//     respect to an allowlisted external actor, so compromise of the
-//     weakest such client is as good as compromise of all of them (see
-//     #5989). An operator closes this gap per issuer by setting
-//     AllowedDelegateClients; when set, actorID must appear in it, checked
-//     below. Either way this remains bounded by: the calling client must
+//     ValidatedClaims.AllowedDelegateClients binds this to specific ToolHive
+//     clients: actorID must appear in it (or it must contain the wildcard
+//     anyDelegateClient), checked below by delegateClientAllowed. Without
+//     this, the allowlist would authorize "this external client's tokens may
+//     be exchanged", not "...by this particular ToolHive client" — every
+//     ToolHive confidential client holding the token-exchange grant would be
+//     delegation-equivalent with respect to an allowlisted external actor, so
+//     compromise of the weakest such client would be as good as compromise
+//     of all of them (see #5989). validateTrustedIssuer rejects an empty
+//     AllowedDelegateClients at construction for exactly this reason: an
+//     operator must declare permissiveness with the wildcard, not get it by
+//     omission. Either way this remains bounded by: the calling client must
 //     already possess a valid subject token (it cannot forge one), and
 //     grantScopes/grantAndBoundAudiences still narrow the result to what
 //     both the client and the subject token are authorized for.
@@ -468,7 +497,7 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string) er
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
 		}
-		if len(validatedClaims.AllowedDelegateClients) > 0 && !slices.Contains(validatedClaims.AllowedDelegateClients, actorID) {
+		if validatedClaims.ExternalIssuer != "" && !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
@@ -481,11 +510,9 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string) er
 		// actorID. This case must be checked before the client_id cases below,
 		// not merged with them.
 		//
-		// AllowedDelegateClients, when the issuer configured it, additionally
-		// binds this allowlisted actor to a specific set of ToolHive clients —
-		// nil means the issuer left it unset (permissive: any ToolHive client
-		// may use this actor, the original behavior).
-		if len(validatedClaims.AllowedDelegateClients) > 0 && !slices.Contains(validatedClaims.AllowedDelegateClients, actorID) {
+		// AllowedDelegateClients binds this allowlisted actor to a specific set
+		// of ToolHive clients — see delegateClientAllowed.
+		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}

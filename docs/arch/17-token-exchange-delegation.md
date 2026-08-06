@@ -69,8 +69,9 @@ whether to grant the exchange, in this order:
    the *external* IdP's namespace, not ToolHive client IDs — the likeliest
    misconfiguration. An empty `allowedActors` accepts only `may_act`-bearing
    tokens from that issuer. `checkDelegationConsent` then additionally checks
-   the issuer's `allowedDelegateClients`, if configured, against the
-   authenticated ToolHive client — see Accepted limitations below.
+   the issuer's `allowedDelegateClients` against the authenticated ToolHive
+   client — this field is required (see below), so the check always applies
+   on this path.
 3. **`client_id` binding.** For a self-issued subject token (not part of the
    external path above), the token's `client_id` must match the authenticated
    client.
@@ -79,29 +80,38 @@ whether to grant the exchange, in this order:
 
 ## Accepted limitations
 
-1. **By default, any allowlisted actor authorizes any ToolHive client.**
-   `allowedActors` by itself authorizes "this external client's tokens may be
-   exchanged here," not "…by this particular ToolHive client" — the external
-   actor claim is never compared against the authenticated ToolHive client
-   ID. Every ToolHive confidential client holding the token-exchange grant is
-   delegation-equivalent with respect to an allowlisted external actor, so
-   compromise of the weakest such client is as good as compromise of all of
-   them.
+1. **`allowedDelegateClients` binds an allowlisted actor to specific ToolHive
+   clients, and is mandatory, not opt-in.** `allowedActors` by itself
+   authorizes "this external client's tokens may be exchanged here," not
+   "…by this particular ToolHive client" — the external actor claim is never
+   compared against the authenticated ToolHive client ID. Without a separate
+   binding, every ToolHive confidential client holding the token-exchange
+   grant would be delegation-equivalent with respect to an allowlisted
+   external actor, so compromise of the weakest such client would be as good
+   as compromise of all of them.
 
-   An operator closes this per issuer by setting `allowedDelegateClients`
-   (`TrustedIssuer.AllowedDelegateClients`) on a hand-written
-   `authserver.RunConfig`: a list of ToolHive client IDs
-   permitted to use that issuer's allowlisted actors. `checkDelegationConsent`
-   checks the authenticated client against it whenever it's set — nil (the
-   default) keeps today's permissive behavior, so existing configs are
-   unaffected. `may_act` bypasses `allowedActors` (the external-issuer
-   allowlist) but NOT `allowedDelegateClients`: `checkDelegationConsent`
-   enforces the latter on both consent paths, including a `may_act`-bearing
-   token, since the validator sets `AllowedDelegateClients` for every external
-   token regardless of which path authorized it (see limitation 4 below). This
-   binding therefore applies to the `AllowedActors` path and the `may_act`
-   path alike. Keeping the token-exchange client set minimal remains the
-   operator's baseline control regardless.
+   `TrustedIssuer.AllowedDelegateClients` (`allowed_delegate_clients` on a
+   hand-written `authserver.RunConfig`) closes this per issuer: a list of
+   ToolHive client IDs permitted to use that issuer's allowlisted actors, or
+   the wildcard `"*"` to explicitly permit any ToolHive client holding the
+   token-exchange grant. `validateTrustedIssuer` rejects the field when it is
+   empty or absent — permissiveness must be *declared* with the wildcard, not
+   obtained by leaving the field out — and rejects the wildcard combined with
+   specific client IDs, since silently ignoring the specific IDs alongside it
+   would be worse than rejecting the config outright. `checkDelegationConsent`
+   checks the authenticated client against this list on both consent paths:
+   `may_act` bypasses `allowedActors` (the external-issuer allowlist) but NOT
+   `allowedDelegateClients`, since the validator sets `AllowedDelegateClients`
+   for every external token regardless of which path authorized it (see
+   limitation 4 below). A self-issued `may_act` (no external issuer involved)
+   has no `allowedDelegateClients` equivalent and is unaffected — it remains
+   bound by `may_act.sub` alone.
+
+   Nothing can reach this code path in production today: the token-exchange
+   grant requires a confidential client, and no supported deployment path
+   provisions one (see issue #6082). That makes the fail-closed default free
+   right now — it would be a breaking change once a client can actually reach
+   this grant.
 2. **Subject namespace collisions are closed, not accepted.** A trusted
    issuer is trusted to assert *any* subject this server accepts for
    delegation, and downstream authorization decisions (Cedar) key on `sub`

@@ -706,22 +706,23 @@ components:
                 claims strategy writes for a self-issued ToolHive access token, so
                 this matters even for the self-issued token-exchange path.
                 Microsoft Entra v2 access tokens carry scopes under "scp" too.
-             3. Subject namespace: a trusted issuer is trusted to assert ANY
-                subject this server will accept for delegation — the delegated
-                token carries ToolHive's own "iss" with the external token's "sub"
-                copied verbatim and no first-class marker of provenance, and
-                downstream authorizers key on "sub" alone. Each trusted issuer's
-                subject namespace (and, for the same reason, its scope names) MUST
-                be disjoint from every upstream IdP's and from every other trusted
-                issuer's. Example: if an upstream's SubjectClaim/SubjectPath
-                resolves to an email address and a trusted issuer's "sub" is also
-                an email address, that issuer can mint a delegated token
-                indistinguishable from a real ToolHive-native user's.
-             4. Client binding: an AllowedActors match by itself authorizes ANY
-                ToolHive confidential client holding the token-exchange grant, not
-                only a specific one — see TrustedIssuer.AllowedActors and
-                .AllowedDelegateClients for the full rationale and how to opt into
-                per-issuer client binding.
+             3. Subject namespace: the delegated token's "sub" is qualified as
+                "<issuerURL>#<externalSub>" for every trusted-issuer exchange (see
+                tokenexchange.delegatedSubject), never the external token's "sub"
+                copied verbatim. This exists because downstream authorizers key on
+                "sub" alone (Cedar's extractClientIDFromClaims does not read "iss"),
+                and ToolHive's own native subjects are UUIDs minted by
+                UserResolver.ResolveUser — never an upstream IdP's raw subject
+                value — so an unqualified external "sub" could otherwise collide
+                with a native user's UUID with no malice on either issuer's part.
+                Scope names are not qualified this way and remain the operator's
+                responsibility to keep disjoint across issuers.
+             4. Client binding: AllowedDelegateClients is a required field —
+                TrustedIssuer.AllowedDelegateClients must list either the wildcard
+                "*" (any ToolHive confidential client holding the token-exchange
+                grant) or specific ToolHive client IDs to bind delegation to them.
+                See TrustedIssuer.AllowedActors and .AllowedDelegateClients for the
+                full rationale.
           items:
             $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer'
           type: array
@@ -919,34 +920,44 @@ components:
             (mirrors the empty-AllowedAudiences convention documented on
             NewSelfIssuedTokenValidator).
 
-            By itself, an allowlisted actor satisfies consent for ANY ToolHive
-            confidential client holding the token-exchange grant — every such
-            client is delegation-equivalent, so compromise of the weakest one
-            suffices, and AllowedActors alone gives no per-client containment (see
-            #5989 and checkDelegationConsent's doc comment in handler.go). Set
-            AllowedDelegateClients below to close that gap for this issuer.
-            Bounded either way by: the calling client must already possess a valid
-            subject token, and scope/audience narrowing still applies to the
-            exchanged result.
+            By itself, an allowlisted actor names no ToolHive client at all —
+            AllowedDelegateClients below is what binds it to one or more specific
+            clients (or, via its wildcard, to any of them explicitly). See #5989
+            and checkDelegationConsent's doc comment in handler.go for why that
+            binding is mandatory rather than opt-in. Bounded either way by: the
+            calling client must already possess a valid subject token, and
+            scope/audience narrowing still applies to the exchanged result.
           items:
             type: string
           type: array
           uniqueItems: false
         allowed_delegate_clients:
           description: |-
-            AllowedDelegateClients, when non-empty, restricts which ToolHive
-            client IDs may exchange a subject token from this issuer — for BOTH
-            consent paths (may_act and the AllowedActors allowlist), closing the
-            gap documented on AllowedActors above. Checked against the
-            authenticated ToolHive client (checkDelegationConsent's actorID in
-            handler.go), not against anything in the subject token itself.
+            AllowedDelegateClients restricts which ToolHive client IDs may
+            exchange a subject token from this issuer — for BOTH consent paths
+            (may_act and the AllowedActors allowlist), closing the gap documented
+            on AllowedActors above. Checked against the authenticated ToolHive
+            client (checkDelegationConsent's actorID in handler.go), not against
+            anything in the subject token itself.
 
-            Empty (the default) is permissive: any ToolHive confidential client
-            holding the token-exchange grant may use an allowlisted external
-            actor or a may_act-bearing token from this issuer, matching this
-            feature's original behavior. Set this field to opt into per-issuer
-            client binding once the operator knows which ToolHive client(s)
-            legitimately act as this issuer's delegate.
+            Required — validateTrustedIssuer rejects an empty or absent value:
+            permissiveness must be declared, not left to an omitted field. Set it
+            to []string{"*"} to permit any ToolHive confidential client holding
+            the token-exchange grant (this issuer's original, and only previous,
+            behavior); list specific client IDs to bind delegation to them once
+            the operator knows which ToolHive client(s) legitimately act as this
+            issuer's delegate. The wildcard "*" must not be combined with other
+            entries — validateTrustedIssuer rejects that too, since silently
+            ignoring the specific IDs alongside it would be worse than rejecting
+            the config outright.
+
+            Nothing can reach this code path in production today: the
+            token-exchange grant requires a confidential client, and no supported
+            deployment path provisions one (see TrustedIssuers's doc comment on
+            authserver.RunConfig and issue #6082). That makes flipping the
+            default from permissive-by-omission to fail-closed free right now —
+            it would be a breaking change once a client can actually reach this
+            grant.
 
             A may_act claim still bypasses AllowedActors — it remains the
             authoritative consent signal, checked only against actorID directly
@@ -972,6 +983,16 @@ components:
             (together with rejectIDTokenClaims's at_hash/c_hash check), per the
             audience-based discriminator RFC 8725 §3.12 recommends in place of a
             "typ" header check.
+
+            This is operator-dependent and NOT enforced: nothing here can tell a
+            resource identifier from a client ID by inspecting the string alone,
+            since Entra v1 legitimately uses a bare app-ID GUID (no URI scheme) as
+            an access token's "aud" too. NewMultiIssuerTokenValidator emits a
+            slog.Warn (looksLikeResourceIdentifier) when ExpectedAudience has no
+            URI scheme, but does not reject it — a hard rejection would break that
+            real, supported provider. An operator who sets this to a client ID
+            anyway silently loses this layer of ID/access-token discrimination for
+            that issuer.
           type: string
         insecure_allow_http:
           description: |-

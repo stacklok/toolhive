@@ -801,7 +801,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url bad scheme rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "issuer_url",
@@ -809,7 +809,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url empty rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "issuer is required",
@@ -817,7 +817,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url http without per-issuer insecure_allow_http rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "http scheme is only allowed for localhost",
@@ -825,7 +825,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url http with per-issuer insecure_allow_http accepted",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", InsecureAllowHTTP: true},
+				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", InsecureAllowHTTP: true, AllowedDelegateClients: []string{"*"}},
 			},
 		},
 		{
@@ -837,7 +837,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			// the same as any other http issuer_url.
 			name: "issuer_url http localhost rejected without per-issuer insecure_allow_http",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "http scheme is only allowed for localhost",
@@ -845,7 +845,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url http localhost accepted with per-issuer insecure_allow_http",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", InsecureAllowHTTP: true},
+				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", InsecureAllowHTTP: true, AllowedDelegateClients: []string{"*"}},
 			},
 		},
 		{
@@ -856,9 +856,10 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url with query string accepted",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "https://idp.example.com/keys?p=B2C_1_signin",
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://idp.example.com/keys?p=B2C_1_signin",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 		},
@@ -866,9 +867,10 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url with trailing slash accepted",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "https://idp.example.com/keys/",
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://idp.example.com/keys/",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 		},
@@ -876,9 +878,10 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url bad scheme rejected",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "ftp://idp.example.com/keys",
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "ftp://idp.example.com/keys",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 			wantErr: true,
@@ -888,9 +891,10 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url http rejected without per-issuer insecure_allow_http",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "http://idp.example.com/keys",
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "http://idp.example.com/keys",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 			wantErr: true,
@@ -900,10 +904,11 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url http accepted with per-issuer insecure_allow_http",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:         "https://idp.example.com",
-					ExpectedAudience:  "https://mcp.example.com",
-					JWKSURL:           "http://idp.example.com/keys",
-					InsecureAllowHTTP: true,
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "http://idp.example.com/keys",
+					InsecureAllowHTTP:      true,
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 		},
@@ -911,9 +916,10 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url private IP literal rejected without allow_private_ips",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "https://10.0.0.5/keys",
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://10.0.0.5/keys",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 			wantErr: true,
@@ -923,10 +929,11 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url private IP literal accepted with allow_private_ips",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "https://10.0.0.5/keys",
-					AllowPrivateIPs:  true,
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://10.0.0.5/keys",
+					AllowPrivateIPs:        true,
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 		},
@@ -941,9 +948,10 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "allow_private_ips without jwks_url rejected",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					AllowPrivateIPs:  true,
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					AllowPrivateIPs:        true,
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 			wantErr: true,
@@ -952,7 +960,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "missing expected_audience rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com"},
+				{IssuerURL: "https://idp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "expected_audience is required",
@@ -960,7 +968,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url equal to Config.Issuer rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "https://example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "must not equal the authorization server's own issuer",
@@ -968,8 +976,8 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "duplicate issuer_url rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "configured more than once",
@@ -977,7 +985,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "actor_claim sub rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorClaim: "sub"},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorClaim: "sub", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "actor_claim",
@@ -991,8 +999,9 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "issuer_url with trailing slash accepted",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://sts.windows.net/11111111-2222-3333-4444-555555555555/",
-					ExpectedAudience: "https://mcp.example.com",
+					IssuerURL:              "https://sts.windows.net/11111111-2222-3333-4444-555555555555/",
+					ExpectedAudience:       "https://mcp.example.com",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 		},
@@ -1002,8 +1011,19 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			// validation time, not that the config itself is invalid.
 			name: "empty allowed_actors accepted",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedActors: nil},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedActors: nil, AllowedDelegateClients: []string{"*"}},
 			},
+		},
+		{
+			// #5989 hardening reaches Config.Validate through the same
+			// shared validateTrustedIssuers -> tokenexchange.ValidateTrustedIssuers
+			// path as the constructor-level check.
+			name: "absent allowed_delegate_clients rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+			},
+			wantErr: true,
+			errMsg:  "allowed_delegate_clients is required",
 		},
 	}
 
@@ -1043,7 +1063,7 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "malformed issuer_url rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "issuer_url",
@@ -1051,7 +1071,7 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "missing expected_audience rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com"},
+				{IssuerURL: "https://idp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "expected_audience is required",
@@ -1059,7 +1079,7 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "issuer_url equal to RunConfig.Issuer rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "https://example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "must not equal the authorization server's own issuer",
@@ -1067,8 +1087,8 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "duplicate issuer_url rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "configured more than once",
@@ -1076,7 +1096,7 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 		{
 			name: "actor_claim sub rejected",
 			issuers: []tokenexchange.TrustedIssuer{
-				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorClaim: "sub"},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorClaim: "sub", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
 			errMsg:  "actor_claim",
@@ -1085,9 +1105,10 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 			name: "jwks_url private IP literal rejected without allow_private_ips",
 			issuers: []tokenexchange.TrustedIssuer{
 				{
-					IssuerURL:        "https://idp.example.com",
-					ExpectedAudience: "https://mcp.example.com",
-					JWKSURL:          "https://10.0.0.5/keys",
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://10.0.0.5/keys",
+					AllowedDelegateClients: []string{"*"},
 				},
 			},
 			wantErr: true,
@@ -1141,7 +1162,7 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 			cfg := Config{
 				AllowedAudiences: tt.audiences,
 				TrustedIssuers: []tokenexchange.TrustedIssuer{
-					{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+					{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 				},
 			}
 			cfg.warnTrustedIssuerAudiences()

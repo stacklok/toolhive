@@ -131,12 +131,14 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 	t.Parallel()
 
 	validIssuer := TrustedIssuer{
-		IssuerURL:        "https://idp.example.com",
-		ExpectedAudience: "https://mcp.example.com",
+		IssuerURL:              "https://idp.example.com",
+		ExpectedAudience:       "https://mcp.example.com",
+		AllowedDelegateClients: []string{anyDelegateClient},
 	}
 	invalidIssuer := TrustedIssuer{
 		IssuerURL: "https://idp.example.com",
 		// ExpectedAudience deliberately empty: invalid per validateTrustedIssuer.
+		AllowedDelegateClients: []string{anyDelegateClient},
 	}
 
 	tests := []struct {

@@ -168,11 +168,12 @@ type RunConfig struct {
 	//     with a native user's UUID with no malice on either issuer's part.
 	//     Scope names are not qualified this way and remain the operator's
 	//     responsibility to keep disjoint across issuers.
-	//  4. Client binding: an AllowedActors match by itself authorizes ANY
-	//     ToolHive confidential client holding the token-exchange grant, not
-	//     only a specific one — see TrustedIssuer.AllowedActors and
-	//     .AllowedDelegateClients for the full rationale and how to opt into
-	//     per-issuer client binding.
+	//  4. Client binding: AllowedDelegateClients is a required field —
+	//     TrustedIssuer.AllowedDelegateClients must list either the wildcard
+	//     "*" (any ToolHive confidential client holding the token-exchange
+	//     grant) or specific ToolHive client IDs to bind delegation to them.
+	//     See TrustedIssuer.AllowedActors and .AllowedDelegateClients for the
+	//     full rationale.
 	//nolint:lll // field tags require full JSON+YAML names
 	TrustedIssuers []tokenexchange.TrustedIssuer `json:"trusted_issuers,omitempty" yaml:"trusted_issuers,omitempty"`
 }

@@ -183,29 +183,39 @@ type TrustedIssuer struct {
 	// (mirrors the empty-AllowedAudiences convention documented on
 	// NewSelfIssuedTokenValidator).
 	//
-	// By itself, an allowlisted actor satisfies consent for ANY ToolHive
-	// confidential client holding the token-exchange grant — every such
-	// client is delegation-equivalent, so compromise of the weakest one
-	// suffices, and AllowedActors alone gives no per-client containment (see
-	// #5989 and checkDelegationConsent's doc comment in handler.go). Set
-	// AllowedDelegateClients below to close that gap for this issuer.
-	// Bounded either way by: the calling client must already possess a valid
-	// subject token, and scope/audience narrowing still applies to the
-	// exchanged result.
+	// By itself, an allowlisted actor names no ToolHive client at all —
+	// AllowedDelegateClients below is what binds it to one or more specific
+	// clients (or, via its wildcard, to any of them explicitly). See #5989
+	// and checkDelegationConsent's doc comment in handler.go for why that
+	// binding is mandatory rather than opt-in. Bounded either way by: the
+	// calling client must already possess a valid subject token, and
+	// scope/audience narrowing still applies to the exchanged result.
 	AllowedActors []string `json:"allowed_actors,omitempty" yaml:"allowed_actors,omitempty"`
-	// AllowedDelegateClients, when non-empty, restricts which ToolHive
-	// client IDs may exchange a subject token from this issuer — for BOTH
-	// consent paths (may_act and the AllowedActors allowlist), closing the
-	// gap documented on AllowedActors above. Checked against the
-	// authenticated ToolHive client (checkDelegationConsent's actorID in
-	// handler.go), not against anything in the subject token itself.
+	// AllowedDelegateClients restricts which ToolHive client IDs may
+	// exchange a subject token from this issuer — for BOTH consent paths
+	// (may_act and the AllowedActors allowlist), closing the gap documented
+	// on AllowedActors above. Checked against the authenticated ToolHive
+	// client (checkDelegationConsent's actorID in handler.go), not against
+	// anything in the subject token itself.
 	//
-	// Empty (the default) is permissive: any ToolHive confidential client
-	// holding the token-exchange grant may use an allowlisted external
-	// actor or a may_act-bearing token from this issuer, matching this
-	// feature's original behavior. Set this field to opt into per-issuer
-	// client binding once the operator knows which ToolHive client(s)
-	// legitimately act as this issuer's delegate.
+	// Required — validateTrustedIssuer rejects an empty or absent value:
+	// permissiveness must be declared, not left to an omitted field. Set it
+	// to []string{"*"} to permit any ToolHive confidential client holding
+	// the token-exchange grant (this issuer's original, and only previous,
+	// behavior); list specific client IDs to bind delegation to them once
+	// the operator knows which ToolHive client(s) legitimately act as this
+	// issuer's delegate. The wildcard "*" must not be combined with other
+	// entries — validateTrustedIssuer rejects that too, since silently
+	// ignoring the specific IDs alongside it would be worse than rejecting
+	// the config outright.
+	//
+	// Nothing can reach this code path in production today: the
+	// token-exchange grant requires a confidential client, and no supported
+	// deployment path provisions one (see TrustedIssuers's doc comment on
+	// authserver.RunConfig and issue #6082). That makes flipping the
+	// default from permissive-by-omission to fail-closed free right now —
+	// it would be a breaking change once a client can actually reach this
+	// grant.
 	//
 	// A may_act claim still bypasses AllowedActors — it remains the
 	// authoritative consent signal, checked only against actorID directly
@@ -1019,8 +1029,10 @@ func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) er
 
 // validateTrustedIssuer checks a single TrustedIssuer for structural validity
 // before it is admitted into issuers: required fields, no collision with
-// selfIssuer or an already-registered issuer, and an ActorClaim that
-// resolveAllowedActor can actually read from Extra (or ClientID).
+// selfIssuer or an already-registered issuer, an ActorClaim that
+// resolveAllowedActor can actually read from Extra (or ClientID), and a
+// well-formed AllowedDelegateClients (non-empty, no empty entries, and the
+// wildcard anyDelegateClient never combined with specific client IDs).
 //
 // Error messages name TrustedIssuer's wire keys (issuer_url,
 // expected_audience, actor_claim), not its Go field names: TrustedIssuer is
@@ -1047,9 +1059,21 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 				`(use "client_id" or a non-registered claim such as "azp", "appid", "cid")`,
 			ti.IssuerURL, ti.ActorClaim)
 	}
+	if len(ti.AllowedDelegateClients) == 0 {
+		return fmt.Errorf(
+			"issuer_url %q: allowed_delegate_clients is required; set it to [%q] to permit any ToolHive "+
+				"confidential client holding the token-exchange grant, or list specific client IDs to bind "+
+				"delegation to them — an issuer with no entries can never authorize a delegated exchange",
+			ti.IssuerURL, anyDelegateClient)
+	}
 	if slices.Contains(ti.AllowedDelegateClients, "") {
 		return fmt.Errorf(
 			"issuer_url %q: allowed_delegate_clients must not contain an empty client ID", ti.IssuerURL)
+	}
+	if slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) && len(ti.AllowedDelegateClients) > 1 {
+		return fmt.Errorf(
+			"issuer_url %q: allowed_delegate_clients must not combine the wildcard %q with specific client IDs",
+			ti.IssuerURL, anyDelegateClient)
 	}
 	// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
 	// discovery — a document fetched from, and thus influenceable by, the

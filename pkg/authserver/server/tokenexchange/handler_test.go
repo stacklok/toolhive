@@ -985,10 +985,13 @@ func TestCheckDelegationConsent(t *testing.T) {
 			// may_act path too, not only ExternalActor's — an issuer that
 			// can emit may_act but has no AllowedActors-equivalent consent
 			// path (Entra, Okta) would otherwise have no per-client
-			// containment at all.
+			// containment at all. ExternalIssuer must be set for this check
+			// to apply at all — see checkDelegationConsent's doc comment for
+			// why a self-issued may_act (ExternalIssuer == "") skips it.
 			name: "may_act matching actorID, actorID in AllowedDelegateClients accepted",
 			claims: &ValidatedClaims{
 				MayAct:                 &MayActClaim{Sub: actorID},
+				ExternalIssuer:         "https://idp.example.com",
 				AllowedDelegateClients: []string{"some-other-client", actorID},
 			},
 		},
@@ -996,14 +999,28 @@ func TestCheckDelegationConsent(t *testing.T) {
 			name: "may_act matching actorID, actorID not in AllowedDelegateClients rejected",
 			claims: &ValidatedClaims{
 				MayAct:                 &MayActClaim{Sub: actorID},
+				ExternalIssuer:         "https://idp.example.com",
 				AllowedDelegateClients: []string{"some-other-client"},
 			},
 			wantErr:     true,
 			errContains: "not authorized to exchange subject tokens",
 		},
 		{
-			name:   "ExternalActor set, no MayAct, no ClientID accepted",
-			claims: &ValidatedClaims{ExternalActor: "ext-agent"},
+			// A self-issued may_act (ExternalIssuer unset) has no
+			// AllowedDelegateClients equivalent, so an empty/absent value
+			// here must not reject it — unlike the external-issuer case
+			// below, where the same emptiness is a hard rejection.
+			name: "may_act matching actorID, ExternalIssuer unset, AllowedDelegateClients not enforced",
+			claims: &ValidatedClaims{
+				MayAct: &MayActClaim{Sub: actorID},
+			},
+		},
+		{
+			name: "ExternalActor set, actorID in wildcard AllowedDelegateClients accepted",
+			claims: &ValidatedClaims{
+				ExternalActor:          "ext-agent",
+				AllowedDelegateClients: []string{anyDelegateClient},
+			},
 		},
 		{
 			// Guards the switch ordering in checkDelegationConsent: the
@@ -1012,8 +1029,9 @@ func TestCheckDelegationConsent(t *testing.T) {
 			// rejection when ExternalActor is already set.
 			name: "ExternalActor set with a differing ClientID still accepted",
 			claims: &ValidatedClaims{
-				ExternalActor: "ext-agent",
-				ClientID:      "some-other-client",
+				ExternalActor:          "ext-agent",
+				ClientID:               "some-other-client",
+				AllowedDelegateClients: []string{anyDelegateClient},
 			},
 		},
 		{
@@ -1030,11 +1048,17 @@ func TestCheckDelegationConsent(t *testing.T) {
 			errContains: "does not authorize",
 		},
 		{
-			name: "ExternalActor set, nil AllowedDelegateClients (issuer did not configure it) accepted for any client",
+			// #5989 hardening: AllowedDelegateClients is now required at
+			// construction (validateTrustedIssuer), so nil/empty must be
+			// rejected at runtime too, not treated as "any client" — this
+			// pins the fail-closed default this PR introduces.
+			name: "ExternalActor set, nil AllowedDelegateClients rejected",
 			claims: &ValidatedClaims{
 				ExternalActor: "ext-agent",
-				// AllowedDelegateClients intentionally nil: permissive default.
+				// AllowedDelegateClients intentionally nil.
 			},
+			wantErr:     true,
+			errContains: "not authorized to exchange subject tokens",
 		},
 		{
 			name: "ExternalActor set, actorID in AllowedDelegateClients accepted",
@@ -1113,10 +1137,11 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 	jwksServer := startJWKSServer(t, externalJWKS)
 
 	trustedIssuers := []TrustedIssuer{{
-		IssuerURL:        testExternalIssuer,
-		ExpectedAudience: testExternalAudience,
-		JWKSURL:          jwksServer.URL + "/jwks",
-		AllowedActors:    []string{"ext-agent"},
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedActors:          []string{"ext-agent"},
+		AllowedDelegateClients: []string{anyDelegateClient},
 	}}
 	multiValidator := newMultiValidator(t, tj, trustedIssuers)
 

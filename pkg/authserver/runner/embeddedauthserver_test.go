@@ -2289,6 +2289,7 @@ func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
 				// AllowedActors intentionally empty: this is what makes
 				// NewMultiIssuerTokenValidator log its warning, the
 				// observable proof this test relies on.
+				AllowedDelegateClients: []string{"*"},
 			},
 		}
 

@@ -15,12 +15,12 @@
 package registration
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestNewLoopbackClient(t *testing.T) {
@@ -312,9 +312,10 @@ func TestNewClient_ConfidentialClient(t *testing.T) {
 	assert.False(t, client.IsPublic())
 	assert.Equal(t, []string{"https://example.com/callback"}, client.GetRedirectURIs())
 
-	// Verify the secret is bcrypt-hashed, not stored as plaintext
-	err = bcrypt.CompareHashAndPassword(defaultClient.Secret, []byte("my-secret"))
-	assert.NoError(t, err, "stored secret should be bcrypt hash of plaintext")
+	// Verify the secret is hashed with SHA256Hasher, not stored as plaintext
+	err = SHA256Hasher.Compare(context.Background(), defaultClient.Secret, []byte("my-secret"))
+	assert.NoError(t, err, "stored secret should be a SHA-256 hash of the plaintext")
+	assert.NotContains(t, string(defaultClient.Secret), "my-secret")
 
 	// Check defaults are applied (use ElementsMatch since fosite returns fosite.Arguments type)
 	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())

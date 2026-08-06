@@ -17,12 +17,12 @@
 package registration
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/ory/fosite"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -130,8 +130,9 @@ type Config struct {
 // New creates a fosite.Client from the given configuration.
 // Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
 // compliant loopback redirect URI matching for native OAuth clients.
-// Confidential clients with secrets have their Secret field bcrypt-hashed
-// as required by fosite for credential validation.
+// Confidential clients with secrets have their Secret field SHA-256 hashed
+// (see SHA256Hasher); fosite compares it with the same hasher at the token
+// endpoint.
 func New(cfg Config) (fosite.Client, error) {
 	// Apply defaults for empty slices
 	grantTypes := cfg.GrantTypes
@@ -160,14 +161,15 @@ func New(cfg Config) (fosite.Client, error) {
 		Public:        cfg.Public,
 	}
 
-	// Set bcrypt-hashed secret for confidential clients.
-	// Fosite expects the Secret field to contain a bcrypt hash
-	// for proper credential validation.
+	// Hash the secret for confidential clients. fosite compares the stored
+	// hash with the presented secret using the hasher configured on
+	// fosite.Config.ClientSecretsHasher, so this must use the same SHA-256
+	// hasher — see SHA256Hasher for why no KDF is used.
 	if !cfg.Public {
 		if cfg.Secret == "" {
 			return nil, fmt.Errorf("confidential client requires a secret")
 		}
-		hashedSecret, err := bcrypt.GenerateFromPassword([]byte(cfg.Secret), bcrypt.DefaultCost)
+		hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash client secret: %w", err)
 		}

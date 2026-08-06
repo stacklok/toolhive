@@ -182,6 +182,15 @@ type storedClient struct {
 	// row predates confidential-client support; see GetClient for how legacy
 	// rows are interpreted.
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
+	// DCRIssued is true when the row was written from a dynamically registered
+	// client. It is persisted rather than inferred from the auth method: a
+	// pre-provisioned confidential client also carries a method, and inferring
+	// from it would hand that permanent client an anti-bloat TTL on its first
+	// token request. Rows predating this field unmarshal with DCRIssued=false;
+	// the only RegisterClient caller (DCR) re-writes its rows on every
+	// registration, so legacy rows are only ever pre-provisioned clients, for
+	// which false is the correct value.
+	DCRIssued bool `json:"dcr_issued,omitempty"`
 }
 
 // clientFromStored rebuilds a fosite.Client from its persisted form.
@@ -199,8 +208,9 @@ type storedClient struct {
 //   - A row with a method was written by registration.New (the only path
 //     that populates the column), so it is rebuilt as a
 //     *fosite.DefaultOpenIDConnectClient — fosite enforces the pinned method
-//     at the token endpoint — and re-marked DCR-issued so its anti-bloat TTL
-//     behaviour survives the round-trip.
+//     at the token endpoint — and re-marked DCR-issued only when the row was
+//     persisted as DCR-issued, so a pre-provisioned confidential client (which
+//     also carries a method) never acquires the anti-bloat TTL.
 //   - IsPublic is derived as (Public && method == "none"): a row that somehow
 //     carries both Public=true and a secret-based method reads back
 //     confidential, forcing secret verification rather than dropping it.
@@ -221,7 +231,7 @@ func clientFromStored(stored storedClient) fosite.Client {
 		}
 		method = oauthproto.TokenEndpointAuthMethodNone
 	}
-	return registration.MarkDCRIssued(&fosite.DefaultOpenIDConnectClient{
+	client := fosite.Client(&fosite.DefaultOpenIDConnectClient{
 		DefaultClient: &fosite.DefaultClient{
 			ID:            stored.ID,
 			Secret:        stored.Secret,
@@ -234,6 +244,10 @@ func clientFromStored(stored storedClient) fosite.Client {
 		},
 		TokenEndpointAuthMethod: method,
 	})
+	if stored.DCRIssued {
+		client = registration.MarkDCRIssued(client)
+	}
+	return client
 }
 
 // RegisterClient adds or updates a client in the storage.
@@ -260,6 +274,7 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
 		stored.TokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
 	}
+	stored.DCRIssued = registration.DCRIssued(client)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {

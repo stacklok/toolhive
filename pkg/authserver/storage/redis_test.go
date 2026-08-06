@@ -538,6 +538,38 @@ func TestRedisStorage_RenewClientTTL(t *testing.T) {
 		})
 	})
 
+	t.Run("pre-provisioned OIDC confidential client stays TTL-less", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// The natural pre-provisioned shape: a DefaultOpenIDConnectClient
+			// with a pinned auth method but no DCRIssued marker. RegisterClient
+			// records the method, so a GetClient round-trip must not infer
+			// DCR-issued from it — otherwise RenewClientTTL would hand this
+			// permanent client an expiry on its first token request.
+			client := &fosite.DefaultOpenIDConnectClient{
+				DefaultClient: &fosite.DefaultClient{
+					ID:     "preprov-oidc-renew",
+					Secret: []byte("hashed"),
+				},
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			}
+			require.False(t, registration.DCRIssued(client), "precondition: pre-provisioned client is not DCR-issued")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "preprov-oidc-renew")
+			require.Equal(t, time.Duration(0), mr.TTL(key), "precondition: no TTL after RegisterClient")
+
+			reread, err := s.GetClient(ctx, "preprov-oidc-renew")
+			require.NoError(t, err)
+			require.False(t, registration.DCRIssued(reread),
+				"a pre-provisioned client must not read back as DCR-issued")
+
+			require.NoError(t, s.RenewClientTTL(ctx, reread))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"RenewClientTTL must not introduce a TTL on a pre-provisioned OIDC client")
+		})
+	})
+
 	t.Run("unknown client is a safe no-op", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			// A DCR-issued client whose row was never persisted (or has been

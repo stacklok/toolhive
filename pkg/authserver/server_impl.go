@@ -417,10 +417,6 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 	return nil
 }
 
-// wrapComposeFactory adapts a compose.Factory to a server.Factory.
-// Compose factories take (fosite.Configurator, interface{}, interface{}) while
-// server factories take (*AuthorizationServerConfig, fosite.Storage, any).
-// The embedded *fosite.Config satisfies fosite.Configurator.
 // logConfidentialClientStartup emits the startup log lines for confidential
 // client DCR: an Info naming the consequence when enabled, and an additional
 // WARN when it is combined with cleartext-HTTP issuance.
@@ -437,6 +433,10 @@ func logConfidentialClientStartup(allowConfidentialClients, insecureAllowHTTP bo
 	}
 }
 
+// wrapComposeFactory adapts a compose.Factory to a server.Factory.
+// Compose factories take (fosite.Configurator, interface{}, interface{}) while
+// server factories take (*AuthorizationServerConfig, fosite.Storage, any).
+// The embedded *fosite.Config satisfies fosite.Configurator.
 func wrapComposeFactory(cf compose.Factory) oauthserver.Factory {
 	return func(config *oauthserver.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		return cf(config.Config, storage, strategy), nil

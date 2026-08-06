@@ -3213,7 +3213,10 @@ func registerConfidentialClient(t *testing.T, serverURL, authMethod string) (cli
 	require.NotEmpty(t, regResp.ClientSecret, "DCR response must contain client_secret for a confidential client")
 	assert.Equal(t, authMethod, regResp.TokenEndpointAuthMethod,
 		"DCR response must echo the registered token_endpoint_auth_method")
-	assert.NotZero(t, regResp.ClientSecretExpiresAt, "confidential registrations carry client_secret_expires_at")
+	require.NotNil(t, regResp.ClientSecretExpiresAt,
+		"confidential registrations must carry the client_secret_expires_at key")
+	assert.Zero(t, *regResp.ClientSecretExpiresAt,
+		"client_secret_expires_at is 0 (does not expire): RenewClientTTL keeps an actively used registration alive")
 
 	return regResp.ClientID, regResp.ClientSecret
 }
@@ -3324,6 +3327,26 @@ func TestIntegration_ConfidentialClientDCR_FullFlow_Redis(t *testing.T) {
 			runConfidentialHappyPath(t, ts.Server.URL, authMethod)
 		})
 	}
+
+	// The serialized Redis rows must never carry the plaintext secret: only
+	// the SHA-256 digest is stored. A regression that persisted cfg.Secret (or
+	// a future storedClient field carrying plaintext) would authenticate
+	// successfully and pass every other assertion in this suite.
+	//nolint:paralleltest // shares the suite's miniredis instance with sibling subtests
+	t.Run("PlaintextSecretAbsentFromRedis", func(t *testing.T) {
+		_, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+			oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+		mr := ts.Miniredis(t)
+		for _, key := range mr.Keys() {
+			value, err := mr.Get(key)
+			if err != nil {
+				continue // non-string key types (sets, hashes); the client row is a string
+			}
+			assert.NotContains(t, value, clientSecret,
+				"Redis key %q must not contain the plaintext client secret", key)
+		}
+	})
 
 	// Criterion 4: evicting the client secret (FastForward past the
 	// registration TTL) makes the token endpoint reject the client with 401
@@ -3584,8 +3607,12 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 		"issuing a code without a PKCE challenge must fail, got %d (body: %s)", resp.StatusCode, string(callbackBody))
 	errLocation, err := resp.Location()
 	require.NoError(t, err)
-	assert.NotEmpty(t, errLocation.Query().Get("error"),
-		"the callback must redirect with an OAuth error rather than issuing a code")
+	// Assert the concrete observed value, not just non-emptiness: when the
+	// callback handler stops masking invalid_request as server_error, this
+	// fails loudly and the assertion can be tightened to the correct code.
+	assert.Equal(t, "server_error", errLocation.Query().Get("error"),
+		"the callback currently masks the PKCE invalid_request as server_error (see callback.go); "+
+			"if this now reads invalid_request, the masking is fixed and this assertion should be updated")
 	assert.Empty(t, errLocation.Query().Get("code"),
 		"no authorization code may be issued to a challenge-less request")
 
@@ -3631,7 +3658,7 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 func TestIntegration_ConfidentialClientDCR_SecretNeverLogged(t *testing.T) {
 	// Not parallel: swaps the process-global slog default handler.
 
-	capture := &capturingSlogHandler{}
+	capture := newCapturingSlogHandler()
 	prev := slog.Default()
 	slog.SetDefault(slog.New(capture))
 	t.Cleanup(func() { slog.SetDefault(prev) })

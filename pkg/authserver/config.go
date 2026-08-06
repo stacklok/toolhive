@@ -127,7 +127,12 @@ type RunConfig struct {
 	// Confidential clients are restricted to https non-loopback redirect URIs.
 	// Registrations idle for more than DefaultDCRClientTTL (30 days) are
 	// evicted and must re-register. Disabling this flag does not revoke
-	// already-minted secrets. Do not combine with InsecureAllowHTTP outside a
+	// already-minted secrets: the token endpoint keeps accepting
+	// client_secret_basic/client_secret_post from those clients while
+	// discovery metadata advertises only "none" (RFC 8414 defines that field
+	// as what the token endpoint supports, so the skew is a known,
+	// deliberate consequence of the flag being a registration-time gate).
+	// Do not combine with InsecureAllowHTTP outside a
 	// trusted network: registration is unauthenticated, so the pair issues
 	// client secrets over cleartext HTTP.
 	//nolint:lll // field tags require full JSON+YAML names

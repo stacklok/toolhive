@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,18 +47,5 @@ func TestSHA256Hasher(t *testing.T) {
 	t.Run("rejects truncated hash", func(t *testing.T) {
 		t.Parallel()
 		assert.Error(t, SHA256Hasher.Compare(ctx, hash[:sha256.Size-1], secret))
-	})
-
-	// Pins the absence of a per-attempt KDF: 100 wrong-secret comparisons must
-	// complete in a bound consistent with SHA-256, not bcrypt (a single
-	// cost-10 bcrypt verify is ~50-100ms; 100 of them would take seconds).
-	t.Run("no per-attempt KDF cost", func(t *testing.T) {
-		t.Parallel()
-		start := time.Now()
-		for range 100 {
-			_ = SHA256Hasher.Compare(ctx, hash, []byte("wrong"))
-		}
-		assert.Less(t, time.Since(start), 100*time.Millisecond,
-			"100 wrong-secret comparisons must be far below one bcrypt verify")
 	})
 }

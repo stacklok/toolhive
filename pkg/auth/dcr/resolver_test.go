@@ -124,7 +124,7 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			RegistrationClientURI:   server.URL + "/register/" + clientID,
 			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 			ClientIDIssuedAt:        cfg.clientIDIssuedAt,
-			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			ClientSecretExpiresAt:   &cfg.clientSecretExpiresAt,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -1896,7 +1896,7 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 					ClientID:              "id",
 					ClientSecret:          "secret",
 					ClientIDIssuedAt:      tc.issuedAt,
-					ClientSecretExpiresAt: tc.expiresAt,
+					ClientSecretExpiresAt: &tc.expiresAt,
 				},
 				&dcrEndpoints{
 					authorizationEndpoint: "https://idp.example.com/authorize",

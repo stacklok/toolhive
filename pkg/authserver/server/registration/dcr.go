@@ -241,16 +241,17 @@ func validateAuthMethod(
 	case oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 		oauthproto.TokenEndpointAuthMethodClientSecretPost:
 		if !allowConfidential {
-			// Keep the pre-flag error byte-identical when the feature is off.
 			return "", &DCRError{
 				Error:            DCRErrorInvalidClientMetadata,
-				ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
+				ErrorDescription: "this authorization server only supports token_endpoint_auth_method 'none'",
 			}
 		}
-		// Confidential clients must use https non-loopback redirect URIs:
-		// a client reachable on loopback or a private scheme is by
-		// construction a public client, and minting it a secret would ship
-		// that secret inside a distributed binary.
+		// Server policy (not a spec mandate): confidential registrations must
+		// use https non-loopback redirect URIs. A client reachable on loopback
+		// or a private scheme is typically a distributed native app that cannot
+		// keep a secret, so this server declines to mint it one. This also
+		// rejects https://localhost, which has no security argument behind it —
+		// it is a deliberate simplicity tradeoff, not a spec requirement.
 		for _, uri := range redirectURIs {
 			if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
 				return "", &DCRError{
@@ -260,8 +261,9 @@ func validateAuthMethod(
 			}
 			if isLoopbackURI(uri) {
 				return "", &DCRError{
-					Error:            DCRErrorInvalidRedirectURI,
-					ErrorDescription: "confidential clients must not use loopback redirect URIs",
+					Error: DCRErrorInvalidClientMetadata,
+					ErrorDescription: "token_endpoint_auth_method '" + authMethod +
+						"' requires https non-loopback redirect_uris; native and loopback clients must use 'none'",
 				}
 			}
 		}

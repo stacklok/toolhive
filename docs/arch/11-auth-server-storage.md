@@ -191,7 +191,7 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | Authorization codes | 10 minutes |
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
-| Public clients (DCR) | 30 days |
+| DCR-issued clients (public and confidential) | 30 days |
 | Users / Providers | No expiry |
 
 ## Configuration

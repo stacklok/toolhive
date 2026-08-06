@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -199,15 +198,19 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		Scopes:                  oauthproto.ScopeList(scopes),
 	}
 	if clientSecret != "" {
-		// client_secret_expires_at mirrors the registration's storage TTL so
-		// the value is truthful at issuance: an idle registration is evicted
-		// after DefaultDCRClientTTL and re-registration is the documented
-		// recovery path. It is never 0 for a confidential registration, so
-		// the int64 + omitempty field emits the key correctly — but if that
-		// ever changes, omitempty would silently drop the RFC 7591-required
-		// key; the raw-JSON handler test guards against that regression.
+		// client_secret_expires_at is 0 ("does not expire", RFC 7591 §2): the
+		// storage TTL on a DCR-issued client is refreshed by RenewClientTTL on
+		// every token exchange, so an actively used registration never expires
+		// and advertising issued_at+TTL would be false. Advertising a real
+		// expiry would also make ToolHive's own DCR client (which acts on this
+		// field, pkg/auth/dcr/resolver.go) re-register against a ToolHive auth
+		// server every TTL while its existing registration is still live,
+		// orphaning the old row — the registration bloat the TTL exists to
+		// prevent. An idle registration is still evicted after
+		// DefaultDCRClientTTL, but re-registration mints a new client_id either
+		// way, so the field cannot usefully describe that case.
 		response.ClientSecret = clientSecret
-		response.ClientSecretExpiresAt = issuedAt + int64(storage.DefaultDCRClientTTL.Seconds())
+		response.ClientSecretExpiresAt = new(int64) // 0: does not expire
 	}
 
 	w.Header().Set("Content-Type", "application/json")

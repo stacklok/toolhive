@@ -198,27 +198,48 @@ func TestNewServer_Success(t *testing.T) {
 // handler is process-global, so tests using it must not run in parallel with
 // other slog-capturing tests.
 type capturingSlogHandler struct {
+	sink *capturingSlogSink
+	// attrs carries the slog.With(...) attributes in effect for this handler,
+	// flattened into every rendered record by recordsContaining. Without this,
+	// a secret leaked via slog.With("client_secret", s).Info(...) — the most
+	// likely way one escapes during a refactor — would be invisible to the
+	// leak-detection tests.
+	attrs []slog.Attr
+}
+
+// capturingSlogSink is the shared record store behind a capturingSlogHandler
+// and every handler derived from it via WithAttrs.
+type capturingSlogSink struct {
 	mu      sync.Mutex
 	records []slog.Record
+}
+
+func newCapturingSlogHandler() *capturingSlogHandler {
+	return &capturingSlogHandler{sink: &capturingSlogSink{}}
 }
 
 func (*capturingSlogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
 func (h *capturingSlogHandler) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.records = append(h.records, r)
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	// Flatten the With(...) attributes into the record so recordsContaining
+	// sees them alongside per-call attrs.
+	r.AddAttrs(h.attrs...)
+	h.sink.records = append(h.sink.records, r)
 	return nil
 }
 
-func (h *capturingSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *capturingSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+func (h *capturingSlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &capturingSlogHandler{sink: h.sink, attrs: append(h.attrs, attrs...)}
+}
+func (h *capturingSlogHandler) WithGroup(_ string) slog.Handler { return h }
 
 func (h *capturingSlogHandler) messages(level slog.Level, containing string) []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
 	var out []string
-	for _, r := range h.records {
+	for _, r := range h.sink.records {
 		if r.Level == level && strings.Contains(r.Message, containing) {
 			out = append(out, r.Message)
 		}
@@ -231,10 +252,10 @@ func (h *capturingSlogHandler) messages(level slog.Level, containing string) []s
 // tests that must prove a secret appears in ZERO log records, not just in
 // zero messages.
 func (h *capturingSlogHandler) recordsContaining(needle string) []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
 	var out []string
-	for _, r := range h.records {
+	for _, r := range h.sink.records {
 		var b strings.Builder
 		b.WriteString(r.Message)
 		r.Attrs(func(a slog.Attr) bool {
@@ -283,7 +304,7 @@ func TestNewServer_AllowConfidentialClients_Logs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			capture := &capturingSlogHandler{}
+			capture := newCapturingSlogHandler()
 			prev := slog.Default()
 			slog.SetDefault(slog.New(capture))
 			t.Cleanup(func() { slog.SetDefault(prev) })

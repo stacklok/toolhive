@@ -850,9 +850,19 @@ func buildResolution(
 		TokenEndpointAuthMethod: authMethod,
 		RedirectURI:             redirectURI,
 		ClientIDIssuedAt:        epochSecondsToTime(response.ClientIDIssuedAt),
-		ClientSecretExpiresAt:   epochSecondsToTime(response.ClientSecretExpiresAt),
+		ClientSecretExpiresAt:   epochSecondsToTime(derefInt64(response.ClientSecretExpiresAt)),
 		CreatedAt:               time.Now(),
 	}
+}
+
+// derefInt64 unwraps the pointer form of client_secret_expires_at; a nil
+// pointer (key absent) and a pointed-to 0 both mean "does not expire" and
+// collapse to 0, which epochSecondsToTime maps to the zero time.Time.
+func derefInt64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // epochSecondsToTime converts the int64 epoch-seconds form used by RFC 7591

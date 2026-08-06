@@ -270,17 +270,17 @@ func TestIsLocalhost(t *testing.T) {
 		{
 			name:     "case insensitive localhost",
 			input:    "LOCALHOST",
-			expected: false, // Current implementation is case sensitive
+			expected: true, // net/url lowercases hostnames anyway; case-fold is safe
 		},
 		{
 			name:     "case insensitive localhost with port",
 			input:    "LOCALHOST:8080",
-			expected: false, // Current implementation is case sensitive
+			expected: true,
 		},
 		{
 			name:     "mixed case localhost",
 			input:    "LocalHost",
-			expected: false, // Current implementation is case sensitive
+			expected: true,
 		},
 		{
 			name:     "localhost with spaces",

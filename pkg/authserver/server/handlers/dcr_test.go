@@ -430,21 +430,14 @@ func TestRegisterClientHandler_ScopeAsJSONArray(t *testing.T) {
 // secret produced by registration.GenerateClientSecret.
 var confidentialClientSecretRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
-// confidentialSecretTTLSeconds is the client_secret_expires_at offset,
-// mirroring storage.DefaultDCRClientTTL so the test asserts against the
-// same value the production handler writes. It is a const (not derived at call
-// time) so it can be used inside subtests; the value is load-bearing and
-// documented at storage.DefaultDCRClientTTL.
-const confidentialSecretTTLSeconds = int64(30 * 24 * 60 * 60)
-
 // confidentialConfig builds an AuthorizationServerConfig with
 // AllowConfidentialClients set, matching the test pattern used elsewhere in
 // this file.
 func confidentialConfig(allowConfidential bool) *server.AuthorizationServerConfig {
 	return &server.AuthorizationServerConfig{
 		Config:                   &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-		ScopesSupported:           registration.DefaultScopes,
-		AllowConfidentialClients:  allowConfidential,
+		ScopesSupported:          registration.DefaultScopes,
+		AllowConfidentialClients: allowConfidential,
 	}
 }
 
@@ -489,9 +482,9 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 		var errResp registration.DCRError
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
 		assert.Equal(t, registration.DCRErrorInvalidClientMetadata, errResp.Error)
-		// Literal assertion: production code must keep this byte-identical so the
-		// pre-flag error contract is unchanged.
-		assert.Equal(t, "token_endpoint_auth_method must be 'none' for public clients", errResp.ErrorDescription)
+		// The description names the server's limitation, not the client's
+		// posture: the client did not declare itself public.
+		assert.Equal(t, "this authorization server only supports token_endpoint_auth_method 'none'", errResp.ErrorDescription)
 		// Raw body must not carry a client_secret key.
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
@@ -537,10 +530,11 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 
 		issuedAt, ok := raw["client_id_issued_at"].(float64)
 		require.True(t, ok, "client_id_issued_at must be present")
+		assert.NotZero(t, issuedAt)
 		expiresAt, ok := raw["client_secret_expires_at"].(float64)
 		require.True(t, ok, "client_secret_expires_at must be present in raw body")
-		assert.Equal(t, issuedAt+float64(confidentialSecretTTLSeconds), expiresAt,
-			"client_secret_expires_at must equal client_id_issued_at + DefaultDCRClientTTL")
+		assert.Equal(t, float64(0), expiresAt,
+			"client_secret_expires_at must be 0 (does not expire): RenewClientTTL keeps an actively used registration alive indefinitely, so advertising a real expiry would be false and would make ToolHive's own DCR client re-register against itself")
 	})
 
 	t.Run("two consecutive registrations yield different secrets", func(t *testing.T) {
@@ -582,23 +576,58 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 	// Redirect URIs that identify a public client (loopback or private scheme)
 	// must be rejected for confidential registrations but still accepted for
 	// public (none) registrations — a secret must not ship inside a distributed
-	// native binary.
+	// native binary. Loopback URIs pass strict redirect-URI validation, so the
+	// rejection names the real field (invalid_client_metadata on
+	// token_endpoint_auth_method) to keep loopback clients self-correcting on a
+	// single retry; a private scheme fails strict validation first and stays
+	// invalid_redirect_uri.
+	for _, tc := range []struct {
+		name      string
+		uris      []string
+		wantError string
+	}{
+		{"loopback localhost", []string{"http://localhost:1234/cb"}, registration.DCRErrorInvalidClientMetadata},
+		{"loopback 127.0.0.1", []string{"http://127.0.0.1/cb"}, registration.DCRErrorInvalidClientMetadata},
+		// Passes RedirectURIPolicyStrict and is caught only by the isLoopbackURI
+		// check (bracket-stripping + IsLoopback, three indirections deep).
+		{"IPv6 loopback", []string{"https://[::1]/cb"}, registration.DCRErrorInvalidClientMetadata},
+		// Every URI in the list must be checked, not just redirectURIs[0].
+		{"mixed list with loopback second", []string{"https://app.example/cb", "http://127.0.0.1/cb"},
+			registration.DCRErrorInvalidClientMetadata},
+		// Plaintext non-loopback exercises the ValidateRedirectURI strict branch
+		// on a non-private-scheme input.
+		{"plaintext non-loopback", []string{"http://app.example/cb"}, registration.DCRErrorInvalidRedirectURI},
+		// A private scheme fails strict validation first and stays
+		// invalid_redirect_uri.
+		{"private scheme", []string{"cursor://cb"}, registration.DCRErrorInvalidRedirectURI},
+	} {
+		tc := tc
+		t.Run("confidential rejects "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			urisJSON, err := json.Marshal(tc.uris)
+			require.NoError(t, err)
+			body := `{"redirect_uris":` + string(urisJSON) + `,"token_endpoint_auth_method":"client_secret_basic"}`
+			w, _ := runDCR(t, confidentialConfig(true), body)
+			require.Equal(t, http.StatusBadRequest, w.Code)
+			var errResp registration.DCRError
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+			assert.Equal(t, tc.wantError, errResp.Error)
+			if tc.wantError == registration.DCRErrorInvalidClientMetadata {
+				assert.Contains(t, errResp.ErrorDescription, "token_endpoint_auth_method",
+					"the error must name the field the client can fix")
+				assert.Contains(t, errResp.ErrorDescription, "'none'",
+					"the error must point loopback clients at the public method")
+			}
+		})
+	}
+
+	// The same loopback/private URIs are accepted for public (none) registrations.
 	for _, uri := range []string{
 		"http://localhost:1234/cb",
 		"http://127.0.0.1/cb",
 		"cursor://cb",
 	} {
 		uri := uri
-		t.Run("confidential rejects loopback/private URI: "+uri, func(t *testing.T) {
-			t.Parallel()
-			body := `{"redirect_uris":["` + uri + `"],"token_endpoint_auth_method":"client_secret_basic"}`
-			w, _ := runDCR(t, confidentialConfig(true), body)
-			require.Equal(t, http.StatusBadRequest, w.Code)
-			var errResp registration.DCRError
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
-			assert.Equal(t, registration.DCRErrorInvalidRedirectURI, errResp.Error)
-		})
-
 		t.Run("public accepts the same loopback/private URI: "+uri, func(t *testing.T) {
 			t.Parallel()
 			body := `{"redirect_uris":["` + uri + `"],"token_endpoint_auth_method":"none"}`
@@ -663,9 +692,9 @@ func TestRegisterClientHandler_ConfidentialClientStored(t *testing.T) {
 		t.Parallel()
 		allowedAudiences := []string{"https://mcp.example.com", "https://api.example.com"}
 		cfg := &server.AuthorizationServerConfig{
-			Config:                  &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			Config:                   &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
 			ScopesSupported:          registration.DefaultScopes,
-			AllowedAudiences:        allowedAudiences,
+			AllowedAudiences:         allowedAudiences,
 			AllowConfidentialClients: true,
 		}
 		w, captured := runDCR(t, cfg,

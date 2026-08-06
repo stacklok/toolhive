@@ -633,7 +633,17 @@ func (c *coreVMCP) authorizedBackends(
 // may only SUBTRACT reachability ([VMCP] contract), so the core is the only layer
 // that can advertise them.
 func (c *coreVMCP) advertisedTools(agg *aggregator.AggregatedCapabilities) []vmcp.Tool {
-	defs := c.accessibleComposites(agg)
+	return advertisedToolsWith(agg, c.accessibleComposites(agg))
+}
+
+// advertisedToolsWith is advertisedTools against an ALREADY-RESOLVED composite set.
+// CallTool needs the same composites map for its own dispatch, and resolving it is
+// not free (FilterWorkflowDefsForSession + ValidateNoToolConflicts +
+// ConvertWorkflowDefsToTools), so it resolves once and passes the result here
+// rather than having this recompute it.
+func advertisedToolsWith(
+	agg *aggregator.AggregatedCapabilities, defs map[string]*composer.WorkflowDefinition,
+) []vmcp.Tool {
 	if len(defs) == 0 {
 		return agg.Tools
 	}

@@ -157,17 +157,17 @@ type RunConfig struct {
 	//     claims strategy writes for a self-issued ToolHive access token, so
 	//     this matters even for the self-issued token-exchange path.
 	//     Microsoft Entra v2 access tokens carry scopes under "scp" too.
-	//  3. Subject namespace: a trusted issuer is trusted to assert ANY
-	//     subject this server will accept for delegation — the delegated
-	//     token carries ToolHive's own "iss" with the external token's "sub"
-	//     copied verbatim and no first-class marker of provenance, and
-	//     downstream authorizers key on "sub" alone. Each trusted issuer's
-	//     subject namespace (and, for the same reason, its scope names) MUST
-	//     be disjoint from every upstream IdP's and from every other trusted
-	//     issuer's. Example: if an upstream's SubjectClaim/SubjectPath
-	//     resolves to an email address and a trusted issuer's "sub" is also
-	//     an email address, that issuer can mint a delegated token
-	//     indistinguishable from a real ToolHive-native user's.
+	//  3. Subject namespace: the delegated token's "sub" is qualified as
+	//     "<issuerURL>#<externalSub>" for every trusted-issuer exchange (see
+	//     tokenexchange.delegatedSubject), never the external token's "sub"
+	//     copied verbatim. This exists because downstream authorizers key on
+	//     "sub" alone (Cedar's extractClientIDFromClaims does not read "iss"),
+	//     and ToolHive's own native subjects are UUIDs minted by
+	//     UserResolver.ResolveUser — never an upstream IdP's raw subject
+	//     value — so an unqualified external "sub" could otherwise collide
+	//     with a native user's UUID with no malice on either issuer's part.
+	//     Scope names are not qualified this way and remain the operator's
+	//     responsibility to keep disjoint across issuers.
 	//  4. Client binding: an AllowedActors match by itself authorizes ANY
 	//     ToolHive confidential client holding the token-exchange grant, not
 	//     only a specific one — see TrustedIssuer.AllowedActors and

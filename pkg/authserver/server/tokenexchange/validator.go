@@ -222,8 +222,10 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 
 	// If may_act is present, it must be well-formed. A present-but-malformed
 	// may_act is treated as an invalid token, not an absent one — fail closed
-	// to prevent silent downgrade to client_id.
-	if err := validateMayActShape(extraClaims, v.issuer); err != nil {
+	// to prevent silent downgrade to client_id. requireIss is false here: see
+	// validateMayActShape's doc comment for why the self-issued path doesn't
+	// need it.
+	if err := validateMayActShape(extraClaims, v.issuer, false); err != nil {
 		return nil, err
 	}
 
@@ -446,8 +448,24 @@ func assignClaim(vc *ValidatedClaims, key string, val any) {
 // ToolHive client ID), so an "iss" naming any other issuer would mean sub is
 // being read out of the wrong namespace. Requiring iss == selfIssuer when
 // present — same fail-closed treatment as a malformed sub — prevents that
-// namespace confusion. iss is optional; its absence is not itself an error.
-func validateMayActShape(extra map[string]any, selfIssuer string) error {
+// namespace confusion.
+//
+// requireIss makes "iss" mandatory rather than merely constrained when
+// present. The self-issued path passes false: the subject token's own "iss"
+// already equals selfIssuer (Validate routed it here on exactly that basis),
+// so may_act.iss would be redundant to require. The external path
+// (multi_issuer_validator.go) passes true: there, an external issuer that
+// emits no "iss" on may_act could otherwise authorize ANY ToolHive client by
+// naming its ID in a bare may_act.sub, entirely bypassing this issuer's
+// AllowedActors/AllowedDelegateClients allowlists — the one consent path
+// that does. No major IdP is known to emit may_act at all (Microsoft Entra,
+// Okta, and Google do not; Keycloak emits "act", a different claim), so
+// reaching this path already requires an operator configuring a custom
+// claim mapper for a nonstandard claim — an operator capable of adding "sub"
+// to that mapper is assumed capable of adding "iss" too. That assumption is
+// not verified against any real IdP's behavior in this repo; it is the
+// rationale for requireIss, not a tested fact.
+func validateMayActShape(extra map[string]any, selfIssuer string, requireIss bool) error {
 	raw, ok := extra["may_act"]
 	if !ok || raw == nil {
 		return nil
@@ -459,30 +477,63 @@ func validateMayActShape(extra map[string]any, selfIssuer string) error {
 	if sub, ok := m["sub"].(string); !ok || sub == "" {
 		return errors.New("subject token has malformed 'may_act' claim: missing or invalid 'sub'")
 	}
-	if rawIss, present := m["iss"]; present {
-		iss, ok := rawIss.(string)
-		if !ok || iss == "" {
-			return errors.New("subject token has malformed 'may_act' claim: invalid 'iss'")
+	rawIss, present := m["iss"]
+	if !present {
+		if requireIss {
+			return errors.New("subject token has malformed 'may_act' claim: missing required 'iss'")
 		}
-		if iss != selfIssuer {
-			return fmt.Errorf(
-				"subject token has malformed 'may_act' claim: 'iss' %q does not match this authorization server's issuer",
-				iss)
-		}
+		return nil
+	}
+	iss, ok := rawIss.(string)
+	if !ok || iss == "" {
+		return errors.New("subject token has malformed 'may_act' claim: invalid 'iss'")
+	}
+	if iss != selfIssuer {
+		return fmt.Errorf(
+			"subject token has malformed 'may_act' claim: 'iss' %q does not match this authorization server's issuer",
+			iss)
 	}
 	return nil
 }
 
 // rejectIDTokenClaims rejects a subject token that carries "at_hash" or
 // "c_hash" — OIDC Core §3.3.2.11 / §3.3.2.10 define both for ID tokens only,
-// never present on an access token. Nothing else here checks token class, so
-// without this an ID token from a trusted issuer could otherwise pass as a
-// subject_token whenever its "aud" and actor claim happen to satisfy the
-// rest of validation. A "typ: at+jwt" header check is not viable instead:
-// Entra v1/v2, Okta, and Google all emit bare "JWT" for access tokens too, so
-// RFC 8725 §3.12's claim-based discriminator is used instead. Deliberately
-// does NOT check "nonce": Microsoft Graph access tokens carry one, so
-// rejecting on its presence would reject legitimate Entra access tokens.
+// never present on an access token. This is a sound POSITIVE detector (their
+// presence proves an ID token) but is NOT EXHAUSTIVE: both claims are
+// OPTIONAL even on a valid authorization-code-flow ID token, so an ID token
+// that omits them passes this check undetected. A "typ: at+jwt" header check
+// is not viable as a replacement: Entra v1/v2, Okta, and Google all emit bare
+// "JWT" for access tokens too. Deliberately does NOT check "nonce": Microsoft
+// Graph access tokens carry one, so rejecting on its presence would reject
+// legitimate Entra access tokens.
+//
+// The other, complementary layer is the audience-shape check on the external
+// path: TrustedIssuer.ExpectedAudience (multi_issuer_validator.go) is
+// documented as MUST be a resource identifier, not a client ID, since an ID
+// token's "aud" is the requesting client's own ID. That check is
+// operator-dependent, not self-enforcing — see ExpectedAudience's doc
+// comment and looksLikeResourceIdentifier's startup warning. Between the two,
+// ID/access-token discrimination for an external issuer is partial: an
+// operator who mis-sets ExpectedAudience to a client ID, presented with a
+// real IdP whose ID tokens omit at_hash/c_hash (both legal per OIDC Core),
+// has no remaining defense here. The blast radius is bounded elsewhere: an
+// admitted ID token carries no "scope"/"scp" claim, so grantScopes
+// (handler.go) either rejects the exchange with invalid_scope or grants a
+// zero-scope delegated token.
+//
+// A third discriminator was considered and rejected: an ID token's "aud"
+// MUST equal its own "azp"/authorized-party claim (OIDC Core §2, §3.1.3.7
+// step 9), so rejecting a token whose "aud" equals the issuer's configured
+// actor claim looked like a candidate. It is not shipped, because it also
+// fires on a legitimate access token: an app whose API and client share one
+// registration — e.g. an Entra v1 app that calls its own exposed API, or any
+// setup where ExpectedAudience is (mis)configured to the app's bare
+// client/resource GUID, which is exactly the ambiguous case this file's
+// audience-shape check already warns about — issues access tokens whose
+// "aud" is that shared ID and whose azp/appid is the very same ID. Rejecting
+// on aud == azp would then reject that provider's genuine access tokens, not
+// just its ID tokens. A false-positive risk of that shape is worse than the
+// gap it would close.
 func rejectIDTokenClaims(extra map[string]any) error {
 	if _, ok := extra["at_hash"]; ok {
 		return errors.New("subject token carries an 'at_hash' claim: ID tokens are not accepted as subject tokens")

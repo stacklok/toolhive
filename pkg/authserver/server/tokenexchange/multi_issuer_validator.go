@@ -31,19 +31,21 @@ const (
 	// httpTimeout is the timeout for HTTP requests to external OIDC endpoints.
 	httpTimeout = 10 * time.Second
 
-	// maxResponseBodySize is the maximum size of HTTP response bodies read from
-	// external OIDC discovery documents (1 MiB). This prevents resource
-	// exhaustion from unexpectedly large discovery responses. JWKS bodies are
-	// no longer read through this path — see ensureRegistered's doc comment
-	// for the (much larger) cap that applies to them instead.
+	// maxResponseBodySize is the maximum size of HTTP response bodies read
+	// from external OIDC discovery documents AND JWKS fetches (1 MiB). This
+	// prevents resource exhaustion from unexpectedly large responses. The
+	// discovery read enforces it directly via io.LimitReader; the JWKS read
+	// goes through jwx instead, so it is enforced by wrapping every issuer's
+	// *http.Client transport with limitedBodyTransport — see where that
+	// client is built in NewMultiIssuerTokenValidator.
 	maxResponseBodySize = 1 << 20
 
 	// maxJWKSKeys caps the number of keys accepted from an external JWKS to
 	// prevent CPU amplification from a hostile endpoint serving many keys.
 	maxJWKSKeys = 100
 
-	// minKidRefreshInterval bounds how often refreshOnUnknownKid forces the
-	// shared jwk.Cache to fetch an issuer's JWKS ahead of jwx's own background
+	// minKidRefreshInterval bounds how often refreshOnUnknownKid forces an
+	// issuer's jwk.Cache to fetch its JWKS ahead of jwx's own background
 	// refresh schedule. verifySignature's kidMatched check runs before the
 	// subject token's signature is trusted, so without this floor a client
 	// presenting a syntactically valid JWT that merely names a made-up kid
@@ -56,6 +58,26 @@ const (
 	// an authenticated client holding the token-exchange grant could force a
 	// real outbound fetch to a broken external IdP on every single request.
 	jwksFetchFailureBackoff = 30 * time.Second
+
+	// jwksRefreshInterval is the fixed interval at which each issuer's
+	// jwk.Cache re-fetches its JWKS in the background, restoring the
+	// pre-jwk.Cache jwksCacheTTL constant this validator used before moving
+	// to httprc. It is passed to Register via jwk.WithConstantInterval,
+	// which makes the resource ignore the response's Cache-Control/Expires
+	// headers entirely (see calculateNextRefreshTime in
+	// httprc/resource.go) rather than merely bounding them with
+	// WithMaxInterval — deliberately: absent this override, httprc derives
+	// the interval from those headers, clamped to [DefaultMinInterval,
+	// DefaultMaxInterval] = [15m, 30 days], so a hostile or misconfigured
+	// issuer could otherwise extend our own key-retention window up to a
+	// month simply by setting a long max-age. This only bounds, not closes,
+	// the revocation-lag window: a key revoked at the IdP but still cached
+	// here keeps validating tokens until the next refresh, since
+	// refreshOnUnknownKid only fires on an unknown kid, not a
+	// still-cached-but-revoked one. Closing that would need a refresh on
+	// every successful-kidMatched verification too, which is a per-request
+	// fetch amplifier and out of scope here.
+	jwksRefreshInterval = 5 * time.Minute
 
 	// defaultActorClaim is the claim read to identify the client that
 	// requested an external subject token, when a TrustedIssuer does not
@@ -115,6 +137,16 @@ type TrustedIssuer struct {
 	// (together with rejectIDTokenClaims's at_hash/c_hash check), per the
 	// audience-based discriminator RFC 8725 §3.12 recommends in place of a
 	// "typ" header check.
+	//
+	// This is operator-dependent and NOT enforced: nothing here can tell a
+	// resource identifier from a client ID by inspecting the string alone,
+	// since Entra v1 legitimately uses a bare app-ID GUID (no URI scheme) as
+	// an access token's "aud" too. NewMultiIssuerTokenValidator emits a
+	// slog.Warn (looksLikeResourceIdentifier) when ExpectedAudience has no
+	// URI scheme, but does not reject it — a hard rejection would break that
+	// real, supported provider. An operator who sets this to a client ID
+	// anyway silently loses this layer of ID/access-token discrimination for
+	// that issuer.
 	ExpectedAudience string `json:"expected_audience" yaml:"expected_audience"`
 	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.
 	// If empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.
@@ -209,50 +241,6 @@ type MultiIssuerTokenValidator struct {
 	selfIssuer    string
 	selfValidator *SelfIssuedTokenValidator
 	issuers       map[string]*externalIssuerConfig
-
-	// jwksCache is the single jwk.Cache shared by every configured external
-	// issuer, nil when issuers is empty. Each issuer registers its own URL
-	// into this one cache (ensureRegistered), carrying its own *http.Client
-	// via jwk.WithHTTPClient — so a shared cache still enforces per-issuer
-	// SSRF/transport policy, PROVIDED no two issuers resolve to the same
-	// jwksURL; see jwksURLPolicies for the guard that makes that proviso
-	// hold. Kept nil rather than always-constructed so an authorization
-	// server configured with no trusted issuers never starts jwx's
-	// background worker pool (NewCache spawns goroutines that run for the
-	// life of the process).
-	jwksCache *jwk.Cache
-
-	// jwksURLPoliciesMu guards jwksURLPolicies. A separate mutex from any
-	// given externalIssuerConfig.mu: two different issuers' first
-	// registration attempts can race each other, and only a lock shared
-	// across all issuers can serialize the check-then-claim below.
-	jwksURLPoliciesMu sync.Mutex
-	// jwksURLPolicies records, for every jwksURL any issuer has registered
-	// with jwksCache, the HTTP transport policy (and issuer_url) that
-	// registered it. httprc keys a cached resource by URL alone, and
-	// jwk.WithHTTPClient only takes effect on the URL's first Register call —
-	// so two issuers that happen to resolve to the same jwksURL (e.g. two
-	// Microsoft Entra v1 tenants, which share one tenant-independent JWKS
-	// endpoint) would otherwise have the second one silently inherit
-	// whichever issuer registered first, defeating
-	// InsecureAllowHTTP/AllowPrivateIPs's per-issuer guarantee for it.
-	// claimJWKSURLPolicy checks this map before every Register or Refresh:
-	// identical policy shares the one cache entry (the common, intended
-	// case), differing policy fails closed instead of borrowing the first
-	// issuer's client. Populated lazily at registration time rather than
-	// checked once at construction: a jwksURL is sometimes only known after
-	// OIDC discovery runs, so a config-time check cannot catch every
-	// collision.
-	jwksURLPolicies map[string]jwksURLPolicy
-}
-
-// jwksURLPolicy is the HTTP transport policy an issuer registered a jwksURL
-// under, as recorded in MultiIssuerTokenValidator.jwksURLPolicies — see that
-// field's doc comment for why this is tracked at all.
-type jwksURLPolicy struct {
-	issuerURL         string
-	insecureAllowHTTP bool
-	allowPrivateIPs   bool
 }
 
 // externalIssuerConfig holds the configuration and cached state for an external
@@ -271,11 +259,24 @@ type externalIssuerConfig struct {
 	// way to know which issuer's fetch they are guarding.
 	httpClient *http.Client
 
+	// jwksCache is this issuer's own jwk.Cache, registered with httpClient
+	// above via jwk.WithHTTPClient (see registerOrRefresh). A cache per
+	// issuer, rather than one shared across every configured issuer, is what
+	// makes two issuers resolving to the same jwks_url (e.g. two Microsoft
+	// Entra v1 tenants, which share one tenant-independent JWKS endpoint) a
+	// non-event: httprc keys a cached resource by URL alone and only honors
+	// jwk.WithHTTPClient on a URL's first Register call, so a shared cache
+	// would have the second such issuer silently inherit the first one's
+	// *http.Client — defeating InsecureAllowHTTP/AllowPrivateIPs's per-issuer
+	// guarantee for it. Splitting the cache per issuer makes that collision
+	// unrepresentable instead of guarding against it.
+	jwksCache *jwk.Cache
+
 	mu sync.Mutex
 	// jwksURL is resolved from OIDC discovery, or copied from
 	// TrustedIssuer.JWKSURL when hand-configured. Once set, it is never
-	// cleared: unlike the JWKS document itself (which the shared jwk.Cache
-	// keeps fresh on its own schedule — see ensureRegistered), a change to
+	// cleared: unlike the JWKS document itself (which jwksCache keeps fresh
+	// on its own schedule — see ensureRegistered), a change to
 	// the *endpoint URL* an issuer serves its keys from requires a process
 	// restart to pick up. Neither Microsoft Entra nor Okta documents rotating
 	// that URL, only the keys served at it, and every other TrustedIssuer
@@ -303,6 +304,38 @@ type externalIssuerConfig struct {
 	// never be gated.
 	fetchFailedAt time.Time
 	fetchErr      error
+}
+
+// limitedBodyTransport wraps an http.RoundTripper to cap every response body
+// at max bytes, via http.MaxBytesReader rather than io.LimitReader: the
+// latter truncates silently, which would let a caller parse a cut-off JWKS
+// document as if it were complete, where the former surfaces a
+// *http.MaxBytesError instead. Its error text ("http: request body too
+// large") is written for the request-body case MaxBytesReader was designed
+// for, so it reads oddly for a capped response — an accepted rough edge
+// rather than justifying a custom ReadCloser.
+//
+// The nil first argument (http.ResponseWriter) is safe: MaxBytesReader only
+// reaches it through a type assertion (`l.w.(requestTooLarger)`) used to tell
+// a real server connection to close early, which — on a nil interface value
+// — safely evaluates to false rather than panicking (net/http/request.go).
+type limitedBodyTransport struct {
+	base http.RoundTripper
+	max  int64
+}
+
+// RoundTrip delegates to base and then caps the returned body. The cap
+// applies to every response, including a non-2xx one whose body the caller
+// doesn't intend to parse — draining it is only ever io.Discard-ed, not
+// unbounded, so this errs on the safe side rather than special-casing status
+// codes.
+func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = http.MaxBytesReader(nil, resp.Body, t.max)
+	return resp, nil
 }
 
 // NewMultiIssuerTokenValidator creates a validator that accepts tokens from the
@@ -343,6 +376,15 @@ func NewMultiIssuerTokenValidator(
 				"issuer", ti.IssuerURL,
 			)
 		}
+		if !looksLikeResourceIdentifier(ti.ExpectedAudience) {
+			slog.Warn("Trusted issuer's expected_audience does not look like a resource identifier "+
+				"(no URI scheme, e.g. \"https://\" or \"api://\"); it may actually be a client ID. "+
+				"rejectIDTokenClaims only catches an ID token that carries at_hash/c_hash, which OIDC "+
+				"does not require, so this issuer's audience check may not distinguish an ID token "+
+				"from an access token",
+				"issuer", ti.IssuerURL, "expected_audience", ti.ExpectedAudience,
+			)
+		}
 
 		// Clone AllowedActors and AllowedDelegateClients so a caller mutating
 		// their original slices in place (e.g. a future config reload) cannot
@@ -378,8 +420,8 @@ func NewMultiIssuerTokenValidator(
 		// keep-alive connections are disabled: that client dials one operator-configured
 		// host repeatedly on a hot path, so it deliberately keeps them on.
 		// This one dials jwks_uri — a host taken from an untrusted discovery
-		// document — at the pace of jwx's own background refresh schedule
-		// (15 minutes to 30 days, driven by the response's Cache-Control/
+		// document — at the fixed pace of jwksRefreshInterval (see its doc
+		// comment for why that overrides the response's own Cache-Control/
 		// Expires headers) plus the occasional on-demand refresh on an
 		// unknown kid, so it's the "caller-varying host" case that comment's
 		// own doc says to revisit for; there's no hot path here to trade the
@@ -399,39 +441,53 @@ func NewMultiIssuerTokenValidator(
 		// server (see SameHostRedirectPolicy's doc comment).
 		httpClient.CheckRedirect = networking.SameHostRedirectPolicy()
 
+		// Cap every response body this client reads at maxResponseBodySize —
+		// discovery already enforces this itself via io.LimitReader
+		// (discoverJWKSURL), but the JWKS fetch is handed to jwx's jwk.Cache
+		// below, which has no equivalent cap of its own (httprc.MaxBufferSize
+		// is ~1000 MiB, and its transformer does an unbounded io.ReadAll under
+		// that ceiling before parsing). Wrapped OUTSIDE httpClient.Transport
+		// (which Build() always sets — see networking's builder) so the
+		// private-IP dial guard and ValidatingTransport's scheme check still
+		// run first, on the inner, unwrapped transport.
+		httpClient.Transport = &limitedBodyTransport{
+			base: httpClient.Transport,
+			max:  maxResponseBodySize,
+		}
+
+		// One jwk.Cache per issuer, not one shared across all of them — see
+		// externalIssuerConfig.jwksCache's doc comment for why. Each starts
+		// its own background worker pool (jwk.NewCache -> httprc.Client.Start)
+		// that runs for the life of the process; WithWorkers(1) holds that
+		// pool to one worker rather than httprc's default of five, since N
+		// issuers now each pay this cost instead of one validator-wide pool
+		// paying it once. One worker is not one goroutine: httprc also runs
+		// its controller loop and a wait-group waiter, so budget roughly
+		// three per issuer. context.Background() is
+		// deliberate, not a placeholder for a caller-supplied context:
+		// NewMultiIssuerTokenValidator has no request context of its own to
+		// root this in, and the cache's background refresh loop is meant to
+		// outlive any single call anyway — it stops only via
+		// jwk.Cache.Shutdown, which nothing in this codebase currently calls,
+		// matching the equivalent long-lived cache in pkg/auth/token.go's
+		// TokenValidator.
+		jwksCache, err := jwk.NewCache(context.Background(), httprc.NewClient(httprc.WithWorkers(1)))
+		if err != nil {
+			return nil, fmt.Errorf("issuer_url %q: failed to create JWKS cache: %w", ti.IssuerURL, err)
+		}
+
 		issuers[ti.IssuerURL] = &externalIssuerConfig{
 			TrustedIssuer: ti,
 			jwksURL:       ti.JWKSURL,
 			httpClient:    httpClient,
-		}
-	}
-
-	// Only constructed when there is at least one external issuer: jwk.Cache
-	// starts a background worker pool (jwk.NewCache -> httprc.Client.Start)
-	// that runs for the life of the process, and an authorization server
-	// with no trusted issuers configured must not pay for goroutines it will
-	// never use. context.Background() is deliberate, not a placeholder for a
-	// caller-supplied context: NewMultiIssuerTokenValidator has no request
-	// context of its own to root this in, and the cache's background
-	// refresh loop is meant to outlive any single call anyway — it stops
-	// only via jwk.Cache.Shutdown, which nothing in this codebase currently
-	// calls, matching the equivalent long-lived cache in
-	// pkg/auth/token.go's TokenValidator.
-	var jwksCache *jwk.Cache
-	if len(issuers) > 0 {
-		var err error
-		jwksCache, err = jwk.NewCache(context.Background(), httprc.NewClient())
-		if err != nil {
-			return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
+			jwksCache:     jwksCache,
 		}
 	}
 
 	return &MultiIssuerTokenValidator{
-		selfIssuer:      selfIssuer,
-		selfValidator:   selfValidator,
-		issuers:         issuers,
-		jwksCache:       jwksCache,
-		jwksURLPolicies: make(map[string]jwksURLPolicy),
+		selfIssuer:    selfIssuer,
+		selfValidator: selfValidator,
+		issuers:       issuers,
 	}, nil
 }
 
@@ -500,7 +556,7 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
 	if err != nil && !kidMatched {
 		// The token's kid isn't among the keys we have cached — possibly a
-		// legitimate rotation the shared cache hasn't caught up with yet
+		// legitimate rotation the issuer's cache hasn't caught up with yet
 		// (jwx's own background refresh floor is 15 minutes by default).
 		// Force an immediate re-fetch and retry once before giving up; a
 		// spoofed-kid attempt (kidMatched true) never reaches this branch,
@@ -554,8 +610,10 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	// may_act's own optional "iss" member: that member identifies the
 	// namespace of may_act.sub, which checkDelegationConsent always compares
 	// against a ToolHive client ID, regardless of which issuer validated the
-	// surrounding token.
-	if err := validateMayActShape(extraClaims, v.selfIssuer); err != nil {
+	// surrounding token. requireIss is true here — see validateMayActShape's
+	// doc comment for why the external path cannot leave "iss" optional the
+	// way the self-issued path does.
+	if err := validateMayActShape(extraClaims, v.selfIssuer, true); err != nil {
 		return nil, err
 	}
 
@@ -611,12 +669,12 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 }
 
 // ensureRegistered resolves issuerConfig.jwksURL — via OIDC discovery on
-// first use, if it isn't already known — and registers it with the shared
-// jwk.Cache.
+// first use, if it isn't already known — and registers it with
+// issuerConfig's own jwk.Cache.
 //
 // Discovery happens at most once per issuer for the life of the process —
 // see externalIssuerConfig's jwksURL doc comment. Registration is retried
-// until v.jwksCache.IsRegistered reports issuerConfig.jwksURL as already
+// until issuerConfig.jwksCache.IsRegistered reports issuerConfig.jwksURL as already
 // known to the cache; see registerOrRefresh's doc comment for why that live
 // check, and not a flag this type remembers itself, is what decides between
 // Register and Refresh. The JWKS *fetch* is retried until one succeeds
@@ -632,16 +690,17 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 // later background-refresh failure, is unaffected.
 //
 // jwx's own httprc.Resource caps a JWKS response body at
-// httprc.MaxBufferSize (~1000 MiB) — far above this file's own
-// maxResponseBodySize (1 MiB), which still applies to OIDC discovery. That
-// gap is deliberate, not an oversight: reaching it requires either a
-// compromised trusted issuer (which can already mint tokens for any
-// subject — body size is the least of the problems at that point) or an
-// on-path attacker where InsecureAllowHTTP is set, which is documented as
-// development-only. The consequence is one bounded allocation per issuer per
-// refresh, on a path reachable only by an authenticated confidential client
-// holding the token-exchange grant — accepted rather than wrapped with a
-// stricter transport, to avoid diverging from jwx's own tested fetch path.
+// httprc.MaxBufferSize (~1000 MiB), far above what this file needs — so
+// every issuer's *http.Client wraps its Transport (see
+// NewMultiIssuerTokenValidator) to enforce the same maxResponseBodySize (1
+// MiB) that already bounds OIDC discovery. This is not merely a
+// request-driven exposure: only the first registration is triggered by an
+// incoming token-exchange request. Every fetch after that is dispatched
+// autonomously by httprc's own background refresh timer (jwksRefreshInterval)
+// for as long as the process runs, with no request or client authentication
+// involved — so an unbounded read here would let a hostile or compromised
+// issuer force an oversized allocation on every refresh indefinitely, not
+// just once per authenticated call.
 func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuerConfig *externalIssuerConfig) error {
 	issuerConfig.mu.Lock()
 	defer issuerConfig.mu.Unlock()
@@ -673,9 +732,9 @@ func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuer
 // call, would let concurrent validations pile up N redundant fetches instead
 // of one.
 //
-// Whether issuerConfig.jwksURL is already registered with the shared cache is
-// asked of v.jwksCache.IsRegistered directly, rather than remembered in a
-// field on this type. httprc.Controller.Add does register the resource in
+// Whether issuerConfig.jwksURL is already registered with issuerConfig's
+// cache is asked of issuerConfig.jwksCache.IsRegistered directly, rather than
+// remembered in a field on this type. httprc.Controller.Add does register the resource in
 // its internal registry before it ever waits on the first fetch — but that
 // registration step is itself a send over a channel to the cache's backend
 // goroutine, bounded by fetchCtx below, and can fail (context deadline)
@@ -721,28 +780,19 @@ func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issue
 		return fmt.Errorf("jwks_url for issuer %s is invalid: %w", issuerConfig.IssuerURL, err)
 	}
 
-	// Must run before either branch below — not just before Register: a
-	// Refresh here can just as easily be reusing a resource a DIFFERENT
-	// issuer registered under a conflicting policy, if this issuer lost the
-	// race to be first. See jwksURLPolicies's doc comment.
-	if err := v.claimJWKSURLPolicy(issuerConfig); err != nil {
-		return err
-	}
-
 	registeredCtx, cancel := context.WithTimeout(detached, httpTimeout)
-	registered := v.jwksCache.IsRegistered(registeredCtx, issuerConfig.jwksURL)
+	registered := issuerConfig.jwksCache.IsRegistered(registeredCtx, issuerConfig.jwksURL)
 	cancel()
 
 	if registered {
-		// Already registered with the shared cache — by this issuer, on a
-		// prior call whose own fetch never completed successfully, or by a
-		// different issuer sharing the same jwksURL under the same policy
-		// (claimJWKSURLPolicy above already confirmed that, or this call
-		// would have returned already). Register would error on an
-		// already-tracked URL, so retry via Refresh instead.
+		// Already registered with this issuer's own cache, on a prior call
+		// whose own fetch never completed successfully — the only way this
+		// can be true, now that each issuer has its own cache. Register
+		// would error on an already-tracked URL, so retry via Refresh
+		// instead.
 		fetchCtx, cancel := context.WithTimeout(detached, httpTimeout)
 		defer cancel()
-		if _, err := v.jwksCache.Refresh(fetchCtx, issuerConfig.jwksURL); err != nil {
+		if _, err := issuerConfig.jwksCache.Refresh(fetchCtx, issuerConfig.jwksURL); err != nil {
 			return fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
 		}
 		return nil
@@ -755,102 +805,11 @@ func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issue
 	// registered branch above, not this one, is where Refresh is used.
 	fetchCtx, cancel := context.WithTimeout(detached, httpTimeout)
 	defer cancel()
-	if err := v.jwksCache.Register(fetchCtx, issuerConfig.jwksURL, jwk.WithHTTPClient(issuerConfig.httpClient)); err != nil {
-		// Roll back this issuer's policy claim — but only if the URL was
-		// genuinely never registered with the cache. httprc.ErrNotReady and
-		// httprc.ErrResourceAlreadyExists are the two outcomes where the
-		// resource IS tracked (registration succeeded, only the first
-		// fetch/transform failed, or something else already registered it) —
-		// on either, the claim must be KEPT. Any other error means
-		// registration itself never took effect, so the claim must be
-		// released or a different-policy issuer resolving to the same
-		// jwksURL would stay blocked for the life of the process. Asking the
-		// error rather than re-probing IsRegistered: IsRegistered discards
-		// its own error, so it can't distinguish "not registered" from "my
-		// probe's context expired" (see registerOrRefresh's doc comment).
-		if !errors.Is(err, httprc.ErrNotReady()) && !errors.Is(err, httprc.ErrResourceAlreadyExists()) {
-			// Narrows a residual TOCTOU: sendBackend's select can observe
-			// ctx.Done() after the backend already inserted the resource,
-			// so Register can return a plain ctx.Err() for a URL that IS
-			// tracked. Unregister reaps such a zombie registration so the
-			// claim release below does not leave a resource behind under
-			// this issuer's client.
-			//
-			// Two honest limits. The error is discarded, so a Remove failure
-			// still releases the claim while the resource may be tracked —
-			// the original fail-open, much rarer. And when a DIFFERENT
-			// issuer shares this jwksURL under a matching policy, it may
-			// already have refreshed and set fetched=true; this Unregister
-			// then tears down the resource it depends on, and
-			// ensureRegistered's early return on fetched means it never
-			// re-registers. Narrow (needs the deadline to land between the
-			// backend's insert and our reply) and availability-only, but it
-			// is not impossible — see #6082 follow-up on per-issuer caches,
-			// which removes the shared-URL case entirely.
-			//
-			// Bounded like every other backend round-trip here: Remove is a
-			// two-phase channel handshake that blocks until its context is
-			// done, and this runs while holding issuerConfig.mu, precisely
-			// when the backend has already proven slow.
-			unregCtx, unregCancel := context.WithTimeout(detached, httpTimeout)
-			_ = v.jwksCache.Unregister(unregCtx, issuerConfig.jwksURL)
-			unregCancel()
-			v.releaseJWKSURLPolicy(issuerConfig)
-		}
+	if err := issuerConfig.jwksCache.Register(fetchCtx, issuerConfig.jwksURL,
+		jwk.WithHTTPClient(issuerConfig.httpClient), jwk.WithConstantInterval(jwksRefreshInterval)); err != nil {
 		return fmt.Errorf("failed to register JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
 	}
 	return nil
-}
-
-// claimJWKSURLPolicy records issuerConfig as the owner of
-// issuerConfig.jwksURL in v.jwksURLPolicies, or — if a different issuer
-// already claimed that same URL — confirms the two configure an identical
-// HTTP transport policy. See jwksURLPolicies's doc comment for why this
-// exists: without it, two issuers sharing a jwksURL would have the second
-// one silently inherit the first one's *http.Client instead of its own.
-func (v *MultiIssuerTokenValidator) claimJWKSURLPolicy(issuerConfig *externalIssuerConfig) error {
-	want := jwksURLPolicy{
-		issuerURL:         issuerConfig.IssuerURL,
-		insecureAllowHTTP: issuerConfig.InsecureAllowHTTP,
-		allowPrivateIPs:   issuerConfig.AllowPrivateIPs,
-	}
-
-	v.jwksURLPoliciesMu.Lock()
-	defer v.jwksURLPoliciesMu.Unlock()
-
-	got, claimed := v.jwksURLPolicies[issuerConfig.jwksURL]
-	if !claimed {
-		v.jwksURLPolicies[issuerConfig.jwksURL] = want
-		return nil
-	}
-	// Compare only the transport policy, not issuerURL: this issuer's own
-	// issuerURL necessarily differs from whichever issuer claimed first, so
-	// including it here would reject even a matching policy.
-	if got.insecureAllowHTTP != want.insecureAllowHTTP || got.allowPrivateIPs != want.allowPrivateIPs {
-		return fmt.Errorf(
-			"issuer_url %q and issuer_url %q share jwks_url %q under different "+
-				"insecure_allow_http/allow_private_ips settings; refusing to let "+
-				"the second issuer silently reuse the first issuer's HTTP client",
-			got.issuerURL, want.issuerURL, issuerConfig.jwksURL)
-	}
-	return nil
-}
-
-// releaseJWKSURLPolicy undoes claimJWKSURLPolicy for issuerConfig: it removes
-// the jwksURLPolicies entry for issuerConfig.jwksURL, but ONLY if that entry
-// is owned by this issuer. The ownership check matters because a different
-// issuer may have legitimately re-claimed the same URL (under a matching
-// policy) after this issuer's registration failed and before this release
-// runs — deleting that entry would reopen the silent-policy-inheritance hole
-// claimJWKSURLPolicy exists to close.
-func (v *MultiIssuerTokenValidator) releaseJWKSURLPolicy(issuerConfig *externalIssuerConfig) {
-	v.jwksURLPoliciesMu.Lock()
-	defer v.jwksURLPoliciesMu.Unlock()
-
-	got, claimed := v.jwksURLPolicies[issuerConfig.jwksURL]
-	if claimed && got.issuerURL == issuerConfig.IssuerURL {
-		delete(v.jwksURLPolicies, issuerConfig.jwksURL)
-	}
 }
 
 // lookupJWKS returns issuerConfig's current JWKS, registering and fetching it
@@ -870,7 +829,7 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, err
 	}
 
-	set, err := v.jwksCache.Lookup(ctx, issuerConfig.jwksURL)
+	set, err := issuerConfig.jwksCache.Lookup(ctx, issuerConfig.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
 	}
@@ -910,7 +869,7 @@ func bridgeJWKSet(set jwk.Set) (*jose.JSONWebKeySet, error) {
 	return &jwks, nil
 }
 
-// refreshOnUnknownKid forces the shared jwk.Cache to re-fetch issuerConfig's
+// refreshOnUnknownKid forces issuerConfig's own jwk.Cache to re-fetch its
 // JWKS immediately, ahead of jwx's own background refresh schedule, when a
 // subject token names a kid the last cached JWKS doesn't have — the
 // situation a legitimate key rotation produces. Gated by minKidRefreshInterval
@@ -921,7 +880,7 @@ func bridgeJWKSet(set jwk.Set) (*jose.JSONWebKeySet, error) {
 // already failed signature verification once and will simply fail again if
 // the refresh didn't produce a usable key, which is the correct outcome for
 // a genuinely invalid token.
-func (v *MultiIssuerTokenValidator) refreshOnUnknownKid(ctx context.Context, issuerConfig *externalIssuerConfig) {
+func (*MultiIssuerTokenValidator) refreshOnUnknownKid(ctx context.Context, issuerConfig *externalIssuerConfig) {
 	issuerConfig.mu.Lock()
 	defer issuerConfig.mu.Unlock()
 
@@ -932,7 +891,7 @@ func (v *MultiIssuerTokenValidator) refreshOnUnknownKid(ctx context.Context, iss
 
 	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*httpTimeout)
 	defer cancel()
-	if _, err := v.jwksCache.Refresh(fetchCtx, issuerConfig.jwksURL); err != nil {
+	if _, err := issuerConfig.jwksCache.Refresh(fetchCtx, issuerConfig.jwksURL); err != nil {
 		slog.Debug("JWKS refresh on unknown kid failed", "issuer", issuerConfig.IssuerURL, "error", err)
 	}
 }
@@ -1107,6 +1066,17 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 			ti.IssuerURL)
 	}
 	return nil
+}
+
+// looksLikeResourceIdentifier reports whether aud is shaped like a resource/API
+// identifier (an absolute URI, e.g. "https://api.example.com" or
+// "api://<app-id>") rather than a bare opaque string or GUID, which is more
+// likely a client ID. This is a heuristic warning signal only — Entra v1
+// legitimately uses a bare app-ID GUID as an access token's "aud" (see
+// TrustedIssuer.ExpectedAudience's doc comment), so a bare value is not
+// rejected, only flagged for the operator to double-check.
+func looksLikeResourceIdentifier(aud string) bool {
+	return strings.Contains(aud, "://")
 }
 
 // resolveAllowedActor resolves the issuer's configured actor claim from

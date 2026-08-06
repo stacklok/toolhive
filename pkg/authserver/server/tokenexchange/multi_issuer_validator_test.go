@@ -4,9 +4,12 @@
 package tokenexchange
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,8 +20,6 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
-	"github.com/lestrrat-go/httprc/v3"
-	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -207,7 +208,7 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 			token: func(t *testing.T) string {
 				t.Helper()
 				return externalJWKS.signToken(t, externalClaims(),
-					map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client"}})
+					map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client", "iss": testIssuer}})
 			},
 			check: func(t *testing.T, vc *ValidatedClaims) {
 				t.Helper()
@@ -407,7 +408,7 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 			token: func(t *testing.T) string {
 				t.Helper()
 				return externalJWKS.signToken(t, externalClaims(),
-					map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client"}})
+					map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client", "iss": testIssuer}})
 			},
 			check: func(t *testing.T, vc *ValidatedClaims) {
 				t.Helper()
@@ -417,6 +418,28 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				assert.Equal(t, testExternalIssuer, vc.ExternalIssuer,
 					"provenance must still be recorded on the may_act path, which bypasses the allowlist")
 			},
+		},
+		{
+			// #5989 fix: the external path cannot leave may_act.iss optional
+			// the way the self-issued path does (see
+			// TestSelfIssuedTokenValidator_Validate's "token with may_act
+			// claim extracts MayAct" for the self-issued equivalent, which
+			// omits iss and is accepted). Without this, an external issuer
+			// could authorize ANY ToolHive client via a bare may_act.sub,
+			// bypassing AllowedActors/AllowedDelegateClients entirely.
+			name: "external token may_act missing iss rejected",
+			trustedIssuers: []TrustedIssuer{{
+				IssuerURL:        testExternalIssuer,
+				ExpectedAudience: testExternalAudience,
+				JWKSURL:          jwksServer.URL + "/jwks",
+			}},
+			token: func(t *testing.T) string {
+				t.Helper()
+				return externalJWKS.signToken(t, externalClaims(),
+					map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client"}})
+			},
+			wantErr:     true,
+			errContains: "missing required 'iss'",
 		},
 		{
 			name: "external token may_act wins even when azp is not allowlisted",
@@ -430,7 +453,7 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				t.Helper()
 				return externalJWKS.signToken(t, externalClaims(), map[string]any{
 					"azp":     "not-in-the-allowlist",
-					"may_act": map[string]any{"sub": "some-toolhive-client"},
+					"may_act": map[string]any{"sub": "some-toolhive-client", "iss": testIssuer},
 				})
 			},
 			check: func(t *testing.T, vc *ValidatedClaims) {
@@ -722,7 +745,7 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				t.Helper()
 				return externalJWKS.signToken(t, externalClaims(), map[string]any{
 					"azp":     "ext-agent",
-					"may_act": map[string]any{"sub": "some-toolhive-client"},
+					"may_act": map[string]any{"sub": "some-toolhive-client", "iss": testIssuer},
 				})
 			},
 			check: func(t *testing.T, vc *ValidatedClaims) {
@@ -870,6 +893,54 @@ func TestMultiIssuerTokenValidator_JWKSCaching(t *testing.T) {
 	}
 
 	assert.Equal(t, int32(1), fetchCount.Load(), "JWKS should be fetched only once due to caching")
+}
+
+// TestMultiIssuerTokenValidator_JWKSRefreshIntervalIsPinned confirms
+// registerOrRefresh actually threads jwk.WithConstantInterval(jwksRefreshInterval)
+// through to the underlying httprc.Resource, even though the JWKS endpoint
+// advertises a much longer Cache-Control max-age. Without the constant
+// interval, httprc would derive the refresh schedule from that header
+// instead — see jwksRefreshInterval's doc comment for why an external
+// issuer must not get to choose how long we keep its keys cached.
+//
+// This can't be observed by waiting for a second fetch without a wall-clock
+// sleep (forbidden by this repo's testing rules), so it asserts directly on
+// the registered resource's ConstantInterval() instead of on fetch timing.
+func TestMultiIssuerTokenValidator_JWKSRefreshIntervalIsPinned(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		// A long max-age that would push httprc's derived interval far past
+		// jwksRefreshInterval if the constant interval were not applied.
+		w.Header().Set("Cache-Control", "max-age=2592000") // 30 days
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(externalJWKS.publicJWKS())
+	})
+	jwksServer := httptest.NewServer(mux)
+	t.Cleanup(jwksServer.Close)
+
+	trustedIssuers := []TrustedIssuer{{
+		IssuerURL:        testExternalIssuer,
+		ExpectedAudience: testExternalAudience,
+		JWKSURL:          jwksServer.URL + "/jwks",
+		AllowedActors:    []string{"ext-agent"},
+	}}
+
+	validator := newMultiValidator(t, selfJWKS, trustedIssuers)
+
+	rawToken := externalJWKS.signToken(t, externalClaims(), map[string]any{"azp": "ext-agent"})
+	_, err := validator.Validate(context.Background(), rawToken)
+	require.NoError(t, err)
+
+	issuerConfig := validator.issuers[testExternalIssuer]
+	resource, err := issuerConfig.jwksCache.LookupResource(context.Background(), issuerConfig.jwksURL)
+	require.NoError(t, err)
+	assert.Equal(t, jwksRefreshInterval, resource.ConstantInterval(),
+		"registered resource must ignore the endpoint's own Cache-Control max-age")
 }
 
 func TestNewMultiIssuerTokenValidator_Validation(t *testing.T) {
@@ -1027,6 +1098,103 @@ func TestNewMultiIssuerTokenValidator_EmptyAllowedActorsAccepted(t *testing.T) {
 	assert.NotNil(t, v)
 }
 
+// syncBuffer is a concurrency-safe io.Writer over a bytes.Buffer, used by
+// TestNewMultiIssuerTokenValidator_AudienceShapeWarning to capture
+// slog.Default() output. slog.SetDefault is process-global, so a plain
+// bytes.Buffer would race against any other goroutine that logs while a
+// capturing handler is installed. Mirrors the identically-named helper in
+// pkg/authserver/runner/embeddedauthserver_test.go; kept as a separate copy
+// since it is an unexported test type not worth exporting across packages.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestNewMultiIssuerTokenValidator_AudienceShapeWarning pins
+// looksLikeResourceIdentifier's startup warning: a TrustedIssuer whose
+// ExpectedAudience has no URI scheme (e.g. a bare client-ID-shaped value)
+// logs a slog.Warn naming the issuer, since that audience shape cannot
+// distinguish an ID token from an access token for that issuer (the token
+// itself may carry neither "at_hash" nor "c_hash", which OIDC permits — see
+// rejectIDTokenClaims's doc comment). A URI-shaped audience (has a "://"
+// scheme) must NOT trigger the warning.
+//
+// NOT t.Parallel(): swaps the package-global slog.Default() and restores it
+// via t.Cleanup; see syncBuffer's doc comment for why a concurrent writer
+// alone would be safe but an overlapping swap/restore pair would not be.
+//
+//nolint:paralleltest // mutates the package-global slog.Default()
+func TestNewMultiIssuerTokenValidator_AudienceShapeWarning(t *testing.T) {
+	tests := []struct {
+		name             string
+		expectedAudience string
+		wantWarning      bool
+	}{
+		{
+			name:             "bare client-ID-shaped audience warns",
+			expectedAudience: "toolhive-authserver",
+			wantWarning:      true,
+		},
+		{
+			name:             "bare GUID audience warns",
+			expectedAudience: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+			wantWarning:      true,
+		},
+		{
+			name:             "https URI audience does not warn",
+			expectedAudience: "https://api.example.com",
+			wantWarning:      false,
+		},
+		{
+			name:             "api URI audience does not warn",
+			expectedAudience: "api://3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+			wantWarning:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			selfJWKS := newTestJWKS(t)
+			selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
+			require.NoError(t, err)
+
+			var buf syncBuffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{{
+				IssuerURL:        testExternalIssuer,
+				ExpectedAudience: tt.expectedAudience,
+				AllowedActors:    []string{"ext-agent"}, // avoid the unrelated AllowedActors warning
+			}})
+			require.NoError(t, err)
+			require.NotNil(t, v)
+
+			logged := buf.String()
+			const wantSubstring = "does not look like a resource identifier"
+			if tt.wantWarning {
+				assert.Contains(t, logged, wantSubstring)
+				assert.Contains(t, logged, testExternalIssuer)
+			} else {
+				assert.NotContains(t, logged, wantSubstring)
+			}
+		})
+	}
+}
+
 func TestNewMultiIssuerTokenValidator_ClonesAllowedActors(t *testing.T) {
 	t.Parallel()
 
@@ -1132,9 +1300,8 @@ func TestMultiIssuerTokenValidator_ClockSkewLeeway(t *testing.T) {
 }
 
 // TestMultiIssuerTokenValidator_DiscoverJWKSURL exercises discoverJWKSURL
-// directly via the externalIssuerConfig seam (the same pattern
-// TestMultiIssuerTokenValidator_RegisteredButUnreadyRetainsPolicyClaim uses),
-// bypassing constructor validation so an empty JWKSURL can be tested at all.
+// directly via the externalIssuerConfig seam, bypassing constructor
+// validation so an empty JWKSURL can be tested at all.
 // NewMultiIssuerTokenValidator can no longer exercise OIDC discovery through
 // its own constructor: validateTrustedIssuer rejects {AllowPrivateIPs: true,
 // JWKSURL: ""}, and every test issuer built through it runs on a loopback
@@ -1523,7 +1690,7 @@ func TestValidateJWKSURL(t *testing.T) {
 // TestMultiIssuerTokenValidator_FetchJWKS exercises ensureRegistered's and
 // lookupJWKS's error paths through the full Validate path, bypassing OIDC
 // discovery via a preconfigured JWKSURL. Registration and the JWKS's own
-// zero-keys/too-many-keys checks now go through the shared jwk.Cache and
+// zero-keys/too-many-keys checks now go through the issuer's own jwk.Cache and
 // lookupJWKS respectively rather than a private HTTP fetch.
 //
 // For "non-200 response" and "malformed JSON body", verified empirically:
@@ -1548,6 +1715,21 @@ func TestMultiIssuerTokenValidator_FetchJWKS(t *testing.T) {
 		key := newECDSAJWK(t, fmt.Sprintf("k%d", i))
 		tooManyKeys[i] = key.Public()
 	}
+
+	// A complete, otherwise-valid JWKS document padded past
+	// maxResponseBodySize with an unrelated field — see its use below for why
+	// that matters.
+	oversizedJWKSDoc := func() []byte {
+		paddingKey := newECDSAJWK(t, "padding-kid")
+		raw, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{paddingKey.Public()}})
+		require.NoError(t, err)
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(raw, &doc))
+		doc["padding"] = strings.Repeat("a", 4*1024*1024)
+		padded, err := json.Marshal(doc)
+		require.NoError(t, err)
+		return padded
+	}()
 
 	tests := []struct {
 		name    string
@@ -1584,6 +1766,27 @@ func TestMultiIssuerTokenValidator_FetchJWKS(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: tooManyKeys})
 			},
 			wantErr: "too many keys",
+		},
+		{
+			// Pins limitedBodyTransport's cap on the JWKS fetch path (jwx's
+			// own httprc.MaxBufferSize ceiling is ~1000 MiB, far too high to
+			// bound anything here on its own). Deliberately WELL-FORMED and
+			// complete, unlike the other failure cases above: the padding
+			// field is oversized but the document would parse successfully
+			// if read in full, so only limitedBodyTransport cutting the read
+			// short makes this fail — the same technique
+			// TestMultiIssuerTokenValidator_DiscoverJWKSURL's oversized-body
+			// case uses for the discovery path. The 4 MiB padding size is a
+			// fixed literal independent of maxResponseBodySize (1 MiB): sizing
+			// it as a multiple of that constant would make a broken cap and a
+			// shrunken constant fail identically, hiding a regression in the
+			// cap itself.
+			name: "oversized JWKS response is rejected rather than parsed",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(oversizedJWKSDoc)
+			},
+			wantErr: "context deadline exceeded",
 		},
 	}
 
@@ -1626,7 +1829,7 @@ func signExternalToken(t *testing.T, key jose.JSONWebKey, claims jwt.Claims) str
 	require.NoError(t, err)
 	raw, err := jwt.Signed(signer).
 		Claims(claims).
-		Claims(map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client"}}).
+		Claims(map[string]any{"may_act": map[string]any{"sub": "some-toolhive-client", "iss": testIssuer}}).
 		Serialize()
 	require.NoError(t, err)
 	return raw
@@ -1796,11 +1999,11 @@ func TestMultiIssuerTokenValidator_NeverFetchedRetryIsRateLimited(t *testing.T) 
 
 // TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy proves that two
 // issuers resolving to the identical jwksURL under the identical HTTP
-// transport policy both validate successfully, sharing the one underlying
-// jwk.Cache entry. This is the common real-world case claimJWKSURLPolicy must
-// not regress: Microsoft Entra v1 tenants share one tenant-independent JWKS
-// endpoint, so two Entra tenants configured as separate trusted issuers
-// collide on the same jwks_url by construction.
+// transport policy both validate successfully — each through its own
+// jwk.Cache and *http.Client (see externalIssuerConfig.jwksCache). This is
+// the common real-world case: Microsoft Entra v1 tenants share one
+// tenant-independent JWKS endpoint, so two Entra tenants configured as
+// separate trusted issuers collide on the same jwks_url by construction.
 func TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy(t *testing.T) {
 	t.Parallel()
 
@@ -1855,49 +2058,65 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy(t *testing.T) {
 }
 
 // TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy proves the
-// fail-closed half of claimJWKSURLPolicy: two issuers resolving to the same
-// jwksURL but configuring different insecure_allow_http/allow_private_ips
-// settings must not have the second one silently inherit the first one's
-// *http.Client. The shared jwks_url here is a syntactically valid HTTPS host
-// that intentionally never resolves — ValidateJWKSURL accepts it regardless
-// of either issuer's own flags (both being moot for an https, non-IP-literal
-// host), so the conflict is detected before any network attempt for the
-// second issuer, and independently of whether the first issuer's own fetch
-// ever succeeds.
+// property a per-issuer jwk.Cache adds over a shared one: two issuers
+// resolving to the same jwks_url but configuring DIFFERENT
+// insecure_allow_http/allow_private_ips settings both validate
+// independently, each fetching through its own dedicated *http.Client. A
+// shared cache could not do this — httprc keys a cached resource by URL
+// alone and only honors jwk.WithHTTPClient on a URL's first Register call,
+// so the second issuer would have silently inherited the first one's client
+// and transport policy. Splitting the cache per issuer removes that
+// collision instead of merely guarding against it.
 func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 	t.Parallel()
 
 	const (
-		sharedJWKSURL = "https://shared-jwks.invalid/jwks"
-		issuerAURL    = "https://issuer-a.example.com"
-		issuerBURL    = "https://issuer-b.example.com"
+		issuerAURL = "https://issuer-a.example.com"
+		issuerBURL = "https://issuer-b.example.com"
+		audienceA  = "aud-a"
+		audienceB  = "aud-b"
 	)
 
 	selfJWKS := newTestJWKS(t)
+	sharedJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, sharedJWKS)
+	sharedJWKSURL := jwksServer.URL + "/jwks"
+
+	// Deliberately NOT newMultiValidator: that helper forces
+	// InsecureAllowHTTP and AllowPrivateIPs to true on every issuer so its
+	// loopback httptest servers are reachable, which would erase the very
+	// difference this test exists to exercise. Both issuers share one
+	// plain-HTTP loopback jwks_url and allow private IPs, and differ ONLY in
+	// InsecureAllowHTTP — so each is judged against its own transport policy:
+	// A is refused for its own reason (no HTTP permitted), B succeeds.
+	//
+	// Under a shared cache B could not succeed here: the policy-claim guard
+	// rejected any second issuer whose policy differed from the URL's first
+	// claimant, and without that guard B would have silently inherited A's
+	// client. Per-issuer caches make both outcomes independent.
 	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
-
 	validator, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, []TrustedIssuer{
 		{
-			IssuerURL:        issuerAURL,
-			ExpectedAudience: "aud-a",
-			JWKSURL:          sharedJWKSURL,
-			AllowedActors:    []string{"agent-a"},
-			// InsecureAllowHTTP/AllowPrivateIPs both left at their strict
-			// (false) default.
+			IssuerURL:         issuerAURL,
+			ExpectedAudience:  audienceA,
+			JWKSURL:           sharedJWKSURL,
+			AllowedActors:     []string{"agent-a"},
+			AllowPrivateIPs:   true,
+			InsecureAllowHTTP: false,
 		},
 		{
 			IssuerURL:         issuerBURL,
-			ExpectedAudience:  "aud-b",
+			ExpectedAudience:  audienceB,
 			JWKSURL:           sharedJWKSURL,
 			AllowedActors:     []string{"agent-b"},
-			InsecureAllowHTTP: true,
 			AllowPrivateIPs:   true,
+			InsecureAllowHTTP: true,
 		},
 	})
 	require.NoError(t, err)
 
-	tokenFor := func(issuer, audience, actor string) string {
+	tokenFor := func(issuer, audience, actor, jti string) string {
 		now := time.Now()
 		claims := jwt.Claims{
 			Subject:   "shared-user",
@@ -1906,32 +2125,32 @@ func TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy(t *testing.T) {
 			Expiry:    jwt.NewNumericDate(now.Add(time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)),
+			ID:        jti,
 		}
-		return selfJWKS.signToken(t, claims, map[string]any{"azp": actor})
+		return sharedJWKS.signToken(t, claims, map[string]any{"azp": actor})
 	}
 
-	// Issuer A claims the shared jwks_url first. Its own fetch will fail
-	// (the host never resolves), but that's irrelevant here: the claim is
-	// recorded before the network attempt, which is the property under test.
-	_, err = validator.Validate(context.Background(), tokenFor(issuerAURL, "aud-a", "agent-a"))
-	require.Error(t, err, "the unresolvable shared host must fail issuer A's own fetch")
+	// A is judged against its OWN policy: it forbids plain HTTP, so its fetch
+	// of the shared http:// jwks_url is refused. Not a policy-conflict error —
+	// A is simply misconfigured for this URL.
+	_, err = validator.Validate(context.Background(), tokenFor(issuerAURL, audienceA, "agent-a", "jti-a"))
+	require.Error(t, err, "the issuer forbidding plain HTTP must be refused for its own jwks_url")
+	assert.Contains(t, err.Error(), "must use HTTPS",
+		"the refusal must come from issuer A's own transport policy")
 
-	// Issuer B shares the same URL under a different policy: it must fail
-	// closed, naming both issuers and the shared URL, rather than silently
-	// reusing issuer A's *http.Client.
-	_, err = validator.Validate(context.Background(), tokenFor(issuerBURL, "aud-b", "agent-b"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), issuerAURL)
-	assert.Contains(t, err.Error(), issuerBURL)
-	assert.Contains(t, err.Error(), sharedJWKSURL)
-	assert.Contains(t, err.Error(), "insecure_allow_http")
+	// B shares that exact URL but permits HTTP, and succeeds — the outcome a
+	// shared cache could not produce, since A reached the URL first.
+	resultB, err := validator.Validate(context.Background(), tokenFor(issuerBURL, audienceB, "agent-b", "jti-b"))
+	require.NoError(t, err, "the issuer permitting HTTP must validate independently, "+
+		"neither blocked by nor inheriting issuer A's stricter policy")
+	assert.Equal(t, issuerBURL, resultB.ExternalIssuer)
 }
 
 // TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes proves the
 // regression-safety half of the ensureRegistered rewrite (removing
-// externalIssuerConfig.added in favor of asking v.jwksCache.IsRegistered
+// externalIssuerConfig.added in favor of asking issuerConfig.jwksCache.IsRegistered
 // directly): once a JWKS fetch has failed but the resource was genuinely
-// registered with the shared cache, a later retry — once
+// registered with the issuer's own cache, a later retry — once
 // jwksFetchFailureBackoff has elapsed — must refresh the existing
 // registration rather than attempt to register it again, which would fail
 // with "already registered".
@@ -1971,7 +2190,7 @@ func TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes(t *testing.T)
 	}
 
 	// First attempt: the endpoint is broken. This genuinely registers the
-	// resource with the shared cache (per httprc.Controller.Add's own
+	// resource with the issuer's own cache (per httprc.Controller.Add's own
 	// ordering), but the fetch itself fails.
 	_, err := validator.Validate(context.Background(), tokenWithID("jti-1"))
 	require.Error(t, err)
@@ -1993,171 +2212,33 @@ func TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes(t *testing.T)
 	require.NotNil(t, result)
 }
 
-// TestMultiIssuerTokenValidator_RegisteredButUnreadyRetainsPolicyClaim forces
-// httprc.Controller.Add's mode-b failure — the resource IS tracked by the
-// cache (registration itself succeeded) but its first fetch fails, so
-// Register returns an error wrapping httprc.ErrNotReady — and proves the
-// issuer's jwksURL policy claim is KEPT, not rolled back. Releasing it here
-// would let a second issuer, sharing the same jwks_url under a different
-// transport policy, claim the URL and then Refresh through the FIRST
-// issuer's *http.Client on the retry path — reopening the
-// silent-policy-inheritance hole claimJWKSURLPolicy exists to close.
-func TestMultiIssuerTokenValidator_RegisteredButUnreadyRetainsPolicyClaim(t *testing.T) {
+// TestLimitedBodyTransport asserts directly on the body cap that protects the
+// JWKS fetch path. A direct test is necessary rather than sufficient coverage
+// via Validate: jwx surfaces every fetch failure as its own WaitReady timeout,
+// so the cap's error never reaches a caller and cannot be distinguished there
+// from a 500, a parse failure, or a kid mismatch. Asserting on the cap itself
+// is the only way to pin it — the oversized case in
+// TestMultiIssuerTokenValidator_FetchJWKS proves the fetch fails, not why.
+func TestLimitedBodyTransport(t *testing.T) {
 	t.Parallel()
 
-	selfJWKS := newTestJWKS(t)
+	const bodyCap = 1024
 
-	// Always fails: httprc.Controller.Add inserts the resource into the
-	// backend's map before waiting on this first fetch, so the failure here
-	// happens strictly after the resource is already tracked.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(strings.Repeat("a", 8*1024)))
 	}))
 	t.Cleanup(srv.Close)
 
-	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
-	require.NoError(t, err)
+	client := srv.Client()
+	client.Transport = &limitedBodyTransport{base: client.Transport, max: bodyCap}
 
-	cache, err := jwk.NewCache(context.Background(), httprc.NewClient())
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = cache.Shutdown(shutdownCtx)
-	})
+	resp, err := client.Get(srv.URL)
+	require.NoError(t, err, "the cap applies to reading the body, not to the round trip")
+	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	issuerConfig := &externalIssuerConfig{
-		TrustedIssuer: TrustedIssuer{
-			IssuerURL:         testExternalIssuer,
-			ExpectedAudience:  testExternalAudience,
-			JWKSURL:           srv.URL,
-			AllowedActors:     []string{"ext-agent"},
-			InsecureAllowHTTP: true,
-			AllowPrivateIPs:   true,
-		},
-		jwksURL:    srv.URL,
-		httpClient: srv.Client(),
-	}
-	validator := &MultiIssuerTokenValidator{
-		selfIssuer:      testIssuer,
-		selfValidator:   selfValidator,
-		issuers:         map[string]*externalIssuerConfig{testExternalIssuer: issuerConfig},
-		jwksCache:       cache,
-		jwksURLPolicies: make(map[string]jwksURLPolicy),
-	}
-
-	err = validator.registerOrRefresh(context.Background(), issuerConfig)
-	require.Error(t, err, "the first fetch must fail (server always returns 500)")
-	require.ErrorIs(t, err, httprc.ErrNotReady(),
-		"the failure must be the registered-but-not-ready case this test targets")
-
-	_, claimed := validator.jwksURLPolicies[srv.URL]
-	assert.True(t, claimed, "the policy claim must be retained: the resource is tracked by the cache")
-
-	registeredCtx, cancel := context.WithTimeout(context.Background(), httpTimeout)
-	defer cancel()
-	assert.True(t, cache.IsRegistered(registeredCtx, srv.URL),
-		"sanity check: the cache must still be tracking the URL despite the fetch failure")
-}
-
-// TestMultiIssuerTokenValidator_FailedRegisterReleasesPolicyClaim forces
-// httprc.Controller.Add's mode-a failure — Register returns an error AND the
-// resource was never tracked by the cache (IsRegistered false) — and proves
-// the failed issuer's jwksURL policy claim is rolled back, so a later issuer
-// resolving to the same jwks_url under a DIFFERENT transport policy is not
-// permanently blocked for the life of the process.
-//
-// The shared jwks_url is a syntactically valid HTTPS host that never resolves
-// (the same trick TestMultiIssuerTokenValidator_SharedJWKSURL_DifferingPolicy
-// uses): ValidateJWKSURL accepts it under either issuer's flags, so both
-// issuers reach Register. The cache's httprc whitelist rejects the FIRST
-// IsAllowed call — issuer A's Register, which then fails before sendBackend,
-// so the cache never tracks the URL (mode-a) — and allows every later one.
-// Issuer B's Register therefore gets past the whitelist, tracks the URL, and
-// fails only on the unresolvable fetch: a mode-b failure whose error names
-// the JWKS fetch, NOT the policy-conflict error claimJWKSURLPolicy would
-// return if A's orphaned claim were left in place.
-func TestMultiIssuerTokenValidator_FailedRegisterReleasesPolicyClaim(t *testing.T) {
-	t.Parallel()
-
-	const (
-		sharedJWKSURL = "https://shared-jwks.invalid/jwks"
-		issuerAURL    = "https://issuer-a.example.com"
-		issuerBURL    = "https://issuer-b.example.com"
-	)
-
-	selfJWKS := newTestJWKS(t)
-
-	// Reject exactly one IsAllowed call: the whitelist is consulted only in
-	// httprc.Controller.Add (registration), never in Lookup/Refresh, so the
-	// first rejection is issuer A's Register below.
-	var rejected atomic.Bool
-	cache, err := jwk.NewCache(context.Background(), httprc.NewClient(httprc.WithWhitelist(
-		httprc.WhitelistFunc(func(string) bool {
-			return rejected.Swap(true)
-		}),
-	)))
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = cache.Shutdown(shutdownCtx)
-	})
-
-	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.publicJWKS(), testIssuer, []string{testIssuer})
-	require.NoError(t, err)
-
-	// Issuer A configures the strict default policy; issuer B relaxes both
-	// gates. The two share one jwks_url, so B's claimJWKSURLPolicy is the
-	// call under test.
-	validator := &MultiIssuerTokenValidator{
-		selfIssuer:    testIssuer,
-		selfValidator: selfValidator,
-		issuers: map[string]*externalIssuerConfig{
-			issuerAURL: {
-				TrustedIssuer: TrustedIssuer{
-					IssuerURL:        issuerAURL,
-					ExpectedAudience: "aud-a",
-					AllowedActors:    []string{"agent-a"},
-					// InsecureAllowHTTP/AllowPrivateIPs left at their strict
-					// (false) defaults.
-				},
-				jwksURL:    sharedJWKSURL,
-				httpClient: &http.Client{},
-			},
-			issuerBURL: {
-				TrustedIssuer: TrustedIssuer{
-					IssuerURL:         issuerBURL,
-					ExpectedAudience:  "aud-b",
-					AllowedActors:     []string{"agent-b"},
-					InsecureAllowHTTP: true,
-					AllowPrivateIPs:   true,
-				},
-				jwksURL:    sharedJWKSURL,
-				httpClient: &http.Client{},
-			},
-		},
-		jwksCache:       cache,
-		jwksURLPolicies: make(map[string]jwksURLPolicy),
-	}
-
-	// Issuer A claims the shared jwks_url, then its Register fails in mode-a:
-	// the whitelist rejection means the cache never tracked the URL. The
-	// policy claim must be rolled back, not left to block issuer B forever.
-	err = validator.registerOrRefresh(context.Background(), validator.issuers[issuerAURL])
-	require.Error(t, err, "issuer A's Register must fail (whitelist blocks the shared jwks_url)")
-	require.Contains(t, err.Error(), "failed to register JWKS for issuer")
-
-	// Issuer B resolves to the same jwks_url under a different policy. With
-	// A's orphaned claim released, B claims the URL afresh and reaches its own
-	// Register — which fails only because the shared host never resolves, NOT
-	// because claimJWKSURLPolicy failed closed on A's lingering claim. The
-	// distinguishing assertion is the absence of the policy-conflict error.
-	err = validator.registerOrRefresh(context.Background(), validator.issuers[issuerBURL])
-	require.Error(t, err, "issuer B's Register must fail (the shared jwks_url never resolves)")
-	assert.NotContains(t, err.Error(), "insecure_allow_http",
-		"issuer B must not be permanently blocked by issuer A's failed registration")
-	assert.NotContains(t, err.Error(), issuerAURL,
-		"the error must be issuer B's own fetch failure, not the cross-issuer policy conflict")
-	assert.Contains(t, err.Error(), "failed to register JWKS for issuer")
+	body, err := io.ReadAll(resp.Body)
+	require.Error(t, err, "reading past the cap must fail rather than truncate silently: "+
+		"a truncated JWKS would be parsed as though it were the whole document")
+	assert.LessOrEqual(t, int64(len(body)), int64(bodyCap),
+		"no more than the cap may be delivered before the error")
 }

@@ -1157,6 +1157,8 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 
 		sess, ok := req.GetSession().(*session.Session)
 		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, testExternalIssuer+"#"+"ext-user-456", sess.JWTClaims.Subject,
+			"external subject must be qualified with the issuer URL, not copied verbatim")
 		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"], "outermost act.sub is always the ToolHive client")
@@ -1177,10 +1179,39 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 
 		sess, ok := req.GetSession().(*session.Session)
 		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, "user-123", sess.JWTClaims.Subject,
+			"self-issued subject must pass through unchanged, never qualified")
 		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"])
 		assert.Nil(t, act["act"], "self-issued delegation must not nest an external actor")
+	})
+
+	// #5989 fix: an external issuer choosing a "sub" equal to a native
+	// ToolHive user's UUID must never produce a delegated token whose "sub"
+	// collides with that UUID — Cedar's extractClientIDFromClaims
+	// (pkg/authz/authorizers/cedar/core.go) keys on "sub" alone, and native
+	// ToolHive subjects are UUIDs from UserResolver.ResolveUser, never an
+	// upstream provider's raw subject value.
+	t.Run("external subject equal to a plausible native UUID is qualified, not collided", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		const nativeLikeUUID = "8a34c9e0-6b1a-4e5f-9c2d-1f0a7b3d5e6c"
+		claims := externalClaims()
+		claims.Subject = nativeLikeUUID
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{"azp": "ext-agent"})
+
+		req, err := requestWith(t, h, token)
+		require.NoError(t, err)
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.NotEqual(t, nativeLikeUUID, sess.JWTClaims.Subject,
+			"the qualified subject must never equal the bare external sub, "+
+				"or it could collide with a native user sharing that UUID")
+		assert.Equal(t, testExternalIssuer+"#"+nativeLikeUUID, sess.JWTClaims.Subject)
 	})
 
 	// The documented dangerous config (see checkDelegationConsent and
@@ -1195,7 +1226,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		claims := externalClaims()
 		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
 		token := externalJWKS.signToken(t, claims, map[string]any{
-			"may_act": map[string]any{"sub": testAgentClientID},
+			"may_act": map[string]any{"sub": testAgentClientID, "iss": testIssuer},
 		})
 
 		req, err := requestWith(t, h, token)

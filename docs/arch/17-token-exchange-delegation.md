@@ -55,7 +55,13 @@ whether to grant the exchange, in this order:
    `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
    against the authenticated ToolHive client. A malformed `may_act` is
    rejected outright by `validateMayActShape`, not silently ignored or
-   fallen through to the allowlist.
+   fallen through to the allowlist. On the external path, `may_act.iss` is
+   mandatory, not merely constrained when present as on the self-issued path
+   — `validateMayActShape`'s `requireIss` parameter is `true` there. Without
+   this, an external issuer omitting `iss` could authorize any ToolHive
+   client by naming its ID in a bare `may_act.sub`, bypassing
+   `allowedActors`/`allowedDelegateClients` entirely — the one consent path
+   that does.
 2. **`ExternalActor`.** Otherwise, consent was already established by
    `resolveAllowedActor`: the claim named by that issuer's `actorClaim`
    (default `azp`; `appid` for Microsoft Entra v1, `cid` for Okta) matched an
@@ -96,13 +102,18 @@ whether to grant the exchange, in this order:
    binding therefore applies to the `AllowedActors` path and the `may_act`
    path alike. Keeping the token-exchange client set minimal remains the
    operator's baseline control regardless.
-2. **Subject namespace must be disjoint.** A trusted issuer is trusted to
-   assert *any* subject this server accepts for delegation — the delegated
-   token carries ToolHive's own `iss` with the external `sub` copied verbatim,
-   and downstream authorization decisions key on `sub`. Each trusted issuer's
-   subject namespace (and scope names) must be disjoint from every upstream
-   provider's and from every other trusted issuer's, or it can mint a
-   delegated token indistinguishable from a real user's.
+2. **Subject namespace collisions are closed, not accepted.** A trusted
+   issuer is trusted to assert *any* subject this server accepts for
+   delegation, and downstream authorization decisions (Cedar) key on `sub`
+   alone — not `iss`. Rather than requiring operators to keep every issuer's
+   subject namespace disjoint, the delegated token's `sub` is qualified as
+   `<issuerURL>#<externalSub>` for every trusted-issuer exchange
+   (`tokenexchange.delegatedSubject`), never the external `sub` copied
+   verbatim. ToolHive's own native subjects are UUIDs minted by
+   `UserResolver.ResolveUser`, which cannot contain `#`, so a qualified
+   external subject can never collide with one. Scope names are not
+   qualified this way and remain the operator's responsibility to keep
+   disjoint across issuers.
 3. **Provenance is recorded for every external token.** The RFC 8693 §4.1
    `act` claim records who acted: `act.sub` is always the ToolHive client,
    with the external issuer nested one level in — `ValidatedClaims.ExternalIssuer`
@@ -120,6 +131,49 @@ whether to grant the exchange, in this order:
    takes priority and can name any ToolHive client, that claim must be drawn
    from ToolHive's own client namespace and must not be influenceable by an
    untrusted party.
+5. **ID/access-token discrimination on the external path rests on two
+   partial layers, neither of which is exhaustive alone.** Nothing inspects
+   the JWT header's `typ` claim: RFC 8725 §3.12 recommends `typ: at+jwt` for
+   access tokens, but Entra v1/v2, Okta, and Google all emit a bare `JWT`
+   `typ` for access tokens too, so requiring `at+jwt` would reject those
+   providers' genuine access tokens.
+
+   Layer one: `rejectIDTokenClaims` (`validator.go`) rejects a subject token
+   carrying `at_hash` or `c_hash` — OIDC Core §3.3.2.11/§3.3.2.10 define both
+   for ID tokens only. This is a sound *positive* detector but not
+   exhaustive: both claims are OPTIONAL even on a valid
+   authorization-code-flow ID token, so an ID token that omits them is not
+   caught here.
+
+   Layer two: `TrustedIssuer.ExpectedAudience` is documented as MUST be a
+   resource/API identifier and MUST NOT be a client ID, since an ID token's
+   `aud` is the requesting client's own ID while an access token's `aud`
+   names the resource. This check is operator-dependent, not
+   self-enforcing — nothing validates that the operator actually set a
+   resource identifier rather than a client ID.
+   `NewMultiIssuerTokenValidator` emits a `slog.Warn` at startup
+   (`looksLikeResourceIdentifier`) when `expected_audience` has no URI
+   scheme (`https://`, `api://`), naming the issuer and the consequence, but
+   does not hard-reject it: Entra v1 legitimately uses a bare app-ID GUID
+   (no scheme) as an access token's `aud`, so rejecting every non-URI
+   audience would break that real, supported provider.
+
+   A third discriminator — rejecting when a subject token's `aud` equals the
+   issuer's configured actor claim, since OIDC Core requires an ID token's
+   `aud` to equal its own `azp` — was evaluated and not shipped: an app whose
+   API and client share one registration (the same ambiguous
+   bare-GUID-audience configuration layer two warns about) legitimately
+   issues *access* tokens where `aud` and `azp`/`appid` are the same value
+   too, so this would reject genuine access tokens from that setup.
+
+   Taken together: an operator who sets `expected_audience` to a client ID
+   (despite the startup warning), talking to a real IdP whose ID tokens omit
+   `at_hash`/`c_hash` (both legal per OIDC Core), has no remaining
+   discriminator here. The blast radius is bounded: an admitted ID token
+   carries no `scope`/`scp` claim, so `grantScopes` (`handler.go`) either
+   rejects the exchange with `invalid_scope` or grants a zero-scope
+   delegated token — it must also be signed by a configured trusted issuer
+   and satisfy one of the consent signals above.
 
 ## Operational notes
 

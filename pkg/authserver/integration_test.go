@@ -1071,10 +1071,11 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		var claims map[string]any
 		require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
 
-		assert.Equal(t, externalUserSub, claims["sub"], "delegated token subject must be the external user")
+		assert.Equal(t, idpServer.URL+"#"+externalUserSub, claims["sub"],
+			"delegated token subject must be the external issuer's URL, qualifying the external user's "+
+				"subject so it can never collide with a native ToolHive user's UUID")
 		assert.Equal(t, testIssuer, claims["iss"],
-			"delegated token must carry ToolHive's own issuer, never the external one, even though the "+
-				"external sub is copied in verbatim")
+			"delegated token must carry ToolHive's own issuer, never the external one")
 
 		aud, ok := claims["aud"].([]interface{})
 		require.True(t, ok, "aud claim should be an array")
@@ -1163,7 +1164,7 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		// No "azp" claim at all — only may_act, naming the ToolHive agent
 		// client directly as the party authorized to act.
 		subjectToken := signExternalToken(t, externalKey, externalClaims(idpServer.URL), map[string]any{
-			"may_act": map[string]any{"sub": agentClientID},
+			"may_act": map[string]any{"sub": agentClientID, "iss": testIssuer},
 		})
 
 		resp := makeTokenRequest(t, ts.Server.URL, url.Values{

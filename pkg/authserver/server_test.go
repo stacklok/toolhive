@@ -6,7 +6,9 @@ package authserver
 import (
 	"context"
 	"crypto/rand"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,6 +191,111 @@ func TestNewServer_Success(t *testing.T) {
 	}
 	if srv.IDPTokenStorage() != stor {
 		t.Error("server.IDPTokenStorage() did not return expected storage")
+	}
+}
+
+// capturingSlogHandler records log records for assertions. slog's default
+// handler is process-global, so tests using it must not run in parallel with
+// other slog-capturing tests.
+type capturingSlogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (*capturingSlogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *capturingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *capturingSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *capturingSlogHandler) messages(level slog.Level, containing string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, r := range h.records {
+		if r.Level == level && strings.Contains(r.Message, containing) {
+			out = append(out, r.Message)
+		}
+	}
+	return out
+}
+
+// TestNewServer_AllowConfidentialClients_Logs pins the startup logging
+// contract: enabling the flag logs an Info naming the consequence, and
+// combining it with insecure_allow_http additionally logs exactly one WARN
+// naming both fields — while startup still succeeds.
+//
+//nolint:paralleltest // swaps the process-global slog default handler
+func TestNewServer_AllowConfidentialClients_Logs(t *testing.T) {
+	// Not parallel: swaps the process-global slog default handler.
+
+	newCfg := func(allowConfidential, insecureHTTP bool) Config {
+		return Config{
+			Issuer:                   "https://example.com",
+			KeyProvider:              keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:              &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:                []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences:         []string{"https://mcp.example.com"},
+			AllowConfidentialClients: allowConfidential,
+			InsecureAllowHTTP:        insecureHTTP,
+		}
+	}
+
+	tests := []struct {
+		name              string
+		allowConfidential bool
+		insecureHTTP      bool
+		wantInfo          bool
+		wantWarns         int
+	}{
+		{"flag off: no logs", false, false, false, 0},
+		{"flag on: Info naming the consequence, no WARN", true, false, true, 0},
+		{"flag on with insecure HTTP: Info plus exactly one WARN", true, true, true, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := &capturingSlogHandler{}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(capture))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+			mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+				return mockUpstream, nil
+			}
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+
+			srv, err := newServer(context.Background(), newCfg(tt.allowConfidential, tt.insecureHTTP), stor, withUpstreamFactory(mockFactory))
+			require.NoError(t, err, "startup must succeed for every flag combination")
+			require.NotNil(t, srv)
+
+			// Filter to the flag's own log lines: other components (key
+			// generation, baseline scopes) also log at Info during startup.
+			infos := capture.messages(slog.LevelInfo, "client secrets")
+			warns := capture.messages(slog.LevelWarn, "allow_confidential_clients")
+
+			if tt.wantInfo {
+				require.Len(t, infos, 1)
+				assert.Contains(t, infos[0], "unauthenticated dynamic registration")
+			} else {
+				assert.Empty(t, infos)
+			}
+
+			require.Len(t, warns, tt.wantWarns)
+			if tt.wantWarns == 1 {
+				assert.Contains(t, warns[0], "insecure_allow_http")
+				assert.Contains(t, warns[0], "cleartext")
+			}
+		})
 	}
 }
 

@@ -117,6 +117,21 @@ type RunConfig struct {
 	// Production deployments reachable outside the cluster MUST use https://.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
+
+	// AllowConfidentialClients permits Dynamic Client Registration of
+	// confidential clients: when true, /oauth/register accepts
+	// token_endpoint_auth_method values client_secret_basic and
+	// client_secret_post in addition to "none" (which remains the default on
+	// omission) and mints a client_secret returned exactly once.
+	//
+	// Confidential clients are restricted to https non-loopback redirect URIs.
+	// Registrations idle for more than DefaultDCRClientTTL (30 days) are
+	// evicted and must re-register. Disabling this flag does not revoke
+	// already-minted secrets. Do not combine with InsecureAllowHTTP outside a
+	// trusted network: registration is unauthenticated, so the pair issues
+	// client secrets over cleartext HTTP.
+	//nolint:lll // field tags require full JSON+YAML names
+	AllowConfidentialClients bool `json:"allow_confidential_clients,omitempty" yaml:"allow_confidential_clients,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -685,6 +700,11 @@ type Config struct {
 	// Only set this for in-cluster Kubernetes deployments on a trusted network.
 	// Production deployments reachable outside the cluster MUST use https://.
 	InsecureAllowHTTP bool
+
+	// AllowConfidentialClients permits DCR of confidential clients
+	// (client_secret_basic / client_secret_post). See RunConfig for the full
+	// semantics; disabling it does not revoke already-minted secrets.
+	AllowConfidentialClients bool
 }
 
 // Validate checks that the Config is valid.

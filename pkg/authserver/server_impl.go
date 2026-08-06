@@ -99,6 +99,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	logConfidentialClientStartup(cfg.AllowConfidentialClients, cfg.InsecureAllowHTTP)
+
 	// Validate storage is provided
 	if stor == nil {
 		return nil, fmt.Errorf("storage is required")
@@ -141,6 +143,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		AllowedAudiences:             cfg.AllowedAudiences,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                  cfg.CIMDEnabled,
+		AllowConfidentialClients:     cfg.AllowConfidentialClients,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -418,6 +421,22 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 // Compose factories take (fosite.Configurator, interface{}, interface{}) while
 // server factories take (*AuthorizationServerConfig, fosite.Storage, any).
 // The embedded *fosite.Config satisfies fosite.Configurator.
+// logConfidentialClientStartup emits the startup log lines for confidential
+// client DCR: an Info naming the consequence when enabled, and an additional
+// WARN when it is combined with cleartext-HTTP issuance.
+func logConfidentialClientStartup(allowConfidentialClients, insecureAllowHTTP bool) {
+	if !allowConfidentialClients {
+		return
+	}
+	slog.Info("confidential-client dynamic registration is enabled: " +
+		"this server issues client secrets over unauthenticated dynamic registration")
+	if insecureAllowHTTP {
+		slog.Warn("allow_confidential_clients is combined with insecure_allow_http: " +
+			"client secrets will be issued over cleartext HTTP on an unauthenticated endpoint; " +
+			"only do this on a trusted in-cluster network")
+	}
+}
+
 func wrapComposeFactory(cf compose.Factory) oauthserver.Factory {
 	return func(config *oauthserver.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		return cf(config.Config, storage, strategy), nil

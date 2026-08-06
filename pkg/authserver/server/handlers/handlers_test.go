@@ -39,6 +39,7 @@ import (
 type testSetupOptions struct {
 	AuthorizationEndpointBaseURL string
 	CIMDEnabled                  bool
+	AllowConfidentialClients     bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -68,6 +69,7 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		Issuer:                       "https://auth.example.com",
 		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                  opts.CIMDEnabled,
+		AllowConfidentialClients:     opts.AllowConfidentialClients,
 		AccessTokenLifespan:          time.Hour,
 		RefreshTokenLifespan:         time.Hour * 24,
 		AuthCodeLifespan:             time.Minute * 10,

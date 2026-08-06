@@ -241,6 +241,7 @@ func NewEmbeddedAuthServerWithStorage(
 		CIMDCacheMaxSize:             cimdCacheMaxSize,
 		CIMDCacheFallbackTTL:         cimdCacheFallbackTTL,
 		InsecureAllowHTTP:            cfg.InsecureAllowHTTP,
+		AllowConfidentialClients:     cfg.AllowConfidentialClients,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR

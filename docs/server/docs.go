@@ -498,6 +498,10 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
+                    "allow_confidential_clients": {
+                        "description": "AllowConfidentialClients permits Dynamic Client Registration of\nconfidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (which remains the default on\nomission) and mints a client_secret returned exactly once.\n\nConfidential clients are restricted to https non-loopback redirect URIs.\nRegistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. Disabling this flag does not revoke\nalready-minted secrets. Do not combine with InsecureAllowHTTP outside a\ntrusted network: registration is unauthenticated, so the pair issues\nclient secrets over cleartext HTTP.",
+                        "type": "boolean"
+                    },
                     "allowed_audiences": {
                         "description": "AllowedAudiences is the list of valid resource URIs that tokens can be issued for.\nPer RFC 8707, the \"resource\" parameter in authorization and token requests is\nvalidated against this list. Required for MCP compliance.",
                         "items": {

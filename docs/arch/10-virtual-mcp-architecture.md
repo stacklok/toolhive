@@ -223,6 +223,19 @@ scan silently dropped an item whenever a duplicate landed on a page boundary
 
 Beyond conflict resolution, vMCP can filter which tools are exposed through allow/deny lists, renaming, and description overrides.
 
+By default a backend with no per-workload entry has all of its tools advertised, so
+adding a workload to the group exposes it. `aggregation.defaultToolVisibility: deny`
+inverts that, advertising only backends named in `aggregation.tools` — useful when the
+exposed tool set should be enumerated deliberately rather than inherited from group
+membership. A listed backend is opted in by its entry; its own `excludeAll`/`filter`
+then decide which of its tools are advertised.
+
+All of these settings — `excludeAllTools`, `defaultToolVisibility`, per-workload
+`excludeAll`, and `filter` — control **advertising only**. Every backend tool stays in
+the routing table so composite tools can call hidden ones, and none of them affect
+resources or prompts. Per-identity authorization is Cedar's job (see [Authorization
+Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate)).
+
 **Implementation**: `pkg/vmcp/aggregator/`
 
 ## Composite Tools

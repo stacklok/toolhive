@@ -430,8 +430,8 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
-//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-//     advertised to MCP clients (visible in tools/list responses).
+//   - ExcludeAllTools, DefaultToolVisibility, per-workload ExcludeAll, and Filter control
+//     which tools are advertised to MCP clients (visible in tools/list responses).
 //   - ALL backend tools remain available in the internal routing table, allowing
 //     composite tools to call hidden backend tools.
 //   - This enables curated experiences where raw backend tools are hidden from
@@ -464,7 +464,49 @@ type AggregationConfig struct {
 	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
+
+	// DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+	// tools advertised to MCP clients.
+	//   - allow (default): every tool from an unlisted backend is advertised, so
+	//     adding a workload to the group exposes it without further configuration.
+	//   - deny: an unlisted backend contributes no tools, so only backends named in
+	//     Tools are advertised. Use this when the set of exposed tools must be
+	//     enumerated deliberately rather than inherited from group membership.
+	//
+	// A backend that DOES have a Tools entry is unaffected by this setting: the
+	// entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+	// every other visibility setting here, this controls advertising only — hidden
+	// tools remain in the routing table for composite tools (see the type doc).
+	//
+	// This gates TOOLS only. An unlisted backend's resources, resource templates,
+	// and prompts are still advertised under deny; mergeResources/mergePrompts have
+	// no equivalent check.
+	//
+	// No kubebuilder default: "" already behaves as allow everywhere that reads this
+	// field, so defaulting would change only the serialized bytes — and apiextensions
+	// applies structural defaults on decode, so every existing VirtualMCPServer would
+	// come back with the field set, changing config.yaml, its ConfigMap checksum, and
+	// the pod template that stamps it. That restarts every vMCP deployment once for a
+	// no-op field.
+	// +kubebuilder:validation:Enum=allow;deny
+	// +optional
+	DefaultToolVisibility DefaultToolVisibility `json:"defaultToolVisibility,omitempty" yaml:"defaultToolVisibility,omitempty"`
 }
+
+// DefaultToolVisibility names the advertising default applied to backends with no
+// per-workload Tools entry. The zero value is "" (unset), which behaves as
+// DefaultToolVisibilityAllow so existing configs keep today's behavior.
+// +gendoc
+type DefaultToolVisibility string
+
+const (
+	// DefaultToolVisibilityAllow advertises every tool from a backend with no Tools
+	// entry. This is the default and matches pre-DefaultToolVisibility behavior.
+	DefaultToolVisibilityAllow DefaultToolVisibility = "allow"
+
+	// DefaultToolVisibilityDeny advertises no tools from a backend with no Tools entry.
+	DefaultToolVisibilityDeny DefaultToolVisibility = "deny"
+)
 
 // ConflictResolutionConfig provides configuration for conflict resolution strategies.
 // +kubebuilder:object:generate=true

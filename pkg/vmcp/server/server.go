@@ -506,12 +506,20 @@ func New(
 		OptimizerFactory:  cfg.OptimizerFactory,
 		TelemetryProvider: cfg.TelemetryProvider,
 		AdvertiseFromCore: true,
-		// Gate per-session backend connects on health status (#5861). Without this a
+		// Gate new-session backend connects on health status (#5861). Without this a
 		// backend the monitor already knows is bad is still re-attempted by every new
-		// session, and session creation blocks on it — so one slow backend sets the
+		// session, and session creation blocks on it — so one bad backend sets the
 		// floor for the whole tenant's initialize latency. BackendHealth() returns a
 		// true nil interface when monitoring is disabled, which the session manager
 		// reads as "attempt every backend" (the prior behaviour).
+		//
+		// A skipped backend's tools stay advertised and callable, but only because
+		// AdvertiseFromCore is set just above: tools/call then routes through
+		// core.CallTool over the core's aggregated view rather than the session's own
+		// routing table, which is built solely from backends that connected. The
+		// session does lose list_changed propagation for a skipped backend, partly
+		// offset by InvalidateCapabilityCache being global (serve_list_changed.go) —
+		// so any other backend's notification opportunistically sweeps in its changes.
 		BackendHealth: coreVMCP.BackendHealth(),
 	}
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -27,13 +28,6 @@ import (
 // the suite stays fast while remaining orders of magnitude above the healthy
 // backends' sub-millisecond responses.
 const slowBackendDelay = 2 * time.Second
-
-// slowBackendLatencyBudget is the ceiling on total CreateSession latency for a
-// tenant containing one known-bad slow backend. It backs the secondary
-// (latency) assertion; the primary assertion is the request counter, which is
-// deterministic. Set well below slowBackendDelay: if session creation blocks on
-// the slow backend at all, elapsed time lands at or above slowBackendDelay.
-const slowBackendLatencyBudget = slowBackendDelay / 2
 
 // startSlowMCPBackend starts an in-process MCP backend that delays every
 // request by delay before responding. It is deliberately WORKING, not broken:
@@ -80,15 +74,45 @@ func startSlowMCPBackend(t *testing.T, backendID string, delay time.Duration) (*
 	}, &requests
 }
 
-// staticHealth is a health.StatusProvider stub returning fixed per-backend
-// statuses, standing in for a live health.Monitor that has already classified
-// the slow backend. #5861's premise is that the monitor ALREADY knows the
-// backend is bad; the bug is that session creation never asks.
-type staticHealth map[string]vmcp.BackendHealthStatus
+// healthStub is a health.StatusProvider returning fixed per-backend statuses,
+// standing in for a live health.Monitor that has already classified the slow
+// backend. #5861's premise is that the monitor ALREADY knows the backend is bad;
+// the bug is that session creation never asks.
+//
+// Named to avoid shadowing the imported health package at call sites.
+type healthStub map[string]vmcp.BackendHealthStatus
 
-func (s staticHealth) QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool) {
+func (s healthStub) QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool) {
 	status, ok := s[backendID]
 	return status, ok
+}
+
+// newTestManagerWithSharedStorageAndHealth is newTestManagerWithSharedStorage
+// with a health.StatusProvider wired, for tests that need the Redis-backed
+// restore path (a fresh Manager over shared storage has an empty cache, so
+// GetMultiSession restores rather than serving from cache).
+func newTestManagerWithSharedStorageAndHealth(
+	t *testing.T,
+	storage transportsession.DataStorage,
+	backends []*vmcp.Backend,
+	backendHealth health.StatusProvider,
+) *Manager {
+	t.Helper()
+	backendList := make([]vmcp.Backend, len(backends))
+	for i, b := range backends {
+		backendList[i] = *b
+	}
+	registry := vmcp.NewImmutableRegistry(backendList)
+	factory := vmcpsession.NewSessionFactory(newUnauthenticatedAuthRegistry(t))
+
+	sm, cleanup, err := New(
+		storage,
+		&FactoryConfig{Base: factory, BackendHealth: backendHealth},
+		registry,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cleanup(context.Background())) })
+	return sm
 }
 
 // newTestManagerWithHealth creates a Manager over backends with the given
@@ -128,26 +152,26 @@ func newTestManagerWithHealth(
 // a backend the health monitor has already classified as bad must not be
 // re-attempted during per-session backend init.
 //
-// Before the fix, Manager.listAllBackends returned the registry unfiltered and
+// Before the fix, the new-session backend list was the registry unfiltered and
 // session.makeBaseSession blocked on wg.Wait() for every backend, so a single
 // slow backend set the floor for the whole tenant's initialize latency — a
 // 10-25s backend against a ~30s client timeout is the reported coin flip.
 // Health status gated capability aggregation (core.filterHealthyBackends) but
 // never connection establishment, and establishment runs first.
 //
-// The primary assertion is the slow backend's request counter: zero requests
-// proves the skip directly and deterministically. Elapsed time is asserted as a
-// secondary signal — it is what the user actually experiences, but on its own it
-// is vulnerable to CI noise (slow runners, GC pauses).
+// Both halves are asserted over the SAME Manager: the bad backend receives zero
+// requests AND the healthy peer still holds a session. Asserting only the former
+// would pass if the fix skipped everything, which is the failure mode a
+// health-gating change is most likely to introduce.
 //
-// The degraded case is the reason the fix cannot simply reuse
-// core.filterHealthyBackends unchanged. The reported backend oscillated
-// unhealthy -> degraded -> unhealthy continuously, because its 10-25s latency
-// straddles the compiled-in 5s degraded threshold and 10s probe timeout
-// (health/monitor.go) with no hysteresis. filterHealthyBackends INCLUDES
-// degraded, so reusing that predicate verbatim would leave every degraded-phase
-// session paying the full latency and the coin flip would survive the fix. See
-// health.ShouldOpenSession.
+// The request counter is the whole assertion — there is deliberately no
+// wall-clock latency bound. Elapsed time only infers the skip, and a ceiling
+// tight enough to be meaningful is also tight enough to flake under -race on a
+// loaded CI runner.
+//
+// Degraded is NOT covered here because it is not skipped: see
+// health.ShouldOpenSession for why (three producers, only one of which is
+// latency) and TestRegression_CreateSession_DegradedIsAttempted.
 func TestRegression_CreateSession_SkipsKnownBadSlowBackend(t *testing.T) {
 	t.Parallel()
 
@@ -156,16 +180,16 @@ func TestRegression_CreateSession_SkipsKnownBadSlowBackend(t *testing.T) {
 		status vmcp.BackendHealthStatus
 	}{
 		{
-			// The monitor has classified the backend unhealthy because its real
-			// latency exceeds the probe timeout — the state the reporter observed.
+			// The state the reporter observed: real latency exceeds the probe
+			// timeout, so checks fail until the unhealthy threshold is reached.
 			name:   "unhealthy",
 			status: vmcp.BackendUnhealthy,
 		},
 		{
-			// The other half of the flap: slow enough to be degraded, not slow
-			// enough to be unhealthy.
-			name:   "degraded",
-			status: vmcp.BackendDegraded,
+			// Terminal until an operator intervenes; connecting can only burn
+			// session-establishment latency.
+			name:   "unauthenticated",
+			status: vmcp.BackendUnauthenticated,
 		},
 	}
 
@@ -176,96 +200,114 @@ func TestRegression_CreateSession_SkipsKnownBadSlowBackend(t *testing.T) {
 			fast := startMCPBackend(t, "backend-fast", "echo")
 			slow, slowRequests := startSlowMCPBackend(t, "backend-slow", slowBackendDelay)
 
-			sm := newTestManagerWithHealth(t, []*vmcp.Backend{fast, slow}, staticHealth{
+			sm := newTestManagerWithHealth(t, []*vmcp.Backend{fast, slow}, healthStub{
 				fast.ID: vmcp.BackendHealthy,
 				slow.ID: tt.status,
 			})
 
-			start := time.Now()
 			sessionID := createSession(t, sm, nil)
-			elapsed := time.Since(start)
-
 			require.NotEmpty(t, sessionID)
+
 			assert.Zero(t, slowRequests.Load(),
 				"session creation must not contact a backend already known %s "+
 					"(#5861); it received %d request(s)", tt.status, slowRequests.Load())
-			assert.Less(t, elapsed, slowBackendLatencyBudget,
-				"session creation must not block on a backend already known %s; "+
-					"took %v, budget %v — the slow backend's %v per-request delay is "+
-					"on the critical path", tt.status, elapsed, slowBackendLatencyBudget,
-				slowBackendDelay)
+
+			sess, ok := sm.GetMultiSession(context.Background(), sessionID)
+			require.True(t, ok)
+			require.NotNil(t, sess)
+			assert.Contains(t, sess.BackendSessions(), fast.ID,
+				"the healthy backend must still hold a session — skipping the %s "+
+					"backend must not drop its healthy peer", tt.status)
 		})
 	}
 }
 
-// TestRegression_CreateSession_HealthyBackendStillConnected guards against the
-// fix over-filtering. Without it, the latency tests above would pass
-// vacuously if the fix skipped every backend.
-func TestRegression_CreateSession_HealthyBackendStillConnected(t *testing.T) {
+// TestRegression_CreateSession_DegradedIsAttempted pins that degraded backends
+// are still connected, which is the deliberate limit on #5861's fix.
+//
+// vmcp.BackendDegraded has three producers and only one is about latency. The
+// "recovering" producer (statusTracker.RecordSuccess) forces degraded on ANY
+// success recorded while consecutiveFailures > 0, overriding the health check's
+// own verdict — so a backend that just answered in microseconds carries degraded
+// for up to one CheckInterval. Skipping degraded would exclude that fast, working
+// backend from every session created in the window right after it recovers.
+//
+// See health.ShouldOpenSession. If a degradation reason is ever recorded
+// alongside the status, the latency producer alone could be skipped and this test
+// should be revisited.
+func TestRegression_CreateSession_DegradedIsAttempted(t *testing.T) {
 	t.Parallel()
 
-	fast := startMCPBackend(t, "backend-fast", "echo")
-	sm := newTestManagerWithHealth(t, []*vmcp.Backend{fast}, staticHealth{
-		fast.ID: vmcp.BackendHealthy,
+	backend := startMCPBackend(t, "backend-degraded", "echo")
+	sm := newTestManagerWithHealth(t, []*vmcp.Backend{backend}, healthStub{
+		backend.ID: vmcp.BackendDegraded,
 	})
 
 	sessionID := createSession(t, sm, nil)
-
 	sess, ok := sm.GetMultiSession(context.Background(), sessionID)
 	require.True(t, ok)
 	require.NotNil(t, sess)
-	assert.NotEmpty(t, sess.BackendSessions(),
-		"a healthy backend must still hold a session — the health filter must "+
-			"not drop everything")
+	assert.Contains(t, sess.BackendSessions(), backend.ID,
+		"a degraded backend must still be attempted: degraded also means "+
+			"'recovering' and 'auth retrying', neither of which is slow")
 }
 
-// TestRegression_CreateSession_UnknownStatusIsAttempted pins that "not yet
-// classified" never fails closed. #5861's fix must skip backends known to be
-// bad, not backends nothing is known about yet.
+// TestRegression_CreateSession_MonitorMissHonoursRegistryStatus pins the
+// resolution order in Manager.shouldOpenSession: when the monitor does not track
+// a backend, the registry's own status decides.
 //
-// Two distinct paths produce Unknown, and both must still be attempted:
+// Both directions are covered, because a test suite that only exercises
+// admitted statuses would still pass with the registry fallback deleted
+// entirely — the zero value is admitted too.
 //
-//   - Untracked (exists=false): the monitor has not created state for the
-//     backend yet. The registry status is consulted, and the k8s workload
-//     mapper returns BackendUnknown for a Pending phase
-//     (workloads/k8s.go mapK8SWorkloadPhaseToHealth).
-//   - Tracked as Unknown (exists=true): the monitor recorded a first failure
-//     BELOW the unhealthy threshold, which stores status Unknown with a
-//     non-zero failure count (health/status.go RecordFailure). Nothing is
-//     confirmed yet — the default threshold needs 3 consecutive failures.
-//
-// Serving is not gated on the first health check completing (only the status
-// reporter calls WaitForInitialHealthChecks), so sessions are created while
-// backends are still Unknown. Failing closed there would connect a session to
-// zero backends during the startup window — a regression against pre-#5861
-// behaviour and a worse outcome than the bug being fixed.
-func TestRegression_CreateSession_UnknownStatusIsAttempted(t *testing.T) {
+//   - Untracked + registry says unhealthy: must SKIP. This is the case the
+//     fallback exists for; a k8s workload already reported unhealthy is honoured
+//     before the monitor has caught up.
+//   - Untracked + registry says unknown / unset: must ATTEMPT. "Not yet
+//     classified" fails open, or a cold monitor strands sessions with zero
+//     backends during pod startup.
+//   - Tracked as unknown: must ATTEMPT. The monitor stores Unknown with a
+//     non-zero failure count for a first failure below the unhealthy threshold
+//     (statusTracker.RecordFailure); nothing is confirmed until the threshold
+//     (default 3) is reached. The registry value is deliberately different here
+//     to prove the monitor's answer wins when it has one.
+func TestRegression_CreateSession_MonitorMissHonoursRegistryStatus(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		// monitored is the status the health monitor reports, or "" for a
-		// backend the monitor does not track at all (exists=false).
+		// monitored is the status the health monitor reports; only consulted
+		// when tracked is true.
 		monitored vmcp.BackendHealthStatus
 		tracked   bool
 		// registryStatus is the status the backend carries in the registry.
 		registryStatus vmcp.BackendHealthStatus
+		wantConnected  bool
 	}{
+		{
+			name:           "untracked by monitor, registry reports unhealthy",
+			tracked:        false,
+			registryStatus: vmcp.BackendUnhealthy,
+			wantConnected:  false,
+		},
 		{
 			name:           "untracked by monitor, registry reports unknown (k8s Pending)",
 			tracked:        false,
 			registryStatus: vmcp.BackendUnknown,
+			wantConnected:  true,
 		},
 		{
 			name:           "untracked by monitor, registry status unset",
 			tracked:        false,
 			registryStatus: "",
+			wantConnected:  true,
 		},
 		{
-			name:           "tracked as unknown (first failure below unhealthy threshold)",
+			name:           "tracked as unknown overrides an unhealthy registry status",
 			monitored:      vmcp.BackendUnknown,
 			tracked:        true,
-			registryStatus: vmcp.BackendHealthy,
+			registryStatus: vmcp.BackendUnhealthy,
+			wantConnected:  true,
 		},
 	}
 
@@ -276,21 +318,26 @@ func TestRegression_CreateSession_UnknownStatusIsAttempted(t *testing.T) {
 			backend := startMCPBackend(t, "backend-pending", "echo")
 			backend.HealthStatus = tt.registryStatus
 
-			health := staticHealth{}
+			stub := healthStub{}
 			if tt.tracked {
-				health[backend.ID] = tt.monitored
+				stub[backend.ID] = tt.monitored
 			}
 
-			sm := newTestManagerWithHealth(t, []*vmcp.Backend{backend}, health)
+			sm := newTestManagerWithHealth(t, []*vmcp.Backend{backend}, stub)
 			sessionID := createSession(t, sm, nil)
 
 			sess, ok := sm.GetMultiSession(context.Background(), sessionID)
 			require.True(t, ok)
 			require.NotNil(t, sess)
-			assert.NotEmpty(t, sess.BackendSessions(),
-				"a backend whose health is not yet established must still be "+
-					"attempted — session establishment must not fail closed before "+
-					"the health monitor has confirmed anything")
+			if tt.wantConnected {
+				assert.Contains(t, sess.BackendSessions(), backend.ID,
+					"backend must be attempted: monitor tracked=%v status=%q, "+
+						"registry status %q", tt.tracked, tt.monitored, tt.registryStatus)
+			} else {
+				assert.NotContains(t, sess.BackendSessions(), backend.ID,
+					"backend must be skipped: monitor tracked=%v, registry status %q "+
+						"is confirmed-bad", tt.tracked, tt.registryStatus)
+			}
 		})
 	}
 }
@@ -310,4 +357,45 @@ func TestRegression_CreateSession_NilHealthProviderConnectsAll(t *testing.T) {
 	require.True(t, ok)
 	assert.NotEmpty(t, sess.BackendSessions(),
 		"with health monitoring disabled every backend must be attempted")
+}
+
+// TestRegression_RestoreSession_IsNotHealthFiltered pins that health gating is
+// confined to NEW sessions and never narrows a restored one.
+//
+// RestoreSession intersects the offered backend list with the session's stored
+// backend IDs (session.RestoreSession), so filtering the list on the restore path
+// would not defer a connection — it would DROP a backend the session already
+// held. Because the routing table is rebuilt from whatever reconnects, that
+// backend would stay gone for the rest of the session's life even after it
+// recovered, since nothing reconnects an established session's backends.
+//
+// The backend is healthy when the session is created and unhealthy when it is
+// restored, which is exactly the transition that would silently shrink a live
+// session's capabilities.
+func TestRegression_RestoreSession_IsNotHealthFiltered(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	storage := newSharedRedisStorage(t, mr)
+	backend := startMCPBackend(t, "backend-alpha", "echo")
+
+	// Healthy at creation: the session connects and stores the backend ID.
+	smWriter := newTestManagerWithSharedStorageAndHealth(t, storage,
+		[]*vmcp.Backend{backend}, healthStub{backend.ID: vmcp.BackendHealthy})
+	sessionID := createSession(t, smWriter, nil)
+
+	// Unhealthy at restore. A fresh manager has an empty cache, so
+	// GetMultiSession takes the restore path.
+	smReader := newTestManagerWithSharedStorageAndHealth(t, storage,
+		[]*vmcp.Backend{backend}, healthStub{backend.ID: vmcp.BackendUnhealthy})
+
+	sess, ok := smReader.GetMultiSession(t.Context(), sessionID)
+	require.True(t, ok)
+	require.NotNil(t, sess)
+	assert.Contains(t, sess.BackendSessions(), backend.ID,
+		"restore must not drop a backend the session already held, even when "+
+			"health now reports it unhealthy — the drop would be permanent for "+
+			"this session")
+	assert.NotEmpty(t, sess.Tools(),
+		"the restored session's routing table must still carry the backend's tools")
 }

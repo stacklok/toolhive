@@ -336,8 +336,9 @@ func (sm *Manager) CreateSession(
 	// Resolve the caller identity (may be nil for anonymous access).
 	identity, _ := auth.IdentityFromContext(ctx)
 
-	// List all available backends from the registry.
-	backends := sm.listAllBackends(ctx)
+	// List the backends worth opening connections to, skipping any the health
+	// monitor already knows are bad (#5861).
+	backends := sm.listBackendsForNewSession(ctx)
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
 	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends, sink)
@@ -842,10 +843,31 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 	return nil
 }
 
-// listAllBackends returns the backends a new session should attempt to connect
-// to, skipping any the health monitor has already classified as not worth
-// blocking on (see shouldOpenSession).
+// listAllBackends returns every backend in the registry as a pointer slice,
+// with no health filtering.
+//
+// Used by the restore path, which must offer the factory the full registry: it
+// intersects this list with the session's stored backend IDs
+// (session.RestoreSession), so filtering here would silently DROP a backend the
+// session already held rather than merely defer connecting to one. Because the
+// routing table is rebuilt from whatever reconnects, a dropped backend stays gone
+// for the rest of that session's life even after it recovers. New sessions use
+// listBackendsForNewSession instead.
 func (sm *Manager) listAllBackends(ctx context.Context) []*vmcp.Backend {
+	raw := sm.backendReg.List(ctx)
+	backends := make([]*vmcp.Backend, len(raw))
+	for i := range raw {
+		backends[i] = &raw[i]
+	}
+	return backends
+}
+
+// listBackendsForNewSession returns the backends a NEW session should attempt to
+// connect to, skipping any the health monitor already knows are bad
+// (see shouldOpenSession).
+//
+// Deliberately not used on the restore path — see listAllBackends.
+func (sm *Manager) listBackendsForNewSession(ctx context.Context) []*vmcp.Backend {
 	raw := sm.backendReg.List(ctx)
 	backends := make([]*vmcp.Backend, 0, len(raw))
 	skipped := 0
@@ -857,7 +879,6 @@ func (sm *Manager) listAllBackends(ctx context.Context) []*vmcp.Backend {
 		backends = append(backends, &raw[i])
 	}
 	if skipped > 0 {
-		//nolint:gosec // G706: values are internal counts, not user-controlled
 		slog.Debug("skipping backends for session establishment due to health status",
 			"skipped", skipped,
 			"attempted", len(backends))
@@ -865,14 +886,16 @@ func (sm *Manager) listAllBackends(ctx context.Context) []*vmcp.Backend {
 	return backends
 }
 
-// shouldOpenSession reports whether this session should attempt to connect to
+// shouldOpenSession reports whether a new session should attempt to connect to
 // backend, consulting the health monitor when one is wired.
 //
 // A nil provider means health monitoring is disabled: every backend is
 // attempted, preserving the pre-#5861 behaviour. A backend the monitor does not
-// track yet falls back to its registry status. Either way only confirmed-bad
-// statuses are skipped — see health.ShouldOpenSession for why "not yet
-// classified" must fail open rather than closed.
+// track yet falls back to its registry status, which is how a status the registry
+// knows but the monitor has not caught up with (e.g. a k8s workload already
+// reported unhealthy) is still honoured. Either way only confirmed-bad statuses
+// are skipped — see health.ShouldOpenSession for why "not yet classified" must
+// fail open rather than closed.
 func (sm *Manager) shouldOpenSession(backend *vmcp.Backend) bool {
 	if sm.backendHealth == nil {
 		return true

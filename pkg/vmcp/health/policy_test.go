@@ -16,11 +16,13 @@ import (
 // unrecognized value.
 //
 // The two are asserted together because their relationship is the contract that
-// matters, and it is not a simple ordering: ShouldOpenSession is stricter for
-// degraded (advertising a slow backend's tools is cheap, blocking initialize on
-// it is not — #5861) and looser for unknown (session establishment must not fail
-// closed before the first health check completes). Testing them side by side
-// makes an accidental change to either one visible as a change in the pairing.
+// matters, and it is not a simple ordering. ShouldOpenSession is LOOSER for
+// unknown (session establishment must not fail closed before the first health
+// check completes), and the two now COINCIDE on degraded — the deliberate outcome
+// of #5861's review: that status conflates "slow", "recovering" and "auth
+// retrying", so it cannot be read as "slow" at session-open time. Testing them
+// side by side makes an accidental change to either one visible as a change in
+// the pairing.
 //
 // The unrecognized-value row pins a subtlety worth stating explicitly: the two
 // predicates have opposite defaults for a status neither knows about.
@@ -52,12 +54,14 @@ func TestShouldAdvertiseAndShouldOpenSession(t *testing.T) {
 			wantOpenSession: true,
 		},
 		{
-			// The asymmetry that makes #5861's fix work: still advertised, but
-			// never blocked on during session establishment.
-			name:            "degraded is advertisable but not worth blocking initialize on",
+			// Degraded is attempted, not skipped. Only one of its three producers
+			// is latency; the "recovering" producer forces degraded onto a backend
+			// that just answered successfully, so skipping it would sideline a
+			// fast, working backend for up to one check interval.
+			name:            "degraded is advertised AND attempted",
 			status:          vmcp.BackendDegraded,
 			wantAdvertise:   true,
-			wantOpenSession: false,
+			wantOpenSession: true,
 		},
 		{
 			name:            "unhealthy",
@@ -66,9 +70,9 @@ func TestShouldAdvertiseAndShouldOpenSession(t *testing.T) {
 			wantOpenSession: false,
 		},
 		{
-			// The other asymmetry: aggregation waits for confirmation, session
-			// establishment must not, or a cold monitor connects sessions to zero
-			// backends during pod startup.
+			// The asymmetry that remains: aggregation waits for confirmation,
+			// session establishment must not, or a cold monitor connects sessions
+			// to zero backends during pod startup.
 			name:            "unknown is not advertised but is still attempted",
 			status:          vmcp.BackendUnknown,
 			wantAdvertise:   false,

@@ -85,12 +85,19 @@ type FactoryConfig struct {
 	// deletion is tracked in #6103.
 	AdvertiseFromCore bool
 
-	// BackendHealth gates which backends a new session attempts to connect to.
+	// BackendHealth gates which backends a NEW session attempts to connect to.
+	// Restored sessions are never filtered (see Manager.listAllBackends).
 	//
 	// Optional: nil disables health gating and every backend is attempted, which
 	// is both the pre-#5861 behaviour and the correct fallback when health
-	// monitoring is switched off. See health.ShouldOpenSession for why session
-	// establishment applies a stricter predicate than capability advertising.
+	// monitoring is switched off. See health.ShouldOpenSession for which statuses
+	// are skipped.
+	//
+	// Because nil is indistinguishable from "monitoring disabled", an embedder that
+	// calls Serve with a hand-built FactoryConfig and omits this field gets no
+	// health gating and no warning. server.New always populates it from the core's
+	// monitor, so in-tree compositions are covered; direct-Serve callers that want
+	// the #5861 fix must pass it explicitly.
 	BackendHealth health.StatusProvider
 }
 

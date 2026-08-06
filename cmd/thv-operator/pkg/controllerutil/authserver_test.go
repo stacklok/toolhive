@@ -1644,6 +1644,39 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"InsecureAllowHTTP false must propagate from CRD field to RunConfig")
 			},
 		},
+		{
+			name: "allowConfidentialClients true is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:                   "https://authserver.example.com",
+				AllowConfidentialClients: true,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.AllowConfidentialClients,
+					"AllowConfidentialClients must propagate from CRD field to RunConfig")
+			},
+		},
+		{
+			name: "allowConfidentialClients defaults to false",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.AllowConfidentialClients,
+					"AllowConfidentialClients must default to false when the CRD field is unset")
+			},
+		},
 	}
 
 	for _, tt := range tests {

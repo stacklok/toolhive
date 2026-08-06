@@ -81,6 +81,23 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  allowConfidentialClients:
+                    default: false
+                    description: |-
+                      AllowConfidentialClients permits RFC 7591 Dynamic Client Registration of
+                      confidential clients: when true, /oauth/register accepts
+                      token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (which remains the default on
+                      omission) and mints a client_secret returned exactly once. Confidential
+                      registrations are restricted to https non-loopback redirect URIs, and
+                      registrations idle for more than 30 days are evicted and must
+                      re-register. Disabling this flag does not revoke already-minted secrets.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential. Do not
+                      combine with insecureAllowHTTP outside a trusted network — the pair
+                      issues client secrets over cleartext HTTP.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -3635,6 +3652,23 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  allowConfidentialClients:
+                    default: false
+                    description: |-
+                      AllowConfidentialClients permits RFC 7591 Dynamic Client Registration of
+                      confidential clients: when true, /oauth/register accepts
+                      token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (which remains the default on
+                      omission) and mints a client_secret returned exactly once. Confidential
+                      registrations are restricted to https non-loopback redirect URIs, and
+                      registrations idle for more than 30 days are evicted and must
+                      re-register. Disabling this flag does not revoke already-minted secrets.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential. Do not
+                      combine with insecureAllowHTTP outside a trusted network — the pair
+                      issues client secrets over cleartext HTTP.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint

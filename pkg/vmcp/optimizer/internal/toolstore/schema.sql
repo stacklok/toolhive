@@ -1,11 +1,43 @@
 -- SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 -- SPDX-License-Identifier: Apache-2.0
 
--- Capabilities table stores tool/resource/prompt metadata
+-- Capabilities table stores tool/resource/prompt metadata.
+--
+-- content_hash identifies the exact input the stored embedding was produced
+-- from, covering both the embedded text and the embedding backend (see
+-- embeddingCacheKey), so UpsertTools can reuse a vector when the hash still
+-- matches. NULL means no embedding (FTS5-only mode).
+--
+-- The database is recreated in memory on every process start, so this column
+-- needs no migration. That changes if the store ever becomes file-backed.
 CREATE TABLE IF NOT EXISTS llm_capabilities (
     name TEXT PRIMARY KEY,
     description TEXT NOT NULL DEFAULT '',
-    embedding BLOB
+    embedding BLOB,
+    content_hash TEXT
+);
+
+-- The reuse probe selects by content_hash across the whole table, not by the
+-- name primary key.
+CREATE INDEX IF NOT EXISTS llm_capabilities_content_hash_idx
+    ON llm_capabilities (content_hash);
+
+-- Embedding of a fixed probe string, used to detect that the embedding backend
+-- started returning different vectors.
+--
+-- The content hash covers the configured provider, endpoint and model, but the
+-- TEI model is fixed by the running container rather than by config, so
+-- swapping it behind an unchanged service URL is invisible to the hash. When
+-- the replacement has the same vector width the dimension check cannot see it
+-- either, and the stored vectors would be reused across a change of semantic
+-- space. Comparing a re-embedded probe against the stored one detects that
+-- regardless of what the configuration says.
+--
+-- Single row by construction: the probe describes the one backend this store
+-- talks to.
+CREATE TABLE IF NOT EXISTS embedding_canary (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    embedding BLOB NOT NULL
 );
 
 -- FTS5 virtual table for full-text search with BM25 ranking.

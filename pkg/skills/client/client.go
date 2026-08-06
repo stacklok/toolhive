@@ -141,7 +141,7 @@ func newDefaultClientWithEnv(ctx context.Context, envReader env.Reader, discover
 }
 
 // timeoutFromEnv reads TOOLHIVE_API_TIMEOUT as a Go duration (e.g. "45s",
-// "5m"). An unset, unparseable, or non-positive value is ignored so a typo
+// "5m"). An unset, unparsable, or non-positive value is ignored so a typo
 // degrades to the default rather than disabling the timeout entirely.
 func timeoutFromEnv(envReader env.Reader) (time.Duration, bool) {
 	raw := strings.TrimSpace(envReader.Getenv(envAPITimeout))

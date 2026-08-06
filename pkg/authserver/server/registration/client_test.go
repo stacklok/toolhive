@@ -267,22 +267,27 @@ func TestNewClient_PublicClient(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		ID:           "test-public-client",
-		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
-		Public:       true,
+		ID:                      "test-public-client",
+		RedirectURIs:            []string{"http://127.0.0.1:8080/callback"},
+		TokenEndpointAuthMethod: "none",
 	}
 
 	client, err := New(cfg)
 	require.NoError(t, err)
 
 	// Public clients should be wrapped in LoopbackClient
-	_, isLoopback := client.(*LoopbackClient)
-	assert.True(t, isLoopback, "public client should be wrapped in LoopbackClient")
+	_, isLoopback := client.(*publicClient)
+	assert.True(t, isLoopback, "public client should be the DCR-issued loopback-wrapped shape")
 
 	// Check basic properties
 	assert.Equal(t, "test-public-client", client.GetID())
 	assert.True(t, client.IsPublic())
 	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, client.GetRedirectURIs())
+
+	// The OIDC shape is what activates fosite's method enforcement.
+	oidc, ok := client.(fosite.OpenIDConnectClient)
+	require.True(t, ok, "public client must satisfy fosite.OpenIDConnectClient")
+	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 
 	// Check defaults are applied (use ElementsMatch since fosite returns fosite.Arguments type)
 	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
@@ -294,23 +299,29 @@ func TestNewClient_ConfidentialClient(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		ID:           "test-confidential-client",
-		Secret:       "my-secret",
-		RedirectURIs: []string{"https://example.com/callback"},
-		Public:       false,
+		ID:                      "test-confidential-client",
+		Secret:                  "my-secret",
+		RedirectURIs:            []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod: "client_secret_basic",
 	}
 
 	client, err := New(cfg)
 	require.NoError(t, err)
 
-	// Confidential clients should be DefaultClient, not wrapped
-	defaultClient, isDefault := client.(*fosite.DefaultClient)
-	require.True(t, isDefault, "confidential client should be *fosite.DefaultClient")
+	// Confidential clients are OIDC clients (method pinning) and are NOT
+	// loopback-wrapped — no dynamic-port matching for a secret holder.
+	conf, isConfidential := client.(*confidentialClient)
+	require.True(t, isConfidential, "confidential client should be the DCR-issued OIDC shape")
+	defaultClient := conf.DefaultClient
 
 	// Check basic properties
 	assert.Equal(t, "test-confidential-client", client.GetID())
 	assert.False(t, client.IsPublic())
 	assert.Equal(t, []string{"https://example.com/callback"}, client.GetRedirectURIs())
+
+	oidc, ok := client.(fosite.OpenIDConnectClient)
+	require.True(t, ok, "confidential client must satisfy fosite.OpenIDConnectClient")
+	assert.Equal(t, "client_secret_basic", oidc.GetTokenEndpointAuthMethod())
 
 	// Verify the secret is hashed with SHA256Hasher, not stored as plaintext
 	err = SHA256Hasher.Compare(context.Background(), defaultClient.Secret, []byte("my-secret"))
@@ -327,16 +338,56 @@ func TestNewClient_ConfidentialClientWithoutSecret(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		ID:           "test-client",
-		Secret:       "", // Empty secret
-		RedirectURIs: []string{"https://example.com/callback"},
-		Public:       false,
+		ID:                      "test-client",
+		Secret:                  "", // Empty secret
+		RedirectURIs:            []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod: "client_secret_post",
 	}
 
 	client, err := New(cfg)
 	assert.Nil(t, client, "client should be nil on error")
 	assert.Error(t, err, "confidential client without secret should fail")
 	assert.Contains(t, err.Error(), "confidential client requires a secret")
+}
+
+// TestNewClient_AuthMethodValidation pins the fail-closed constructor: an
+// empty or unrecognized token_endpoint_auth_method is rejected outright —
+// silently defaulting would reclassify the client one layer up.
+func TestNewClient_AuthMethodValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		method  string
+		wantErr bool
+	}{
+		{"empty method rejected", "", true},
+		{"unknown method rejected", "client_secret_jwt", true},
+		{"garbage rejected", "garbage", true},
+		{"none accepted", "none", false},
+		{"client_secret_basic accepted", "client_secret_basic", false},
+		{"client_secret_post accepted", "client_secret_post", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{
+				ID:                      "test-client",
+				Secret:                  "my-secret",
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: tt.method,
+			}
+			client, err := New(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unsupported token_endpoint_auth_method")
+				assert.Nil(t, client)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, client)
+			}
+		})
+	}
 }
 
 func TestNewClient_CustomOverrides(t *testing.T) {
@@ -347,12 +398,12 @@ func TestNewClient_CustomOverrides(t *testing.T) {
 	customScopes := []string{"openid", "custom-scope"}
 
 	cfg := Config{
-		ID:            "test-custom-client",
-		RedirectURIs:  []string{"http://localhost:3000/callback"},
-		Public:        true,
-		GrantTypes:    customGrantTypes,
-		ResponseTypes: customResponseTypes,
-		Scopes:        customScopes,
+		ID:                      "test-custom-client",
+		RedirectURIs:            []string{"http://localhost:3000/callback"},
+		TokenEndpointAuthMethod: "none",
+		GrantTypes:              customGrantTypes,
+		ResponseTypes:           customResponseTypes,
+		Scopes:                  customScopes,
 	}
 
 	client, err := New(cfg)
@@ -368,12 +419,12 @@ func TestNewClient_EmptySlicesUseDefaults(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		ID:            "test-client",
-		RedirectURIs:  []string{"http://localhost:8080/callback"},
-		Public:        true,
-		GrantTypes:    nil,        // nil should use defaults
-		ResponseTypes: []string{}, // empty should use defaults
-		Scopes:        nil,
+		ID:                      "test-client",
+		RedirectURIs:            []string{"http://localhost:8080/callback"},
+		TokenEndpointAuthMethod: "none",
+		GrantTypes:              nil,        // nil should use defaults
+		ResponseTypes:           []string{}, // empty should use defaults
+		Scopes:                  nil,
 	}
 
 	client, err := New(cfg)

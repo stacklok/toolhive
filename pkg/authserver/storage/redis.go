@@ -18,8 +18,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // nullMarker is used to store nil upstream tokens in Redis.
@@ -195,8 +196,11 @@ type storedClient struct {
 //     fosite.OpenIDConnectClient implementations), so it is rebuilt as a bare
 //     *fosite.DefaultClient — keeping that skip in place and making the
 //     upgrade a no-op.
-//   - A row with a method is rebuilt as a *fosite.DefaultOpenIDConnectClient
-//     so fosite enforces the pinned method at the token endpoint.
+//   - A row with a method was written by registration.New (the only path
+//     that populates the column), so it is rebuilt as a
+//     *fosite.DefaultOpenIDConnectClient — fosite enforces the pinned method
+//     at the token endpoint — and re-marked DCR-issued so its anti-bloat TTL
+//     behaviour survives the round-trip.
 //   - IsPublic is derived as (Public && method == "none"): a row that somehow
 //     carries both Public=true and a secret-based method reads back
 //     confidential, forcing secret verification rather than dropping it.
@@ -217,7 +221,7 @@ func clientFromStored(stored storedClient) fosite.Client {
 		}
 		method = oauthproto.TokenEndpointAuthMethodNone
 	}
-	return &fosite.DefaultOpenIDConnectClient{
+	return registration.MarkDCRIssued(&fosite.DefaultOpenIDConnectClient{
 		DefaultClient: &fosite.DefaultClient{
 			ID:            stored.ID,
 			Secret:        stored.Secret,
@@ -229,7 +233,7 @@ func clientFromStored(stored storedClient) fosite.Client {
 			Public:        stored.Public && method == oauthproto.TokenEndpointAuthMethodNone,
 		},
 		TokenEndpointAuthMethod: method,
-	}
+	})
 }
 
 // RegisterClient adds or updates a client in the storage.

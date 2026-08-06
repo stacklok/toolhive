@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -57,8 +58,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Validate request
-	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq)
+	// Validate request. h.config.AllowConfidentialClients gates whether
+	// client_secret_basic / client_secret_post registrations are accepted.
+	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClients)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -101,15 +103,35 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Generate client ID
 	clientID := uuid.NewString()
 
+	// Mint a secret for confidential registrations. Any client_secret field
+	// in the request is ignored — secrets are always server-generated
+	// (oauthproto.DynamicClientRegistrationRequest deliberately has no such
+	// field). The plaintext is returned exactly once in the response and
+	// never logged; only its SHA-256 hash is stored.
+	var clientSecret string
+	if validated.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
+		var err error
+		clientSecret, err = registration.GenerateClientSecret()
+		if err != nil {
+			slog.Error("failed to generate client secret", "error", err)
+			writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
+				Error:            "server_error",
+				ErrorDescription: "failed to create client",
+			})
+			return
+		}
+	}
+
 	// Create fosite client using factory.
 	fositeClient, err := registration.New(registration.Config{
-		ID:            clientID,
-		RedirectURIs:  validated.RedirectURIs,
-		Public:        true,
-		GrantTypes:    validated.GrantTypes,
-		ResponseTypes: validated.ResponseTypes,
-		Scopes:        scopes,
-		Audience:      h.config.AllowedAudiences,
+		ID:                      clientID,
+		Secret:                  clientSecret,
+		RedirectURIs:            validated.RedirectURIs,
+		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
+		GrantTypes:              validated.GrantTypes,
+		ResponseTypes:           validated.ResponseTypes,
+		Scopes:                  scopes,
+		Audience:                h.config.AllowedAudiences,
 	})
 	if err != nil {
 		slog.Error("failed to create client", "error", err)
@@ -165,15 +187,27 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// validation to be a subset of ScopesSupported. The unioned set is NOT
 	// re-validated here. ScopeList.MarshalJSON emits the RFC 7591 §2
 	// space-delimited wire form on the way out.
+	issuedAt := time.Now().Unix()
 	response := oauthproto.DynamicClientRegistrationResponse{
 		ClientID:                clientID,
-		ClientIDIssuedAt:        time.Now().Unix(),
+		ClientIDIssuedAt:        issuedAt,
 		RedirectURIs:            validated.RedirectURIs,
 		ClientName:              validated.ClientName,
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
 		Scopes:                  oauthproto.ScopeList(scopes),
+	}
+	if clientSecret != "" {
+		// client_secret_expires_at mirrors the registration's storage TTL so
+		// the value is truthful at issuance: an idle registration is evicted
+		// after DefaultPublicClientTTL and re-registration is the documented
+		// recovery path. It is never 0 for a confidential registration, so
+		// the int64 + omitempty field emits the key correctly — but if that
+		// ever changes, omitempty would silently drop the RFC 7591-required
+		// key; the raw-JSON handler test guards against that regression.
+		response.ClientSecret = clientSecret
+		response.ClientSecretExpiresAt = issuedAt + int64(storage.DefaultPublicClientTTL.Seconds())
 	}
 
 	w.Header().Set("Content-Type", "application/json")

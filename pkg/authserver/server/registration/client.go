@@ -18,13 +18,17 @@ package registration
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
 
+	jose "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // LoopbackClient is a fosite.Client implementation that supports RFC 8252 Section 7.3
@@ -100,14 +104,17 @@ type Config struct {
 	ID string
 
 	// Secret is the client secret for confidential clients.
-	// Empty for public clients.
+	// Required for client_secret_basic / client_secret_post; ignored for "none".
 	Secret string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// RedirectURIs is the list of allowed redirect URIs.
 	RedirectURIs []string
 
-	// Public indicates whether this is a public client (no secret).
-	Public bool
+	// TokenEndpointAuthMethod is the client's registered auth method:
+	// "none" (public client) or one of the client_secret_* methods
+	// (confidential client). Required — there is no default, so callers must
+	// choose explicitly rather than drifting into one.
+	TokenEndpointAuthMethod string
 
 	// GrantTypes overrides the default grant types.
 	// If nil or empty, defaultGrantTypes is used.
@@ -127,13 +134,151 @@ type Config struct {
 	Audience []string
 }
 
+// dcrIssued is the marker identifying clients built by this package (i.e.
+// issued via dynamic client registration or an equivalent explicit
+// registration.New call). Storage backends use it to tell DCR-issued
+// registrations — which carry an anti-bloat TTL — from pre-provisioned
+// clients, which must never acquire one. The method is unexported so the
+// marker cannot be implemented outside this package.
+type dcrIssued interface {
+	dcrIssued()
+}
+
+// DCRIssued reports whether client was issued by this package.
+func DCRIssued(client fosite.Client) bool {
+	_, ok := client.(dcrIssued)
+	return ok
+}
+
+// MarkDCRIssued wraps a client rebuilt from persisted DCR-issued form (i.e. a
+// row that recorded a token_endpoint_auth_method) so the DCRIssued marker —
+// and with it the anti-bloat TTL behaviour in storage — survives the storage
+// round-trip. Callers must only mark clients they know were DCR-issued;
+// pre-provisioned clients must never carry the marker.
+//
+// The wrapper must preserve the fosite.OpenIDConnectClient surface of the
+// wrapped client: embedding the fosite.Client interface would promote only the
+// base Client method set, silently dropping GetTokenEndpointAuthMethod and the
+// other OIDC methods. fosite activates token-endpoint auth-method enforcement
+// only for clients that satisfy fosite.OpenIDConnectClient, so a wrapper that
+// hid those methods would downgrade a reloaded confidential client to the
+// legacy skip-enforcement path. The OIDC methods are therefore forwarded
+// explicitly.
+func MarkDCRIssued(client fosite.Client) fosite.Client {
+	return &markedDCRIssued{Client: client}
+}
+
+type markedDCRIssued struct {
+	fosite.Client
+}
+
+func (markedDCRIssued) dcrIssued() {}
+
+// asOIDC unwraps the embedded client to its OpenIDConnectClient view. It is
+// the single place that tolerates a non-OIDC wrapped client (returning ok =
+// false); the forwarding methods below treat that as a programming error
+// because MarkDCRIssued is only ever called on clients rebuilt from a row that
+// recorded a token_endpoint_auth_method — i.e. always OIDC clients.
+func (m markedDCRIssued) asOIDC() (fosite.OpenIDConnectClient, bool) {
+	oidc, ok := m.Client.(fosite.OpenIDConnectClient)
+	return oidc, ok
+}
+
+func (m markedDCRIssued) GetRequestURIs() []string {
+	if oidc, ok := m.asOIDC(); ok {
+		return oidc.GetRequestURIs()
+	}
+	return nil
+}
+
+func (m markedDCRIssued) GetJSONWebKeys() *jose.JSONWebKeySet {
+	if oidc, ok := m.asOIDC(); ok {
+		return oidc.GetJSONWebKeys()
+	}
+	return nil
+}
+
+func (m markedDCRIssued) GetJSONWebKeysURI() string {
+	if oidc, ok := m.asOIDC(); ok {
+		return oidc.GetJSONWebKeysURI()
+	}
+	return ""
+}
+
+func (m markedDCRIssued) GetRequestObjectSigningAlgorithm() string {
+	if oidc, ok := m.asOIDC(); ok {
+		return oidc.GetRequestObjectSigningAlgorithm()
+	}
+	return ""
+}
+
+func (m markedDCRIssued) GetTokenEndpointAuthMethod() string {
+	if oidc, ok := m.asOIDC(); ok {
+		return oidc.GetTokenEndpointAuthMethod()
+	}
+	return ""
+}
+
+func (m markedDCRIssued) GetTokenEndpointAuthSigningAlgorithm() string {
+	if oidc, ok := m.asOIDC(); ok {
+		return oidc.GetTokenEndpointAuthSigningAlgorithm()
+	}
+	return ""
+}
+
+type dcrIssuedMarker struct{}
+
+func (dcrIssuedMarker) dcrIssued() {}
+
+// publicClient is the DCR-issued public client shape: an OIDC client (so the
+// "none" method is recorded and enforced) with loopback redirect matching for
+// native apps.
+type publicClient struct {
+	dcrIssuedMarker
+	*LoopbackClient
+}
+
+// confidentialClient is the DCR-issued confidential client shape: an OIDC
+// client so fosite pins and enforces the registered auth method at the token
+// endpoint. It is deliberately NOT a LoopbackClient — a secret-holding client
+// gets no dynamic-port matching.
+type confidentialClient struct {
+	dcrIssuedMarker
+	*fosite.DefaultOpenIDConnectClient
+}
+
+// GenerateClientSecret mints a new client secret: 32 bytes of crypto/rand
+// output, base64url-encoded (43 characters, no padding). RawURLEncoding is
+// load-bearing, not cosmetic: fosite url.QueryUnescape's both Basic-auth
+// components, so a secret containing '+', '/', or '%' would be corrupted or
+// rejected at the token endpoint.
+func GenerateClientSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate client secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
 // New creates a fosite.Client from the given configuration.
-// Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
-// compliant loopback redirect URI matching for native OAuth clients.
-// Confidential clients with secrets have their Secret field SHA-256 hashed
-// (see SHA256Hasher); fosite compares it with the same hasher at the token
-// endpoint.
+// Public clients ("none") are wrapped in LoopbackClient to support RFC 8252
+// Section 7.3 compliant loopback redirect URI matching for native OAuth
+// clients. Confidential clients (client_secret_basic / client_secret_post)
+// require a Secret, have it SHA-256 hashed (see SHA256Hasher), and are not
+// loopback-wrapped.
 func New(cfg Config) (fosite.Client, error) {
+	// Validate the auth method explicitly: silently defaulting an empty or
+	// unknown value would reclassify the client one layer up, the same
+	// public-ification bug the storage read path fails closed against.
+	switch cfg.TokenEndpointAuthMethod {
+	case oauthproto.TokenEndpointAuthMethodNone,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+	default:
+		return nil, fmt.Errorf("unsupported token_endpoint_auth_method: %q", cfg.TokenEndpointAuthMethod)
+	}
+	public := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodNone
+
 	// Apply defaults for empty slices
 	grantTypes := cfg.GrantTypes
 	if len(grantTypes) == 0 {
@@ -158,14 +303,14 @@ func New(cfg Config) (fosite.Client, error) {
 		GrantTypes:    grantTypes,
 		Scopes:        scopes,
 		Audience:      cfg.Audience,
-		Public:        cfg.Public,
+		Public:        public,
 	}
 
 	// Hash the secret for confidential clients. fosite compares the stored
 	// hash with the presented secret using the hasher configured on
 	// fosite.Config.ClientSecretsHasher, so this must use the same SHA-256
 	// hasher — see SHA256Hasher for why no KDF is used.
-	if !cfg.Public {
+	if !public {
 		if cfg.Secret == "" {
 			return nil, fmt.Errorf("confidential client requires a secret")
 		}
@@ -176,19 +321,18 @@ func New(cfg Config) (fosite.Client, error) {
 		defaultClient.Secret = hashedSecret
 	}
 
-	// Wrap public clients in LoopbackClient for RFC 8252 Section 7.3
-	// dynamic port matching for native app loopback redirect URIs.
-	// Use DefaultOpenIDConnectClient so TokenEndpointAuthMethod ("none" for
-	// public clients) is preserved through the LoopbackClient wrapper.
-	if cfg.Public {
-		oidcClient := &fosite.DefaultOpenIDConnectClient{
-			DefaultClient:           defaultClient,
-			TokenEndpointAuthMethod: "none",
-		}
-		return NewLoopbackClient(oidcClient), nil
+	oidcClient := &fosite.DefaultOpenIDConnectClient{
+		DefaultClient:           defaultClient,
+		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 	}
 
-	return defaultClient, nil
+	// Public clients get the LoopbackClient wrapper for RFC 8252 Section 7.3
+	// dynamic port matching on native-app loopback redirect URIs; confidential
+	// clients do not (no dynamic-port matching for a secret holder).
+	if public {
+		return &publicClient{LoopbackClient: NewLoopbackClient(oidcClient)}, nil
+	}
+	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient}, nil
 }
 
 // Compile-time interface compliance check

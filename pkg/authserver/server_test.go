@@ -226,6 +226,29 @@ func (h *capturingSlogHandler) messages(level slog.Level, containing string) []s
 	return out
 }
 
+// recordsContaining returns every captured record — message plus all
+// attribute values, at any level — that contains needle. Used by leak-detection
+// tests that must prove a secret appears in ZERO log records, not just in
+// zero messages.
+func (h *capturingSlogHandler) recordsContaining(needle string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, r := range h.records {
+		var b strings.Builder
+		b.WriteString(r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			b.WriteString(" ")
+			b.WriteString(a.Value.String())
+			return true
+		})
+		if strings.Contains(b.String(), needle) {
+			out = append(out, b.String())
+		}
+	}
+	return out
+}
+
 // TestNewServer_AllowConfidentialClients_Logs pins the startup logging
 // contract: enabling the flag logs an Info naming the consequence, and
 // combining it with insecure_allow_http additionally logs exactly one WARN

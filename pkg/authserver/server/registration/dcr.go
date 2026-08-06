@@ -105,7 +105,14 @@ var allowedResponseTypes = map[string]bool{
 }
 
 // ValidateDCRRequest validates a DCR request according to RFC 7591
-// and the server's security policy (loopback-only public clients).
+// and the server's security policy. When allowConfidential is false the
+// policy is unchanged from the historical default: public clients only.
+// When true, token_endpoint_auth_method may also be client_secret_basic or
+// client_secret_post; such confidential registrations are additionally
+// restricted to https non-loopback redirect URIs, because a client on a
+// loopback or private-scheme URI is by construction a public client
+// (OAuth 2.1 §2.1) and minting it a secret ships that secret inside a
+// distributed binary.
 // Returns the validated request with defaults applied, or an error.
 //
 // The validated request does NOT carry the requested scopes — scope
@@ -113,6 +120,7 @@ var allowedResponseTypes = map[string]bool{
 // handled by ValidateScopes using the caller's policy inputs.
 func ValidateDCRRequest(
 	req *oauthproto.DynamicClientRegistrationRequest,
+	allowConfidential bool,
 ) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
 	// 1. Validate redirect_uris - required
 	if len(req.RedirectURIs) == 0 {
@@ -155,15 +163,9 @@ func ValidateDCRRequest(
 	}
 
 	// 5. Validate/default token_endpoint_auth_method
-	authMethod := req.TokenEndpointAuthMethod
-	if authMethod == "" {
-		authMethod = "none"
-	}
-	if authMethod != "none" {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
-		}
+	authMethod, dcrErr := validateAuthMethod(req.TokenEndpointAuthMethod, req.RedirectURIs, allowConfidential)
+	if dcrErr != nil {
+		return nil, dcrErr
 	}
 
 	// 6. Validate/default grant_types
@@ -215,6 +217,61 @@ func validateSoftwareID(softwareID string) *DCRError {
 		}
 	}
 	return nil
+}
+
+// validateAuthMethod validates token_endpoint_auth_method and returns the
+// effective method with the empty default applied. When allowConfidential is
+// false the policy is unchanged from the historical default: public clients
+// only. When true, the client_secret_* methods are accepted but restricted to
+// https non-loopback redirect URIs, because a client on a loopback or
+// private-scheme URI is by construction a public client (OAuth 2.1 §2.1) and
+// minting it a secret ships that secret inside a distributed binary.
+func validateAuthMethod(
+	authMethod string,
+	redirectURIs []string,
+	allowConfidential bool,
+) (string, *DCRError) {
+	if authMethod == "" {
+		authMethod = oauthproto.TokenEndpointAuthMethodNone
+	}
+	switch authMethod {
+	case oauthproto.TokenEndpointAuthMethodNone:
+		// Always accepted; the public-client default.
+		return authMethod, nil
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !allowConfidential {
+			// Keep the pre-flag error byte-identical when the feature is off.
+			return "", &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
+			}
+		}
+		// Confidential clients must use https non-loopback redirect URIs:
+		// a client reachable on loopback or a private scheme is by
+		// construction a public client, and minting it a secret would ship
+		// that secret inside a distributed binary.
+		for _, uri := range redirectURIs {
+			if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+				return "", &DCRError{
+					Error:            DCRErrorInvalidRedirectURI,
+					ErrorDescription: err.Error(),
+				}
+			}
+			if isLoopbackURI(uri) {
+				return "", &DCRError{
+					Error:            DCRErrorInvalidRedirectURI,
+					ErrorDescription: "confidential clients must not use loopback redirect URIs",
+				}
+			}
+		}
+		return authMethod, nil
+	default:
+		return "", &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "unsupported token_endpoint_auth_method: " + authMethod,
+		}
+	}
 }
 
 func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {

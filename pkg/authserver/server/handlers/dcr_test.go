@@ -8,8 +8,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -303,14 +305,20 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
 	require.NotNil(t, storedClient)
-	loopbackClient, ok := storedClient.(*registration.LoopbackClient)
-	require.True(t, ok, "expected *registration.LoopbackClient, got %T", storedClient)
-
-	assert.Equal(t, resp.ClientID, loopbackClient.GetID())
-	assert.True(t, loopbackClient.IsPublic())
-	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, loopbackClient.GetRedirectURIs())
-	assert.Equal(t, fosite.Arguments(allowedAudiences), loopbackClient.GetAudience(),
+	// DCR now stores the package's DCR-issued public client shape
+	// (*registration.publicClient), which embeds the LoopbackClient behaviour.
+	// Assert on the public surface rather than the unexported concrete type.
+	assert.Equal(t, resp.ClientID, storedClient.GetID())
+	assert.True(t, storedClient.IsPublic())
+	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, storedClient.GetRedirectURIs())
+	assert.Equal(t, fosite.Arguments(allowedAudiences), storedClient.GetAudience(),
 		"DCR client must inherit server's AllowedAudiences so refresh token requests with resource= succeed")
+
+	// The stored client must carry the OIDC shape so the "none" auth method is
+	// recorded and enforced at the token endpoint.
+	oidc, ok := storedClient.(fosite.OpenIDConnectClient)
+	require.True(t, ok, "stored DCR client must satisfy fosite.OpenIDConnectClient")
+	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 }
 
 // TestRegisterClientHandler_ScopeAsJSONArray verifies that the /oauth/register
@@ -416,4 +424,256 @@ func TestRegisterClientHandler_ScopeAsJSONArray(t *testing.T) {
 				"the array-form scopes must reach storage")
 		})
 	}
+}
+
+// confidentialClientSecretRegex matches the 43-char base64url (RawURLEncoding)
+// secret produced by registration.GenerateClientSecret.
+var confidentialClientSecretRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+
+// confidentialSecretTTLSeconds is the client_secret_expires_at offset,
+// mirroring storage.DefaultPublicClientTTL so the test asserts against the
+// same value the production handler writes. It is a const (not derived at call
+// time) so it can be used inside subtests; the value is load-bearing and
+// documented at storage.DefaultPublicClientTTL.
+const confidentialSecretTTLSeconds = int64(30 * 24 * 60 * 60)
+
+// confidentialConfig builds an AuthorizationServerConfig with
+// AllowConfidentialClients set, matching the test pattern used elsewhere in
+// this file.
+func confidentialConfig(allowConfidential bool) *server.AuthorizationServerConfig {
+	return &server.AuthorizationServerConfig{
+		Config:                   &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+		ScopesSupported:           registration.DefaultScopes,
+		AllowConfidentialClients:  allowConfidential,
+	}
+}
+
+// runDCR fires a single DCR request at a fresh handler with the given config
+// and body, returning the recorded response. Storage is set up to capture the
+// fosite.Client handed to RegisterClient (or nil when RegisterClient is not
+// expected to be called).
+func runDCR(t *testing.T, cfg *server.AuthorizationServerConfig, body string) (
+	w *httptest.ResponseRecorder, capturedClient fosite.Client,
+) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, c fosite.Client) error {
+			capturedClient = c
+			return nil
+		}).AnyTimes()
+	handler := &Handler{storage: stor, config: cfg}
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	handler.RegisterClientHandler(w, req)
+	return w, capturedClient
+}
+
+// TestRegisterClientHandler_ConfidentialDCR covers the confidential-client DCR
+// acceptance criteria: flag-gating of client_secret_basic/post, the
+// server-minted secret and its expiry in the raw response body, uniqueness,
+// suppression of an attacker-supplied client_secret, redirect-URI restrictions
+// for confidential clients, and rejection of unsupported auth methods.
+func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
+	t.Parallel()
+
+	t.Run("flag off rejects client_secret_basic with exact error", func(t *testing.T) {
+		t.Parallel()
+		w, _ := runDCR(t, confidentialConfig(false),
+			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		var errResp registration.DCRError
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+		assert.Equal(t, registration.DCRErrorInvalidClientMetadata, errResp.Error)
+		// Literal assertion: production code must keep this byte-identical so the
+		// pre-flag error contract is unchanged.
+		assert.Equal(t, "token_endpoint_auth_method must be 'none' for public clients", errResp.ErrorDescription)
+		// Raw body must not carry a client_secret key.
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+		_, hasSecret := raw["client_secret"]
+		assert.False(t, hasSecret, "rejected registration must not return a client_secret")
+	})
+
+	t.Run("flag on method omitted stays public", func(t *testing.T) {
+		t.Parallel()
+		w, _ := runDCR(t, confidentialConfig(true),
+			`{"redirect_uris":["http://127.0.0.1:8080/callback"]}`)
+
+		require.Equal(t, http.StatusCreated, w.Code)
+		// Decode to a raw map so omitempty cannot mask a regression: a public
+		// registration must emit neither client_secret nor
+		// client_secret_expires_at.
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+		_, hasSecret := raw["client_secret"]
+		assert.False(t, hasSecret, "public registration must not return client_secret")
+		_, hasExp := raw["client_secret_expires_at"]
+		assert.False(t, hasExp, "public registration must not return client_secret_expires_at")
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodNone, raw["token_endpoint_auth_method"])
+	})
+
+	t.Run("flag on client_secret_basic mints secret and raw expiry", func(t *testing.T) {
+		t.Parallel()
+		w, _ := runDCR(t, confidentialConfig(true),
+			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)
+
+		require.Equal(t, http.StatusCreated, w.Code)
+		assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+
+		// Assert on the RAW JSON bytes, not the unmarshalled struct, so an
+		// omitempty drop on client_secret_expires_at is caught.
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+
+		secret, ok := raw["client_secret"].(string)
+		require.True(t, ok, "client_secret must be a present string")
+		assert.Regexp(t, confidentialClientSecretRegex, secret,
+			"client_secret must be 43-char base64url (RawURLEncoding)")
+
+		issuedAt, ok := raw["client_id_issued_at"].(float64)
+		require.True(t, ok, "client_id_issued_at must be present")
+		expiresAt, ok := raw["client_secret_expires_at"].(float64)
+		require.True(t, ok, "client_secret_expires_at must be present in raw body")
+		assert.Equal(t, issuedAt+float64(confidentialSecretTTLSeconds), expiresAt,
+			"client_secret_expires_at must equal client_id_issued_at + DefaultPublicClientTTL")
+	})
+
+	t.Run("two consecutive registrations yield different secrets", func(t *testing.T) {
+		t.Parallel()
+		cfg := confidentialConfig(true)
+		w1, _ := runDCR(t, cfg,
+			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)
+		require.Equal(t, http.StatusCreated, w1.Code)
+		var r1 map[string]any
+		require.NoError(t, json.Unmarshal(w1.Body.Bytes(), &r1))
+
+		w2, _ := runDCR(t, cfg,
+			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)
+		require.Equal(t, http.StatusCreated, w2.Code)
+		var r2 map[string]any
+		require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &r2))
+
+		s1, _ := r1["client_secret"].(string)
+		s2, _ := r2["client_secret"].(string)
+		require.NotEmpty(t, s1)
+		require.NotEmpty(t, s2)
+		assert.NotEqual(t, s1, s2, "server-generated secrets must be unique per registration")
+	})
+
+	t.Run("attacker-supplied client_secret is ignored", func(t *testing.T) {
+		t.Parallel()
+		w, _ := runDCR(t, confidentialConfig(true),
+			`{"redirect_uris":["https://app.example/cb"],`+
+				`"token_endpoint_auth_method":"client_secret_basic","client_secret":"attacker-chosen"}`)
+
+		require.Equal(t, http.StatusCreated, w.Code)
+		var resp oauthproto.DynamicClientRegistrationResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.NotEqual(t, "attacker-chosen", resp.ClientSecret,
+			"a client_secret in the request must be ignored; the server always mints its own")
+		assert.Regexp(t, confidentialClientSecretRegex, resp.ClientSecret)
+	})
+
+	// Redirect URIs that identify a public client (loopback or private scheme)
+	// must be rejected for confidential registrations but still accepted for
+	// public (none) registrations — a secret must not ship inside a distributed
+	// native binary.
+	for _, uri := range []string{
+		"http://localhost:1234/cb",
+		"http://127.0.0.1/cb",
+		"cursor://cb",
+	} {
+		uri := uri
+		t.Run("confidential rejects loopback/private URI: "+uri, func(t *testing.T) {
+			t.Parallel()
+			body := `{"redirect_uris":["` + uri + `"],"token_endpoint_auth_method":"client_secret_basic"}`
+			w, _ := runDCR(t, confidentialConfig(true), body)
+			require.Equal(t, http.StatusBadRequest, w.Code)
+			var errResp registration.DCRError
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+			assert.Equal(t, registration.DCRErrorInvalidRedirectURI, errResp.Error)
+		})
+
+		t.Run("public accepts the same loopback/private URI: "+uri, func(t *testing.T) {
+			t.Parallel()
+			body := `{"redirect_uris":["` + uri + `"],"token_endpoint_auth_method":"none"}`
+			w, _ := runDCR(t, confidentialConfig(true), body)
+			require.Equal(t, http.StatusCreated, w.Code)
+		})
+	}
+
+	// Auth methods outside the accepted set (none / client_secret_basic /
+	// client_secret_post) are rejected regardless of the flag.
+	rejectedMethods := []string{
+		"client_secret_jwt",
+		"private_key_jwt",
+		"tls_client_auth",
+		"not-a-real-method",
+	}
+	for _, method := range rejectedMethods {
+		method := method
+		for _, flag := range []bool{true, false} {
+			flag := flag
+			t.Run(fmt.Sprintf("rejected method %s flag=%v", method, flag), func(t *testing.T) {
+				t.Parallel()
+				body := `{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"` + method + `"}`
+				w, _ := runDCR(t, confidentialConfig(flag), body)
+				require.Equal(t, http.StatusBadRequest, w.Code)
+				var errResp registration.DCRError
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+				assert.Equal(t, registration.DCRErrorInvalidClientMetadata, errResp.Error)
+			})
+		}
+	}
+}
+
+// TestRegisterClientHandler_ConfidentialClientStored covers the storage-layer
+// shape of a confidential registration: it must be a non-loopback OIDC client
+// carrying the registered auth method and the server's AllowedAudiences.
+func TestRegisterClientHandler_ConfidentialClientStored(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stored without LoopbackClient wrapper and carries auth method", func(t *testing.T) {
+		t.Parallel()
+		cfg := confidentialConfig(true)
+		w, captured := runDCR(t, cfg,
+			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)
+		require.Equal(t, http.StatusCreated, w.Code)
+
+		require.NotNil(t, captured, "storage.RegisterClient must be called")
+		oidc, ok := captured.(fosite.OpenIDConnectClient)
+		require.True(t, ok, "confidential client must satisfy fosite.OpenIDConnectClient")
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, oidc.GetTokenEndpointAuthMethod())
+		assert.False(t, captured.IsPublic(), "confidential client must not be public")
+		assert.Equal(t, []string{"https://app.example/cb"}, captured.GetRedirectURIs())
+
+		// A secret-holding client must NOT get the LoopbackClient dynamic-port
+		// matching wrapper.
+		_, isLoopback := captured.(*registration.LoopbackClient)
+		assert.False(t, isLoopback,
+			"confidential client must not be a *registration.LoopbackClient")
+	})
+
+	t.Run("audience is preserved on stored confidential client", func(t *testing.T) {
+		t.Parallel()
+		allowedAudiences := []string{"https://mcp.example.com", "https://api.example.com"}
+		cfg := &server.AuthorizationServerConfig{
+			Config:                  &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported:          registration.DefaultScopes,
+			AllowedAudiences:        allowedAudiences,
+			AllowConfidentialClients: true,
+		}
+		w, captured := runDCR(t, cfg,
+			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)
+		require.Equal(t, http.StatusCreated, w.Code)
+
+		require.NotNil(t, captured, "storage.RegisterClient must be called")
+		assert.Equal(t, fosite.Arguments(allowedAudiences), captured.GetAudience(),
+			"confidential client must inherit server AllowedAudiences")
+	})
 }

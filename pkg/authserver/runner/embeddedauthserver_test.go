@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -2179,6 +2180,101 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 	// context to correlate the failure with upstream logs.
 	assert.Contains(t, logged, "redis.example.com",
 		"closeErr host must remain in the Warn record after sanitisation")
+}
+
+// TestNewEmbeddedAuthServer_TrustedIssuers pins the RunConfig.TrustedIssuers
+// -> Config.TrustedIssuers conversion (embeddedauthserver.go's resolvedCfg,
+// ~line 244). "Construction succeeds" alone doesn't discriminate: deleting
+// the resolvedCfg.TrustedIssuers assignment entirely still builds a server
+// (it degrades to the empty-TrustedIssuers case, which is itself valid), so
+// the no-trusted-issuers control subtest can't disagree with a broken one.
+//
+// Instead this uses an observable side effect that only fires if the field
+// actually reached the Factory closure and NewMultiIssuerTokenValidator's
+// constructor (not merely RunConfig.Validate/Config.Validate, both of which
+// run before resolvedCfg is built): NewMultiIssuerTokenValidator logs a
+// slog.Warn ("Trusted issuer has no allowed actors configured") for each
+// TrustedIssuer with an empty AllowedActors. Confirmed by mutation: deleting
+// `TrustedIssuers: slices.Clone(cfg.TrustedIssuers)` from resolvedCfg's
+// construction makes this test fail (the warning never fires because
+// MultiIssuerTokenValidator is never even built — Factory falls back to the
+// self-issued validator).
+//
+// What this does NOT cover: resolvedCfg has no exported accessor, so the
+// mutate-the-caller's-slice-after-construction claim (slices.Clone protects
+// the outer []TrustedIssuer from a later append/removal on cfg, but is
+// shallow — a mutation reaching through a still-shared AllowedActors slice
+// would not be caught by this outer clone) is not observable through this
+// package's public API. Proving it would require a live token-exchange HTTP
+// round trip against an external issuer (Step 7's HTTP-level integration
+// tests), or a production-code accessor this task's scope excludes.
+// NewMultiIssuerTokenValidator's own AllowedActors clone (see
+// multi_issuer_validator.go) closes that gap at the layer where it actually
+// matters for concurrent request handling.
+func TestNewEmbeddedAuthServer_TrustedIssuers(t *testing.T) {
+	t.Parallel()
+
+	base := func() *authserver.RunConfig {
+		return &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "https://auth.example.com",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "https://auth.example.com/oauth/callback",
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	t.Run("no trusted issuers builds server (control case)", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+
+		srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, srv)
+		require.NoError(t, srv.Close())
+	})
+
+	// NOT t.Parallel(): captures the package-global slog.Default(); see
+	// TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog above for the
+	// same pattern. Runs to completion (including the t.Cleanup restore)
+	// before the parallel sibling subtest above executes, so there's no
+	// race on slog's default handle.
+	//nolint:paralleltest // see comment above
+	t.Run("valid trusted issuers reach the Factory closure and validator constructor", func(t *testing.T) {
+		cfg := base()
+		cfg.TrustedIssuers = []tokenexchange.TrustedIssuer{
+			{
+				IssuerURL:        "https://idp.example.com",
+				ExpectedAudience: "https://mcp.example.com",
+				// AllowedActors intentionally empty: this is what makes
+				// NewMultiIssuerTokenValidator log its warning, the
+				// observable proof this test relies on.
+			},
+		}
+
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		srv, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		require.NotNil(t, srv)
+		t.Cleanup(func() { _ = srv.Close() })
+
+		assert.Contains(t, buf.String(), "Trusted issuer has no allowed actors configured")
+	})
 }
 
 func TestResolveCIMDConfig(t *testing.T) {

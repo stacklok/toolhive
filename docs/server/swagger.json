@@ -559,6 +559,14 @@
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
+                    "trusted_issuers": {
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nPrerequisite: the token-exchange grant requires a confidential client.\nNo supported deployment path provisions one today — DCR only ever mints\npublic clients, CIMD clients are public-only, and there is no\nclient-seeding field on this RunConfig — so this grant is not yet\nusable end to end for self-issued or external subject tokens alike.\nDiscovery also does not yet advertise the grant or secret-based client\nauth, so a metadata-driven client won't attempt it either. Tracked in\nhttps://github.com/stacklok/toolhive/issues/6082.\n\nFail-closed consent per issuer: an empty AllowedActors accepts only\nsubject tokens carrying a \"may_act\" claim; every other token from that\nissuer is rejected. See tokenexchange.TrustedIssuer for the full field\nreference, and the operator-facing constraints below that are not\nvisible from the config shape alone:\n\n 1. Audience: the token-exchange handler bounds the requested audience\n    by the subject token's own \"aud\" claim. An external IdP's \"aud\" is\n    typically an app-ID GUID or \"api://\u003capp-id\u003e\", not one of ToolHive's\n    http(s) AllowedAudiences URIs, so an ordinary\n    resource=https://mcp.example.com request will fail with\n    invalid_target on every call. The external path only works if the\n    operator configures the external IdP's API identifier to be exactly\n    one of ToolHive's AllowedAudiences URIs.\n 2. Scopes: the handler rejects any requested scope absent from the\n    subject token's granted scopes with invalid_scope — it does not\n    intersect down to a reduced grant. Both the \"scope\" string claim\n    (RFC 9068) and the \"scp\" array claim are read (\"scope\" wins if\n    both are present), so a subject token with neither claim rejects\n    every scoped request; only a scopeless request succeeds. \"scp\" is\n    not an Entra-specific quirk — it's what fosite's own default JWT\n    claims strategy writes for a self-issued ToolHive access token, so\n    this matters even for the self-issued token-exchange path.\n    Microsoft Entra v2 access tokens carry scopes under \"scp\" too.\n 3. Subject namespace: a trusted issuer is trusted to assert ANY\n    subject this server will accept for delegation — the delegated\n    token carries ToolHive's own \"iss\" with the external token's \"sub\"\n    copied verbatim and no first-class marker of provenance, and\n    downstream authorizers key on \"sub\" alone. Each trusted issuer's\n    subject namespace (and, for the same reason, its scope names) MUST\n    be disjoint from every upstream IdP's and from every other trusted\n    issuer's. Example: if an upstream's SubjectClaim/SubjectPath\n    resolves to an email address and a trusted issuer's \"sub\" is also\n    an email address, that issuer can mint a delegated token\n    indistinguishable from a real ToolHive-native user's.\n 4. Client binding: an AllowedActors match by itself authorizes ANY\n    ToolHive confidential client holding the token-exchange grant, not\n    only a specific one — see TrustedIssuer.AllowedActors and\n    .AllowedDelegateClients for the full rationale and how to opt into\n    per-issuer client binding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
@@ -711,6 +719,51 @@
                     },
                     "http_method": {
                         "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer": {
+                "properties": {
+                    "actor_claim": {
+                        "description": "ActorClaim names the claim that identifies the client that requested the\nsubject token from THIS EXTERNAL ISSUER, used for the AllowedActors consent\ncheck below. Values are in the external issuer's client namespace — they are\nNOT ToolHive client IDs, and listing a ToolHive client ID in AllowedActors\ndoes not bind delegation to that client (see AllowedActors). Defaults to\n\"azp\" when empty. Set to \"appid\" for Microsoft Entra v1 tokens, or \"cid\"\nfor Okta tokens. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra, since that claim is routed to a structured field rather\nthan left in Extra — it is still the external token's client_id claim, not\na ToolHive one.",
+                        "type": "string"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
+                        "type": "boolean"
+                    },
+                    "allowed_actors": {
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer, when the token does not\ncarry a \"may_act\" claim. Empty means only may_act-bearing tokens from\nthis issuer are accepted — every other token from it is rejected\n(mirrors the empty-AllowedAudiences convention documented on\nNewSelfIssuedTokenValidator).\n\nBy itself, an allowlisted actor satisfies consent for ANY ToolHive\nconfidential client holding the token-exchange grant — every such\nclient is delegation-equivalent, so compromise of the weakest one\nsuffices, and AllowedActors alone gives no per-client containment (see\n#5989 and checkDelegationConsent's doc comment in handler.go). Set\nAllowedDelegateClients below to close that gap for this issuer.\nBounded either way by: the calling client must already possess a valid\nsubject token, and scope/audience narrowing still applies to the\nexchanged result.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "allowed_delegate_clients": {
+                        "description": "AllowedDelegateClients, when non-empty, restricts which ToolHive\nclient IDs may exchange a subject token from this issuer — for BOTH\nconsent paths (may_act and the AllowedActors allowlist), closing the\ngap documented on AllowedActors above. Checked against the\nauthenticated ToolHive client (checkDelegationConsent's actorID in\nhandler.go), not against anything in the subject token itself.\n\nEmpty (the default) is permissive: any ToolHive confidential client\nholding the token-exchange grant may use an allowlisted external\nactor or a may_act-bearing token from this issuer, matching this\nfeature's original behavior. Set this field to opt into per-issuer\nclient binding once the operator knows which ToolHive client(s)\nlegitimately act as this issuer's delegate.\n\nA may_act claim still bypasses AllowedActors — it remains the\nauthoritative consent signal, checked only against actorID directly\n(see checkDelegationConsent) — but it does NOT bypass this field: an\nissuer that can emit may_act but has no way to populate AllowedActors\n(e.g. Entra, Okta) would otherwise have no per-client containment at\nall.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "expected_audience": {
+                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin the token's audience list. Required; NewMultiIssuerTokenValidator\nrejects any TrustedIssuer with an empty ExpectedAudience.\n\nMUST be a resource/API identifier (e.g. an App ID URI or resource\nserver identifier) and MUST NOT be a client ID. An ID token's \"aud\" is\nthe requesting client's ID, while an access token's \"aud\" names the\nresource it's for — ExpectedAudience being a resource identifier is\nwhat makes this check reject an ID token presented as a subject token\n(together with rejectIDTokenClaims's at_hash/c_hash check), per the\naudience-based discriminator RFC 8725 §3.12 recommends in place of a\n\"typ\" header check.",
+                        "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches\nfor THIS issuer only. Development and testing only — never set in\nproduction. Does not relax the private-IP guard; see AllowPrivateIPs\nfor that. Deliberately per-issuer rather than a validator-wide or\nself-issuer setting: this authorization server's own InsecureAllowHTTP\n(e.g. for an in-cluster issuer) must not silently permit plaintext\ndiscovery for every trusted external issuer too — a network attacker\nwho can intercept that traffic could substitute a JWKS and thereafter\nforge subject tokens for that issuer's namespace.",
+                        "type": "boolean"
+                    },
+                    "issuer_url": {
+                        "description": "IssuerURL is the expected \"iss\" claim value (exact match).",
+                        "type": "string"
+                    },
+                    "jwks_url": {
+                        "description": "JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.\nIf empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.",
                         "type": "string"
                     }
                 },

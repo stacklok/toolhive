@@ -61,7 +61,14 @@ func startSlowMCPBackend(t *testing.T, backendID string, delay time.Duration) (*
 	// delay is what makes this backend slow rather than broken.
 	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		time.Sleep(delay)
+		// Honour cancellation while delaying: on a regression several requests are
+		// in flight, and an unconditional sleep would block ts.Close in t.Cleanup
+		// for the full delay on each one.
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
 		streamableSrv.ServeHTTP(w, r)
 	}))
 	ts := httptest.NewServer(mux)

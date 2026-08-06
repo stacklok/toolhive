@@ -34,6 +34,7 @@ Valid clients:
   - lm-studio: LM Studio application
   - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
+  - qoder: Qoder IDE
   - roo-code: VS Code Roo Code extension (deprecated)
   - trae: Trae IDE
   - vscode: Visual Studio Code

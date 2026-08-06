@@ -1821,6 +1821,169 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 	}
 }
 
+// TestResolveClaimsOpaqueUpstreamToken pins the claim-source contract when the
+// pinned provider's access token is opaque (Google's ya29.*, GitHub's gho_*) and
+// therefore carries no claims of its own: the SAME provider's id_token stands in,
+// supplying the principal `sub` plus the profileClaimsFromIDToken allowlist, and
+// the ToolHive-issued token is not a claim source (#6048). Before that fix this
+// branch evaluated the ToolHive-issued token, making the principal an internal
+// user UUID and attributing the first configured upstream's profile to the pinned
+// provider.
+//
+// The one exception is a provider with no usable id_token — a pure OAuth 2.0
+// upstream never asked for `openid` — which has no upstream claim source at all
+// and still evaluates the ToolHive-issued token's claims.
+func TestResolveClaimsOpaqueUpstreamToken(t *testing.T) {
+	t.Parallel()
+
+	const (
+		providerName = "google"
+		// Opaque: two dots would make looksLikeJWT true, which is a different case.
+		opaqueToken = "ya29.opaque-google-style-token"
+	)
+
+	// The ToolHive-issued token's claims, in the shape claimsToIdentity produces:
+	// the internal user ID, the profile the auth server mirrored, and the
+	// `client_id` it embeds per RFC 9068 (session.New). Every value is a sentinel,
+	// so any of them appearing in a resolved claim set is a leak, not a coincidence.
+	asIssuedClaims := map[string]any{
+		"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+		"email":     "leaked-from-as-token@wrong-provider.example",
+		"name":      "Leaked From AS Token",
+		"client_id": "leaked-from-as-token-vscode",
+	}
+
+	tests := []struct {
+		name       string
+		idToken    string
+		wantClaims jwt.MapClaims
+	}{
+		{
+			// The principal becomes the upstream subject, and the profile claims
+			// come from the provider that actually asserted them.
+			name: "id_token_supplies_principal_and_profile_claims",
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+				"name":  "Alice",
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+				"name":  "Alice",
+			},
+		},
+		{
+			// The allowlist boundary. `iss`, `aud` and `nonce` describe the id_token
+			// rather than the user; `hd` is an upstream-only claim the JWT branch
+			// would not supplement either. Group and role claims are governed by the
+			// same allowlist, so widening it (#6049) widens both branches at once.
+			name: "claims_outside_the_allowlist_are_not_admitted",
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+				"iss":   "https://accounts.google.example",
+				"aud":   "toolhive-as-client",
+				"nonce": "n-abc",
+				"hd":    "example.com",
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+			},
+		},
+		{
+			// The other direction of the allowlist, and a behaviour change worth
+			// pinning: `client_id` is the one claim the ToolHive-issued token
+			// contributed on this branch before #6048, so a policy gating on
+			// `claim_client_id` used to match here. It no longer does — which is
+			// the state the JWT branch was always in, since the auth server's
+			// client_id appears in neither upstream token. The value an upstream
+			// id_token may carry under that name is its own OAuth client
+			// registration, not the calling MCP client, so it stays out too.
+			name: "client_id_is_admitted_from_neither_token",
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":       "google|alice",
+				"email":     "alice@example.com",
+				"client_id": "toolhive-as-client-at-google",
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+			},
+		},
+		{
+			// Same rationale as the JWT branch: the id_token records what the
+			// upstream asserted at login, so enforcing `exp` would flip a policy
+			// from permit to deny mid-session.
+			name: "expired_id_token_is_still_used",
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+				"exp":   1000000000, // long past
+			}),
+			wantClaims: jwt.MapClaims{
+				"sub":   "google|alice",
+				"email": "alice@example.com",
+			},
+		},
+		{
+			// An id_token violating OIDC Core 1.0 §2 by omitting `sub` leaves the
+			// principal unresolvable. It is NOT taken from the ToolHive-issued
+			// token; AuthorizeWithJWTClaims fails closed with ErrMissingPrincipal.
+			name:       "id_token_without_sub_leaves_the_principal_absent",
+			idToken:    makeUnsignedJWT(jwt.MapClaims{"email": "alice@example.com"}),
+			wantClaims: jwt.MapClaims{"email": "alice@example.com"},
+		},
+		{
+			// A pure OAuth 2.0 upstream: no `openid` scope was requested, so no
+			// id_token was ever captured and there is no upstream claim source.
+			// Denying every request instead would leave the operator no
+			// configuration that recovers, so the pre-#6048 behaviour stands.
+			name:       "no_id_token_falls_back_to_the_toolhive_issued_claims",
+			idToken:    "",
+			wantClaims: jwt.MapClaims(asIssuedClaims),
+		},
+		{
+			// A corrupt stored id_token is the no-id_token case, not a hard failure:
+			// the same fallback keeps the workload usable.
+			name:       "unparsable_id_token_falls_back_to_the_toolhive_issued_claims",
+			idToken:    "not-base64.not-base64.not-base64",
+			wantClaims: jwt.MapClaims(asIssuedClaims),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:                []string{`permit(principal, action, resource);`},
+				EntitiesJSON:            `[]`,
+				PrimaryUpstreamProvider: providerName,
+			}, "")
+			require.NoError(t, err)
+
+			identity := &auth.Identity{
+				PrincipalInfo:  auth.PrincipalInfo{Subject: "7f3c1e64-uuid", Claims: asIssuedClaims},
+				UpstreamTokens: map[string]string{providerName: opaqueToken},
+			}
+			if tt.idToken != "" {
+				identity.UpstreamIDTokens = map[string]string{providerName: tt.idToken}
+			}
+			claimsBefore := maps.Clone(asIssuedClaims)
+
+			resolved, err := authorizer.(*Authorizer).resolveClaims(identity)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantClaims, resolved)
+			// Identity MUST NOT be modified after it is placed in the request
+			// context, since it is read concurrently.
+			assert.Equal(t, claimsBefore, asIssuedClaims, "identity claims must not be mutated")
+		})
+	}
+}
+
 // TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim is the end-to-end
 // authorizer-level reproducer for #5916: the exact policy shape from the report
 // (a defensively-authored `has`-guarded domain gate plus a tool permit) evaluated
@@ -1991,6 +2154,122 @@ func TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced(t *testing.T) {
 						"email": "alice@example.com",
 					}),
 				},
+			}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+
+			if tt.wantErr {
+				require.ErrorIs(t, err, ErrMissingPrincipal)
+				assert.False(t, authorized)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_OpaqueUpstreamTokenPrincipal is the end-to-end
+// consequence of #6048: with an opaque upstream access token, a rule keyed on the
+// upstream subject must match, and a domain gate must be satisfied by the pinned
+// provider's own email rather than by the one the ToolHive-issued token mirrors.
+// Before the fix the principal was ToolHive's internal user UUID, so
+// principal-keyed rules silently stopped matching.
+func TestAuthorizeWithJWTClaims_OpaqueUpstreamTokenPrincipal(t *testing.T) {
+	t.Parallel()
+
+	const (
+		providerName = "google"
+		opaqueToken  = "ya29.opaque-google-style-token"
+		asSubject    = "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42"
+	)
+
+	// A banned-user rule keyed on the upstream subject, plus a domain-gated permit.
+	// A principal built from asSubject stops matching the forbid; an email read from
+	// the ToolHive-issued token fails the gate, since the sentinel is off-domain.
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies: []string{
+			`forbid(principal == Client::"google|banned-alice", action, resource);`,
+			`permit(principal, action == Action::"call_tool", resource)
+			 when { principal has claim_email && principal.claim_email like "*@example.com" };`,
+		},
+		EntitiesJSON:            `[]`,
+		PrimaryUpstreamProvider: providerName,
+	}, "")
+	require.NoError(t, err)
+
+	// The claims of the token the client presented. The email is deliberately
+	// off-domain so any leak shows up as an unexpected permit/deny rather than
+	// agreeing with the id_token by coincidence.
+	asIssuedClaims := map[string]any{
+		"sub":   asSubject,
+		"email": "leaked-from-as-token@wrong-provider.example",
+		"name":  "Leaked From AS Token",
+	}
+
+	tests := []struct {
+		name          string
+		idTokenClaims jwt.MapClaims
+		noIDToken     bool
+		wantAuthorize bool
+		wantErr       bool
+	}{
+		{
+			// The principal is the upstream subject, so the forbid matches.
+			name:          "banned_upstream_subject_from_id_token_is_forbidden",
+			idTokenClaims: jwt.MapClaims{"sub": "google|banned-alice", "email": "alice@example.com"},
+			wantAuthorize: false,
+		},
+		{
+			name:          "other_upstream_subject_with_gated_email_is_permitted",
+			idTokenClaims: jwt.MapClaims{"sub": "google|bob", "email": "bob@example.com"},
+			wantAuthorize: true,
+		},
+		{
+			// The leak detector. The id_token asserts no email, so the gate must
+			// fail — the ToolHive-issued token's sentinel email must not stand in.
+			name:          "id_token_without_email_denies_rather_than_using_the_toolhive_token",
+			idTokenClaims: jwt.MapClaims{"sub": "google|bob"},
+			wantAuthorize: false,
+		},
+		{
+			// No principal is derivable, and the ToolHive-issued subject does not
+			// stand in, so this fails closed instead of reaching the permit.
+			name:          "id_token_without_sub_fails_closed",
+			idTokenClaims: jwt.MapClaims{"email": "bob@example.com"},
+			wantErr:       true,
+		},
+		{
+			// Pure OAuth 2.0 upstream: no id_token exists, so the ToolHive-issued
+			// token's claims are the documented last resort. Its email is off-domain,
+			// so the gate denies — which is also what pins that this configuration
+			// reads that token and nothing else.
+			name:          "no_id_token_falls_back_to_the_toolhive_issued_claims",
+			noIDToken:     true,
+			wantAuthorize: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			identity := &auth.Identity{
+				PrincipalInfo:  auth.PrincipalInfo{Subject: asSubject, Claims: asIssuedClaims},
+				UpstreamTokens: map[string]string{providerName: opaqueToken},
+			}
+			if !tt.noIDToken {
+				identity.UpstreamIDTokens = map[string]string{
+					providerName: makeUnsignedJWT(tt.idTokenClaims),
+				}
 			}
 			ctx := auth.WithIdentity(context.Background(), identity)
 
@@ -2340,6 +2619,26 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 					providerName: makeUnsignedJWT(jwt.MapClaims{
 						"sub": "upstream-user",
 					}),
+				},
+			},
+			wantAuthorize: false,
+		},
+		{
+			// Same invariant on the opaque-access-token branch, where the provider's
+			// id_token is the claim source: a group on the ToolHive-issued token
+			// still grants nothing.
+			name: "toolhive_groups_ignored_when_upstream_token_is_opaque",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims: map[string]any{
+						"sub":    "thv-user",
+						"groups": []interface{}{"platform-eng"},
+					},
+				},
+				UpstreamTokens: map[string]string{providerName: "gho_opaque-github-style-token"},
+				UpstreamIDTokens: map[string]string{
+					providerName: makeUnsignedJWT(jwt.MapClaims{"sub": "upstream-user"}),
 				},
 			},
 			wantAuthorize: false,

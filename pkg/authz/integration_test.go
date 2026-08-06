@@ -1250,6 +1250,7 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 		name          string
 		upstreamToken string
 		requestClaims jwt.MapClaims
+		noIDToken     bool
 		expectAllowed bool
 	}{
 		{
@@ -1272,19 +1273,27 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 			expectAllowed: false,
 		},
 		{
-			// Regression guard for the #5147 path, which this change leaves intact:
-			// an opaque access token has no claims to read, so that branch still
-			// evaluates the ToolHive-issued token's claims. Those carry the
-			// upstream profile only because the auth server mirrors the FIRST
-			// configured upstream, so this case supplies a single-upstream
-			// AS token rather than the leak sentinel the JWT cases use.
-			//
-			// That leaves the two branches inconsistent about claim provenance
-			// (and about the principal: this branch's `sub` is ToolHive's internal
-			// user ID, not the upstream subject). Unifying them on the id_token is
-			// a follow-up — it changes behaviour on a shipped path.
-			name:          "opaque_upstream_token_still_falls_back",
+			// The #5147 path, unified with the JWT one by #6048: an opaque access
+			// token (Google's ya29.*, GitHub's gho_*) has no claims to read, so the
+			// SAME provider's id_token becomes the claim source — supplying the
+			// principal and the profile claims — instead of the ToolHive-issued
+			// token. So this case keeps the leak sentinel that the JWT cases use:
+			// its off-domain email would fail the gate, and the permit proves the
+			// email came from the pinned provider's id_token.
+			name:          "opaque_upstream_token_uses_id_token_claims",
 			upstreamToken: "ya29.opaque-google-style-token",
+			expectAllowed: true,
+		},
+		{
+			// The one configuration that still reads the ToolHive-issued token: a
+			// pure OAuth 2.0 upstream never asked for `openid` has no stored
+			// id_token, so an opaque access token leaves no upstream claim source at
+			// all. Denying outright would leave those deployments no configuration
+			// that recovers, so the pre-#6048 behaviour stands — with the principal
+			// being ToolHive's internal user ID rather than the upstream subject.
+			name:          "opaque_upstream_token_without_id_token_falls_back",
+			upstreamToken: "ya29.opaque-google-style-token",
+			noIDToken:     true,
 			requestClaims: jwt.MapClaims{
 				"sub":   "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
 				"email": "alice@example.com",
@@ -1330,8 +1339,10 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 					Subject: "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
 					Claims:  requestClaims,
 				},
-				UpstreamTokens:   map[string]string{providerName: tt.upstreamToken},
-				UpstreamIDTokens: map[string]string{providerName: upstreamIDToken},
+				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
+			}
+			if !tt.noIDToken {
+				identity.UpstreamIDTokens = map[string]string{providerName: upstreamIDToken}
 			}
 			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
 

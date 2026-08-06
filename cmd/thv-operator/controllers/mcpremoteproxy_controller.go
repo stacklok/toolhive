@@ -1637,8 +1637,9 @@ func (r *MCPRemoteProxyReconciler) generatedContainerNeedsUpdate(
 		return true
 	}
 
-	// Check if resources have changed
-	expectedResources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
+	// Check if resources have changed. Use the same default+override merge as
+	// deployment generation so drift detection stays consistent.
+	expectedResources := resourceRequirementsForRemoteProxy(proxy)
 	if !reflect.DeepEqual(container.Resources, expectedResources) {
 		return true
 	}

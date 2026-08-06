@@ -465,6 +465,14 @@ type AggregationConfig struct {
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
 
+	// NOTE (maintainers, not rendered into the CRD reference): there is
+	// deliberately no kubebuilder default on DefaultToolVisibility. "" already
+	// behaves as allow everywhere that reads this field, so defaulting would change
+	// only the serialized bytes — and apiextensions applies structural defaults on
+	// decode, so every existing VirtualMCPServer would come back with the field set,
+	// changing config.yaml, its ConfigMap checksum, and the pod template that stamps
+	// it. That restarts every vMCP deployment once for a no-op field.
+
 	// DefaultToolVisibility controls whether a backend with NO entry in Tools has its
 	// tools advertised to MCP clients.
 	//   - allow (default): every tool from an unlisted backend is advertised, so
@@ -481,13 +489,6 @@ type AggregationConfig struct {
 	// This gates TOOLS only. An unlisted backend's resources, resource templates,
 	// and prompts are still advertised under deny; mergeResources/mergePrompts have
 	// no equivalent check.
-	//
-	// No kubebuilder default: "" already behaves as allow everywhere that reads this
-	// field, so defaulting would change only the serialized bytes — and apiextensions
-	// applies structural defaults on decode, so every existing VirtualMCPServer would
-	// come back with the field set, changing config.yaml, its ConfigMap checksum, and
-	// the pod template that stamps it. That restarts every vMCP deployment once for a
-	// no-op field.
 	// +kubebuilder:validation:Enum=allow;deny
 	// +optional
 	DefaultToolVisibility DefaultToolVisibility `json:"defaultToolVisibility,omitempty" yaml:"defaultToolVisibility,omitempty"`

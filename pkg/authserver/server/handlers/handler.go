@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
+	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
@@ -52,6 +53,14 @@ type Handler struct {
 	// configured upstreams once the first leg resolves. Nil when no filter is
 	// configured; the chain then walks all configured upstreams as before.
 	filter UpstreamFilter
+	// registerLimiter bounds the unauthenticated /oauth/register endpoint,
+	// which mints persisted state on every call. Global, not per-IP: the goal
+	// is to cap storage growth and log volume, not to be fair between callers
+	// (per-IP limiting behind a shared NAT or proxy would either under- or
+	// over-count, and X-Forwarded-For is attacker-controlled without a trusted
+	// proxy list). Nil in tests that construct Handler directly; OAuthRoutes
+	// tolerates nil by skipping the gate.
+	registerLimiter *rate.Limiter
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -166,6 +175,11 @@ func NewHandler(
 		storage:      stor,
 		upstreams:    upstreams,
 		userResolver: NewUserResolver(stor),
+		// 1 registration/sec sustained, burst of 5: generous for legitimate
+		// tooling (a client registers once, then reuses its client_id), tight
+		// enough that an unauthenticated caller cannot grow the client
+		// keyspace or the log stream faster than operators can react.
+		registerLimiter: rate.NewLimiter(rate.Limit(1), 5),
 	}
 	for _, o := range opts {
 		o(h)
@@ -186,7 +200,22 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/authorize", h.AuthorizeHandler)
 	r.Get("/oauth/callback", h.CallbackHandler)
 	r.Post("/oauth/token", h.TokenHandler)
-	r.Post("/oauth/register", h.RegisterClientHandler)
+	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
+}
+
+// rateLimitRegister gates the unauthenticated registration endpoint: over the
+// limit it returns 429 with a Retry-After hint rather than minting persisted
+// state. RFC 7591 has no DCR-specific rate-limit response, so this uses the
+// plain HTTP semantics; well-behaved DCR clients retry.
+func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.registerLimiter != nil && !h.registerLimiter.Allow() {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
 }
 
 // WellKnownRoutes registers well-known endpoints (JWKS, OAuth/OIDC discovery) on the provided router.

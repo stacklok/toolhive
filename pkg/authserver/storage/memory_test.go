@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -219,6 +220,48 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, client, retrieved)
 	})
+}
+
+// TestMemoryStorage_RegisterClient_Bounded pins the anti-DoS cap: the client
+// map is bounded by maxClients with oldest-first eviction (never rejection —
+// rejecting converts a memory DoS into a lockout DoS), a re-registered client
+// refreshes its eviction position, and the survivors still authenticate.
+func TestMemoryStorage_RegisterClient_Bounded(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	s := NewMemoryStorage(WithMaxClients(3))
+	defer s.Close()
+
+	// Register at capacity: client-1 is the oldest.
+	for _, id := range []string{"client-1", "client-2", "client-3"} {
+		require.NoError(t, s.RegisterClient(ctx, &mockClient{id: id}))
+	}
+
+	// Re-register client-1: it is no longer the oldest, so the next overflow
+	// evicts client-2 instead.
+	require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "client-1"}))
+
+	// Overflow: client-2 (now oldest) is evicted; everyone else survives.
+	require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "client-4"}))
+
+	_, err := s.GetClient(ctx, "client-2")
+	requireNotFoundError(t, err)
+
+	for _, id := range []string{"client-1", "client-3", "client-4"} {
+		client, err := s.GetClient(ctx, id)
+		require.NoError(t, err, "surviving client %q must still authenticate", id)
+		assert.Equal(t, id, client.GetID())
+	}
+
+	// The map never exceeds the cap under continued registration pressure.
+	for i := range 10 {
+		require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "overflow-" + strconv.Itoa(i)}))
+	}
+	s.mu.RLock()
+	size := len(s.clients)
+	s.mu.RUnlock()
+	assert.LessOrEqual(t, size, 3, "client map must never exceed maxClients")
 }
 
 func TestMemoryStorage_RenewClientTTL_NoOp(t *testing.T) {

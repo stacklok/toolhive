@@ -27,7 +27,11 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
 	if err != nil {
-		slog.Error("failed to create access request",
+		// Debug, not Error: RFC6749Error.Error() returns only the error code, so
+		// the line carries no diagnostic detail, and the endpoint is
+		// unauthenticated — at Error level a caller can flood the log stream at
+		// arbitrary rate and drown real errors.
+		slog.Debug("failed to create access request",
 			"error", err,
 		)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
@@ -91,7 +95,10 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Generate the access response (tokens)
 	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
 	if err != nil {
-		slog.Error("failed to create access response",
+		// Debug, not Error: same reasoning as the NewAccessRequest failure
+		// above — content-free error code, unauthenticated-triggerable at
+		// arbitrary rate.
+		slog.Debug("failed to create access response",
 			"error", err,
 		)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)

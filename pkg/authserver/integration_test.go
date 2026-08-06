@@ -3386,6 +3386,43 @@ func TestIntegration_ConfidentialClientDCR_FullFlow_Redis(t *testing.T) {
 	})
 }
 
+// TestIntegration_DCRRateLimited pins the anti-DoS gate on the unauthenticated
+// registration endpoint: a burst beyond the limiter's capacity gets 429 with
+// Retry-After, while ordinary use (a single registration) is unaffected.
+func TestIntegration_DCRRateLimited(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+	})
+	require.NoError(t, err)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	// The limiter is rate.NewLimiter(1, 5): the first 5 requests drain the
+	// burst, so within 20 rapid calls at least one must be rejected.
+	saw429 := false
+	sawSuccess := false
+	for range 20 {
+		resp, err := httpClient.Post(ts.Server.URL+"/oauth/register", "application/json", bytes.NewReader(reqBody))
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			saw429 = true
+			assert.NotEmpty(t, resp.Header.Get("Retry-After"), "429 must carry a Retry-After hint")
+		}
+		if resp.StatusCode == http.StatusCreated {
+			sawSuccess = true
+		}
+	}
+	assert.True(t, saw429, "20 rapid registrations must trip the rate limiter")
+	assert.True(t, sawSuccess, "the burst allowance must let ordinary registrations through")
+}
+
 // TestIntegration_ConfidentialClientDCR_FlagOffRejected proves the feature is
 // opt-in: with AllowConfidentialClients unset, DCR rejects client_secret_*
 // registrations with the historical public-clients-only error.
@@ -3655,6 +3692,8 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 // registration, authorize, and token paths including failures. The capture
 // handler is installed before server construction so even startup-time
 // logging is in scope, and stays installed for the whole flow.
+//
+//nolint:paralleltest // swaps the process-global slog default handler
 func TestIntegration_ConfidentialClientDCR_SecretNeverLogged(t *testing.T) {
 	// Not parallel: swaps the process-global slog default handler.
 
@@ -3701,6 +3740,43 @@ func TestIntegration_ConfidentialClientDCR_SecretNeverLogged(t *testing.T) {
 		assert.Empty(t, capture.recordsContaining(needle),
 			"client_secret (or a substring of it) must never be logged; needle %q", needle)
 	}
+}
+
+// TestIntegration_TokenEndpointFailuresLogAtDebug pins the log-volume half of
+// the unauthenticated-DoS hardening: wrong-secret token requests must not
+// produce ERROR-level records, because RFC6749Error.Error() carries only the
+// error code (no diagnostic value) and the endpoint is unauthenticated — at
+// Error level an attacker could flood the log stream and drown real errors.
+//
+//nolint:paralleltest // swaps the process-global slog default handler
+func TestIntegration_TokenEndpointFailuresLogAtDebug(t *testing.T) {
+	// Not parallel: swaps the process-global slog default handler.
+
+	capture := newCapturingSlogHandler()
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capture))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+
+	clientID, _ := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost)
+
+	for range 100 {
+		params := url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {"some-code"},
+			"client_id":     {clientID},
+			"client_secret": {"wrong-secret_00000000000000000000000000000"},
+		}
+		resp := makeTokenRequest(t, ts.Server.URL, params)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	assert.Empty(t, capture.messages(slog.LevelError, "failed to create access"),
+		"100 wrong-secret token requests must produce no ERROR-level records")
 }
 
 // TestIntegration_ConfidentialClientDCR_AudienceParity covers criterion 16: a

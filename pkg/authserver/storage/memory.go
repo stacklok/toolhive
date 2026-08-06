@@ -57,6 +57,20 @@ type MemoryStorage struct {
 	// clients maps client_id -> Client for client lookup (fosite.ClientManager).
 	clients map[string]fosite.Client
 
+	// clientOrder is the FIFO insertion order of clients, used for oldest-first
+	// eviction when the map reaches maxClients. /oauth/register is
+	// unauthenticated and every call mints an entry, so an uncapped map is a
+	// memory-exhaustion DoS in the same process as the proxy. Eviction (not
+	// rejection) is the right bound: rejecting converts a memory DoS into a
+	// lockout DoS where an attacker fills the cap and legitimate clients can
+	// never register. A re-registration of an existing ID refreshes its
+	// position, so actively used clients survive.
+	clientOrder []string
+
+	// maxClients caps the client map; zero means unlimited. RegisterClient
+	// evicts the oldest entry once the cap is reached.
+	maxClients int
+
 	// authCodes maps authorization code -> Requester. Codes are one-time-use;
 	// invalidatedCodes tracks used codes to return ErrInvalidatedAuthorizeCode.
 	authCodes map[string]*timedEntry[fosite.Requester]
@@ -128,6 +142,22 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 	}
 }
 
+// DefaultMaxClients is the default cap on the in-memory client map.
+// /oauth/register is unauthenticated and mints an entry per call; the cap
+// bounds memory growth while staying far above any legitimate client count
+// (clients register once and reuse their client_id).
+const DefaultMaxClients = 10000
+
+// WithMaxClients sets the client-map cap. Once reached, RegisterClient evicts
+// the oldest registration (oldest-first, not rejection: rejecting converts a
+// memory DoS into a lockout DoS where an attacker fills the cap and legitimate
+// clients can never register).
+func WithMaxClients(n int) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.maxClients = n
+	}
+}
+
 // NewMemoryStorage creates a new MemoryStorage instance with initialized maps
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
@@ -145,6 +175,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		providerIdentities:    make(map[string]*ProviderIdentity),
 		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:       DefaultCleanupInterval,
+		maxClients:            DefaultMaxClients,
 		stopCleanup:           make(chan struct{}),
 		cleanupDone:           make(chan struct{}),
 	}
@@ -339,10 +370,27 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 
 // RegisterClient adds or updates a client in the storage.
 // This is useful for setting up test clients.
+//
+// When the client map is at maxClients, the oldest registration is evicted to
+// make room (oldest-first eviction, not rejection — see WithMaxClients).
+// Re-registering an existing ID moves it to the back of the eviction queue.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clients[client.GetID()] = client
+
+	id := client.GetID()
+	if _, exists := s.clients[id]; exists {
+		// Refresh the eviction position: an actively re-registering client is
+		// not the oldest.
+		s.clientOrder = slices.DeleteFunc(s.clientOrder, func(existing string) bool { return existing == id })
+	} else if s.maxClients > 0 && len(s.clients) >= s.maxClients {
+		oldest := s.clientOrder[0]
+		s.clientOrder = s.clientOrder[1:]
+		delete(s.clients, oldest)
+		slog.Debug("evicted oldest client registration at capacity", "client_id", oldest, "max_clients", s.maxClients)
+	}
+	s.clientOrder = append(s.clientOrder, id)
+	s.clients[id] = client
 	return nil
 }
 

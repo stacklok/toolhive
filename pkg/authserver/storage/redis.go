@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
@@ -107,7 +108,9 @@ type storedSession struct {
 
 // NewRedisStorage creates Redis-backed storage. Connection-mode topology,
 // timeouts, TLS, and credentials are configured through cfg; keyPrefix is the
-// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:") and must be non-empty.
+// per-tenant key prefix (a single Redis Cluster hash tag combining namespace
+// and name — see DeriveKeyPrefix, e.g. "thv:auth:{ns:name}:") and must be
+// non-empty.
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
@@ -173,21 +176,61 @@ type storedClient struct {
 	Scopes        []string `json:"scopes"`
 	Audience      []string `json:"audience"`
 	Public        bool     `json:"public"`
+	// TokenEndpointAuthMethod is the auth method registered for the client
+	// ("none", "client_secret_basic", "client_secret_post"). Empty means the
+	// row predates confidential-client support; see GetClient for how legacy
+	// rows are interpreted.
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
 }
 
-// redisClient implements fosite.Client for deserialization.
-type redisClient struct {
-	storedClient
+// clientFromStored rebuilds a fosite.Client from its persisted form.
+//
+// The read logic is deliberately three-way so that drift between the Public
+// flag and the auth method can only ever *add* secret verification, never
+// remove it:
+//
+//   - A row with no method predates confidential-client support. A public row
+//     was registered with "none". A confidential row had no method recorded and
+//     fosite skipped method enforcement for it (it only enforces the method on
+//     fosite.OpenIDConnectClient implementations), so it is rebuilt as a bare
+//     *fosite.DefaultClient — keeping that skip in place and making the
+//     upgrade a no-op.
+//   - A row with a method is rebuilt as a *fosite.DefaultOpenIDConnectClient
+//     so fosite enforces the pinned method at the token endpoint.
+//   - IsPublic is derived as (Public && method == "none"): a row that somehow
+//     carries both Public=true and a secret-based method reads back
+//     confidential, forcing secret verification rather than dropping it.
+func clientFromStored(stored storedClient) fosite.Client {
+	method := stored.TokenEndpointAuthMethod
+	if method == "" {
+		if !stored.Public {
+			return &fosite.DefaultClient{
+				ID:            stored.ID,
+				Secret:        stored.Secret,
+				RedirectURIs:  stored.RedirectURIs,
+				GrantTypes:    stored.GrantTypes,
+				ResponseTypes: stored.ResponseTypes,
+				Scopes:        stored.Scopes,
+				Audience:      stored.Audience,
+				Public:        false,
+			}
+		}
+		method = oauthproto.TokenEndpointAuthMethodNone
+	}
+	return &fosite.DefaultOpenIDConnectClient{
+		DefaultClient: &fosite.DefaultClient{
+			ID:            stored.ID,
+			Secret:        stored.Secret,
+			RedirectURIs:  stored.RedirectURIs,
+			GrantTypes:    stored.GrantTypes,
+			ResponseTypes: stored.ResponseTypes,
+			Scopes:        stored.Scopes,
+			Audience:      stored.Audience,
+			Public:        stored.Public && method == oauthproto.TokenEndpointAuthMethodNone,
+		},
+		TokenEndpointAuthMethod: method,
+	}
 }
-
-func (c *redisClient) GetID() string                      { return c.ID }
-func (c *redisClient) GetHashedSecret() []byte            { return c.Secret }
-func (c *redisClient) GetRedirectURIs() []string          { return c.RedirectURIs }
-func (c *redisClient) GetGrantTypes() fosite.Arguments    { return c.GrantTypes }
-func (c *redisClient) GetResponseTypes() fosite.Arguments { return c.ResponseTypes }
-func (c *redisClient) GetScopes() fosite.Arguments        { return c.Scopes }
-func (c *redisClient) GetAudience() fosite.Arguments      { return c.Audience }
-func (c *redisClient) IsPublic() bool                     { return c.Public }
 
 // RegisterClient adds or updates a client in the storage.
 func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
@@ -202,6 +245,16 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		Scopes:        client.GetScopes(),
 		Audience:      client.GetAudience(),
 		Public:        client.IsPublic(),
+	}
+	// Record the registered auth method when the client exposes one. Clients
+	// that don't implement fosite.OpenIDConnectClient (e.g. pre-provisioned
+	// confidential clients built as bare *fosite.DefaultClient) leave the field
+	// empty on purpose: Public alone carries the meaning it already carries,
+	// and GetClient treats the empty method as a legacy row. Do NOT substitute
+	// a "none" fallback here — that would silently reclassify a confidential
+	// row as public on read-back.
+	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
+		stored.TokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
 	}
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
@@ -237,7 +290,7 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 		return nil, fmt.Errorf("failed to unmarshal client: %w", err)
 	}
 
-	return &redisClient{storedClient: stored}, nil
+	return clientFromStored(stored), nil
 }
 
 // RenewClientTTL extends a public client's registration TTL to DefaultPublicClientTTL.

@@ -10,6 +10,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // --- Test Helpers ---
@@ -270,6 +272,136 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, client.GetID(), retrieved.GetID())
 		assert.Equal(t, client.GetScopes(), retrieved.GetScopes())
+	})
+}
+
+// TestRedisStorage_ClientAuthMethodPersistence pins the fail-closed read/write
+// behaviour for token_endpoint_auth_method: drift between the Public flag and
+// the stored method may only ever add secret verification, never remove it,
+// and rows written before confidential-client support must keep their exact
+// pre-upgrade behaviour.
+func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
+	t.Parallel()
+
+	newOIDCClient := func(method string, public bool) *fosite.DefaultOpenIDConnectClient {
+		return &fosite.DefaultOpenIDConnectClient{
+			DefaultClient: &fosite.DefaultClient{
+				ID:            "oidc-client",
+				Secret:        []byte("already-hashed-secret"),
+				RedirectURIs:  []string{"https://app.example/cb"},
+				GrantTypes:    []string{"authorization_code", "refresh_token"},
+				ResponseTypes: []string{"code"},
+				Scopes:        []string{"openid"},
+				Audience:      []string{"https://mcp.example"},
+				Public:        public,
+			},
+			TokenEndpointAuthMethod: method,
+		}
+	}
+
+	t.Run("OIDC client round-trips method and confidential status", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := newOIDCClient(oauthproto.TokenEndpointAuthMethodClientSecretBasic, false)
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			retrieved, err := s.GetClient(ctx, "oidc-client")
+			require.NoError(t, err)
+
+			// The returned value must satisfy fosite.OpenIDConnectClient: that
+			// assertion, not the Public field, is what activates fosite's
+			// token-endpoint method enforcement.
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "modern row must deserialize as fosite.OpenIDConnectClient")
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, oidc.GetTokenEndpointAuthMethod())
+			assert.False(t, retrieved.IsPublic())
+
+			// The stored secret is already hashed; round-tripping must not re-hash it.
+			assert.Equal(t, []byte("already-hashed-secret"), retrieved.GetHashedSecret())
+		})
+	})
+
+	// writeLegacyRow bypasses RegisterClient to simulate a row written by a
+	// release that predates the token_endpoint_auth_method column.
+	writeLegacyRow := func(ctx context.Context, s *RedisStorage, id string, public bool, secret []byte) {
+		key := redisKey(s.keyPrefix, KeyTypeClient, id)
+		data, err := json.Marshal(storedClient{
+			ID:           id,
+			Secret:       secret,
+			RedirectURIs: []string{"https://app.example/cb"},
+			GrantTypes:   []string{"authorization_code"},
+			Public:       public,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+	}
+
+	t.Run("legacy public row reads back public with method none", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			writeLegacyRow(ctx, s, "legacy-public", true, nil)
+
+			retrieved, err := s.GetClient(ctx, "legacy-public")
+			require.NoError(t, err)
+			assert.True(t, retrieved.IsPublic())
+
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "legacy public row should still satisfy fosite.OpenIDConnectClient")
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodNone, oidc.GetTokenEndpointAuthMethod())
+		})
+	})
+
+	t.Run("legacy confidential row keeps pre-upgrade behaviour", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			writeLegacyRow(ctx, s, "legacy-confidential", false, []byte("hashed"))
+
+			retrieved, err := s.GetClient(ctx, "legacy-confidential")
+			require.NoError(t, err)
+			assert.False(t, retrieved.IsPublic())
+
+			// Upgrade-safety pin: pre-upgrade confidential rows had no method
+			// recorded and fosite skipped method enforcement for them. The
+			// rebuilt client must NOT satisfy fosite.OpenIDConnectClient so the
+			// skip stays in place and the upgrade is a no-op.
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "legacy confidential row must remain a non-OIDC client")
+			assert.Equal(t, []byte("hashed"), retrieved.GetHashedSecret())
+		})
+	})
+
+	t.Run("drift row fails closed to confidential", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// public=true combined with a secret-based method: impossible via
+			// RegisterClient, but if it ever occurs the row must read back
+			// confidential so secret verification is added, not dropped.
+			key := redisKey(s.keyPrefix, KeyTypeClient, "drift-client")
+			data, err := json.Marshal(storedClient{
+				ID:                      "drift-client",
+				Secret:                  []byte("hashed"),
+				RedirectURIs:            []string{"https://app.example/cb"},
+				Public:                  true,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+
+			retrieved, err := s.GetClient(ctx, "drift-client")
+			require.NoError(t, err)
+			assert.False(t, retrieved.IsPublic(), "drift row must fail closed to confidential")
+		})
+	})
+
+	t.Run("non-OIDC client round-trips as non-public without method", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// mockClient does not implement fosite.OpenIDConnectClient; the
+			// write path must leave the method column empty rather than
+			// substituting a "none" fallback that would reclassify the row.
+			require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "mock-conf", public: false}))
+
+			retrieved, err := s.GetClient(ctx, "mock-conf")
+			require.NoError(t, err)
+			assert.False(t, retrieved.IsPublic())
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "non-OIDC client must round-trip as a non-OIDC client")
+		})
 	})
 }
 

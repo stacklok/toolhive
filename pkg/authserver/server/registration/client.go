@@ -47,8 +47,15 @@ type LoopbackClient struct {
 }
 
 // NewLoopbackClient creates a new LoopbackClient wrapping the provided client.
-// The wrapper preserves all OIDC fields (including TokenEndpointAuthMethod)
-// while adding RFC 8252 §7.3 dynamic port matching for loopback redirect URIs.
+// The wrapper preserves all OIDC fields (including TokenEndpointAuthMethod).
+//
+// Note: fosite's redirect-matching path does not call MatchRedirectURI —
+// MatchRedirectURIWithClientRedirectURIs reads only GetRedirectURIs() and
+// applies fosite's own loopback handling (isMatchingAsLoopback), which covers
+// loopback IP literals but not the "localhost" hostname. This wrapper's value
+// is carrying the OIDC client shape (so GetTokenEndpointAuthMethod survives)
+// for callers that do their own matching via MatchRedirectURI/
+// GetMatchingRedirectURI; it is not a fosite hook.
 func NewLoopbackClient(client *fosite.DefaultOpenIDConnectClient) *LoopbackClient {
 	return &LoopbackClient{DefaultOpenIDConnectClient: client}
 }

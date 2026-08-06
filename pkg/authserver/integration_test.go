@@ -1424,7 +1424,7 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
 				IssuerURL: idpServer.URL,
 				// Set directly rather than relying on discovery: this exercises
-				// resolveJWKS's pre-configured-URL branch instead of
+				// ensureRegistered's pre-configured-URL branch instead of
 				// discoverJWKSURL.
 				JWKSURL:           idpServer.URL + "/jwks",
 				ExpectedAudience:  testAudience,

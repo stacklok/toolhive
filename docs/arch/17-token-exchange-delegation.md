@@ -88,10 +88,14 @@ whether to grant the exchange, in this order:
    permitted to use that issuer's allowlisted actors. `checkDelegationConsent`
    checks the authenticated client against it whenever it's set — nil (the
    default) keeps today's permissive behavior, so existing configs are
-   unaffected. This binding only applies to the `AllowedActors` consent path;
-   `may_act` still bypasses `allowedActors` entirely (see limitation 4 below)
-   and therefore `allowedDelegateClients` too. Keeping the token-exchange
-   client set minimal remains the operator's baseline control regardless.
+   unaffected. `may_act` bypasses `allowedActors` (the external-issuer
+   allowlist) but NOT `allowedDelegateClients`: `checkDelegationConsent`
+   enforces the latter on both consent paths, including a `may_act`-bearing
+   token, since the validator sets `AllowedDelegateClients` for every external
+   token regardless of which path authorized it (see limitation 4 below). This
+   binding therefore applies to the `AllowedActors` path and the `may_act`
+   path alike. Keeping the token-exchange client set minimal remains the
+   operator's baseline control regardless.
 2. **Subject namespace must be disjoint.** A trusted issuer is trusted to
    assert *any* subject this server accepts for delegation — the delegated
    token carries ToolHive's own `iss` with the external `sub` copied verbatim,
@@ -146,9 +150,13 @@ whether to grant the exchange, in this order:
   redirects (`networking.SameHostRedirectPolicy()`), so an issuer whose
   `/.well-known/openid-configuration` redirects cross-host cannot be
   onboarded via discovery — set `jwksUrl` explicitly to skip discovery.
-- **JWKS caching.** A successful fetch is cached 5 minutes; a failed fetch is
-  cached (backed off) for 30 seconds — so a just-corrected `jwksUrl` can keep
-  failing for up to 30s before the next retry.
+- **JWKS caching.** A successful fetch is cached and refreshed by jwx's
+  `jwk.Cache` on a schedule driven by the response's `Cache-Control`/`Expires`
+  headers (no fixed TTL). The 30-second figure is `jwksFetchFailureBackoff`,
+  which gates only how often a persistently-failing issuer is retried before
+  its first successful fetch — so a just-corrected `jwksUrl` can keep failing
+  for up to 30s before the next retry; once a fetch has ever succeeded, this
+  backoff no longer applies.
 - **Diagnostics.** A non-allowlisted actor and an untrusted issuer both
   surface as the same generic `invalid_request`
   ("The subject token is invalid or could not be verified."), per RFC 8693

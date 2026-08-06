@@ -266,11 +266,14 @@ func verifySignature(
 	}
 
 	var lastErr error
+	var filtered int
 	for _, key := range candidates {
 		if key.Use != "" && key.Use != "sig" {
+			filtered++
 			continue
 		}
 		if key.Algorithm != "" && key.Algorithm != headerAlg {
+			filtered++
 			continue
 		}
 		var claims jwt.Claims
@@ -283,6 +286,12 @@ func verifySignature(
 	}
 	if lastErr != nil {
 		return jwt.Claims{}, nil, kidMatched, fmt.Errorf("subject token signature verification failed: %w", lastErr)
+	}
+	if filtered > 0 {
+		return jwt.Claims{}, nil, kidMatched, fmt.Errorf(
+			"subject token signature verification failed: no compatible keys in JWKS "+
+				"(%d key(s) present but all skipped by use/alg filter)",
+			len(candidates))
 	}
 	return jwt.Claims{}, nil, kidMatched, fmt.Errorf("subject token signature verification failed: no keys in JWKS")
 }
@@ -334,6 +343,11 @@ func buildValidatedClaims(
 	// Scopes. This must run after the loop, not inside assignClaim's per-key
 	// switch, because map iteration order is random — assignClaim can't tell
 	// whether a not-yet-seen "scope" claim will still show up.
+	//
+	// Without this fallback, a genuine self-issued subject token (which
+	// carries "scp", not "scope") reads as scope-less and any scoped
+	// exchange fails with invalid_scope — scoped delegation against a
+	// self-issued token was effectively unusable before this fallback.
 	if vc.Scopes == "" {
 		if scp, ok := extra["scp"]; ok {
 			vc.Scopes = scpToScopeString(scp)

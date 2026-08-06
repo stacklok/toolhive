@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -303,6 +304,18 @@ type externalIssuerConfig struct {
 	// never be gated.
 	fetchFailedAt time.Time
 	fetchErr      error
+
+	// bridgeMu guards bridgeSource/bridgeJWKS only. Separate from mu (which
+	// serializes JWKS fetches across a 20s Refresh) so a signature
+	// verification on the hot path doesn't block on a concurrent refresh.
+	bridgeMu sync.Mutex
+	// bridgeSource is the jwk.Set identity that bridgeJWKS was last
+	// converted from. nil until the first conversion. Lookup returns a new
+	// pointer only after a refresh, so a changed identity is the invalidation
+	// signal that triggers a re-conversion.
+	bridgeSource jwk.Set
+	// bridgeJWKS is the converted jose.JSONWebKeySet for bridgeSource.
+	bridgeJWKS *jose.JSONWebKeySet
 }
 
 // NewMultiIssuerTokenValidator creates a validator that accepts tokens from the
@@ -756,6 +769,25 @@ func (v *MultiIssuerTokenValidator) registerOrRefresh(ctx context.Context, issue
 	fetchCtx, cancel := context.WithTimeout(detached, httpTimeout)
 	defer cancel()
 	if err := v.jwksCache.Register(fetchCtx, issuerConfig.jwksURL, jwk.WithHTTPClient(issuerConfig.httpClient)); err != nil {
+		// Roll back this issuer's policy claim — but only if the URL was
+		// genuinely never registered with the cache. httprc.Controller.Add
+		// registers the resource with its backend before waiting on the first
+		// fetch, so a Register error covers two distinct failure modes (see
+		// registerOrRefresh's doc comment):
+		//   - the addRequest never reached the backend (e.g. fetchCtx expired
+		//     first), so nothing was registered — IsRegistered is false, and
+		//     the claim above must be released or a different-policy issuer
+		//     resolving to the same jwksURL would stay blocked for the life of
+		//     the process;
+		//   - the resource WAS registered but its first fetch failed — the
+		//     claim correctly reflects a URL the cache is tracking, so it must
+		//     be kept (the retry path refreshes this registration).
+		probeCtx, probeCancel := context.WithTimeout(detached, httpTimeout)
+		registered := v.jwksCache.IsRegistered(probeCtx, issuerConfig.jwksURL)
+		probeCancel()
+		if !registered {
+			v.releaseJWKSURLPolicy(issuerConfig)
+		}
 		return fmt.Errorf("failed to register JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
 	}
 	return nil
@@ -795,6 +827,23 @@ func (v *MultiIssuerTokenValidator) claimJWKSURLPolicy(issuerConfig *externalIss
 	return nil
 }
 
+// releaseJWKSURLPolicy undoes claimJWKSURLPolicy for issuerConfig: it removes
+// the jwksURLPolicies entry for issuerConfig.jwksURL, but ONLY if that entry
+// is owned by this issuer. The ownership check matters because a different
+// issuer may have legitimately re-claimed the same URL (under a matching
+// policy) after this issuer's registration failed and before this release
+// runs — deleting that entry would reopen the silent-policy-inheritance hole
+// claimJWKSURLPolicy exists to close.
+func (v *MultiIssuerTokenValidator) releaseJWKSURLPolicy(issuerConfig *externalIssuerConfig) {
+	v.jwksURLPoliciesMu.Lock()
+	defer v.jwksURLPoliciesMu.Unlock()
+
+	got, claimed := v.jwksURLPolicies[issuerConfig.jwksURL]
+	if claimed && got.issuerURL == issuerConfig.IssuerURL {
+		delete(v.jwksURLPolicies, issuerConfig.jwksURL)
+	}
+}
+
 // lookupJWKS returns issuerConfig's current JWKS, registering and fetching it
 // first if this is the first use (see ensureRegistered). jwk.Cache serves the
 // last successfully fetched Set even while a later background refresh is
@@ -814,7 +863,7 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
 	}
 
-	jwks, err := bridgeJWKSet(set)
+	jwks, err := v.bridgedJWKS(set, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -829,6 +878,41 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 	}
 
 	return jwks, nil
+}
+
+// bridgedJWKS returns issuerConfig's current JWKS as a *jose.JSONWebKeySet,
+// reusing a cached conversion when the underlying jwk.Cache Set has not
+// changed. The conversion runs OUTSIDE bridgeMu: two concurrent callers that
+// both miss may each convert and the later one loses the CAS — wasteful but
+// correct, since the conversion is a pure function of the source Set.
+func (*MultiIssuerTokenValidator) bridgedJWKS(set jwk.Set, issuerConfig *externalIssuerConfig) (*jose.JSONWebKeySet, error) {
+	issuerConfig.bridgeMu.Lock()
+	if issuerConfig.bridgeSource != nil && sameSetIdentity(issuerConfig.bridgeSource, set) && issuerConfig.bridgeJWKS != nil {
+		cached := issuerConfig.bridgeJWKS
+		issuerConfig.bridgeMu.Unlock()
+		return cached, nil
+	}
+	issuerConfig.bridgeMu.Unlock()
+
+	converted, err := bridgeJWKSet(set)
+	if err != nil {
+		return nil, err
+	}
+
+	issuerConfig.bridgeMu.Lock()
+	defer issuerConfig.bridgeMu.Unlock()
+	if issuerConfig.bridgeSource == nil || sameSetIdentity(issuerConfig.bridgeSource, set) {
+		issuerConfig.bridgeSource = set
+		issuerConfig.bridgeJWKS = converted
+	}
+	return converted, nil
+}
+
+// sameSetIdentity reports whether two jwk.Set values reference the same
+// underlying Set. Uses reflect data-pointer comparison rather than
+// interface ==, which is fragile to jwx returning a value type in future.
+func sameSetIdentity(a, b jwk.Set) bool {
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
 }
 
 // bridgeJWKSet converts a jwx jwk.Set into the go-jose jose.JSONWebKeySet
@@ -943,7 +1027,7 @@ func (*MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerCon
 		return "", fmt.Errorf("discovery document missing 'jwks_uri'")
 	}
 
-	// The returned URL is validated by the caller (resolveJWKS), which is
+	// The returned URL is validated by the caller (ensureRegistered), which is
 	// the single choke point covering both discovered and pre-configured
 	// JWKS URLs.
 	return doc.JWKSURI, nil
@@ -954,13 +1038,13 @@ func (*MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerCon
 // not any other non-https scheme such as "file" or "ftp" — and, when the
 // host is an IP literal, is not a private or loopback address unless
 // allowPrivateIPs permits that. Both flags come from the specific
-// TrustedIssuer being fetched (see resolveJWKS), never from a validator-wide
+// TrustedIssuer being fetched (see ensureRegistered), never from a validator-wide
 // or self-issuer setting. This prevents SSRF attacks where a compromised
 // discovery document — or a hand-configured jwks_url — points to internal
 // services.
 //
 // This is the single implementation shared by the runtime choke point above
-// (resolveJWKS, on every fetch) and pkg/authserver/config.go's config-time
+// (ensureRegistered, on every fetch) and pkg/authserver/config.go's config-time
 // check (validateJWKSEndpointURL): the two must not drift out of sync, or a
 // laxer runtime check would silently defeat the config-time guard.
 func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) error {
@@ -1030,6 +1114,20 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 	if slices.Contains(ti.AllowedDelegateClients, "") {
 		return fmt.Errorf(
 			"issuer_url %q: allowed_delegate_clients must not contain an empty client ID", ti.IssuerURL)
+	}
+	// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
+	// discovery — a document fetched from, and thus influenceable by, the
+	// external issuer itself — choose the private target the dial is
+	// allowed to reach. Requiring jwks_url pins that target to
+	// operator-supplied config. Mirrors the config-time check in
+	// pkg/authserver/config.go:924-929; duplicated here so a caller that
+	// builds the validator directly (factory, tests) without running
+	// Config.Validate cannot bypass it.
+	if ti.AllowPrivateIPs && ti.JWKSURL == "" {
+		return fmt.Errorf(
+			"issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+
+				"otherwise OIDC discovery — fetched from the external issuer — would choose the private target",
+			ti.IssuerURL)
 	}
 	return nil
 }

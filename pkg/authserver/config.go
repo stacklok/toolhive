@@ -916,11 +916,11 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 		// discovery — a document fetched from, and thus influenceable by,
 		// the external issuer itself — choose the private target the dial
 		// is allowed to reach. Requiring jwks_url pins that target to
-		// operator-supplied config instead. This mirrors the operator's own
-		// CRD-level CEL rule (mcpexternalauthconfig_types.go) requiring
-		// jwksUrl whenever allowPrivateIPs is set; enforcing it here too
-		// means a hand-written RunConfig can't bypass what the CRD path
-		// already guarantees.
+		// operator-supplied config instead. This is the only enforcement of
+		// that invariant: trustedIssuers has no operator/CRD surface yet
+		// (see #6082), so it is reachable only via a hand-written RunConfig,
+		// and this config-time check is what prevents such a RunConfig from
+		// letting discovery choose a private dial target.
 		if ti.AllowPrivateIPs && ti.JWKSURL == "" {
 			return fmt.Errorf(
 				"trusted_issuers: issuer_url %q: allow_private_ips requires jwks_url to be set explicitly; "+
@@ -947,7 +947,7 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 // JWKS endpoint legitimately carries those.
 //
 // Delegates to tokenexchange.ValidateJWKSURL, the same predicate the runtime
-// choke point (resolveJWKS, called on every JWKS fetch) enforces — the two
+// choke point (ensureRegistered, called on every JWKS fetch) enforces — the two
 // were previously separate implementations that had drifted apart (a
 // runtime check laxer than this one would silently defeat this config-time
 // guard), so this is now the single source of truth for both.

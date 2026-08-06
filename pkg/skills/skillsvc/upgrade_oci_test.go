@@ -180,3 +180,54 @@ func TestPlanUpgrade_RegistryFallbackSourceUpgrades(t *testing.T) {
 		"a registry-fallback-installed skill must be upgradable through the same fallback")
 	assert.Equal(t, ociTestDigest(3), plan.outcome.NewDigest)
 }
+
+// TestPlanUpgrade_TagMoveWithinRepositoryIsNotBlocked covers the routine
+// case a catalog-sourced skill hits on every release: the version moves, so
+// the resolved tag moves with it, but the artifact still comes from the same
+// repository. Blocking that would make --allow-ref-change mandatory for
+// ordinary upgrades and so disable the repository check it exists for (#6213).
+func TestPlanUpgrade_TagMoveWithinRepositoryIsNotBlocked(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reg := ocimocks.NewMockRegistryClient(ctrl)
+	reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "ghcr.io/org/skill:v2").
+		Return(godigest.Digest(ociTestDigest(2)), nil)
+	svc := newOCIUpgradeService(t, reg, nil)
+
+	entry := lockfile.Entry{
+		Name:              "my-skill",
+		Source:            "ghcr.io/org/skill:v2",
+		ResolvedReference: "ghcr.io/org/skill:v1",
+		Digest:            ociTestDigest(1),
+	}
+
+	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, plan.outcome.Status)
+	assert.Equal(t, "ghcr.io/org/skill:v2", plan.outcome.NewResolvedReference,
+		"the move is still reported even though it is permitted")
+	assert.NotEmpty(t, plan.pinnedRef, "a permitted plan must carry the pinned candidate")
+}
+
+// TestPlanUpgrade_RegistryChangeStaysBlocked keeps the guard meaningful: the
+// repository path is identical, only the registry host differs.
+func TestPlanUpgrade_RegistryChangeStaysBlocked(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reg := ocimocks.NewMockRegistryClient(ctrl)
+	reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "elsewhere.io/org/skill:v1").
+		Return(godigest.Digest(ociTestDigest(2)), nil)
+	svc := newOCIUpgradeService(t, reg, nil)
+
+	entry := lockfile.Entry{
+		Name:              "my-skill",
+		Source:            "elsewhere.io/org/skill:v1",
+		ResolvedReference: "ghcr.io/org/skill:v1",
+		Digest:            ociTestDigest(1),
+	}
+
+	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
+	assert.Equal(t, skills.UpgradeStatusRefChangeBlocked, plan.outcome.Status)
+	assert.Empty(t, plan.pinnedRef)
+}

@@ -1443,7 +1443,7 @@ func (h *httpBackendClient) legacyListCapabilities(
 	}()
 
 	// Initialize the client and get server capabilities
-	serverCaps, err := h.legacyInit(ctx, c, target)
+	serverCaps, _, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
@@ -1536,14 +1536,14 @@ var errLegacyInitFailed = errors.New("legacy initialize step failed")
 // self-heals within one window instead of never.
 func (h *httpBackendClient) legacyInit(
 	ctx context.Context, c *client.Client, target *vmcp.BackendTarget,
-) (*mcp.ServerCapabilities, error) {
+) (*mcp.ServerCapabilities, string, error) {
 	backendID := target.WorkloadID
 	caps, negotiatedVersion, err := initializeClient(ctx, c)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
+		return nil, "", fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
 	}
 	if negotiatedVersion != mcpparser.MCPVersionModern {
-		return caps, nil
+		return caps, negotiatedVersion, nil
 	}
 
 	cached, isCached := h.cachedRevision(backendID)
@@ -1562,7 +1562,7 @@ func (h *httpBackendClient) legacyInit(
 			h.modernHintRefuted.Store(backendID, time.Now())
 		}
 	}
-	return caps, nil
+	return caps, negotiatedVersion, nil
 }
 
 // hintRefuted reports whether backendID's Modern-handshake hint is currently
@@ -1800,7 +1800,7 @@ func (h *httpBackendClient) legacyCallTool(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := h.legacyInit(ctx, c, target)
+	serverCaps, negotiatedVersion, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
@@ -1809,7 +1809,7 @@ func (h *httpBackendClient) legacyCallTool(
 	// level so the backend emits notifications/message during the call; the
 	// notification forwarder relays them to the downstream client. Best-effort:
 	// a failure here must not fail the tool call.
-	h.enableBackendLogging(ctx, c, serverCaps, target.WorkloadID)
+	h.enableBackendLogging(ctx, c, serverCaps, negotiatedVersion, target.WorkloadID)
 
 	// Call the tool using the original capability name from the backend's perspective.
 	// When conflict resolution renames tools (e.g., "fetch" → "fetch_fetch"),
@@ -1998,7 +1998,7 @@ func (h *httpBackendClient) legacyReadResource(
 	}()
 
 	// Initialize the client
-	if _, err := h.legacyInit(ctx, c, target); err != nil {
+	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2114,7 +2114,7 @@ func (h *httpBackendClient) legacyGetPrompt(
 	}()
 
 	// Initialize the client
-	if _, err := h.legacyInit(ctx, c, target); err != nil {
+	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2255,7 +2255,7 @@ func (h *httpBackendClient) legacyComplete(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, err := h.legacyInit(ctx, c, target)
+	serverCaps, _, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}

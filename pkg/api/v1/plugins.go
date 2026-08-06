@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
@@ -26,17 +27,24 @@ func PluginsRouter(pluginService plugins.PluginService) http.Handler {
 		pluginService: pluginService,
 	}
 
+	// Mirrors WorkloadRouter and SkillsRouter: routes that move OCI artifacts
+	// get a timeout sized for the transfer, everything else keeps the short
+	// one. Without the split these routes inherit the flat 60s applied to
+	// standard routers, which severs a cold artifact pull mid-flight.
+	stdTimeout := middleware.Timeout(standardRouteTimeout)
+	longTimeout := middleware.Timeout(longRunningRouteTimeout)
+
 	r := chi.NewRouter()
-	r.Get("/", apierrors.ErrorHandler(routes.listPlugins))
-	r.Post("/", apierrors.ErrorHandler(routes.installPlugin))
-	r.Delete("/{name}", apierrors.ErrorHandler(routes.uninstallPlugin))
-	r.Get("/{name}", apierrors.ErrorHandler(routes.getPluginInfo))
-	r.Post("/validate", apierrors.ErrorHandler(routes.validatePlugin))
-	r.Post("/build", apierrors.ErrorHandler(routes.buildPlugin))
-	r.Post("/push", apierrors.ErrorHandler(routes.pushPlugin))
-	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
-	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
-	r.Get("/content", apierrors.ErrorHandler(routes.getPluginContent))
+	r.With(stdTimeout).Get("/", apierrors.ErrorHandler(routes.listPlugins))
+	r.With(longTimeout).Post("/", apierrors.ErrorHandler(routes.installPlugin))
+	r.With(stdTimeout).Delete("/{name}", apierrors.ErrorHandler(routes.uninstallPlugin))
+	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getPluginInfo))
+	r.With(stdTimeout).Post("/validate", apierrors.ErrorHandler(routes.validatePlugin))
+	r.With(longTimeout).Post("/build", apierrors.ErrorHandler(routes.buildPlugin))
+	r.With(longTimeout).Post("/push", apierrors.ErrorHandler(routes.pushPlugin))
+	r.With(stdTimeout).Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
+	r.With(stdTimeout).Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
+	r.With(stdTimeout).Get("/content", apierrors.ErrorHandler(routes.getPluginContent))
 
 	return r
 }

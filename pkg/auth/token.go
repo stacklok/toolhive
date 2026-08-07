@@ -640,6 +640,19 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		return nil, ErrMissingIssuerAndJWKSURL
 	}
 
+	// Google's tokeninfo endpoint returns no iss claim - parseGoogleResponse
+	// synthesises iss locally, so a configured-issuer check against it is
+	// self-satisfying and proves nothing about which OAuth client the token
+	// was minted for. The only real binding to this deployment is the
+	// audience check, which is skipped when audience is empty. Without it,
+	// ANY valid Google access token (e.g. one minted for an attacker's own
+	// unrelated OAuth client) passes validation. Refuse the combination at
+	// startup instead of silently accepting cross-client tokens at runtime.
+	if config.IntrospectionURL == GoogleTokeninfoURL && config.Audience == "" {
+		return nil, fmt.Errorf("audience is required when using Google's tokeninfo endpoint for introspection: " +
+			"without it any valid Google access token is accepted regardless of the OAuth client it was minted for")
+	}
+
 	// Create HTTP client with CA bundle and auth token support for JWKS
 	httpClient, err := networking.NewHttpClientBuilder().
 		WithCABundle(config.CACertPath).

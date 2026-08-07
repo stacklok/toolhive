@@ -63,7 +63,7 @@ Example config files:
 ### Known limitations
 
 - **Stale Modern headers.** A mutating webhook patches only the JSON body, so after it renames a tool the `Mcp-Method`/`Mcp-Name` headers forwarded to the backend still describe the original name. `ValidateHeaderConsistency` (`pkg/mcp/revision.go:512`) requires the header and body to agree and returns a `RequestHeaderMismatchError` (`CodeHeaderMismatch`) if they don't, but today that check is only wired into vMCP (`pkg/vmcp/server/classification.go:72`), which never runs the mutating webhook — so nothing in ToolHive catches this yet. A spec-conformant Modern (2026-07-28) backend will reject the mismatched request itself, so this fails closed rather than silently mis-authorizing. Practical guidance: a mutating webhook must not rename tools on the Modern path.
-- **Controls outside the parser see the pre-mutation request.** The tool-call filter (`pkg/mcp/tool_filter.go`) reads the raw request body directly, and the rate limiter runs before the mutating webhook in the chain (see the ordering rules below) — both decide against the request as received, not as mutated. A mutating webhook can therefore rename a call into a tool that `--tools` filtering excluded, and the rate limiter debits the bucket for the requested tool rather than the executed one. This is a known gap, not a regression: the tool filter's position ahead of the MCP parser is deliberate (it needs the raw request), as already noted in the ordering rules below.
+- **Controls evaluated before mutation see the pre-mutation request.** The tool-call filter (`pkg/mcp/tool_filter.go`) reads the raw request body before parsing, and the rate limiter runs after parsing but before the mutating webhook (see the ordering rules below). Both decide against the request as received, not as mutated. A mutating webhook can therefore rename a call into a tool that `--tools` filtering excluded, and the rate limiter debits the bucket for the requested tool rather than the executed one. This is a known gap, not a regression: filtering must happen before excluded calls proceed, and rate limiting intentionally rejects excess traffic before making webhook round trips.
 
 ## Architecture Diagram
 
@@ -1055,11 +1055,11 @@ The middleware chain execution order is critical and controlled by the order in 
 5. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
 6. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
 7. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-8. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
-9. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
-10. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
-11. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
-12. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
+8. **Telemetry Middleware** (if enabled) - Starts the request span; finalizes MCP identity after the inner chain returns
+9. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
+10. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
+11. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
+12. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
 13. **Authorization Middleware** (if enabled) - Cedar policy evaluation
 14. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
 15. **Recovery Middleware** (always present) - Catches panics
@@ -1072,8 +1072,10 @@ The middleware chain execution order is critical and controlled by the order in 
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
+- Telemetry must come before Rate Limiting so the limiter can annotate the active request span; telemetry finalizes MCP names, attributes, and metrics after downstream processing from the shared parsed-request holder
+- Rate Limiting must come before webhooks so rejected traffic does not invoke outbound webhook requests
 - Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request
-- Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so every later consumer (authorization, audit, telemetry, usage metrics) reads the cached parse rather than re-reading the body
+- Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so downstream consumers read the refreshed context while outer audit and telemetry wrappers read the refreshed `mcp.ParsedRequestHolder` after the inner chain returns
 - Header Forward executes close to the backend handler (innermost position)
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
 - Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. Their rejections (413/403) are the only ones not audited.

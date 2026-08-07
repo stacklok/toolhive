@@ -153,10 +153,10 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 // the caller is responsible for terminating the request (e.g. writing an
 // error response) instead of proceeding with a stale or absent parse.
 //
-// This only refreshes consumers that read the parse from the request context or
-// from a ParsedRequestHolder. Middleware that inspects the raw body from OUTSIDE
-// ParsingMiddleware — the tool-call filter and the rate limiter — has already
-// decided against the pre-rewrite body and is not corrected by republishing.
+// This refreshes downstream context consumers and outer wrappers that inspect
+// ParsedRequestHolder after the inner chain returns. It cannot change decisions
+// already made before the rewrite: tool-call filtering and rate limiting still
+// evaluate the request as received.
 //
 // The caller must also refresh r.ContentLength when it replaces r.Body, or the
 // reverse proxy will reject the forwarded request.

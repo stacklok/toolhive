@@ -4,6 +4,8 @@
 package templates
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -528,4 +530,268 @@ func TestUVXTemplateWithoutBuildWithIsUnchanged(t *testing.T) {
 	assert.Contains(t, dockerfile, `uv tool install "$package_spec"`,
 		"no --with arguments should appear when BuildWith is empty")
 	assert.NotContains(t, dockerfile, "--with")
+}
+
+func TestRuntimeConfigClone_Nil(t *testing.T) {
+	t.Parallel()
+
+	var rc *RuntimeConfig
+	assert.Nil(t, rc.Clone())
+}
+
+func TestRuntimeConfigClone_Detached(t *testing.T) {
+	t.Parallel()
+
+	src := &RuntimeConfig{
+		BuilderImage:       "golang:1.26-alpine",
+		AdditionalPackages: []string{"git"},
+		BuildWith:          []string{"mcp<2"},
+		RuntimeEnv:         map[string]string{"FOO": "bar"},
+	}
+	clone := src.Clone()
+	assert.Equal(t, src, clone)
+
+	// Mutating the source afterwards must not affect the clone.
+	src.AdditionalPackages[0] = "mutated"
+	src.BuildWith[0] = "mutated"
+	src.RuntimeEnv["FOO"] = "mutated"
+	assert.Equal(t, "git", clone.AdditionalPackages[0])
+	assert.Equal(t, "mcp<2", clone.BuildWith[0])
+	assert.Equal(t, "bar", clone.RuntimeEnv["FOO"])
+
+	// Mutating the clone must not affect the source.
+	clone2 := src.Clone()
+	clone2.AdditionalPackages[0] = "mutated-again"
+	clone2.RuntimeEnv["FOO"] = "mutated-again"
+	assert.Equal(t, "mutated", src.AdditionalPackages[0])
+	assert.Equal(t, "mutated", src.RuntimeEnv["FOO"])
+}
+
+func TestRuntimeConfigClone_DoesNotAliasRuntimeDefaults(t *testing.T) {
+	t.Parallel()
+
+	wantPackages := slices.Clone(RuntimeDefaults[TransportTypeNPX].AdditionalPackages)
+
+	// Mutate the value GetDefaultRuntimeConfig hands back directly - not a
+	// Clone() of it - so this fails if GetDefaultRuntimeConfig ever reverts
+	// to a shallow `return config` instead of `return *config.Clone()`.
+	original := GetDefaultRuntimeConfig(TransportTypeNPX)
+	original.AdditionalPackages[0] = "mutated"
+
+	assert.Equal(t, wantPackages, RuntimeDefaults[TransportTypeNPX].AdditionalPackages,
+		"mutating a GetDefaultRuntimeConfig() result must not reach RuntimeDefaults")
+	assert.Equal(t, wantPackages, GetDefaultRuntimeConfig(TransportTypeNPX).AdditionalPackages,
+		"a fresh GetDefaultRuntimeConfig() call must not observe the earlier mutation")
+}
+
+func TestRuntimeConfigWithOverrides(t *testing.T) {
+	t.Parallel()
+
+	base := &RuntimeConfig{
+		BuilderImage:       "python:3.14-slim",
+		AdditionalPackages: []string{"ca-certificates", "git"},
+		RuntimeEnv:         map[string]string{"BASE_KEY": "base-value", "SHARED_KEY": "base-value"},
+	}
+
+	tests := []struct {
+		name         string
+		override     *RuntimeConfig
+		wantImage    string
+		wantPackages []string
+		wantEnv      map[string]string
+		wantBuild    []string
+	}{
+		{
+			name:         "nil override behaves like Clone",
+			override:     nil,
+			wantImage:    "python:3.14-slim",
+			wantPackages: []string{"ca-certificates", "git"},
+			wantEnv:      map[string]string{"BASE_KEY": "base-value", "SHARED_KEY": "base-value"},
+		},
+		{
+			name:         "empty override builder image falls back to base",
+			override:     &RuntimeConfig{},
+			wantImage:    "python:3.14-slim",
+			wantPackages: []string{"ca-certificates", "git"},
+			wantEnv:      map[string]string{"BASE_KEY": "base-value", "SHARED_KEY": "base-value"},
+		},
+		{
+			name:         "non-empty override builder image wins",
+			override:     &RuntimeConfig{BuilderImage: "python:3.11-slim"},
+			wantImage:    "python:3.11-slim",
+			wantPackages: []string{"ca-certificates", "git"},
+			wantEnv:      map[string]string{"BASE_KEY": "base-value", "SHARED_KEY": "base-value"},
+		},
+		{
+			name:         "packages dedupe, base first",
+			override:     &RuntimeConfig{AdditionalPackages: []string{"ca-certificates", "curl"}},
+			wantImage:    "python:3.14-slim",
+			wantPackages: []string{"ca-certificates", "git", "curl"},
+			wantEnv:      map[string]string{"BASE_KEY": "base-value", "SHARED_KEY": "base-value"},
+		},
+		{
+			name: "runtime env: override wins on shared key, base-only and override-only keys survive",
+			override: &RuntimeConfig{
+				RuntimeEnv: map[string]string{"SHARED_KEY": "override-value", "OVERRIDE_KEY": "override-value"},
+			},
+			wantImage:    "python:3.14-slim",
+			wantPackages: []string{"ca-certificates", "git"},
+			wantEnv: map[string]string{
+				"BASE_KEY": "base-value", "SHARED_KEY": "override-value", "OVERRIDE_KEY": "override-value",
+			},
+		},
+		{
+			name:         "build_with taken from override as-is, no defaults",
+			override:     &RuntimeConfig{BuildWith: []string{"mcp<2"}},
+			wantImage:    "python:3.14-slim",
+			wantPackages: []string{"ca-certificates", "git"},
+			wantEnv:      map[string]string{"BASE_KEY": "base-value", "SHARED_KEY": "base-value"},
+			wantBuild:    []string{"mcp<2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := base.WithOverrides(tt.override)
+			assert.Equal(t, tt.wantImage, got.BuilderImage)
+			assert.Equal(t, tt.wantPackages, got.AdditionalPackages)
+			assert.Equal(t, tt.wantEnv, got.RuntimeEnv)
+			assert.Equal(t, tt.wantBuild, got.BuildWith)
+		})
+	}
+}
+
+func TestRuntimeConfigWithOverrides_RuntimeEnvNilWhenBothEmpty(t *testing.T) {
+	t.Parallel()
+
+	// Base has no RuntimeEnv and override sets none either: the merged
+	// result must stay nil, not an empty map, so `omitempty` still omits
+	// runtime_env from serialized output.
+	base := &RuntimeConfig{AdditionalPackages: []string{"git"}}
+	assert.Nil(t, base.WithOverrides(nil).RuntimeEnv)
+	assert.Nil(t, base.WithOverrides(&RuntimeConfig{}).RuntimeEnv)
+}
+
+// TestRuntimeConfigWithOverrides_BuildWithFallsBackToBase pins the API's
+// exact scenario: getBaseRuntimeConfig reads the user's config file as the
+// base, so a global runtime_configs.uvx.build_with pin must survive a
+// request whose runtime_config sets unrelated fields only.
+func TestRuntimeConfigWithOverrides_BuildWithFallsBackToBase(t *testing.T) {
+	t.Parallel()
+
+	base := &RuntimeConfig{
+		BuilderImage: "python:3.14-slim",
+		BuildWith:    []string{"mcp<2"},
+	}
+	override := &RuntimeConfig{BuilderImage: "python:3.11-slim"}
+
+	got := base.WithOverrides(override)
+	assert.Equal(t, []string{"mcp<2"}, got.BuildWith)
+
+	// Detachment: the merge must clone on the fallback path too, not just
+	// the override-wins path — otherwise merged.BuildWith aliases base's
+	// slice via the `merged := *rc` struct copy.
+	base.BuildWith[0] = "mutated"
+	assert.Equal(t, []string{"mcp<2"}, got.BuildWith)
+}
+
+func TestRuntimeConfigWithOverrides_NilEqualsClone(t *testing.T) {
+	t.Parallel()
+
+	base := &RuntimeConfig{
+		BuilderImage:       "node:24-alpine",
+		AdditionalPackages: []string{"git"},
+	}
+	merged := base.WithOverrides(nil)
+	cloned := base.Clone()
+
+	assert.Equal(t, cloned, merged)
+	assert.NotSame(t, base, merged)
+}
+
+func TestRuntimeConfigWithOverrides_DoesNotMutateInputs(t *testing.T) {
+	t.Parallel()
+
+	base := &RuntimeConfig{
+		AdditionalPackages: []string{"git"},
+		RuntimeEnv:         map[string]string{"FOO": "base"},
+	}
+	override := &RuntimeConfig{
+		AdditionalPackages: []string{"curl"},
+		RuntimeEnv:         map[string]string{"FOO": "override"},
+	}
+
+	got := base.WithOverrides(override)
+	got.AdditionalPackages[0] = "mutated"
+	got.RuntimeEnv["FOO"] = "mutated"
+
+	assert.Equal(t, []string{"git"}, base.AdditionalPackages)
+	assert.Equal(t, map[string]string{"FOO": "base"}, base.RuntimeEnv)
+	assert.Equal(t, []string{"curl"}, override.AdditionalPackages)
+	assert.Equal(t, map[string]string{"FOO": "override"}, override.RuntimeEnv)
+}
+
+// TestRuntimeConfigWithOverrides_OutputIsDetachedFromInputs covers the opposite
+// direction from TestRuntimeConfigWithOverrides_DoesNotMutateInputs: mutating an
+// input slice/map *after* WithOverrides must not change the already-returned
+// result. BuildWith in particular was passed through as override.BuildWith
+// directly (no clone), so it aliased the caller's slice.
+func TestRuntimeConfigWithOverrides_OutputIsDetachedFromInputs(t *testing.T) {
+	t.Parallel()
+
+	base := &RuntimeConfig{
+		AdditionalPackages: []string{"git"},
+		RuntimeEnv:         map[string]string{"FOO": "base"},
+	}
+	override := &RuntimeConfig{
+		AdditionalPackages: []string{"curl"},
+		RuntimeEnv:         map[string]string{"FOO": "override"},
+		BuildWith:          []string{"mcp<2"},
+	}
+
+	got := base.WithOverrides(override)
+
+	override.AdditionalPackages[0] = "mutated"
+	override.RuntimeEnv["FOO"] = "mutated"
+	override.BuildWith[0] = "mutated"
+
+	assert.Equal(t, []string{"git", "curl"}, got.AdditionalPackages)
+	assert.Equal(t, "override", got.RuntimeEnv["FOO"])
+	assert.Equal(t, []string{"mcp<2"}, got.BuildWith)
+}
+
+// TestRuntimeConfigFieldCount guards against a field being added to
+// RuntimeConfig without updating Clone, WithOverrides, and IsEmpty, all of
+// which enumerate every field individually.
+func TestRuntimeConfigFieldCount(t *testing.T) {
+	t.Parallel()
+
+	// Adding a field? Update Clone, WithOverrides, and IsEmpty, then bump this.
+	require.Equal(t, 4, reflect.TypeOf(RuntimeConfig{}).NumField())
+}
+
+func TestRuntimeConfigIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rc   *RuntimeConfig
+		want bool
+	}{
+		{name: "nil receiver", rc: nil, want: true},
+		{name: "zero value", rc: &RuntimeConfig{}, want: true},
+		{name: "builder image set", rc: &RuntimeConfig{BuilderImage: "golang:1.26-alpine"}, want: false},
+		{name: "additional packages set", rc: &RuntimeConfig{AdditionalPackages: []string{"git"}}, want: false},
+		{name: "build with set", rc: &RuntimeConfig{BuildWith: []string{"mcp<2"}}, want: false},
+		{name: "runtime env set", rc: &RuntimeConfig{RuntimeEnv: map[string]string{"FOO": "bar"}}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.rc.IsEmpty())
+		})
+	}
 }

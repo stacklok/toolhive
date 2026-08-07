@@ -9,10 +9,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
-
-	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -32,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
+	wterrors "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 const (
@@ -39,24 +39,6 @@ const (
 	// Set to 10 minutes to handle large images (1GB+) on slower connections
 	imageRetrievalTimeout = 10 * time.Minute
 )
-
-func isValidRuntimePackageName(pkg string) bool {
-	if pkg == "" {
-		return false
-	}
-	for i, r := range pkg {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '.', r == '_':
-		case (r == '+' || r == '-') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
 
 // WorkloadService handles business logic for workload operations
 type WorkloadService struct {
@@ -94,8 +76,9 @@ func NewWorkloadService(
 
 // CreateWorkloadFromRequest creates a workload from a request
 func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Build the full run config (no existing port, so pass 0)
-	runConfig, err := s.BuildFullRunConfig(ctx, req, 0)
+	// Build the full run config (no existing port, so pass 0; no persisted
+	// workload exists yet, so pass nil)
+	runConfig, err := s.BuildFullRunConfig(ctx, req, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -130,8 +113,48 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 		slog.Debug("reusing existing port", "port", existingPort, "name", name)
 	}
 
+	// A workload built from a protocol-scheme image (uvx://, npx://, go://)
+	// persists Image as the *built* image, which is no longer a protocol
+	// scheme, plus the RuntimeConfig used to build it. GET echoes both back
+	// (see runtimeConfigForResponse), so PUT-ing that response unchanged
+	// would otherwise hit runtimeConfigForImageBuild's protocol-scheme guard.
+	// The persisted config is threaded through to BuildFullRunConfig so
+	// runtimeConfigForImageBuild can recognize an exact echo - same image,
+	// same URL, same runtime_config - and skip only the retriever/build
+	// input for it. req.RuntimeConfig itself is never touched here, so
+	// runConfig.RuntimeConfig is always populated from the request before
+	// the policy gate below evaluates it - a policy can't be bypassed by
+	// echoing an unchanged config back.
+	//
+	// Only load state when an echo is even possible, to keep the extra I/O
+	// off requests that don't need it. Missing state falls through with
+	// persisted left nil - the workload exists (the handler already
+	// checked), only its state file doesn't, so this can't be an echo and
+	// the protocol-scheme guard below is the correct 400, not a 404. Any
+	// other load error (corrupt file, cancelled context) is surfaced
+	// instead of silently disabling the echo check and producing a
+	// misleading 400.
+	var persisted *runner.RunConfig
+	// runtimeConfigFromRequest is called again in BuildFullRunConfig; it's
+	// pure (Clone-then-normalize), so the duplicate call just decides whether
+	// a state read is needed at all. Gating on it rather than the raw
+	// req.RuntimeConfig != nil means a request with an empty/whitespace-only
+	// runtime_config (which normalizes away to nothing) never reads state.
+	if runtimeConfigFromRequest(req) != nil && (req.URL != "" || !runner.IsImageProtocolScheme(req.Image)) {
+		p, err := runner.LoadState(ctx, name)
+		switch {
+		case err == nil:
+			persisted = p
+		case errors.Is(err, wterrors.ErrRunConfigNotFound):
+			// No persisted state to echo against; fall through to the
+			// protocol-scheme guard.
+		default:
+			return nil, fmt.Errorf("failed to load persisted state for workload %q: %w", name, err)
+		}
+	}
+
 	// Build the full run config
-	runConfig, err := s.BuildFullRunConfig(ctx, req, existingPort)
+	runConfig, err := s.BuildFullRunConfig(ctx, req, existingPort, persisted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build workload config: %w", err)
 	}
@@ -145,11 +168,14 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 	return runConfig, nil
 }
 
-// BuildFullRunConfig builds a complete RunConfig
+// BuildFullRunConfig builds a complete RunConfig. persisted is the
+// workload's existing RunConfig on update, or nil on create; it is used
+// only to recognize an unchanged runtime_config echo on a non-protocol
+// image (see runtimeConfigForImageBuild).
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
 func (s *WorkloadService) BuildFullRunConfig(
-	ctx context.Context, req *createRequest, existingPort int,
+	ctx context.Context, req *createRequest, existingPort int, persisted *runner.RunConfig,
 ) (*runner.RunConfig, error) {
 	// If registry+server specified, resolve from registry and fill defaults.
 	// The returned metadata is assigned to the local variables so the rest of
@@ -242,7 +268,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	}
 
 	runtimeConfigOverride := runtimeConfigFromRequest(req)
-	retrievalRuntimeConfig, err := runtimeConfigForImageBuild(req, runtimeConfigOverride)
+	retrievalRuntimeConfig, err := runtimeConfigForImageBuild(req, runtimeConfigOverride, persisted)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", retriever.ErrInvalidRunConfig, err)
 	}
@@ -355,8 +381,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithRegistryServerName(regServerName),
 	}
 
-	// Runtime overrides only apply to protocol-scheme image builds.
-	if runtimeConfigOverride != nil && req.URL == "" {
+	// A non-nil override here is either a protocol-scheme build (validated
+	// above) or an accepted echo on an otherwise-rejected image/URL - both
+	// must be preserved on the RunConfig, so no req.URL guard here.
+	if runtimeConfigOverride != nil {
 		options = append(options, runner.WithRuntimeConfig(runtimeConfigOverride))
 	}
 
@@ -503,60 +531,85 @@ func createRequestToRemoteAuthConfig(
 	return remoteAuthConfig
 }
 
+// runtimeConfigFromRequest normalizes the request's runtime config in place
+// on a clone, rather than copying it field by field, so a future field rides
+// along without needing a new branch here. Returns nil if there is no
+// runtime config, or if every field is empty after normalization — callers
+// must treat nil as "no override" and not build one, since a nil result
+// skips runtimeConfigForImageBuild's protocol-scheme guard downstream.
 func runtimeConfigFromRequest(req *createRequest) *templates.RuntimeConfig {
-	if req == nil || req.RuntimeConfig == nil {
+	if req == nil {
 		return nil
 	}
 
-	runtimeConfig := &templates.RuntimeConfig{}
-	if builderImage := strings.TrimSpace(req.RuntimeConfig.BuilderImage); builderImage != "" {
-		runtimeConfig.BuilderImage = builderImage
-	}
-	if len(req.RuntimeConfig.AdditionalPackages) > 0 {
-		for _, pkg := range req.RuntimeConfig.AdditionalPackages {
-			if trimmedPkg := strings.TrimSpace(pkg); trimmedPkg != "" {
-				runtimeConfig.AdditionalPackages = append(runtimeConfig.AdditionalPackages, trimmedPkg)
-			}
-		}
-	}
-	if runtimeConfig.BuilderImage == "" && len(runtimeConfig.AdditionalPackages) == 0 {
+	rc := normalizeRuntimeConfig(req.RuntimeConfig)
+	if rc == nil || rc.IsEmpty() {
 		return nil
 	}
 
-	return runtimeConfig
+	return rc
 }
 
-func validateRuntimeConfig(runtimeConfig *templates.RuntimeConfig) error {
-	if runtimeConfig == nil {
+// normalizeRuntimeConfig returns a deep copy of rc with fields trimmed and
+// emptied consistently, so two configs that differ only in incidental
+// whitespace or a nil-vs-empty collection compare equal. Used both to
+// normalize an incoming request (runtimeConfigFromRequest) and to normalize
+// a persisted config before comparing it against an already-normalized
+// override for an echo (runtimeConfigForImageBuild) - a stored config
+// persisted before this normalization existed (e.g. an untrimmed
+// builder_image) must still compare equal to its own unchanged echo.
+// Returns nil for a nil input.
+func normalizeRuntimeConfig(rc *templates.RuntimeConfig) *templates.RuntimeConfig {
+	if rc == nil {
 		return nil
 	}
-
-	if runtimeConfig.BuilderImage != "" {
-		if _, err := nameref.ParseReference(runtimeConfig.BuilderImage); err != nil {
-			return fmt.Errorf("runtime_config.builder_image must be a valid container image reference")
-		}
+	out := rc.Clone()
+	out.BuilderImage = strings.TrimSpace(out.BuilderImage)
+	out.AdditionalPackages = trimAndFilterEmpty(out.AdditionalPackages)
+	out.BuildWith = trimAndFilterEmpty(out.BuildWith)
+	if len(out.RuntimeEnv) == 0 {
+		out.RuntimeEnv = nil
 	}
-
-	for _, pkg := range runtimeConfig.AdditionalPackages {
-		if !isValidRuntimePackageName(pkg) {
-			return fmt.Errorf("runtime_config.additional_packages contains invalid package name %q", pkg)
-		}
-	}
-
-	return nil
+	return out
 }
 
+// trimAndFilterEmpty trims whitespace from each entry and drops any that
+// become empty, without mutating the input slice.
+func trimAndFilterEmpty(entries []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	var out []string
+	for _, entry := range entries {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// persisted is the workload's existing RunConfig on update (nil on create).
+// It is used solely to recognize an unchanged runtime_config echo on a
+// non-protocol image, in which case this returns nil, nil instead of
+// rejecting: nothing needs to be (re)built. This only suppresses the value
+// fed to the retriever - the caller populates runConfig.RuntimeConfig from
+// runtimeConfigOverride regardless, so the policy gate still sees it.
 func runtimeConfigForImageBuild(
 	req *createRequest,
 	runtimeConfigOverride *templates.RuntimeConfig,
+	persisted *runner.RunConfig,
 ) (*templates.RuntimeConfig, error) {
 	if runtimeConfigOverride == nil || req == nil {
 		return nil, nil
 	}
-	if err := validateRuntimeConfig(runtimeConfigOverride); err != nil {
-		return nil, err
-	}
 	if req.URL != "" || !runner.IsImageProtocolScheme(req.Image) {
+		// An exact echo of the persisted workload - same image, same URL,
+		// same runtime_config - is inert: nothing to rebuild, so it isn't
+		// rejected even though the image isn't a protocol scheme.
+		if persisted != nil && req.Image == persisted.Image && req.URL == persisted.RemoteURL &&
+			reflect.DeepEqual(runtimeConfigOverride, normalizeRuntimeConfig(persisted.RuntimeConfig)) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("runtime_config is only supported for protocol-scheme images")
 	}
 
@@ -565,16 +618,17 @@ func runtimeConfigForImageBuild(
 		return nil, err
 	}
 
-	baseConfig := getBaseRuntimeConfig(transportType)
-	merged := &templates.RuntimeConfig{
-		BuilderImage:       baseConfig.BuilderImage,
-		AdditionalPackages: append([]string{}, baseConfig.AdditionalPackages...),
-	}
-	if runtimeConfigOverride.BuilderImage != "" {
-		merged.BuilderImage = runtimeConfigOverride.BuilderImage
-	}
-	if len(runtimeConfigOverride.AdditionalPackages) > 0 {
-		merged.AdditionalPackages = append(merged.AdditionalPackages, runtimeConfigOverride.AdditionalPackages...)
+	base := getBaseRuntimeConfig(transportType)
+	merged := base.WithOverrides(runtimeConfigOverride)
+	// Validating here, before the merged config ever reaches the builder, is
+	// load-bearing, not incidental: the caller wraps this error in
+	// retriever.ErrInvalidRunConfig, which is coded 400 and returned to the
+	// client intact. The same failure surfacing inside imageRetriever instead
+	// would be >=500, and pkg/api/errors/handler.go scrubs those down to a
+	// bare "Internal Server Error" — silently reintroducing the bug this
+	// design exists to close.
+	if err := merged.ValidateFor(transportType); err != nil {
+		return nil, fmt.Errorf("runtime_config: %w", err)
 	}
 
 	return merged, nil
@@ -583,17 +637,11 @@ func runtimeConfigForImageBuild(
 func getBaseRuntimeConfig(transportType templates.TransportType) *templates.RuntimeConfig {
 	provider := config.NewProvider()
 	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
-		return &templates.RuntimeConfig{
-			BuilderImage:       userConfig.BuilderImage,
-			AdditionalPackages: append([]string{}, userConfig.AdditionalPackages...),
-		}
+		return userConfig.Clone()
 	}
 
 	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
-	return &templates.RuntimeConfig{
-		BuilderImage:       defaultConfig.BuilderImage,
-		AdditionalPackages: append([]string{}, defaultConfig.AdditionalPackages...),
-	}
+	return defaultConfig.Clone()
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group

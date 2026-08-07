@@ -176,9 +176,11 @@ func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
 
 // ensureAuditContext injects the mutable carriers the auditor reads after the
 // inner chain returns: BackendInfo (backend routing), an auth.IdentityHolder
-// (identity attached by an auth middleware running INSIDE audit), and an
+// (identity attached by an auth middleware running INSIDE audit), an
 // mcp.ParsedRequestHolder (parsed MCP data from a parser running INSIDE
-// audit). Each is only injected when absent so nested auditors share carriers.
+// audit), and an mcp.AuthzDenialMarker (pre-parse refusals flagged by the
+// authz middleware running INSIDE audit). Each is only injected when absent
+// so nested auditors share carriers.
 func ensureAuditContext(r *http.Request) *http.Request {
 	ctx := r.Context()
 	changed := false
@@ -192,6 +194,10 @@ func ensureAuditContext(r *http.Request) *http.Request {
 	}
 	if _, ok := mcp.ParsedRequestHolderFromContext(ctx); !ok {
 		ctx = mcp.WithParsedRequestHolder(ctx, &mcp.ParsedRequestHolder{})
+		changed = true
+	}
+	if _, ok := mcp.AuthzDenialMarkerFromContext(ctx); !ok {
+		ctx = mcp.WithAuthzDenialMarker(ctx, &mcp.AuthzDenialMarker{})
 		changed = true
 	}
 	if !changed {
@@ -274,6 +280,14 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Determine outcome based on status code
 	outcome := a.determineOutcome(rw.statusCode)
+
+	// A refusal by the authz middleware before message-level authorization
+	// could run (e.g. a non-JSON POST carrying a smuggled JSON-RPC body)
+	// writes a 400, which determineOutcome maps to a generic failure. The
+	// marker reclassifies it as a denial so blocked sweeps are alertable.
+	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
+		outcome = OutcomeDenied
+	}
 
 	// When HTTP status indicates success, check for JSON-RPC errors
 	// hidden inside HTTP 200 responses.

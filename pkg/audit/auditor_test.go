@@ -1441,6 +1441,29 @@ func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
 			"no identity exists when authentication fails")
 	})
 
+	t.Run("authz non-JSON refusal is audited as denied", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		// Mirror the authz middleware's refusal path: flag the injected
+		// marker and write the 400, as the explicit early return does.
+		refuse := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
+				marker.Denied = true
+			}
+			http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
+		})
+		req := httptest.NewRequest(http.MethodPost, "/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"target_tool","arguments":{}}}`))
+		req.Header.Set("Content-Type", "text/plain")
+		auditor.Middleware(refuse).ServeHTTP(httptest.NewRecorder(), req)
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, OutcomeDenied, events[0]["outcome"],
+			"an authz refusal before message-level authorization must audit as denied, not a generic 400 failure")
+	})
+
 	t.Run("event type comes from inner parser via holder", func(t *testing.T) {
 		t.Parallel()
 		auditor, logBuf := newBufferAuditor(t)

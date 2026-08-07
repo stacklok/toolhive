@@ -114,9 +114,18 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 // shouldSkipInitialAuthorization checks if the request should skip authorization
 // before reading the request body.
 func shouldSkipInitialAuthorization(r *http.Request) bool {
-	// Skip authorization for non-POST requests and non-JSON content types
-	if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	// Skip authorization for non-POST requests
+	if r.Method != http.MethodPost {
 		return true
+	}
+
+	// A POST that does not declare application/json is not parsed as MCP, so the
+	// message-level authorization below cannot run - but the proxy still forwards
+	// the body verbatim, and MCP backends parse JSON-RPC without checking
+	// Content-Type. Refusing here is the only point that keeps a JSON-RPC body
+	// smuggled under text/plain from reaching the backend un-authorized.
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return false
 	}
 
 	// Skip authorization for the SSE endpoint

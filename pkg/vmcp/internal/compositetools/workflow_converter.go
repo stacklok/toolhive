@@ -135,6 +135,28 @@ func ConvertWorkflowDefsToTools(
 	return tools
 }
 
+// FilterWorkflowDefsByAnnotations returns only the workflow definitions whose
+// explicit annotations do not contradict the derived safety floor. Definitions
+// that contradict are omitted (with the same warning resolveCompositeAnnotations
+// already emits). This is the CallTool/ListTools shared gate — callers that
+// execute composites must use this filtered set so a dropped tool is never callable.
+func FilterWorkflowDefsByAnnotations(
+	defs map[string]*composer.WorkflowDefinition,
+	stepResolver StepAnnotationResolver,
+) map[string]*composer.WorkflowDefinition {
+	if len(defs) == 0 {
+		return defs
+	}
+
+	filtered := make(map[string]*composer.WorkflowDefinition, len(defs))
+	for name, def := range defs {
+		if _, ok := resolveCompositeAnnotations(def, stepResolver); ok {
+			filtered[name] = def
+		}
+	}
+	return filtered
+}
+
 // resolveCompositeAnnotations computes the advertised annotations for a
 // composite tool: the floor derived from the step tools merged with the
 // workflow's explicit annotations. It returns ok=false when the explicit
@@ -199,6 +221,20 @@ func resolveStepAnnotations(
 	return anns, refs
 }
 
+// CompositeToolNames returns the names of the composite tools in defs.
+// Order is undefined (map iteration). Used for name-conflict detection so
+// annotation policy cannot drop a colliding name from the conflict check.
+func CompositeToolNames(defs map[string]*composer.WorkflowDefinition) []string {
+	if len(defs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(defs))
+	for name := range defs {
+		names = append(names, name)
+	}
+	return names
+}
+
 // ValidateNoToolConflicts validates that composite tool names don't conflict with backend tool names.
 //
 // Tool name conflicts would cause ambiguity in routing/execution:
@@ -208,12 +244,9 @@ func resolveStepAnnotations(
 // This validation ensures clear separation and prevents runtime confusion.
 // Returns an error listing all conflicting tool names if any conflicts are found.
 //
-// Note: this path builds composite Tool values only to detect name collisions,
-// so it passes a noop annotation resolver and ignores the derived annotations.
-// (D4 — extracting a CompositeToolNames primitive shared with the advertise
-// path is tracked as a low-priority follow-up; the noop resolver keeps the
-// collision check free of annotation-resolution cost.)
-func ValidateNoToolConflicts(backendTools, compositeTools []vmcp.Tool) error {
+// Prefer CompositeToolNames(defs) for the compositeNames argument so conflict
+// detection never depends on annotation conversion (which can drop tools).
+func ValidateNoToolConflicts(backendTools []vmcp.Tool, compositeNames []string) error {
 	// Build set of backend tool names for O(1) lookups
 	backendNames := make(map[string]bool, len(backendTools))
 	for _, tool := range backendTools {
@@ -222,9 +255,9 @@ func ValidateNoToolConflicts(backendTools, compositeTools []vmcp.Tool) error {
 
 	// Check for conflicts
 	var conflicts []string
-	for _, compTool := range compositeTools {
-		if backendNames[compTool.Name] {
-			conflicts = append(conflicts, compTool.Name)
+	for _, name := range compositeNames {
+		if backendNames[name] {
+			conflicts = append(conflicts, name)
 		}
 	}
 

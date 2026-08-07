@@ -387,6 +387,13 @@ from the annotations of the backend tools referenced by the workflow's steps
 - `openWorldHint`: **OR** across steps — same rule as `destructiveHint`.
 - `idempotentHint`: never derived (left unset).
 
+> **Client compatibility note:** existing composite tools that previously
+> advertised no annotations now advertise the fail-closed floor
+> (`destructiveHint: true`, `openWorldHint: true`, `readOnlyHint: false`) when
+> they have tool steps. That matches the MCP spec defaults for omitted hints, so
+> conformant clients are unaffected — but clients that branch on
+> `annotations != nil` may start treating composites as destructive.
+
 **When `annotations` is set**, the explicit values are merged over the derived
 floor: each explicitly set field wins; unset fields keep the derived value.
 
@@ -401,9 +408,9 @@ conservatively (`readOnly=false`, `destructive=true`, `openWorld=true`). In the
 common case where backends declare no annotations (e.g. yardstick echo), the
 floor is that conservative set, so an explicit `readOnlyHint: true` will
 contradict it and be dropped. This guardrail runs at **runtime (advertise
-time)**, not at admission: a contradicting composite tool is dropped from
-`tools/list` with a warning (naming the offending step tools) in the vMCP logs,
-while the VirtualMCPServer stays Ready.
+time)**, not at admission: a contradicting composite tool is omitted from
+`tools/list` and is also uncallable via `tools/call` (with a warning naming the
+offending step tools in the vMCP logs), while the VirtualMCPServer stays Ready.
 
 > **`thv vmcp validate` does NOT check annotation contradictions.** A composite
 > tool definition that passes validation can still be dropped at runtime if its

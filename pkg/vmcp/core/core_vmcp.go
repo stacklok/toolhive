@@ -647,9 +647,12 @@ func (c *coreVMCP) advertisedTools(agg *aggregator.AggregatedCapabilities) []vmc
 
 // accessibleComposites returns the composite-tool definitions the core advertises
 // (and therefore executes) for agg's view: those whose every tool step is reachable
-// in the routing table AND whose names do not collide with a backend tool. On a name
+// in the routing table, whose names do not collide with a backend tool, AND whose
+// explicit annotations do not contradict the derived safety floor. On a name
 // collision ALL composites are dropped so the backend tool wins, matching the legacy
 // compositeToolsDecorator (sessionmanager/factory.go:158-168, decorator.go:83-86).
+// On an annotation contradiction the offending composite is dropped (with a warning)
+// so CallTool and ListTools share the same set.
 //
 // This is the single source of truth shared by advertisedTools (what ListTools shows)
 // and CallTool (what executes), so a withheld composite is never executed — advertised
@@ -665,15 +668,16 @@ func (c *coreVMCP) accessibleComposites(
 	if len(defs) == 0 {
 		return nil
 	}
-	// Annotations are irrelevant to name-conflict detection, so derivation is
-	// skipped here via a noop resolver.
-	noopResolver := func(string) *vmcp.ToolAnnotations { return nil }
+	// Name-only conflict check — must not run annotation conversion, which can
+	// drop composites carrying optimistic hints and hide a colliding name.
 	if err := compositetools.ValidateNoToolConflicts(
-		agg.Tools, compositetools.ConvertWorkflowDefsToTools(defs, noopResolver)); err != nil {
+		agg.Tools, compositetools.CompositeToolNames(defs)); err != nil {
 		slog.Warn("composite tool name conflict detected; omitting composite tools", "error", err)
 		return nil
 	}
-	return defs
+	// Annotation guardrail: drop contradicting composites so CallTool and
+	// ListTools share the same set (advertised equals executed).
+	return compositetools.FilterWorkflowDefsByAnnotations(defs, stepAnnotationResolver(agg))
 }
 
 // stepAnnotationResolver returns a StepAnnotationResolver that maps a composite

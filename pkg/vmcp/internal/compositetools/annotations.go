@@ -83,16 +83,11 @@ func DeriveCompositeAnnotations(stepAnn []*vmcp.ToolAnnotations) *vmcp.ToolAnnot
 // idempotentHint never contradicts, and an explicit hint MORE conservative than
 // the floor (e.g. readOnlyHint=false when the floor is true) is allowed.
 //
-// A floor hint that is nil means "unknown" for that hint, and an explicit hint
-// that claims the conservative direction (e.g. destructiveHint:false while the
-// floor's destructiveHint is nil) is allowed rather than flagged as a
-// contradiction — only an explicit claim that would tighten safety against an
-// unknown floor is rejected (readOnlyHint:true against a nil floor readOnly is
-// rejected; destructiveHint:false against a nil floor destructive is allowed
-// because the floor does not assert the tool is destructive).
-//
-// Returns nil when there is no contradiction (including nil explicit or a nil
-// floor, since a nil floor means "no tool steps" and there is nothing to guard).
+// DeriveCompositeAnnotations always populates ReadOnlyHint, DestructiveHint,
+// and OpenWorldHint when it returns a non-nil floor, so the nil-hint branches
+// below are defensive (they would only matter for a hand-built floor). A nil
+// floor (no tool steps) or nil explicit means there is nothing to guard and
+// the check returns nil.
 func CheckAnnotationContradiction(explicit, floor *vmcp.ToolAnnotations) error {
 	if explicit == nil || floor == nil {
 		return nil

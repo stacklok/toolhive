@@ -313,6 +313,14 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			_, found = toolAnnotations[contradictingToolName]
 			Expect(found).To(BeFalse(),
 				"Composite tool with annotations contradicting the safety floor should be dropped: %s", contradictingToolName)
+
+			By("Verifying the contradicting composite tool is also uncallable")
+			callRequest := mcp.CallToolRequest{}
+			callRequest.Params.Name = contradictingToolName
+			callRequest.Params.Arguments = map[string]any{"message": "should-not-run"}
+			_, err = mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+			Expect(err).To(HaveOccurred(),
+				"CallTool on a dropped contradicting composite must fail; advertised equals executed")
 		})
 
 		It("should stay Ready while dropping the contradicting composite tool", func() {

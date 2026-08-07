@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // expectAggregation wires reg.List + agg.AggregateCapabilities to return agg once.
@@ -358,6 +359,102 @@ func TestCompositeNameConflict_AdvertisedEqualsExecuted(t *testing.T) {
 	got, err := c.CallTool(context.Background(), nil, "shared", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, want, got, "conflicting name must resolve to the backend tool, not the composite")
+}
+
+// TestCompositeAnnotationContradiction_AdvertisedEqualsExecuted is the parity
+// guard for annotation drop: a composite whose explicit annotations contradict
+// the derived floor is omitted from ListTools and must also be uncallable via
+// CallTool (ErrNotFound). No backend CallTool expectation is set — if the
+// composite incorrectly remains executable, CallTool would hit the composer and
+// invoke the backend, failing the mock.
+func TestCompositeAnnotationContradiction_AdvertisedEqualsExecuted(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+		"wf": {
+			Name: "wf",
+			// Optimistic readOnlyHint against a silent backend (nil annotations →
+			// fail-closed floor with readOnly=false) is a contradiction → drop.
+			Annotations: &config.ToolAnnotationsOverride{ReadOnlyHint: boolPtr(true)},
+			Steps:       []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.echo"}},
+		},
+	}
+
+	beTarget := backendTarget()
+	// Backend tool has nil Annotations → silent backend → conservative floor.
+	agg := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{{Name: "be1.echo", BackendID: testBackendID}},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{
+			"be1.echo": beTarget,
+		}},
+	}
+	// Two aggregations: one for ListTools, one for CallTool.
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(2)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(agg, nil).Times(2)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	tools, err := c.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
+	assert.Equal(t, "be1.echo", tools[0].Name)
+	assert.Equal(t, testBackendID, tools[0].BackendID)
+
+	// No m.client.EXPECT().CallTool — a regression that executes the workflow
+	// would call the backend and fail the mock controller.
+	_, err = c.CallTool(context.Background(), nil, "wf", nil, nil)
+	assert.ErrorIs(t, err, vmcp.ErrNotFound,
+		"contradicting composite must be uncallable; advertised equals executed")
+}
+
+// TestCompositeNameConflict_WithOptimisticAnnotations_RoutesToBackend is the
+// bug-2 regression: a composite named like a backend tool and carrying
+// optimistic annotations (readOnlyHint:true) must still be detected as a name
+// conflict. Pre-fix, ConvertWorkflowDefsToTools + noop resolver dropped the
+// composite from conversion (annotation contradiction), so ValidateNoToolConflicts
+// never saw the name and CallTool executed the workflow. Post-fix,
+// CompositeToolNames feeds the conflict check → ALL composites dropped →
+// CallTool routes to the backend.
+func TestCompositeNameConflict_WithOptimisticAnnotations_RoutesToBackend(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+		"be1.echo": {
+			Name:        "be1.echo",
+			Annotations: &config.ToolAnnotationsOverride{ReadOnlyHint: boolPtr(true)},
+			Steps:       []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.echo"}},
+		},
+	}
+
+	beTarget := backendTarget()
+	agg := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{{Name: "be1.echo", BackendID: testBackendID}},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{
+			"be1.echo": beTarget,
+		}},
+	}
+	// Two aggregations: one for ListTools, one for CallTool.
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(2)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(agg, nil).Times(2)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	tools, err := c.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
+	assert.Equal(t, "be1.echo", tools[0].Name)
+	assert.Equal(t, testBackendID, tools[0].BackendID)
+
+	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"from": "backend"}}
+	m.client.EXPECT().CallTool(gomock.Any(), beTarget, "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).Return(want, nil)
+
+	got, err := c.CallTool(context.Background(), nil, "be1.echo", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "conflicting composite with optimistic annotations must route to the backend")
 }
 
 // TestComplete_RoutesPromptRef verifies a ref/prompt completion resolves the

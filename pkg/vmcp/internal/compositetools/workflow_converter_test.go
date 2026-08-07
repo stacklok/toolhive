@@ -4,9 +4,12 @@
 package compositetools
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
@@ -1034,6 +1037,193 @@ func TestConvertWorkflowDefsToToolsAnnotations(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestCompositeToolNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		defs map[string]*composer.WorkflowDefinition
+		want []string
+	}{
+		{
+			name: "nil map",
+			defs: nil,
+			want: nil,
+		},
+		{
+			name: "empty map",
+			defs: map[string]*composer.WorkflowDefinition{},
+			want: nil,
+		},
+		{
+			name: "returns all definition names",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf_a": {Name: "wf_a"},
+				"wf_b": {Name: "wf_b"},
+				"wf_c": {Name: "wf_c"},
+			},
+			want: []string{"wf_a", "wf_b", "wf_c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := CompositeToolNames(tt.defs)
+			require.ElementsMatch(t, tt.want, got)
+		})
+	}
+}
+
+func TestValidateNoToolConflicts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		backendTools   []vmcp.Tool
+		compositeNames []string
+		wantConflict   bool
+	}{
+		{
+			name:           "no conflict",
+			backendTools:   []vmcp.Tool{{Name: "be1.echo"}, {Name: "be1.list"}},
+			compositeNames: []string{"wf", "deploy"},
+			wantConflict:   false,
+		},
+		{
+			name:           "single name conflict",
+			backendTools:   []vmcp.Tool{{Name: "be1.echo"}, {Name: "shared"}},
+			compositeNames: []string{"wf", "shared"},
+			wantConflict:   true,
+		},
+		{
+			name:           "empty composites",
+			backendTools:   []vmcp.Tool{{Name: "be1.echo"}},
+			compositeNames: nil,
+			wantConflict:   false,
+		},
+		{
+			name:           "empty backends",
+			backendTools:   nil,
+			compositeNames: []string{"wf"},
+			wantConflict:   false,
+		},
+		{
+			// Name-only check: even an optimistic/contradicting composite name is
+			// still visible to conflict detection (bug-2 regression surface).
+			name:           "conflict with optimistic annotation name still detected",
+			backendTools:   []vmcp.Tool{{Name: "be1.echo"}},
+			compositeNames: []string{"be1.echo"},
+			wantConflict:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateNoToolConflicts(tt.backendTools, tt.compositeNames)
+			if tt.wantConflict {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, vmcp.ErrToolNameConflict),
+					"expected ErrToolNameConflict, got %v", err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestFilterWorkflowDefsByAnnotations(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+	resolver := func(ann map[string]*vmcp.ToolAnnotations) StepAnnotationResolver {
+		return func(stepTool string) *vmcp.ToolAnnotations { return ann[stepTool] }
+	}
+
+	tests := []struct {
+		name         string
+		defs         map[string]*composer.WorkflowDefinition
+		stepResolver StepAnnotationResolver
+		wantNames    []string
+	}{
+		{
+			name:      "empty defs",
+			defs:      map[string]*composer.WorkflowDefinition{},
+			wantNames: nil,
+		},
+		{
+			name: "keeps non-contradicting, drops contradicting",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf_bad": {
+					Name: "wf_bad",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.write"},
+					},
+					Annotations: &config.ToolAnnotationsOverride{ReadOnlyHint: &trueVal},
+				},
+				"wf_ok": {
+					Name: "wf_ok",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read":  {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+				"backend.write": {ReadOnlyHint: &falseVal, DestructiveHint: &trueVal, OpenWorldHint: &trueVal},
+			}),
+			wantNames: []string{"wf_ok"},
+		},
+		{
+			// Silent backend (nil step annotations) → fail-closed floor; explicit
+			// readOnlyHint:true contradicts and the def is dropped.
+			name: "drops optimistic readOnly against silent backend floor",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name: "wf",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.echo"},
+					},
+					Annotations: &config.ToolAnnotationsOverride{ReadOnlyHint: &trueVal},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.echo": nil,
+			}),
+			wantNames: []string{},
+		},
+		{
+			name: "keeps workflow with no explicit annotations",
+			defs: map[string]*composer.WorkflowDefinition{
+				"wf": {
+					Name: "wf",
+					Steps: []composer.WorkflowStep{
+						{ID: "s1", Type: composer.StepTypeTool, Tool: "backend.read"},
+					},
+				},
+			},
+			stepResolver: resolver(map[string]*vmcp.ToolAnnotations{
+				"backend.read": {ReadOnlyHint: &trueVal, DestructiveHint: &falseVal, OpenWorldHint: &falseVal},
+			}),
+			wantNames: []string{"wf"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := FilterWorkflowDefsByAnnotations(tt.defs, tt.stepResolver)
+			gotNames := make([]string, 0, len(got))
+			for name := range got {
+				gotNames = append(gotNames, name)
+			}
+			require.ElementsMatch(t, tt.wantNames, gotNames)
+		})
+	}
+}
 
 func TestBuildOutputPropertySchema(t *testing.T) {
 	t.Parallel()

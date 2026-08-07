@@ -541,23 +541,33 @@ type ToolConfigRef struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type ToolAnnotationsOverride struct {
-	// Title overrides the human-readable title annotation.
+	// Title sets the human-readable title annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	Title *string `json:"title,omitempty" yaml:"title,omitempty"`
 
-	// ReadOnlyHint overrides the read-only hint annotation.
+	// ReadOnlyHint sets the read-only hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	ReadOnlyHint *bool `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
 
-	// DestructiveHint overrides the destructive hint annotation.
+	// DestructiveHint sets the destructive hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	DestructiveHint *bool `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
 
-	// IdempotentHint overrides the idempotent hint annotation.
+	// IdempotentHint sets the idempotent hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	IdempotentHint *bool `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
 
-	// OpenWorldHint overrides the open-world hint annotation.
+	// OpenWorldHint sets the open-world hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	OpenWorldHint *bool `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
 }

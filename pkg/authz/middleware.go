@@ -19,6 +19,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
@@ -287,7 +289,9 @@ func authorizeAndServe(
 // It always fully handles the request (authorization, unauthorized response, or serving).
 //
 // For pass-through meta-tools (find_tool, call_tool):
-//   - call_tool: authorizes the real inner tool name from arguments["tool_name"].
+//   - call_tool: authorizes the real inner tool name, decoded from the request
+//     arguments exactly as dispatch decodes them, so the two cannot disagree about
+//     which tool a request names. Arguments that do not decode are denied.
 //   - find_tool (and other pass-through tools without a tool_name): allowed through
 //     as a discovery operation with no policy check.
 //
@@ -303,12 +307,28 @@ func handleToolsCall(
 	next http.Handler,
 ) {
 	if _, isPassThrough := passThroughTools[parsedRequest.ResourceID]; isPassThrough {
-		if toolName, ok := parsedRequest.Arguments[optimizerdec.CallToolArgToolName].(string); ok && toolName != "" {
+		// Decode with the same call the two call_tool dispatch sites use rather than
+		// indexing the arguments map. encoding/json matches struct fields
+		// case-insensitively, so a map index on "tool_name" misses a request carrying
+		// "Tool_Name" that dispatch resolves and runs. Going through CallToolInput
+		// also applies the nested-tool_name hoist, so the name authorized here is the
+		// one that will execute.
+		input, err := schema.Translate[optimizer.CallToolInput](parsedRequest.Arguments)
+		if err != nil {
+			// The arguments are not a decodable call_tool payload, so the tool they
+			// target cannot be established. Deny rather than pass through; dispatch
+			// decodes the same map with the same call and rejects it too, so no
+			// legitimate invocation is lost.
+			slog.Warn("denying pass-through tool call with undecodable arguments",
+				"tool", parsedRequest.ResourceID, "error", err)
+			handleUnauthorized(w, parsedRequest.ID, nil)
+			return
+		}
+		if input.ToolName != "" {
 			// call_tool: authorize the real backend tool name.
-			innerArgs, _ := parsedRequest.Arguments[optimizerdec.CallToolArgParameters].(map[string]interface{})
 			authorizeAndServe(w, r, a, annotationCache,
 				featureOp.Feature, featureOp.Operation,
-				parsedRequest.ID, toolName, innerArgs, next)
+				parsedRequest.ID, input.ToolName, input.Parameters, next)
 			return
 		}
 		// find_tool: allow through but filter the tools list in the response so

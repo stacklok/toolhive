@@ -56,7 +56,7 @@ const metaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 // schema's RequestMetaObject.
 const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 
-// metaKeyLogLevel carries the per-request minimum log level on Modern
+// MetaKeyLogLevel carries the per-request minimum log level on Modern
 // (2026-07-28) requests (draft schema RequestMetaObject; go-sdk protocol.go).
 // It is a reserved per-hop key that must be stripped before a Legacy backend
 // hop, but — unlike the other reserved keys — its mere presence is NOT a claim
@@ -64,7 +64,10 @@ const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 // on protocolVersion, and SEP-2577 already deprecates logLevel. It therefore
 // belongs in the strip set (ReservedMetaPrefix, minus passthroughMetaKeys) but
 // not the ingress signal set (modernSignalMetaKeys).
-const metaKeyLogLevel = "io.modelcontextprotocol/logLevel"
+//
+// Exported so the vMCP Modern client can overlay it onto the request _meta it
+// mints (the Modern replacement for the removed logging/setLevel RPC).
+const MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 
 // ReservedMetaPrefix is the _meta key namespace the MCP spec reserves for the
 // protocol's own use. StripReservedMeta removes every key carrying it except

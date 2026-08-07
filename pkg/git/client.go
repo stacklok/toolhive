@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 )
@@ -53,6 +55,10 @@ type HeadCommit struct {
 	// whatever bytes the commit carries; callers must cryptographically
 	// verify it before treating it as provenance.
 	Signature string
+	// Payload is the encoded commit object without its signature — the
+	// exact bytes the signature signs. Verifiers check Signature over
+	// Payload.
+	Payload []byte
 }
 
 // DefaultGitClient implements Client using go-git
@@ -277,8 +283,28 @@ func (*DefaultGitClient) HeadCommit(repoInfo *RepositoryInfo) (HeadCommit, error
 	if err != nil {
 		return HeadCommit{}, fmt.Errorf("failed to read HEAD commit: %w", err)
 	}
+	payload, err := commitPayload(commit)
+	if err != nil {
+		return HeadCommit{}, fmt.Errorf("failed to encode HEAD commit payload: %w", err)
+	}
 	return HeadCommit{
 		Hash:      ref.Hash().String(),
 		Signature: commit.PGPSignature,
+		Payload:   payload,
 	}, nil
+}
+
+// commitPayload returns the encoded commit object without its signature —
+// the bytes a commit signature is computed over.
+func commitPayload(commit *object.Commit) ([]byte, error) {
+	obj := &plumbing.MemoryObject{}
+	if err := commit.EncodeWithoutSignature(obj); err != nil {
+		return nil, err
+	}
+	r, err := obj.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close() //nolint:errcheck // in-memory reader
+	return io.ReadAll(r)
 }

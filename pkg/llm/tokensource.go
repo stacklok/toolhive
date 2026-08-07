@@ -39,7 +39,10 @@ type TokenSource = tokensource.OAuthTokenSource
 // secretsProvider may be nil if the secrets store is unavailable.
 // tokenRefUpdater is called after login/refresh to persist the token reference
 // into config — pass nil to skip config persistence (useful in tests).
-// Set interactive to false for non-interactive callers such as thv llm token.
+// interactive controls whether a genuine cache miss may launch the browser
+// OIDC flow. thv llm token passes true so a prior "thv llm setup --lazy" signs
+// the user in transparently on first use; cached tokens are served without a
+// browser prompt either way.
 // When skipBrowser is true, an interactive login prints the authorization URL
 // instead of opening a browser (headless/SSH/CI use); it has no effect unless
 // interactive is also true.

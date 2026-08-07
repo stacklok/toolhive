@@ -378,10 +378,12 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 // Rejecting the combination up front is cheaper than reordering the pipeline,
 // which would mean resolving conflicts twice: once over the visible candidates
 // and once over the complete set that composite tools route against.
+//
+// validateAggregation guarantees ConflictResolutionConfig is non-nil before
+// calling this, so it is safe to dereference below.
 func validateDenyVisibilityPriorityOrder(agg *AggregationConfig) error {
 	if agg.DefaultToolVisibility != DefaultToolVisibilityDeny ||
-		agg.ConflictResolution != vmcp.ConflictStrategyPriority ||
-		agg.ConflictResolutionConfig == nil {
+		agg.ConflictResolution != vmcp.ConflictStrategyPriority {
 		return nil
 	}
 

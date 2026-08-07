@@ -4,7 +4,6 @@
 package authz
 
 import (
-	"strings"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -546,6 +546,69 @@ func TestMiddlewareRejectsNonJSONPost(t *testing.T) {
 
 	assert.False(t, handlerCalled, "handler must not be reached by a non-JSON POST carrying JSON-RPC")
 	assert.Equal(t, http.StatusBadRequest, rr.Code, "non-JSON POST should be rejected")
+}
+
+// TestMiddlewareNonJSONPostVariants pins the content-type handling around the
+// explicit non-JSON refusal: which declarations still authorize and reach the
+// handler, and which get the 400.
+func TestMiddlewareNonJSONPostVariants(t *testing.T) {
+	t.Parallel()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
+
+	cases := []struct {
+		name        string
+		path        string
+		contentType string // empty means the header is not set at all
+		wantStatus  int
+		wantHandled bool
+	}{
+		{"charset variant still authorizes", "/mcp", "application/json; charset=utf-8", http.StatusOK, true},
+		{"uppercase media type still authorizes", "/mcp", "Application/JSON", http.StatusOK, true},
+		{"missing Content-Type is rejected", "/mcp", "", http.StatusBadRequest, false},
+		{"non-JSON POST to SSE path is rejected", "/sse", "text/plain", http.StatusBadRequest, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+				Policies: []string{
+					`permit(principal, action, resource);`,
+				},
+				EntitiesJSON: `[]`,
+			}, "")
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			var handlerCalled bool
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+			req, err := http.NewRequest(http.MethodPost, tc.path, strings.NewReader(body))
+			require.NoError(t, err, "Failed to create HTTP request")
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			}
+
+			// Attach an identity so the permissive policy has a principal to
+			// authorize, matching the other authorized-call tests.
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user",
+				Claims:  jwt.MapClaims{"sub": "test-user"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			middleware.ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.wantHandled, handlerCalled, "handler reached")
+			assert.Equal(t, tc.wantStatus, rr.Code, "response status")
+		})
+	}
 }
 
 func TestFactoryCreateMiddleware(t *testing.T) {

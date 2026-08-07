@@ -112,20 +112,13 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 }
 
 // shouldSkipInitialAuthorization checks if the request should skip authorization
-// before reading the request body.
+// before reading the request body. Content-Type is deliberately NOT consulted
+// here: the middleware body refuses non-JSON POSTs with an explicit early
+// return before this function is reached.
 func shouldSkipInitialAuthorization(r *http.Request) bool {
 	// Skip authorization for non-POST requests
 	if r.Method != http.MethodPost {
 		return true
-	}
-
-	// A POST that does not declare application/json is not parsed as MCP, so the
-	// message-level authorization below cannot run - but the proxy still forwards
-	// the body verbatim, and MCP backends parse JSON-RPC without checking
-	// Content-Type. Refusing here is the only point that keeps a JSON-RPC body
-	// smuggled under text/plain from reaching the backend un-authorized.
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		return false
 	}
 
 	// Skip authorization for the SSE endpoint
@@ -175,6 +168,13 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	_ = mcp.WriteJSONRPCError(w, http.StatusForbidden, errorResponse)
 }
 
+// rejectInvalidMCPRequest writes the 400 response for requests that arrive
+// without a parsed MCP message: non-JSON POSTs refused by the middleware
+// (the load-bearing security refusal) and malformed JSON POSTs.
+func rejectInvalidMCPRequest(w http.ResponseWriter) {
+	http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
+}
+
 // Middleware creates an HTTP middleware that authorizes MCP requests.
 // This middleware extracts the MCP message from the request, determines the feature,
 // operation, and resource ID, and authorizes the request using the configured authorizer.
@@ -197,6 +197,22 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 	annotationCache := NewAnnotationCache()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Non-JSON POSTs are rejected deliberately and must never be passed
+		// through. Such a request is not parsed as MCP, so message-level
+		// authorization cannot run, but the proxy still forwards the body
+		// verbatim and MCP backends parse JSON-RPC without checking
+		// Content-Type. This early return is load-bearing for security: it is
+		// the only point that keeps a JSON-RPC body smuggled under text/plain
+		// from reaching the backend un-authorized. The marker lets the outer
+		// audit middleware record the refusal as a denial, not a 400 failure.
+		if r.Method == http.MethodPost && !mcp.RequestHasJSONContentType(r) {
+			if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
+				marker.Denied = true
+			}
+			rejectInvalidMCPRequest(w)
+			return
+		}
+
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
 			next.ServeHTTP(w, r)
@@ -206,9 +222,11 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Get parsed MCP request from context (set by parsing middleware)
 		parsedRequest := mcp.GetParsedMCPRequest(r.Context())
 		if parsedRequest == nil {
-			// No parsed MCP request available for a request that should have been parsed
-			// This indicates either a malformed request or missing parsing middleware
-			http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
+			// Non-JSON POSTs are already rejected by the early return above,
+			// so a nil parsed request here means a malformed JSON body or a
+			// missing parsing middleware. This branch is now only a
+			// belt-and-braces fallback behind the content-type refusal.
+			rejectInvalidMCPRequest(w)
 			return
 		}
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -212,6 +213,51 @@ func ParsedRequestHolderFromContext(ctx context.Context) (*ParsedRequestHolder, 
 	return holder, ok && holder != nil
 }
 
+// authzDenialMarkerContextKey is the context key for AuthzDenialMarker.
+type authzDenialMarkerContextKey struct{}
+
+// AuthzDenialMarker is a mutable carrier that lets the authorization
+// middleware (pkg/authz), which runs INSIDE the audit middleware, flag a
+// request it refused before message-level authorization could run, such as a
+// non-JSON POST carrying a smuggled JSON-RPC body. It follows the same
+// propagation pattern as ParsedRequestHolder: the audit wrapper injects an
+// empty marker via WithAuthzDenialMarker, the inner middleware fills it, and
+// the wrapper reads it back after the inner chain returns so the refusal is
+// audited as a denial rather than a generic 400 failure. The type lives in
+// this package because pkg/authz already depends on pkg/audit transitively,
+// so the carrier cannot live in either of those two packages.
+//
+// Like ParsedRequestHolder, the marker is written and read by the single
+// request goroutine, so no synchronization is needed.
+type AuthzDenialMarker struct {
+	Denied bool
+}
+
+// WithAuthzDenialMarker returns a new context carrying the given marker.
+func WithAuthzDenialMarker(ctx context.Context, marker *AuthzDenialMarker) context.Context {
+	return context.WithValue(ctx, authzDenialMarkerContextKey{}, marker)
+}
+
+// AuthzDenialMarkerFromContext retrieves the AuthzDenialMarker from the
+// context. Returns (nil, false) if no marker is present.
+func AuthzDenialMarkerFromContext(ctx context.Context) (*AuthzDenialMarker, bool) {
+	marker, ok := ctx.Value(authzDenialMarkerContextKey{}).(*AuthzDenialMarker)
+	return marker, ok && marker != nil
+}
+
+// RequestHasJSONContentType reports whether r declares an application/json
+// Content-Type. Media types are case-insensitive per RFC 9110 8.3.1, so the
+// header is parsed with mime.ParseMediaType and compared with EqualFold; the
+// case-sensitive prefix match this replaces also wrongly accepted longer
+// types such as "application/jsonx".
+func RequestHasJSONContentType(r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(mediaType, "application/json")
+}
+
 // GetParsedMCPRequest retrieves the parsed MCP request from the request context.
 // Returns nil if no parsed request is available.
 func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
@@ -228,8 +274,7 @@ func shouldParseMCPRequest(r *http.Request) bool {
 		return false
 	}
 
-	contentType := r.Header.Get("Content-Type")
-	if !strings.HasPrefix(contentType, "application/json") {
+	if !RequestHasJSONContentType(r) {
 		return false
 	}
 

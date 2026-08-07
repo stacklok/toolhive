@@ -50,7 +50,29 @@ var schemaSQL string
 // and optional vector embedding-based semantic search.
 // It satisfies the types.ToolStore interface.
 type sqliteToolStore struct {
-	db                        *sql.DB
+	db *sql.DB
+
+	// keepAlive is a dedicated connection held open for the store's whole lifetime.
+	//
+	// The database is in-memory with a shared cache, so it exists only while at
+	// least one connection to it is open. If the database/sql pool ever drops to
+	// zero connections, SQLite discards the entire database — table, FTS5 index
+	// and triggers — and nothing recreates it, because the schema is executed
+	// only in the constructor. Every later operation then fails with
+	// "no such table: llm_capabilities" until the process restarts.
+	//
+	// The pool does reach zero in practice. modernc.org/sqlite implements context
+	// cancellation with sqlite3_interrupt and reports an interrupted connection as
+	// unusable from conn.IsValid, so database/sql discards a connection whose
+	// statement was canceled instead of returning it to the pool. A single
+	// canceled request while the pool holds one connection is enough to destroy
+	// the database for the life of the process (#5889).
+	//
+	// This connection is acquired with a background context and never used to run
+	// statements, so it can never be interrupted and never discarded. It exists
+	// solely to keep the database alive.
+	keepAlive *sql.Conn
+
 	embeddingClient           types.EmbeddingClient // nil = FTS5-only
 	maxToolsToReturn          int
 	hybridSemanticRatio       float64
@@ -77,8 +99,17 @@ func newSQLiteToolStore(
 		return sqliteToolStore{}, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
+	// Pin the keep-alive connection before anything else, so the database cannot
+	// be discarded from this point on. See the keepAlive field for why.
+	keepAlive, err := db.Conn(context.Background())
+	if err != nil {
+		_ = db.Close()
+		return sqliteToolStore{}, fmt.Errorf("failed to acquire keep-alive connection: %w", err)
+	}
+
 	// Execute schema
 	if _, err := db.Exec(schemaSQL); err != nil {
+		_ = keepAlive.Close()
 		_ = db.Close()
 		return sqliteToolStore{}, fmt.Errorf("failed to initialize schema: %w", err)
 	}
@@ -100,6 +131,7 @@ func newSQLiteToolStore(
 
 	store := sqliteToolStore{
 		db:                        db,
+		keepAlive:                 keepAlive,
 		embeddingClient:           embeddingClient,
 		maxToolsToReturn:          maxTools,
 		hybridSemanticRatio:       hybridRatio,
@@ -176,30 +208,40 @@ func (s sqliteToolStore) generateEmbeddings(ctx context.Context, tools []server.
 	return blobs, nil
 }
 
-// Search finds tools matching the query string using FTS5 full-text search
-// and optional semantic search when an embedding client is configured.
+// Search finds tools matching q using FTS5 full-text search and optional
+// semantic search when an embedding client is configured. The lexical arm
+// prefers q.Keywords, falling back to q.Description when Keywords is empty;
+// the semantic arm always embeds q.Description.
 // The allowedTools parameter limits results to only tools with names in the given set.
 // If allowedTools is empty, no results are returned (empty = no access).
 // Returns matches ranked by relevance.
-func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
+func (s sqliteToolStore) Search(ctx context.Context, q types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 	if len(allowedTools) == 0 {
 		slog.Debug("search skipped, no allowed tools")
 		return nil, nil
 	}
 
-	ftsExpr := sanitizeFTS5Query(query)
+	// The lexical arm prefers explicit keywords and falls back to the words of
+	// the description, either when no keywords were supplied or when every
+	// keyword was dropped as too common to discriminate. The semantic arm
+	// always embeds the description.
+	ftsExpr := sanitizeFTS5Terms(q.Keywords)
+	if ftsExpr == "" {
+		ftsExpr = sanitizeFTS5Terms(strings.Fields(q.Description))
+	}
 
 	// FTS5-only path (no embedding client)
 	if s.embeddingClient == nil {
 		if ftsExpr == "" {
-			slog.Debug("search skipped, empty FTS5 expression", "query", query)
+			slog.Debug("search skipped, empty FTS5 expression", "query", q.Description, "keywords", q.Keywords)
 			return nil, nil
 		}
 		results, err := s.searchFTS5(ctx, ftsExpr, allowedTools, s.maxToolsToReturn)
 		if err != nil {
 			return nil, err
 		}
-		slog.Debug("search completed (FTS5-only)", "query", query, "results", len(results), "matched_tools", matchNames(results))
+		slog.Debug("search completed (FTS5-only)",
+			"query", q.Description, "keywords", q.Keywords, "results", len(results), "matched_tools", matchNames(results))
 		return results, nil
 	}
 
@@ -221,7 +263,7 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 	if semanticLimit > 0 {
 		g.Go(func() error {
 			var err error
-			semanticResults, err = s.searchSemantic(gCtx, query, allowedTools, semanticLimit)
+			semanticResults, err = s.searchSemantic(gCtx, q.Description, allowedTools, semanticLimit)
 			return err
 		})
 	}
@@ -233,7 +275,8 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 	merged := mergeResults(ftsResults, semanticResults, s.maxToolsToReturn)
 
 	slog.Debug("search completed (hybrid)",
-		"query", query,
+		"query", q.Description,
+		"keywords", q.Keywords,
 		"fts5_results", len(ftsResults),
 		"semantic_results", len(semanticResults),
 		"merged_results", len(merged),
@@ -243,14 +286,27 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 	return merged, nil
 }
 
-// Close releases the underlying database connection.
+// Close releases the underlying database connections. Releasing the keep-alive
+// connection drops the in-memory database, so it happens only here, on the way
+// to closing the pool itself.
+//
+// Close may be called more than once: a keep-alive connection that was already
+// released reports sql.ErrConnDone, which is not a failure.
 func (s sqliteToolStore) Close() error {
 	var embErr error
 	if s.embeddingClient != nil {
 		embErr = s.embeddingClient.Close()
 	}
+
+	var keepAliveErr error
+	if s.keepAlive != nil {
+		if err := s.keepAlive.Close(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+			keepAliveErr = err
+		}
+	}
+
 	dbErr := s.db.Close()
-	return errors.Join(embErr, dbErr)
+	return errors.Join(embErr, keepAliveErr, dbErr)
 }
 
 // searchFTS5 performs a full-text search using FTS5 MATCH with BM25 ranking.
@@ -263,7 +319,7 @@ func (s sqliteToolStore) Close() error {
 // it has high cosine similarity, because the semantic query runs separately
 // and will surface it.
 //
-// The ftsExpr is produced by sanitizeFTS5Query and is always passed as a
+// The ftsExpr is produced by sanitizeFTS5Terms and is always passed as a
 // parameterized ? value, never interpolated into SQL.
 func (s sqliteToolStore) searchFTS5(
 	ctx context.Context, ftsExpr string, allowedTools []string, limit int,
@@ -458,8 +514,12 @@ func matchNames(matches []mcp.Tool) []string {
 }
 
 // problematicWords contains words that FTS5 interprets as operators or that
-// are too common in tool metadata to be useful search terms. This set aligns
-// with Python mcp_optimizer's DEFAULT_FTS_PROBLEMATIC_WORDS.
+// are too common in tool metadata to be useful search terms.
+//
+// sanitizeFTS5Terms drops them. The alternative, falling back to a phrase
+// search over the whole query when one of these appears, demands exact token
+// adjacency and so reliably matches nothing; dropping the noise word and
+// OR-joining the rest avoids the result flood without going empty-handed.
 var problematicWords = map[string]struct{}{
 	"name": {}, "description": {}, "schema": {}, "input": {},
 	"output": {}, "type": {}, "properties": {}, "required": {},
@@ -469,13 +529,16 @@ var problematicWords = map[string]struct{}{
 	"index": {}, "key": {}, "primary": {},
 }
 
-// sanitizeFTS5Query prepares a user query string for use with FTS5 MATCH.
+// sanitizeFTS5Terms builds an FTS5 MATCH expression from a list of search terms.
+//
+// Each entry is split on whitespace (a single term may arrive multi-word), words
+// in problematicWords are dropped, the remainder is deduplicated case-insensitively,
+// and what is left is OR-joined. Returns "" when no usable term remains, letting
+// the caller fall back to another source of terms.
 //
 // The returned string is designed to be passed as a single ? parameter to
-// QueryContext. It cannot cause SQL injection because it is always bound via ?.
-//
-// FTS5 MATCH requires a single string operand containing the full query
-// expression (e.g., "read" OR "write"). Individual terms cannot be separate
+// QueryContext. FTS5 MATCH requires a single string operand containing the full
+// query expression (e.g., "read" OR "write"). Individual terms cannot be separate
 // ? SQL parameters because the OR/AND operators are part of the FTS5 query
 // language, not SQL.
 // See: https://sqlite.org/fts5.html#full_text_query_syntax
@@ -484,32 +547,24 @@ var problematicWords = map[string]struct{}{
 //   - SQL injection is prevented because the expression is always bound via ?.
 //   - FTS5 operator injection is prevented by double-quoting each term and
 //     escaping embedded double-quotes (standard FTS5 escaping).
-func sanitizeFTS5Query(query string) string {
-	words := strings.Fields(strings.TrimSpace(query))
-	if len(words) == 0 {
-		return ""
-	}
-
-	hasProblematic := false
-	for _, word := range words {
-		if _, ok := problematicWords[strings.ToLower(word)]; ok {
-			hasProblematic = true
-			break
+func sanitizeFTS5Terms(terms []string) string {
+	seen := make(map[string]struct{}, len(terms))
+	var quoted []string
+	for _, term := range terms {
+		for _, word := range strings.Fields(term) {
+			lower := strings.ToLower(word)
+			if _, ok := problematicWords[lower]; ok {
+				continue
+			}
+			if _, ok := seen[lower]; ok {
+				continue
+			}
+			seen[lower] = struct{}{}
+			escaped := strings.ReplaceAll(word, `"`, `""`)
+			quoted = append(quoted, `"`+escaped+`"`)
 		}
 	}
 
-	// Single word or any problematic word present: use phrase search
-	if len(words) == 1 || hasProblematic {
-		escaped := strings.ReplaceAll(strings.Join(words, " "), `"`, `""`)
-		return `"` + escaped + `"`
-	}
-
-	// Multi-word with no problematic words: join with OR
-	quoted := make([]string, len(words))
-	for i, word := range words {
-		escaped := strings.ReplaceAll(word, `"`, `""`)
-		quoted[i] = `"` + escaped + `"`
-	}
 	return strings.Join(quoted, " OR ")
 }
 

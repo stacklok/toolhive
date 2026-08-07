@@ -241,6 +241,11 @@ func NewEmbeddedAuthServerWithStorage(
 		CIMDCacheMaxSize:             cimdCacheMaxSize,
 		CIMDCacheFallbackTTL:         cimdCacheFallbackTTL,
 		InsecureAllowHTTP:            cfg.InsecureAllowHTTP,
+		// slices.Clone is shallow: each TrustedIssuer's own AllowedActors
+		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
+		// constructor clones AllowedActors per issuer before use, so the
+		// authorization-critical data is protected without a deep copy here.
+		TrustedIssuers: slices.Clone(cfg.TrustedIssuers),
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR

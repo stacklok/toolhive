@@ -1035,6 +1035,35 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultToolVisibility:
+                        description: |-
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+
+                          No kubebuilder default: "" already behaves as allow everywhere that reads this
+                          field, so defaulting would change only the serialized bytes — and apiextensions
+                          applies structural defaults on decode, so every existing VirtualMCPServer would
+                          come back with the field set, changing config.yaml, its ConfigMap checksum, and
+                          the pod template that stamps it. That restarts every vMCP deployment once for a
+                          no-op field.
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -1080,24 +1109,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -1325,6 +1364,57 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            idempotentHint:
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            openWorldHint:
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            readOnlyHint:
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            title:
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string
@@ -4499,6 +4589,35 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultToolVisibility:
+                        description: |-
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+
+                          No kubebuilder default: "" already behaves as allow everywhere that reads this
+                          field, so defaulting would change only the serialized bytes — and apiextensions
+                          applies structural defaults on decode, so every existing VirtualMCPServer would
+                          come back with the field set, changing config.yaml, its ConfigMap checksum, and
+                          the pod template that stamps it. That restarts every vMCP deployment once for a
+                          no-op field.
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -4544,24 +4663,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -4789,6 +4918,57 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            idempotentHint:
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            openWorldHint:
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            readOnlyHint:
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            title:
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string

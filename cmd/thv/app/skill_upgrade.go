@@ -13,13 +13,14 @@ import (
 )
 
 var (
-	skillUpgradeProjectRoot    string
-	skillUpgradeClientsRaw     string
-	skillUpgradePreview        bool
-	skillUpgradeFailOnChanges  bool
-	skillUpgradeAllowRefChange bool
-	skillUpgradeYes            bool
-	skillUpgradeFormat         string
+	skillUpgradeProjectRoot       string
+	skillUpgradeClientsRaw        string
+	skillUpgradePreview           bool
+	skillUpgradeFailOnChanges     bool
+	skillUpgradeAllowRefChange    bool
+	skillUpgradeAllowSignerChange bool
+	skillUpgradeYes               bool
+	skillUpgradeFormat            string
 )
 
 var skillUpgradeCmd = &cobra.Command{
@@ -34,8 +35,9 @@ Skills pinned to an immutable reference (an OCI digest or a full git commit
 hash) are reported not-upgradable — there is nothing newer to resolve to.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
-and --allow-ref-change to permit the resolved reference itself changing
-(e.g. a registry entry repointed at a different repository).
+and --allow-ref-change to permit the artifact moving to a different
+repository (a version bump within the same repository is not a change
+this guard blocks).
 --fail-on-changes evaluates the same plan and never installs: it is a CI
 freshness gate.
 
@@ -59,8 +61,10 @@ func init() {
 		"Report what would change without persisting anything (OCI sources are still fetched to compare digests)")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeFailOnChanges, "fail-on-changes", false,
 		"Report what would change without installing anything; a CI freshness gate")
+	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowSignerChange, "allow-signer-change", false,
+		"Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowRefChange, "allow-ref-change", false,
-		"Permit the resolved reference itself to change during upgrade")
+		"Permit the artifact to move to a different repository during upgrade")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
 	AddFormatFlag(skillUpgradeCmd, &skillUpgradeFormat)
@@ -88,12 +92,13 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 
 	c := newSkillClient(cmd.Context())
 	result, err := c.Upgrade(cmd.Context(), skills.UpgradeOptions{
-		ProjectRoot:    projectRoot,
-		Names:          args,
-		Clients:        parseSkillInstallClients(skillUpgradeClientsRaw),
-		Preview:        skillUpgradePreview,
-		FailOnChanges:  skillUpgradeFailOnChanges,
-		AllowRefChange: skillUpgradeAllowRefChange,
+		ProjectRoot:       projectRoot,
+		Names:             args,
+		Clients:           parseSkillInstallClients(skillUpgradeClientsRaw),
+		Preview:           skillUpgradePreview,
+		FailOnChanges:     skillUpgradeFailOnChanges,
+		AllowRefChange:    skillUpgradeAllowRefChange,
+		AllowSignerChange: skillUpgradeAllowSignerChange,
 	})
 	if err != nil {
 		return formatSkillError("upgrade skills", err)
@@ -113,21 +118,36 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 // (exit 2). A ref-change block maps to a policy rejection (exit 4) only
 // when the run wasn't a preview/gate evaluation — during those nothing was
 // actually blocked, only reported.
-func upgradeExitError(result *skills.UpgradeResult, preview, failOnChanges bool) error {
-	var failed, refBlocked, wouldChange int
+// upgradeTally counts the exit-code-relevant outcome classes.
+type upgradeTally struct {
+	failed, refBlocked, signerBlocked, wouldChange int
+}
+
+func tallyUpgradeOutcomes(result *skills.UpgradeResult) upgradeTally {
+	var t upgradeTally
 	for _, o := range result.Outcomes {
 		switch o.Status {
 		case skills.UpgradeStatusFailed:
-			failed++
+			t.failed++
 		case skills.UpgradeStatusRefChangeBlocked:
-			refBlocked++
-			wouldChange++
+			t.refBlocked++
+			t.wouldChange++
+		case skills.UpgradeStatusSignerChangeBlocked:
+			t.signerBlocked++
+			t.wouldChange++
 		case skills.UpgradeStatusUpgraded:
-			wouldChange++
+			t.wouldChange++
 		case skills.UpgradeStatusUpToDate, skills.UpgradeStatusNotUpgradable:
 			// No exit-code impact.
 		}
 	}
+	return t
+}
+
+func upgradeExitError(result *skills.UpgradeResult, preview, failOnChanges bool) error {
+	tally := tallyUpgradeOutcomes(result)
+	failed, refBlocked, signerBlocked, wouldChange :=
+		tally.failed, tally.refBlocked, tally.signerBlocked, tally.wouldChange
 	if failed > 0 {
 		return withExitCode(fmt.Errorf("upgrade failed for %d skill(s)", failed), ExitCodePartialFailure)
 	}
@@ -137,9 +157,15 @@ func upgradeExitError(result *skills.UpgradeResult, preview, failOnChanges bool)
 			ExitCodeCheckFailure,
 		)
 	}
+	if !preview && !failOnChanges && signerBlocked > 0 {
+		return withExitCode(
+			fmt.Errorf("%d skill(s) blocked by a signer change; use --allow-signer-change", signerBlocked),
+			ExitCodePolicyRejection,
+		)
+	}
 	if !preview && !failOnChanges && refBlocked > 0 {
 		return withExitCode(
-			fmt.Errorf("%d skill(s) blocked by a reference change; use --allow-ref-change", refBlocked),
+			fmt.Errorf("%d skill(s) blocked by a repository change; use --allow-ref-change", refBlocked),
 			ExitCodePolicyRejection,
 		)
 	}
@@ -176,7 +202,14 @@ func printUpgradeResult(result *skills.UpgradeResult, format string, planOnly bo
 		case skills.UpgradeStatusNotUpgradable:
 			fmt.Printf("%s: not upgradable (pinned to an immutable reference)\n", o.Name)
 		case skills.UpgradeStatusRefChangeBlocked:
-			fmt.Printf("%s: reference change blocked (would move to %s; use --allow-ref-change)\n", o.Name, o.NewResolvedReference)
+			fmt.Printf("%s: repository change blocked (would move to %s; use --allow-ref-change)\n",
+				o.Name, o.NewResolvedReference)
+		case skills.UpgradeStatusSignerChangeBlocked:
+			newSigner := o.NewSignerIdentity
+			if newSigner == "" {
+				newSigner = "unsigned"
+			}
+			fmt.Printf("%s: signer change blocked (candidate is %s; use --allow-signer-change)\n", o.Name, newSigner)
 		case skills.UpgradeStatusFailed:
 			fmt.Printf("%s: failed [%s]: %s\n", o.Name, o.Reason, o.Error)
 		}

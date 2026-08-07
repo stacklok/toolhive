@@ -724,7 +724,7 @@ func TestDispatchModern_AuthzGate(t *testing.T) {
 
 // TestDispatchModern_CodedErrorPreservesCodeAndData pins the CodedError branch
 // of writeModernDispatchError: a domain error carrying its own stable JSON-RPC
-// code and data (here the rate limiter's -32029 with data.retryAfterSeconds)
+// code and data (here the rate limiter's 429 with data.retryAfterSeconds)
 // must reach the Modern client with that code and data intact, not be
 // laundered into an opaque -32603 — parity with the SDK path, where
 // conversion.ErrorToToolResult preserves the same code/data in

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -45,6 +46,12 @@ type CachedAPIRegistryProvider struct {
 	cachedSkills   []types.Skill
 	skillsCacheSet bool
 	skillsTime     time.Time
+
+	// Plugins cache
+	pluginsMu       sync.RWMutex
+	cachedPlugins   []types.Plugin
+	pluginsCacheSet bool
+	pluginsTime     time.Time
 
 	// Cache configuration
 	cacheTTL      time.Duration
@@ -149,8 +156,24 @@ func (p *CachedAPIRegistryProvider) refreshCache() (*types.Registry, error) {
 	return registry, nil
 }
 
-// ForceRefresh forces a cache refresh, ignoring TTL.
+// ForceRefresh forces a cache refresh, ignoring TTL. It also invalidates the
+// skills and plugins caches so the next ListAvailableSkills/ListAvailablePlugins
+// call re-fetches from the API rather than serving stale data until its own
+// TTL expires.
 func (p *CachedAPIRegistryProvider) ForceRefresh() error {
+	// Invalidate the skills and plugins caches so the next access refetches.
+	// Without this, ForceRefresh would only refresh the servers cache while
+	// skills/plugins kept serving stale data for up to cacheTTL after the
+	// refresh — a confusing inconsistency for callers who expect "force" to
+	// mean "everything is refreshed".
+	p.skillsMu.Lock()
+	p.skillsCacheSet = false
+	p.skillsMu.Unlock()
+
+	p.pluginsMu.Lock()
+	p.pluginsCacheSet = false
+	p.pluginsMu.Unlock()
+
 	_, err := p.refreshCache()
 	return err
 }
@@ -445,6 +468,80 @@ func (p *CachedAPIRegistryProvider) ListAvailableSkills() ([]types.Skill, error)
 	p.skillsMu.Unlock()
 
 	return allSkills, nil
+}
+
+// ListAvailablePlugins returns plugins from the registry API, with caching.
+// Creates a PluginsClient on demand and fetches all plugins with auto-pagination.
+//
+// Error semantics mirror refreshCache's contract for the servers cache:
+//   - authentication failures (401/403, surfaced as api.RegistryHTTPError that
+//     unwraps to api.ErrRegistryUnauthorized) are always propagated — stale
+//     cache must never mask a changed authentication state, or a revoked token
+//     would silently serve stale data and hide the need to re-auth;
+//   - other failures (network blip, 5xx) degrade gracefully to stale cache
+//     when one is present;
+//   - with no stale cache, the error is returned (never nil,nil), so the v0.1
+//     registry route surfaces a real failure instead of an empty 200.
+func (p *CachedAPIRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	// Check cache
+	p.pluginsMu.RLock()
+	if p.pluginsCacheSet && time.Since(p.pluginsTime) < p.cacheTTL {
+		plugins := p.cachedPlugins
+		p.pluginsMu.RUnlock()
+		return plugins, nil
+	}
+	p.pluginsMu.RUnlock()
+
+	// Fetch from API
+	pluginsClient, err := api.NewPluginsClient(p.apiURL, p.allowPrivateIp, p.tokenSource)
+	if err != nil {
+		// Client construction is a local failure (bad URL / transport), not an
+		// auth-state change: fall back to stale cache when available.
+		p.pluginsMu.RLock()
+		defer p.pluginsMu.RUnlock()
+		if p.pluginsCacheSet {
+			return p.cachedPlugins, nil
+		}
+		return nil, fmt.Errorf("failed to create plugins client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// ListPlugins auto-paginates internally, returning all plugins in one call
+	result, err := pluginsClient.ListPlugins(ctx, nil)
+	if err != nil {
+		// Auth failures must propagate — never mask with stale cache.
+		var httpErr *api.RegistryHTTPError
+		if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden) {
+			return nil, err
+		}
+		// Transient failures: degrade to stale cache if available.
+		p.pluginsMu.RLock()
+		defer p.pluginsMu.RUnlock()
+		if p.pluginsCacheSet {
+			return p.cachedPlugins, nil
+		}
+		// No stale cache: surface the error rather than nil,nil so the
+		// v0.1 registry route does not answer 200 [] on a real failure.
+		return nil, err
+	}
+
+	allPlugins := make([]types.Plugin, 0, len(result.Plugins))
+	for _, pl := range result.Plugins {
+		if pl != nil {
+			allPlugins = append(allPlugins, *pl)
+		}
+	}
+
+	// Update cache
+	p.pluginsMu.Lock()
+	p.cachedPlugins = allPlugins
+	p.pluginsCacheSet = true
+	p.pluginsTime = time.Now()
+	p.pluginsMu.Unlock()
+
+	return allPlugins, nil
 }
 
 // ConvertServerJSON wraps ConvertServerJSON for cached provider

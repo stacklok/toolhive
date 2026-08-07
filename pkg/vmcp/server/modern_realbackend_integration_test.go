@@ -402,16 +402,20 @@ func TestIntegration_Modern_RealBackend_ProgressDropped(t *testing.T) {
 //   - A WELL-FORMED Modern logging/setLevel is an unknown method to
 //     dispatchModern: 404 + -32601, matching go-sdk's own server ("method
 //     removed in the new protocol").
-//   - The request go-sdk v1.7.0-pre.3 ACTUALLY sends is malformed — its
-//     SetLoggingLevel omits the per-request _meta injection (upstream bug),
-//     producing a Modern header with no _meta protocolVersion — and vMCP's
-//     classifier CORRECTLY rejects that shape with 400 + -32020
-//     (HeaderMismatch). Loosening this to accept the malformed request would
-//     be worse than the failing upstream call.
+//   - The request go-sdk v1.7.x ACTUALLY sends is malformed — its
+//     SetLoggingLevel omits the per-request _meta injection, producing a Modern
+//     header with no _meta protocolVersion — and vMCP's classifier CORRECTLY
+//     rejects that shape with 400 + -32020 (HeaderMismatch). Loosening this to
+//     accept the malformed request would be worse than the failing upstream
+//     call. This malformed shape is a permanent go-sdk v1.7.x fixture:
+//     modelcontextprotocol/go-sdk#1116 was closed wont-fix-by-design (the RPC
+//     is removed on Modern), so -32020 is the standing contract for any caller
+//     still using the removed RPC on a Modern session, not a temporary bug
+//     guard.
 //
 // See TestForwarding_Logging_RealBackend's pin comment for the full
-// three-cause disposition (upstream bug, method removal/streaming gap,
-// SEP-2577 deprecation).
+// three-cause disposition (go-sdk's wont-fix SetLoggingLevel, method
+// removal/streaming gap, SEP-2577 deprecation).
 func TestIntegration_Modern_RealBackend_LoggingContract(t *testing.T) {
 	t.Parallel()
 

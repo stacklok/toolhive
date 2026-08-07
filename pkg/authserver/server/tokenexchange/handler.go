@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,6 +31,15 @@ var _ fosite.TokenEndpointHandler = (*Handler)(nil)
 // issued token and the load it places on downstream resource servers that
 // parse it.
 const maxDelegationDepth = 10
+
+// anyDelegateClient is the TrustedIssuer.AllowedDelegateClients entry that
+// explicitly opts an issuer into "any ToolHive confidential client holding
+// the token-exchange grant may act as its delegate" — the behavior that used
+// to be the implicit default whenever the field was left empty. See
+// checkDelegationConsent's doc comment for why that default was removed:
+// permissiveness must now be declared with this wildcard, not left to an
+// absent field.
+const anyDelegateClient = "*"
 
 // Handler implements RFC 8693 token exchange for user-to-agent delegation.
 //
@@ -116,12 +126,15 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"error", err,
 			"actor", actorID,
 		)
-		// TODO(#5989): this maps every validation failure to invalid_request,
-		// which is correct for a malformed/unverifiable subject token. Once the
-		// multi-issuer validator is wired in, grant-level failures reachable only
-		// on the external path (untrusted issuer, wrong audience, expired) should
-		// map to invalid_grant per RFC 6749 §5.2; that needs typed validator
-		// errors the handler can distinguish.
+		// RFC 8693 §2.2.2 mandates invalid_request here: "if either the
+		// subject_token or actor_token are invalid for any reason, or are
+		// unacceptable based on policy ... The value of the error parameter
+		// MUST be the invalid_request error code." checkDelegationConsent
+		// below deliberately returns invalid_grant instead for its own
+		// failures — a documented deviation: RFC 6749 §5.2's invalid_grant
+		// covers "was issued to another client", §2.2.2 permits other error
+		// codes for other failures, and both Keycloak and Hydra follow this
+		// same split.
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified."))
 	}
@@ -140,7 +153,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	// Build the delegated session with the user's identity and the agent's act claim.
 	delegatedSession := session.New(
-		validatedClaims.Subject,
+		delegatedSubject(validatedClaims),
 		"", // No IDP session link for delegated tokens.
 		actorID,
 		session.UserClaims{
@@ -149,45 +162,9 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		},
 	)
 
-	// Add the RFC 8693 Section 4.1 "act" claim identifying the acting party.
-	// If the subject token itself carries an "act" claim (i.e. it is a
-	// previously-delegated token being re-exchanged), nest it so the full
-	// delegation chain remains auditable rather than being discarded.
-	act := map[string]any{"sub": actorID}
-	if priorAct, ok := validatedClaims.Extra["act"]; ok && priorAct != nil {
-		// Parse with the shared audit-side parser rather than a bespoke walker: it
-		// reports both the chain depth and any RFC 8693 Section 4.1 conformance
-		// violation, so a non-object act cannot slip past the depth gate and be
-		// re-minted. A JSON-null act is filtered by the guard above: it asserts no
-		// delegation and must not read as malformed.
-		chain := coreaudit.ParseDelegationChain(priorAct, maxDelegationDepth)
-		if chain.Malformed {
-			// RFC 8693 Section 2.2.2 nominally calls for invalid_request on a bad
-			// subject_token, but also allows that "other error codes may also be
-			// used, as appropriate": invalid_grant keeps this consistent with the
-			// depth, consent, and expiry gates in this same handler, all of which
-			// reject a structurally unacceptable subject token that way.
-			//
-			// MalformedReason is a closed, value-free enum; it is surfaced to the
-			// client and MUST stay that way — never interpolate claim contents here.
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHintf(
-				"The subject token's delegation chain is malformed (%s).", chain.MalformedReason))
-		}
-		// Equivalent to the depth of the prior chain: the parser appends exactly one
-		// hop per level and stops at maxDelegationDepth, so len(Chain) is
-		// min(depth, maxDelegationDepth).
-		if len(chain.Chain) >= maxDelegationDepth {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
-				"The subject token's delegation chain is too deep."))
-		}
-		// Nest priorAct verbatim rather than re-serializing from chain: core keeps
-		// each hop's extra claims in an unexported map, so rebuilding would silently
-		// drop the history trail that Section 4.1 asks us to preserve. The cost is
-		// that unknown hop claims — and the non-identity claims Section 4.1 calls
-		// "not meaningful" inside act — pass through re-signed, which sits in
-		// tension with Section 6 data minimization. Accepted here; bounding the
-		// subtree belongs with the external-issuer work in #5989.
-		act["act"] = priorAct
+	act, err := buildActClaim(validatedClaims, actorID)
+	if err != nil {
+		return err
 	}
 	delegatedSession.JWTClaims.Extra["act"] = act
 
@@ -205,6 +182,8 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	slog.Debug("Token exchange request validated",
 		"subject", validatedClaims.Subject,
 		"actor", actorID,
+		"issuer", validatedClaims.Issuer,
+		"subject_token_client", validatedClaims.ExternalActor,
 		"lifetime", lifetime.String(),
 	)
 
@@ -313,19 +292,202 @@ func validateExchangeParams(form url.Values) (string, error) {
 	return subjectToken, nil
 }
 
+// delegatedSubject returns the "sub" to embed in the delegated token.
+//
+// Self-issued tokens pass through unchanged: their subject is already a
+// UUID from UserResolver.ResolveUser's (providerID, providerSubject)
+// mapping (pkg/authserver/server/handlers/user.go), ToolHive's own native
+// subject namespace.
+//
+// A subject token from a trusted external issuer is qualified as
+// "<issuerURL>#<sub>" instead, because the issued token's "sub" is the only
+// signal Cedar's extractClientIDFromClaims (pkg/authz/authorizers/cedar/core.go)
+// keys on — it reads "sub" alone, not "iss" — and the external issuer
+// chooses that value, not ToolHive. Without qualification, an external
+// issuer could pick a "sub" equal to a native user's UUID and mint a
+// delegated token indistinguishable from that user's, entirely without
+// malicious intent on either issuer's part: two trusted issuers merely
+// choosing overlapping subject values collide with no attacker involved.
+//
+// "#" is an unambiguous separator: an issuer URL cannot itself contain a
+// fragment (the OIDC/OAuth "iss" value is a URL without a fragment
+// component, and this validator's own issuer comparison is an exact string
+// match against that value), so strings.Cut(sub, "#") on the qualified
+// subject always recovers (issuerURL, externalSub) uniquely. A native UUID
+// can never collide with a qualified value, since a UUID contains no "#".
+//
+// Re-exchanging a previously-issued delegated token does not double-qualify:
+// such a token's "iss" is always this server's own issuer (fosite stamps
+// "iss" from the server's config at issuance — see session.New's doc
+// comment), so Validate routes it to the self-issued path, which never
+// calls this branch.
+func delegatedSubject(validatedClaims *ValidatedClaims) string {
+	if validatedClaims.ExternalIssuer == "" {
+		return validatedClaims.Subject
+	}
+	return validatedClaims.ExternalIssuer + "#" + validatedClaims.Subject
+}
+
+// buildActClaim assembles the RFC 8693 Section 4.1 "act" claim for the
+// delegated token. The outermost act.sub is always actorID (the ToolHive
+// client) — every downstream consumer reads that as "who is acting", and it
+// must not change regardless of how the subject token was obtained.
+//
+// Extracted from HandleTokenEndpointRequest rather than inlined: the external
+// provenance nesting and the prior-chain depth gate below add five branches
+// that have nothing to do with the surrounding request plumbing, and two of
+// them reject the request outright.
+func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string]any, error) {
+	act := map[string]any{"sub": actorID}
+	nestUnder := act
+	newLevels := 1
+
+	// When the subject token came from a trusted external issuer
+	// (ValidatedClaims.ExternalIssuer is set only there — see
+	// multi_issuer_validator.go), nest that issuer one level in, together
+	// with the allowlisted actor when one was resolved. RFC 8693 §4.1
+	// anticipates exactly this: "the combination of the two claims 'iss' and
+	// 'sub' might be necessary to uniquely identify an actor." Without this,
+	// the issued token would carry no record that the delegation originated
+	// externally at all — including for a may_act-bearing external token,
+	// which leaves ExternalActor unset because may_act.sub already names the
+	// delegate directly via the actorID binding above. That token still has
+	// an external issuer worth recording, so nesting here is keyed on
+	// ExternalIssuer, not ExternalActor: the allowlist path's accepted
+	// any-ToolHive-client scope limitation (see checkDelegationConsent)
+	// depends on this provenance being auditable after the fact, and a
+	// may_act-bearing external token — the path that bypasses the allowlist
+	// entirely — needs it at least as much.
+	if validatedClaims.ExternalIssuer != "" {
+		external := map[string]any{"iss": validatedClaims.ExternalIssuer}
+		// ExternalActor is only present on the allowlist path (see its doc
+		// comment) — a may_act-bearing external token has no client-namespace
+		// actor claim to report, so the nested entry there carries "iss" only.
+		if validatedClaims.ExternalActor != "" {
+			external["sub"] = validatedClaims.ExternalActor
+		}
+		act["act"] = external
+		nestUnder = external
+		newLevels = 2
+	}
+
+	// If the subject token itself carries an "act" claim (i.e. it is a
+	// previously-delegated token being re-exchanged), nest it so the full
+	// delegation chain remains auditable rather than being discarded.
+	// newLevels accounts for the external wrapper above, if any, so the
+	// resulting chain never exceeds maxDelegationDepth regardless of how
+	// many levels this exchange itself adds.
+	if priorAct, ok := validatedClaims.Extra["act"]; ok && priorAct != nil {
+		// Parse with the shared audit-side parser rather than a bespoke walker: it
+		// reports both the chain depth and any RFC 8693 Section 4.1 conformance
+		// violation, so a non-object act cannot slip past the depth gate and be
+		// re-minted. A JSON-null act is filtered by the guard above: it asserts no
+		// delegation and must not read as malformed.
+		chain := coreaudit.ParseDelegationChain(priorAct, maxDelegationDepth)
+		if chain.Malformed {
+			// RFC 8693 Section 2.2.2 nominally calls for invalid_request on a bad
+			// subject_token, but also allows that "other error codes may also be
+			// used, as appropriate": invalid_grant keeps this consistent with the
+			// depth, consent, and expiry gates in this same handler, all of which
+			// reject a structurally unacceptable subject token that way.
+			//
+			// MalformedReason is a closed, value-free enum; it is surfaced to the
+			// client and MUST stay that way — never interpolate claim contents here.
+			return nil, errorsx.WithStack(fosite.ErrInvalidGrant.WithHintf(
+				"The subject token's delegation chain is malformed (%s).", chain.MalformedReason))
+		}
+		// len(Chain) is the prior chain's depth: the parser appends exactly one
+		// hop per level and stops at maxDelegationDepth, so it is
+		// min(depth, maxDelegationDepth). newLevels is what this exchange adds
+		// on top — one for the acting client, two when an external issuer is
+		// also nested — so the resulting chain never exceeds the cap.
+		if len(chain.Chain)+newLevels > maxDelegationDepth {
+			return nil, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+				"The subject token's delegation chain is too deep."))
+		}
+		// Nest priorAct verbatim rather than re-serializing from chain: core keeps
+		// each hop's extra claims in an unexported map, so rebuilding would silently
+		// drop the history trail that Section 4.1 asks us to preserve. The cost is
+		// that unknown hop claims — and the non-identity claims Section 4.1 calls
+		// "not meaningful" inside act — pass through re-signed, which sits in
+		// tension with Section 6 data minimization. Accepted here; bounding the
+		// subtree is tracked separately.
+		//
+		// nestUnder is the innermost entry this exchange added: the acting
+		// client normally, or the external-issuer entry when one was nested
+		// above, so the prior chain hangs below the provenance rather than
+		// displacing it.
+		nestUnder["act"] = priorAct
+	}
+	return act, nil
+}
+
+// delegateClientAllowed reports whether actorID may use an issuer's
+// AllowedDelegateClients-bound consent grant (a may_act.sub match or an
+// AllowedActors match): either the list contains the wildcard
+// anyDelegateClient, or it contains actorID directly. An empty list denies
+// every client — validateTrustedIssuer rejects that configuration outright
+// for any TrustedIssuer, so the empty case here is an extra fail-closed
+// backstop, not the path an operator is expected to reach. Callers must only
+// invoke this for a claim that actually went through that per-issuer
+// validation (ExternalIssuer != ""); a self-issued token's
+// AllowedDelegateClients is always nil, since that field has no equivalent
+// concept on the self-issued path.
+func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool {
+	return slices.Contains(allowedDelegateClients, anyDelegateClient) ||
+		slices.Contains(allowedDelegateClients, actorID)
+}
+
 // checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.
 //
-// If the subject token carries a may_act claim, it is the authoritative
-// consent signal: only the party named in may_act.sub may delegate. The
-// client_id binding is skipped in this case because may_act enables
-// cross-client delegation (the token was issued to client A but authorizes
-// client B to act).
+// There are three consent sources, checked in order:
 //
-// If may_act is absent, fall back to client_id binding: the subject token's
-// client_id must match the authenticated client. This prevents a stolen
-// subject token from being exchanged by a different client.
+//  1. may_act: if present, it is the authoritative consent signal — only the
+//     party named in may_act.sub may delegate. The client_id binding is
+//     skipped in this case because may_act enables cross-client delegation
+//     (the token was issued to client A but authorizes client B to act).
+//     ValidatedClaims.AllowedDelegateClients is additionally enforced here,
+//     but ONLY when ExternalIssuer is set: that field is a TrustedIssuer
+//     concept with no self-issued equivalent, so a self-issued may_act (a
+//     ToolHive user token delegating to a ToolHive client directly) is
+//     bound by may_act.sub alone, the same as before this check existed.
+//     On the external path, may_act bypasses AllowedActors, not per-client
+//     containment — delegateClientAllowed still applies there.
 //
-// If neither may_act nor client_id is present, the subject token carries no
+//  2. ExternalActor: if may_act is absent but the multi-issuer validator has
+//     already established consent for this token (multi_issuer_validator.go),
+//     it did so by matching the subject token's actor claim against that
+//     issuer's operator-configured AllowedActors. That actor claim — even
+//     when configured as "client_id" — names a client in the EXTERNAL
+//     issuer's namespace, not ToolHive's, so it must never be compared
+//     against actorID the way case 3 below compares ValidatedClaims.ClientID.
+//     This case MUST be checked before case 3: it is not a fallback for an
+//     empty ClientID, it is a distinct, already-verified consent signal that
+//     takes priority whenever it is set, even if ClientID also happens to be
+//     populated.
+//
+//     ValidatedClaims.AllowedDelegateClients binds this to specific ToolHive
+//     clients: actorID must appear in it (or it must contain the wildcard
+//     anyDelegateClient), checked below by delegateClientAllowed. Without
+//     this, the allowlist would authorize "this external client's tokens may
+//     be exchanged", not "...by this particular ToolHive client" — every
+//     ToolHive confidential client holding the token-exchange grant would be
+//     delegation-equivalent with respect to an allowlisted external actor, so
+//     compromise of the weakest such client would be as good as compromise
+//     of all of them (see #5989). validateTrustedIssuer rejects an empty
+//     AllowedDelegateClients at construction for exactly this reason: an
+//     operator must declare permissiveness with the wildcard, not get it by
+//     omission. Either way this remains bounded by: the calling client must
+//     already possess a valid subject token (it cannot forge one), and
+//     grantScopes/grantAndBoundAudiences still narrow the result to what
+//     both the client and the subject token are authorized for.
+//
+//  3. client_id: if neither of the above applies, fall back to client_id
+//     binding — the subject token's client_id must match the authenticated
+//     client. This prevents a stolen subject token from being exchanged by a
+//     different client.
+//
+// If none of the three consent sources apply, the subject token carries no
 // verifiable binding to any client at all — this fails closed (CWE-863)
 // rather than allowing an unbound token through.
 func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string) error {
@@ -334,6 +496,25 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string) er
 		if validatedClaims.MayAct.Sub != actorID {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
+		}
+		if validatedClaims.ExternalIssuer != "" && !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
+		}
+	case validatedClaims.ExternalActor != "":
+		// Consent was already established by the external-issuer validator: the
+		// subject token's actor claim matched this issuer's operator-configured
+		// AllowedActors. That claim lives in the external issuer's client
+		// namespace, not ToolHive's, so — even when ClientID is also populated
+		// (ActorClaim: "client_id") — it must never be compared against
+		// actorID. This case must be checked before the client_id cases below,
+		// not merged with them.
+		//
+		// AllowedDelegateClients binds this allowlisted actor to a specific set
+		// of ToolHive clients — see delegateClientAllowed.
+		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
 	case validatedClaims.ClientID != "" && validatedClaims.ClientID != actorID:
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
@@ -481,9 +662,14 @@ func (h *Handler) grantDefaultAudience(ctx context.Context, requester fosite.Acc
 
 // ensureAudienceSubsetOfSubject verifies that every audience granted to the
 // delegated token is covered by the subject token's own audience. A subject
-// token always carries at least one audience (the validator rejects tokens
-// whose aud does not intersect the server's allowed audiences), so an empty
-// subject audience here can only reject.
+// token always carries at least one audience, so an empty subject audience
+// here can only reject — but what guarantees that non-empty audience differs
+// by path. On the self-issued path, SelfIssuedTokenValidator rejects tokens
+// whose aud does not intersect this server's AllowedAudiences. On the
+// external path, validateExternalToken instead requires aud to contain the
+// issuer's own configured ExpectedAudience, which has no required
+// relationship to AllowedAudiences — see the TrustedIssuers field doc
+// comment in pkg/authserver/config.go for the operator-facing consequence.
 func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
 	subj := make(map[string]bool, len(subjectAud))
 	for _, a := range subjectAud {

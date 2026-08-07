@@ -128,12 +128,6 @@ type MCPTelemetryConfigStatus struct {
 	// ConfigHash is a hash of the current configuration for change detection
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
-
-	// ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true

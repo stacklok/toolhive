@@ -3011,3 +3011,67 @@ func TestValidateToken_DiscoveryFailsWithKeyProvider(t *testing.T) {
 		require.Contains(t, err.Error(), "local key provider could not resolve key")
 	})
 }
+
+func TestEnsureJWKSRegistered_NonFatalRegistrationErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ErrNotReady marks the JWKS as registered", func(t *testing.T) {
+		t.Parallel()
+		// A JWKS endpoint that never succeeds keeps the resource from
+		// becoming ready within the registration budget.
+		jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(jwksServer.Close)
+		caCertPath := writeTestServerCert(t, jwksServer)
+
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			Audience:       "test-audience",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		})
+		require.NoError(t, err)
+
+		// Bound the ready-wait well below the 5s registration budget.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		require.NoError(t, validator.ensureJWKSRegistered(ctx),
+			"ErrNotReady must be treated as registered-but-pending")
+		require.True(t, validator.jwksRegistered)
+
+		// Lookup surfaces not-ready until a background fetch succeeds.
+		_, err = validator.jwksClient.Lookup(context.Background(), jwksServer.URL)
+		require.Error(t, err)
+	})
+
+	t.Run("ErrResourceAlreadyExists marks the JWKS as registered", func(t *testing.T) {
+		t.Parallel()
+		jwksServer, caCertPath := createTestJWKSServer(t, jwk.NewSet())
+		t.Cleanup(jwksServer.Close)
+
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			Audience:       "test-audience",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, validator.ensureJWKSRegistered(context.Background()))
+
+		// Simulate the reset done after OIDC re-discovery: the flag is
+		// cleared but the URL is still in httprc's resource map, so the
+		// next registration attempt returns ErrResourceAlreadyExists.
+		validator.jwksRegistrationMu.Lock()
+		validator.jwksRegistered = false
+		validator.jwksRegistrationMu.Unlock()
+
+		require.NoError(t, validator.ensureJWKSRegistered(context.Background()),
+			"re-registering an already-registered URL must not fail")
+		require.True(t, validator.jwksRegistered)
+	})
+}

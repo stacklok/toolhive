@@ -222,7 +222,7 @@ func TestClassifyRevision(t *testing.T) {
 			// Legacy.
 			name:        "legacy: logLevel reserved key alone is not a Modern signal",
 			method:      "tools/call",
-			meta:        map[string]any{metaKeyLogLevel: "debug"},
+			meta:        map[string]any{MetaKeyLogLevel: "debug"},
 			protoHeader: "",
 			expectedRev: RevisionLegacy,
 			checkErr: func(t *testing.T, err error) {
@@ -697,7 +697,7 @@ func TestStripReservedMeta(t *testing.T) {
 			metaKeyProtocolVersion:    MCPVersionModern,
 			metaKeyClientInfo:         map[string]any{"name": "x"},
 			metaKeyClientCapabilities: map[string]any{},
-			metaKeyLogLevel:           "debug",
+			MetaKeyLogLevel:           "debug",
 			// Response/notification-side reserved keys: a backend must not be able
 			// to speak for vMCP on the way back to the client (#5986).
 			"io.modelcontextprotocol/serverInfo":     map[string]any{"name": "attacker"},

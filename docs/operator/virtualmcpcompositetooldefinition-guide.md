@@ -347,6 +347,77 @@ spec:
 - `abort`: Stop on first failure (default)
 - `continue`: Execute all steps regardless of failures
 
+### Annotations
+
+Declare MCP tool annotations for the composite tool. Annotations are behavioral
+hints advertised to MCP clients in `tools/list` responses.
+
+```yaml
+spec:
+  name: user_report
+  description: Generate a read-only user report
+
+  annotations:
+    title: User Report
+    readOnlyHint: true
+
+  steps:
+    - id: get_user
+      tool: users.get
+```
+
+**Fields** (all optional; all hints are booleans):
+
+| Field             | Type   | Default           | Semantics |
+|-------------------|--------|-------------------|-----------|
+| `title`           | string | derived (none)    | Human-readable title. Explicit value wins when set. |
+| `readOnlyHint`    | bool   | derived from steps | The composite tool does not modify its environment. |
+| `destructiveHint` | bool   | derived from steps | The composite tool may perform destructive updates. |
+| `idempotentHint`  | bool   | none              | Repeated calls with the same arguments have no additional effect. Never derived — only advertised when explicitly declared. |
+| `openWorldHint`   | bool   | derived from steps | The composite tool interacts with external entities. |
+
+**When `annotations` is omitted**, annotations are derived at advertise time
+from the annotations of the backend tools referenced by the workflow's steps
+(including `forEach` inner steps):
+
+- `readOnlyHint`: **AND** across steps — `true` only when every step tool
+  declares `readOnlyHint: true`; any step that is nil or `false` makes it `false`.
+- `destructiveHint`: **OR** across steps — `true` when any step declares it
+  `true`, or when any step's annotations are unknown.
+- `openWorldHint`: **OR** across steps — same rule as `destructiveHint`.
+- `idempotentHint`: never derived (left unset).
+
+> **Client compatibility note:** existing composite tools that previously
+> advertised no annotations now advertise the fail-closed floor
+> (`destructiveHint: true`, `openWorldHint: true`, `readOnlyHint: false`) when
+> they have tool steps. That matches the MCP spec defaults for omitted hints, so
+> conformant clients are unaffected — but clients that branch on
+> `annotations != nil` may start treating composites as destructive.
+
+**When `annotations` is set**, the explicit values are merged over the derived
+floor: each explicitly set field wins; unset fields keep the derived value.
+
+**Safety floor and contradiction guardrail**: an explicit hint may be *more
+conservative* than the derived floor (e.g. `readOnlyHint: false` when the floor
+is `true`), but it may never make the tool look *safer* than its steps allow
+(e.g. `readOnlyHint: true` when a step is not read-only, or
+`destructiveHint: false` when a step is destructive). The floor is
+**fail-closed**: when a workflow has one or more tool steps the floor is always
+non-nil, and any step whose annotations are nil or unknown taints it
+conservatively (`readOnly=false`, `destructive=true`, `openWorld=true`). In the
+common case where backends declare no annotations (e.g. yardstick echo), the
+floor is that conservative set, so an explicit `readOnlyHint: true` will
+contradict it and be dropped. This guardrail runs at **runtime (advertise
+time)**, not at admission: a contradicting composite tool is omitted from
+`tools/list` and is also uncallable via `tools/call` (with a warning naming the
+offending step tools in the vMCP logs), while the VirtualMCPServer stays Ready.
+
+> **`thv vmcp validate` does NOT check annotation contradictions.** A composite
+> tool definition that passes validation can still be dropped at runtime if its
+> explicit annotations contradict the derived safety floor — contradictions only
+> surface in the vMCP logs at advertise time. It cannot run at admission because
+> step-tool annotations are only known once backends are aggregated.
+
 ### Template Syntax
 
 Use Go template syntax for dynamic values:

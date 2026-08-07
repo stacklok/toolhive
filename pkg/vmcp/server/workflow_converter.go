@@ -71,6 +71,7 @@ func ConvertConfigToWorkflowDefinitions(
 			Steps:       steps,
 			Timeout:     timeout,
 			Output:      ct.Output,
+			Annotations: ct.Annotations,
 			Metadata:    make(map[string]string),
 		}
 

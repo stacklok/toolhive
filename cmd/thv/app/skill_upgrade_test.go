@@ -43,6 +43,23 @@ func TestUpgradeExitError(t *testing.T) {
 			wantCode: ExitCodePolicyRejection,
 		},
 		{
+			name:     "signer change blocked is a policy rejection",
+			outcomes: []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusSignerChangeBlocked}},
+			wantCode: ExitCodePolicyRejection,
+		},
+		{
+			name:     "signer change blocked in preview is informational",
+			outcomes: []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusSignerChangeBlocked}},
+			preview:  true,
+			wantCode: 0,
+		},
+		{
+			name:          "signer change blocked counts as would-change under fail-on-changes",
+			outcomes:      []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusSignerChangeBlocked}},
+			failOnChanges: true,
+			wantCode:      ExitCodeCheckFailure,
+		},
+		{
 			name:     "ref change blocked during preview is not a policy rejection",
 			outcomes: []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusRefChangeBlocked}},
 			preview:  true,

@@ -85,6 +85,10 @@ func (s *service) getContentFromOCI(ctx context.Context, ref string) (*plugins.P
 			)
 		}
 
+		if err := validateOCIRegistryHost(ociRef); err != nil {
+			return nil, err
+		}
+
 		qualifiedRef := qualifiedOCIRef(ociRef)
 		pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
 		defer cancel()

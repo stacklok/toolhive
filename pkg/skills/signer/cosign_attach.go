@@ -46,12 +46,14 @@ type cosignImage struct {
 	DockerManifestDigest string `json:"docker-manifest-digest"`
 }
 
-// simpleSigningPayload builds the canonical simple-signing payload for the
+// SimpleSigningPayload builds the canonical simple-signing payload for the
 // artifact at ref pinned to digestStr. This payload — not the manifest
 // digest — is what gets signed, per the cosign convention: a verifier
 // recovers the payload from the signature manifest's layer, checks the
 // signature over it, and reads the bound manifest digest out of it.
-func simpleSigningPayload(imageRef, digestStr string) ([]byte, error) {
+// Exported because offline re-verification of a stored key-signed bundle
+// must reconstruct exactly these bytes to check the signature's binding.
+func SimpleSigningPayload(imageRef, digestStr string) ([]byte, error) {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("parsing image reference: %w", err)

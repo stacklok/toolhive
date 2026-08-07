@@ -25,6 +25,13 @@ import (
 // from the same table. Returns vmcp.ErrNotFound for an unadvertised name and
 // vmcp.ErrAuthorizationFailed when admission denies identity the call.
 //
+// "Unadvertised" here means the AGGREGATION view that ListTools filters — NOT
+// the routing table, which intentionally holds more (see the advertised-view
+// check below). Admission narrowing on top of that view is enforced separately,
+// by authorizeToolCall. So a tool hidden by excludeAllTools, per-workload
+// excludeAll, or filter is not directly callable, while composite workflow steps
+// may still reach it.
+//
 // args and meta are treated as read-only and copied before being forwarded
 // (go-style: copy before mutating caller input). The admission decision enforces
 // the same policy ListTools filters on. identity is never logged. See ListTools
@@ -44,8 +51,43 @@ func (c *coreVMCP) CallTool(
 		return nil, err
 	}
 
-	if err := c.authorizeToolCall(ctx, identity, name, argsCopy, agg); err != nil {
+	// Resolve the advertised view ONCE and thread it through the three consumers
+	// below (admission, the not-found guard, the composite branch). Each of
+	// accessibleComposites and advertisedTools re-runs FilterWorkflowDefsForSession,
+	// ValidateNoToolConflicts and ConvertWorkflowDefsToTools, so computing them per
+	// consumer meant three passes and two concatenated-slice allocations per call.
+	// Sharing one result also removes any chance of the admission lookup and the
+	// guard below disagreeing about what is advertised.
+	composites := c.accessibleComposites(agg)
+	advertised := advertisedToolsWith(agg, composites)
+	tool := findAdvertisedTool(advertised, name)
+
+	if err := c.authorizeToolCall(ctx, identity, name, argsCopy, tool); err != nil {
 		return nil, err
+	}
+
+	// Hold the call to the ADVERTISED view, not the routing table. The routing
+	// table deliberately carries every backend tool — including those hidden from
+	// tools/list by excludeAllTools, per-workload excludeAll, or filter — so that
+	// composite-tool workflow STEPS can reach them (#3636,
+	// aggregator/default_aggregator.go:349). Workflow steps never come through
+	// here: a composite enters CallTool once under its own (advertised) name and
+	// its steps then run composer -> router.RouteTool -> backendClient.CallTool,
+	// bypassing this method. So narrowing to the advertised set closes direct
+	// invocation of a hidden tool without weakening #3636 at all.
+	//
+	// This is checked AFTER authorizeToolCall on purpose: a tool that admission
+	// denies must keep returning ErrAuthorizationFailed, never ErrNotFound, or the
+	// two errors together would let a caller probe which denied tools exist.
+	//
+	// advertised includes accessible composites, so an advertised workflow still
+	// resolves here and falls through to the composite branch below. Note this
+	// also rejects RouteTool's "{workloadID}.{toolName}" alias
+	// (router/session_router.go:105) for a direct call: an alias is never an
+	// advertised name. That alias exists for workflow step definitions and keeps
+	// working there, inside the composer.
+	if tool == nil {
+		return nil, fmt.Errorf("%w: tool %q", vmcp.ErrNotFound, name)
 	}
 
 	// Composite tool: execute only when the workflow is actually advertised in the
@@ -53,7 +95,7 @@ func (c *coreVMCP) CallTool(
 	// uses the same gate as ListTools (accessibleComposites), so advertised equals
 	// executed. A name that collides with a backend tool is NOT in the set and falls
 	// through to backend routing, matching the legacy decorator.
-	if def, ok := c.accessibleComposites(agg)[name]; ok {
+	if def, ok := composites[name]; ok {
 		engine := c.composerFactory(agg.RoutingTable, agg.Tools)
 		return executeComposite(ctx, engine, def, argsCopy)
 	}

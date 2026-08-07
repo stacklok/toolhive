@@ -231,33 +231,79 @@ Defines tool aggregation and conflict resolution strategies.
 - `conflictResolutionConfig` (ConflictResolutionConfig, optional): Configuration for the chosen strategy
 - `tools` ([]WorkloadToolConfig, optional): Per-workload tool filtering and overrides
 - `excludeAllTools` (bool, optional): Excludes all tools from aggregation when true
+- `defaultToolVisibility` (string, optional, default: "allow"): Whether a backend with no `tools` entry is advertised
+  - `allow`: every tool from an unlisted backend is advertised
+  - `deny`: an unlisted backend contributes no tools, so only backends named in `tools` are advertised
 
 **Example (prefix strategy)**:
 ```yaml
 spec:
   groupRef:
     name: my-services
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr"]
-      - workload: jira
-        toolConfigRef:
-          name: jira-tool-config
+  config:
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr"]
+        - workload: jira
+          toolConfigRef:
+            name: jira-tool-config
 ```
+
+**Example (deny-by-default)**:
+
+By default, a workload in the group with no `tools` entry has all of its tools
+advertised, so adding a workload to the group exposes it. Set
+`defaultToolVisibility: deny` to invert that, so only the workloads you list
+contribute tools:
+
+```yaml
+spec:
+  groupRef:
+    name: my-services
+  config:
+    aggregation:
+      conflictResolution: prefix
+      defaultToolVisibility: deny
+      tools:
+        # Only these two workloads are advertised. Any other workload in
+        # my-services contributes no tools, including ones added later.
+        - workload: github
+          filter: ["get_issue", "list_prs"]
+        - workload: jira
+          filter: ["get_issue"]
+```
+
+A workload that *is* listed is opted in by its entry: `excludeAll` and `filter`
+on that entry then decide which of its tools are advertised. An entry with
+neither advertises all of that workload's tools.
+
+`defaultToolVisibility: deny` cannot be combined with the `priority` conflict
+strategy unless every `priorityOrder` entry also has a `tools` entry. An unlisted
+backend can win a name conflict and then be withheld, which would hide the tool
+from every workload offering it; the configuration is rejected rather than
+silently dropping the tool.
+
+> **Note**: `defaultToolVisibility` controls **advertising** only, as do
+> `excludeAllTools` and `excludeAll`. Tools hidden this way remain in the routing
+> table so composite tools can still call them, and `defaultToolVisibility` does
+> not affect resources or prompts, which are advertised regardless. For
+> per-identity authorization, use Cedar policies (see
+> [Authorization](../authz.md)).
 
 **Example (priority strategy)**:
 ```yaml
 spec:
   groupRef:
     name: my-services
-  aggregation:
-    conflictResolution: priority
-    conflictResolutionConfig:
-      priorityOrder: ["github", "jira", "slack"]
+  config:
+    aggregation:
+      conflictResolution: priority
+      conflictResolutionConfig:
+        priorityOrder: ["github", "jira", "slack"]
 ```
 
 **Example (manual strategy)**:
@@ -265,23 +311,24 @@ spec:
 spec:
   groupRef:
     name: my-services
-  aggregation:
-    conflictResolution: manual
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr", "list_repos"]
-        overrides:
-          create_pr:
-            name: github_create_pr
-            description: "Create a pull request in GitHub"
-      - workload: jira
-        filter: ["create_issue", "update_issue"]
-        overrides:
-          create_issue:
-            name: jira_create_issue
-            description: "Create an issue in Jira"
-      # All tool name conflicts must be explicitly resolved via overrides
-      # Runtime validation ensures no unresolved conflicts exist
+  config:
+    aggregation:
+      conflictResolution: manual
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr", "list_repos"]
+          overrides:
+            create_pr:
+              name: github_create_pr
+              description: "Create a pull request in GitHub"
+        - workload: jira
+          filter: ["create_issue", "update_issue"]
+          overrides:
+            create_issue:
+              name: jira_create_issue
+              description: "Create an issue in Jira"
+        # All tool name conflicts must be explicitly resolved via overrides
+        # Runtime validation ensures no unresolved conflicts exist
 ```
 
 #### WorkloadToolConfig

@@ -13,13 +13,14 @@ import (
 )
 
 var (
-	skillSyncProjectRoot string
-	skillSyncClientsRaw  string
-	skillSyncCheck       bool
-	skillSyncAdopt       bool
-	skillSyncPrune       bool
-	skillSyncYes         bool
-	skillSyncFormat      string
+	skillSyncProjectRoot   string
+	skillSyncClientsRaw    string
+	skillSyncCheck         bool
+	skillSyncAdopt         bool
+	skillSyncPrune         bool
+	skillSyncYes           bool
+	skillSyncAllowUnsigned bool
+	skillSyncFormat        string
 )
 
 var skillSyncCmd = &cobra.Command{
@@ -59,6 +60,8 @@ func init() {
 		"Remove installs no longer present in the lock file")
 	skillSyncCmd.Flags().BoolVar(&skillSyncYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
+	skillSyncCmd.Flags().BoolVar(&skillSyncAllowUnsigned, "allow-unsigned", false,
+		"Allow adopting skills whose signature state cannot be established (recorded as unsigned)")
 	AddFormatFlag(skillSyncCmd, &skillSyncFormat)
 }
 
@@ -84,11 +87,12 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	c := newSkillClient(cmd.Context())
 	result, err := c.Sync(cmd.Context(), skills.SyncOptions{
-		ProjectRoot: projectRoot,
-		Clients:     parseSkillInstallClients(skillSyncClientsRaw),
-		Check:       skillSyncCheck,
-		Adopt:       skillSyncAdopt,
-		Prune:       skillSyncPrune,
+		ProjectRoot:   projectRoot,
+		Clients:       parseSkillInstallClients(skillSyncClientsRaw),
+		Check:         skillSyncCheck,
+		Adopt:         skillSyncAdopt,
+		Prune:         skillSyncPrune,
+		AllowUnsigned: skillSyncAllowUnsigned,
 	})
 	if err != nil {
 		return formatSkillError("sync skills", err)

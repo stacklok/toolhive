@@ -458,7 +458,7 @@ func TestRuntimeConfigValidate_MultipleErrorsWithRuntimeEnv(t *testing.T) {
 	assert.Contains(t, err.Error(), "contains potentially dangerous characters")
 }
 
-func TestRuntimeConfigValidate_ValidUVWith(t *testing.T) {
+func TestRuntimeConfigValidate_ValidBuildWith(t *testing.T) {
 	t.Parallel()
 
 	valid := []string{
@@ -471,12 +471,12 @@ func TestRuntimeConfigValidate_ValidUVWith(t *testing.T) {
 		"pkg >= 1.0, < 3",
 	}
 	for _, spec := range valid {
-		rc := &RuntimeConfig{UVWith: []string{spec}}
+		rc := &RuntimeConfig{BuildWith: []string{spec}}
 		assert.NoError(t, rc.Validate(), "specifier %q should be valid", spec)
 	}
 }
 
-func TestRuntimeConfigValidate_InvalidUVWith(t *testing.T) {
+func TestRuntimeConfigValidate_InvalidBuildWith(t *testing.T) {
 	t.Parallel()
 
 	invalid := []string{
@@ -495,16 +495,16 @@ func TestRuntimeConfigValidate_InvalidUVWith(t *testing.T) {
 		"pkg; python_version<'3.8'", // env markers need quotes, deliberately unsupported
 	}
 	for _, spec := range invalid {
-		rc := &RuntimeConfig{UVWith: []string{spec}}
+		rc := &RuntimeConfig{BuildWith: []string{spec}}
 		assert.Error(t, rc.Validate(), "specifier %q should be rejected", spec)
 	}
 }
 
-func TestUVXTemplateRendersUVWith(t *testing.T) {
+func TestUVXTemplateRendersBuildWith(t *testing.T) {
 	t.Parallel()
 
 	rc := GetDefaultRuntimeConfig(TransportTypeUVX)
-	rc.UVWith = []string{"mcp<2", "other>=1,<4"}
+	rc.BuildWith = []string{"mcp<2", "other>=1,<4"}
 	data := TemplateData{
 		MCPPackage:    "arxiv-mcp-server",
 		RuntimeConfig: &rc,
@@ -512,10 +512,10 @@ func TestUVXTemplateRendersUVWith(t *testing.T) {
 	dockerfile, err := GetDockerfileTemplate(TransportTypeUVX, data)
 	require.NoError(t, err)
 	assert.Contains(t, dockerfile, `uv tool install --with 'mcp<2' --with 'other>=1,<4' "$package_spec"`,
-		"each UVWith specifier must be passed as a single-quoted --with argument")
+		"each BuildWith specifier must be passed as a single-quoted --with argument")
 }
 
-func TestUVXTemplateWithoutUVWithIsUnchanged(t *testing.T) {
+func TestUVXTemplateWithoutBuildWithIsUnchanged(t *testing.T) {
 	t.Parallel()
 
 	rc := GetDefaultRuntimeConfig(TransportTypeUVX)
@@ -526,6 +526,6 @@ func TestUVXTemplateWithoutUVWithIsUnchanged(t *testing.T) {
 	dockerfile, err := GetDockerfileTemplate(TransportTypeUVX, data)
 	require.NoError(t, err)
 	assert.Contains(t, dockerfile, `uv tool install "$package_spec"`,
-		"no --with arguments should appear when UVWith is empty")
+		"no --with arguments should appear when BuildWith is empty")
 	assert.NotContains(t, dockerfile, "--with")
 }

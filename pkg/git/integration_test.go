@@ -43,6 +43,60 @@ func initTestRepo(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// signTestRepoHead rewrites the HEAD commit of the repo at dir with the given
+// armored signature attached, mimicking what gitsign/PGP tooling produces.
+func signTestRepoHead(t *testing.T, dir, signature string) {
+	t.Helper()
+
+	repo, err := gogit.PlainOpen(dir)
+	require.NoError(t, err)
+	head, err := repo.Head()
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(head.Hash())
+	require.NoError(t, err)
+
+	commit.PGPSignature = signature
+	obj := repo.Storer.NewEncodedObject()
+	require.NoError(t, commit.Encode(obj))
+	hash, err := repo.Storer.SetEncodedObject(obj)
+	require.NoError(t, err)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), hash)))
+}
+
+// repoInfoHeadHash returns the HEAD hash of a cloned repo directly via
+// go-git, for cross-checking HeadCommit.
+func repoInfoHeadHash(t *testing.T, repoInfo *RepositoryInfo) string {
+	t.Helper()
+	ref, err := repoInfo.Repository.Head()
+	require.NoError(t, err)
+	return ref.Hash().String()
+}
+
+// TestDefaultGitClient_HeadCommit_SignedCommit verifies the armored
+// signature stored on a commit survives clone and is returned verbatim.
+func TestDefaultGitClient_HeadCommit_SignedCommit(t *testing.T) {
+	t.Parallel()
+
+	const armoredSig = "-----BEGIN SIGNED MESSAGE-----\nMIIC(test-signature)\n-----END SIGNED MESSAGE-----\n"
+	repoDir := initTestRepo(t, map[string]string{"test.txt": "content"})
+	signTestRepoHead(t, repoDir, armoredSig)
+
+	client := NewDefaultGitClient()
+	repoInfo, err := client.Clone(t.Context(), &CloneConfig{URL: repoDir})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Cleanup(t.Context(), repoInfo) })
+
+	head, err := client.HeadCommit(repoInfo)
+	require.NoError(t, err)
+	assert.Equal(t, armoredSig, head.Signature)
+	assert.Equal(t, repoInfoHeadHash(t, repoInfo), head.Hash,
+		"hash and signature must describe the same commit")
+	assert.NotContains(t, string(head.Payload), "gpgsig",
+		"the payload must be the commit without its signature header")
+	assert.Contains(t, string(head.Payload), "tree ",
+		"the payload must be the encoded commit object")
+}
+
 // TestDefaultGitClient_FullWorkflow exercises the complete clone → read → cleanup lifecycle
 // against a local git repository to verify end-to-end correctness.
 func TestDefaultGitClient_FullWorkflow(t *testing.T) {

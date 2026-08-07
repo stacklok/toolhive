@@ -145,25 +145,6 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("should track MCPRemoteProxy in MCPOIDCConfig ReferencingWorkloads", func() {
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
 	})
 
 	Context("When MCPRemoteProxy references non-existent MCPOIDCConfig (fail-closed on missing)", Ordered, func() {
@@ -414,23 +395,18 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxy = newTestMCPRemoteProxy(proxyName, namespace, configName)
 			Expect(k8sClient.Create(ctx, proxy)).Should(Succeed())
 
-			// Wait for ReferencingWorkloads to be populated
+			// Wait for the proxy to be wired to the config (OIDCConfigHash populated)
+			// so the config is observably referenced before we attempt deletion.
 			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
+					Name:      proxyName,
 					Namespace: namespace,
 				}, updated)
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
+				return updated.Status.OIDCConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
 
 			// Attempt to delete the MCPOIDCConfig (should be blocked by finalizer)
@@ -455,8 +431,9 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should not be deleted while referenced by MCPRemoteProxy", func() {
-			// The object should still exist because the finalizer blocks deletion
+		It("should not be deleted while referenced and should set DeletionBlocked condition", func() {
+			// The object should still exist (finalizer blocks deletion) with a
+			// pending deletion timestamp and a DeletionBlocked=True condition.
 			Eventually(func() bool {
 				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -466,7 +443,11 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				return !updated.DeletionTimestamp.IsZero()
+				if updated.DeletionTimestamp.IsZero() {
+					return false
+				}
+				cond := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
+				return cond != nil && cond.Status == metav1.ConditionTrue
 			}, timeout, interval).Should(BeTrue())
 		})
 
@@ -549,25 +530,6 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxy = newTestMCPRemoteProxy(proxyName, namespace, configName)
 			Expect(k8sClient.Create(ctx, proxy)).Should(Succeed())
 
-			// Wait for ReferencingWorkloads to contain the proxy
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-
 			// Wait for the proxy OIDCConfigHash to be populated
 			Eventually(func() bool {
 				updated := &mcpv1beta1.MCPRemoteProxy{}
@@ -588,7 +550,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should clean up ReferencingWorkloads and clear OIDCConfigHash after ref removal", func() {
+		It("should clear OIDCConfigHash and remove condition after ref removal", func() {
 			// Remove the OIDCConfigRef from the MCPRemoteProxy
 			updated := &mcpv1beta1.MCPRemoteProxy{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -599,25 +561,6 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			// Remove the OIDCConfigRef
 			updated.Spec.OIDCConfigRef = nil
 			Expect(k8sClient.Update(ctx, updated)).Should(Succeed())
-
-			// MCPOIDCConfig should no longer list MCPRemoteProxy in ReferencingWorkloads
-			Eventually(func() bool {
-				cfg := &mcpv1beta1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, cfg)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
-				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return false
-					}
-				}
-				return true
-			}, timeout, interval).Should(BeTrue())
 
 			// MCPRemoteProxy OIDCConfigHash should be cleared and condition removed
 			Eventually(func() bool {
@@ -635,111 +578,6 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				// Verify the OIDCConfigRefValidated condition was removed
 				cond := meta.FindStatusCondition(proxyUpdated.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 				return cond == nil
-			}, timeout, interval).Should(BeTrue())
-		})
-	})
-
-	Context("When MCPRemoteProxy is deleted, should clean up ReferencingWorkloads", Ordered, func() {
-		var (
-			namespace  string
-			configName string
-			proxyName  string
-			oidcConfig *mcpv1beta1.MCPOIDCConfig
-			proxy      *mcpv1beta1.MCPRemoteProxy
-			ns         *corev1.Namespace
-		)
-
-		BeforeAll(func() {
-			ns = &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					GenerateName: "test-proxy-oidcref-cleanup-",
-				},
-			}
-			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
-			namespace = ns.Name
-
-			configName = testOIDCConfigName
-			proxyName = testRemoteProxyName
-
-			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      configName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.MCPOIDCConfigSpec{
-					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
-						Issuer:   "https://accounts.google.com",
-						ClientID: "test-client",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, oidcConfig)).Should(Succeed())
-
-			// Wait for ready
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				return updated.Status.ConfigHash != ""
-			}, timeout, interval).Should(BeTrue())
-
-			// Create MCPRemoteProxy with OIDCConfigRef
-			proxy = newTestMCPRemoteProxy(proxyName, namespace, configName)
-			Expect(k8sClient.Create(ctx, proxy)).Should(Succeed())
-
-			// Wait for ReferencingWorkloads to contain the proxy
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
-
-		AfterAll(func() {
-			_ = k8sClient.Delete(ctx, oidcConfig)
-			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
-		})
-
-		It("should remove MCPRemoteProxy from ReferencingWorkloads after deletion", func() {
-			// Delete the MCPRemoteProxy
-			Expect(k8sClient.Delete(ctx, proxy)).Should(Succeed())
-
-			// Eventually the referencing workloads list should not contain the proxy
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return false
-					}
-				}
-				return true
 			}, timeout, interval).Should(BeTrue())
 		})
 	})

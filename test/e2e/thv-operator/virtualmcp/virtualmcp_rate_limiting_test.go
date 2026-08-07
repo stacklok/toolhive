@@ -226,7 +226,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(ratelimit.MessageRateLimited))
 
 		// Pin the full Modern envelope with an era-pinned raw request (the
-		// #6051 convention): RFC THV-0057's -32029 with data.retryAfterSeconds
+		// #6051 convention): the rate limiter's 429 with data.retryAfterSeconds
 		// must survive the Modern dispatch path, which the go-sdk client above
 		// can only surface as an error string.
 		ginkgo.By("Verifying the Modern rate-limit error envelope")

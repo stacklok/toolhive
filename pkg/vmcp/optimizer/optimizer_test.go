@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
 
 func TestGetAndValidateConfig(t *testing.T) {
@@ -437,11 +440,11 @@ func newMockStoreWithSubstringSearch(ctrl *gomock.Controller) *mocks.MockToolSto
 	).AnyTimes()
 
 	store.EXPECT().Search(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
+		func(_ context.Context, q types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 			if len(allowedTools) == 0 {
 				return nil, nil
 			}
-			searchTerm := strings.ToLower(query)
+			searchTerm := strings.ToLower(q.Description)
 			allowedSet := make(map[string]struct{}, len(allowedTools))
 			for _, name := range allowedTools {
 				allowedSet[name] = struct{}{}
@@ -483,8 +486,8 @@ func TestOptimizer_SearchDelegation(t *testing.T) {
 	}
 
 	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().Search(gomock.Any(), "query", gomock.Any()).DoAndReturn(
-		func(_ context.Context, _ string, allowedTools []string) ([]mcp.Tool, error) {
+	store.EXPECT().Search(gomock.Any(), types.SearchQuery{Description: "query"}, gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 			require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
 			return []mcp.Tool{
 				{Name: "tool_a", Description: "Tool A"},
@@ -688,6 +691,35 @@ func TestOptimizer_FindTool(t *testing.T) {
 	}
 }
 
+// TestOptimizer_FindToolPassesKeywords is the regression guard for the bug
+// where ToolKeywords was decoded off the wire, logged, and then dropped
+// instead of reaching the store's Search call.
+func TestOptimizer_FindToolPassesKeywords(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	store := mocks.NewMockToolStore(ctrl)
+
+	tools := []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	}
+
+	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().Search(gomock.Any(), types.SearchQuery{
+		Description: "query",
+		Keywords:    []string{"list", "issues", "github"},
+	}, gomock.Any()).Return(nil, nil)
+
+	opt, err := newToolOptimizer(context.Background(), store, tokencounter.NewJSONByteCounter(), tools)
+	require.NoError(t, err)
+
+	_, err = opt.FindTool(context.Background(), FindToolInput{
+		ToolDescription: "query",
+		ToolKeywords:    []string{"list", "issues", "github"},
+	})
+	require.NoError(t, err)
+}
+
 func TestOptimizerFactoryWithStore(t *testing.T) {
 	t.Parallel()
 
@@ -816,7 +848,7 @@ func TestOptimizer_CallTool(t *testing.T) {
 				Parameters: map[string]any{},
 			},
 			expectedError: true,
-			errorContains: "tool_name is required",
+			errorContains: `call_tool expects {"tool_name"`,
 		},
 	}
 
@@ -847,4 +879,152 @@ func TestOptimizer_CallTool(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCallToolTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		toolName       string
+		params         map[string]any
+		expectedName   string
+		expectedParams map[string]any
+	}{
+		{
+			name:           "top-level name is returned unchanged",
+			toolName:       "search",
+			params:         map[string]any{"query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nested name is hoisted and removed from params",
+			params:         map[string]any{"tool_name": "search", "query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "top-level name wins and params are left untouched",
+			toolName:       "search",
+			params:         map[string]any{"tool_name": "other", "query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"tool_name": "other", "query": "weather"},
+		},
+		{
+			name:           "nested empty name is not hoisted",
+			params:         map[string]any{"tool_name": ""},
+			expectedName:   "",
+			expectedParams: map[string]any{"tool_name": ""},
+		},
+		{
+			name:           "nested non-string name is not hoisted",
+			params:         map[string]any{"tool_name": 123},
+			expectedName:   "",
+			expectedParams: map[string]any{"tool_name": 123},
+		},
+		{
+			name:           "no name anywhere",
+			params:         map[string]any{"query": "weather"},
+			expectedName:   "",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nil params",
+			expectedName:   "",
+			expectedParams: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Callers share this map with downstream consumers, so it must survive intact.
+			original := maps.Clone(tc.params)
+
+			gotName, gotParams := resolveCallToolTarget(tc.toolName, tc.params)
+			require.Equal(t, tc.expectedName, gotName)
+			require.Equal(t, tc.expectedParams, gotParams)
+			require.Equal(t, original, tc.params, "input params must not be mutated")
+		})
+	}
+}
+
+// Both call_tool handlers and the authz middleware resolve the target with
+// schema.Translate, so every shape that reaches a tool through that call must
+// resolve to the same name for all three. A reader that indexes the arguments map
+// instead sees a different target for the case-variant keys below.
+func TestCallToolInput_TranslateResolvesTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		args           map[string]any
+		expectedName   string
+		expectedParams map[string]any
+	}{
+		{
+			name:           "top-level name",
+			args:           map[string]any{"tool_name": "search", "parameters": map[string]any{"query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nested name is hoisted",
+			args:           map[string]any{"parameters": map[string]any{"tool_name": "search", "query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			// encoding/json prefers an exact field match but falls back to a
+			// case-insensitive one, so these name a tool just as the lowercase key does.
+			name:           "case-variant top-level key still names the tool",
+			args:           map[string]any{"Tool_Name": "search", "parameters": map[string]any{"query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "case-variant parameters key still carries the arguments",
+			args:           map[string]any{"tool_name": "search", "PARAMETERS": map[string]any{"query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			// The nested lookup is a map index, not a struct field match, so it is
+			// exact. Dispatch names no tool here and neither may authorization.
+			name:           "case-variant nested key is not hoisted",
+			args:           map[string]any{"parameters": map[string]any{"Tool_Name": "search"}},
+			expectedName:   "",
+			expectedParams: map[string]any{"Tool_Name": "search"},
+		},
+		{
+			name:           "no name anywhere",
+			args:           map[string]any{"parameters": map[string]any{"query": "weather"}},
+			expectedName:   "",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := schema.Translate[CallToolInput](tc.args)
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedName, got.ToolName)
+			require.Equal(t, tc.expectedParams, got.Parameters)
+		})
+	}
+}
+
+// TestCallToolArgToolNameMatchesStructTag guards the one place the target is
+// resolved by indexing a map rather than decoding a struct. If the json tag is
+// renamed and the constant is not, a nested name silently stops being hoisted.
+func TestCallToolArgToolNameMatchesStructTag(t *testing.T) {
+	t.Parallel()
+
+	f, ok := reflect.TypeOf(CallToolInput{}).FieldByName("ToolName")
+	require.True(t, ok, "CallToolInput must have a ToolName field")
+	assert.Equal(t, callToolArgToolName, f.Tag.Get("json"))
 }

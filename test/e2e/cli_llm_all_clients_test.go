@@ -254,12 +254,9 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 		binDir, err = e2e.CreateFakeBrowserDir(tempDir)
 		Expect(err).ToNot(HaveOccurred())
 
-		// Allocate a free port for the OIDC mock server.
-		oidcPort, err = networking.FindOrUsePort(0)
+		oidcServer, err = e2e.NewOIDCMockServer(0, clientID, clientSecret)
 		Expect(err).ToNot(HaveOccurred())
-
-		oidcServer, err = e2e.NewOIDCMockServer(oidcPort, clientID, clientSecret)
-		Expect(err).ToNot(HaveOccurred())
+		oidcPort = oidcServer.Port()
 		oidcServer.EnableAutoComplete()
 		Expect(oidcServer.Start()).To(Succeed())
 
@@ -541,39 +538,13 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			proxyPort, portErr := networking.FindOrUsePort(0)
 			Expect(portErr).ToNot(HaveOccurred())
 
-			By(fmt.Sprintf("setting proxy port to %d", proxyPort))
-			thvCmd("llm", "config", "set", "--proxy-port", fmt.Sprintf("%d", proxyPort)).ExpectSuccess()
-
-			By("starting the proxy in a goroutine")
-			type proxyResult struct {
-				stdout, stderr string
-				err            error
-			}
-			done := make(chan proxyResult, 1)
-			proxyCmd := thvCmd("llm", "proxy", "start")
-			go func() {
-				out, serr, rerr := proxyCmd.RunWithTimeout(15 * time.Second)
-				done <- proxyResult{out, serr, rerr}
-			}()
-			DeferCleanup(func() {
-				_ = proxyCmd.Interrupt()
-				select {
-				case <-done:
-				case <-time.After(5 * time.Second):
-				}
+			By(fmt.Sprintf("starting the proxy on port %d", proxyPort))
+			_, portErr = e2e.RetryOnPortConflict(proxyPort, func(port int) error {
+				return startLLMProxy(thvCmd, func() *e2e.THVCommand {
+					return thvCmd("llm", "proxy", "start")
+				}, port, 15*time.Second)
 			})
-
-			By(fmt.Sprintf("waiting for proxy to listen on port %d", proxyPort))
-			proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
-			Eventually(func() error {
-				conn, err := net.DialTimeout("tcp", proxyAddr, 200*time.Millisecond)
-				if err != nil {
-					return err
-				}
-				_ = conn.Close()
-				return nil
-			}, 10*time.Second, 300*time.Millisecond).Should(Succeed(),
-				"proxy should be listening on %s", proxyAddr)
+			Expect(portErr).ToNot(HaveOccurred())
 		})
 	})
 
@@ -630,9 +601,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 
 			// Start a local HTTPS mock gateway so the proxy can forward requests
 			// quickly rather than timing out on DNS resolution for a fake domain.
-			gwPort, portErr := networking.FindOrUsePort(0)
-			Expect(portErr).ToNot(HaveOccurred())
-			gw, gwErr := e2e.NewLLMGatewayMock(gwPort)
+			gw, gwErr := e2e.NewLLMGatewayMock(0)
 			Expect(gwErr).ToNot(HaveOccurred())
 			Expect(gw.Start()).To(Succeed())
 			defer func() { _ = gw.Stop() }()
@@ -660,36 +629,17 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			proxyPort, portErr2 := networking.FindOrUsePort(0)
 			Expect(portErr2).ToNot(HaveOccurred())
 
-			By(fmt.Sprintf("setting proxy port to %d and starting proxy", proxyPort))
-			thvCmd("llm", "config", "set", "--proxy-port", fmt.Sprintf("%d", proxyPort)).ExpectSuccess()
-
-			done := make(chan struct{})
-			proxyCmd := thvCmd("llm", "proxy", "start").WithEnv(
-				"SSL_CERT_FILE="+gwCertFile,
-				rebindEnvKey+"="+rebindToken,
-			)
-			go func() {
-				defer close(done)
-				_, _, _ = proxyCmd.RunWithTimeout(15 * time.Second)
-			}()
-			DeferCleanup(func() {
-				_ = proxyCmd.Interrupt()
-				select {
-				case <-done:
-				case <-time.After(5 * time.Second):
-				}
+			By(fmt.Sprintf("starting the proxy on port %d", proxyPort))
+			proxyPort, portErr2 = e2e.RetryOnPortConflict(proxyPort, func(port int) error {
+				return startLLMProxy(thvCmd, func() *e2e.THVCommand {
+					return thvCmd("llm", "proxy", "start").WithEnv(
+						"SSL_CERT_FILE="+gwCertFile,
+						rebindEnvKey+"="+rebindToken,
+					)
+				}, port, 15*time.Second)
 			})
-
+			Expect(portErr2).ToNot(HaveOccurred())
 			proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
-			Eventually(func() error {
-				conn, dialErr := net.DialTimeout("tcp", proxyAddr, 200*time.Millisecond)
-				if dialErr != nil {
-					return dialErr
-				}
-				_ = conn.Close()
-				return nil
-			}, 10*time.Second, 300*time.Millisecond).Should(Succeed(),
-				"proxy should be listening on %s", proxyAddr)
 
 			rebindClient := &http.Client{Timeout: 10 * time.Second}
 
@@ -765,16 +715,15 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					Skip(fmt.Sprintf("client %q not supported on %s", clientTC.name, runtime.GOOS))
 				}
 
-				// Allocate ports for the mock gateway and the proxy.
-				gatewayPort, portErr := networking.FindOrUsePort(0)
-				Expect(portErr).ToNot(HaveOccurred())
+				// Allocate a port for the proxy.
 				proxyPort, portErr := networking.FindOrUsePort(0)
 				Expect(portErr).ToNot(HaveOccurred())
 
 				// Start the mock LLM gateway (HTTPS with self-signed cert).
-				By(fmt.Sprintf("[%s] starting mock LLM gateway on port %d", clientTC.name, gatewayPort))
-				gateway, gwErr := e2e.NewLLMGatewayMock(gatewayPort)
+				gateway, gwErr := e2e.NewLLMGatewayMock(0)
 				Expect(gwErr).ToNot(HaveOccurred())
+				gatewayPort := gateway.Port()
+				By(fmt.Sprintf("[%s] starting mock LLM gateway on port %d", clientTC.name, gatewayPort))
 				Expect(gateway.Start()).To(Succeed())
 				defer func() { _ = gateway.Stop() }()
 
@@ -822,34 +771,14 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				}
 
 				// Configure the proxy port and start it.
-				By(fmt.Sprintf("[%s] setting proxy port to %d", clientTC.name, proxyPort))
-				thvCmd("llm", "config", "set", "--proxy-port", fmt.Sprintf("%d", proxyPort)).ExpectSuccess()
-
-				By(fmt.Sprintf("[%s] starting the proxy", clientTC.name))
-				done := make(chan struct{})
-				proxyCmd := thvCmdWithToken("llm", "proxy", "start")
-				go func() {
-					defer close(done)
-					_, _, _ = proxyCmd.RunWithTimeout(20 * time.Second)
-				}()
-				DeferCleanup(func() {
-					_ = proxyCmd.Interrupt()
-					select {
-					case <-done:
-					case <-time.After(5 * time.Second):
-					}
+				By(fmt.Sprintf("[%s] starting the proxy on port %d", clientTC.name, proxyPort))
+				proxyPort, portErr = e2e.RetryOnPortConflict(proxyPort, func(port int) error {
+					return startLLMProxy(thvCmd, func() *e2e.THVCommand {
+						return thvCmdWithToken("llm", "proxy", "start")
+					}, port, 20*time.Second)
 				})
-
+				Expect(portErr).ToNot(HaveOccurred())
 				proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
-				Eventually(func() error {
-					conn, dialErr := net.DialTimeout("tcp", proxyAddr, 200*time.Millisecond)
-					if dialErr != nil {
-						return dialErr
-					}
-					_ = conn.Close()
-					return nil
-				}, 10*time.Second, 300*time.Millisecond).Should(Succeed(),
-					"proxy should be listening on %s", proxyAddr)
 
 				// Send requests through the proxy and verify the gateway received them
 				// with the correct Bearer token. Use a client with an explicit timeout
@@ -1274,6 +1203,75 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+// llmProxyResult captures a `thv llm proxy start` subprocess's outcome, so
+// startLLMProxy can inspect it for an address-already-in-use signal if the
+// subprocess exits before its listener comes up.
+type llmProxyResult struct {
+	stdout, stderr string
+	err            error
+}
+
+// startLLMProxy sets the proxy port via `thv llm config set --proxy-port`,
+// starts `thv llm proxy start` (built by buildProxyCmd, so each call site
+// can inject its own env/token wiring) in the background, registers a
+// DeferCleanup to interrupt it, and waits for it to accept TCP connections
+// on 127.0.0.1:port. The port is only probed free at selection time
+// (networking.FindOrUsePort); the real bind happens later in this
+// subprocess, so another process can steal it in between. On that race,
+// this returns an error containing "address already in use" so callers can
+// retry via e2e.RetryOnPortConflict.
+func startLLMProxy(
+	thvCmd func(args ...string) *e2e.THVCommand,
+	buildProxyCmd func() *e2e.THVCommand,
+	port int,
+	runTimeout time.Duration,
+) error {
+	thvCmd("llm", "config", "set", "--proxy-port", fmt.Sprintf("%d", port)).ExpectSuccess()
+
+	proxyCmd := buildProxyCmd()
+	done := make(chan llmProxyResult, 1)
+	go func() {
+		out, serr, rerr := proxyCmd.RunWithTimeout(runTimeout)
+		done <- llmProxyResult{out, serr, rerr}
+	}()
+	DeferCleanup(func() {
+		_ = proxyCmd.Interrupt()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	})
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	deadline := time.After(10 * time.Second)
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case res := <-done:
+			return fmt.Errorf("proxy exited before listening on %s: err=%v stderr=%q", addr, res.err, res.stderr)
+		case <-deadline:
+			return fmt.Errorf("timed out waiting for proxy to listen on %s", addr)
+		case <-ticker.C:
+			conn, dialErr := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+			if dialErr != nil {
+				continue
+			}
+			_ = conn.Close()
+			// A successful dial doesn't prove OUR subprocess is the listener -- if it
+			// lost the bind race, another process already listening on this exact
+			// port would also accept the connection. Give the subprocess's own exit
+			// (if any) a moment to land on `done` before trusting the dial.
+			select {
+			case res := <-done:
+				return fmt.Errorf("proxy exited before listening on %s: err=%v stderr=%q", addr, res.err, res.stderr)
+			case <-time.After(100 * time.Millisecond):
+				return nil
+			}
+		}
+	}
+}
 
 // createFakeBinary writes a minimal no-op shell script named `name` in dir.
 // This satisfies the LLMBinaryName check in DetectedLLMGatewayClients.

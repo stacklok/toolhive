@@ -108,6 +108,11 @@ type HTTPProxy struct {
 	// cross-session leakage. See dispatcher_routing.go.
 	routing *sessionRouter
 
+	// initialize caches the backend's InitializeResult so only the first
+	// client handshake reaches the single stdio session behind this proxy and
+	// every later one is answered locally. See initialize_cache.go.
+	initialize *initializeCache
+
 	// uriLocks serializes each uri's resources/subscribe|unsubscribe ref-count
 	// decision with the upstream forward it may trigger, so concurrent
 	// subscribe/unsubscribe calls for the SAME uri from different sessions can
@@ -233,6 +238,7 @@ func NewHTTPProxy(
 		sessionTTL:        session.DefaultSessionTTL,
 		serverStreams:     newServerStreamRegistry(),
 		routing:           newSessionRouter(),
+		initialize:        newInitializeCache(),
 		uriLocks:          newKeyedMutex(),
 		standaloneSSE:     true,
 	}
@@ -766,9 +772,10 @@ func (p *HTTPProxy) writeSingleRequestSSEFinalResponse(
 }
 
 // writeSSEErrorEvent writes a best-effort JSON-RPC error as a single SSE
-// data: frame, for a request whose response headers (200 + text/event-stream)
-// have already been sent -- an HTTP error status can no longer be set at this
-// point, so the error must be communicated in-band as the response payload.
+// message event (via writeSSEData), for a request whose response headers
+// (200 + text/event-stream) have already been sent -- an HTTP error status can
+// no longer be set at this point, so the error must be communicated in-band as
+// the response payload.
 //
 // The "id" key is included only if id.IsValid(); MCP narrows base JSON-RPC
 // 2.0 here (schema/2025-11-25 types the error response id as optional,
@@ -1169,6 +1176,12 @@ func (p *HTTPProxy) interceptSessionScopedRequest(
 	}
 
 	switch req.Method {
+	case string(sdkmcp.MethodInitialize):
+		// Served from the shared InitializeResult cache after the first
+		// handshake, so the single stdio session behind this proxy never
+		// receives a second initialize. See initialize_cache.go.
+		return p.interceptInitialize(ctx, sessID, req), true
+
 	case methodResourcesSubscribe:
 		uri, ok := extractStringParam(req.Params, "uri")
 		if !ok || uri == "" {
@@ -1542,6 +1555,14 @@ func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, se
 		// Refresh TTL so a client sending only notifications doesn't get evicted.
 		if sessID != "" {
 			p.sessionManager.Get(sessID)
+		}
+		// The backend completed a single handshake and expects a single
+		// notifications/initialized. Later clients' copies are acknowledged
+		// here without being forwarded, mirroring the initialize interception
+		// that answered their handshakes from cache.
+		if isInitializedNotification(msg) && !p.claimInitializedForward() {
+			w.WriteHeader(http.StatusAccepted)
+			return true
 		}
 		if err := p.SendMessageToDestination(msg); err != nil {
 			slog.Error("failed to send message to destination", "error", err)

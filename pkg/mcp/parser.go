@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -139,6 +140,46 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RepublishParsedMCPRequest refreshes the cached parse after middleware has
+// rewritten the request body, returning the request to pass downstream.
+// ParsingMiddleware deliberately parses only once, so any middleware that
+// replaces r.Body MUST call this or downstream consumers (authorization,
+// audit, telemetry) will decide on the bytes that arrived rather than the
+// bytes the backend executes.
+//
+// On error, the returned request is nil and must not be passed downstream:
+// the caller is responsible for terminating the request (e.g. writing an
+// error response) instead of proceeding with a stale or absent parse.
+//
+// This only refreshes consumers that read the parse from the request context or
+// from a ParsedRequestHolder. Middleware that inspects the raw body from OUTSIDE
+// ParsingMiddleware — the tool-call filter and the rate limiter — has already
+// decided against the pre-rewrite body and is not corrected by republishing.
+//
+// The caller must also refresh r.ContentLength when it replaces r.Body, or the
+// reverse proxy will reject the forwarded request.
+func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, error) {
+	// Batch-reject before parsing, using the same guard ParsingMiddleware uses,
+	// so a mutation can never smuggle a batch past authz/audit by rewriting a
+	// single request into an array (see IsBatchRequest's doc comment).
+	if IsBatchRequest(body) {
+		return nil, &BatchUnsupportedError{}
+	}
+
+	parsed := parseMCPRequest(body)
+	if parsed == nil {
+		return nil, errors.New("republished body is not a valid JSON-RPC request")
+	}
+	parsed.MCPMethodHeader = r.Header.Get("Mcp-Method")
+	parsed.MCPNameHeader = r.Header.Get("Mcp-Name")
+
+	if holder, ok := ParsedRequestHolderFromContext(r.Context()); ok {
+		holder.Parsed = parsed
+	}
+
+	return r.WithContext(context.WithValue(r.Context(), MCPRequestContextKey, parsed)), nil
 }
 
 // parsedRequestHolderContextKey is the context key for ParsedRequestHolder.

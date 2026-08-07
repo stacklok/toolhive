@@ -58,6 +58,17 @@ func makeMCPRequest(tb testing.TB, body []byte) *http.Request {
 	return req
 }
 
+// newUnparsedMCPRequest builds a POST request with a JSON body and no parsed
+// request in its context, so mcp.ParsingMiddleware will actually parse it
+// (see shouldParseMCPRequest) rather than short-circuiting on an existing parse.
+func newUnparsedMCPRequest(tb testing.TB, body []byte) *http.Request {
+	tb.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.168.1.1:1234"
+	return req
+}
+
 //nolint:paralleltest // Shares mock server state
 func TestMutatingMiddleware_AllowedWithPatch(t *testing.T) {
 	const reqBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"db","arguments":{"query":"SELECT *"}}}`
@@ -401,6 +412,210 @@ func TestMutatingMiddleware_ChainedMutations(t *testing.T) {
 	assert.Equal(t, "alice", args["user"], "user from webhook 1 should be present")
 	assert.Equal(t, "engineering", args["dept"], "dept from webhook 2 should be present")
 	assert.Equal(t, "SELECT *", args["query"], "original query should be preserved")
+}
+
+// renameToolReqBody and renameToolPatch model a mutating webhook that renames
+// the called tool. Shared by the tests that pin the tool-rename invariant from
+// both the authz (context) and audit (holder) observation points.
+const renameToolReqBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"read_file","arguments":{"path":"/etc/passwd"}}}`
+
+var renameToolPatch = []JSONPatchOp{
+	{Op: "replace", Path: "/mcp_request/params/name", Value: json.RawMessage(`"delete_file"`)},
+}
+
+// newMutatingWebhookServer starts a fake mutating webhook that always allows
+// the request and returns the given JSON Patch. Callers must not mutate patch
+// afterwards: it's read by the handler on every request, including from
+// parallel tests that share a patch value.
+func newMutatingWebhookServer(t *testing.T, patch []JSONPatchOp) *httptest.Server {
+	t.Helper()
+	patchJSON, err := json.Marshal(patch)
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req webhook.Request
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+		resp := webhook.MutatingResponse{
+			Response:  webhook.Response{Version: webhook.APIVersion, UID: req.UID, Allowed: true},
+			PatchType: patchTypeJSONPatch,
+			Patch:     patchJSON,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestMutatingMiddleware_ParsedRequestReflectsRenamedTool pins the invariant
+// that authorization (which reads mcp.GetParsedMCPRequest) depends on: the
+// cached parse in the request context must always describe the SAME tool
+// name that ends up in the body the backend receives, even after a mutating
+// webhook renames the tool. The chain here uses the real mcp.ParsingMiddleware
+// (not a hand-built ParsedMCPRequest) so the cached parse is produced exactly
+// as it is in production.
+func TestMutatingMiddleware_ParsedRequestReflectsRenamedTool(t *testing.T) {
+	t.Parallel()
+
+	server := newMutatingWebhookServer(t, renameToolPatch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		parsed := mcp.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.EqualValues(t, len(bodyBytes), r.ContentLength, "ContentLength must match the mutated body actually readable from r.Body")
+
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(bodyBytes, &body))
+		params := body["params"].(map[string]interface{})
+
+		assert.Equal(t, "delete_file", parsed.ResourceID, "cached parse must reflect the renamed tool")
+		assert.Equal(t, params["name"], parsed.ResourceID, "cached parse and mutated body must agree on the tool name")
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	require.True(t, nextCalled, "next must be called for the request to be observed")
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestMutatingMiddleware_ParsedRequestReflectsPatchedArgument pins the same
+// invariant as the tool-rename case but for an argument value: a webhook that
+// replaces an existing argument (not one that merely adds a new field) must be
+// reflected in the cached parse's Arguments, since authorization/audit read
+// Arguments from the parse rather than re-reading the body.
+func TestMutatingMiddleware_ParsedRequestReflectsPatchedArgument(t *testing.T) {
+	t.Parallel()
+
+	const reqBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"db","arguments":{"query":"SELECT *"}}}`
+	patch := []JSONPatchOp{
+		{Op: "replace", Path: "/mcp_request/params/arguments/query", Value: json.RawMessage(`"DROP TABLE users"`)},
+	}
+
+	server := newMutatingWebhookServer(t, patch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		parsed := mcp.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+		assert.Equal(t, "DROP TABLE users", parsed.Arguments["query"], "cached parse must reflect the patched argument")
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(reqBody)))
+
+	require.True(t, nextCalled, "next must be called for the request to be observed")
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestMutatingMiddleware_HolderReflectsMutatedResourceID pins the invariant
+// that audit (pkg/audit/auditor.go) depends on: it wraps the chain, injects an
+// mcp.ParsedRequestHolder before calling in, and reads the holder after
+// ServeHTTP returns. That holder must reflect the SAME mutated tool name that
+// ends up in the body the backend receives, not the pre-mutation name the
+// parser first observed.
+func TestMutatingMiddleware_HolderReflectsMutatedResourceID(t *testing.T) {
+	t.Parallel()
+
+	server := newMutatingWebhookServer(t, renameToolPatch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})))
+
+	holder := &mcp.ParsedRequestHolder{}
+	req := newUnparsedMCPRequest(t, []byte(renameToolReqBody))
+	req = req.WithContext(mcp.WithParsedRequestHolder(req.Context(), holder))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NotNil(t, holder.Parsed, "audit holder must be filled by the parser")
+	assert.Equal(t, "delete_file", holder.Parsed.ResourceID, "audit holder must reflect the mutated tool name")
+}
+
+// TestMutatingMiddleware_PatchRemovesMethod_ReturnsConformantError pins the
+// republish failure path: a webhook patch can produce a body that is valid
+// JSON but no longer a JSON-RPC request (e.g. the "method" field is removed).
+// RepublishParsedMCPRequest fails to parse it, so the middleware must fail
+// closed with a 500 and a conformant JSON-RPC error, never reaching next.
+func TestMutatingMiddleware_PatchRemovesMethod_ReturnsConformantError(t *testing.T) {
+	t.Parallel()
+
+	patch := []JSONPatchOp{
+		{Op: "remove", Path: "/mcp_request/method"},
+	}
+	server := newMutatingWebhookServer(t, patch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	assert.False(t, nextCalled, "next must not be called when the mutated body fails to re-parse")
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+	assert.Equal(t, "2.0", decoded["jsonrpc"])
+	assert.Equal(t, float64(1), decoded["id"])
+	errObj, ok := decoded["error"].(map[string]interface{})
+	require.True(t, ok, "response must contain a JSON-RPC error object")
+	assert.NotEmpty(t, errObj["message"])
+	_, hasResult := decoded["result"]
+	assert.False(t, hasResult, "error response must not contain a result key")
+}
+
+// TestMutatingMiddleware_NoMutation_ParseUnchangedAndNextCalled pins the
+// bytes.Equal guard: when a webhook allows the request without a patch, the
+// body handed to RepublishParsedMCPRequest would be byte-identical to what
+// ParsingMiddleware already parsed, so no republish should happen, and next
+// must still be called with the original, correct parse intact.
+func TestMutatingMiddleware_NoMutation_ParseUnchangedAndNextCalled(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := webhook.MutatingResponse{
+			Response: webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: true},
+			// No patch: the body is unchanged.
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(server.Close)
+
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		parsed := mcp.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+		assert.Equal(t, "read_file", parsed.ResourceID, "parse must reflect the original, unmutated tool name")
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.EqualValues(t, len(bodyBytes), r.ContentLength, "ContentLength must match the unchanged body on the no-mutation path")
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	assert.True(t, nextCalled, "next must be called on the no-mutation path")
+	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
 func TestMutatingMiddleware_SkipNonMCPRequests(t *testing.T) {

@@ -23,7 +23,7 @@ import (
 )
 
 // LevelAudit is a custom audit log level - between Info and Warn
-const LevelAudit = slog.Level(2)
+const LevelAudit = coreaudit.LevelAudit
 
 // contextKey is an unexported type for context keys to avoid collisions
 type contextKey struct{}
@@ -51,27 +51,7 @@ func BackendInfoFromContext(ctx context.Context) (*BackendInfo, bool) {
 
 // NewAuditLogger creates a new structured audit logger that writes to the specified writer.
 func NewAuditLogger(w io.Writer) *slog.Logger {
-	if w == nil {
-		w = os.Stdout
-	}
-
-	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level: LevelAudit,
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			// Replace the custom audit level with "AUDIT" string for better
-			// compatibility with log aggregation systems (Loki, Elasticsearch, etc.)
-			// that expect standard level names. This prevents audit events from
-			// appearing as "INFO+2" which breaks level-based filtering.
-			if a.Key == slog.LevelKey {
-				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelAudit {
-					a.Value = slog.StringValue("AUDIT")
-				}
-			}
-			return a
-		},
-	})
-
-	return slog.New(handler)
+	return coreaudit.NewAuditLogger(w)
 }
 
 // Auditor handles audit logging for HTTP requests.

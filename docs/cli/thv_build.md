@@ -53,11 +53,11 @@ thv build [flags] PROTOCOL [-- ARGS...]
 ### Options
 
 ```
-      --dry-run               Generate Dockerfile without building (stdout output unless -o is set) (default false)
-  -h, --help                  help for build
-  -o, --output string         Write the Dockerfile to the specified file instead of building (default builds an image instead of generating a Dockerfile)
-  -t, --tag string            Name and optionally a tag in the 'name:tag' format for the built image (default generates a unique image name based on the package and transport type)
-      --uv-with stringArray   Additional PEP 508 requirement specifier passed to 'uv tool install --with' for uvx:// builds, e.g. --uv-with 'mcp<2' to constrain a transitive dependency (can be specified multiple times)
+      --build-with stringArray   Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem (uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); errors on ecosystems without constraint support (can be specified multiple times)
+      --dry-run                  Generate Dockerfile without building (stdout output unless -o is set) (default false)
+  -h, --help                     help for build
+  -o, --output string            Write the Dockerfile to the specified file instead of building (default builds an image instead of generating a Dockerfile)
+  -t, --tag string               Name and optionally a tag in the 'name:tag' format for the built image (default generates a unique image name based on the package and transport type)
 ```
 
 ### Options inherited from parent commands

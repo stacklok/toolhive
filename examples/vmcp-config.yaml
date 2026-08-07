@@ -157,6 +157,18 @@ operational:
 #       required: ["pr_number"]
 #     timeout: "30m"
 #
+#     # Optional: explicit MCP tool annotations advertised to clients.
+#     # When omitted, annotations are derived from the step tools at advertise
+#     # time (readOnlyHint = AND across steps, destructiveHint/openWorldHint = OR,
+#     # idempotentHint = never derived). Explicit values are merged over the
+#     # derived floor but must never contradict it (e.g. readOnlyHint: true when
+#     # a step is not read-only) — a contradicting composite tool is dropped
+#     # from tools/list with a warning at runtime.
+#     annotations:
+#       title: "Deploy and Notify"
+#       destructiveHint: true
+#       openWorldHint: true
+#
 #     steps:
 #       - id: "merge"
 #         tool: "github.merge_pr"

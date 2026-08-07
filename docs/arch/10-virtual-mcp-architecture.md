@@ -223,6 +223,19 @@ scan silently dropped an item whenever a duplicate landed on a page boundary
 
 Beyond conflict resolution, vMCP can filter which tools are exposed through allow/deny lists, renaming, and description overrides.
 
+By default a backend with no per-workload entry has all of its tools advertised, so
+adding a workload to the group exposes it. `aggregation.defaultToolVisibility: deny`
+inverts that, advertising only backends named in `aggregation.tools` — useful when the
+exposed tool set should be enumerated deliberately rather than inherited from group
+membership. A listed backend is opted in by its entry; its own `excludeAll`/`filter`
+then decide which of its tools are advertised.
+
+All of these settings — `excludeAllTools`, `defaultToolVisibility`, per-workload
+`excludeAll`, and `filter` — control **advertising only**. Every backend tool stays in
+the routing table so composite tools can call hidden ones, and none of them affect
+resources or prompts. Per-identity authorization is Cedar's job (see [Authorization
+Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate)).
+
 **Implementation**: `pkg/vmcp/aggregator/`
 
 ## Composite Tools
@@ -252,7 +265,9 @@ Steps can be of three types:
 - **elicitation**: Request user input via MCP elicitation protocol
 - **forEach**: Iterate over a collection from a previous step, executing an inner tool step per item with bounded parallelism
 
-**Implementation**: `pkg/vmcp/composer/`
+**Tool annotations**: Composite tools advertise MCP tool annotations computed at advertise time via a derive-then-merge ordering. First, a safety floor is derived from the annotations of the step tools (including `forEach` inner steps): `readOnlyHint` is the AND across steps, `destructiveHint` and `openWorldHint` are the OR across steps (unknown steps taint conservatively), and `idempotentHint` is never derived. Then any explicit `annotations` declared on the composite tool definition are merged over the floor, with explicitly set fields winning. An explicit hint may be more conservative than the floor, but if it would make the tool look safer than its steps allow (e.g. `readOnlyHint: true` when a step is not read-only), the composite tool is dropped from `tools/list` with a warning rather than advertised misleadingly.
+
+**Implementation**: `pkg/vmcp/composer/` (execution), `pkg/vmcp/internal/compositetools/` (advertised tool conversion and annotation derivation)
 
 ## Backend MCP Revision Classification
 
@@ -804,7 +819,33 @@ forwarding applies — see
 [Limitation: elicitation and sampling are unavailable to Modern clients](#limitation-elicitation-and-sampling-are-unavailable-to-modern-clients)
 for what a Modern caller gets instead.
 
-**Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested `logging/setLevel`. vMCP requests debug-level logging from the backend so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own level preference is not applied to the relayed stream.
+**Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested level. On Legacy, vMCP requests debug-level logging from the backend (`logging/setLevel`) so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own `logging/setLevel` preference is not applied to the relayed stream. The same is true on Modern (2026-07-28), where the RPC is removed and the level rides per-request in `_meta["io.modelcontextprotocol/logLevel"]`: vMCP strips that reserved per-hop key from the downstream request and overlays its own (`debug`, when forwarding is bound) on the backend hop, so a Modern client's per-request level preference is likewise not honored — the relay runs at debug either way.
+
+**Known limitation (advertised-but-no-stream elicitation fails fast)**: a client
+that advertised the `elicitation` capability but holds **no open standalone SSE
+stream** passes go-sdk's capability gate, yet the elicitation cannot be
+delivered — under the shim's `JSONResponse` transport the go-sdk routes
+server→client requests to the standalone stream, and a missing stream rejects
+the write ("rejected by transport: stream not connected or already closed").
+The mid-call `tools/call` therefore fails fast with a tool error instead of
+hanging to the deadline (pinned by
+`TestForwarding_Elicitation_AdvertisedButNoStream_FastFails` in
+`pkg/vmcp/server`). A cleaner pre-dispatch refusal awaits an upstream mcpcompat
+accessor for stream presence (#5975).
+
+**Known limitation (cross-pod origination needs session affinity)**: a
+server→client request can only be delivered by the replica currently holding
+the client's standalone SSE stream. If the `tools/call` executes on replica A
+but the client's GET stream is pinned to replica B, an elicitation or sampling
+request originated from A cannot reach the client — the shim loads the go-sdk
+session bound to *its* pod and has no cross-replica delivery channel for
+request/response (only notifications rehydrate cross-replica). Multi-replica
+deployments that rely on mid-call elicitation/sampling therefore need **session
+affinity** at the load balancer pinning the standalone stream and the tool
+calls to the same replica. The durable fix is the 2026-07-28 revision itself:
+it replaces server-initiated requests with client-polled MRTR, which has no
+stream-locality requirement — so this constraint is documented rather than
+engineered around (#5975, #5743).
 
 **Known limitation (resource-template authorization)**: a resource template is advertised on the template-string entity (e.g. `file:///logs/{date}.txt`), but a concrete read is admission-checked on the **expanded** URI (e.g. `file:///logs/2025-01-01.txt`). Operators should therefore author resource authorization policies against concrete URI patterns, not the template string.
 

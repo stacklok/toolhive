@@ -49,10 +49,15 @@ func init() {
 func aiPluginListCmdFunc(cmd *cobra.Command, _ []string) error {
 	c := newAIPluginClient(cmd.Context())
 
+	projectRoot, err := absProjectRoot(aiPluginListProjectRoot)
+	if err != nil {
+		return err
+	}
+
 	installed, err := c.List(cmd.Context(), plugins.ListOptions{
 		Scope:       plugins.Scope(aiPluginListScope),
 		ClientApp:   aiPluginListClient,
-		ProjectRoot: aiPluginListProjectRoot,
+		ProjectRoot: projectRoot,
 		Group:       aiPluginListGroup,
 	})
 	if err != nil {

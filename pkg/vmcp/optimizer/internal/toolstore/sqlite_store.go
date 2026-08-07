@@ -50,7 +50,29 @@ var schemaSQL string
 // and optional vector embedding-based semantic search.
 // It satisfies the types.ToolStore interface.
 type sqliteToolStore struct {
-	db                        *sql.DB
+	db *sql.DB
+
+	// keepAlive is a dedicated connection held open for the store's whole lifetime.
+	//
+	// The database is in-memory with a shared cache, so it exists only while at
+	// least one connection to it is open. If the database/sql pool ever drops to
+	// zero connections, SQLite discards the entire database — table, FTS5 index
+	// and triggers — and nothing recreates it, because the schema is executed
+	// only in the constructor. Every later operation then fails with
+	// "no such table: llm_capabilities" until the process restarts.
+	//
+	// The pool does reach zero in practice. modernc.org/sqlite implements context
+	// cancellation with sqlite3_interrupt and reports an interrupted connection as
+	// unusable from conn.IsValid, so database/sql discards a connection whose
+	// statement was canceled instead of returning it to the pool. A single
+	// canceled request while the pool holds one connection is enough to destroy
+	// the database for the life of the process (#5889).
+	//
+	// This connection is acquired with a background context and never used to run
+	// statements, so it can never be interrupted and never discarded. It exists
+	// solely to keep the database alive.
+	keepAlive *sql.Conn
+
 	embeddingClient           types.EmbeddingClient // nil = FTS5-only
 	maxToolsToReturn          int
 	hybridSemanticRatio       float64
@@ -77,8 +99,17 @@ func newSQLiteToolStore(
 		return sqliteToolStore{}, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
+	// Pin the keep-alive connection before anything else, so the database cannot
+	// be discarded from this point on. See the keepAlive field for why.
+	keepAlive, err := db.Conn(context.Background())
+	if err != nil {
+		_ = db.Close()
+		return sqliteToolStore{}, fmt.Errorf("failed to acquire keep-alive connection: %w", err)
+	}
+
 	// Execute schema
 	if _, err := db.Exec(schemaSQL); err != nil {
+		_ = keepAlive.Close()
 		_ = db.Close()
 		return sqliteToolStore{}, fmt.Errorf("failed to initialize schema: %w", err)
 	}
@@ -100,6 +131,7 @@ func newSQLiteToolStore(
 
 	store := sqliteToolStore{
 		db:                        db,
+		keepAlive:                 keepAlive,
 		embeddingClient:           embeddingClient,
 		maxToolsToReturn:          maxTools,
 		hybridSemanticRatio:       hybridRatio,
@@ -254,14 +286,27 @@ func (s sqliteToolStore) Search(ctx context.Context, q types.SearchQuery, allowe
 	return merged, nil
 }
 
-// Close releases the underlying database connection.
+// Close releases the underlying database connections. Releasing the keep-alive
+// connection drops the in-memory database, so it happens only here, on the way
+// to closing the pool itself.
+//
+// Close may be called more than once: a keep-alive connection that was already
+// released reports sql.ErrConnDone, which is not a failure.
 func (s sqliteToolStore) Close() error {
 	var embErr error
 	if s.embeddingClient != nil {
 		embErr = s.embeddingClient.Close()
 	}
+
+	var keepAliveErr error
+	if s.keepAlive != nil {
+		if err := s.keepAlive.Close(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+			keepAliveErr = err
+		}
+	}
+
 	dbErr := s.db.Close()
-	return errors.Join(embErr, dbErr)
+	return errors.Join(embErr, keepAliveErr, dbErr)
 }
 
 // searchFTS5 performs a full-text search using FTS5 MATCH with BM25 ranking.

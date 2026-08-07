@@ -109,6 +109,43 @@ func TestCheckResourceRead_AllowDenyFailClosed_NoAggregation(t *testing.T) {
 		vmcp.ErrAuthorizationFailed, "authorizer error must fail closed")
 }
 
+// TestCallTool_DenialPrecedesNotFound pins the ORDER of CallTool's two rejections.
+// A tool that is both hidden from tools/list and denied by policy must report the
+// DENIAL, not ErrNotFound: if the advertised-view check ran first, the pair of
+// answers would become an oracle — ErrNotFound for "hidden and denied" vs.
+// ErrAuthorizationFailed for "advertised but denied" would tell an unauthorized
+// caller which hidden tools exist.
+//
+// "hidden" is routable but unadvertised, and the authorizer denies it. The
+// advertised "visible" tool proves the same authorizer produces a denial (not a
+// not-found) for a name that IS in the view, so the two legs differ only in
+// advertising.
+func TestCallTool_DenialPrecedesNotFound(t *testing.T) {
+	t.Parallel()
+	_, m := baseConfig(t)
+
+	// Neither name is authorized: mockAuthorizer denies anything absent from results.
+	c := checkCore(m, newCedarAdmission(&mockAuthorizer{results: map[string]mockResult{}}))
+	target := backendTarget()
+	expectAggregationAnyTimes(m, &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{backendTool("visible")},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{
+			"visible": target,
+			"hidden":  target,
+		}},
+	})
+
+	_, hiddenErr := c.CallTool(t.Context(), cedarIdentity(), "hidden", nil, nil)
+	assert.ErrorIs(t, hiddenErr, vmcp.ErrAuthorizationFailed,
+		"a denied tool must report the denial even when it is also unadvertised")
+	assert.NotErrorIs(t, hiddenErr, vmcp.ErrNotFound,
+		"reporting not-found for a denied hidden tool would leak which hidden tools exist")
+
+	_, visibleErr := c.CallTool(t.Context(), cedarIdentity(), "visible", nil, nil)
+	assert.ErrorIs(t, visibleErr, vmcp.ErrAuthorizationFailed,
+		"an advertised-but-denied tool must be indistinguishable from a hidden denied one")
+}
+
 func TestCheckPromptGet_AllowDenyFailClosed_NoAggregation(t *testing.T) {
 	t.Parallel()
 	_, m := baseConfig(t)

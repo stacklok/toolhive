@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -304,14 +305,26 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"unmanaged-skill"}, result.NeverManaged)
 
+	// Adoption of an install with no stored bundle is an unsigned trust
+	// decision: without the explicit exception it fails...
 	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, skills.FailureReasonUnsignedRejected, result.Failed[0].Reason)
+	lf := readLockfile(t, projectRoot)
+	_, ok := lf.Get("unmanaged-skill")
+	assert.False(t, ok, "adoption without the unsigned exception must not write a lock entry")
+
+	// ...and with it, the entry records the unsigned state.
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"unmanaged-skill"}, result.NeverManaged)
 
-	lf := readLockfile(t, projectRoot)
+	lf = readLockfile(t, projectRoot)
 	entry, ok := lf.Get("unmanaged-skill")
 	require.True(t, ok, "adopt must write a lock entry for the unmanaged install")
 	assert.NotEmpty(t, entry.ContentDigest)
+	assert.True(t, entry.Unsigned, "an adoption without verifiable trust must record unsigned")
 
 	sk, err := svc.Info(t.Context(), skills.InfoOptions{Name: "unmanaged-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
 	require.NoError(t, err)
@@ -377,7 +390,12 @@ func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
 			return filepath.Join(projectRoot, "."+client, "skills", skillName), nil
 		})
 	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
-	svc := New(store, WithPathResolver(pr), WithGitResolver(gr))
+	mv := verifiermocks.NewMockVerifier(ctrl)
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	svc := New(store, WithPathResolver(pr), WithGitResolver(gr), WithVerifier(mv))
 
 	ref, _ := gitRef("multi-skill")
 	_, err = svc.Install(t.Context(), skills.InstallOptions{

@@ -708,8 +708,30 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Attempt registration
-	if err := v.jwksClient.Register(registrationCtx, v.jwksURL); err != nil {
+	// Attempt registration. The CA-aware client must be passed per-resource:
+	// jwx >= 3.1.0 injects its own default client at the resource level when
+	// none is given here, which takes precedence over the client-level one
+	// configured in NewTokenValidator and silently drops custom CA support.
+	err := v.jwksClient.Register(registrationCtx, v.jwksURL, jwk.WithHTTPClient(v.client))
+	switch {
+	case err == nil:
+		// Registered and the first fetch succeeded.
+	case errors.Is(err, httprc.ErrNotReady()):
+		// The resource is registered and httprc will keep fetching it in the
+		// background; only the first fetch has not completed within the
+		// registration budget. Treat it as registered: Lookup returns a
+		// not-ready error until a background fetch succeeds. Retrying Register
+		// instead would fail with ErrResourceAlreadyExists forever.
+		//nolint:gosec // G706: JWKS URL is from server configuration or OIDC discovery
+		slog.Debug(
+			"JWKS URL registered but first fetch not ready; fetching continues in background",
+			"jwks_url", v.jwksURL, "error", err,
+		)
+	case errors.Is(err, httprc.ErrResourceAlreadyExists()):
+		// The URL is already in httprc's resource map, e.g. a previous attempt
+		// returned ErrNotReady before this state was tracked, or OIDC
+		// re-discovery produced the same URL after resetting the flag.
+	default:
 		v.jwksRegistrationErr = fmt.Errorf("failed to register JWKS URL: %w", err)
 		// Do NOT set jwksRegistered = true -- allow retry on next call
 		return v.jwksRegistrationErr

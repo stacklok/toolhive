@@ -667,6 +667,28 @@ components:
           $ref: '#/components/schemas/storage.RunConfig'
         token_lifespans:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig'
+        trusted_issuers:
+          description: |-
+            TrustedIssuers lists external OIDC issuers whose tokens are accepted as
+            subject tokens during RFC 8693 token exchange. Empty (the default) means
+            only self-issued subject tokens are accepted.
+
+            Prerequisite: the token-exchange grant requires a confidential client,
+            and no supported deployment path provisions one today (DCR and CIMD
+            clients are both public-only, and there is no client-seeding field on
+            this RunConfig), so this grant is not yet usable end to end for
+            self-issued or external subject tokens alike. Tracked in
+            https://github.com/stacklok/toolhive/issues/6082.
+
+            See tokenexchange.TrustedIssuer for the per-issuer field reference, and
+            docs/arch/17-token-exchange-delegation.md for the trust model, consent
+            signals, and operator-facing constraints (audience/scope bounding,
+            subject namespace qualification, required client binding) that aren't
+            visible from the config shape alone.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer'
+          type: array
+          uniqueItems: false
         upstreams:
           description: |-
             Upstreams configures connections to upstream Identity Providers.
@@ -828,6 +850,75 @@ components:
           description: |-
             HTTPMethod is the HTTP method to use for the userinfo request.
             If not specified, defaults to GET.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer:
+      properties:
+        actor_claim:
+          description: |-
+            ActorClaim names the claim identifying the client that requested the
+            subject token from THIS EXTERNAL ISSUER (used by AllowedActors below).
+            Values are in the external issuer's namespace, NOT ToolHive client
+            IDs. Defaults to "azp"; use "appid" for Microsoft Entra v1, "cid" for
+            Okta. The special value "client_id" reads ValidatedClaims.ClientID
+            instead of Extra (assignClaim routes it to that field) — it is still
+            the external token's client_id claim, not a ToolHive one.
+          type: string
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS
+            issuer to resolve to a private or loopback address. Use only when the
+            issuer is hosted inside the same cluster and has no public endpoint.
+          type: boolean
+        allowed_actors:
+          description: |-
+            AllowedActors is the allowlist of ActorClaim values authorized to
+            exchange a subject token from this issuer when it carries no
+            "may_act" claim; empty means only may_act-bearing tokens are
+            accepted. By itself names no ToolHive client — see
+            AllowedDelegateClients and docs/arch/17-token-exchange-delegation.md
+            ("Accepted limitations" #1).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        allowed_delegate_clients:
+          description: |-
+            AllowedDelegateClients restricts which ToolHive client IDs may
+            exchange a subject token from this issuer, for BOTH consent paths.
+            Required (validateTrustedIssuer rejects empty/absent); "*" permits
+            any confidential client holding the grant. See
+            docs/arch/17-token-exchange-delegation.md ("Accepted limitations" #1).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        expected_audience:
+          description: |-
+            ExpectedAudience is the expected "aud" claim value that must appear
+            in the token's audience list (a resource/API identifier, not a
+            client ID — required, but not enforced; see looksLikeResourceIdentifier).
+            See docs/arch/17-token-exchange-delegation.md ("ID/access-token
+            discrimination") for why and its limits.
+          type: string
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
+            for THIS issuer only. Development and testing only — never set in
+            production. Does not relax the private-IP guard; see AllowPrivateIPs.
+            Deliberately per-issuer: this server's own InsecureAllowHTTP must not
+            silently permit plaintext discovery for every trusted external issuer
+            too — a network attacker who can intercept that traffic could
+            substitute a JWKS and forge subject tokens for that issuer's
+            namespace.
+          type: boolean
+        issuer_url:
+          description: IssuerURL is the expected "iss" claim value (exact match).
+          type: string
+        jwks_url:
+          description: |-
+            JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.
+            If empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authz.Config:
@@ -1619,6 +1710,9 @@ components:
       - digest-missing
       - validation-rejected
       - lock-write-failed
+      - signature-invalid
+      - signer-mismatch
+      - unsigned-rejected
       - unknown
       type: string
       x-enum-varnames:
@@ -1626,6 +1720,9 @@ components:
       - FailureReasonDigestMissing
       - FailureReasonValidationRejected
       - FailureReasonLockWriteFailed
+      - FailureReasonSignatureInvalid
+      - FailureReasonSignerMismatch
+      - FailureReasonUnsignedRejected
       - FailureReasonUnknown
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:
       description: Status is the current installation status.
@@ -1869,6 +1966,11 @@ components:
         new_resolved_reference:
           description: NewResolvedReference is the new resolvedReference when it changed.
           type: string
+        new_signer_identity:
+          description: |-
+            NewSignerIdentity is the candidate's signer identity when it differs
+            from the recorded one (empty when the candidate is unsigned).
+          type: string
         old_digest:
           description: OldDigest is the digest pinned in the lock file before this
             operation.
@@ -1894,6 +1996,7 @@ components:
       - up-to-date
       - not-upgradable
       - ref-change-blocked
+      - signer-change-blocked
       - failed
       type: string
       x-enum-varnames:
@@ -1901,6 +2004,7 @@ components:
       - UpgradeStatusUpToDate
       - UpgradeStatusNotUpgradable
       - UpgradeStatusRefChangeBlocked
+      - UpgradeStatusSignerChangeBlocked
       - UpgradeStatusFailed
     github_com_stacklok_toolhive_pkg_skills.ValidationResult:
       properties:
@@ -2818,6 +2922,12 @@ components:
     pkg_api_v1.installSkillRequest:
       description: Request to install a skill
       properties:
+        allow_unsigned:
+          description: |-
+            AllowUnsigned permits installing a project-scoped skill without a
+            verified signature; the exception is recorded in the project's lock
+            file.
+          type: boolean
         clients:
           description: |-
             Clients lists target client identifiers (e.g., "claude-code"),
@@ -3159,6 +3269,11 @@ components:
           description: Adopt writes lock entries for existing unmanaged project-scope
             installs
           type: boolean
+        allow_unsigned:
+          description: |-
+            AllowUnsigned permits adopting skills whose signature state cannot be
+            established, recording them as unsigned
+          type: boolean
         check:
           description: Check verifies on-disk content against the lock file without
             installing or writing anything
@@ -3353,6 +3468,11 @@ components:
       properties:
         allow_ref_change:
           description: AllowRefChange permits resolvedReference changes during upgrade
+          type: boolean
+        allow_signer_change:
+          description: |-
+            AllowSignerChange permits upgrading to an artifact signed by a
+            different identity than the recorded one
           type: boolean
         clients:
           description: |-

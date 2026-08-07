@@ -7,11 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -88,7 +91,19 @@ func (s *service) syncLockedEntry(
 	dbOK bool,
 	result *skills.SyncResult,
 ) {
-	if dbOK && entryMatchesInstalled(s.pathResolver, entry, sk) {
+	sigOK := true
+	if dbOK {
+		if sigErr := s.verifyStoredSignature(entry, sk); sigErr != nil {
+			// A failed offline re-verification is treated as drift: check
+			// mode reports it, apply mode reinstalls from the pinned
+			// reference — where install-time verification enforces the
+			// locked identity and, on success, heals the stored bundle.
+			sigOK = false
+			slog.Warn("stored signature failed offline re-verification",
+				"skill", entry.Name, "error", sigErr)
+		}
+	}
+	if dbOK && sigOK && entryMatchesInstalled(s.pathResolver, entry, sk) {
 		result.AlreadyCurrent = append(result.AlreadyCurrent, entry.Name)
 		return
 	}
@@ -170,7 +185,7 @@ func (s *service) syncUnlockedInstall(
 	if !sk.Managed {
 		result.NeverManaged = append(result.NeverManaged, sk.Metadata.Name)
 		if opts.Adopt && !opts.Check {
-			if err := s.adoptSkill(ctx, sk); err != nil {
+			if err := s.adoptSkill(ctx, opts, sk); err != nil {
 				result.Failed = append(result.Failed, skills.SyncFailure{
 					Name: sk.Metadata.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 				})
@@ -193,15 +208,59 @@ func (s *service) syncUnlockedInstall(
 	}
 }
 
+// verifyStoredSignature re-verifies the Sigstore bundle stored with an
+// installed skill against the identity its lock entry records — entirely
+// offline, via the embedded trust root. Entries recorded unsigned or with
+// no provenance have nothing to verify. A recorded identity with no stored
+// bundle fails closed for OCI installs (the bundle should exist); git
+// installs never store a bundle — their signature lives on the commit and
+// is re-verified when content is re-resolved.
+func (s *service) verifyStoredSignature(entry lockfile.Entry, sk skills.InstalledSkill) error {
+	if entry.Unsigned || entry.Provenance == nil {
+		return nil
+	}
+	if len(sk.SigstoreBundle) == 0 {
+		if !strings.Contains(entry.Digest, ":") {
+			return nil // git install: no stored bundle by design
+		}
+		return fmt.Errorf("%w: lock entry records signer %q but no bundle is stored",
+			verifier.ErrSignatureInvalid, entry.Provenance.SignerIdentity)
+	}
+	return s.artifactVerifier().VerifyBundleOffline(sk.SigstoreBundle, entry.Digest, entry.Provenance)
+}
+
 // adoptSkill writes a lock entry for an existing, unmanaged project-scope
 // install, pinning its current on-disk state. The install's own Reference is
 // used as Source: an adopted install predates (or never went through) lock
 // tracking, so the original user-typed request is not recoverable — the
 // concrete resolved reference is the closest available fact to pin against.
-func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) error {
+//
+// Trust state is back-filled from the stored Sigstore bundle when one
+// exists; otherwise adoption is the same trust decision as an unsigned
+// install and requires the explicit AllowUnsigned exception.
+func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk skills.InstalledSkill) error {
 	contentDigest, err := computeContentDigest(s.pathResolver, sk)
 	if err != nil {
 		return fmt.Errorf("computing content digest: %w", err)
+	}
+	var provenance *lockfile.Provenance
+	unsigned := false
+	if len(sk.SigstoreBundle) > 0 {
+		result, verifyErr := s.artifactVerifier().ResultFromBundle(sk.SigstoreBundle, sk.Digest)
+		if verifyErr != nil {
+			return fmt.Errorf("verifying stored bundle for adoption: %w", verifyErr)
+		}
+		provenance = provenanceInfoToLock(provenanceInfoFromResult(result))
+	}
+	if provenance == nil {
+		if !opts.AllowUnsigned {
+			return httperr.WithCode(
+				fmt.Errorf("%w: adopting %q records it as unsigned; pass --allow-unsigned to accept that",
+					verifier.ErrUnsigned, sk.Metadata.Name),
+				http.StatusForbidden,
+			)
+		}
+		unsigned = true
 	}
 	if err := recordLockEntry(sk.ProjectRoot, lockEntryInput{
 		Name:              sk.Metadata.Name,
@@ -210,6 +269,8 @@ func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) erro
 		ResolvedReference: sk.Reference,
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
+		Provenance:        provenance,
+		Unsigned:          unsigned,
 	}); err != nil {
 		return fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
@@ -230,6 +291,9 @@ func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) erro
 func classifySyncFailure(err error) skills.FailureReason {
 	if errors.Is(err, errLockWrite) {
 		return skills.FailureReasonLockWriteFailed
+	}
+	if reason := classifySignatureError(err); reason != "" {
+		return reason
 	}
 	switch httperr.Code(err) {
 	case http.StatusNotFound:

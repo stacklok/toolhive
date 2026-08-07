@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
@@ -34,19 +35,26 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 		routes.lockService = lockSvc
 	}
 
+	// Mirrors WorkloadRouter: routes that move OCI artifacts get a timeout
+	// sized for the transfer, everything else keeps the short one. Without
+	// the split these routes inherit the flat 60s applied to standard
+	// routers, which severs a cold artifact pull mid-flight.
+	stdTimeout := middleware.Timeout(standardRouteTimeout)
+	longTimeout := middleware.Timeout(longRunningRouteTimeout)
+
 	r := chi.NewRouter()
-	r.Get("/", apierrors.ErrorHandler(routes.listSkills))
-	r.Post("/", apierrors.ErrorHandler(routes.installSkill))
-	r.Delete("/{name}", apierrors.ErrorHandler(routes.uninstallSkill))
-	r.Get("/{name}", apierrors.ErrorHandler(routes.getSkillInfo))
-	r.Post("/validate", apierrors.ErrorHandler(routes.validateSkill))
-	r.Post("/build", apierrors.ErrorHandler(routes.buildSkill))
-	r.Post("/push", apierrors.ErrorHandler(routes.pushSkill))
-	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
-	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
-	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
-	r.Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
-	r.Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
+	r.With(stdTimeout).Get("/", apierrors.ErrorHandler(routes.listSkills))
+	r.With(longTimeout).Post("/", apierrors.ErrorHandler(routes.installSkill))
+	r.With(stdTimeout).Delete("/{name}", apierrors.ErrorHandler(routes.uninstallSkill))
+	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getSkillInfo))
+	r.With(stdTimeout).Post("/validate", apierrors.ErrorHandler(routes.validateSkill))
+	r.With(longTimeout).Post("/build", apierrors.ErrorHandler(routes.buildSkill))
+	r.With(longTimeout).Post("/push", apierrors.ErrorHandler(routes.pushSkill))
+	r.With(stdTimeout).Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
+	r.With(stdTimeout).Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
+	r.With(stdTimeout).Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
+	r.With(longTimeout).Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
+	r.With(longTimeout).Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
 
 	return r
 }
@@ -113,13 +121,14 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
-		Name:        req.Name,
-		Version:     req.Version,
-		Scope:       req.Scope,
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Force:       req.Force,
-		Group:       req.Group,
+		Name:          req.Name,
+		Version:       req.Version,
+		Scope:         req.Scope,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Force:         req.Force,
+		Group:         req.Group,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err
@@ -404,11 +413,12 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	result, err := s.lockService.Sync(r.Context(), skills.SyncOptions{
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Prune:       req.Prune,
-		Check:       req.Check,
-		Adopt:       req.Adopt,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Prune:         req.Prune,
+		Check:         req.Check,
+		Adopt:         req.Adopt,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err
@@ -450,12 +460,13 @@ func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) err
 	}
 
 	result, err := s.lockService.Upgrade(r.Context(), skills.UpgradeOptions{
-		ProjectRoot:    req.ProjectRoot,
-		Names:          req.Names,
-		Preview:        req.Preview,
-		FailOnChanges:  req.FailOnChanges,
-		AllowRefChange: req.AllowRefChange,
-		Clients:        req.Clients,
+		ProjectRoot:       req.ProjectRoot,
+		Names:             req.Names,
+		Preview:           req.Preview,
+		FailOnChanges:     req.FailOnChanges,
+		AllowRefChange:    req.AllowRefChange,
+		AllowSignerChange: req.AllowSignerChange,
+		Clients:           req.Clients,
 	})
 	if err != nil {
 		return err

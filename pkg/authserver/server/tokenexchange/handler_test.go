@@ -959,6 +959,368 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 	}
 }
 
+func TestCheckDelegationConsent(t *testing.T) {
+	t.Parallel()
+
+	const actorID = testAgentClientID
+
+	tests := []struct {
+		name        string
+		claims      *ValidatedClaims
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:   "may_act matching actorID accepted",
+			claims: &ValidatedClaims{MayAct: &MayActClaim{Sub: actorID}},
+		},
+		{
+			name:        "may_act not matching actorID rejected",
+			claims:      &ValidatedClaims{MayAct: &MayActClaim{Sub: "different-agent"}},
+			wantErr:     true,
+			errContains: "does not authorize",
+		},
+		{
+			// #5989 fix: AllowedDelegateClients must be enforced on the
+			// may_act path too, not only ExternalActor's — an issuer that
+			// can emit may_act but has no AllowedActors-equivalent consent
+			// path (Entra, Okta) would otherwise have no per-client
+			// containment at all. ExternalIssuer must be set for this check
+			// to apply at all — see checkDelegationConsent's doc comment for
+			// why a self-issued may_act (ExternalIssuer == "") skips it.
+			name: "may_act matching actorID, actorID in AllowedDelegateClients accepted",
+			claims: &ValidatedClaims{
+				MayAct:                 &MayActClaim{Sub: actorID},
+				ExternalIssuer:         "https://idp.example.com",
+				AllowedDelegateClients: []string{"some-other-client", actorID},
+			},
+		},
+		{
+			name: "may_act matching actorID, actorID not in AllowedDelegateClients rejected",
+			claims: &ValidatedClaims{
+				MayAct:                 &MayActClaim{Sub: actorID},
+				ExternalIssuer:         "https://idp.example.com",
+				AllowedDelegateClients: []string{"some-other-client"},
+			},
+			wantErr:     true,
+			errContains: "not authorized to exchange subject tokens",
+		},
+		{
+			// A self-issued may_act (ExternalIssuer unset) has no
+			// AllowedDelegateClients equivalent, so an empty/absent value
+			// here must not reject it — unlike the external-issuer case
+			// below, where the same emptiness is a hard rejection.
+			name: "may_act matching actorID, ExternalIssuer unset, AllowedDelegateClients not enforced",
+			claims: &ValidatedClaims{
+				MayAct: &MayActClaim{Sub: actorID},
+			},
+		},
+		{
+			name: "ExternalActor set, actorID in wildcard AllowedDelegateClients accepted",
+			claims: &ValidatedClaims{
+				ExternalActor:          "ext-agent",
+				AllowedDelegateClients: []string{anyDelegateClient},
+			},
+		},
+		{
+			// Guards the switch ordering in checkDelegationConsent: the
+			// ExternalActor case must be checked before the client_id cases,
+			// so a populated (and mismatched) ClientID must not cause
+			// rejection when ExternalActor is already set.
+			name: "ExternalActor set with a differing ClientID still accepted",
+			claims: &ValidatedClaims{
+				ExternalActor:          "ext-agent",
+				ClientID:               "some-other-client",
+				AllowedDelegateClients: []string{anyDelegateClient},
+			},
+		},
+		{
+			// may_act must keep winning even when ExternalActor is also set
+			// (the external validator only sets ExternalActor when MayAct is
+			// nil, but checkDelegationConsent's own ordering must not depend
+			// on that invariant holding).
+			name: "ExternalActor set but MayAct mismatched is rejected",
+			claims: &ValidatedClaims{
+				ExternalActor: "ext-agent",
+				MayAct:        &MayActClaim{Sub: "different-agent"},
+			},
+			wantErr:     true,
+			errContains: "does not authorize",
+		},
+		{
+			// #5989 hardening: AllowedDelegateClients is now required at
+			// construction (validateTrustedIssuer), so nil/empty must be
+			// rejected at runtime too, not treated as "any client" — this
+			// pins the fail-closed default this PR introduces.
+			name: "ExternalActor set, nil AllowedDelegateClients rejected",
+			claims: &ValidatedClaims{
+				ExternalActor: "ext-agent",
+				// AllowedDelegateClients intentionally nil.
+			},
+			wantErr:     true,
+			errContains: "not authorized to exchange subject tokens",
+		},
+		{
+			name: "ExternalActor set, actorID in AllowedDelegateClients accepted",
+			claims: &ValidatedClaims{
+				ExternalActor:          "ext-agent",
+				AllowedDelegateClients: []string{"some-other-client", actorID},
+			},
+		},
+		{
+			name: "ExternalActor set, actorID not in AllowedDelegateClients rejected",
+			claims: &ValidatedClaims{
+				ExternalActor:          "ext-agent",
+				AllowedDelegateClients: []string{"some-other-client"},
+			},
+			wantErr:     true,
+			errContains: "not authorized to exchange subject tokens",
+		},
+		{
+			name:   "client_id matching actorID accepted",
+			claims: &ValidatedClaims{ClientID: actorID},
+		},
+		{
+			name:        "client_id not matching actorID rejected",
+			claims:      &ValidatedClaims{ClientID: "different-client"},
+			wantErr:     true,
+			errContains: "different client",
+		},
+		{
+			name:        "no may_act, no ExternalActor, no client_id rejected",
+			claims:      &ValidatedClaims{},
+			wantErr:     true,
+			errContains: "no verifiable client binding",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkDelegationConsent(tt.claims, actorID)
+			if tt.wantErr {
+				require.Error(t, err)
+				var rfcErr *fosite.RFC6749Error
+				require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
+				assert.Contains(t, rfcErr.Reason(), tt.errContains)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// newTestHandlerWithValidator creates a Handler wired to a caller-provided
+// validator, for tests that need external-issuer delegation coverage that
+// newTestHandler's self-issued-only validator cannot produce.
+func newTestHandlerWithValidator(validator SubjectTokenValidator) *Handler {
+	return &Handler{
+		validator:          validator,
+		delegationLifespan: 15 * time.Minute,
+		allowedAudiences:   []string{testIssuer},
+		config: &mockConfig{
+			scopeStrategy:    fosite.ExactScopeStrategy,
+			audienceStrategy: fosite.DefaultAudienceMatchingStrategy,
+		},
+	}
+}
+
+// TestTokenExchangeHandler_ActChainProvenance covers the act-chain shape that
+// HandleTokenEndpointRequest builds, for the case a token exchange terminates
+// on (ValidatedClaims.ExternalActor set) that TestTokenExchangeHandler_
+// HandleTokenEndpointRequest's self-issued-only table cannot exercise.
+func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+
+	trustedIssuers := []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedActors:          []string{"ext-agent"},
+		AllowedDelegateClients: []string{anyDelegateClient},
+	}}
+	multiValidator := newMultiValidator(t, tj, trustedIssuers)
+
+	// externalToken signs a subject token from the trusted external issuer
+	// with an allowlisted actor (so ExternalActor is set) and an optional
+	// prior act chain. The audience includes testIssuer alongside the
+	// issuer's required ExpectedAudience so the delegated token's
+	// default-audience grant (testIssuer) stays covered by the subject
+	// token's own audience (ensureAudienceSubsetOfSubject).
+	externalToken := func(t *testing.T, priorAct any) string {
+		t.Helper()
+		claims := externalClaims()
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		extra := map[string]any{"azp": "ext-agent"}
+		if priorAct != nil {
+			extra["act"] = priorAct
+		}
+		return externalJWKS.signToken(t, claims, extra)
+	}
+
+	requestWith := func(t *testing.T, h *Handler, token string) (*fosite.AccessRequest, error) {
+		t.Helper()
+		form := url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {token},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		}
+		req := newAccessRequest(t, defaultClient(), form)
+		return req, h.HandleTokenEndpointRequest(context.Background(), req)
+	}
+
+	t.Run("external delegation nests actor and issuer under the client's act entry", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		req, err := requestWith(t, h, externalToken(t, nil))
+		require.NoError(t, err)
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, testExternalIssuer+"#"+"ext-user-456", sess.JWTClaims.Subject,
+			"external subject must be qualified with the issuer URL, not copied verbatim")
+		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		assert.Equal(t, testAgentClientID, act["sub"], "outermost act.sub is always the ToolHive client")
+
+		nested, ok := act["act"].(map[string]any)
+		require.True(t, ok, "external actor/issuer must be nested under act.act")
+		assert.Equal(t, "ext-agent", nested["sub"])
+		assert.Equal(t, testExternalIssuer, nested["iss"])
+		assert.Nil(t, nested["act"], "no prior chain to nest further")
+	})
+
+	t.Run("self-issued delegation stays a single level with no external nesting", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandler(t, tj, 15*time.Minute)
+
+		req, err := requestWith(t, h, tj.signToken(t, validClaims(), validExtraClaims()))
+		require.NoError(t, err)
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, "user-123", sess.JWTClaims.Subject,
+			"self-issued subject must pass through unchanged, never qualified")
+		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		assert.Equal(t, testAgentClientID, act["sub"])
+		assert.Nil(t, act["act"], "self-issued delegation must not nest an external actor")
+	})
+
+	// #5989 fix: an external issuer choosing a "sub" equal to a native
+	// ToolHive user's UUID must never produce a delegated token whose "sub"
+	// collides with that UUID — Cedar's extractClientIDFromClaims
+	// (pkg/authz/authorizers/cedar/core.go) keys on "sub" alone, and native
+	// ToolHive subjects are UUIDs from UserResolver.ResolveUser, never an
+	// upstream provider's raw subject value.
+	t.Run("external subject equal to a plausible native UUID is qualified, not collided", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		const nativeLikeUUID = "8a34c9e0-6b1a-4e5f-9c2d-1f0a7b3d5e6c"
+		claims := externalClaims()
+		claims.Subject = nativeLikeUUID
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{"azp": "ext-agent"})
+
+		req, err := requestWith(t, h, token)
+		require.NoError(t, err)
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.NotEqual(t, nativeLikeUUID, sess.JWTClaims.Subject,
+			"the qualified subject must never equal the bare external sub, "+
+				"or it could collide with a native user sharing that UUID")
+		assert.Equal(t, testExternalIssuer+"#"+nativeLikeUUID, sess.JWTClaims.Subject)
+	})
+
+	// The documented dangerous config (see checkDelegationConsent and
+	// resolveAllowedActor's doc comments): a trusted external issuer emitting
+	// a well-formed may_act naming this client bypasses the allowlist
+	// entirely. Only covered at the checkDelegationConsent unit level until
+	// now — this exercises it through the full handler.
+	t.Run("external token carrying may_act still nests the issuer, with no actor to report", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		claims := externalClaims()
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{
+			"may_act": map[string]any{"sub": testAgentClientID, "iss": testIssuer},
+		})
+
+		req, err := requestWith(t, h, token)
+		require.NoError(t, err)
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		assert.Equal(t, testAgentClientID, act["sub"])
+
+		// The path that bypasses the allowlist entirely still records where
+		// the delegation came from (ValidatedClaims.ExternalIssuer is set
+		// unconditionally by validateExternalToken) — it just has no
+		// client-namespace actor claim to report, since may_act.sub already
+		// named the delegate directly via the outermost act.sub above.
+		nested, ok := act["act"].(map[string]any)
+		require.True(t, ok, "external issuer must be nested even on the may_act path")
+		assert.Equal(t, testExternalIssuer, nested["iss"])
+		_, hasSub := nested["sub"]
+		assert.False(t, hasSub, "no ExternalActor exists on the may_act path")
+	})
+
+	// maxDelegationDepth (10) bounds the prior chain depth + newLevels. The
+	// external wrapper adds a level of its own (newLevels=2) versus the
+	// self-issued path (newLevels=1), so the external path's prior chain must
+	// be one level shallower to fit:
+	//   self-issued: depth 9 accepted (9+1=10); depth 10 rejected (10+1=11>10)
+	//     — see "delegation chain under max depth is nested" /
+	//     "delegation chain at max depth rejected" in
+	//     TestTokenExchangeHandler_HandleTokenEndpointRequest.
+	//   external:    depth 8 accepted (8+2=10); depth 9 rejected (9+2=11>10)
+	// Split into two subtests (rather than one asserting both sides) so a
+	// failure on the accept half can't hide a regression on the reject half.
+	t.Run("external delegation at depth 8 fits exactly and preserves the full nested chain", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		req, err := requestWith(t, h, externalToken(t, nestedActChain(8)))
+		require.NoError(t, err, "depth 8 plus the external wrapper must fit exactly at maxDelegationDepth")
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		external, ok := act["act"].(map[string]any)
+		require.True(t, ok, "external actor/issuer must be nested under act.act")
+		assert.Equal(t, "ext-agent", external["sub"])
+		assert.Equal(t, testExternalIssuer, external["iss"])
+		// The prior chain must be preserved under the external wrapper, not
+		// dropped or overwritten by it — this is the provenance record
+		// checkDelegationConsent's doc comment relies on being auditable.
+		assert.Equal(t, nestedActChain(8), external["act"],
+			"the prior act chain must be nested under the external wrapper, unchanged")
+	})
+
+	t.Run("external delegation at depth 9 is rejected as too deep", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		_, err := requestWith(t, h, externalToken(t, nestedActChain(9)))
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant))
+		var rfcErr *fosite.RFC6749Error
+		require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
+		assert.Contains(t, rfcErr.Reason(), "too deep")
+	})
+}
+
 // mockConfig implements the tokenExchangeConfig interface for testing.
 type mockConfig struct {
 	scopeStrategy    fosite.ScopeStrategy

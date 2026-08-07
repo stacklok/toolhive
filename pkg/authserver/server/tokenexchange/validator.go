@@ -527,7 +527,7 @@ func validateMayActShape(extra map[string]any, selfIssuer string, requireIss boo
 // actor claim looked like a candidate. It is not shipped, because it also
 // fires on a legitimate access token: an app whose API and client share one
 // registration — e.g. an Entra v1 app that calls its own exposed API, or any
-// setup where ExpectedAudience is (mis)configured to the app's bare
+// setup where ExpectedAudience is misconfigured to the app's bare
 // client/resource GUID, which is exactly the ambiguous case this file's
 // audience-shape check already warns about — issues access tokens whose
 // "aud" is that shared ID and whose azp/appid is the very same ID. Rejecting

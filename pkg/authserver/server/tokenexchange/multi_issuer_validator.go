@@ -352,7 +352,7 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 	// silently widen AllowPrivateIPs regardless of what the operator set,
 	// defeating the point of splitting the two flags per issuer.
 	//
-	// Keep-alives are disabled: this client dials jwks_uri, a host taken
+	// Keep-alive connections are disabled: this client dials jwks_uri, a host taken
 	// from an untrusted discovery document, only on the fixed
 	// jwksRefreshInterval schedule plus occasional on-demand refreshes —
 	// no hot path here to trade the per-dial SSRF check away for.

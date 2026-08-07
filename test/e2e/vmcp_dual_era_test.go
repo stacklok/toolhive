@@ -43,13 +43,10 @@ import (
 // (mirrors the same finding already documented in dual_era_mixing_test.go
 // for the single-server transparent proxy).
 //
-// Deliberate harness choice: no request in this file sets
-// "Accept: application/json, text/event-stream" (a MUST on both revisions).
-// e2e.RawMCPClient now parses SSE-framed POST responses (sseResponsePayload,
-// mcp_raw_client.go), but these specs still omit the header so Legacy
-// responses stay plain JSON; flipping them to the conformant Accept is
-// tracked in #6104. Until then the bridge is proven here only under a
-// non-conformant Accept header.
+// Every request in this file sends the streamable-HTTP Accept header both MCP
+// revisions require: "application/json, text/event-stream". Legacy responses
+// may therefore be SSE-framed by the go-sdk transport, while Modern responses
+// remain plain JSON; e2e.RawMCPClient parses both shapes before assertions.
 var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Serial, func() {
 	Context("one Legacy and one Modern backend in the same group", func() {
 		var (
@@ -154,6 +151,25 @@ var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Seria
 			assertBridgedCall(resp, "legacytomodern", "")
 		})
 
+		It("preserves response content under plain JSON and SSE-capable Accept", func() {
+			ctx := context.Background()
+			sessionID := legacyInitialize(ctx, rawClient, vMCPURL)
+
+			legacyPlain := legacyToolCallWithAccept(ctx, rawClient, vMCPURL, sessionID, legacyToolName, "legacyaccept", false)
+			legacyConformant := legacyToolCallWithAccept(ctx, rawClient, vMCPURL, sessionID, legacyToolName, "legacyaccept", true)
+			assertBridgedCall(legacyPlain, "legacyaccept", "")
+			assertBridgedCall(legacyConformant, "legacyaccept", "")
+			Expect(legacyConformant.Result).To(MatchJSON(legacyPlain.Result),
+				"Legacy content must be identical whether the transport frames the response as plain JSON or SSE")
+
+			modernPlain := modernToolCallWithAccept(ctx, rawClient, vMCPURL, modernToolName, "modernaccept", false)
+			modernConformant := modernToolCallWithAccept(ctx, rawClient, vMCPURL, modernToolName, "modernaccept", true)
+			assertBridgedCall(modernPlain, "modernaccept", "complete")
+			assertBridgedCall(modernConformant, "modernaccept", "complete")
+			Expect(modernConformant.Result).To(MatchJSON(modernPlain.Result),
+				"Modern content must be identical under both Accept values")
+		})
+
 		It("never cross-delivers between two concurrent principals across mismatched backends", func() {
 			// Principal A: a Legacy session calling the Legacy backend, perEra
 			// times per round. Principal B: a stateless Modern client calling the
@@ -218,7 +234,7 @@ var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Seria
 // not accepted.
 func legacyInitialize(ctx context.Context, client *e2e.RawMCPClient, url string) string {
 	GinkgoHelper()
-	req := e2e.NewLegacyInitializeRequest("dual-era-legacy-client", "1.0")
+	req := e2e.NewLegacyInitializeRequest("dual-era-legacy-client", "1.0").WithStreamableAccept()
 	resp, err := client.Send(ctx, url, req)
 	Expect(err).ToNot(HaveOccurred())
 	Expect(resp.StatusCode).To(Equal(200), "body: %s", resp.Body)
@@ -228,7 +244,7 @@ func legacyInitialize(ctx context.Context, client *e2e.RawMCPClient, url string)
 	notifyReq, err := e2e.NewLegacyRequest("notifications/initialized", nil)
 	Expect(err).ToNot(HaveOccurred())
 	// WithID(nil) omits "id" entirely, making this a true JSON-RPC notification.
-	notifyReq.WithID(nil).WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, mcpparser.MCPVersionLegacy)
+	notifyReq.WithID(nil).WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, mcpparser.MCPVersionLegacy).WithStreamableAccept()
 	notifyResp, err := client.Send(ctx, url, notifyReq)
 	Expect(err).ToNot(HaveOccurred())
 	Expect(notifyResp.StatusCode).To(Equal(202), "body: %s", notifyResp.Body)
@@ -243,12 +259,22 @@ func legacyToolCall(
 	ctx context.Context, client *e2e.RawMCPClient, url, sessionID, toolName, input string,
 ) *e2e.RawResponse {
 	GinkgoHelper()
+	return legacyToolCallWithAccept(ctx, client, url, sessionID, toolName, input, true)
+}
+
+func legacyToolCallWithAccept(
+	ctx context.Context, client *e2e.RawMCPClient, url, sessionID, toolName, input string, streamableAccept bool,
+) *e2e.RawResponse {
+	GinkgoHelper()
 	req, err := e2e.NewLegacyRequest("tools/call", map[string]any{
 		"name":      toolName,
 		"arguments": map[string]any{"input": input},
 	})
 	Expect(err).ToNot(HaveOccurred())
 	req.WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, mcpparser.MCPVersionLegacy)
+	if streamableAccept {
+		req.WithStreamableAccept()
+	}
 	resp, err := client.Send(ctx, url, req)
 	Expect(err).ToNot(HaveOccurred())
 	return resp
@@ -257,11 +283,21 @@ func legacyToolCall(
 // modernToolCall sends a stateless Modern tools/call for toolName.
 func modernToolCall(ctx context.Context, client *e2e.RawMCPClient, url, toolName, input string) *e2e.RawResponse {
 	GinkgoHelper()
+	return modernToolCallWithAccept(ctx, client, url, toolName, input, true)
+}
+
+func modernToolCallWithAccept(
+	ctx context.Context, client *e2e.RawMCPClient, url, toolName, input string, streamableAccept bool,
+) *e2e.RawResponse {
+	GinkgoHelper()
 	req, err := e2e.NewModernRequest("tools/call", map[string]any{
 		"name":      toolName,
 		"arguments": map[string]any{"input": input},
 	})
 	Expect(err).ToNot(HaveOccurred())
+	if streamableAccept {
+		req.WithStreamableAccept()
+	}
 	resp, err := client.Send(ctx, url, req)
 	Expect(err).ToNot(HaveOccurred())
 	return resp
@@ -332,15 +368,19 @@ func fireConcurrentBridgedBatch(
 			if err != nil {
 				return nil, err
 			}
-			return req.WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, mcpparser.MCPVersionLegacy), nil
+			return req.WithSessionID(sessionID).SetHeader(e2e.HeaderMCPProtocolVersion, mcpparser.MCPVersionLegacy).WithStreamableAccept(), nil
 		})
 	}
 	for i := 0; i < perEra; i++ {
 		fire(perEra+i, func() (*e2e.RawRequest, error) {
-			return e2e.NewModernRequest("tools/call", map[string]any{
+			req, err := e2e.NewModernRequest("tools/call", map[string]any{
 				"name":      modernClientTool,
 				"arguments": map[string]any{"input": "concurrencycheck"},
 			})
+			if err != nil {
+				return nil, err
+			}
+			return req.WithStreamableAccept(), nil
 		})
 	}
 

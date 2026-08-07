@@ -5,8 +5,6 @@ package sessionmanager
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -18,14 +16,9 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/telemetry"
-	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
-	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
 const instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
@@ -80,8 +73,8 @@ type FactoryConfig struct {
 	// New resolves the optimizer factory and owns its store/cleanup. server.New
 	// sets this unconditionally (server.go), so every in-tree composition
 	// advertises from the core; the flag exists for direct-Serve embedders. The
-	// decorator branch the false case used to select is now unreachable — its
-	// deletion is tracked in #6103.
+	// legacy decorator branch the false case used to select has been removed;
+	// optimizers are now built only by the Serve layer.
 	AdvertiseFromCore bool
 }
 
@@ -134,129 +127,6 @@ func resolveOptimizer(cfg *FactoryConfig) (
 	default:
 		return nil, noopCleanup, nil
 	}
-}
-
-// buildDecoratingFactory builds the decorating session factory from cfg.
-// terminateSession is the session manager's own Terminate method, captured
-// here to avoid the forward-reference dance previously needed in server.New().
-func buildDecoratingFactory(
-	cfg *FactoryConfig,
-	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error),
-	terminateSession func(string) (bool, error),
-) vmcpsession.MultiSessionFactory {
-	var decorators []vmcpsession.Decorator
-
-	// On the Serve path (AdvertiseFromCore) the optimizer is built by the Serve layer
-	// over the core's advertised set, so the factory's optimizer decorator is skipped
-	// to avoid double-indexing the shared store (see FactoryConfig.AdvertiseFromCore).
-	// Composite tools and their telemetry are owned by the core, not the factory.
-	// This branch is unreachable: New rejects an optimizer without AdvertiseFromCore,
-	// so optimizerFactory is nil whenever the flag is false. Deleting the decorator
-	// path is tracked in #6103.
-	if optimizerFactory != nil && !cfg.AdvertiseFromCore {
-		decorators = append(decorators, optimizerDecoratorFn(optimizerFactory, terminateSession))
-	}
-
-	return vmcpsession.NewDecoratingFactory(cfg.Base, decorators...)
-}
-
-// optimizerDecoratorFn returns a Decorator that indexes all session tools into
-// the optimizer and replaces the tool list with find_tool + call_tool.
-func optimizerDecoratorFn(
-	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error),
-	terminateSession func(string) (bool, error),
-) vmcpsession.Decorator {
-	return func(ctx context.Context, sess vmcpsession.MultiSession) (vmcpsession.MultiSession, error) {
-		sdkTools, err := adaptToolsForFactory(sess, terminateSession)
-		if err != nil {
-			return nil, fmt.Errorf("failed to adapt tools for optimizer: %w", err)
-		}
-
-		opt, err := optimizerFactory(ctx, sdkTools)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create optimizer: %w", err)
-		}
-
-		slog.Info("session capabilities decorated (optimizer mode)", "indexed_tool_count", len(sdkTools))
-		return optimizerdec.NewDecorator(sess, opt), nil
-	}
-}
-
-// adaptToolsForFactory converts domain tools from sess to SDK-format ServerTools.
-// Unlike GetAdaptedTools in session_manager.go, this version accepts an explicit
-// terminateSession callback so that auth failures still terminate the session,
-// preserving hijack-prevention parity with the non-optimizer tool path.
-func adaptToolsForFactory(
-	sess sessiontypes.MultiSession,
-	terminateSession func(string) (bool, error),
-) ([]mcpserver.ServerTool, error) {
-	domainTools := sess.Tools()
-	sdkTools := make([]mcpserver.ServerTool, 0, len(domainTools))
-
-	for _, domainTool := range domainTools {
-		schemaJSON, err := json.Marshal(domainTool.InputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal schema for tool %s: %w", domainTool.Name, err)
-		}
-
-		tool := mcp.Tool{
-			Name:           domainTool.Name,
-			Description:    domainTool.Description,
-			RawInputSchema: schemaJSON,
-			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),
-		}
-		if domainTool.OutputSchema != nil {
-			outputSchemaJSON, marshalErr := json.Marshal(domainTool.OutputSchema)
-			if marshalErr != nil {
-				slog.Warn("failed to marshal tool output schema", "tool", domainTool.Name, "error", marshalErr)
-			} else {
-				tool.RawOutputSchema = outputSchemaJSON
-			}
-		}
-
-		capturedSess := sess
-		capturedSessionID := sess.ID()
-		capturedToolName := domainTool.Name
-		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			args, ok := req.Params.Arguments.(map[string]any)
-			if !ok {
-				wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
-				slog.Warn("invalid arguments for tool", "tool", capturedToolName, "error", wrappedErr)
-				return mcp.NewToolResultError(wrappedErr.Error()), nil
-			}
-
-			meta := conversion.FromMCPMeta(req.Params.Meta)
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			result, callErr := capturedSess.CallTool(ctx, caller, capturedToolName, args, meta)
-			if callErr != nil {
-				if errors.Is(callErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(callErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "tool", capturedToolName, "error", callErr)
-					if _, termErr := terminateSession(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", callErr)), nil
-				}
-				return mcp.NewToolResultError(callErr.Error()), nil
-			}
-
-			return &mcp.CallToolResult{
-				Result:            mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
-				Content:           conversion.ToMCPContents(result.Content),
-				StructuredContent: result.StructuredContent,
-				IsError:           result.IsError,
-			}, nil
-		}
-
-		sdkTools = append(sdkTools, mcpserver.ServerTool{
-			Tool:    tool,
-			Handler: handler,
-		})
-	}
-
-	return sdkTools, nil
 }
 
 // monitorOptimizer wraps an optimizer factory so that every Optimizer instance

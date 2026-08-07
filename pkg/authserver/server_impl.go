@@ -249,7 +249,7 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (fosite.OAuth2Provider, error) {
-	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan)
+	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan, cfg.TrustedIssuers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 	}

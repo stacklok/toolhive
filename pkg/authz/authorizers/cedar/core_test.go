@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"sync"
@@ -3347,38 +3348,61 @@ func TestParseCedarEntityID(t *testing.T) {
 	}
 }
 
-// TestSanitizeURIForCedar tests the sanitizeURIForCedar helper function.
-func TestSanitizeURIForCedar(t *testing.T) {
+// TestAuthorizeResourceReadEntityIDsCollisionFree verifies that resource URIs
+// become Cedar entity IDs verbatim. Distinct URIs that a lossy sanitization
+// would map onto the same entity ID must stay distinct, so a policy grant on
+// one URI never authorizes a colliding URI.
+func TestAuthorizeResourceReadEntityIDsCollisionFree(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name         string
+		grantedURI   string
+		collidingURI string
 	}{
-		{name: "empty_string", input: "", want: ""},
-		{name: "already_clean", input: "simple_resource", want: "simple_resource"},
-		{name: "colon", input: "a:b", want: "a_b"},
-		{name: "forward_slash", input: "a/b", want: "a_b"},
-		{name: "backslash", input: `a\b`, want: "a_b"},
-		{name: "question_mark", input: "a?b", want: "a_b"},
-		{name: "ampersand", input: "a&b", want: "a_b"},
-		{name: "equals", input: "a=b", want: "a_b"},
-		{name: "hash", input: "a#b", want: "a_b"},
-		{name: "space", input: "a b", want: "a_b"},
-		{name: "dot", input: "a.b", want: "a_b"},
 		{
-			name:  "complex_uri",
-			input: "https://api.example.com/v1/data?key=val&other=123#fragment",
-			want:  "https___api_example_com_v1_data_key_val_other_123_fragment",
+			name:         "file_uri_colon_and_slash_run",
+			grantedURI:   "file:///etc/passwd",
+			collidingURI: "file://_etc/passwd",
+		},
+		{
+			name:         "mcp_uri_colon_vs_slash",
+			grantedURI:   "mcp://srv/config:admin",
+			collidingURI: "mcp://srv/config/admin",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := sanitizeURIForCedar(tt.input)
-			assert.Equal(t, tt.want, got)
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies: []string{
+					fmt.Sprintf(`permit(principal, action == Action::"read_resource", resource == Resource::"%s");`, tt.grantedURI),
+				},
+				EntitiesJSON: `[]`,
+			}, "")
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user",
+				Claims:  jwt.MapClaims{"sub": "user123"},
+			}}
+			claimsCtx := auth.WithIdentity(context.Background(), identity)
+
+			// The exact URI named in the policy is authorized.
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				claimsCtx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, tt.grantedURI, nil)
+			require.NoError(t, err)
+			assert.True(t, authorized, "exact URI named in the policy should be authorized")
+
+			// The colliding URI, which mapped to the same entity ID under the
+			// previous lossy sanitization, must not be authorized.
+			authorized, err = authorizer.AuthorizeWithJWTClaims(
+				claimsCtx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, tt.collidingURI, nil)
+			require.NoError(t, err)
+			assert.False(t, authorized,
+				"colliding URI %q must not be authorized by a grant on %q", tt.collidingURI, tt.grantedURI)
 		})
 	}
 }

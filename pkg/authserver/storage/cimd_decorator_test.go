@@ -282,6 +282,37 @@ func TestCIMDStorageDecorator_FetchOrCached_FetchFailureReturnsNotFound(t *testi
 	assert.ErrorIs(t, err, fosite.ErrNotFound, "fetch failure must be wrapped as fosite.ErrNotFound")
 }
 
+// TestCIMDStorageDecorator_FetchOrCached_FetchFailureIsNotCached pins CIMD
+// draft compliance (client-id-metadata-document §5.2: error responses and
+// invalid/malformed documents must not be cached) and closes off the
+// eviction-based DoS a shared failure+success cache would otherwise allow: an
+// unauthenticated caller cycling through bogus client_ids could flush
+// legitimate cache entries for free. The accepted tradeoff is a fresh network
+// fetch on every call for a persistently-failing client_id.
+func TestCIMDStorageDecorator_FetchOrCached_FetchFailureIsNotCached(t *testing.T) {
+	t.Parallel()
+
+	var fetchCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetchCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+	id := srv.URL + "/meta.json"
+
+	_, err := dec.fetchOrCached(context.Background(), id)
+	require.Error(t, err)
+
+	_, err = dec.fetchOrCached(context.Background(), id)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrNotFound)
+
+	assert.Equal(t, int32(2), fetchCount.Load(),
+		"a failing client_id must be refetched every call, not cached (CIMD draft §5.2)")
+}
+
 func TestCIMDStorageDecorator_FetchOrCached_ExpiredCacheEntryRefetches(t *testing.T) {
 	t.Parallel()
 
@@ -371,7 +402,7 @@ func TestBuildFositeClient_ScopeParsing(t *testing.T) {
 	assert.ElementsMatch(t, []string{"openid", "profile", "email"}, []string(got.GetScopes()))
 }
 
-func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
+func TestBuildFositeClient_LoopbackRedirectGetsDynamicPortMatching(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
@@ -380,16 +411,17 @@ func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
 	}
 
 	got := buildFositeClient(doc, nil)
-	// LoopbackClient adds MatchRedirectURI — check the distinctive method is present.
-	type loopbackMatcher interface {
-		MatchRedirectURI(string) bool
-	}
-	_, ok := got.(loopbackMatcher)
-	assert.True(t, ok, "loopback redirect URI must produce a LoopbackClient")
 
-	// TokenEndpointAuthMethod must be preserved through the LoopbackClient wrapper.
+	// A client built for a loopback CIMD document must get RFC 8252 §7.3
+	// dynamic-port matching: a request for a different port than registered
+	// still resolves to the registered portless URI.
+	uri, ok := registration.RegisteredLoopbackRedirectURI(got, "http://localhost:54321/callback")
+	require.True(t, ok, "loopback redirect URI must get dynamic-port matching")
+	assert.Equal(t, "http://localhost/callback", uri)
+
+	// TokenEndpointAuthMethod must be preserved through buildFositeClient.
 	oidc, ok := got.(fosite.OpenIDConnectClient)
-	require.True(t, ok, "LoopbackClient must implement fosite.OpenIDConnectClient")
+	require.True(t, ok, "got must implement fosite.OpenIDConnectClient")
 	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod(),
 		"loopback client must preserve TokenEndpointAuthMethod from the OIDC client")
 }

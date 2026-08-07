@@ -1080,24 +1080,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -1346,24 +1356,34 @@ spec:
                             steps allow.
                           properties:
                             destructiveHint:
-                              description: DestructiveHint overrides the destructive
-                                hint annotation.
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             idempotentHint:
-                              description: IdempotentHint overrides the idempotent
-                                hint annotation.
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             openWorldHint:
-                              description: OpenWorldHint overrides the open-world
-                                hint annotation.
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             readOnlyHint:
-                              description: ReadOnlyHint overrides the read-only hint
-                                annotation.
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             title:
-                              description: Title overrides the human-readable title
-                                annotation.
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: string
                           type: object
                         description:
@@ -4585,24 +4605,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -4851,24 +4881,34 @@ spec:
                             steps allow.
                           properties:
                             destructiveHint:
-                              description: DestructiveHint overrides the destructive
-                                hint annotation.
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             idempotentHint:
-                              description: IdempotentHint overrides the idempotent
-                                hint annotation.
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             openWorldHint:
-                              description: OpenWorldHint overrides the open-world
-                                hint annotation.
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             readOnlyHint:
-                              description: ReadOnlyHint overrides the read-only hint
-                                annotation.
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: boolean
                             title:
-                              description: Title overrides the human-readable title
-                                annotation.
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
                               type: string
                           type: object
                         description:

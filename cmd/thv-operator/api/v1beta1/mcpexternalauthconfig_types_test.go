@@ -574,6 +574,28 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			},
 			expectErr: false, // validateEmbeddedAuthServer returns nil if config is nil
 		},
+		{
+			name: "confidential clients combined with insecure HTTP - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://auth.example.com",
+						InsecureAllowHTTP:                   true,
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+		},
 	}
 
 	for _, tt := range tests {

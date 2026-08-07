@@ -267,10 +267,15 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument, resolvedScopes []string
 		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
 	}
 
-	// Wrap in LoopbackClient when any redirect URI targets localhost so that
-	// RFC 8252 §7.3 dynamic port matching works for native app clients.
-	// Pass openIDClient directly so TokenEndpointAuthMethod is preserved —
-	// LoopbackClient now embeds *fosite.DefaultOpenIDConnectClient.
+	// Wrap in LoopbackClient when any redirect URI targets localhost. This does
+	// NOT make RFC 8252 §7.3 dynamic port matching work: fosite's own
+	// authorize-path redirect matching reads only GetRedirectURIs() and never
+	// calls LoopbackClient's methods, and fosite's own loopback matcher
+	// supports IP literals (127.0.0.1, [::1]) but not the "localhost"
+	// hostname — a "http://localhost/callback" registration still gets
+	// exact-match only against a dynamic-port authorize request. The wrap's
+	// value here is carrying the OIDC client shape so TokenEndpointAuthMethod
+	// is preserved — LoopbackClient embeds *fosite.DefaultOpenIDConnectClient.
 	if hasLoopbackRedirectURI(doc.RedirectURIs) {
 		return registration.NewLoopbackClient(openIDClient)
 	}

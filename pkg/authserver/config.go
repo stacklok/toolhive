@@ -118,25 +118,22 @@ type RunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 
-	// AllowConfidentialClients permits Dynamic Client Registration of
-	// confidential clients: when true, /oauth/register accepts
+	// AllowConfidentialClientRegistration permits Dynamic Client Registration
+	// of confidential clients: when true, /oauth/register accepts
 	// token_endpoint_auth_method values client_secret_basic and
-	// client_secret_post in addition to "none" (which remains the default on
-	// omission) and mints a client_secret returned exactly once.
+	// client_secret_post in addition to "none" (still the default on
+	// omission) and mints a client_secret returned exactly once. Confidential
+	// clients are restricted to https non-loopback redirect URIs, and
+	// registrations idle for more than DefaultDCRClientTTL (30 days) are
+	// evicted and must re-register. This gates registration only: disabling
+	// it does not revoke or reject already-minted secrets at the token
+	// endpoint.
 	//
-	// Confidential clients are restricted to https non-loopback redirect URIs.
-	// Registrations idle for more than DefaultDCRClientTTL (30 days) are
-	// evicted and must re-register. Disabling this flag does not revoke
-	// already-minted secrets: the token endpoint keeps accepting
-	// client_secret_basic/client_secret_post from those clients while
-	// discovery metadata advertises only "none" (RFC 8414 defines that field
-	// as what the token endpoint supports, so the skew is a known,
-	// deliberate consequence of the flag being a registration-time gate).
-	// Do not combine with InsecureAllowHTTP outside a
-	// trusted network: registration is unauthenticated, so the pair issues
-	// client secrets over cleartext HTTP.
+	// Security: /oauth/register is unauthenticated, so this issues client
+	// secrets to any caller. Combining it with InsecureAllowHTTP is rejected
+	// by Validate.
 	//nolint:lll // field tags require full JSON+YAML names
-	AllowConfidentialClients bool `json:"allow_confidential_clients,omitempty" yaml:"allow_confidential_clients,omitempty"`
+	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -148,6 +145,9 @@ func (c *RunConfig) Validate() error {
 		if err := c.CIMD.Validate(); err != nil {
 			return fmt.Errorf("cimd: %w", err)
 		}
+	}
+	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+		return err
 	}
 	return c.validateBaselineClientScopes()
 }
@@ -706,10 +706,10 @@ type Config struct {
 	// Production deployments reachable outside the cluster MUST use https://.
 	InsecureAllowHTTP bool
 
-	// AllowConfidentialClients permits DCR of confidential clients
+	// AllowConfidentialClientRegistration permits DCR of confidential clients
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
-	AllowConfidentialClients bool
+	AllowConfidentialClientRegistration bool
 }
 
 // Validate checks that the Config is valid.
@@ -718,6 +718,10 @@ func (c *Config) Validate() error {
 
 	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
 		return fmt.Errorf("issuer: %w", err)
+	}
+
+	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+		return err
 	}
 
 	if c.AuthorizationEndpointBaseURL != "" {
@@ -1057,6 +1061,17 @@ func (c *Config) applyDefaults() error {
 	if c.CIMDEnabled && c.CIMDCacheFallbackTTL == 0 {
 		c.CIMDCacheFallbackTTL = 5 * time.Minute
 		slog.Debug("applied default cimd cache_fallback_ttl", "ttl", c.CIMDCacheFallbackTTL)
+	}
+	return nil
+}
+
+// ValidateConfidentialClientTransport rejects the combination of confidential-client
+// DCR with cleartext HTTP: /oauth/register is unauthenticated, so issuing
+// client secrets over plain HTTP exposes them to anyone on the network path.
+func ValidateConfidentialClientTransport(allowConfidential, insecureAllowHTTP bool) error {
+	if allowConfidential && insecureAllowHTTP {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
+			"this would issue client secrets over cleartext HTTP on an unauthenticated registration endpoint")
 	}
 	return nil
 }

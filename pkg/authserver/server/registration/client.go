@@ -24,15 +24,15 @@ import (
 	"net/url"
 	"strings"
 
-	jose "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// LoopbackClient is a fosite.Client implementation that supports RFC 8252 Section 7.3
-// compliant loopback redirect URI matching for native OAuth clients.
+// LoopbackClient wraps a fosite.DefaultOpenIDConnectClient with RFC 8252
+// Section 7.3 loopback redirect URI matching helpers (MatchRedirectURI,
+// GetMatchingRedirectURI, defined below).
 //
 // RFC 8252 Section 7.3 specifies that:
 //   - Loopback redirect URIs use "http" (not "https")
@@ -40,12 +40,20 @@ import (
 //   - The authorization server MUST allow any port
 //   - The path and query components must match exactly
 //
-// This client extends fosite's built-in loopback support to also handle "localhost"
-// as a loopback address. Fosite's isMatchingAsLoopback uses isLoopbackAddress()
-// which only supports IP addresses (net.ParseIP().IsLoopback()), not the "localhost"
-// hostname. This is needed for DCR with clients like VS Code, Claude Code, and other
-// native apps that register redirect URIs like "http://localhost/callback" and then
-// request authorization with dynamic ports like "http://localhost:57403/callback".
+// What this type does NOT do: fosite's own authorize-path redirect matching
+// (MatchRedirectURIWithClientRedirectURIs → isMatchingAsLoopback) reads only
+// GetRedirectURIs() and never calls this type's methods, so they take no
+// effect on that path. Fosite's own loopback matching (isLoopbackAddress,
+// net.ParseIP().IsLoopback()) covers IP literals (127.0.0.1, [::1]) but not
+// the "localhost" hostname — net.ParseIP("localhost") returns nil — so a
+// client registered with "http://localhost/callback" gets exact-match only
+// against fosite's matcher; a dynamic-port authorize request like
+// "http://localhost:57403/callback" (the pattern VS Code, Claude Code, and
+// other native apps use) fails today. MatchRedirectURI/GetMatchingRedirectURI
+// exist for callers that do their own matching outside fosite's authorize
+// path; they are not a fosite hook. This type's live value in the codebase is
+// carrying the OIDC client shape (so GetTokenEndpointAuthMethod survives)
+// through storage's DCR round-trip.
 type LoopbackClient struct {
 	*fosite.DefaultOpenIDConnectClient
 }
@@ -150,81 +158,44 @@ func DCRIssued(client fosite.Client) bool {
 	return ok
 }
 
-// MarkDCRIssued wraps a client rebuilt from persisted DCR-issued form (i.e. a
-// row that recorded a token_endpoint_auth_method) so the DCRIssued marker —
-// and with it the anti-bloat TTL behaviour in storage — survives the storage
-// round-trip. Callers must only mark clients they know were DCR-issued;
-// pre-provisioned clients must never carry the marker.
+// MarkDCRIssued wraps a client rebuilt from persisted DCR-issued form so the
+// DCRIssued marker — and with it the anti-bloat TTL behaviour in storage —
+// survives the storage round-trip. Callers must only mark clients they know
+// were DCR-issued; pre-provisioned clients must never carry the marker.
 //
-// The wrapper must preserve the fosite.OpenIDConnectClient surface of the
-// wrapped client: embedding the fosite.Client interface would promote only the
-// base Client method set, silently dropping GetTokenEndpointAuthMethod and the
-// other OIDC methods. fosite activates token-endpoint auth-method enforcement
-// only for clients that satisfy fosite.OpenIDConnectClient, so a wrapper that
-// hid those methods would downgrade a reloaded confidential client to the
-// legacy skip-enforcement path. The OIDC methods are therefore forwarded
-// explicitly.
+// client must be one of the two concrete shapes clientFromStored produces:
+// *fosite.DefaultOpenIDConnectClient (a row with a recorded
+// token_endpoint_auth_method) or *fosite.DefaultClient (a row with none). The
+// type switch below embeds whichever concrete type it was given rather than
+// the fosite.Client interface, so every method the concrete type implements —
+// now and in the future, including optional fosite interfaces like
+// ClientWithSecretRotation — promotes automatically instead of being silently
+// dropped, which is exactly what embedding the interface would do (fosite
+// type-asserts for ClientWithSecretRotation.GetRotatedHashes during secret
+// validation). Any other concrete type is a caller bug and panics rather than
+// risk that silent drop.
 func MarkDCRIssued(client fosite.Client) fosite.Client {
-	return &markedDCRIssued{Client: client}
-}
-
-type markedDCRIssued struct {
-	fosite.Client
-}
-
-func (markedDCRIssued) dcrIssued() {}
-
-// asOIDC unwraps the embedded client to its OpenIDConnectClient view. It is
-// the single place that tolerates a non-OIDC wrapped client (returning ok =
-// false); the forwarding methods below treat that as a programming error
-// because MarkDCRIssued is only ever called on clients rebuilt from a row that
-// recorded a token_endpoint_auth_method — i.e. always OIDC clients.
-func (m markedDCRIssued) asOIDC() (fosite.OpenIDConnectClient, bool) {
-	oidc, ok := m.Client.(fosite.OpenIDConnectClient)
-	return oidc, ok
-}
-
-func (m markedDCRIssued) GetRequestURIs() []string {
-	if oidc, ok := m.asOIDC(); ok {
-		return oidc.GetRequestURIs()
+	switch c := client.(type) {
+	case *fosite.DefaultOpenIDConnectClient:
+		return &markedDCRIssuedOIDC{DefaultOpenIDConnectClient: c}
+	case *fosite.DefaultClient:
+		return &markedDCRIssuedDefault{DefaultClient: c}
+	default:
+		panic(fmt.Sprintf("registration: MarkDCRIssued: unsupported concrete client type %T", client))
 	}
-	return nil
 }
 
-func (m markedDCRIssued) GetJSONWebKeys() *jose.JSONWebKeySet {
-	if oidc, ok := m.asOIDC(); ok {
-		return oidc.GetJSONWebKeys()
-	}
-	return nil
+type markedDCRIssuedOIDC struct {
+	*fosite.DefaultOpenIDConnectClient
 }
 
-func (m markedDCRIssued) GetJSONWebKeysURI() string {
-	if oidc, ok := m.asOIDC(); ok {
-		return oidc.GetJSONWebKeysURI()
-	}
-	return ""
+func (markedDCRIssuedOIDC) dcrIssued() {}
+
+type markedDCRIssuedDefault struct {
+	*fosite.DefaultClient
 }
 
-func (m markedDCRIssued) GetRequestObjectSigningAlgorithm() string {
-	if oidc, ok := m.asOIDC(); ok {
-		return oidc.GetRequestObjectSigningAlgorithm()
-	}
-	return ""
-}
-
-func (m markedDCRIssued) GetTokenEndpointAuthMethod() string {
-	if oidc, ok := m.asOIDC(); ok {
-		return oidc.GetTokenEndpointAuthMethod()
-	}
-	return ""
-}
-
-func (m markedDCRIssued) GetTokenEndpointAuthSigningAlgorithm() string {
-	if oidc, ok := m.asOIDC(); ok {
-		return oidc.GetTokenEndpointAuthSigningAlgorithm()
-	}
-	return ""
-}
+func (markedDCRIssuedDefault) dcrIssued() {}
 
 type dcrIssuedMarker struct{}
 

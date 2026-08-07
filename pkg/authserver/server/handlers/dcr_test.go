@@ -431,13 +431,13 @@ func TestRegisterClientHandler_ScopeAsJSONArray(t *testing.T) {
 var confidentialClientSecretRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // confidentialConfig builds an AuthorizationServerConfig with
-// AllowConfidentialClients set, matching the test pattern used elsewhere in
+// AllowConfidentialClientRegistration set, matching the test pattern used elsewhere in
 // this file.
 func confidentialConfig(allowConfidential bool) *server.AuthorizationServerConfig {
 	return &server.AuthorizationServerConfig{
-		Config:                   &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-		ScopesSupported:          registration.DefaultScopes,
-		AllowConfidentialClients: allowConfidential,
+		Config:                              &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+		ScopesSupported:                     registration.DefaultScopes,
+		AllowConfidentialClientRegistration: allowConfidential,
 	}
 }
 
@@ -692,10 +692,10 @@ func TestRegisterClientHandler_ConfidentialClientStored(t *testing.T) {
 		t.Parallel()
 		allowedAudiences := []string{"https://mcp.example.com", "https://api.example.com"}
 		cfg := &server.AuthorizationServerConfig{
-			Config:                   &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-			ScopesSupported:          registration.DefaultScopes,
-			AllowedAudiences:         allowedAudiences,
-			AllowConfidentialClients: true,
+			Config:                              &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported:                     registration.DefaultScopes,
+			AllowedAudiences:                    allowedAudiences,
+			AllowConfidentialClientRegistration: true,
 		}
 		w, captured := runDCR(t, cfg,
 			`{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`)

@@ -37,9 +37,9 @@ import (
 
 // testSetupOptions allows customizing the test handler setup.
 type testSetupOptions struct {
-	AuthorizationEndpointBaseURL string
-	CIMDEnabled                  bool
-	AllowConfidentialClients     bool
+	AuthorizationEndpointBaseURL        string
+	CIMDEnabled                         bool
+	AllowConfidentialClientRegistration bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -66,17 +66,17 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:                       "https://auth.example.com",
-		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                  opts.CIMDEnabled,
-		AllowConfidentialClients:     opts.AllowConfidentialClients,
-		AccessTokenLifespan:          time.Hour,
-		RefreshTokenLifespan:         time.Hour * 24,
-		AuthCodeLifespan:             time.Minute * 10,
-		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                 "test-key-1",
-		SigningKeyAlgorithm:          "RS256",
-		SigningKey:                   rsaKey,
+		Issuer:                              "https://auth.example.com",
+		AuthorizationEndpointBaseURL:        opts.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         opts.CIMDEnabled,
+		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
+		AccessTokenLifespan:                 time.Hour,
+		RefreshTokenLifespan:                time.Hour * 24,
+		AuthCodeLifespan:                    time.Minute * 10,
+		HMACSecrets:                         servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                        "test-key-1",
+		SigningKeyAlgorithm:                 "RS256",
+		SigningKey:                          rsaKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -281,7 +281,7 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			handler := testSetupWithOptions(t, testSetupOptions{AllowConfidentialClients: tc.allowConfidential})
+			handler := testSetupWithOptions(t, testSetupOptions{AllowConfidentialClientRegistration: tc.allowConfidential})
 
 			// OAuth AS metadata endpoint.
 			rec := httptest.NewRecorder()

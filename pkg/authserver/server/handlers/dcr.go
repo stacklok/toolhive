@@ -27,8 +27,10 @@ import (
 const MaxDCRBodySize = 64 * 1024
 
 // RegisterClientHandler handles POST /oauth/register requests.
-// It implements RFC 7591 Dynamic Client Registration for public clients
-// with loopback redirect URIs only.
+// It implements RFC 7591 Dynamic Client Registration for public clients with
+// loopback redirect URIs, and additionally for confidential clients with
+// https non-loopback redirect URIs when AllowConfidentialClientRegistration
+// is set.
 func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -57,9 +59,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Validate request. h.config.AllowConfidentialClients gates whether
+	// Validate request. h.config.AllowConfidentialClientRegistration gates whether
 	// client_secret_basic / client_secret_post registrations are accepted.
-	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClients)
+	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClientRegistration)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return

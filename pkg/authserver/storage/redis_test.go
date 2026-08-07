@@ -353,7 +353,7 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 		require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
 	}
 
-	t.Run("legacy public row reads back public with method none", func(t *testing.T) {
+	t.Run("legacy public row stays non-OIDC and DCR-marked", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			writeLegacyRow(ctx, s, "legacy-public", true, nil)
 
@@ -361,13 +361,23 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, retrieved.IsPublic())
 
-			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
-			require.True(t, ok, "legacy public row should still satisfy fosite.OpenIDConnectClient")
-			assert.Equal(t, oauthproto.TokenEndpointAuthMethodNone, oidc.GetTokenEndpointAuthMethod())
+			// A legacy row never had a pinned method, public or confidential
+			// alike, so it must not gain method enforcement on read-back: the
+			// rebuilt client must not satisfy fosite.OpenIDConnectClient,
+			// matching the pre-branch behaviour fosite applied to it.
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "legacy public row must not satisfy fosite.OpenIDConnectClient")
+
+			// A legacy row with no method and Public=true can only have been
+			// written by DCR (RegisterClient always records "none" for
+			// anything it registers itself), so RenewClientTTL must treat it
+			// as DCR-issued even though the persisted field says otherwise.
+			assert.True(t, registration.DCRIssued(retrieved),
+				"legacy public row must be treated as DCR-issued so it keeps renewing on use")
 		})
 	})
 
-	t.Run("legacy confidential row keeps pre-upgrade behaviour", func(t *testing.T) {
+	t.Run("legacy confidential row keeps pre-upgrade behaviour and stays unmarked", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			writeLegacyRow(ctx, s, "legacy-confidential", false, []byte("hashed"))
 
@@ -382,6 +392,61 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 			_, ok := retrieved.(fosite.OpenIDConnectClient)
 			assert.False(t, ok, "legacy confidential row must remain a non-OIDC client")
 			assert.Equal(t, []byte("hashed"), retrieved.GetHashedSecret())
+
+			// A legacy confidential row predates confidential DCR support
+			// entirely, so it must never be marked DCR-issued — doing so
+			// would hand a pre-provisioned permanent client an anti-bloat TTL.
+			assert.False(t, registration.DCRIssued(retrieved),
+				"legacy confidential row must not be treated as DCR-issued")
+		})
+	})
+
+	t.Run("row with recorded method still enforces it regardless of Public", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Regression guard for the fail-closed path: a row that DOES carry
+			// a recorded token_endpoint_auth_method must still satisfy
+			// fosite.OpenIDConnectClient and pin that method, unaffected by
+			// the no-method symmetry fix above.
+			key := redisKey(s.keyPrefix, KeyTypeClient, "pinned-method")
+			data, err := json.Marshal(storedClient{
+				ID:                      "pinned-method",
+				Secret:                  []byte("hashed"),
+				RedirectURIs:            []string{"https://app.example/cb"},
+				GrantTypes:              []string{"authorization_code"},
+				Public:                  false,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+
+			retrieved, err := s.GetClient(ctx, "pinned-method")
+			require.NoError(t, err)
+
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "a row with a recorded method must satisfy fosite.OpenIDConnectClient")
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, oidc.GetTokenEndpointAuthMethod())
+			assert.False(t, retrieved.IsPublic())
+		})
+	})
+
+	t.Run("explicit DCRIssued=true row still reads back marked", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "explicit-dcr")
+			data, err := json.Marshal(storedClient{
+				ID:                      "explicit-dcr",
+				RedirectURIs:            []string{"https://app.example/cb"},
+				Public:                  false,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+				Secret:                  []byte("hashed"),
+				DCRIssued:               true,
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+
+			retrieved, err := s.GetClient(ctx, "explicit-dcr")
+			require.NoError(t, err)
+			assert.True(t, registration.DCRIssued(retrieved),
+				"row persisted with DCRIssued=true must read back marked")
 		})
 	})
 

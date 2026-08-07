@@ -186,52 +186,70 @@ type storedClient struct {
 	// client. It is persisted rather than inferred from the auth method: a
 	// pre-provisioned confidential client also carries a method, and inferring
 	// from it would hand that permanent client an anti-bloat TTL on its first
-	// token request. Rows predating this field unmarshal with DCRIssued=false;
-	// the only RegisterClient caller (DCR) re-writes its rows on every
-	// registration, so legacy rows are only ever pre-provisioned clients, for
-	// which false is the correct value.
+	// token request. Rows predating this field unmarshal with DCRIssued=false.
+	// DCR mints a new client_id per registration and never rewrites an existing
+	// row, so a pre-existing row with no DCRIssued value is itself DCR-issued —
+	// it just reads back unmarked. clientFromStored compensates for this on
+	// read: a legacy row with no auth method and Public=true is treated as
+	// DCR-issued even though the persisted field says otherwise, because that
+	// shape only ever comes from DCR. A legacy confidential row (no method,
+	// Public=false) is not compensated for — it predates confidential DCR
+	// support entirely, so it cannot be DCR-issued.
 	DCRIssued bool `json:"dcr_issued,omitempty"`
 }
 
 // clientFromStored rebuilds a fosite.Client from its persisted form.
 //
-// The read logic is deliberately three-way so that drift between the Public
-// flag and the auth method can only ever *add* secret verification, never
-// remove it:
+// The read logic is two-way so that drift between the Public flag and the
+// auth method can only ever *add* secret verification, never remove it:
 //
-//   - A row with no method predates confidential-client support. A public row
-//     was registered with "none". A confidential row had no method recorded and
-//     fosite skipped method enforcement for it (it only enforces the method on
-//     fosite.OpenIDConnectClient implementations), so it is rebuilt as a bare
-//     *fosite.DefaultClient — keeping that skip in place and making the
-//     upgrade a no-op.
+//   - A row with no method recorded covers two populations, both rebuilt as a
+//     bare *fosite.DefaultClient: a pre-provisioned non-OIDC client
+//     (permanent — RegisterClient only populates the column for
+//     fosite.OpenIDConnectClient implementations, so a non-OIDC client will
+//     never carry one, by design, not by omission) and a row written before
+//     confidential-client support existed (transitional). Neither shape was
+//     ever assigned a pinned method — the public one no more than the
+//     confidential one — so neither should acquire method enforcement on
+//     read-back: fosite only enforces token_endpoint_auth_method on
+//     fosite.OpenIDConnectClient implementations, and a bare
+//     *fosite.DefaultClient does not satisfy that interface. IsPublic still
+//     reports correctly because it reads the Public field directly
+//     (fosite.DefaultClient.IsPublic() returns c.Public, uninfluenced by the
+//     auth method).
 //   - A row with a method was written by registration.New (the only path
 //     that populates the column), so it is rebuilt as a
 //     *fosite.DefaultOpenIDConnectClient — fosite enforces the pinned method
-//     at the token endpoint — and re-marked DCR-issued only when the row was
-//     persisted as DCR-issued, so a pre-provisioned confidential client (which
-//     also carries a method) never acquires the anti-bloat TTL.
-//   - IsPublic is derived as (Public && method == "none"): a row that somehow
-//     carries both Public=true and a secret-based method reads back
-//     confidential, forcing secret verification rather than dropping it.
+//     at the token endpoint. IsPublic is derived as
+//     (Public && method == "none"): a row that somehow carries both
+//     Public=true and a secret-based method reads back confidential, forcing
+//     secret verification rather than dropping it.
+//
+// DCR-issued marking: a row is treated as DCR-issued when it was persisted as
+// such, OR when it has the legacy public shape (no method, Public=true) — the
+// only way that shape gets written is DCR, since RegisterClient always
+// records "none" for anything it registers itself. A legacy confidential row
+// (no method, Public=false) is never marked: it predates confidential DCR
+// support entirely and cannot be DCR-issued.
 func clientFromStored(stored storedClient) fosite.Client {
 	method := stored.TokenEndpointAuthMethod
 	if method == "" {
-		if !stored.Public {
-			return &fosite.DefaultClient{
-				ID:            stored.ID,
-				Secret:        stored.Secret,
-				RedirectURIs:  stored.RedirectURIs,
-				GrantTypes:    stored.GrantTypes,
-				ResponseTypes: stored.ResponseTypes,
-				Scopes:        stored.Scopes,
-				Audience:      stored.Audience,
-				Public:        false,
-			}
+		client := &fosite.DefaultClient{
+			ID:            stored.ID,
+			Secret:        stored.Secret,
+			RedirectURIs:  stored.RedirectURIs,
+			GrantTypes:    stored.GrantTypes,
+			ResponseTypes: stored.ResponseTypes,
+			Scopes:        stored.Scopes,
+			Audience:      stored.Audience,
+			Public:        stored.Public,
 		}
-		method = oauthproto.TokenEndpointAuthMethodNone
+		if stored.DCRIssued || stored.Public {
+			return registration.MarkDCRIssued(client)
+		}
+		return client
 	}
-	client := fosite.Client(&fosite.DefaultOpenIDConnectClient{
+	oidcClient := &fosite.DefaultOpenIDConnectClient{
 		DefaultClient: &fosite.DefaultClient{
 			ID:            stored.ID,
 			Secret:        stored.Secret,
@@ -243,11 +261,11 @@ func clientFromStored(stored storedClient) fosite.Client {
 			Public:        stored.Public && method == oauthproto.TokenEndpointAuthMethodNone,
 		},
 		TokenEndpointAuthMethod: method,
-	})
-	if stored.DCRIssued {
-		client = registration.MarkDCRIssued(client)
 	}
-	return client
+	if stored.DCRIssued {
+		return registration.MarkDCRIssued(oidcClient)
+	}
+	return oidcClient
 }
 
 // RegisterClient adds or updates a client in the storage.

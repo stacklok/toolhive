@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
 // timedEntry wraps a value with its creation time for TTL tracking.
@@ -36,6 +38,14 @@ type timedEntry[T any] struct {
 type upstreamKey struct {
 	sessionID    string
 	providerName string
+}
+
+// clientOrderEntry is one position in MemoryStorage.clientOrder: a client ID
+// and the time it was placed at the back of the eviction queue (registration
+// or renewal). touchedAt backs the minClientAge grace window.
+type clientOrderEntry struct {
+	id        string
+	touchedAt time.Time
 }
 
 // MemoryStorage implements the Storage interface with in-memory maps.
@@ -57,19 +67,38 @@ type MemoryStorage struct {
 	// clients maps client_id -> Client for client lookup (fosite.ClientManager).
 	clients map[string]fosite.Client
 
-	// clientOrder is the FIFO insertion order of clients, used for oldest-first
-	// eviction when the map reaches maxClients. /oauth/register is
-	// unauthenticated and every call mints an entry, so an uncapped map is a
-	// memory-exhaustion DoS in the same process as the proxy. Eviction (not
-	// rejection) is the right bound: rejecting converts a memory DoS into a
-	// lockout DoS where an attacker fills the cap and legitimate clients can
-	// never register. A re-registration of an existing ID refreshes its
-	// position, so actively used clients survive.
-	clientOrder []string
+	// clientOrder is the least-recently-proven-used order of clients: a
+	// registration starts at the back, and RenewClientTTL moves a DCR-issued
+	// client to the back again on proven use (a successful token
+	// exchange/refresh), mirroring RedisStorage.RenewClientTTL's TTL bump.
+	// Each entry's touchedAt records when it was placed at the back
+	// (registration or renewal), which oldestEvictableClientIndex uses to
+	// apply the minClientAge grace window. Eviction in RegisterClient walks
+	// from the front and takes the first entry that both carries the
+	// registration.DCRIssued marker and has aged past minClientAge.
+	// /oauth/register is unauthenticated and every call mints an entry, so an
+	// uncapped map is a memory-exhaustion DoS in the same process as the
+	// proxy. Eviction (not rejection) is the right bound: rejecting converts
+	// a memory DoS into a lockout DoS where an attacker fills the cap and
+	// legitimate clients can never register.
+	clientOrder []clientOrderEntry
 
 	// maxClients caps the client map; zero means unlimited. RegisterClient
-	// evicts the oldest entry once the cap is reached.
+	// evicts the oldest DCR-issued entry once the cap is reached; a
+	// pre-provisioned client (no DCRIssued marker) is never evicted.
 	maxClients int
+
+	// minClientAge is the grace window below which a DCR-issued client is
+	// never evicted, regardless of position in clientOrder. Without it, a
+	// legitimately registered but not-yet-used client sits at the front of
+	// the queue (RenewClientTTL only fires on a successful token exchange),
+	// so an attacker filling the map at capacity can evict that specific
+	// victim on demand — the rate limiter bounds the speed of this but not
+	// the outcome. The floor removes that targeted-victim primitive while
+	// keeping the anti-bloat bound: if every current entry is younger than
+	// the floor, RegisterClient inserts over cap instead (see
+	// oldestEvictableClientIndex).
+	minClientAge time.Duration
 
 	// authCodes maps authorization code -> Requester. Codes are one-time-use;
 	// invalidatedCodes tracks used codes to return ErrInvalidatedAuthorizeCode.
@@ -149,12 +178,31 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 const DefaultMaxClients = 10000
 
 // WithMaxClients sets the client-map cap. Once reached, RegisterClient evicts
-// the oldest registration (oldest-first, not rejection: rejecting converts a
-// memory DoS into a lockout DoS where an attacker fills the cap and legitimate
-// clients can never register).
+// the oldest DCR-issued registration that has aged past minClientAge
+// (oldest-first, not rejection: rejecting converts a memory DoS into a
+// lockout DoS where an attacker fills the cap and legitimate clients can
+// never register). A pre-provisioned client (no registration.DCRIssued
+// marker) is never evicted; if no evictable client exists, the cap is
+// exceeded rather than evicting a permanent or too-young client.
 func WithMaxClients(n int) MemoryStorageOption {
 	return func(s *MemoryStorage) {
 		s.maxClients = n
+	}
+}
+
+// DefaultMinClientAge is the default grace window below which a DCR-issued
+// client is never evicted. See the minClientAge field doc for why the floor
+// exists: without it, a freshly registered but not-yet-used client can be
+// evicted on demand by an attacker filling the map to capacity.
+const DefaultMinClientAge = time.Hour
+
+// WithMinClientAge overrides the grace window below which a DCR-issued
+// client is protected from eviction regardless of queue position. Tests use
+// this to drive the floor down (e.g. to zero) instead of sleeping for real
+// wall-clock time.
+func WithMinClientAge(d time.Duration) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.minClientAge = d
 	}
 }
 
@@ -176,6 +224,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:       DefaultCleanupInterval,
 		maxClients:            DefaultMaxClients,
+		minClientAge:          DefaultMinClientAge,
 		stopCleanup:           make(chan struct{}),
 		cleanupDone:           make(chan struct{}),
 	}
@@ -371,33 +420,80 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 // RegisterClient adds or updates a client in the storage.
 // This is useful for setting up test clients.
 //
-// When the client map is at maxClients, the oldest registration is evicted to
-// make room (oldest-first eviction, not rejection — see WithMaxClients).
+// When the client map is at maxClients, the oldest DCR-issued registration
+// that has aged past minClientAge is evicted to make room (oldest-first
+// eviction, not rejection — see WithMaxClients). A pre-provisioned client (no
+// registration.DCRIssued marker) is never evicted; if none of the current
+// entries are evictable (none carry the marker, or all are younger than
+// minClientAge), the new client is inserted anyway and the cap is exceeded.
 // Re-registering an existing ID moves it to the back of the eviction queue.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id := client.GetID()
+	now := time.Now()
 	if _, exists := s.clients[id]; exists {
 		// Refresh the eviction position: an actively re-registering client is
 		// not the oldest.
-		s.clientOrder = slices.DeleteFunc(s.clientOrder, func(existing string) bool { return existing == id })
+		s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
 	} else if s.maxClients > 0 && len(s.clients) >= s.maxClients {
-		oldest := s.clientOrder[0]
-		s.clientOrder = s.clientOrder[1:]
-		delete(s.clients, oldest)
-		slog.Debug("evicted oldest client registration at capacity", "client_id", oldest, "max_clients", s.maxClients)
+		if idx := s.oldestEvictableClientIndex(now); idx >= 0 {
+			victim := s.clientOrder[idx].id
+			s.clientOrder = append(s.clientOrder[:idx], s.clientOrder[idx+1:]...)
+			delete(s.clients, victim)
+			slog.Debug("evicted oldest DCR-issued client registration at capacity",
+				"client_id", victim, "max_clients", s.maxClients)
+		} else {
+			slog.Debug("client map at capacity with no evictable DCR-issued client; inserting over cap",
+				"max_clients", s.maxClients)
+		}
 	}
-	s.clientOrder = append(s.clientOrder, id)
+	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: now})
 	s.clients[id] = client
 	return nil
 }
 
-// RenewClientTTL is a no-op for the in-memory backend: clients are held for the
-// process lifetime with no TTL, so there is nothing to renew. The behavior that
-// matters for distributed deployments lives in RedisStorage.RenewClientTTL.
-func (*MemoryStorage) RenewClientTTL(_ context.Context, _ fosite.Client) error {
+// oldestEvictableClientIndex returns the clientOrder index of the oldest
+// (frontmost) client that carries the registration.DCRIssued marker and has
+// aged past minClientAge as of now, or -1 if no current entry is evictable.
+// Callers must hold s.mu.
+func (s *MemoryStorage) oldestEvictableClientIndex(now time.Time) int {
+	for i, entry := range s.clientOrder {
+		if now.Sub(entry.touchedAt) < s.minClientAge {
+			continue
+		}
+		if client, ok := s.clients[entry.id]; ok && registration.DCRIssued(client) {
+			return i
+		}
+	}
+	return -1
+}
+
+// RenewClientTTL moves a DCR-issued client to the back of clientOrder on
+// proven use (a successful token exchange/refresh), the same signal
+// RedisStorage.RenewClientTTL uses to extend a Redis TTL. The in-memory
+// backend holds no wall-clock TTL, so "renewal" here means "make this client
+// the least-eligible-for-eviction" rather than resetting an expiry: FIFO
+// eviction order thereby becomes least-recently-proven-used order. Only
+// DCR-issued clients are repositioned; a pre-provisioned client is never
+// evicted so it needs no renewal. A client absent from the map (already
+// evicted, or never persisted) is a no-op, matching RedisStorage's EXPIRE
+// no-op on a missing key.
+func (s *MemoryStorage) RenewClientTTL(_ context.Context, client fosite.Client) error {
+	if client == nil || !registration.DCRIssued(client) {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := client.GetID()
+	if _, exists := s.clients[id]; !exists {
+		return nil
+	}
+	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
+	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
 	return nil
 }
 

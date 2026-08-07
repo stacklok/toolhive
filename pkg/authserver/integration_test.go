@@ -102,9 +102,9 @@ type testServerOptions struct {
 	// flows the default public client cannot exercise (e.g. RFC 8693 token
 	// exchange, which requires a confidential acting client).
 	extraClients []fosite.Client
-	// allowConfidentialClients, when true, sets Config.AllowConfidentialClients
+	// allowConfidentialClientRegistration, when true, sets Config.AllowConfidentialClientRegistration
 	// so DCR accepts client_secret_basic / client_secret_post registrations.
-	allowConfidentialClients bool
+	allowConfidentialClientRegistration bool
 }
 
 // testServerOption is a functional option for test server setup.
@@ -280,7 +280,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		AllowedAudiences:     []string{"https://mcp.example.com"},
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
-		AllowConfidentialClients: options.allowConfidentialClients,
+		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
 	}
 
 	// 7. Create server using newServer with test options
@@ -3129,7 +3129,7 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 //
 // These tests drive the full confidential-client lifecycle over HTTP against
 // the real fosite provider: DCR registration at /oauth/register (gated by
-// Config.AllowConfidentialClients), headless authorization through mockoidc,
+// Config.AllowConfidentialClientRegistration), headless authorization through mockoidc,
 // and client-secret authentication at /oauth/token in both the
 // client_secret_basic and client_secret_post directions.
 //
@@ -3143,13 +3143,13 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 // /oauth/authorize redirect_uri parameter must match exactly.
 const testConfidentialRedirectURI = "https://app.example/cb"
 
-// withAllowConfidentialClients sets Config.AllowConfidentialClients on the
+// withAllowConfidentialClientRegistration sets Config.AllowConfidentialClientRegistration on the
 // test server, opting DCR in to client_secret_basic / client_secret_post
 // registrations. It mirrors the withExtraClient pattern: the flag is plumbed
 // through testServerOptions and applied to the Config built in setupTestServer.
-func withAllowConfidentialClients(allow bool) testServerOption {
+func withAllowConfidentialClientRegistration(allow bool) testServerOption {
 	return func(opts *testServerOptions) {
-		opts.allowConfidentialClients = allow
+		opts.allowConfidentialClientRegistration = allow
 	}
 }
 
@@ -3295,7 +3295,7 @@ func TestIntegration_ConfidentialClientDCR_FullFlow(t *testing.T) {
 	t.Parallel()
 
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true))
 
 	for _, authMethod := range []string{
 		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
@@ -3316,7 +3316,7 @@ func TestIntegration_ConfidentialClientDCR_FullFlow_Redis(t *testing.T) {
 	t.Parallel()
 
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true), withRedisBackedStorage())
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true), withRedisBackedStorage())
 	ts.Miniredis(t) // assert the harness was wired with withRedisBackedStorage
 
 	for _, authMethod := range []string{
@@ -3386,6 +3386,70 @@ func TestIntegration_ConfidentialClientDCR_FullFlow_Redis(t *testing.T) {
 	})
 }
 
+// TestIntegration_LegacyPublicClient_TolerantOfPresentedSecret pins the
+// end-user-visible half of D3a's symmetry fix: a legacy-shaped client row —
+// no token_endpoint_auth_method ever recorded, Public=true — must still
+// authenticate at /oauth/token even when the caller presents a non-empty
+// client_secret. clientFromStored (pkg/authserver/storage/redis.go) rebuilds
+// this row shape as a bare *fosite.DefaultClient, which does not satisfy
+// fosite.OpenIDConnectClient, so fosite's method-enforcement checks in
+// client_authentication.go never run; IsPublic()==true then short-circuits
+// straight past secret verification regardless of what was presented. This
+// is the fail-open tolerance the row always had, before and after D3a — the
+// storage-layer tests in redis_test.go pin the same shape read-back, this
+// pins the behaviour a real token request sees.
+//
+// withExtraClient registers a bare *fosite.DefaultClient (no
+// fosite.OpenIDConnectClient implementation) directly through the public
+// Storage.RegisterClient API: RegisterClient only populates
+// token_endpoint_auth_method for clients implementing that interface, so
+// this produces the exact legacy row shape without reaching into storage's
+// unexported types.
+func TestIntegration_LegacyPublicClient_TolerantOfPresentedSecret(t *testing.T) {
+	t.Parallel()
+
+	const legacyClientID = "legacy-public-no-method"
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withExtraClient(&fosite.DefaultClient{
+		ID:            legacyClientID,
+		RedirectURIs:  []string{testRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		Scopes:        registration.DefaultScopes,
+		Audience:      []string{testAudience},
+		Public:        true,
+	}))
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     legacyClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "legacy-public-state",
+		Challenge:    servercrypto.ComputePKCEChallenge(verifier),
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+		"client_id":     {legacyClientID},
+		"client_secret": {"whatever-a-caller-might-still-send"},
+	})
+	defer resp.Body.Close()
+
+	tokenData := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"legacy public client must still authenticate with a non-empty client_secret presented, got %d (body: %v)",
+		resp.StatusCode, tokenData)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+}
+
 // TestIntegration_DCRRateLimited pins the anti-DoS gate on the unauthenticated
 // registration endpoint: a burst beyond the limiter's capacity gets 429 with
 // Retry-After, while ordinary use (a single registration) is unaffected.
@@ -3424,13 +3488,13 @@ func TestIntegration_DCRRateLimited(t *testing.T) {
 }
 
 // TestIntegration_ConfidentialClientDCR_FlagOffRejected proves the feature is
-// opt-in: with AllowConfidentialClients unset, DCR rejects client_secret_*
+// opt-in: with AllowConfidentialClientRegistration unset, DCR rejects client_secret_*
 // registrations with the historical public-clients-only error.
 func TestIntegration_ConfidentialClientDCR_FlagOffRejected(t *testing.T) {
 	t.Parallel()
 
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m) // no withAllowConfidentialClients
+	ts := setupTestServerWithMockOIDC(t, m) // no withAllowConfidentialClientRegistration
 
 	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs:            []string{testConfidentialRedirectURI},
@@ -3464,7 +3528,7 @@ func TestIntegration_ConfidentialClientDCR_InvalidClient(t *testing.T) {
 	t.Parallel()
 
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true))
 
 	postClientID, postClientSecret := registerConfidentialClient(t, ts.Server.URL,
 		oauthproto.TokenEndpointAuthMethodClientSecretPost)
@@ -3583,7 +3647,7 @@ func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
 	t.Parallel()
 
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true))
 
 	clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
 		oauthproto.TokenEndpointAuthMethodClientSecretBasic)
@@ -3704,7 +3768,7 @@ func TestIntegration_ConfidentialClientDCR_SecretNeverLogged(t *testing.T) {
 
 	// Construct the server while the capture handler is installed.
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true))
 
 	// Registration path: DCR mints the secret.
 	clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
@@ -3758,7 +3822,7 @@ func TestIntegration_TokenEndpointFailuresLogAtDebug(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true))
 
 	clientID, _ := registerConfidentialClient(t, ts.Server.URL,
 		oauthproto.TokenEndpointAuthMethodClientSecretPost)
@@ -3792,7 +3856,7 @@ func TestIntegration_ConfidentialClientDCR_AudienceParity(t *testing.T) {
 	m := startMockOIDC(t)
 	// setupTestServer configures AllowedAudiences: [testAudience] for every
 	// client, exactly as in TestIntegration_FullPKCEFlow.
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClients(true))
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(true))
 
 	tokenData := runConfidentialHappyPath(t, ts.Server.URL, oauthproto.TokenEndpointAuthMethodClientSecretBasic)
 

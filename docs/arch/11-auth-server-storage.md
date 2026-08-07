@@ -194,6 +194,15 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | DCR-issued clients (public and confidential) | 30 days |
 | Users / Providers | No expiry |
 
+These TTLs apply to the Redis backend. The in-memory backend holds no
+wall-clock TTL; it instead bounds growth with a capacity cap
+(`DefaultMaxClients`) and evicts the oldest DCR-issued client on overflow. A
+pre-provisioned client (no DCR marker) is never evicted. Both backends renew
+on the same proven-use signal (a successful token exchange/refresh): Redis
+extends the key's TTL, and the in-memory backend moves the client to the back
+of its eviction queue, so an actively-used DCR-issued client survives
+overflow the same way in either backend.
+
 ## Configuration
 
 ### CRD Configuration
@@ -238,6 +247,19 @@ When passing configuration across process boundaries (operator → proxy-runner)
 - **Key prefix isolation**: Each auth server is restricted to its own key prefix via Redis ACL rules (`~thv:auth:*`).
 - **Credential handling**: In Kubernetes, credentials are stored in Secrets and injected as environment variables. They are never written to disk or logged.
 - **TLS support**: TLS is supported for both master and Sentinel connections via `tls` and `sentinelTls` in the CRD. For managed services with private CAs (e.g. GCP Memorystore), provide the CA certificate via `caCertSecretRef`.
+
+### Enabling Confidential Client Registration
+
+`AllowConfidentialClientRegistration` is **off by default**. `/oauth/register` is unauthenticated, so turning it on lets any caller who can reach the endpoint obtain a client credential — there is no admission control to gate who receives a `client_secret`. This is the tradeoff an operator accepts by enabling it, not a bug to work around.
+
+Enabling it permits DCR of confidential clients: `/oauth/register` additionally accepts `token_endpoint_auth_method` values `client_secret_basic` and `client_secret_post` (the `"none"` public-client default still applies on omission), and mints a `client_secret` returned exactly once in the registration response — it is never re-displayed or re-issued. Disabling the flag afterward does not revoke or reject secrets already minted; this gate only affects new registrations, not the token endpoint's acceptance of existing credentials.
+
+Two restrictions apply regardless of this flag:
+
+- Confidential registrations are restricted to https non-loopback redirect URIs. A client reachable on loopback or a private scheme is, by construction, a public client that cannot keep a secret (OAuth 2.1 §2.1), so the server declines to mint it one.
+- Combining `AllowConfidentialClientRegistration` with `InsecureAllowHTTP` is rejected outright at validation — an unauthenticated secret-minting endpoint served over plaintext HTTP would let the secret be intercepted in transit.
+
+See the [storage consequences](#ttl-management) above for what happens to a confidential registration over time: it is subject to the same DCR-issued TTL/eviction behavior as public DCR clients (Redis TTL, or the in-memory backend's capacity-bounded eviction).
 
 ## Related Documentation
 

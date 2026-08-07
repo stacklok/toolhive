@@ -70,10 +70,10 @@ type AuthorizationServerConfig struct {
 	// CIMDEnabled indicates that the CIMD storage decorator is active. When true,
 	// the discovery document advertises client_id_metadata_document_supported.
 	CIMDEnabled bool
-	// AllowConfidentialClients permits DCR of confidential clients. When true,
+	// AllowConfidentialClientRegistration permits DCR of confidential clients. When true,
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
-	AllowConfidentialClients bool
+	AllowConfidentialClientRegistration bool
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -112,10 +112,10 @@ type AuthorizationServerParams struct {
 	// CIMDEnabled indicates that the CIMD storage decorator is active. When true,
 	// the discovery document advertises client_id_metadata_document_supported.
 	CIMDEnabled bool
-	// AllowConfidentialClients permits DCR of confidential clients. When true,
+	// AllowConfidentialClientRegistration permits DCR of confidential clients. When true,
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
-	AllowConfidentialClients bool
+	AllowConfidentialClientRegistration bool
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -270,15 +270,15 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:                       fositeConfig,
-		SigningKey:                   &jwk,
-		SigningJWKS:                  &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-		AllowedAudiences:             cfg.AllowedAudiences,
-		ScopesSupported:              cfg.ScopesSupported,
-		BaselineClientScopes:         cfg.BaselineClientScopes,
-		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                  cfg.CIMDEnabled,
-		AllowConfidentialClients:     cfg.AllowConfidentialClients,
+		Config:                              fositeConfig,
+		SigningKey:                          &jwk,
+		SigningJWKS:                         &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		AllowedAudiences:                    cfg.AllowedAudiences,
+		ScopesSupported:                     cfg.ScopesSupported,
+		BaselineClientScopes:                cfg.BaselineClientScopes,
+		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
 	}, nil
 }
 

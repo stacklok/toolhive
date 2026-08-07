@@ -270,37 +270,35 @@ func (h *capturingSlogHandler) recordsContaining(needle string) []string {
 	return out
 }
 
-// TestNewServer_AllowConfidentialClients_Logs pins the startup logging
-// contract: enabling the flag logs an Info naming the consequence, and
-// combining it with insecure_allow_http additionally logs exactly one WARN
-// naming both fields — while startup still succeeds.
+// TestNewServer_AllowConfidentialClientRegistration_Logs pins the startup logging
+// contract: enabling the flag logs an Info naming the consequence when
+// startup succeeds. Combining it with insecure_allow_http is rejected by
+// Config.Validate (see ValidateConfidentialClientTransport) before this log
+// line is ever reached, so that combination is covered by
+// TestConfig_Validate_RejectsConfidentialClientOverInsecureHTTP instead.
 //
 //nolint:paralleltest // swaps the process-global slog default handler
-func TestNewServer_AllowConfidentialClients_Logs(t *testing.T) {
+func TestNewServer_AllowConfidentialClientRegistration_Logs(t *testing.T) {
 	// Not parallel: swaps the process-global slog default handler.
 
-	newCfg := func(allowConfidential, insecureHTTP bool) Config {
+	newCfg := func(allowConfidential bool) Config {
 		return Config{
-			Issuer:                   "https://example.com",
-			KeyProvider:              keys.NewGeneratingProvider(keys.DefaultAlgorithm),
-			HMACSecrets:              &servercrypto.HMACSecrets{Current: validHMACSecret()},
-			Upstreams:                []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
-			AllowedAudiences:         []string{"https://mcp.example.com"},
-			AllowConfidentialClients: allowConfidential,
-			InsecureAllowHTTP:        insecureHTTP,
+			Issuer:                              "https://example.com",
+			KeyProvider:                         keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:                         &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:                           []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences:                    []string{"https://mcp.example.com"},
+			AllowConfidentialClientRegistration: allowConfidential,
 		}
 	}
 
 	tests := []struct {
 		name              string
 		allowConfidential bool
-		insecureHTTP      bool
 		wantInfo          bool
-		wantWarns         int
 	}{
-		{"flag off: no logs", false, false, false, 0},
-		{"flag on: Info naming the consequence, no WARN", true, false, true, 0},
-		{"flag on with insecure HTTP: Info plus exactly one WARN", true, true, true, 1},
+		{"flag off: no logs", false, false},
+		{"flag on: Info naming the consequence", true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -318,14 +316,13 @@ func TestNewServer_AllowConfidentialClients_Logs(t *testing.T) {
 			stor := storage.NewMemoryStorage()
 			t.Cleanup(func() { _ = stor.Close() })
 
-			srv, err := newServer(context.Background(), newCfg(tt.allowConfidential, tt.insecureHTTP), stor, withUpstreamFactory(mockFactory))
+			srv, err := newServer(context.Background(), newCfg(tt.allowConfidential), stor, withUpstreamFactory(mockFactory))
 			require.NoError(t, err, "startup must succeed for every flag combination")
 			require.NotNil(t, srv)
 
 			// Filter to the flag's own log lines: other components (key
 			// generation, baseline scopes) also log at Info during startup.
 			infos := capture.messages(slog.LevelInfo, "client secrets")
-			warns := capture.messages(slog.LevelWarn, "allow_confidential_clients")
 
 			if tt.wantInfo {
 				require.Len(t, infos, 1)
@@ -333,14 +330,32 @@ func TestNewServer_AllowConfidentialClients_Logs(t *testing.T) {
 			} else {
 				assert.Empty(t, infos)
 			}
-
-			require.Len(t, warns, tt.wantWarns)
-			if tt.wantWarns == 1 {
-				assert.Contains(t, warns[0], "insecure_allow_http")
-				assert.Contains(t, warns[0], "cleartext")
-			}
 		})
 	}
+}
+
+// TestConfig_Validate_RejectsConfidentialClientOverInsecureHTTP pins the
+// rejection of allow_confidential_client_registration combined with insecure_allow_http:
+// issuing client secrets over cleartext HTTP on an unauthenticated
+// registration endpoint must fail loudly at config validation, not just log
+// a warning.
+func TestConfig_Validate_RejectsConfidentialClientOverInsecureHTTP(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Issuer:                              "http://example.com",
+		KeyProvider:                         keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:                         &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:                           []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences:                    []string{"https://mcp.example.com"},
+		AllowConfidentialClientRegistration: true,
+		InsecureAllowHTTP:                   true,
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allow_confidential_client_registration")
+	assert.Contains(t, err.Error(), "insecure_allow_http")
 }
 
 func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {

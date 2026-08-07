@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -139,6 +140,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "CIMD enabled negative cache_fallback_ttl rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: -time.Second}, wantErr: true, errMsg: "cache_fallback_ttl must be non-negative"},
 		{name: "CIMD disabled ignores invalid cache fields", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: false, CIMDCacheMaxSize: -1, CIMDCacheFallbackTTL: -time.Second}},
 		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
+
+		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
+		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -465,6 +469,15 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
 		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
+		// Confidential-client transport gate
+		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
+		{
+			name:    "confidential clients combined with insecure HTTP rejects",
+			config:  RunConfig{AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true},
+			wantErr: true,
+			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+		},
 	}
 
 	for _, tt := range tests {
@@ -472,6 +485,40 @@ func TestRunConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestValidateConfidentialClientTransport pins the shared predicate that both
+// RunConfig.Validate and Config.Validate call, and that the operator's
+// validateEmbeddedAuthServer reuses: the only rejected combination is both
+// flags true.
+func TestValidateConfidentialClientTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		allowConfidential bool
+		insecureAllowHTTP bool
+		wantErr           bool
+	}{
+		{name: "both false passes"},
+		{name: "confidential only passes", allowConfidential: true},
+		{name: "insecure HTTP only passes", insecureAllowHTTP: true},
+		{name: "both true rejects", allowConfidential: true, insecureAllowHTTP: true, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "allow_confidential_client_registration")
+				assert.Contains(t, err.Error(), "insecure_allow_http")
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 )
 
@@ -350,6 +351,13 @@ type BearerTokenConfig struct {
 
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 // This enables running an authorization server that delegates authentication to upstream IDPs.
+// This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
+// VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rule below is
+// enforced at admission for both CRDs.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
@@ -456,6 +464,11 @@ type EmbeddedAuthServerConfig struct {
 	// structurally present but enforcement is deferred to pod startup via Config.Validate();
 	// a misconfigured issuer will cause the pod to crash at startup rather than surface
 	// as an operator condition.
+	//
+	// One combination is rejected at admission on all three CRDs regardless of the
+	// above: setting this field alongside allowConfidentialClientRegistration, which
+	// would issue client secrets in cleartext over an unauthenticated registration
+	// endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
@@ -484,22 +497,23 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
 
-	// AllowConfidentialClients permits RFC 7591 Dynamic Client Registration of
-	// confidential clients: when true, /oauth/register accepts
-	// token_endpoint_auth_method values client_secret_basic and
-	// client_secret_post in addition to "none" (which remains the default on
-	// omission) and mints a client_secret returned exactly once. Confidential
-	// registrations are restricted to https non-loopback redirect URIs, and
-	// registrations idle for more than 30 days are evicted and must
-	// re-register. Disabling this flag does not revoke already-minted secrets.
+	// AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+	// Registration of confidential clients: when true, /oauth/register
+	// accepts token_endpoint_auth_method values client_secret_basic and
+	// client_secret_post in addition to "none" (still the default on
+	// omission) and mints a client_secret returned exactly once.
+	// Confidential registrations are restricted to https non-loopback
+	// redirect URIs, and on the Redis storage backend all DCR-issued
+	// registrations are evicted after 30 days of inactivity and must
+	// re-register. This gates registration only: disabling it does not
+	// revoke or reject already-minted secrets at the token endpoint.
 	//
 	// Security: registration is unauthenticated, so enabling this lets any
-	// caller who can reach the endpoint obtain a client credential. Do not
-	// combine with insecureAllowHTTP outside a trusted network — the pair
-	// issues client secrets over cleartext HTTP.
+	// caller who can reach the endpoint obtain a client credential.
+	// Combining it with insecureAllowHTTP is rejected at validation.
 	// +kubebuilder:default=false
 	// +optional
-	AllowConfidentialClients bool `json:"allowConfidentialClients,omitempty"`
+	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
 
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
@@ -1609,6 +1623,13 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
+
+	// Defense-in-depth: mirrors the type-level XValidation rule on
+	// EmbeddedAuthServerConfig, which already rejects this combination at
+	// admission for both MCPExternalAuthConfig and VirtualMCPServer.
+	if err := authserver.ValidateConfidentialClientTransport(cfg.AllowConfidentialClientRegistration, cfg.InsecureAllowHTTP); err != nil {
+		return err
+	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {

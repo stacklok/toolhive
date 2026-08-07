@@ -1645,10 +1645,10 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "allowConfidentialClients true is propagated to RunConfig",
+			name: "allowConfidentialClientRegistration true is propagated to RunConfig",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
-				Issuer:                   "https://authserver.example.com",
-				AllowConfidentialClients: true,
+				Issuer:                              "https://authserver.example.com",
+				AllowConfidentialClientRegistration: true,
 				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "hmac-secret", Key: "hmac"},
 				},
@@ -1657,12 +1657,12 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
-				assert.True(t, config.AllowConfidentialClients,
-					"AllowConfidentialClients must propagate from CRD field to RunConfig")
+				assert.True(t, config.AllowConfidentialClientRegistration,
+					"AllowConfidentialClientRegistration must propagate from CRD field to RunConfig")
 			},
 		},
 		{
-			name: "allowConfidentialClients defaults to false",
+			name: "allowConfidentialClientRegistration defaults to false",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
 				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
@@ -1673,8 +1673,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			scopesSupported:  defaultScopes,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
-				assert.False(t, config.AllowConfidentialClients,
-					"AllowConfidentialClients must default to false when the CRD field is unset")
+				assert.False(t, config.AllowConfidentialClientRegistration,
+					"AllowConfidentialClientRegistration must default to false when the CRD field is unset")
 			},
 		},
 	}

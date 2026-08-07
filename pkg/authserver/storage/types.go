@@ -533,13 +533,16 @@ type ClientRegistry interface {
 	// Returns ErrAlreadyExists if a client with the same ID already exists.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
-	// RenewClientTTL extends the registration TTL of a public (DCR) client so an
-	// actively-used client is not evicted mid-lifecycle and forced to re-register.
-	// Call it on a proven-use signal (e.g. a successful token exchange), NOT on an
-	// unauthenticated client read such as the /oauth/authorize lookup. Implementations
-	// renew only public clients; confidential clients have no TTL. Backends without a
-	// native TTL (the in-memory backend) treat this as a no-op. A renewal failure is
-	// non-fatal to the caller's primary operation.
+	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
+	// confidential, gated on the registration.DCRIssued marker) so an actively-used
+	// client is not evicted mid-lifecycle and forced to re-register. Call it on a
+	// proven-use signal (e.g. a successful token exchange), NOT on an unauthenticated
+	// client read such as the /oauth/authorize lookup. Pre-provisioned/static clients
+	// carry no marker and this is a no-op for them on both backends. On the Redis
+	// backend this refreshes the key's sliding TTL; on the in-memory backend, which
+	// has no native TTL, this instead repositions the client to the back of the
+	// eviction order so it is not the next one dropped when WithMaxClients is reached.
+	// A renewal failure is non-fatal to the caller's primary operation.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 

@@ -65,11 +65,11 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
 }
 
-// TestNewAuthorizationServerConfig_AllowConfidentialClients pins the flag's
+// TestNewAuthorizationServerConfig_AllowConfidentialClientRegistration pins the flag's
 // passage through NewAuthorizationServerConfig — the return literal is the hop
 // that silently drops the flag if a field is added to the params and config
 // structs but not copied between them.
-func TestNewAuthorizationServerConfig_AllowConfidentialClients(t *testing.T) {
+func TestNewAuthorizationServerConfig_AllowConfidentialClientRegistration(t *testing.T) {
 	t.Parallel()
 
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -77,25 +77,25 @@ func TestNewAuthorizationServerConfig_AllowConfidentialClients(t *testing.T) {
 
 	newParams := func(allow bool) *AuthorizationServerParams {
 		return &AuthorizationServerParams{
-			Issuer:                   "https://auth.example.com",
-			AccessTokenLifespan:      time.Hour,
-			RefreshTokenLifespan:     time.Hour * 24,
-			AuthCodeLifespan:         time.Minute * 10,
-			HMACSecrets:              servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
-			SigningKeyID:             "key-1",
-			SigningKeyAlgorithm:      "RS256",
-			SigningKey:               rsaKey,
-			AllowConfidentialClients: allow,
+			Issuer:                              "https://auth.example.com",
+			AccessTokenLifespan:                 time.Hour,
+			RefreshTokenLifespan:                time.Hour * 24,
+			AuthCodeLifespan:                    time.Minute * 10,
+			HMACSecrets:                         servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+			SigningKeyID:                        "key-1",
+			SigningKeyAlgorithm:                 "RS256",
+			SigningKey:                          rsaKey,
+			AllowConfidentialClientRegistration: allow,
 		}
 	}
 
 	on, err := NewAuthorizationServerConfig(newParams(true))
 	require.NoError(t, err)
-	assert.True(t, on.AllowConfidentialClients)
+	assert.True(t, on.AllowConfidentialClientRegistration)
 
 	off, err := NewAuthorizationServerConfig(newParams(false))
 	require.NoError(t, err)
-	assert.False(t, off.AllowConfidentialClients)
+	assert.False(t, off.AllowConfidentialClientRegistration)
 }
 
 func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {

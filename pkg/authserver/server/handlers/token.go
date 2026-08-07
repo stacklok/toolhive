@@ -4,12 +4,35 @@
 package handlers
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+
+	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
+
+// logAccessError logs a token-endpoint failure from fosite's access
+// request/response flow at a level determined by the error's HTTP status:
+// Debug for 4xx (the only class an unauthenticated caller can trigger, so
+// logging every one at Error would let a caller flood the log stream) and
+// Error for 5xx (a storage outage or signing-key failure, which must not be
+// silent at default log level). RFC6749Error.Error() returns only the error
+// code, so the diagnostic fields are read individually.
+func logAccessError(ctx context.Context, msg string, err error) {
+	rfcErr := fosite.ErrorToRFC6749Error(err)
+	lvl := slog.LevelDebug
+	if rfcErr.CodeField >= http.StatusInternalServerError {
+		lvl = slog.LevelError
+	}
+	slog.Log(ctx, lvl, msg, //nolint:gosec // G706: error is request-derived (form parsing, client auth); fields are error code/hint/debug, not raw client input
+		"error", rfcErr.ErrorField,
+		"debug", rfcErr.DebugField,
+		"status", rfcErr.CodeField,
+	)
+}
 
 // TokenHandler handles POST /oauth/token requests.
 // It processes token requests using fosite's access request/response flow.
@@ -27,13 +50,13 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
 	if err != nil {
-		// Debug, not Error: RFC6749Error.Error() returns only the error code, so
-		// the line carries no diagnostic detail, and the endpoint is
-		// unauthenticated — at Error level a caller can flood the log stream at
-		// arbitrary rate and drown real errors.
-		slog.Debug("failed to create access request",
-			"error", err,
-		)
+		// RFC6749Error.Error() returns only the error code, so a bare "error"
+		// field carries no diagnostic detail; logAccessError reads CodeField,
+		// DebugField, and DescriptionField instead. Client errors (4xx, the
+		// only class an unauthenticated caller can trigger) stay at Debug so a
+		// flood can't drown real errors; a genuine 5xx (storage outage, signing
+		// failure) still surfaces at Error.
+		logAccessError(ctx, "failed to create access request", err)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
 	}
@@ -95,21 +118,20 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Generate the access response (tokens)
 	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
 	if err != nil {
-		// Debug, not Error: same reasoning as the NewAccessRequest failure
-		// above — content-free error code, unauthenticated-triggerable at
-		// arbitrary rate.
-		slog.Debug("failed to create access response",
-			"error", err,
-		)
+		// Same reasoning as the NewAccessRequest failure above: split on
+		// status so a 500 from a storage outage or signing-key failure isn't
+		// silently swallowed at Debug level.
+		logAccessError(ctx, "failed to create access response", err)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
 	}
 
-	// Renew the registration TTL for public (DCR) clients on a successful token
-	// exchange/refresh. This is the proven-use signal — unlike the unauthenticated
-	// /oauth/authorize client read — so an actively-used public client is not evicted
-	// mid-lifecycle and forced to re-register. Best-effort: a renewal failure must not
-	// fail the token that was just issued. Storage renews only public clients.
+	// Renew the registration TTL for DCR-issued clients (public or confidential) on a
+	// successful token exchange/refresh. This is the proven-use signal — unlike the
+	// unauthenticated /oauth/authorize client read — so an actively-used client is not
+	// evicted mid-lifecycle and forced to re-register. Best-effort: a renewal failure
+	// must not fail the token that was just issued. Storage is a no-op for
+	// pre-provisioned/static clients, which carry no DCRIssued marker.
 	if client := accessRequest.GetClient(); client != nil {
 		if err := h.storage.RenewClientTTL(ctx, client); err != nil {
 			slog.Warn("failed to renew client registration TTL",

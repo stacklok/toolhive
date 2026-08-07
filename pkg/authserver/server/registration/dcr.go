@@ -259,6 +259,16 @@ func validateAuthMethod(
 					ErrorDescription: err.Error(),
 				}
 			}
+			// isLoopbackURI is a literal-string check (127.0.0.0/8, ::1,
+			// ::ffff:127.0.0.1, localhost); it does not resolve the hostname,
+			// so a registrant-controlled name that merely resolves to a
+			// loopback address slips through. This is acceptable: the
+			// registrant controls both its own redirect URI and its own DNS,
+			// so at worst this lets an actor mint a secret for its own
+			// loopback app, not attack another tenant. Resolving DNS at
+			// registration time would add an unreliable (TTL/rebinding) and
+			// unnecessary network dependency to a request that should stay
+			// purely local.
 			if isLoopbackURI(uri) {
 				return "", &DCRError{
 					Error: DCRErrorInvalidClientMetadata,

@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
@@ -45,9 +46,21 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}
-	config, authServerRC, err := converter.Convert(ctx, vmcp, telemetryCfg)
+	// processOutgoingAuth below is the authoritative, status-aware conversion
+	// path. Defer promoted outgoing auth here so one invalid backend cannot make
+	// the generic converter return before per-backend conditions are recorded and
+	// the remaining valid backends are retained.
+	baseVMCP := vmcp.DeepCopy()
+	baseVMCP.Spec.OutgoingAuth = nil
+	config, authServerRC, err := converter.Convert(ctx, baseVMCP, telemetryCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
+	}
+	// Clearing the promoted spec above makes the generic converter apply its
+	// default source (discovered). Restore the source selected on the original
+	// resource so the status-aware path retains inline semantics when requested.
+	if config.OutgoingAuth != nil {
+		config.OutgoingAuth.Source = outgoingAuthSource(vmcp)
 	}
 
 	// Process outgoing auth configuration for both inline and discovered modes
@@ -227,10 +240,23 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 			return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 		}
 
-		// Build auth config and collect any errors (but don't fail the operation)
+		// Build auth config and collect per-backend errors. Inventory errors are
+		// transient and must abort before an incomplete auth view is used.
 		// Note: Auth errors are collected and reported via status conditions by processOutgoingAuth.
 		// In static mode, we still attempt to build the auth config for ConfigMap embedding.
-		authConfig, _, _ = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+		authConfig, _, _, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build outgoing auth config: %w", err)
+		}
+
+		// Carry the resolved override marker into workload conversion as well as
+		// the aggregator. Otherwise an unsupported backend ref can fail closed
+		// before the aggregator gets a chance to apply the valid override.
+		workloadDiscoverer = workloads.NewK8SDiscovererWithClientAndAuthConfig(
+			r.Client,
+			vmcp.Namespace,
+			authConfig,
+		)
 	}
 
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
@@ -340,15 +366,22 @@ func (r *VirtualMCPServerReconciler) buildCABundlePathMap(
 	return caBundlePathMap, nil
 }
 
-// extractInlineBackendNames extracts the list of inline backend names from the VirtualMCPServer spec.
+// extractInlineBackendNames extracts concrete per-backend overrides from the
+// VirtualMCPServer spec. A type="discovered" entry is a discovery directive,
+// not an inline auth configuration, so it must not own a BackendAuthConfig-*
+// status condition.
 func extractInlineBackendNames(vmcp *mcpv1beta1.VirtualMCPServer) []string {
 	if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
 		return nil
 	}
 	names := make([]string, 0, len(vmcp.Spec.OutgoingAuth.Backends))
-	for backendName := range vmcp.Spec.OutgoingAuth.Backends {
+	for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+		if backendAuth.Type == mcpv1beta1.BackendAuthTypeDiscovered {
+			continue
+		}
 		names = append(names, backendName)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -359,17 +392,14 @@ func extractInlineBackendNames(vmcp *mcpv1beta1.VirtualMCPServer) []string {
 // omitting a failed backend from that map is not enough to keep it from being routed to
 // with the wrong (Default) identity — it must also be dropped from the served backend set.
 //
-// Default-only errors (empty BackendName) are excluded here: they aren't tied to a
-// specific backend, and a backend that falls through to a nil Default degrades to the
-// explicit "unauthenticated" strategy rather than picking up a different identity.
+// Default-only errors (empty BackendName) are handled separately by
+// excludeDefaultDependentBackends because they apply to every workload that lacks a
+// successfully resolved backend-specific strategy.
 //
 // A backend name recorded in authErrors is only added to the exclusion set if it also
-// lacks a successfully-resolved strategy in resolvedBackends. A backend can accumulate an
-// error from one path (e.g. a broken discovered ExternalAuthConfigRef) while still ending
-// up with a valid strategy from another (e.g. an inline override) — discoverExternalAuthConfigs
-// records the discovered-path error before checking whether an inline override makes the
-// discovered result irrelevant. Excluding such a backend would drop a fully routable backend
-// from the served set.
+// lacks a successfully resolved strategy in resolvedBackends. This is a defense-in-depth
+// guard for cases where multiple configuration paths produce results for the same backend:
+// a valid resolved strategy must not be made unroutable by an unrelated error.
 func backendsWithFailedAuth(
 	authErrors []AuthConfigError,
 	resolvedBackends map[string]*authtypes.BackendAuthStrategy,
@@ -387,22 +417,92 @@ func backendsWithFailedAuth(
 	return failed
 }
 
-// determineValidInlineBackends determines which inline backends have valid auth configs.
+// excludeDefaultDependentBackends extends excluded with every workload that would
+// otherwise depend on an explicitly configured Default strategy that failed to build.
+// A valid backend-specific strategy remains routable, so one invalid default does not
+// unnecessarily take healthy peers offline.
+func excludeDefaultDependentBackends(
+	excluded map[string]struct{},
+	authErrors []AuthConfigError,
+	resolvedBackends map[string]*authtypes.BackendAuthStrategy,
+	typedWorkloads []workloads.TypedWorkload,
+) {
+	defaultFailed := false
+	for _, authErr := range authErrors {
+		if authErr.Context == authContextDefault {
+			defaultFailed = true
+			break
+		}
+	}
+	if !defaultFailed {
+		return
+	}
+
+	for _, workload := range typedWorkloads {
+		if resolvedBackends[workload.Name] == nil {
+			excluded[workload.Name] = struct{}{}
+		}
+	}
+}
+
+func sortedBackendNames(backends map[string]struct{}) []string {
+	if len(backends) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(backends))
+	for name := range backends {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// determineValidInlineBackends determines which concrete per-backend overrides
+// resolved successfully. inlineBackendNames is already filtered to exclude
+// type="discovered" directives.
 func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inlineBackendNames []string) []string {
 	if authConfig == nil || authConfig.Backends == nil {
 		return nil
 	}
-	valid := make([]string, 0)
-	for backendName := range authConfig.Backends {
-		// Only count inline backends (not discovered backends)
-		for _, inlineBackend := range inlineBackendNames {
-			if backendName == inlineBackend {
-				valid = append(valid, backendName)
-				break
-			}
+	valid := make([]string, 0, len(inlineBackendNames))
+	for _, backendName := range inlineBackendNames {
+		if authConfig.Backends[backendName] != nil {
+			valid = append(valid, backendName)
 		}
 	}
 	return valid
+}
+
+// determineExplicitBackendOverrides returns successfully resolved concrete
+// per-backend overrides. A type="discovered" entry remains a discovery
+// directive and is intentionally omitted: its unauthenticated runtime strategy
+// is only a fallback when the backend does not expose discovered auth.
+//
+// The returned slice is non-nil and sorted so it is serialized deterministically
+// even when no concrete overrides are configured. This lets the runtime
+// distinguish operator-resolved discovered strategies from explicit overrides.
+func determineExplicitBackendOverrides(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	authConfig *vmcpconfig.OutgoingAuthConfig,
+) []string {
+	explicit := make([]string, 0)
+	if vmcp.Spec.OutgoingAuth == nil || authConfig == nil {
+		return explicit
+	}
+
+	for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+		if backendAuth.Type == mcpv1beta1.BackendAuthTypeDiscovered {
+			continue
+		}
+		if authConfig.Backends[backendName] != nil {
+			explicit = append(explicit, backendName)
+		}
+	}
+	sort.Strings(explicit)
+	return explicit
 }
 
 // processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
@@ -429,9 +529,12 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		return nil
 	}
 
-	// Build auth config and collect all errors (default, backend-specific, discovered)
-	// All errors are non-fatal - the system continues in degraded mode with partial auth config
-	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+	// Build auth config and collect all per-config errors (default, backend-specific, discovered).
+	// A transient inventory error aborts reconciliation before status or ConfigMap state is persisted.
+	authConfig, backendsWithAuthConfig, allAuthErrors, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+	if err != nil {
+		return fmt.Errorf("failed to build outgoing auth config: %w", err)
+	}
 
 	// Backends whose auth strategy failed to build must be excluded from the served
 	// set entirely — see backendsWithFailedAuth for why omission from
@@ -441,6 +544,7 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		resolvedBackends = authConfig.Backends
 	}
 	excludedBackends := backendsWithFailedAuth(allAuthErrors, resolvedBackends)
+	excludeDefaultDependentBackends(excludedBackends, allAuthErrors, resolvedBackends, typedWorkloads)
 
 	// Extract inline backend names and determine valid auth configs
 	inlineBackendNames := extractInlineBackendNames(vmcp)
@@ -458,12 +562,16 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		allAuthErrors,
 	)
 
+	// Persist only successfully resolved strategies plus the deterministic deny
+	// list. Dynamic discovery consumes ExcludedBackends before a workload can be
+	// converted or routed; static conversion applies the same set below.
+	if authConfig != nil {
+		authConfig.ExcludedBackends = sortedBackendNames(excludedBackends)
+		config.OutgoingAuth = authConfig
+	}
+
 	// Static mode (inline): Embed full backend details in ConfigMap
 	if isInlineMode {
-		if authConfig != nil {
-			config.OutgoingAuth = authConfig
-		}
-
 		// Discover backends with metadata
 		backends, err := r.discoverBackendsWithMetadata(ctx, vmcp)
 		if err != nil {
@@ -494,8 +602,9 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 			)
 		}
 	}
-	// Dynamic mode (discovered): vMCP discovers backends at runtime via K8s API
-	// Conditions are already set above, no additional ConfigMap config needed
+	// Dynamic mode (discovered): vMCP discovers backends at runtime via K8s API.
+	// The sanitized strategies and deny list above are required so a failed
+	// explicit strategy cannot silently degrade to a different identity or no auth.
 
 	return nil
 }

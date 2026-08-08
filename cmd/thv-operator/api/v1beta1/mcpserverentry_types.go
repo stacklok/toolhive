@@ -29,9 +29,12 @@ type MCPServerEntrySpec struct {
 	// +kubebuilder:validation:Required
 	GroupRef *MCPGroupRef `json:"groupRef"`
 
-	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange
-	// when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must
-	// exist in the same namespace as this MCPServerEntry.
+	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource when connecting
+	// to the remote MCP server. Supported types are tokenExchange, headerInjection,
+	// unauthenticated, awsSts, upstreamInject, xaa, and obo when an enterprise handler
+	// is registered. Unsupported types are reported in status.conditions with Reason:
+	// UnsupportedAuthType. The referenced MCPExternalAuthConfig must exist in the same
+	// namespace as this MCPServerEntry.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 

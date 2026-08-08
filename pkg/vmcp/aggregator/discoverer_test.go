@@ -418,6 +418,107 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		assert.Equal(t, "test-token", backends[0].AuthConfig.HeaderInjection.HeaderValue)
 	})
 
+	t.Run("excludes dynamic backend with unresolved authentication", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		healthyBackend := &vmcp.Backend{
+			ID:            "healthy-backend",
+			Name:          "healthy-backend",
+			BaseURL:       "http://healthy.default.svc.cluster.local:8080/mcp",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata:      map[string]string{},
+		}
+		authConfig := &config.OutgoingAuthConfig{
+			Source:           "discovered",
+			ExcludedBackends: []string{"blocked-backend"},
+		}
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return([]workloads.TypedWorkload{
+				{Name: "blocked-backend", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "healthy-backend", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		// The blocked workload is rejected before conversion, so no Get call is
+		// expected for it. Healthy peers continue to be discovered normally.
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{Name: "healthy-backend", Type: workloads.WorkloadTypeMCPServer},
+		).Return(healthyBackend, nil)
+
+		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, authConfig)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.NoError(t, err)
+		require.Len(t, backends, 1)
+		assert.Equal(t, "healthy-backend", backends[0].Name)
+	})
+
+	t.Run("failed default excludes only backends without independent auth", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		defaultDependentBackend := &vmcp.Backend{
+			ID:            "late-default-dependent",
+			Name:          "late-default-dependent",
+			BaseURL:       "http://late-default-dependent.default.svc.cluster.local:8080/mcp",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata:      map[string]string{},
+		}
+		discoveredPeer := &vmcp.Backend{
+			ID:            "late-discovered-peer",
+			Name:          "late-discovered-peer",
+			BaseURL:       "http://late-discovered-peer.default.svc.cluster.local:8080/mcp",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata:      map[string]string{},
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeUnauthenticated,
+			},
+		}
+		authConfig := &config.OutgoingAuthConfig{
+			Source:            "discovered",
+			Backends:          map[string]*authtypes.BackendAuthStrategy{},
+			ExplicitBackends:  []string{},
+			DefaultAuthFailed: true,
+		}
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return([]workloads.TypedWorkload{
+				{Name: "late-default-dependent", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "late-discovered-peer", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{Name: "late-default-dependent", Type: workloads.WorkloadTypeMCPServer},
+		).Return(defaultDependentBackend, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{Name: "late-discovered-peer", Type: workloads.WorkloadTypeMCPServer},
+		).Return(discoveredPeer, nil)
+
+		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, authConfig)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.NoError(t, err)
+		require.Len(t, backends, 1)
+		assert.Equal(t, "late-discovered-peer", backends[0].Name)
+		require.NotNil(t, backends[0].AuthConfig)
+		assert.Equal(t, authtypes.StrategyTypeUnauthenticated, backends[0].AuthConfig.Type)
+	})
+
 	t.Run("successful discovery with MCPRemoteProxy backends", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -796,7 +897,7 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 	t.Parallel()
 
-	t.Run("discovered mode with discovered auth", func(t *testing.T) {
+	t.Run("discovered mode explicit override beats discovered auth", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
@@ -805,7 +906,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
-			Source: "discovered",
+			Source:           "discovered",
+			ExplicitBackends: []string{"backend1"},
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "header_injection",
@@ -836,8 +938,40 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
-		// In discovered mode, discovered auth should be preserved
-		assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "config-token", backend.AuthConfig.HeaderInjection.HeaderValue)
+	})
+
+	t.Run("discovered mode preserves discovered auth for non-explicit config entry", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		discoverer := &backendDiscoverer{
+			workloadsManager: discoverermocks.NewMockDiscoverer(ctrl),
+			groupsManager:    mocks.NewMockManager(ctrl),
+			authConfig: &config.OutgoingAuthConfig{
+				Source:           "discovered",
+				ExplicitBackends: []string{},
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"backend1": {Type: authtypes.StrategyTypeUnauthenticated},
+				},
+			},
+		}
+		backend := &vmcp.Backend{
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
+			},
+		}
+
+		discoverer.applyAuthConfigToBackend(backend, "backend1")
+
+		assert.Equal(t, authtypes.StrategyTypeTokenExchange, backend.AuthConfig.Type)
 		assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
 	})
 

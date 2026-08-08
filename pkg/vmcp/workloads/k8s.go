@@ -22,6 +22,7 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -39,14 +40,29 @@ const (
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
 // It uses the Kubernetes client directly to query MCPServer CRDs instead of going through k8s.BackendWatcher.
 type k8sDiscoverer struct {
-	k8sClient client.Client
-	namespace string
+	k8sClient  client.Client
+	namespace  string
+	authConfig *vmcpconfig.OutgoingAuthConfig
 }
 
 // NewK8SDiscoverer creates a new Kubernetes workload discoverer that directly uses
 // the Kubernetes client to discover MCPServer CRDs.
 // If namespace is empty, it will detect the namespace using k8s.GetCurrentNamespace().
 func NewK8SDiscoverer(namespace ...string) (Discoverer, error) {
+	return newK8SDiscoverer(nil, namespace...)
+}
+
+// NewK8SDiscovererWithAuthConfig creates a Kubernetes workload discoverer that
+// applies explicit vMCP backend auth overrides before resolving authentication
+// referenced by the backend resource itself.
+func NewK8SDiscovererWithAuthConfig(
+	authConfig *vmcpconfig.OutgoingAuthConfig,
+	namespace ...string,
+) (Discoverer, error) {
+	return newK8SDiscoverer(authConfig, namespace...)
+}
+
+func newK8SDiscoverer(authConfig *vmcpconfig.OutgoingAuthConfig, namespace ...string) (Discoverer, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -70,15 +86,26 @@ func NewK8SDiscoverer(namespace ...string) (Discoverer, error) {
 		ns = k8s.GetCurrentNamespace()
 	}
 
-	return NewK8SDiscovererWithClient(k8sClient, ns), nil
+	return NewK8SDiscovererWithClientAndAuthConfig(k8sClient, ns, authConfig), nil
 }
 
 // NewK8SDiscovererWithClient creates a new Kubernetes workload discoverer with a provided client.
 // This is useful for testing with fake clients.
 func NewK8SDiscovererWithClient(k8sClient client.Client, namespace string) Discoverer {
+	return NewK8SDiscovererWithClientAndAuthConfig(k8sClient, namespace, nil)
+}
+
+// NewK8SDiscovererWithClientAndAuthConfig creates a Kubernetes workload
+// discoverer with a provided client and outgoing auth configuration.
+func NewK8SDiscovererWithClientAndAuthConfig(
+	k8sClient client.Client,
+	namespace string,
+	authConfig *vmcpconfig.OutgoingAuthConfig,
+) Discoverer {
 	return &k8sDiscoverer{
-		k8sClient: k8sClient,
-		namespace: namespace,
+		k8sClient:  k8sClient,
+		namespace:  namespace,
+		authConfig: authConfig,
 	}
 }
 
@@ -331,6 +358,19 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 	resourceKind string,
 	backend *vmcp.Backend,
 ) error {
+	// A successfully resolved per-backend override is authoritative in every
+	// source mode. Apply it before touching the backend's discovered reference so
+	// an unsupported, invalid, or unavailable reference cannot shadow the valid
+	// override.
+	if strategy, ok := d.authConfig.ResolveExplicitForBackend(resourceName); ok {
+		backend.AuthConfig = strategy
+		slog.Debug("using explicit auth override",
+			"kind", resourceKind,
+			"name", resourceName,
+			"strategy", strategy.Type)
+		return nil
+	}
+
 	// Discover and resolve auth using the converters package
 	strategy, err := converters.DiscoverAndResolveAuth(
 		ctx,

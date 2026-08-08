@@ -71,8 +71,11 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
-	// When specified, the proxy will exchange validated incoming tokens for remote service tokens.
+	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+	// Supported types are tokenExchange, bearerToken, unauthenticated,
+	// embeddedAuthServer, awsSts, and obo when an enterprise handler is registered.
+	// For new embedded authorization server configurations, prefer AuthServerRef.
+	// Unsupported types are reported in status.conditions with Reason: UnsupportedAuthType.
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`

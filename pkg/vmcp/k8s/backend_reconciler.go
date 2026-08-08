@@ -18,6 +18,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -53,9 +54,10 @@ const (
 //  1. Fetch resource (try MCPServer, then MCPRemoteProxy, then MCPServerEntry)
 //  2. If not found (deleted) → Remove from registry
 //  3. If groupRef doesn't match → Remove from registry (moved to different group)
-//  4. Convert to vmcp.Backend using discoverer
-//  5. If conversion fails or returns nil (auth failed) → Remove from registry
-//  6. Upsert backend to registry (triggers version increment + cache invalidation)
+//  4. If backend is excluded by outgoing auth → Remove from registry
+//  5. Convert to vmcp.Backend using discoverer
+//  6. If conversion fails or returns nil (auth failed) → Remove from registry
+//  7. Upsert backend to registry (triggers version increment + cache invalidation)
 type BackendReconciler struct {
 	client.Client
 
@@ -70,6 +72,15 @@ type BackendReconciler struct {
 
 	// Discoverer converts K8s resources to vmcp.Backend (reuses existing code)
 	Discoverer workloads.Discoverer
+
+	// AuthConfig supplies the backend-specific and default fallbacks applied
+	// after explicit and discovered strategies produced by Discoverer.
+	AuthConfig *vmcpconfig.OutgoingAuthConfig
+
+	// ExcludedBackends contains backend names whose configured authentication
+	// could not be resolved. Watch-driven reconciles must remove these backends
+	// instead of allowing a later resource event to add them back to the registry.
+	ExcludedBackends map[string]struct{}
 }
 
 // SetupIndexes registers field indexes required by the reconciler's watch handlers.
@@ -124,6 +135,13 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			"watcherGroupRef", r.GroupRef,
 		)
 		return r.removeBackendFromRegistry(ctx, req.Name, "GroupRef mismatch")
+	}
+
+	// Initial discovery excludes backends whose authentication could not be
+	// resolved. Apply the same deny set before conversion so a later watch event
+	// cannot reintroduce an affected backend into the dynamic registry.
+	if _, excluded := r.ExcludedBackends[resourceInfo.Name]; excluded {
+		return r.removeBackendFromRegistry(ctx, resourceInfo.Name, "Excluded by outgoing auth configuration")
 	}
 
 	// Convert resource to vmcp.Backend and upsert to registry
@@ -240,6 +258,11 @@ func (r *BackendReconciler) MapAuthConfigToEntries(ctx context.Context, authConf
 // Safe to use name-only ID because BackendWatcher is namespace-scoped.
 func (r *BackendReconciler) removeBackendFromRegistry(ctx context.Context, backendID, reason string) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
+	if r.Registry.Get(ctx, backendID) == nil {
+		ctxLogger.V(1).Info("Backend already absent from registry", "backendID", backendID, "reason", reason)
+		return ctrl.Result{}, nil
+	}
+
 	ctxLogger.Info("Removing backend from registry", "backendID", backendID, "reason", reason)
 
 	if err := r.Registry.Remove(backendID); err != nil {
@@ -270,7 +293,7 @@ func (r *BackendReconciler) convertAndUpsertBackend(
 		ctxLogger.Error(err, "Failed to convert workload to backend", "workload", workload.Name)
 		// Remove from registry if conversion fails (could be auth failure)
 		// Ignore removal errors and return the original conversion error for requeue
-		if removeErr := r.Registry.Remove(backendID); removeErr != nil {
+		if _, removeErr := r.removeBackendFromRegistry(ctx, backendID, "Backend conversion failed"); removeErr != nil {
 			ctxLogger.Error(removeErr, "Failed to remove backend after conversion error")
 		}
 		return ctrl.Result{}, err
@@ -281,6 +304,20 @@ func (r *BackendReconciler) convertAndUpsertBackend(
 	if backend == nil {
 		ctxLogger.Info("Backend conversion returned nil (auth failure or no URL)", "backendID", backendID)
 		return r.removeBackendFromRegistry(ctx, backendID, "Auth failure or no URL")
+	}
+
+	// The discoverer has already applied an explicit override or resolved the
+	// backend resource's auth reference. Only when neither produced a strategy do
+	// we consult the non-explicit backend fallback and then the valid Default.
+	if backend.AuthConfig == nil && r.AuthConfig != nil {
+		backend.AuthConfig = r.AuthConfig.ResolveForBackend(backendID)
+	}
+
+	// A failed, explicitly configured Default is a deny signal for any backend
+	// that still lacks an independent strategy. This includes workloads joining
+	// the group after the operator emitted the initial exclusion list.
+	if r.AuthConfig != nil && r.AuthConfig.DefaultAuthFailed && backend.AuthConfig == nil {
+		return r.removeBackendFromRegistry(ctx, backendID, "Unresolved default outgoing auth")
 	}
 
 	// Upsert backend to registry (triggers version increment + cache invalidation)

@@ -38,6 +38,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -191,6 +192,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to get MCPServer")
 		return ctrl.Result{}, err
 	}
+	originalStatus := mcpServer.DeepCopy().Status
 
 	// Check if the MCPServer instance is marked to be deleted — do this before
 	// any validation or external API calls to avoid unnecessary work during deletion
@@ -278,8 +280,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Update status to reflect the error
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
-		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+		if !equality.Semantic.DeepEqual(originalStatus, mcpServer.Status) {
+			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+				return ctrl.Result{}, statusErr
+			}
+		}
+		if isTerminalExternalAuthError(err) {
+			// Consumer/type incompatibility and source Valid=False are both
+			// configuration errors. A spec or referenced-config change will enqueue
+			// reconciliation; retrying the same generation cannot heal the resource.
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -2179,6 +2190,20 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	// having to inspect the referenced MCPExternalAuthConfig).
 	if mirrored, err := mirrorInvalidOnMCPServer(m, externalAuthConfig); mirrored {
 		return err
+	}
+
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerMCPServer,
+		externalAuthConfig.Spec.Type,
+	); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, err)
 	}
 
 	// MCPServer supports only single-upstream embedded auth server configs.

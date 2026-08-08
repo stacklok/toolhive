@@ -19,6 +19,8 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 const testNamespace = "test-namespace"
@@ -275,6 +277,94 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 	// This is security-critical: fail closed rather than allowing unauthorized access
 	require.NoError(t, err)
 	require.Nil(t, backend, "Should return nil backend when auth config is missing")
+}
+
+func TestDiscoverAuth_ExplicitOverridePrecedesBackendRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		backendAuth *mcpv1beta1.MCPExternalAuthConfig
+	}{
+		{
+			name: "unsupported backend auth type",
+			backendAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "backend-auth", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token", Key: "value"},
+					},
+				},
+			},
+		},
+		{
+			name: "backend auth marked invalid",
+			backendAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "backend-auth", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+						TokenURL: "https://invalid.example.com/token",
+					},
+				},
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+					Conditions: []metav1.Condition{{
+						Type:    mcpv1beta1.ConditionTypeValid,
+						Status:  metav1.ConditionFalse,
+						Reason:  "InvalidConfig",
+						Message: "backend auth is invalid",
+					}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "test-image:latest",
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: tt.backendAuth.Name,
+					},
+				},
+				Status: mcpv1beta1.MCPServerStatus{
+					Phase: mcpv1beta1.MCPServerPhaseReady,
+					URL:   "http://localhost:8080",
+				},
+			}
+			override := &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-Override",
+					HeaderValue: "override-value",
+				},
+			}
+			authConfig := &vmcpconfig.OutgoingAuthConfig{
+				Source:           "discovered",
+				Backends:         map[string]*authtypes.BackendAuthStrategy{"test-server": override},
+				ExplicitBackends: []string{"test-server"},
+			}
+
+			k8sClient := setupTestClient(t, mcpServer, tt.backendAuth)
+			discoverer := NewK8SDiscovererWithClientAndAuthConfig(k8sClient, testNamespace, authConfig)
+			backend, err := discoverer.GetWorkloadAsVMCPBackend(context.Background(), TypedWorkload{
+				Name: "test-server",
+				Type: WorkloadTypeMCPServer,
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, backend)
+			assert.Same(t, override, backend.AuthConfig)
+			assert.Empty(t, backend.AuthConfigRef, "the replaced backend ref must not be resolved")
+		})
+	}
 }
 
 func TestDiscoverAuth_SecretNotFound(t *testing.T) {

@@ -266,7 +266,11 @@ spec:
                 x-kubernetes-list-type: map
               externalAuthConfigRef:
                 description: |-
-                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+                  ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+                  Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and
+                  obo when an enterprise handler is registered. For new embedded authorization
+                  server configurations, prefer AuthServerRef. Unsupported types are reported
+                  in status.conditions with Reason: UnsupportedAuthType.
                   The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
                 properties:
                   name:
@@ -1210,7 +1214,11 @@ spec:
                 x-kubernetes-list-type: map
               externalAuthConfigRef:
                 description: |-
-                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+                  ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+                  Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and
+                  obo when an enterprise handler is registered. For new embedded authorization
+                  server configurations, prefer AuthServerRef. Unsupported types are reported
+                  in status.conditions with Reason: UnsupportedAuthType.
                   The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
                 properties:
                   name:

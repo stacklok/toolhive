@@ -37,6 +37,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -2222,6 +2223,13 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerVirtualMCPServer,
+		externalAuthConfig.Spec.Type,
+	); err != nil {
+		return nil, err
+	}
+
 	// Use the converter registry to convert to typed strategy
 	registry := converters.DefaultRegistry()
 	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
@@ -2265,10 +2273,13 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 	namespace string,
 	crdConfig *mcpv1beta1.BackendAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
-	// For type="discovered", return a minimal strategy (will be populated by discovery)
+	// Keep the established CRD conversion contract: "discovered" is represented
+	// as an unauthenticated fallback in the runtime config. In discovered source
+	// mode, backend-provided auth still takes precedence unless a valid explicit
+	// per-backend override is present.
 	if crdConfig.Type == mcpv1beta1.BackendAuthTypeDiscovered {
 		return &authtypes.BackendAuthStrategy{
-			Type: crdConfig.Type,
+			Type: authtypes.StrategyTypeUnauthenticated,
 		}, nil
 	}
 
@@ -2346,37 +2357,46 @@ func (r *VirtualMCPServerReconciler) listMCPServerEntriesAsMap(
 }
 
 // discoverExternalAuthConfigs discovers ExternalAuthConfig from workloads and adds them to the outgoing config.
-// Returns a list of non-fatal errors that should be reported via status conditions.
-// The controller should continue in degraded mode even if some auth configs fail.
+// Per-backend auth configuration errors are non-fatal and should be reported via status conditions.
+// Inventory List errors are transient and returned separately so reconciliation aborts before persisting partial auth state.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 	outgoing *vmcpconfig.OutgoingAuthConfig,
-) ([]string, []AuthConfigError) {
+) ([]string, []AuthConfigError, error) {
 	ctxLogger := log.FromContext(ctx)
 	var authErrors []AuthConfigError
 	var backendsWithAuthConfig []string
 
 	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
 	if err != nil {
-		ctxLogger.Error(err, "Failed to list MCPServers")
-		return backendsWithAuthConfig, authErrors
+		return nil, nil, fmt.Errorf("failed to list MCPServers for outgoing auth discovery: %w", err)
 	}
 
 	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
 	if err != nil {
-		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
-		return backendsWithAuthConfig, authErrors
+		return nil, nil, fmt.Errorf("failed to list MCPRemoteProxies for outgoing auth discovery: %w", err)
 	}
 
 	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, vmcp.Namespace)
 	if err != nil {
-		ctxLogger.Error(err, "Failed to list MCPServerEntries")
-		return backendsWithAuthConfig, authErrors
+		return nil, nil, fmt.Errorf("failed to list MCPServerEntries for outgoing auth discovery: %w", err)
 	}
 
 	for _, workloadInfo := range typedWorkloads {
+		// A concrete per-backend entry is an override in every source mode. Do
+		// not validate or resolve the backend's own ExternalAuthConfigRef first:
+		// an unsupported or Valid=False discovered reference is irrelevant when
+		// a valid explicit override replaces it. A type="discovered" entry is a
+		// discovery directive, not a concrete override, so it does not short-circuit.
+		if vmcp.Spec.OutgoingAuth != nil {
+			backendAuth, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]
+			if exists && backendAuth.Type != mcpv1beta1.BackendAuthTypeDiscovered {
+				continue
+			}
+		}
+
 		externalAuthConfigName := r.getExternalAuthConfigNameFromWorkload(
 			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if externalAuthConfigName == "" {
@@ -2426,32 +2446,25 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
 				BackendName: workloadInfo.Name,
 				Error:       fmt.Errorf("failed to convert MCPExternalAuthConfig: %w", err),
+				Reason:      externalAuthReasonFromError(err),
 			})
 			continue
 		}
 
-		// Only add if not already overridden in inline config.
-		shouldAssign := true
-		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
-			_, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]
-			shouldAssign = !exists
-		}
-		if shouldAssign {
-			injected, err := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
-			if err != nil {
-				authErrors = append(authErrors, AuthConfigError{
-					Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
-					BackendName: workloadInfo.Name,
-					Error:       fmt.Errorf("failed to inject subject provider name: %w", err),
-					Reason:      subjectProviderErrorReason(err),
-				})
-			} else {
-				outgoing.Backends[workloadInfo.Name] = injected
-			}
+		injected, err := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+		if err != nil {
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       fmt.Errorf("failed to inject subject provider name: %w", err),
+				Reason:      subjectProviderErrorReason(err),
+			})
+		} else {
+			outgoing.Backends[workloadInfo.Name] = injected
 		}
 	}
 
-	return backendsWithAuthConfig, authErrors
+	return backendsWithAuthConfig, authErrors, nil
 }
 
 // getExternalAuthConfigNameFromWorkload extracts the ExternalAuthConfigRef name from a workload.
@@ -2491,7 +2504,7 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 // buildOutgoingAuthConfig builds an OutgoingAuthConfig from the VirtualMCPServer spec,
 // discovering ExternalAuthConfig from MCPServers when source is "discovered".
 // Returns the config with partial auth (if some configs fail), backends with auth config,
-// and all collected auth errors (non-fatal).
+// all collected auth errors (non-fatal), and any transient inventory error.
 //
 // All three types of auth config errors are collected but don't fail reconciliation:
 // - Default auth config errors
@@ -2499,11 +2512,12 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 // - Discovered auth config errors (from ExternalAuthConfigRef)
 //
 // This allows the system to continue operating in degraded mode with partial auth configuration.
+// Transient workload inventory errors abort the build so callers cannot persist an incomplete view.
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
-) (*vmcpconfig.OutgoingAuthConfig, []string, []AuthConfigError) {
+) (*vmcpconfig.OutgoingAuthConfig, []string, []AuthConfigError, error) {
 	// Determine source - default to "discovered" if not specified
 	source := outgoingAuthSource(vmcp)
 
@@ -2520,13 +2534,15 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		defaultStrategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default)
 		if err != nil {
 			// Collect error but continue (degraded mode)
+			outgoing.DefaultAuthFailed = true
 			allAuthErrors = append(allAuthErrors, AuthConfigError{
 				Context:     authContextDefault,
 				BackendName: "",
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
-				Reason:      mirroredReasonFromError(err),
+				Reason:      externalAuthReasonFromError(err),
 			})
 		} else if injected, injectErr := injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
+			outgoing.DefaultAuthFailed = true
 			allAuthErrors = append(allAuthErrors, AuthConfigError{
 				Context:     authContextDefault,
 				BackendName: "",
@@ -2543,13 +2559,32 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	// - Inline/static mode: Full backend auth details are embedded in the ConfigMap
 	// - Discovered/dynamic mode: Auth configs are validated and errors reported via conditions
 	//
-	// Discovered errors are collected but don't fail reconciliation (degraded mode).
-	backendsWithAuthConfig, discoveredErrors := r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
+	// Per-backend discovered errors are collected without failing reconciliation.
+	// Inventory errors are returned separately because an empty/partial view is unsafe.
+	backendsWithAuthConfig, discoveredErrors, err := r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	allAuthErrors = append(allAuthErrors, discoveredErrors...)
+	backendsWithAuthConfigSet := make(map[string]struct{}, len(backendsWithAuthConfig))
+	for _, backendName := range backendsWithAuthConfig {
+		backendsWithAuthConfigSet[backendName] = struct{}{}
+	}
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
 		for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+			// A type="discovered" entry is a control-plane directive, not an
+			// explicit runtime override. When the backend has its own auth ref,
+			// discovery above either installed the concrete resolved strategy or
+			// recorded an error. Do not overwrite either outcome with the
+			// unauthenticated fallback used for backends without an auth ref.
+			if backendAuth.Type == mcpv1beta1.BackendAuthTypeDiscovered {
+				if _, hasBackendAuthRef := backendsWithAuthConfigSet[backendName]; hasBackendAuthRef {
+					continue
+				}
+			}
+
 			strategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, &backendAuth)
 			if err != nil {
 				// Collect error but continue (degraded mode)
@@ -2557,7 +2592,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
 					BackendName: backendName,
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
-					Reason:      mirroredReasonFromError(err),
+					Reason:      externalAuthReasonFromError(err),
 				})
 			} else if injected, injectErr := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
 				allAuthErrors = append(allAuthErrors, AuthConfigError{
@@ -2572,7 +2607,8 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		}
 	}
 
-	return outgoing, backendsWithAuthConfig, allAuthErrors
+	outgoing.ExplicitBackends = determineExplicitBackendOverrides(vmcp, outgoing)
+	return outgoing, backendsWithAuthConfig, allAuthErrors, nil
 }
 
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on

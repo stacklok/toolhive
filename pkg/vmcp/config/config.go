@@ -122,6 +122,7 @@ type Config struct {
 	// OutgoingAuth configures how the virtual MCP server authenticates to backends.
 	// When using the Kubernetes operator, this is populated by the converter from
 	// VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+	// See VirtualMCPServerSpec.OutgoingAuth for supported MCPExternalAuthConfig types.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty" yaml:"outgoingAuth,omitempty"`
 
@@ -395,14 +396,67 @@ type StaticBackendConfig struct {
 type OutgoingAuthConfig struct {
 	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
-	// - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
+	// - discovered: Auto-discover from backend MCPServer, MCPRemoteProxy, and
+	//   MCPServerEntry externalAuthConfigRef fields (Kubernetes only)
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.
 	Default *authtypes.BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
 
+	// DefaultAuthFailed reports that an explicitly configured Default strategy
+	// could not be resolved by the operator. Backends without an independently
+	// resolved strategy must remain unavailable rather than falling through to
+	// unauthenticated access. The zero value preserves legacy configuration
+	// behavior when no failure marker was emitted.
+	DefaultAuthFailed bool `json:"defaultAuthFailed,omitempty" yaml:"defaultAuthFailed,omitempty"`
+
 	// Backends contains per-backend auth configuration.
 	Backends map[string]*authtypes.BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
+
+	// ExplicitBackends identifies entries in Backends that came from explicit
+	// per-backend overrides rather than runtime discovery. The operator emits
+	// this field even when it is empty so the runtime can apply a valid override
+	// before consulting a backend's externalAuthConfigRef.
+	//
+	// A nil value preserves compatibility with configuration written before this
+	// marker existed: in that case, entries in Backends are treated as explicit.
+	// +optional
+	ExplicitBackends []string `json:"explicitBackends" yaml:"explicitBackends"`
+
+	// ExcludedBackends contains backend names that must not be served because
+	// their explicitly configured authentication could not be resolved. The
+	// operator populates this list when it can continue serving healthy peers in
+	// degraded mode without allowing an affected backend to fall back to another
+	// identity or to unauthenticated access.
+	ExcludedBackends []string `json:"excludedBackends,omitempty" yaml:"excludedBackends,omitempty"`
+}
+
+// ResolveExplicitForBackend returns an explicit per-backend override when one
+// is configured. The boolean distinguishes "no explicit override" from a nil
+// strategy so callers can continue with discovered authentication or Default.
+func (c *OutgoingAuthConfig) ResolveExplicitForBackend(backendID string) (*authtypes.BackendAuthStrategy, bool) {
+	if c == nil {
+		return nil, false
+	}
+
+	strategy, exists := c.Backends[backendID]
+	if !exists || strategy == nil {
+		return nil, false
+	}
+
+	// Configurations written before ExplicitBackends existed only had Backends,
+	// whose documented meaning is per-backend overrides.
+	if c.ExplicitBackends == nil {
+		return strategy, true
+	}
+
+	for _, explicitBackend := range c.ExplicitBackends {
+		if explicitBackend == backendID {
+			return strategy, true
+		}
+	}
+
+	return nil, false
 }
 
 // ResolveForBackend returns the auth strategy for a given backend ID.
@@ -416,6 +470,12 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 	// Check for backend-specific configuration
 	if strategy, exists := c.Backends[backendID]; exists && strategy != nil {
 		return strategy
+	}
+
+	// A failed, explicitly configured default is a deny signal, not an absent
+	// default that callers may safely replace with unauthenticated access.
+	if c.DefaultAuthFailed {
+		return nil
 	}
 
 	// Fall back to default configuration

@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -313,11 +315,14 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		validateErrors   func(*testing.T, []AuthConfigError) // Validate all auth errors (default, backend-specific, discovered)
 	}{
 		{
-			name: "discovered mode with external auth config",
+			name: "discovered directive preserves resolved backend auth",
 			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 				v1beta1test.WithVMCPGroupRef("test-group"),
 				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
 					Source: "discovered",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-1": {Type: mcpv1beta1.BackendAuthTypeDiscovered},
+					},
 				}),
 			),
 			mcpServers: []mcpv1beta1.MCPServer{
@@ -354,11 +359,41 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "discovered", config.Source)
+				assert.Empty(t, config.ExplicitBackends)
+				assert.NotNil(t, config.ExplicitBackends)
 				// backend-1 should have auth config
 				assert.Contains(t, config.Backends, "backend-1")
 				assert.Equal(t, "token_exchange", config.Backends["backend-1"].Type)
 				// backend-2 should not have auth config (no ExternalAuthConfigRef)
 				assert.NotContains(t, config.Backends, "backend-2")
+			},
+		},
+		{
+			name: "discovered directive without backend auth uses unauthenticated fallback",
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-1": {Type: mcpv1beta1.BackendAuthTypeDiscovered},
+					},
+				}),
+			),
+			mcpServers: []mcpv1beta1.MCPServer{
+				*v1beta1test.NewMCPServer("backend-1", "default"),
+			},
+			workloadNames: []workloads.TypedWorkload{
+				{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
+				t.Helper()
+				strategy, ok := config.Backends["backend-1"]
+				require.True(t, ok)
+				require.NotNil(t, strategy)
+				assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Type)
+				assert.NotEqual(t, string(mcpv1beta1.BackendAuthTypeDiscovered), strategy.Type)
+				assert.Empty(t, config.ExplicitBackends)
+				assert.NotNil(t, config.ExplicitBackends)
 			},
 		},
 		{
@@ -718,8 +753,9 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			config, _, allAuthErrors := r.buildOutgoingAuthConfig(ctx, tt.vmcp, tt.workloadNames)
+			config, _, allAuthErrors, err := r.buildOutgoingAuthConfig(ctx, tt.vmcp, tt.workloadNames)
 
+			require.NoError(t, err)
 			require.NotNil(t, config)
 
 			// Check auth config errors (default, backend-specific, discovered)
@@ -735,6 +771,220 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			if tt.validate != nil {
 				tt.validate(t, config)
 			}
+		})
+	}
+}
+
+func TestBuildOutgoingAuthConfig_ExplicitOverridePrecedesDiscoveredRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		backendAuth *mcpv1beta1.MCPExternalAuthConfig
+	}{
+		{
+			name: "unsupported backend auth type",
+			backendAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "backend-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token", Key: "value"},
+					},
+				},
+			},
+		},
+		{
+			name: "backend auth marked invalid",
+			backendAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "backend-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+						TokenURL: "https://invalid.example.com/token",
+					},
+				},
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+					Conditions: []metav1.Condition{{
+						Type:    mcpv1beta1.ConditionTypeValid,
+						Status:  metav1.ConditionFalse,
+						Reason:  "InvalidConfig",
+						Message: "backend auth is invalid",
+					}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: OutgoingAuthSourceDiscovered,
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-1": {
+							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "override-auth",
+							},
+						},
+					},
+				}),
+			)
+			backend := v1beta1test.NewMCPServer("backend-1", "default",
+				v1beta1test.WithExternalAuthConfigRef(tt.backendAuth.Name),
+			)
+			overrideAuth := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "override-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+				},
+			}
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(vmcp, backend, tt.backendAuth, overrideAuth).
+				Build()
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			config, _, authErrors, err := r.buildOutgoingAuthConfig(
+				context.Background(),
+				vmcp,
+				[]workloads.TypedWorkload{{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer}},
+			)
+
+			require.NoError(t, err)
+			require.Empty(t, authErrors, "the replaced backend ref must not produce an auth error")
+			require.NotNil(t, config)
+			strategy, ok := config.Backends["backend-1"]
+			require.True(t, ok)
+			require.NotNil(t, strategy)
+			assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Type)
+			assert.Equal(t, []string{"backend-1"}, config.ExplicitBackends)
+		})
+	}
+}
+
+// TestBuildOutgoingAuthConfig_RejectsUnsupportedVMCPAuthTypes verifies that
+// explicitly configured vMCP backend auth never degrades to an unauthenticated
+// strategy when the referenced auth type is not implemented by the vMCP
+// converter registry. A supported backend in the same config must remain usable.
+func TestBuildOutgoingAuthConfig_RejectsUnsupportedVMCPAuthTypes(t *testing.T) {
+	t.Parallel()
+
+	for _, authType := range []mcpv1beta1.ExternalAuthType{
+		mcpv1beta1.ExternalAuthTypeBearerToken,
+		mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+	} {
+		authType := authType
+		t.Run(string(authType), func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: OutgoingAuthSourceInline,
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"unsupported-backend": {
+							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "unsupported-auth",
+							},
+						},
+						"supported-backend": {
+							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "supported-auth",
+							},
+						},
+					},
+				}),
+			)
+
+			unsupportedAuth := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "unsupported-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: authType,
+				},
+			}
+			switch authType {
+			case mcpv1beta1.ExternalAuthTypeBearerToken:
+				unsupportedAuth.Spec.BearerToken = &mcpv1beta1.BearerTokenConfig{
+					TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "bearer-token", Key: "token"},
+				}
+			case mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer:
+				unsupportedAuth.Spec.EmbeddedAuthServer = &mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: "https://auth.example.com",
+					UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+						{
+							Name: "oidc",
+							Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+							OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+								IssuerURL: "https://idp.example.com",
+								ClientID:  "client-id",
+							},
+						},
+					},
+				}
+			case mcpv1beta1.ExternalAuthTypeTokenExchange,
+				mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				mcpv1beta1.ExternalAuthTypeUnauthenticated,
+				mcpv1beta1.ExternalAuthTypeAWSSts,
+				mcpv1beta1.ExternalAuthTypeUpstreamInject,
+				mcpv1beta1.ExternalAuthTypeOBO,
+				mcpv1beta1.ExternalAuthTypeXAA:
+				t.Fatalf("test configured with supported auth type %q", authType)
+			default:
+				t.Fatalf("unknown test auth type %q", authType)
+			}
+			supportedAuth := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "supported-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+				},
+			}
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(vmcp, unsupportedAuth, supportedAuth).
+				Build()
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			config, _, authErrors, err := r.buildOutgoingAuthConfig(context.Background(), vmcp, nil)
+
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.NotContains(t, config.Backends, "unsupported-backend",
+				"unsupported auth must not silently produce a backend strategy")
+			supportedStrategy, ok := config.Backends["supported-backend"]
+			require.True(t, ok, "a supported backend in the same config must remain available")
+			require.NotNil(t, supportedStrategy)
+			assert.Equal(t, string(mcpv1beta1.ExternalAuthTypeUnauthenticated), supportedStrategy.Type)
+
+			require.Len(t, authErrors, 1)
+			authErr := authErrors[0]
+			assert.Equal(t, authContextBackendPrefix+"unsupported-backend", authErr.Context)
+			assert.Equal(t, "unsupported-backend", authErr.BackendName)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, authErr.Reason)
+			require.Error(t, authErr.Error)
+			var unsupportedTypeErr *externalauthsupport.UnsupportedTypeError
+			require.True(t, stderrors.As(authErr.Error, &unsupportedTypeErr))
+			assert.Equal(t, externalauthsupport.ConsumerVirtualMCPServer, unsupportedTypeErr.Consumer)
+			assert.Equal(t, authType, unsupportedTypeErr.AuthType)
+			assert.Contains(t, authErr.Error.Error(), string(authType))
 		})
 	}
 }
@@ -781,6 +1031,17 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 				assert.Equal(t, "https://oauth.example.com/token", strategy.TokenExchange.TokenURL)
 				assert.Equal(t, "backend-service", strategy.TokenExchange.Audience)
 				assert.Equal(t, "test-client", strategy.TokenExchange.ClientID)
+			},
+		},
+		{
+			name: "discovered type becomes a valid runtime fallback",
+			crdConfig: &mcpv1beta1.BackendAuthConfig{
+				Type: mcpv1beta1.BackendAuthTypeDiscovered,
+			},
+			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Type)
+				assert.NotEqual(t, string(mcpv1beta1.BackendAuthTypeDiscovered), strategy.Type)
 			},
 		},
 		{
@@ -1319,8 +1580,9 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 		{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
 	}
 
-	config, _, allAuthErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, workloadNames)
+	config, _, allAuthErrors, err := r.buildOutgoingAuthConfig(context.Background(), vmcp, workloadNames)
 
+	require.NoError(t, err)
 	require.NotNil(t, config)
 	require.Empty(t, allAuthErrors)
 
@@ -1695,8 +1957,9 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	config, _, allAuthErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, nil)
+	config, _, allAuthErrors, err := r.buildOutgoingAuthConfig(context.Background(), vmcp, nil)
 
+	require.NoError(t, err)
 	require.NotNil(t, config)
 	require.Empty(t, allAuthErrors)
 
@@ -1805,8 +2068,9 @@ func TestBuildOutgoingAuthConfig_XAAAmbiguousSubjectProviderError(t *testing.T) 
 		{Name: "token-exchange-backend", Type: workloads.WorkloadTypeMCPServer},
 	}
 
-	config, _, allAuthErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, workloadNames)
+	config, _, allAuthErrors, err := r.buildOutgoingAuthConfig(context.Background(), vmcp, workloadNames)
 
+	require.NoError(t, err)
 	require.NotNil(t, config)
 
 	// All 3 ambiguous xaa call sites produced a non-fatal AuthConfigError...

@@ -2031,6 +2031,7 @@ spec:
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.
                       When using the Kubernetes operator, this is populated by the converter from
                       VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+                      See VirtualMCPServerSpec.OutgoingAuth for supported MCPExternalAuthConfig types.
                     properties:
                       backends:
                         additionalProperties:
@@ -2642,11 +2643,42 @@ spec:
                         required:
                         - type
                         type: object
+                      defaultAuthFailed:
+                        description: |-
+                          DefaultAuthFailed reports that an explicitly configured Default strategy
+                          could not be resolved by the operator. Backends without an independently
+                          resolved strategy must remain unavailable rather than falling through to
+                          unauthenticated access. The zero value preserves legacy configuration
+                          behavior when no failure marker was emitted.
+                        type: boolean
+                      excludedBackends:
+                        description: |-
+                          ExcludedBackends contains backend names that must not be served because
+                          their explicitly configured authentication could not be resolved. The
+                          operator populates this list when it can continue serving healthy peers in
+                          degraded mode without allowing an affected backend to fall back to another
+                          identity or to unauthenticated access.
+                        items:
+                          type: string
+                        type: array
+                      explicitBackends:
+                        description: |-
+                          ExplicitBackends identifies entries in Backends that came from explicit
+                          per-backend overrides rather than runtime discovery. The operator emits
+                          this field even when it is empty so the runtime can apply a valid override
+                          before consulting a backend's externalAuthConfigRef.
+
+                          A nil value preserves compatibility with configuration written before this
+                          marker existed: in that case, entries in Backends are treated as explicit.
+                        items:
+                          type: string
+                        type: array
                       source:
                         description: |-
                           Source defines how to discover backend auth: "inline", "discovered"
                           - inline: Explicit configuration in OutgoingAuth
-                          - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
+                          - discovered: Auto-discover from backend MCPServer, MCPRemoteProxy, and
+                            MCPServerEntry externalAuthConfigRef fields (Kubernetes only)
                         type: string
                     required:
                     - source
@@ -3180,20 +3212,29 @@ spec:
                   rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
-                  OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+                  OutgoingAuth configures authentication from Virtual MCP to backend resources.
                   This field takes precedence over config.OutgoingAuth and should be preferred because it
                   supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
                   dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
+                  Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,
+                  headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo when an
+                  enterprise handler is registered. Unsupported types are reported per backend in
+                  status.conditions with Reason: UnsupportedAuthType. Backends whose configured
+                  authentication cannot be resolved are excluded from routing while valid peers
+                  remain available.
                 properties:
                   backends:
                     additionalProperties:
                       description: BackendAuthConfig defines authentication configuration
-                        for a backend MCPServer
+                        for a backend resource.
                       properties:
                         externalAuthConfigRef:
                           description: |-
-                            ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                            Only used when Type is "externalAuthConfigRef"
+                            ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
+                            Only used when Type is "externalAuthConfigRef". Supported referenced types are
+                            tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
+                            and obo when an enterprise handler is registered. Unsupported types are reported
+                            for the affected backend in status.conditions with Reason: UnsupportedAuthType.
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -3221,8 +3262,11 @@ spec:
                     properties:
                       externalAuthConfigRef:
                         description: |-
-                          ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                          Only used when Type is "externalAuthConfigRef"
+                          ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
+                          Only used when Type is "externalAuthConfigRef". Supported referenced types are
+                          tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
+                          and obo when an enterprise handler is registered. Unsupported types are reported
+                          for the affected backend in status.conditions with Reason: UnsupportedAuthType.
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig
@@ -3244,7 +3288,8 @@ spec:
                     default: discovered
                     description: |-
                       Source defines how backend authentication configurations are determined
-                      - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
+                      - discovered: Automatically discover from backend MCPServer, MCPRemoteProxy,
+                        and MCPServerEntry externalAuthConfigRef fields
                       - inline: Explicit per-backend configuration in VirtualMCPServer
                     enum:
                     - discovered
@@ -5578,6 +5623,7 @@ spec:
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.
                       When using the Kubernetes operator, this is populated by the converter from
                       VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+                      See VirtualMCPServerSpec.OutgoingAuth for supported MCPExternalAuthConfig types.
                     properties:
                       backends:
                         additionalProperties:
@@ -6189,11 +6235,42 @@ spec:
                         required:
                         - type
                         type: object
+                      defaultAuthFailed:
+                        description: |-
+                          DefaultAuthFailed reports that an explicitly configured Default strategy
+                          could not be resolved by the operator. Backends without an independently
+                          resolved strategy must remain unavailable rather than falling through to
+                          unauthenticated access. The zero value preserves legacy configuration
+                          behavior when no failure marker was emitted.
+                        type: boolean
+                      excludedBackends:
+                        description: |-
+                          ExcludedBackends contains backend names that must not be served because
+                          their explicitly configured authentication could not be resolved. The
+                          operator populates this list when it can continue serving healthy peers in
+                          degraded mode without allowing an affected backend to fall back to another
+                          identity or to unauthenticated access.
+                        items:
+                          type: string
+                        type: array
+                      explicitBackends:
+                        description: |-
+                          ExplicitBackends identifies entries in Backends that came from explicit
+                          per-backend overrides rather than runtime discovery. The operator emits
+                          this field even when it is empty so the runtime can apply a valid override
+                          before consulting a backend's externalAuthConfigRef.
+
+                          A nil value preserves compatibility with configuration written before this
+                          marker existed: in that case, entries in Backends are treated as explicit.
+                        items:
+                          type: string
+                        type: array
                       source:
                         description: |-
                           Source defines how to discover backend auth: "inline", "discovered"
                           - inline: Explicit configuration in OutgoingAuth
-                          - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
+                          - discovered: Auto-discover from backend MCPServer, MCPRemoteProxy, and
+                            MCPServerEntry externalAuthConfigRef fields (Kubernetes only)
                         type: string
                     required:
                     - source
@@ -6727,20 +6804,29 @@ spec:
                   rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
-                  OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+                  OutgoingAuth configures authentication from Virtual MCP to backend resources.
                   This field takes precedence over config.OutgoingAuth and should be preferred because it
                   supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
                   dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
+                  Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,
+                  headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo when an
+                  enterprise handler is registered. Unsupported types are reported per backend in
+                  status.conditions with Reason: UnsupportedAuthType. Backends whose configured
+                  authentication cannot be resolved are excluded from routing while valid peers
+                  remain available.
                 properties:
                   backends:
                     additionalProperties:
                       description: BackendAuthConfig defines authentication configuration
-                        for a backend MCPServer
+                        for a backend resource.
                       properties:
                         externalAuthConfigRef:
                           description: |-
-                            ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                            Only used when Type is "externalAuthConfigRef"
+                            ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
+                            Only used when Type is "externalAuthConfigRef". Supported referenced types are
+                            tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
+                            and obo when an enterprise handler is registered. Unsupported types are reported
+                            for the affected backend in status.conditions with Reason: UnsupportedAuthType.
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -6768,8 +6854,11 @@ spec:
                     properties:
                       externalAuthConfigRef:
                         description: |-
-                          ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                          Only used when Type is "externalAuthConfigRef"
+                          ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
+                          Only used when Type is "externalAuthConfigRef". Supported referenced types are
+                          tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
+                          and obo when an enterprise handler is registered. Unsupported types are reported
+                          for the affected backend in status.conditions with Reason: UnsupportedAuthType.
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig
@@ -6791,7 +6880,8 @@ spec:
                     default: discovered
                     description: |-
                       Source defines how backend authentication configurations are determined
-                      - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
+                      - discovered: Automatically discover from backend MCPServer, MCPRemoteProxy,
+                        and MCPServerEntry externalAuthConfigRef fields
                       - inline: Explicit per-backend configuration in VirtualMCPServer
                     enum:
                     - discovered

@@ -7,4 +7,8 @@ package v1beta1
 const (
 	ConditionTypeValid           = "Valid"
 	ConditionTypeDeletionBlocked = "DeletionBlocked"
+
+	// ConditionReasonUnsupportedAuthType indicates that an MCPExternalAuthConfig
+	// type is not implemented by the resource that references it.
+	ConditionReasonUnsupportedAuthType = "UnsupportedAuthType"
 )

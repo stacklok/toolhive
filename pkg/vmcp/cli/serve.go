@@ -230,7 +230,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
 		}
 
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry)
+		backendWatcher, err = k8s.NewBackendWatcherWithAuthConfig(
+			restConfig,
+			namespace,
+			vmcpCfg.Group,
+			dynamicRegistry,
+			vmcpCfg.OutgoingAuth,
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create backend watcher: %w", err)
 		}

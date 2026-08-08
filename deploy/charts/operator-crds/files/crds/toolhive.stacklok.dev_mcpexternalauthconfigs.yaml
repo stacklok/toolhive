@@ -59,8 +59,9 @@ spec:
           spec:
             description: |-
               MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
-              MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-              MCPServer resources in the same namespace.
+              MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+              MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+              the same namespace. Each consumer supports only a subset of authentication types.
             properties:
               awsSts:
                 description: |-
@@ -1338,10 +1339,22 @@ spec:
               type:
                 description: |-
                   Type is the type of external authentication to configure.
-                  When set to "obo", the cluster must run a build that has registered an
-                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-                  for obo-typed configs.
+                  Consumer support is as follows:
+                    - tokenExchange and unauthenticated: MCPServer, MCPRemoteProxy,
+                      MCPServerEntry, and VirtualMCPServer outgoing authentication.
+                    - headerInjection, upstreamInject, and xaa: MCPServerEntry and
+                      VirtualMCPServer outgoing authentication.
+                    - bearerToken: MCPRemoteProxy.
+                    - embeddedAuthServer: MCPServer and MCPRemoteProxy.
+                    - awsSts: MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer outgoing
+                      authentication.
+                    - obo: all four consumers when the cluster build has registered an OBO
+                      handler via controllerutil.RegisterOBOHandler.
+
+                  Upstream-only builds surface status.conditions[Valid] = False with Reason:
+                  EnterpriseRequired for obo-typed configs. Other unsupported consumer/type
+                  combinations are reported on the consuming resource with Reason:
+                  UnsupportedAuthType.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -1597,9 +1610,10 @@ spec:
       openAPIV3Schema:
         description: |-
           MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
-          MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-          MCPServer resources within the same namespace. Cross-namespace references
-          are not supported for security and isolation reasons.
+          MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+          MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+          the same namespace. Cross-namespace references are not supported for security
+          and isolation reasons. Each consumer supports only a subset of authentication types.
         properties:
           apiVersion:
             description: |-
@@ -1621,8 +1635,9 @@ spec:
           spec:
             description: |-
               MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
-              MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-              MCPServer resources in the same namespace.
+              MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+              MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+              the same namespace. Each consumer supports only a subset of authentication types.
             properties:
               awsSts:
                 description: |-
@@ -2900,10 +2915,22 @@ spec:
               type:
                 description: |-
                   Type is the type of external authentication to configure.
-                  When set to "obo", the cluster must run a build that has registered an
-                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-                  for obo-typed configs.
+                  Consumer support is as follows:
+                    - tokenExchange and unauthenticated: MCPServer, MCPRemoteProxy,
+                      MCPServerEntry, and VirtualMCPServer outgoing authentication.
+                    - headerInjection, upstreamInject, and xaa: MCPServerEntry and
+                      VirtualMCPServer outgoing authentication.
+                    - bearerToken: MCPRemoteProxy.
+                    - embeddedAuthServer: MCPServer and MCPRemoteProxy.
+                    - awsSts: MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer outgoing
+                      authentication.
+                    - obo: all four consumers when the cluster build has registered an OBO
+                      handler via controllerutil.RegisterOBOHandler.
+
+                  Upstream-only builds surface status.conditions[Valid] = False with Reason:
+                  EnterpriseRequired for obo-typed configs. Other unsupported consumer/type
+                  combinations are reported on the consuming resource with Reason:
+                  UnsupportedAuthType.
                 enum:
                 - tokenExchange
                 - headerInjection

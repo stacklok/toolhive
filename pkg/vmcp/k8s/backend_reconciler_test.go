@@ -20,6 +20,8 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -28,9 +30,11 @@ import (
 type mockDiscoverer struct {
 	backend *vmcp.Backend
 	err     error
+	calls   int
 }
 
 func (m *mockDiscoverer) GetWorkloadAsVMCPBackend(_ context.Context, _ workloads.TypedWorkload) (*vmcp.Backend, error) {
+	m.calls++
 	return m.backend, m.err
 }
 
@@ -85,6 +89,12 @@ func (m *mockRegistry) List(_ context.Context) []vmcp.Backend {
 
 func (m *mockRegistry) Count() int {
 	return len(m.upsertedBackends)
+}
+
+func newMockRegistryWithBackend(backendID string) *mockRegistry {
+	return &mockRegistry{
+		upsertedBackends: []vmcp.Backend{{ID: backendID, Name: backendID}},
+	}
 }
 
 // newTestReconciler creates a BackendReconciler for testing with fake client and mocks.
@@ -189,7 +199,7 @@ func TestReconcile_GroupRefMismatch(t *testing.T) {
 		Build()
 
 	mockDisc := &mockDiscoverer{}
-	mockReg := &mockRegistry{}
+	mockReg := newMockRegistryWithBackend("test-server")
 
 	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
 
@@ -210,6 +220,383 @@ func TestReconcile_GroupRefMismatch(t *testing.T) {
 	assert.Equal(t, "test-server", mockReg.removedIDs[0])
 }
 
+// TestReconcile_ExcludedBackend verifies watch events cannot reintroduce a
+// backend that initial discovery excluded because its auth failed to resolve.
+func TestReconcile_ExcludedBackend(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resource client.Object
+	}{
+		{
+			name: "MCPServer",
+			resource: &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "blocked-server", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				},
+			},
+		},
+		{
+			name: "MCPRemoteProxy",
+			resource: v1beta1test.NewMCPRemoteProxy(
+				"blocked-proxy",
+				"default",
+				v1beta1test.WithRemoteProxyGroupRef("test-group"),
+			),
+		},
+		{
+			name: "MCPServerEntry",
+			resource: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "blocked-entry", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			k8sClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.resource).
+				Build()
+
+			backendName := tt.resource.GetName()
+			mockDisc := &mockDiscoverer{
+				backend: &vmcp.Backend{ID: backendName, Name: backendName},
+			}
+			mockReg := newMockRegistryWithBackend(backendName)
+			reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
+			reconciler.ExcludedBackends = map[string]struct{}{backendName: {}}
+
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: backendName, Namespace: "default"},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+			assert.Zero(t, mockDisc.calls, "excluded backend must not be converted")
+			assert.Empty(t, mockReg.upsertedBackends, "excluded backend must remain absent")
+			assert.Equal(t, []string{backendName}, mockReg.removedIDs)
+			assert.Equal(t, uint64(1), mockReg.Version())
+
+			result, err = reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: backendName, Namespace: "default"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+			assert.Equal(t, []string{backendName}, mockReg.removedIDs,
+				"an already absent excluded backend must not be removed twice")
+			assert.Equal(t, uint64(1), mockReg.Version(),
+				"an already absent excluded backend must not invalidate registry caches")
+		})
+	}
+}
+
+// TestReconcile_AuthPrecedence verifies watcher-driven updates use the same
+// precedence as initial aggregation: explicit, discovered, backend fallback,
+// then Default.
+func TestReconcile_AuthPrecedence(t *testing.T) {
+	t.Parallel()
+
+	const backendName = "auth-backend"
+	explicitStrategy := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeHeaderInjection}
+	backendFallback := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeTokenExchange}
+	defaultStrategy := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject}
+
+	tests := []struct {
+		name              string
+		hasDiscoveredRef  bool
+		discoveredInvalid bool
+		backends          map[string]*authtypes.BackendAuthStrategy
+		explicitBackends  []string
+		wantStrategyType  string
+		wantExactStrategy *authtypes.BackendAuthStrategy
+	}{
+		{
+			name:              "explicit override wins without inspecting invalid discovered source",
+			hasDiscoveredRef:  true,
+			discoveredInvalid: true,
+			backends:          map[string]*authtypes.BackendAuthStrategy{backendName: explicitStrategy},
+			explicitBackends:  []string{backendName},
+			wantStrategyType:  authtypes.StrategyTypeHeaderInjection,
+			wantExactStrategy: explicitStrategy,
+		},
+		{
+			name:             "discovered auth wins over backend fallback and default",
+			hasDiscoveredRef: true,
+			backends:         map[string]*authtypes.BackendAuthStrategy{backendName: backendFallback},
+			explicitBackends: []string{},
+			wantStrategyType: authtypes.StrategyTypeUnauthenticated,
+		},
+		{
+			name:              "backend fallback wins over default",
+			backends:          map[string]*authtypes.BackendAuthStrategy{backendName: backendFallback},
+			explicitBackends:  []string{},
+			wantStrategyType:  authtypes.StrategyTypeTokenExchange,
+			wantExactStrategy: backendFallback,
+		},
+		{
+			name:              "valid default survives watcher update",
+			backends:          map[string]*authtypes.BackendAuthStrategy{},
+			explicitBackends:  []string{},
+			wantStrategyType:  authtypes.StrategyTypeUpstreamInject,
+			wantExactStrategy: defaultStrategy,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					Transport: "streamable-http",
+				},
+				Status: mcpv1beta1.MCPServerStatus{
+					Phase: mcpv1beta1.MCPServerPhaseReady,
+					URL:   "http://auth-backend.default.svc.cluster.local:8080",
+				},
+			}
+			objects := []client.Object{server}
+			if tt.hasDiscoveredRef {
+				server.Spec.ExternalAuthConfigRef = &mcpv1beta1.ExternalAuthConfigRef{Name: "discovered-auth"}
+				discoveredAuth := &mcpv1beta1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "discovered-auth", Namespace: "default"},
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+					},
+				}
+				if tt.discoveredInvalid {
+					discoveredAuth.Status.Conditions = []metav1.Condition{
+						{
+							Type:    mcpv1beta1.ConditionTypeValid,
+							Status:  metav1.ConditionFalse,
+							Reason:  "InvalidConfig",
+							Message: "source must not be inspected when an explicit override exists",
+						},
+					}
+				}
+				objects = append(objects, discoveredAuth)
+			}
+
+			authConfig := &vmcpconfig.OutgoingAuthConfig{
+				Source:           "discovered",
+				Default:          defaultStrategy,
+				Backends:         tt.backends,
+				ExplicitBackends: tt.explicitBackends,
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			discoverer := workloads.NewK8SDiscovererWithClientAndAuthConfig(k8sClient, "default", authConfig)
+			registry := &mockRegistry{}
+			reconciler := newTestReconciler(k8sClient, "default", "test-group", registry, discoverer)
+			reconciler.AuthConfig = authConfig
+
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: backendName, Namespace: "default"},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+			require.Len(t, registry.upsertedBackends, 1)
+			require.NotNil(t, registry.upsertedBackends[0].AuthConfig)
+			assert.Equal(t, tt.wantStrategyType, registry.upsertedBackends[0].AuthConfig.Type)
+			if tt.wantExactStrategy != nil {
+				assert.Same(t, tt.wantExactStrategy, registry.upsertedBackends[0].AuthConfig)
+			}
+		})
+	}
+}
+
+// TestReconcile_InvalidDiscoveredAuthRemovesBackend verifies a supported
+// converter cannot make a source usable when the source controller marked it
+// invalid or its stored spec fails local validation.
+func TestReconcile_InvalidDiscoveredAuthRemovesBackend(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
+	}{
+		{
+			name: "Valid False source",
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+				},
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    mcpv1beta1.ConditionTypeValid,
+							Status:  metav1.ConditionFalse,
+							Reason:  "InvalidConfig",
+							Message: "source validation failed",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "locally invalid source",
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &mcpv1beta1.UpstreamInjectSpec{
+						ProviderName: "",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const backendName = "invalid-auth-backend"
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:              &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					Transport:             "streamable-http",
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "invalid-auth"},
+				},
+				Status: mcpv1beta1.MCPServerStatus{
+					Phase: mcpv1beta1.MCPServerPhaseReady,
+					URL:   "http://invalid-auth-backend.default.svc.cluster.local:8080",
+				},
+			}
+			tt.externalAuth.Name = "invalid-auth"
+			tt.externalAuth.Namespace = "default"
+			authConfig := &vmcpconfig.OutgoingAuthConfig{
+				Source:           "discovered",
+				Backends:         map[string]*authtypes.BackendAuthStrategy{},
+				ExplicitBackends: []string{},
+			}
+			k8sClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(server, tt.externalAuth).
+				Build()
+			discoverer := workloads.NewK8SDiscovererWithClientAndAuthConfig(k8sClient, "default", authConfig)
+			registry := newMockRegistryWithBackend(backendName)
+			reconciler := newTestReconciler(k8sClient, "default", "test-group", registry, discoverer)
+			reconciler.AuthConfig = authConfig
+
+			result, err := reconciler.Reconcile(t.Context(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: backendName, Namespace: "default"},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+			assert.Empty(t, registry.upsertedBackends)
+			assert.Equal(t, []string{backendName}, registry.removedIDs)
+			assert.Equal(t, uint64(1), registry.Version())
+		})
+	}
+}
+
+// TestReconcile_FailedDefaultForNewBackend verifies the runtime failure marker
+// denies a newly joined backend without independent auth while preserving a
+// peer with valid discovered auth.
+func TestReconcile_FailedDefaultForNewBackend(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		backendName      string
+		hasDiscoveredRef bool
+		wantAllowed      bool
+	}{
+		{
+			name:        "backend without auth ref is denied",
+			backendName: "late-default-dependent",
+		},
+		{
+			name:             "backend with valid discovered auth is allowed",
+			backendName:      "late-discovered-peer",
+			hasDiscoveredRef: true,
+			wantAllowed:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: tt.backendName, Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					Transport: "streamable-http",
+				},
+				Status: mcpv1beta1.MCPServerStatus{
+					Phase: mcpv1beta1.MCPServerPhaseReady,
+					URL:   "http://" + tt.backendName + ".default.svc.cluster.local:8080",
+				},
+			}
+			objects := []client.Object{server}
+			if tt.hasDiscoveredRef {
+				server.Spec.ExternalAuthConfigRef = &mcpv1beta1.ExternalAuthConfigRef{Name: "valid-discovered-auth"}
+				objects = append(objects, &mcpv1beta1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "valid-discovered-auth", Namespace: "default"},
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+					},
+				})
+			}
+
+			authConfig := &vmcpconfig.OutgoingAuthConfig{
+				Source:            "discovered",
+				Backends:          map[string]*authtypes.BackendAuthStrategy{},
+				ExplicitBackends:  []string{},
+				DefaultAuthFailed: true,
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			discoverer := workloads.NewK8SDiscovererWithClientAndAuthConfig(k8sClient, "default", authConfig)
+			registry := &mockRegistry{}
+			reconciler := newTestReconciler(k8sClient, "default", "test-group", registry, discoverer)
+			reconciler.AuthConfig = authConfig
+
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: tt.backendName, Namespace: "default"},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+			if tt.wantAllowed {
+				require.Len(t, registry.upsertedBackends, 1)
+				require.NotNil(t, registry.upsertedBackends[0].AuthConfig)
+				assert.Equal(t, authtypes.StrategyTypeUnauthenticated, registry.upsertedBackends[0].AuthConfig.Type)
+				assert.Equal(t, uint64(1), registry.Version())
+				return
+			}
+
+			assert.Empty(t, registry.upsertedBackends)
+			assert.Empty(t, registry.removedIDs, "new backend was never present, so removal is a no-op")
+			assert.Zero(t, registry.Version(), "denying an absent backend must not invalidate registry caches")
+		})
+	}
+}
+
 // TestReconcile_Deleted tests that deleted resources are removed from registry
 func TestReconcile_Deleted(t *testing.T) {
 	t.Parallel()
@@ -223,7 +610,7 @@ func TestReconcile_Deleted(t *testing.T) {
 		Build()
 
 	mockDisc := &mockDiscoverer{}
-	mockReg := &mockRegistry{}
+	mockReg := newMockRegistryWithBackend("deleted-server")
 
 	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
 
@@ -269,7 +656,7 @@ func TestReconcile_AuthFailure(t *testing.T) {
 
 	// Discoverer returns nil backend (simulates auth failure)
 	mockDisc := &mockDiscoverer{backend: nil, err: nil}
-	mockReg := &mockRegistry{}
+	mockReg := newMockRegistryWithBackend("test-server")
 
 	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
 
@@ -360,7 +747,7 @@ func TestReconcile_ConversionError(t *testing.T) {
 
 	// Discoverer returns error (simulates conversion failure)
 	mockDisc := &mockDiscoverer{backend: nil, err: fmt.Errorf("conversion failed")}
-	mockReg := &mockRegistry{}
+	mockReg := newMockRegistryWithBackend("test-server")
 
 	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
 
@@ -485,7 +872,7 @@ func TestReconcile_MCPServerEntry_GroupRefMismatch(t *testing.T) {
 		Build()
 
 	mockDisc := &mockDiscoverer{}
-	mockReg := &mockRegistry{}
+	mockReg := newMockRegistryWithBackend("remote-mcp")
 
 	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
 
@@ -517,7 +904,7 @@ func TestReconcile_MCPServerEntry_Deleted(t *testing.T) {
 		Build()
 
 	mockDisc := &mockDiscoverer{}
-	mockReg := &mockRegistry{}
+	mockReg := newMockRegistryWithBackend("deleted-entry")
 
 	reconciler := newTestReconciler(k8sClient, "default", "test-group", mockReg, mockDisc)
 

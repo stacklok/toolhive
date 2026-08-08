@@ -1496,6 +1496,21 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 			errMsg:  "X-Forwarded-For",
 		},
 		{
+			// Documented contract (virtualmcpserver-api.md): Authorization is
+			// rejected at startup. Forwarding caller-supplied credentials
+			// verbatim to every backend is a credential-leak footgun.
+			name:    "Authorization is restricted",
+			headers: []string{"authorization"},
+			wantErr: true,
+			errMsg:  "Authorization",
+		},
+		{
+			name:    "Cookie is restricted",
+			headers: []string{"Cookie"},
+			wantErr: true,
+			errMsg:  "Cookie",
+		},
+		{
 			name:    "empty string header name is rejected",
 			headers: []string{""},
 			wantErr: true,

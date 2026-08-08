@@ -4,6 +4,7 @@
 package authz
 
 import (
+	"strings"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -511,6 +512,40 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	// Check that the handler was called and the response is OK
 	assert.True(t, handlerCalled, "Handler should be called for GET requests")
 	assert.Equal(t, http.StatusOK, rr.Code, "Response status code should be OK")
+}
+
+func TestMiddlewareRejectsNonJSONPost(t *testing.T) {
+	t.Parallel()
+	// Even a permissive policy must not see this request: a non-JSON POST is
+	// never parsed as MCP, so message-level authorization cannot run, while the
+	// proxy would still forward the body verbatim to a backend that parses
+	// JSON-RPC without checking Content-Type.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action, resource);`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err, "Failed to create Cedar authorizer")
+
+	var handlerCalled bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
+	req, err := http.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	require.NoError(t, err, "Failed to create HTTP request")
+	req.Header.Set("Content-Type", "text/plain")
+
+	rr := httptest.NewRecorder()
+	middleware.ServeHTTP(rr, req)
+
+	assert.False(t, handlerCalled, "handler must not be reached by a non-JSON POST carrying JSON-RPC")
+	assert.Equal(t, http.StatusBadRequest, rr.Code, "non-JSON POST should be rejected")
 }
 
 func TestFactoryCreateMiddleware(t *testing.T) {

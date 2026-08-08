@@ -592,6 +592,15 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 }
 
 func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
+	// The standalone header-forward middleware deliberately allows Authorization
+	// (an operator may legitimately forward it), but for vMCP passthrough the
+	// documented contract is stricter: Authorization and Cookie are rejected at
+	// startup because forwarding caller-supplied credentials verbatim to every
+	// backend is a credential-leak footgun, not a pass-through use case.
+	vmcpRestricted := map[string]bool{
+		"Authorization": true,
+		"Cookie":        true,
+	}
 	for i, name := range cfg.PassthroughHeaders {
 		if name == "" {
 			return fmt.Errorf("passthroughHeaders[%d]: header name must not be empty", i)
@@ -599,7 +608,7 @@ func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 
 		canonical := http.CanonicalHeaderKey(name)
 
-		if middleware.RestrictedHeaders[canonical] {
+		if middleware.RestrictedHeaders[canonical] || vmcpRestricted[canonical] {
 			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
 		}
 

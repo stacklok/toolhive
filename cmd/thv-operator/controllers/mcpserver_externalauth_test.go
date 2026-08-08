@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -35,6 +37,70 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
+
+func newExternalAuthConfigForConsumerTest(
+	t *testing.T,
+	name string,
+	authType mcpv1beta1.ExternalAuthType,
+) *mcpv1beta1.MCPExternalAuthConfig {
+	t.Helper()
+
+	config := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: authType},
+	}
+	switch authType {
+	case mcpv1beta1.ExternalAuthTypeTokenExchange:
+		config.Spec.TokenExchange = &mcpv1beta1.TokenExchangeConfig{
+			TokenURL: "https://issuer.example/token",
+			ClientID: "client-id",
+			Audience: "backend",
+		}
+	case mcpv1beta1.ExternalAuthTypeHeaderInjection:
+		config.Spec.HeaderInjection = &mcpv1beta1.HeaderInjectionConfig{
+			HeaderName:     "X-Backend-Token",
+			ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "header-secret", Key: "value"},
+		}
+	case mcpv1beta1.ExternalAuthTypeBearerToken:
+		config.Spec.BearerToken = &mcpv1beta1.BearerTokenConfig{
+			TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "bearer-secret", Key: "token"},
+		}
+	case mcpv1beta1.ExternalAuthTypeUnauthenticated:
+		// No type-specific configuration is valid for unauthenticated.
+	case mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer:
+		config.Spec.EmbeddedAuthServer = &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "oidc",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					ClientID:  "client-id",
+				},
+			}},
+		}
+	case mcpv1beta1.ExternalAuthTypeAWSSts:
+		config.Spec.AWSSts = &mcpv1beta1.AWSStsConfig{
+			Region:          "us-east-1",
+			FallbackRoleArn: "arn:aws:iam::123456789012:role/toolhive-test",
+		}
+	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
+		config.Spec.UpstreamInject = &mcpv1beta1.UpstreamInjectSpec{ProviderName: "oidc"}
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		config.Spec.OBO = &mcpv1beta1.OBOConfig{}
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		config.Spec.XAA = &mcpv1beta1.XAASpec{
+			IDPTokenURL:    "https://idp.example.com/token",
+			TargetTokenURL: "https://target.example.com/token",
+			TargetAudience: "https://target.example.com",
+			TargetResource: "https://backend.example.com/mcp",
+		}
+	default:
+		t.Fatalf("unsupported test auth type %q", authType)
+	}
+
+	return config
+}
 
 func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 	t.Parallel()
@@ -207,6 +273,193 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPServerReconciler_handleExternalAuthConfig_UnsupportedAuthType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		authType mcpv1beta1.ExternalAuthType
+	}{
+		{name: "header injection", authType: mcpv1beta1.ExternalAuthTypeHeaderInjection},
+		{name: "bearer token", authType: mcpv1beta1.ExternalAuthTypeBearerToken},
+		{name: "AWS STS", authType: mcpv1beta1.ExternalAuthTypeAWSSts},
+		{name: "upstream injection", authType: mcpv1beta1.ExternalAuthTypeUpstreamInject},
+		{name: "XAA", authType: mcpv1beta1.ExternalAuthTypeXAA},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const (
+				generation   int64 = 17
+				previousHash       = "previous-supported-hash"
+			)
+			authConfig := newExternalAuthConfigForConsumerTest(t, "auth-config", tt.authType)
+			authConfig.Status.ConfigHash = "unsupported-hash"
+			mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{ExternalAuthConfigHash: previousHash}),
+				v1beta1test.Mutate(func(server *mcpv1beta1.MCPServer) {
+					server.Generation = generation
+				}),
+			)
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(authConfig, mcpServer).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), mcpServer)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), string(tt.authType))
+			assert.Contains(t, err.Error(), "MCPServer")
+			cond := meta.FindStatusCondition(
+				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, cond.Reason)
+			assert.Equal(t, generation, cond.ObservedGeneration)
+			assert.Contains(t, cond.Message, string(tt.authType))
+			assert.Contains(t, cond.Message, "MCPServer")
+			assert.Equal(t, previousHash, mcpServer.Status.ExternalAuthConfigHash,
+				"an unsupported config must not advance the last applied config hash")
+		})
+	}
+}
+
+func TestMCPServerReconciler_handleExternalAuthConfig_RecoversFromUnsupportedAuthType(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "default"
+		authName  = "auth-config"
+	)
+	authConfig := newExternalAuthConfigForConsumerTest(
+		t, authName, mcpv1beta1.ExternalAuthTypeHeaderInjection)
+	authConfig.Status.ConfigHash = "unsupported-hash"
+	mcpServer := v1beta1test.NewMCPServer("test-server", namespace,
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef(authName),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	require.Error(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+	cond := meta.FindStatusCondition(
+		mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, cond)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, cond.Reason)
+
+	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKey{Name: authName, Namespace: namespace}, &updatedConfig))
+	updatedConfig.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+		Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+		TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+			TokenURL: "https://issuer.example/token",
+			ClientID: "client-id",
+			Audience: "backend",
+		},
+	}
+	updatedConfig.Status.ConfigHash = "supported-hash"
+	require.NoError(t, fakeClient.Update(t.Context(), &updatedConfig))
+
+	require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+	recovered := meta.FindStatusCondition(
+		mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, recovered,
+		"the condition must flip to True after the source becomes supported, not linger at False")
+	assert.Equal(t, metav1.ConditionTrue, recovered.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, recovered.Reason)
+	assert.Equal(t, "supported-hash", mcpServer.Status.ExternalAuthConfigHash)
+}
+
+func TestMCPServerReconciler_UnsupportedExternalAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	authConfig := newExternalAuthConfigForConsumerTest(
+		t, "auth-config", mcpv1beta1.ExternalAuthTypeHeaderInjection)
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+		v1beta1test.Mutate(func(server *mcpv1beta1.MCPServer) {
+			server.Finalizers = []string{MCPServerFinalizerName}
+		}),
+	)
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Name: mcpServer.Name, Namespace: mcpServer.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "unsupported auth should be terminal until a watched resource changes")
+
+	afterFirst := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), request.NamespacedName, afterFirst))
+	condition := meta.FindStatusCondition(
+		afterFirst.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, condition.Reason)
+}
+
+func TestMCPServerReconciler_MirroredInvalidExternalAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	authConfig := newExternalAuthConfigForConsumerTest(t, "auth-config", mcpv1beta1.ExternalAuthTypeOBO)
+	authConfig.Status.Conditions = []metav1.Condition{{
+		Type:    mcpv1beta1.ConditionTypeValid,
+		Status:  metav1.ConditionFalse,
+		Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+		Message: "enterprise feature required",
+	}}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+		v1beta1test.Mutate(func(server *mcpv1beta1.MCPServer) {
+			server.Finalizers = []string{MCPServerFinalizerName}
+		}),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Name: mcpServer.Name, Namespace: mcpServer.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "source Valid=False should wait for the referenced resource watch")
+
+	updated := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), request.NamespacedName, updated))
+	condition := meta.FindStatusCondition(
+		updated.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, condition.Reason)
 }
 
 func TestMCPServerReconciler_handleExternalAuthConfig_SameNamespace(t *testing.T) {
@@ -513,11 +766,12 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 
 			if !tt.wantMirrored {
 				assert.NoError(t, err, "no error expected when source is valid")
-				if tt.wantPreexistingCleared {
-					assert.Nil(t, cond, "stale mirror condition must be cleared once source has healed")
-				} else {
-					assert.Nil(t, cond, "no mirror condition expected when source is valid")
-				}
+				// A healthy source now lands on the success setter: the mirror
+				// (or its absence) is replaced by an explicit True condition, so
+				// the resource does not stay stuck at False once the source heals.
+				require.NotNil(t, cond, "valid source must produce an explicit True condition")
+				assert.Equal(t, metav1.ConditionTrue, cond.Status)
+				assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, cond.Reason)
 				return
 			}
 

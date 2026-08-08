@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 )
 
 // Status Condition Parity machinery for #5347. The probe reads a referenced
@@ -69,6 +70,30 @@ func mirroredReasonFromError(err error) string {
 		return mirrored.Reason
 	}
 	return ""
+}
+
+// externalAuthReasonFromError returns a stable condition reason for typed
+// external-auth failures. Source-level invalidity keeps its mirrored reason;
+// consumer/type incompatibility uses the shared UnsupportedAuthType taxonomy.
+func externalAuthReasonFromError(err error) string {
+	if reason := mirroredReasonFromError(err); reason != "" {
+		return reason
+	}
+
+	var unsupported *externalauthsupport.UnsupportedTypeError
+	if stderrors.As(err, &unsupported) {
+		return mcpv1beta1.ConditionReasonUnsupportedAuthType
+	}
+	return ""
+}
+
+// isTerminalExternalAuthError reports whether err represents a configuration
+// state that can only heal after the consumer spec or its referenced
+// MCPExternalAuthConfig changes. Both resources are watched by the consumer
+// controllers, so rate-limited retries of the same generation add noise but
+// cannot make progress.
+func isTerminalExternalAuthError(err error) bool {
+	return externalAuthReasonFromError(err) != ""
 }
 
 // mirrorInvalidOnMCPServer mirrors the source's Valid=False condition onto the

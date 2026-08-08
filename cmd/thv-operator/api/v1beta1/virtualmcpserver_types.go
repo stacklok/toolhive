@@ -31,10 +31,14 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
-	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+	// OutgoingAuth configures authentication from Virtual MCP to backend resources.
 	// This field takes precedence over config.OutgoingAuth and should be preferred because it
 	// supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
 	// dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
+	// Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,
+	// headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo when an
+	// enterprise handler is registered. Unsupported types are reported per backend in
+	// status.conditions with Reason: UnsupportedAuthType.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
@@ -204,10 +208,14 @@ type IncomingAuthConfig struct {
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }
 
-// OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServers
+// OutgoingAuthConfig configures authentication from Virtual MCP to backend resources.
+// Referenced MCPExternalAuthConfig resources support tokenExchange, headerInjection,
+// unauthenticated, awsSts, upstreamInject, xaa, and obo when an enterprise handler
+// is registered.
 type OutgoingAuthConfig struct {
 	// Source defines how backend authentication configurations are determined
-	// - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
+	// - discovered: Automatically discover from backend MCPServer, MCPRemoteProxy,
+	//   and MCPServerEntry externalAuthConfigRef fields
 	// - inline: Explicit per-backend configuration in VirtualMCPServer
 	// +kubebuilder:validation:Enum=discovered;inline
 	// +kubebuilder:default=discovered
@@ -224,15 +232,18 @@ type OutgoingAuthConfig struct {
 	Backends map[string]BackendAuthConfig `json:"backends,omitempty"`
 }
 
-// BackendAuthConfig defines authentication configuration for a backend MCPServer
+// BackendAuthConfig defines authentication configuration for a backend resource.
 type BackendAuthConfig struct {
 	// Type defines the authentication type
 	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	// Only used when Type is "externalAuthConfigRef"
+	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
+	// Only used when Type is "externalAuthConfigRef". Supported referenced types are
+	// tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
+	// and obo when an enterprise handler is registered. Unsupported types are reported
+	// for the affected backend in status.conditions with Reason: UnsupportedAuthType.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 }

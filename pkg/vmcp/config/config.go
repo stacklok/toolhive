@@ -122,6 +122,7 @@ type Config struct {
 	// OutgoingAuth configures how the virtual MCP server authenticates to backends.
 	// When using the Kubernetes operator, this is populated by the converter from
 	// VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+	// See VirtualMCPServerSpec.OutgoingAuth for supported MCPExternalAuthConfig types.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty" yaml:"outgoingAuth,omitempty"`
 
@@ -395,7 +396,8 @@ type StaticBackendConfig struct {
 type OutgoingAuthConfig struct {
 	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
-	// - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
+	// - discovered: Auto-discover from backend MCPServer, MCPRemoteProxy, and
+	//   MCPServerEntry externalAuthConfigRef fields (Kubernetes only)
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.

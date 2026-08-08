@@ -89,8 +89,10 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 	}
 }
 
-// TestConvertOutgoingAuth tests outgoing auth configuration conversion
-func TestConvertOutgoingAuth(t *testing.T) {
+// TestBuildOutgoingAuthConfig_SourceModes tests outgoing auth conversion through
+// the reconciler, which owns it now that the generic converter no longer
+// converts OutgoingAuth (see processOutgoingAuth).
+func TestBuildOutgoingAuthConfig_SourceModes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -142,23 +144,27 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := v1beta1test.NewVirtualMCPServer("", "",
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 				v1beta1test.WithVMCPGroupRef("test-group"),
 				v1beta1test.WithVMCPOutgoingAuth(tt.outgoingAuth),
 			)
 
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
 
-			require.NotNil(t, config.OutgoingAuth)
-			assert.Equal(t, tt.expectedSource, config.OutgoingAuth.Source)
+			authConfig, _, authErrors := reconciler.buildOutgoingAuthConfig(
+				context.Background(), vmcpServer, nil)
+			require.Empty(t, authErrors)
+
+			require.NotNil(t, authConfig)
+			assert.Equal(t, tt.expectedSource, authConfig.Source)
 
 			if tt.hasDefault {
-				assert.NotNil(t, config.OutgoingAuth.Default)
+				assert.NotNil(t, authConfig.Default)
 			}
 
-			assert.Len(t, config.OutgoingAuth.Backends, tt.backendCount)
+			assert.Len(t, authConfig.Backends, tt.backendCount)
 		})
 	}
 }
@@ -198,18 +204,11 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
-				v1beta1test.WithVMCPGroupRef("test-group"),
-				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
-					Default: tt.authConfig,
-				}),
-			)
-
 			// For externalAuthConfigRef test, create the referenced MCPExternalAuthConfig
-			var converter *vmcpconfigconv.Converter
+			scheme := testutil.NewScheme(t)
+			builder := fake.NewClientBuilder().WithScheme(scheme)
 			if tt.authConfig.Type == mcpv1beta1.BackendAuthTypeExternalAuthConfigRef {
-				// Create a fake MCPExternalAuthConfig
-				externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				builder = builder.WithObjects(&mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "auth-config",
 						Namespace: "default",
@@ -217,27 +216,13 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 						Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 					},
-				}
-
-				// Create converter with fake client that has the external auth config
-				scheme := testutil.NewScheme(t)
-				fakeClient := fake.NewClientBuilder().
-					WithScheme(scheme).
-					WithObjects(externalAuthConfig).
-					Build()
-				var err error
-				converter, err = vmcpconfigconv.NewConverter(newNoOpMockResolver(t), fakeClient)
-				require.NoError(t, err)
-			} else {
-				converter = newTestConverter(t, newNoOpMockResolver(t))
+				})
 			}
+			reconciler := &VirtualMCPServerReconciler{Client: builder.Build(), Scheme: scheme}
 
-			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
+			strategy, err := reconciler.convertBackendAuthConfigToVMCP(
+				context.Background(), "default", tt.authConfig)
 			require.NoError(t, err)
-
-			require.NotNil(t, config.OutgoingAuth)
-			require.NotNil(t, config.OutgoingAuth.Default)
-			strategy := config.OutgoingAuth.Default
 
 			require.NotNil(t, strategy)
 			assert.Equal(t, tt.expectedType, strategy.Type)

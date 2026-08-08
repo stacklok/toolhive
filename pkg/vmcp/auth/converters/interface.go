@@ -88,6 +88,22 @@ func (r *Registry) Register(authType mcpv1beta1.ExternalAuthType, converter Stra
 	r.converters[authType] = converter
 }
 
+// RegisteredTypes returns the auth types that have a registered converter.
+// This is the set of MCPExternalAuthConfig types a vMCP backend can actually
+// use, so consumers that route through this registry (VirtualMCPServer
+// outgoing auth, MCPServerEntry) derive their support from it rather than
+// keeping a separate hand-maintained list.
+func (r *Registry) RegisteredTypes() []mcpv1beta1.ExternalAuthType {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	registered := make([]mcpv1beta1.ExternalAuthType, 0, len(r.converters))
+	for authType := range r.converters {
+		registered = append(registered, authType)
+	}
+	return registered
+}
+
 // GetConverter retrieves a converter by auth type
 func (r *Registry) GetConverter(authType mcpv1beta1.ExternalAuthType) (StrategyConverter, error) {
 	r.mu.RLock()

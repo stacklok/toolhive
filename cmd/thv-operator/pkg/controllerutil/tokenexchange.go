@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
@@ -209,6 +210,14 @@ func GenerateTokenExchangeEnvVars(
 // This creates token exchange configuration which will be automatically converted to middleware by
 // PopulateMiddlewareConfigs() when the runner starts. This ensures correct middleware ordering.
 //
+// The consumer parameter identifies the resource kind building the run config.
+// The externalauthsupport matrix is enforced here, at the one dispatch point
+// both MCPServer and MCPRemoteProxy route through, so an unsupported type
+// results in an UnsupportedTypeError instead of a silent no-op (#5930). The
+// consumer controllers validate earlier and surface the failure as a status
+// condition; this guard keeps the run-config path honest even for a caller
+// that skips that step.
+//
 // The oidcConfig parameter is used for embedded auth server configuration to populate:
 //   - AllowedAudiences from oidcConfig.ResourceURL
 //   - ScopesSupported from oidcConfig.Scopes
@@ -219,6 +228,7 @@ func AddExternalAuthConfigOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
+	consumer externalauthsupport.Consumer,
 	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
@@ -233,12 +243,14 @@ func AddExternalAuthConfigOptions(
 		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
 	}
 
+	if err := externalauthsupport.Validate(consumer, externalAuthConfig.Spec.Type); err != nil {
+		return err
+	}
+
 	// Handle different auth types
 	switch externalAuthConfig.Spec.Type {
 	case mcpv1beta1.ExternalAuthTypeTokenExchange:
 		return addTokenExchangeConfig(ctx, c, namespace, externalAuthConfig, options)
-	case mcpv1beta1.ExternalAuthTypeHeaderInjection:
-		return addHeaderInjectionConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1beta1.ExternalAuthTypeBearerToken:
 		return addBearerTokenConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1beta1.ExternalAuthTypeUnauthenticated:
@@ -248,9 +260,6 @@ func AddExternalAuthConfigOptions(
 		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, mcpServerName, externalAuthConfigRef, oidcConfig, options)
 	case mcpv1beta1.ExternalAuthTypeAWSSts:
 		return addAWSStsConfig(externalAuthConfig, options)
-	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
-		// Upstream inject is handled by the vMCP converter at runtime
-		return nil
 	case mcpv1beta1.ExternalAuthTypeOBO:
 		// Dispatch through the registered handler. In upstream-only builds the
 		// default handler returns obo.ErrEnterpriseRequired; an out-of-tree
@@ -258,11 +267,17 @@ func AddExternalAuthConfigOptions(
 		// default's "unsupported external auth type" path so callers can
 		// distinguish via errors.Is(err, obo.ErrEnterpriseRequired).
 		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
-	case mcpv1beta1.ExternalAuthTypeXAA:
-		// XAA is handled by the vMCP converter at runtime
-		return nil
+	case mcpv1beta1.ExternalAuthTypeHeaderInjection,
+		mcpv1beta1.ExternalAuthTypeUpstreamInject,
+		mcpv1beta1.ExternalAuthTypeXAA:
+		// Unreachable today: the support-matrix check above rejects these for
+		// both consumers that route through this dispatcher. They used to be
+		// silent no-op arms — the failure mode behind #5930 — so if a matrix
+		// edit ever admits one of them, fail loudly until a real arm exists.
+		return fmt.Errorf("external auth type %q passed the support matrix but has no dispatch arm here",
+			externalAuthConfig.Spec.Type)
 	default:
-		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+		return fmt.Errorf("unknown external auth type: %s", externalAuthConfig.Spec.Type)
 	}
 }
 
@@ -380,23 +395,6 @@ func addTokenExchangeConfig(
 	// The middleware will be automatically created by PopulateMiddlewareConfigs() in the correct order
 	*options = append(*options, runner.WithTokenExchangeConfig(tokenExchangeConfig))
 
-	return nil
-}
-
-// addHeaderInjectionConfig adds header injection configuration to runner options
-// For now, this is a no-op as header injection for MCPServer is not implemented
-// Header injection is primarily used for vMCP outgoing auth, not for MCPServer incoming auth
-func addHeaderInjectionConfig(
-	_ context.Context,
-	_ client.Client,
-	_ string,
-	_ *mcpv1beta1.MCPExternalAuthConfig,
-	_ *[]runner.RunConfigBuilderOption,
-) error {
-	// Header injection for MCPServer is not yet implemented
-	// This is a placeholder to avoid the "unsupported auth type" error
-	// MCPServer's ExternalAuthConfigRef is meant for incoming auth configuration
-	// but header injection doesn't make sense in that context
 	return nil
 }
 

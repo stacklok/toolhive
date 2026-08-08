@@ -50,6 +50,13 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
+	// Outgoing auth is owned by processOutgoingAuth, not by the generic
+	// converter: one invalid backend has to surface as a per-backend status
+	// condition while the remaining valid backends stay served, which the
+	// converter's all-or-nothing conversion cannot express. Start from the
+	// source selected on the resource; processOutgoingAuth fills in the rest.
+	config.OutgoingAuth = &vmcpconfig.OutgoingAuthConfig{Source: outgoingAuthSource(vmcp)}
+
 	// Process outgoing auth configuration for both inline and discovered modes
 	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
 		return err
@@ -405,6 +412,30 @@ func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inl
 	return valid
 }
 
+// persistDiscoveredModeAuth writes the discovered-mode outgoing auth into the
+// ConfigMap-bound config: only what the spec declares — the default strategy
+// and inline per-backend entries. Strategies discovered from backend resources
+// stay out of the ConfigMap; the runtime rediscovers them and resolves their
+// secrets itself.
+func persistDiscoveredModeAuth(
+	config *vmcpconfig.Config,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	authConfig *vmcpconfig.OutgoingAuthConfig,
+) {
+	config.OutgoingAuth.Default = authConfig.Default
+	if vmcp.Spec.OutgoingAuth == nil || len(vmcp.Spec.OutgoingAuth.Backends) == 0 {
+		return
+	}
+
+	specBackends := make(map[string]*authtypes.BackendAuthStrategy, len(vmcp.Spec.OutgoingAuth.Backends))
+	for backendName := range vmcp.Spec.OutgoingAuth.Backends {
+		if strategy := authConfig.Backends[backendName]; strategy != nil {
+			specBackends[backendName] = strategy
+		}
+	}
+	config.OutgoingAuth.Backends = specBackends
+}
+
 // processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
 // It builds auth configs, sets status conditions for all auth config types, and configures static backends for inline mode.
 func (r *VirtualMCPServerReconciler) processOutgoingAuth(
@@ -457,6 +488,10 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		validInlineBackends,
 		allAuthErrors,
 	)
+
+	if isDiscoveredMode && authConfig != nil {
+		persistDiscoveredModeAuth(config, vmcp, authConfig)
+	}
 
 	// Static mode (inline): Embed full backend details in ConfigMap
 	if isInlineMode {

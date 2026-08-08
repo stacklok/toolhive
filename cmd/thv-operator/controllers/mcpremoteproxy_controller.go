@@ -30,6 +30,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -88,6 +89,12 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if stderrors.Is(err, errInvalidMCPRemoteProxyPodTemplateSpec) {
 			return ctrl.Result{}, nil
 		}
+		if isTerminalExternalAuthError(err) {
+			// Consumer/type incompatibility and source Valid=False are terminal
+			// configuration errors. A watched resource change will enqueue
+			// reconciliation; returning an error here would only create a backoff loop.
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -108,6 +115,7 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // validateAndHandleConfigs validates spec and handles referenced configurations
 func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
+	originalStatus := proxy.DeepCopy().Status
 
 	if err := r.validateSpecAndPodTemplate(ctx, proxy); err != nil {
 		return err
@@ -149,8 +157,19 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	if err := r.handleExternalAuthConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
 		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
+		proxy.Status.Message = "External authentication configuration is invalid"
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonAuthInvalid,
+			Message:            fmt.Sprintf("External authentication configuration is invalid: %v", err),
+			ObservedGeneration: proxy.Generation,
+		})
+		if !equality.Semantic.DeepEqual(originalStatus, proxy.Status) {
+			if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
+				return fmt.Errorf("failed to update MCPRemoteProxy status after MCPExternalAuthConfig error: %w", statusErr)
+			}
 		}
 		return err
 	}
@@ -846,6 +865,20 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	// user having to inspect the referenced MCPExternalAuthConfig).
 	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
 		return err
+	}
+
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerMCPRemoteProxy,
+		externalAuthConfig.Spec.Type,
+	); err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			Message:            err.Error(),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", proxy.Namespace, externalAuthConfig.Name, err)
 	}
 
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.

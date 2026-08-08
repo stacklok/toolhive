@@ -3,7 +3,9 @@ project_name: toolhive
 version: 2
 # This section defines the build matrix.
 builds:
-  - env:
+  # id is referenced by notarize.macos.ids below; matches the previous default.
+  - id: toolhive
+    env:
       - GO111MODULE=on
       - CGO_ENABLED=0
     flags:
@@ -24,6 +26,23 @@ builds:
       - arm64
     main: ./cmd/thv
     binary: thv
+# Developer ID signature for the macOS binaries. Go's linker emits only an
+# ad-hoc one, which carries no Team ID to allowlist. Signing  goes through
+# GoReleaser's embedded quill, so no macOS runner is needed.
+#
+# Sign-only: omitting the `notarize` sub-block keeps Apple's notary service off
+# the release critical path.
+notarize:
+  macos:
+    # A flag rather than `isEnvSet "APPLE_CERTIFICATE"`, because an absent GitHub
+    # secret still sets the variable, to the empty string. Unset means ad-hoc
+    # binaries, not a failed release.
+    - enabled: '{{ .Env.MACOS_SIGN_ENABLED }}'
+      ids:
+        - toolhive
+      sign:
+        certificate: "{{ .Env.APPLE_CERTIFICATE }}"
+        password: "{{ .Env.APPLE_CERTIFICATE_PASSWORD }}"
 # This section defines the release format.
 archives:
   - formats: [ 'tar.gz' ]

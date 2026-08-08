@@ -806,6 +806,62 @@ connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
 `runListChangedResync`, `resyncSessionTools`, `resyncSessionResources`,
 `resyncSessionPrompts`) with `Server.resyncBaseCtx` cancelled on `Stop`.
 
+### Health-driven tools resync (#5786, PR1: passthrough mode)
+
+The propagation above only fires when a connected backend itself emits a
+`list_changed` notification. A backend that flips
+unhealthy ⇄ healthy, or is added to / removed from the group, emits nothing —
+yet the advertised catalog changes, because capability aggregation
+health-filters the backend set (`filterHealthyBackends`). Before #5786,
+already-connected sessions kept serving the capability set snapshotted at
+registration until they reconnected; health transitions were a status-only
+signal (logged, reported to the CRD) with no data-path consumer.
+
+The health monitor (`pkg/vmcp/health`) now exposes a change callback:
+`Monitor.OnChange(fn ChangeListener)` (also on the `health.Reporter`
+interface). It fires when a backend's **advertisability** flips — a transition
+across the healthy/degraded ⇄ unhealthy/unknown/unauthenticated partition,
+detected at the `statusTracker.RecordSuccess`/`RecordFailure` transition
+points, mirroring `filterHealthyBackends`' inclusion rule — and when
+`UpdateBackends` adds or removes backends. Delivery is **debounced to the
+monitor's check interval** (leading edge immediate, further changes in the
+window coalesced into one trailing delivery carrying a monotonically
+increasing generation), so a flapping backend or a multi-backend partition
+cannot storm listeners. Listeners run on a dedicated goroutine, never on a
+health-check path, and `Monitor.Stop` waits for in-flight deliveries.
+
+`Serve` subscribes the transport layer
+(`pkg/vmcp/server/serve_health_resync.go`): the server keeps a registry of
+each live session's **KindTools resync worker** (the same
+`listChangedResyncWorker` the backend-notification path builds — identity and
+forwarded-header capture, the liveness guard, cache invalidation, replace
+semantics, and the SDK's automatic downstream `notifications/tools/list_changed`
+emission are all shared) and, on each delivery, triggers a tools resync for
+every registered session. Sessions register on successful registration and
+deregister on the termination paths the server observes; sessions that end
+without server involvement (TTL expiry, SDK-initiated DELETE) are pruned
+lazily when a triggered resync's liveness guard finds them gone.
+
+**Scope**: passthrough mode, tools only. When the optimizer is enabled the
+fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not
+change on a health flip, and rebuilding the optimizer's per-session backing
+index for live sessions is the deferred optimizer-mode follow-up (PR2 of
+#5786). Resources/resource-templates/prompts re-derivation on health change is
+likewise not wired (a recovered backend's resources appear to new sessions,
+and to existing sessions on the backend's own `list_changed`). `UpdateBackends`
+notifies on membership changes only: a property change to an existing backend
+(URL/transport) restarts its health-check goroutine but does not notify —
+if the relocated backend serves a different tool set, existing sessions pick
+it up via the backend's own `list_changed` or on reconnect, matching the
+agreed membership-only scope.
+
+**Implementation**: `pkg/vmcp/health/change_notifier.go` (`ChangeListener`,
+debounce), `pkg/vmcp/health/monitor.go` (`OnChange`, fire points),
+`pkg/vmcp/health/status.go` (advertisability-transition detection),
+`pkg/vmcp/server/serve_health_resync.go` (`healthResyncRegistry`,
+`resyncSessionsOnBackendHealthChange`), subscription in
+`pkg/vmcp/server/serve.go`.
+
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 
 While a backend `tools/call` (or other request) is in flight, the backend may issue **server-initiated** requests and notifications back toward the client: elicitation, sampling, progress, and logging. vMCP forwards these mid-call in both directions through a per-call forwarder that bridges the backend connection to the originating client session, so a backend that needs user input (elicitation) or model completions (sampling), or that emits progress/log notifications, reaches the real client transparently. This is distinct from composite-tool elicitation (which the composer drives during a workflow); the mid-call forwarder handles the general request-scoped case for a single backend call.

@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"testing"
 	"time"
 
@@ -94,16 +93,18 @@ func TestLiveModelSwap_DifferentWidth(t *testing.T) {
 }
 
 // TestLiveModelSwap_SameWidth verifies against two real models of identical
-// width that a swap invisible to both the content hash and the dimension check
-// is still caught, and the stale vectors recomputed.
+// width that the swap is caught through the model id in the cache key, and the
+// stale vectors recomputed.
 //
-// For the TEI provider the model is fixed by the running container rather than
-// by config, so this swap changes nothing the cache key can see; equal widths
-// hide it from the dimension check too. Only re-embedding the probe detects it.
+// For the TEI provider the model is a property of the running container rather
+// than of the config, so this swap changes nothing the configured identity can
+// see, and equal widths hide it from the dimension check too. The configured
+// halves of the two identities are forced equal below to reproduce that; only
+// the live model id separates them.
 //
-// It also measures how far apart the two spaces are, which is what makes the
-// probe's tolerance safe: the same model repeats bit-identically, while two
-// different models put the same text roughly a full unit apart.
+// It also measures how far apart the two spaces are — the same text under two
+// models lands roughly a full unit apart — which is the size of the corruption
+// a missed swap would serve.
 func TestLiveModelSwap_SameWidth(t *testing.T) {
 	t.Parallel()
 
@@ -125,7 +126,8 @@ func TestLiveModelSwap_SameWidth(t *testing.T) {
 		"this test requires two models of equal width (%s=%d, %s=%d)", base, len(baseVec), other, len(otherVec))
 
 	// The same text embedded by two different models: how different are the spaces?
-	dist := similarity.CosineDistance(baseVec, otherVec)
+	dist, err := similarity.CosineDistance(baseVec, otherVec)
+	require.NoError(t, err)
 	t.Logf("same text under %s vs %s: cosine distance %.4f (width %d)", base, other, dist, len(baseVec))
 
 	dsn := fmt.Sprintf("file:livesame_%d?mode=memory&cache=shared", testDBCounter.Add(1))
@@ -135,10 +137,10 @@ func TestLiveModelSwap_SameWidth(t *testing.T) {
 	require.NoError(t, indexed.UpsertTools(ctx, tools))
 
 	// A TEI-style swap: the model changes behind an unchanged service URL, so
-	// the identity the cache key is derived from is byte-identical. The store is
-	// configured with `base` while the client actually embeds with `other`.
+	// the configured half of the identity is byte-identical. Only the model id
+	// the client reports separates the two stores.
 	swapped := liveModelStore(t, dsn, endpoint, other)
-	swapped.embeddingIdentity = indexed.embeddingIdentity
+	swapped.configIdentity = indexed.configIdentity
 	require.NoError(t, swapped.UpsertTools(ctx, tools))
 
 	var stored []byte
@@ -149,91 +151,6 @@ func TestLiveModelSwap_SameWidth(t *testing.T) {
 		"a same-width model swap must be detected and the stale vector recomputed")
 	assert.NotEqual(t, encodeEmbedding(baseVec), stored,
 		"the previous model's vector must not survive the swap")
-}
-
-// TestLiveModelSwap_StaleDistanceDistribution measures how many stale vectors
-// survive the semantic distance filter after an undetectable same-width model
-// swap, across a realistic catalogue rather than a single pair.
-//
-// A single aggregate distance is misleading here. Two unrelated embedding spaces
-// give a cosine similarity centred on zero, so per-tool distances scatter around
-// 1.0 — and DefaultSemanticDistanceThreshold is exactly 1.0. Whether the filter
-// is a real backstop or a coin flip therefore depends on the spread, which only
-// a distribution can show.
-func TestLiveModelSwap_StaleDistanceDistribution(t *testing.T) {
-	t.Parallel()
-
-	endpoint := liveModelEndpoint(t)
-	base := cmp.Or(os.Getenv(liveModelBaseEnv), "bge-m3")
-	other := os.Getenv(liveModelSameWidthEnv)
-	if other == "" {
-		t.Skipf("%s not set; skipping stale-distance distribution measurement", liveModelSameWidthEnv)
-	}
-
-	ctx := context.Background()
-	backends := []string{"grafana", "datadog", "argocd", "k8s", "gitnexus", "dbhub", "firecrawl", "context7"}
-	const toolCount = 64
-
-	texts := make([]string, toolCount)
-	for i := range toolCount {
-		b := backends[i%len(backends)]
-		texts[i] = embeddedText(
-			fmt.Sprintf("%s_operation_%03d", b, i),
-			fmt.Sprintf("Perform operation %d against the %s backend, applying the requested "+
-				"filters and returning the matching records with their metadata.", i, b),
-		)
-	}
-
-	// Tools indexed by the outgoing model; queries embedded by the incoming one.
-	staleVecs := liveEmbedBatch(ctx, t, endpoint, base, texts)
-	queries := []string{
-		"search dashboards", "list kubernetes pods", "run a SQL query",
-		"fetch a web page", "look up library documentation", "check deployment sync status",
-	}
-	queryVecs := liveEmbedBatch(ctx, t, endpoint, other, queries)
-	require.Equal(t, len(staleVecs[0]), len(queryVecs[0]), "the two models must share a width")
-
-	var dists []float64
-	for _, q := range queryVecs {
-		for _, s := range staleVecs {
-			dists = append(dists, similarity.CosineDistance(q, s))
-		}
-	}
-	sort.Float64s(dists)
-
-	belowThreshold := 0
-	for _, d := range dists {
-		if d <= DefaultSemanticDistanceThreshold {
-			belowThreshold++
-		}
-	}
-	pct := 100 * float64(belowThreshold) / float64(len(dists))
-
-	t.Logf("stale-vector distances after a same-width swap (%s indexed, %s querying), n=%d:",
-		base, other, len(dists))
-	t.Logf("  min %.4f | p50 %.4f | max %.4f", dists[0], dists[len(dists)/2], dists[len(dists)-1])
-	t.Logf("  %d/%d (%.1f%%) fall at or below the %.1f distance threshold and would be ranked",
-		belowThreshold, len(dists), pct, DefaultSemanticDistanceThreshold)
-
-	// No pass/fail on the fraction: it is a property of the model pair, not of
-	// this code. The assertion is only that the measurement is meaningful.
-	require.NotEmpty(t, dists)
-}
-
-// liveEmbedBatch returns embeddings for several texts from one model.
-func liveEmbedBatch(ctx context.Context, t *testing.T, endpoint, model string, texts []string) [][]float32 {
-	t.Helper()
-	client, err := similarity.NewEmbeddingClient(&types.OptimizerConfig{
-		EmbeddingService:        endpoint,
-		EmbeddingProvider:       types.EmbeddingProviderOpenAI,
-		EmbeddingModel:          model,
-		EmbeddingServiceTimeout: 5 * time.Minute,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
-	vecs, err := client.EmbedBatch(ctx, texts)
-	require.NoError(t, err)
-	return vecs
 }
 
 // liveEmbed returns one embedding from the live endpoint for the given model.

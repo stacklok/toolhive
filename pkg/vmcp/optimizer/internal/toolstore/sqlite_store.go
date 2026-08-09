@@ -20,7 +20,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
@@ -82,29 +81,30 @@ type sqliteToolStore struct {
 	hybridSemanticRatio       float64
 	semanticDistanceThreshold float64
 
-	// embeddingIdentity describes the backend that produces embeddings. It is
-	// mixed into every content hash so vectors are never reused across a
-	// provider, endpoint, or model change. Immutable after construction.
-	embeddingIdentity string
+	// configIdentity digests the configured embedding provider, endpoint and
+	// model. The model id read live from the backend on every build is folded
+	// in next to it (see embeddingIdentity), so vectors are not reused across
+	// any provider, endpoint, or model change the identity can see — including
+	// a TEI container redeployed with a different model behind an unchanged
+	// URL, which the config alone cannot. When the id cannot be read the
+	// identity falls back and reuse proceeds unverified, within the bounds
+	// documented on embeddingIdentity. Immutable after construction.
+	configIdentity string
+
+	// lastModelID is the most recent model id successfully read from the
+	// embedding backend, or nil before the first successful read. It is the
+	// fallback for a failed read: keeping the last-seen id keeps cache keys
+	// stable across a transient failure, where switching to a different
+	// identity would force a full re-embed and a second one on recovery.
+	// Held by pointer because the store is used by value.
+	lastModelID *atomic.Pointer[string]
 
 	// embeddingDim is the vector width most recently observed from the
 	// embedding backend, or 0 before any embedding call has succeeded. It
-	// bounds which stored vectors may be reused, catching a model swap that
-	// embeddingIdentity cannot see (the TEI model is fixed by the running
-	// container, not by config). Held by pointer because the store is used by
-	// value.
+	// bounds which stored vectors may be reused, as defense in depth behind
+	// the model id in the cache key. Held by pointer because the store is
+	// used by value.
 	embeddingDim *atomic.Int64
-
-	// canary serializes the backend probe so concurrent builds cannot race on
-	// the stored probe row. Held by pointer because the store is used by value.
-	canary *canaryState
-}
-
-// canaryState serializes the backend probe and counts completed probes, so a
-// build that waited through one can tell that its result already applies.
-type canaryState struct {
-	mu         sync.Mutex
-	generation atomic.Uint64
 }
 
 // NewSQLiteToolStore creates a new ToolStore backed by a shared in-memory
@@ -164,9 +164,9 @@ func newSQLiteToolStore(
 		maxToolsToReturn:          maxTools,
 		hybridSemanticRatio:       hybridRatio,
 		semanticDistanceThreshold: semanticThreshold,
-		embeddingIdentity:         embeddingIdentity(cfg),
+		configIdentity:            configIdentity(cfg),
+		lastModelID:               &atomic.Pointer[string]{},
 		embeddingDim:              &atomic.Int64{},
-		canary:                    &canaryState{},
 	}
 
 	slog.Debug("optimizer tool store created",
@@ -220,6 +220,12 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 	return tx.Commit()
 }
 
+// maxResolveAttempts bounds how many times one build may restart because the
+// embedding model changed under it. Two is enough for the legitimate case of
+// a single redeploy; a backend that swaps models on consecutive builds is an
+// operational problem no retry count fixes.
+const maxResolveAttempts = 2
+
 // resolveEmbeddings returns an encoded embedding blob and a content hash for
 // each tool, embedding only the tools whose hash is not already stored.
 //
@@ -228,6 +234,19 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 // Embedding all of it every time costs O(tools x sessions) on the client's
 // initialize round-trip; reuse makes it O(tools whose text changed). See
 // stacklok/toolhive#5847.
+//
+// The backend identity is read at the start of an attempt and re-read after
+// the embedding batch. If the two differ, the batch spanned a model swap and
+// none of its vectors is attributable to either model — each chunk may have
+// hit either side of the swap — so the attempt is discarded and re-run under
+// the new identity, where the stale rows simply miss by key. Without the
+// re-read, vectors produced by the new model would be committed under keys
+// naming the old one: wrong vectors under valid-looking keys, which no later
+// build would ever re-check. Reused blobs need no such guard: a blob is only
+// found under the identity it was committed with, and only identities that
+// were verified when the blob was committed ever carry a hash — vectors
+// embedded while the id could not be read are committed hashless, searchable
+// but never reusable (see the note at the fill loop below).
 //
 // With no embedding client it returns nil blobs and hashes (FTS5-only mode).
 func (s sqliteToolStore) resolveEmbeddings(
@@ -241,23 +260,103 @@ func (s sqliteToolStore) resolveEmbeddings(
 	}
 
 	texts := make([]string, len(tools))
-	keys := make([]string, len(tools))
 	for i, tool := range tools {
 		texts[i] = embeddedText(tool.Tool.Name, tool.Tool.Description)
-		keys[i] = embeddingCacheKey(s.embeddingIdentity, texts[i])
-		hashes[i] = sql.NullString{String: keys[i], Valid: true}
 	}
 
-	// Discards stored vectors first if the backend has changed under us, so the
-	// lookup below simply finds nothing to reuse for them.
-	s.syncBackendProbe(ctx)
+	keys := make([]string, len(tools))
+	for attempt := 1; ; attempt++ {
+		identity, verified := s.embeddingIdentity(ctx)
 
-	cached, err := s.cachedEmbeddings(ctx, keys)
-	if err != nil {
-		return nil, nil, err
+		for i := range tools {
+			keys[i] = embeddingCacheKey(identity, texts[i])
+			hashes[i] = sql.NullString{String: keys[i], Valid: true}
+		}
+
+		cached, err := s.cachedEmbeddings(ctx, keys)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		missIndexByKey, missTexts, reused := partitionMisses(blobs, keys, texts, cached)
+
+		slog.Debug("resolved tool embeddings",
+			"tools", len(tools), "reused", reused, "embedded", len(missTexts))
+
+		// All cache hits: nothing was embedded, so there is no batch to have
+		// spanned a swap. The reused vectors are correct for the keys they
+		// carry by construction.
+		if len(missTexts) == 0 {
+			return blobs, hashes, nil
+		}
+
+		embeddings, err := s.embedTexts(ctx, missTexts)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		after, afterVerified := s.embeddingIdentity(ctx)
+		if after != identity {
+			if attempt >= maxResolveAttempts {
+				return nil, nil, fmt.Errorf(
+					"embedding model changed during %d consecutive build attempts; giving up", attempt)
+			}
+			slog.Warn("embedding model changed during the batch; discarding it and re-embedding under the new identity")
+			continue
+		}
+		verified = verified && afterVerified
+
+		// Published only for a batch that will commit: a discarded attempt's
+		// width must not make concurrent builds reject their own valid rows.
+		if n := len(embeddings[0]); n > 0 {
+			s.embeddingDim.Store(int64(n))
+		}
+
+		if err := fillMisses(blobs, hashes, keys, tools, missIndexByKey, embeddings, verified); err != nil {
+			return nil, nil, err
+		}
+
+		return blobs, hashes, nil
 	}
+}
 
-	// Deduplicated by key: the same tool may appear twice in one batch.
+// fillMisses encodes the freshly embedded vectors into their tools' slots.
+// When the attempt's identity was not verified on both sides of the batch,
+// the fresh rows are committed hashless — searchable but never reusable. A
+// hashed row here would be permanent poison if the backend is later rolled
+// back to the fallback model: the next verified build would derive the very
+// identity these keys name, cache-hit the mislabelled vectors, and re-key
+// nothing.
+func fillMisses(
+	blobs [][]byte, hashes []sql.NullString, keys []string,
+	tools []server.ServerTool, missIndexByKey map[string]int, embeddings [][]float32, verified bool,
+) error {
+	for i, key := range keys {
+		if blobs[i] != nil {
+			continue
+		}
+		idx, ok := missIndexByKey[key]
+		if !ok {
+			// Unreachable, but a missing key would otherwise index 0 and store
+			// another tool's vector under this name.
+			return fmt.Errorf("no embedding resolved for tool %s", tools[i].Tool.Name)
+		}
+		blobs[i] = encodeEmbedding(embeddings[idx])
+		if !verified {
+			hashes[i] = sql.NullString{}
+		}
+	}
+	return nil
+}
+
+// partitionMisses fills blobs with the cached vectors and returns the texts
+// still to embed, deduplicated by key — the same tool may appear twice in one
+// batch — along with the number of reused entries. Entries with no cached
+// vector are reset to nil: a retry after a model swap must not carry blobs
+// reused under the previous attempt's identity.
+func partitionMisses(
+	blobs [][]byte, keys, texts []string, cached map[string][]byte,
+) (map[string]int, []string, int) {
 	missIndexByKey := make(map[string]int, len(keys))
 	var missTexts []string
 	reused := 0
@@ -267,191 +366,73 @@ func (s sqliteToolStore) resolveEmbeddings(
 			reused++
 			continue
 		}
+		blobs[i] = nil
 		if _, seen := missIndexByKey[key]; !seen {
 			missIndexByKey[key] = len(missTexts)
 			missTexts = append(missTexts, texts[i])
 		}
 	}
-
-	slog.Debug("resolved tool embeddings",
-		"tools", len(tools), "reused", reused, "embedded", len(missTexts))
-
-	if len(missTexts) == 0 {
-		return blobs, hashes, nil
-	}
-
-	embeddings, err := s.embeddingClient.EmbedBatch(ctx, missTexts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate embeddings: %w", err)
-	}
-	if len(embeddings) != len(missTexts) {
-		return nil, nil, fmt.Errorf("embedding client returned %d embeddings for %d inputs",
-			len(embeddings), len(missTexts))
-	}
-	if n := len(embeddings[0]); n > 0 {
-		s.embeddingDim.Store(int64(n))
-	}
-
-	for i, key := range keys {
-		if blobs[i] != nil {
-			continue
-		}
-		idx, ok := missIndexByKey[key]
-		if !ok {
-			// Unreachable, but a missing key would otherwise index 0 and store
-			// another tool's vector under this name.
-			return nil, nil, fmt.Errorf("no embedding resolved for tool %s", tools[i].Tool.Name)
-		}
-		blobs[i] = encodeEmbedding(embeddings[idx])
-	}
-
-	return blobs, hashes, nil
+	return missIndexByKey, missTexts, reused
 }
 
-// canaryText is the fixed probe embedded to detect a change of embedding
-// backend. Its content is arbitrary but must never change: an edit would make
-// every stored canary incomparable and force one needless full re-embed.
-const canaryText = "toolhive optimizer embedding canary v1"
-
-// canaryMaxDistance is the cosine distance below which two probe embeddings are
-// considered to come from the same backend.
-//
-// The threshold is not zero because a backend is not required to be
-// deterministic: reduction order can differ across hardware and runtimes, so the
-// same model may return slightly different vectors on different deployments.
-// It is small because the signal it must not miss is large — two different
-// models of equal width place the same text roughly a full unit apart, i.e.
-// effectively orthogonal, so this leaves two orders of magnitude of margin.
-const canaryMaxDistance = 0.01
-
-// syncBackendProbe discards stored embeddings when the embedding backend
-// has started returning different vectors.
-//
-// It runs on every build, not once per store. The store lives for the whole
-// process and the embedding service is addressed by a stable URL, so the backend
-// can be replaced underneath a running server — redeploying the embedding
-// service with a different model of the same width changes neither the URL nor
-// the vector length, leaving it invisible to both the content hash and the
-// dimension check. Probing once at startup would never see it, and reuse would
-// then serve vectors from the old model for the rest of the process's life.
-// Before embedding reuse existed the next session simply re-embedded everything
-// and the condition healed on its own.
-//
-// Cost is one embedding per build, against the ~140 it saves.
-//
-// Every failure path leaves the stored embeddings reusable. A probe that cannot
-// be taken says the backend is unreachable, not that it changed — and an
-// unreachable backend cannot re-embed the catalogue either, so refusing reuse
-// would turn a working build into a failed one. Serving possibly-stale vectors
-// is bounded: the next build with a reachable backend re-probes and discards
-// them. A build that still works beats a client with no tools.
-func (s sqliteToolStore) syncBackendProbe(ctx context.Context) {
-	// Every build must be ordered after any in-flight probe, because a probe may
-	// be about to discard the very vectors this build is about to read and write
-	// back. Skipping the lock instead of waiting for it lets a build read
-	// pre-discard rows and re-insert them — restoring both the stale vector and
-	// its content hash — after which the freshly written probe certifies the
-	// store as current and nothing ever re-checks. That is permanent, not
-	// bounded. See TestSQLiteToolStore_ConcurrentBuilds_OrderedAfterProbe.
-	//
-	// Waiting is still cheap: a build that waited through someone else's probe
-	// sees the generation move and skips the network call, so a burst of
-	// concurrent builds costs one embedding between them, not one each.
-	gen := s.canary.generation.Load()
-	s.canary.mu.Lock()
-	defer s.canary.mu.Unlock()
-	if s.canary.generation.Load() != gen {
-		return
-	}
-
-	// Embedded outside any transaction so no database lock is held across the
-	// network call (see the note in UpsertTools).
-	probe, err := s.embeddingClient.Embed(ctx, canaryText)
+// embedTexts runs one embedding batch, returning exactly one vector per text.
+func (s sqliteToolStore) embedTexts(ctx context.Context, texts []string) ([][]float32, error) {
+	embeddings, err := s.embeddingClient.EmbedBatch(ctx, texts)
 	if err != nil {
-		slog.Warn("could not probe the embedding backend; reusing stored embeddings unverified", "error", err)
-		return
+		return nil, fmt.Errorf("failed to generate embeddings: %w", err)
 	}
-	if len(probe) == 0 {
-		slog.Warn("embedding backend returned an empty probe; reusing stored embeddings unverified")
-		return
+	if len(embeddings) != len(texts) {
+		return nil, fmt.Errorf("embedding client returned %d embeddings for %d inputs",
+			len(embeddings), len(texts))
 	}
-	s.embeddingDim.Store(int64(len(probe)))
-
-	changed, err := s.reconcileCanary(ctx, probe)
-	if err != nil {
-		slog.Warn("could not reconcile the embedding probe; reusing stored embeddings unverified", "error", err)
-		return
-	}
-
-	s.canary.generation.Add(1)
-	if changed {
-		slog.Warn("embedding backend changed; stored embeddings were discarded and will be recomputed")
-	}
+	return embeddings, nil
 }
 
-// reconcileCanary compares probe against the stored canary, discarding every
-// stored embedding when they differ, and records probe as the new canary.
-// Reports whether stored embeddings were discarded.
+// embeddingIdentity derives the backend identity mixed into every cache key
+// for one build, folding the live model id into the configured identity.
 //
-// The discard and the new canary are written in one transaction so a failure
-// cannot leave a canary that claims vectors are current when they are not.
-func (s sqliteToolStore) reconcileCanary(ctx context.Context, probe []float32) (discarded bool, retErr error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to begin canary transaction: %w", err)
-	}
-	defer func() {
-		if retErr != nil {
-			_ = tx.Rollback()
+// The id is read from the backend on every build rather than once at
+// construction: the store lives for the whole process and the embedding
+// service is addressed by a stable URL, so a TEI container can be redeployed
+// with a different model behind an unchanged URL — invisible to the config,
+// and to the dimension check when the widths match. A live id turns that
+// swap into different cache keys, so stale rows simply stop being found;
+// there is nothing to detect and nothing to discard.
+//
+// Every failure path keeps the previous identity and reports it unverified.
+// A read that fails says the backend is unreachable, not that it changed —
+// and an unreachable backend cannot re-embed the catalogue either, so
+// flipping the identity would turn a working build into a full re-embed now
+// and a second one on recovery. Before any successful read it degrades to
+// the configured identity alone. Previously verified rows stay reusable
+// under an unverified identity; what an unverified identity must never do is
+// attribute NEW vectors (see resolveEmbeddings).
+func (s sqliteToolStore) embeddingIdentity(ctx context.Context) (identity string, verified bool) {
+	modelID, err := s.embeddingClient.ModelID(ctx)
+	verified = err == nil && modelID != ""
+	if !verified {
+		modelID = ""
+		if last := s.lastModelID.Load(); last != nil {
+			modelID = *last
 		}
-	}()
-
-	var storedBlob []byte
-	err = tx.QueryRowContext(ctx, "SELECT embedding FROM embedding_canary WHERE id = 1").Scan(&storedBlob)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		// No probe recorded. Any embeddings already present came from a backend
-		// this store cannot vouch for, so they are not reusable.
-		var existing int
-		if err := tx.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM llm_capabilities WHERE embedding IS NOT NULL").Scan(&existing); err != nil {
-			return false, fmt.Errorf("failed to count stored embeddings: %w", err)
-		}
-		discarded = existing > 0
-	case err != nil:
-		return false, fmt.Errorf("failed to read the stored canary: %w", err)
-	default:
-		stored := decodeEmbedding(storedBlob)
-		// Compare widths first: cosine distance indexes both slices positionally
-		// and would panic on a shorter stored vector.
-		discarded = len(stored) != len(probe) ||
-			similarity.CosineDistance(stored, probe) > canaryMaxDistance
+		slog.Warn("could not read the embedding model id; proceeding with the last known identity unverified",
+			"error", err, "assumed_model_id", modelID)
+	} else {
+		s.lastModelID.Store(&modelID)
 	}
-
-	if discarded {
-		// Clear the vectors but keep the rows: they also back the external-content
-		// FTS5 index, so deleting them would break keyword search for tools
-		// outside the current session's set.
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE llm_capabilities SET embedding = NULL, content_hash = NULL"); err != nil {
-			return false, fmt.Errorf("failed to discard stale embeddings: %w", err)
-		}
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		"INSERT OR REPLACE INTO embedding_canary (id, embedding) VALUES (1, ?)",
-		encodeEmbedding(probe)); err != nil {
-		return false, fmt.Errorf("failed to record the canary: %w", err)
-	}
-
-	return discarded, tx.Commit()
+	// Digested rather than joined so the identity is fixed-length and cannot
+	// shift the field boundaries of the cache key it is folded into.
+	return hashParts(s.configIdentity, modelID), verified
 }
 
 // cachedEmbeddings returns the reusable stored embeddings among the given
 // content hashes, keyed by hash. Hashes with no usable vector are absent.
 //
-// Matching on content_hash rather than tool name lets a renamed tool keep its
-// vector. Runs outside any transaction — see the lock note in UpsertTools.
+// Matching on content_hash rather than tool name confirms in one lookup that
+// the embedded text and the producing backend are both unchanged; a changed
+// description or a repointed backend cannot quietly reuse a vector. A rename
+// changes the text, so it re-embeds. Runs outside any transaction — see the
+// lock note in UpsertTools.
 //
 // A stale-width vector is treated as a miss rather than reused: reuse would be
 // permanent, since it is handed back and re-stored on every rebuild while
@@ -541,15 +522,9 @@ func hashParts(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// embeddingIdentity derives the backend identity mixed into every content hash.
-//
-// Known limitation: for the TEI provider the model is fixed by the running
-// container rather than by config, so swapping the model behind an unchanged
-// service URL is not detected here. Search tolerates the resulting stale
-// vectors (see searchSemantic) but they remain semantically stale until the
-// process restarts. Reading the model id from the TEI /info endpoint would
-// close this gap.
-func embeddingIdentity(cfg *types.OptimizerConfig) string {
+// configIdentity digests the configured half of the backend identity; the
+// model id read live per build completes it (see embeddingIdentity).
+func configIdentity(cfg *types.OptimizerConfig) string {
 	if cfg == nil {
 		return ""
 	}
@@ -780,15 +755,13 @@ func (s sqliteToolStore) searchSemantic(
 		candidatesEvaluated++
 		emb := decodeEmbedding(embBlob)
 
-		// Cosine distance indexes both slices positionally: a shorter stored
-		// vector panics, a longer one silently ignores its tail. A mismatch
-		// means the vector survived a model change (see embeddingIdentity).
-		if len(emb) != len(queryVec) {
+		// A width mismatch means the vector survived a model change (see
+		// embeddingIdentity); skip it rather than fail the whole search.
+		dist, err := similarity.CosineDistance(queryVec, emb)
+		if err != nil {
 			dimensionMismatches++
 			continue
 		}
-
-		dist := similarity.CosineDistance(queryVec, emb)
 
 		// Filter by semantic distance threshold.
 		// This is meaningful only for cosine distance (semantic search).

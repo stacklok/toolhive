@@ -24,8 +24,9 @@ import (
 // avoided rather than on wall-clock time.
 type countingEmbeddingClient struct {
 	*fakeEmbeddingClient
-	texts atomic.Int64
-	calls atomic.Int64
+	texts       atomic.Int64
+	calls       atomic.Int64
+	modelIDGets atomic.Int64
 
 	mu       sync.Mutex
 	embedded []string
@@ -47,6 +48,11 @@ func (c *countingEmbeddingClient) EmbedBatch(ctx context.Context, texts []string
 	c.embedded = append(c.embedded, texts...)
 	c.mu.Unlock()
 	return c.fakeEmbeddingClient.EmbedBatch(ctx, texts)
+}
+
+func (c *countingEmbeddingClient) ModelID(ctx context.Context) (string, error) {
+	c.modelIDGets.Add(1)
+	return c.fakeEmbeddingClient.ModelID(ctx)
 }
 
 // textsEmbedded returns the total number of texts sent to the backend.
@@ -185,6 +191,12 @@ func TestSQLiteToolStore_UpsertTools_ReusesCachedEmbeddings(t *testing.T) {
 		"an unchanged tool set must not be re-embedded on subsequent builds")
 	assert.Equal(t, 1, client.batchCalls(),
 		"rebuilds over an unchanged tool set must not reach the embedding backend at all")
+
+	// The cold build reads the id twice (once per side of its batch); a warm
+	// build reads it once. This bounds the backend round-trips on the warm
+	// path, which the probe this design replaced paid one embedding for.
+	assert.Equal(t, int64(2+3), client.modelIDGets.Load(),
+		"a warm build must cost exactly one model id read and nothing else")
 }
 
 // TestSQLiteToolStore_UpsertTools_ReEmbedsOnlyChangedTools asserts the cache is
@@ -388,11 +400,15 @@ func TestSQLiteToolStore_UpsertTools_IgnoresEmptyStoredEmbedding(t *testing.T) {
 
 // shiftedEmbeddingClient produces vectors of the configured width that differ
 // from fakeEmbeddingClient's for the same text, standing in for a replacement
-// model of identical width — the swap neither the content hash nor the
-// dimension check can see.
+// model of identical width. It reports its own model id, which is how the
+// replacement becomes visible to the cache key.
 type shiftedEmbeddingClient struct {
 	*fakeEmbeddingClient
 	calls atomic.Int64
+}
+
+func (*shiftedEmbeddingClient) ModelID(context.Context) (string, error) {
+	return "shifted-model", nil
 }
 
 func newShiftedEmbeddingClient() *shiftedEmbeddingClient {
@@ -428,7 +444,8 @@ func (c *shiftedEmbeddingClient) EmbedBatch(ctx context.Context, texts []string)
 //
 // This is what redeploying the embedding service with a different model looks
 // like to a running vmcp: the Service URL is unchanged, so the store keeps the
-// same client and never learns the backend moved.
+// same client. The swap is observable only through ModelID, which reports the
+// model currently serving — exactly what the real TEI client reads from /info.
 type swappableEmbeddingClient struct {
 	*fakeEmbeddingClient
 	swapped atomic.Bool
@@ -441,8 +458,13 @@ func newSwappableEmbeddingClient() *swappableEmbeddingClient {
 
 func (c *swappableEmbeddingClient) swap() { c.swapped.Store(true) }
 
-// Embed counts every text, including the backend probe, which is issued here
-// rather than through EmbedBatch.
+func (c *swappableEmbeddingClient) ModelID(context.Context) (string, error) {
+	if c.swapped.Load() {
+		return "swapped-model", nil
+	}
+	return fakeModelID, nil
+}
+
 func (c *swappableEmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
 	c.texts.Add(1)
 	vec, err := c.fakeEmbeddingClient.Embed(ctx, text)
@@ -474,11 +496,12 @@ func (c *swappableEmbeddingClient) embedded() int { return int(c.texts.Load()) }
 // TestSQLiteToolStore_BackendChange_DiscardsStaleEmbeddings is the regression
 // test for the failure this cache would otherwise introduce.
 //
-// A replacement model of the same width is invisible to the content hash (the
-// config is unchanged) and to the dimension check (the width is unchanged), so
-// without the backend probe the stale vectors would be reused and re-stored on
-// every later build — permanently, where re-embedding every session used to heal
-// it on its own.
+// A replacement model of the same width is invisible to the configured
+// identity (the config is unchanged) and to the dimension check (the width is
+// unchanged). The model id read per build is what makes it visible: a
+// different id produces different cache keys, so every stale row misses and
+// the catalogue is re-embedded — where keying on text alone would reuse and
+// re-store the stale vectors permanently.
 //
 // The topology matters: production creates ONE store per process
 // (NewOptimizerFactory) and every session build calls UpsertTools on it, so the
@@ -494,20 +517,19 @@ func TestSQLiteToolStore_BackendChange_DiscardsStaleEmbeddings(t *testing.T) {
 
 	require.NoError(t, store.UpsertTools(ctx, tools), "first build")
 	afterCold := client.embedded()
-	require.Equal(t, len(tools)+1, afterCold, "cold build embeds every tool plus the probe")
+	require.Equal(t, len(tools), afterCold, "cold build embeds every tool")
 
 	require.NoError(t, store.UpsertTools(ctx, tools), "second build, backend unchanged")
-	afterWarm := client.embedded()
-	require.Equal(t, afterCold+1, afterWarm,
-		"an unchanged backend re-embeds only the probe")
+	require.Equal(t, afterCold, client.embedded(),
+		"an unchanged backend embeds nothing on a rebuild")
 
 	// The embedding service is redeployed with a different model. Same URL, same
-	// client, same store — only the vectors change.
+	// client, same store — only the vectors and the reported model id change.
 	client.swap()
 	require.NoError(t, store.UpsertTools(ctx, tools), "build after the model swap")
 
-	assert.Equal(t, afterWarm+1+len(tools), client.embedded(),
-		"a changed backend must re-embed every tool, not just the probe")
+	assert.Equal(t, afterCold+len(tools), client.embedded(),
+		"a changed model id must re-embed every tool")
 
 	var stored []byte
 	require.NoError(t, store.db.QueryRowContext(ctx,
@@ -520,13 +542,14 @@ func TestSQLiteToolStore_BackendChange_DiscardsStaleEmbeddings(t *testing.T) {
 
 // TestSQLiteToolStore_BackendUnreachable_StillServesTools pins the availability
 // property this cache buys: once warm, a build survives the embedding backend
-// being completely down.
+// being completely down — the model id read fails along with everything else,
+// and the identity falls back to the last id seen.
 //
 // Measured live on 2026-07-25 — all four TEI pods deleted, a session built
 // normally from cache. It is asserted here because that scenario cannot run in
-// CI, and because it is fragile: making the probe refuse reuse on failure
-// silently destroys it, turning a working build into a client with no tools.
-// That is the original stacklok/toolhive#5847 symptom.
+// CI, and because it is fragile: flipping the identity when the id cannot be
+// read silently destroys it, turning a working build into a client with no
+// tools. That is the original stacklok/toolhive#5847 symptom.
 func TestSQLiteToolStore_BackendUnreachable_StillServesTools(t *testing.T) {
 	t.Parallel()
 
@@ -554,7 +577,7 @@ func TestSQLiteToolStore_BackendUnreachable_StillServesTools(t *testing.T) {
 }
 
 // flakyEmbeddingClient fails every call once down is set, modelling the
-// embedding service being unreachable.
+// embedding service being unreachable — including its model id endpoint.
 type flakyEmbeddingClient struct {
 	*fakeEmbeddingClient
 	down  atomic.Bool
@@ -563,6 +586,13 @@ type flakyEmbeddingClient struct {
 
 func newFlakyEmbeddingClient() *flakyEmbeddingClient {
 	return &flakyEmbeddingClient{fakeEmbeddingClient: newFakeEmbeddingClient(countingClientDim)}
+}
+
+func (c *flakyEmbeddingClient) ModelID(ctx context.Context) (string, error) {
+	if c.down.Load() {
+		return "", fmt.Errorf("embedding backend unreachable")
+	}
+	return c.fakeEmbeddingClient.ModelID(ctx)
 }
 
 func (c *flakyEmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
@@ -587,103 +617,296 @@ func (c *flakyEmbeddingClient) EmbedBatch(ctx context.Context, texts []string) (
 
 func (c *flakyEmbeddingClient) embedded() int { return int(c.texts.Load()) }
 
-// blockingProbeClient holds the probe open until released, so a test can
-// observe what a concurrent build does while a probe is in flight.
-type blockingProbeClient struct {
-	*fakeEmbeddingClient
-	entered chan struct{}
-	release chan struct{}
+// midBatchSwapClient swaps the model at the moment the swapOnBatch-th
+// embedding batch begins, so that batch's vectors come from the new model
+// while the build's identity was read under the old one — the narrowest form
+// of the swap window. With infoDownAfterSwap, the model id also becomes
+// unreadable from the swap on, modelling a redeploy that takes /info away in
+// the same instant it changes the model.
+type midBatchSwapClient struct {
+	*swappableEmbeddingClient
+	batches           atomic.Int64
+	swapOnBatch       int64
+	infoDownAfterSwap bool
 }
 
-func newBlockingProbeClient() *blockingProbeClient {
-	return &blockingProbeClient{
-		fakeEmbeddingClient: newFakeEmbeddingClient(countingClientDim),
-		entered:             make(chan struct{}, 1),
-		release:             make(chan struct{}),
+func newMidBatchSwapClient() *midBatchSwapClient {
+	return &midBatchSwapClient{swappableEmbeddingClient: newSwappableEmbeddingClient(), swapOnBatch: 1}
+}
+
+func (c *midBatchSwapClient) ModelID(ctx context.Context) (string, error) {
+	if c.infoDownAfterSwap && c.swapped.Load() {
+		return "", fmt.Errorf("info endpoint unreachable")
 	}
+	return c.swappableEmbeddingClient.ModelID(ctx)
 }
 
-func (c *blockingProbeClient) Embed(ctx context.Context, text string) ([]float32, error) {
-	if text == canaryText {
-		select {
-		case c.entered <- struct{}{}:
-		default:
-		}
-		select {
-		case <-c.release:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+func (c *midBatchSwapClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if c.batches.Add(1) == c.swapOnBatch {
+		c.swap()
 	}
-	return c.fakeEmbeddingClient.Embed(ctx, text)
+	return c.swappableEmbeddingClient.EmbedBatch(ctx, texts)
 }
 
-func (c *blockingProbeClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	for i, text := range texts {
-		vec, err := c.Embed(ctx, text)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = vec
-	}
-	return out, nil
-}
-
-// TestSQLiteToolStore_ConcurrentBuilds_OrderedAfterProbe asserts no build reads
-// the cache while a probe is in flight.
+// TestSQLiteToolStore_ModelSwapDuringBatch_ReembedsUnderNewIdentity covers the
+// window the post-batch identity re-read exists for: the model is replaced
+// while a build sits in EmbedBatch, which takes seconds against a real backend.
 //
-// A probe may be about to discard the vectors a concurrent build is reading. If
-// that build is allowed to proceed, its INSERT OR REPLACE writes the stale
-// vector AND its content hash back after the discard commits. The identity is
-// unchanged on a same-width backend swap, so later builds recompute the same
-// hash, find the restored row, and reuse it — while the freshly written probe
-// certifies the store as current, so nothing re-checks. Permanently stale, with
-// nothing logged.
-//
-// Found by cross-model review; the earlier TryLock implementation had exactly
-// this hole.
-func TestSQLiteToolStore_ConcurrentBuilds_OrderedAfterProbe(t *testing.T) {
+// Committing that batch would store the new model's vectors under keys naming
+// the old model. A later build under the new id re-embeds and heals — but a
+// swap back to the old model recomputes exactly those keys and reuses the
+// mislabelled vectors as the old model's, permanently. And a batch the swap
+// landed in the middle of is a mixture no single identity describes. The
+// re-read discards the attempt and re-runs it under the new identity instead.
+func TestSQLiteToolStore_ModelSwapDuringBatch_ReembedsUnderNewIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	client := newBlockingProbeClient()
+	client := newMidBatchSwapClient()
 	store := newTestStore(t, client, nil)
+	tools := catalog(5)
 
-	go func() { _ = store.UpsertTools(ctx, catalog(3)) }()
-	<-client.entered // a probe is now in flight and holding the lock
+	require.NoError(t, store.UpsertTools(ctx, tools), "build spanning the swap must still succeed")
+	require.Equal(t, int64(2), client.batches.Load(),
+		"the batch that spanned the swap must be discarded and re-run")
 
-	done := make(chan struct{})
-	go func() {
-		_ = store.UpsertTools(ctx, makeTools(
-			mcp.NewTool("concurrent", mcp.WithDescription("Indexed while a probe is in flight"))))
-		close(done)
-	}()
+	// The committed vectors must be the new model's, stored under the new
+	// model's keys: a rebuild under the (unchanged) new id reuses everything.
+	before := client.embedded()
+	require.NoError(t, store.UpsertTools(ctx, tools), "rebuild under the new model")
+	assert.Equal(t, before, client.embedded(),
+		"a rebuild after the swap settled must embed nothing")
 
-	select {
-	case <-done:
-		close(client.release)
-		t.Fatal("a build completed while a probe was in flight; it can write pre-discard state back")
-	case <-time.After(600 * time.Millisecond):
-		// Correct: the second build is ordered behind the probe.
-	}
-	close(client.release)
-
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("timeout waiting for the queued build to finish")
-	}
+	var stored []byte
+	require.NoError(t, store.db.QueryRowContext(ctx,
+		"SELECT embedding FROM llm_capabilities WHERE name = ?", tools[0].Tool.Name).Scan(&stored))
+	want, err := client.Embed(ctx, embeddedText(tools[0].Tool.Name, tools[0].Tool.Description))
+	require.NoError(t, err)
+	assert.Equal(t, encodeEmbedding(want), stored,
+		"the committed vector must come from the post-swap model")
 }
 
-// TestSQLiteToolStore_BackendUnchanged_KeepsReuse asserts the probe does not
-// invalidate the cache when the backend is the same, which would silently undo
-// the reuse this cache exists for.
+// TestSQLiteToolStore_ModelSwapDuringBatch_DropsBlobsReusedUnderOldIdentity
+// covers the retry from a WARM store: attempt one reuses most of the catalogue
+// under the old identity and embeds only the changed tools; the swap lands in
+// that batch, so the retry must drop the reused blobs too — every vector it
+// commits, including the unchanged tools', must come from the new model. This
+// is the path where forgetting to reset carried-over blobs commits old-model
+// vectors under new-model keys.
+func TestSQLiteToolStore_ModelSwapDuringBatch_DropsBlobsReusedUnderOldIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newMidBatchSwapClient()
+	client.swapOnBatch = 2 // the warm build below is batch 1
+	store := newTestStore(t, client, nil)
+
+	require.NoError(t, store.UpsertTools(ctx, catalog(5)), "warm build under the old model")
+
+	changed := catalog(5)
+	changed[4].Tool.Description = "Reworded while the model swaps"
+	require.NoError(t, store.UpsertTools(ctx, changed), "build spanning the swap")
+	require.Equal(t, int64(3), client.batches.Load(),
+		"the spanning batch must be discarded and the whole set re-embedded")
+
+	// An unchanged tool is the telling one: attempt one reused its old-model
+	// blob, and that blob must not have survived into the commit.
+	var stored []byte
+	require.NoError(t, store.db.QueryRowContext(ctx,
+		"SELECT embedding FROM llm_capabilities WHERE name = ?", changed[0].Tool.Name).Scan(&stored))
+	want, err := client.Embed(ctx, embeddedText(changed[0].Tool.Name, changed[0].Tool.Description))
+	require.NoError(t, err)
+	assert.Equal(t, encodeEmbedding(want), stored,
+		"a blob reused under the pre-swap identity must be re-embedded, not committed under the new keys")
+}
+
+// flappingModelIDClient reports a different model id on every read, modelling
+// a backend that cannot settle — e.g. two replicas running different models
+// behind one Service.
+type flappingModelIDClient struct {
+	*fakeEmbeddingClient
+	reads atomic.Int64
+}
+
+func (c *flappingModelIDClient) ModelID(context.Context) (string, error) {
+	if c.reads.Add(1)%2 == 1 {
+		return "model-a", nil
+	}
+	return "model-b", nil
+}
+
+// TestSQLiteToolStore_ModelIDFlapping_FailsTheBuild pins the give-up bound:
+// a backend whose identity moves on every read must fail the build with a
+// clear error, not retry forever or commit under an arbitrary identity.
+func TestSQLiteToolStore_ModelIDFlapping_FailsTheBuild(t *testing.T) {
+	t.Parallel()
+
+	client := &flappingModelIDClient{fakeEmbeddingClient: newFakeEmbeddingClient(countingClientDim)}
+	store := newTestStore(t, client, nil)
+
+	err := store.UpsertTools(context.Background(), catalog(3))
+	require.ErrorContains(t, err, "model changed during",
+		"an identity that moves on every read must fail the build after the retry budget")
+}
+
+// TestSQLiteToolStore_SwapWithUnreadableID_CommitsFailOpen pins the documented
+// fail-open bound: when the swap lands mid-batch AND the id becomes unreadable
+// in the same instant, the post-batch re-read falls back to the pre-batch id,
+// the check passes vacuously, and the batch commits — searchable, but never
+// reusable (see TestSQLiteToolStore_RollbackAfterUnverifiedCommit_NeverReusesPoison
+// for why the unverified rows must not carry a hash). Failing the build
+// instead would turn every transient /info outage into an outage of its own.
+func TestSQLiteToolStore_SwapWithUnreadableID_CommitsFailOpen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newMidBatchSwapClient()
+	client.infoDownAfterSwap = true
+	store := newTestStore(t, client, nil)
+	tools := catalog(5)
+
+	require.NoError(t, store.UpsertTools(ctx, tools),
+		"a swap the store cannot observe must not fail the build")
+	require.Equal(t, int64(1), client.batches.Load(),
+		"the unverifiable batch commits; there is nothing to compare a retry against")
+
+	// The id becomes readable again: the next build re-keys under the real
+	// post-swap identity and re-embeds — the bounded self-healing.
+	client.infoDownAfterSwap = false
+	before := client.embedded()
+	require.NoError(t, store.UpsertTools(ctx, tools), "first build after /info recovers")
+	assert.Equal(t, before+len(tools), client.embedded(),
+		"recovering the id must re-key and re-embed the mislabelled rows")
+}
+
+// TestSQLiteToolStore_RollbackAfterUnverifiedCommit_NeverReusesPoison covers
+// the case where "the next readable build re-keys everything" does NOT heal:
+// vectors embedded by model B but committed under model A's identity (swap
+// with the id unreadable — the fail-open window) are poison if the backend is
+// then rolled back to A. The next readable build derives A's identity again,
+// so the keys never change and a hashed poison row would be cache-hit forever.
+// The guard: rows committed under an unverified identity carry no content
+// hash — searchable, never reusable — so the rollback build re-embeds them.
+func TestSQLiteToolStore_RollbackAfterUnverifiedCommit_NeverReusesPoison(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newMidBatchSwapClient()
+	client.infoDownAfterSwap = true
+	store := newTestStore(t, client, nil)
+	tools := catalog(5)
+
+	// Swap lands mid-batch with /info down: model-b vectors, identity model-a.
+	require.NoError(t, store.UpsertTools(ctx, tools), "unverified build must still succeed")
+
+	// The operator rolls back to model-a and /info recovers. The identity the
+	// next build derives is the very one the poison was committed under.
+	client.swapped.Store(false)
+	client.infoDownAfterSwap = false
+
+	before := client.embedded()
+	require.NoError(t, store.UpsertTools(ctx, tools), "build after the rollback")
+	require.Equal(t, before+len(tools), client.embedded(),
+		"rows committed under an unverified identity must be re-embedded, never reused")
+
+	var stored []byte
+	require.NoError(t, store.db.QueryRowContext(ctx,
+		"SELECT embedding FROM llm_capabilities WHERE name = ?", tools[0].Tool.Name).Scan(&stored))
+	want, err := client.Embed(ctx, embeddedText(tools[0].Tool.Name, tools[0].Tool.Description))
+	require.NoError(t, err)
+	assert.Equal(t, encodeEmbedding(want), stored,
+		"after the rollback the stored vector must be model-a's, not the mislabelled model-b one")
+}
+
+// infoDownClient keeps embedding while its model id read fails, modelling a
+// backend whose /info route is broken or filtered while /embed still works.
+type infoDownClient struct {
+	*countingEmbeddingClient
+	infoDown atomic.Bool
+}
+
+func newInfoDownClient() *infoDownClient {
+	return &infoDownClient{countingEmbeddingClient: newCountingEmbeddingClient()}
+}
+
+func (c *infoDownClient) ModelID(ctx context.Context) (string, error) {
+	if c.infoDown.Load() {
+		return "", fmt.Errorf("info endpoint unreachable")
+	}
+	return c.countingEmbeddingClient.ModelID(ctx)
+}
+
+// TestSQLiteToolStore_ModelIDUnreadable_KeepsKeysStable asserts a failed model
+// id read falls back to the last id seen instead of changing the identity.
+//
+// Flipping the identity on a transient read failure would invalidate every
+// key, force a full re-embed, and force a second one when the read recovers —
+// cache churn in both directions, caused by the very mechanism that exists to
+// avoid re-embedding.
+func TestSQLiteToolStore_ModelIDUnreadable_KeepsKeysStable(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newInfoDownClient()
+	store := newTestStore(t, client, nil)
+
+	require.NoError(t, store.UpsertTools(ctx, catalog(5)), "warm build with the id readable")
+	require.Equal(t, 5, client.textsEmbedded())
+
+	// The id becomes unreadable; the catalogue gains one tool.
+	client.infoDown.Store(true)
+	grown := append(catalog(5), makeTools(
+		mcp.NewTool("late_arrival", mcp.WithDescription("Registered while /info is down")))...)
+
+	require.NoError(t, store.UpsertTools(ctx, grown), "build with the id unreadable")
+	assert.Equal(t, 6, client.textsEmbedded(),
+		"only the new tool may be embedded: reuse must survive an unreadable model id")
+}
+
+// TestSQLiteToolStore_ModelIDNeverRead_ServesWithoutCaching covers the
+// remaining fallback step: a store whose model id has never been readable
+// still builds and serves, but cannot attribute what it embeds, so nothing
+// it embeds is cached — every unverified build re-embeds. (Caching under the
+// config-only identity instead would be rollback poison: see
+// TestSQLiteToolStore_RollbackAfterUnverifiedCommit_NeverReusesPoison.)
+// Once the id becomes readable, one verified build seeds the cache and
+// reuse begins.
+func TestSQLiteToolStore_ModelIDNeverRead_ServesWithoutCaching(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newInfoDownClient()
+	client.infoDown.Store(true)
+	store := newTestStore(t, client, nil)
+	tools := catalog(5)
+
+	require.NoError(t, store.UpsertTools(ctx, tools), "first build with the id unreadable")
+	require.Equal(t, 5, client.textsEmbedded())
+
+	require.NoError(t, store.UpsertTools(ctx, tools), "rebuild with the id still unreadable")
+	require.Equal(t, 10, client.textsEmbedded(),
+		"vectors embedded under an unverifiable identity must not be reused")
+
+	// The id becomes readable: the first verified build embeds once more and
+	// its rows, now attributable, seed the cache.
+	client.infoDown.Store(false)
+	require.NoError(t, store.UpsertTools(ctx, tools), "first build after the id recovers")
+	assert.Equal(t, 15, client.textsEmbedded(),
+		"the first verified build re-embeds and seeds the cache")
+
+	require.NoError(t, store.UpsertTools(ctx, tools), "steady state after recovery")
+	assert.Equal(t, 15, client.textsEmbedded(),
+		"reuse must resume once the identity is verified")
+}
+
+// TestSQLiteToolStore_BackendUnchanged_KeepsReuse asserts an unchanged backend
+// derives an unchanged identity across processes, so a restart does not
+// silently undo the reuse this cache exists for.
 func TestSQLiteToolStore_BackendUnchanged_KeepsReuse(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dsn := fmt.Sprintf("file:canarysame_%d?mode=memory&cache=shared", testDBCounter.Add(1))
+	dsn := fmt.Sprintf("file:identsame_%d?mode=memory&cache=shared", testDBCounter.Add(1))
 	tools := catalog(5)
 
 	first := newTestStoreDSN(t, dsn, newCountingEmbeddingClient())
@@ -697,14 +920,14 @@ func TestSQLiteToolStore_BackendUnchanged_KeepsReuse(t *testing.T) {
 		"an unchanged backend must keep every stored vector reusable")
 }
 
-// TestSQLiteToolStore_BackendChange_PreservesKeywordSearch asserts the stale
-// vectors are cleared without removing the rows, which also back the
-// external-content FTS5 index.
+// TestSQLiteToolStore_BackendChange_PreservesKeywordSearch asserts a backend
+// change leaves the rows backing the external-content FTS5 index in place:
+// stale vectors become unreachable by key, they are never deleted.
 func TestSQLiteToolStore_BackendChange_PreservesKeywordSearch(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dsn := fmt.Sprintf("file:canaryfts_%d?mode=memory&cache=shared", testDBCounter.Add(1))
+	dsn := fmt.Sprintf("file:identfts_%d?mode=memory&cache=shared", testDBCounter.Add(1))
 	indexed := newTestStoreDSN(t, dsn, newCountingEmbeddingClient())
 	require.NoError(t, indexed.UpsertTools(ctx, makeTools(
 		mcp.NewTool("archive_file", mcp.WithDescription("Archive a file to cold storage")))))
@@ -719,112 +942,6 @@ func TestSQLiteToolStore_BackendChange_PreservesKeywordSearch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"archive_file"}, matchNames(found),
 		"discarding stale vectors must not remove the rows backing keyword search")
-}
-
-// probeCountingClient counts probe embeds and holds each one open, so a test
-// can tell whether concurrent builds queue behind the probe or skip it.
-type probeCountingClient struct {
-	*fakeEmbeddingClient
-	probes atomic.Int64
-	delay  time.Duration
-}
-
-func (c *probeCountingClient) Embed(ctx context.Context, text string) ([]float32, error) {
-	if text == canaryText {
-		c.probes.Add(1)
-		select {
-		case <-time.After(c.delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return c.fakeEmbeddingClient.Embed(ctx, text)
-}
-
-func (c *probeCountingClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	for i, text := range texts {
-		vec, err := c.Embed(ctx, text)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = vec
-	}
-	return out, nil
-}
-
-// TestSQLiteToolStore_ConcurrentBuilds_ShareOneProbe asserts that concurrent
-// builds skip the probe when one is already in flight, rather than queueing
-// behind it.
-//
-// The probe runs on every build and costs a network round-trip. Serializing it
-// would put one round-trip per concurrent session on the tools/list path:
-// measured at 4 builds x a 200ms probe = 805ms before this, 201ms after. The
-// probe is idempotent, so its result applies to every build racing it.
-func TestSQLiteToolStore_ConcurrentBuilds_ShareOneProbe(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	client := &probeCountingClient{
-		fakeEmbeddingClient: newFakeEmbeddingClient(countingClientDim),
-		delay:               200 * time.Millisecond,
-	}
-	store := newTestStore(t, client, nil)
-
-	// Warm first so the concurrent builds do the probe and nothing else.
-	require.NoError(t, store.UpsertTools(ctx, catalog(5)))
-	client.probes.Store(0)
-
-	const builds = 4
-	var wg sync.WaitGroup
-	errs := make(chan error, builds)
-	for i := range builds {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			errs <- store.UpsertTools(ctx, makeTools(mcp.NewTool(
-				fmt.Sprintf("concurrent_%d", idx), mcp.WithDescription("A concurrently indexed tool"))))
-		}(i)
-	}
-	waitOrFail(t, &wg, "concurrent probing builds")
-	close(errs)
-	for err := range errs {
-		require.NoError(t, err)
-	}
-
-	assert.Less(t, int(client.probes.Load()), builds,
-		"concurrent builds must skip an in-flight probe, not queue behind it")
-}
-
-// TestSQLiteToolStore_BackendProbe_RunsOnce asserts concurrent first builds
-// probe the backend once rather than once each.
-func TestSQLiteToolStore_BackendProbe_RunsOnce(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	client := newCountingEmbeddingClient()
-	store := newTestStore(t, client, nil)
-
-	var wg sync.WaitGroup
-	errs := make(chan error, 4)
-	for i := range 4 {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			errs <- store.UpsertTools(ctx, makeTools(mcp.NewTool(
-				fmt.Sprintf("tool_%d", idx), mcp.WithDescription("A concurrently indexed tool"))))
-		}(i)
-	}
-	waitOrFail(t, &wg, "concurrent first builds")
-	close(errs)
-	for err := range errs {
-		require.NoError(t, err)
-	}
-
-	var canaries int
-	require.NoError(t, store.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM embedding_canary").Scan(&canaries))
-	assert.Equal(t, 1, canaries, "the probe must record exactly one canary")
 }
 
 // TestEmbeddedText pins the exact string sent to the embedding backend. Every

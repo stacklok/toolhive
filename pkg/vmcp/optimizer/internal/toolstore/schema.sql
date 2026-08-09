@@ -17,28 +17,10 @@ CREATE TABLE IF NOT EXISTS llm_capabilities (
     content_hash TEXT
 );
 
--- The reuse probe selects by content_hash across the whole table, not by the
+-- The reuse lookup selects by content_hash across the whole table, not by the
 -- name primary key.
 CREATE INDEX IF NOT EXISTS llm_capabilities_content_hash_idx
     ON llm_capabilities (content_hash);
-
--- Embedding of a fixed probe string, used to detect that the embedding backend
--- started returning different vectors.
---
--- The content hash covers the configured provider, endpoint and model, but the
--- TEI model is fixed by the running container rather than by config, so
--- swapping it behind an unchanged service URL is invisible to the hash. When
--- the replacement has the same vector width the dimension check cannot see it
--- either, and the stored vectors would be reused across a change of semantic
--- space. Comparing a re-embedded probe against the stored one detects that
--- regardless of what the configuration says.
---
--- Single row by construction: the probe describes the one backend this store
--- talks to.
-CREATE TABLE IF NOT EXISTS embedding_canary (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    embedding BLOB NOT NULL
-);
 
 -- FTS5 virtual table for full-text search with BM25 ranking.
 -- tokenize='porter' uses the Porter stemming algorithm so that morphological

@@ -222,6 +222,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
+		// CORS is enabled only from the EXPLICIT --allowed-origins list. The
+		// loopback-derived defaults resolved in prependOriginMiddleware must
+		// never reach CORS, so only the raw config value is passed here.
+		AllowedCORSOrigins: r.Config.AllowedOrigins,
 	}
 
 	// Set proxy mode for stdio transport

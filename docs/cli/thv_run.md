@@ -112,7 +112,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 
 ```
       --allow-docker-gateway                        Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the gateway is reachable on any port.
-      --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
+      --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). When set, also enables CORS for exactly these origins on the MCP proxy endpoint. CORS is disabled by default; omit this flag when CORS is handled by an upstream gateway. Loopback binds derive a default origin allowlist automatically but never enable CORS. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file
       --build-with stringArray                      Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem (uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); errors on ecosystems without constraint support (can be specified multiple times)

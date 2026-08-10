@@ -62,11 +62,24 @@ jobs:
             console.log(`PR size: ${total} lines -> ${sizeLabel}`);
             return sizeLabel;
 
+      # This workflow runs on `pull_request`, so a pull request — including one
+      # from a fork — supplies the definition that produces these files.
+      # Nothing in them can be trusted to say which pull request to act on, so
+      # the consumer derives the number from its own trigger event instead.
+      #
+      # pr-number.txt is still written even though the new consumer ignores it.
+      # `workflow_run` consumers always execute the copy on the default branch,
+      # so until this change merges the consumer reading it is the old one, and
+      # dropping the file here would break labelling for every open pull
+      # request. Removing the write is a follow-up once this has landed.
       - name: Save size label to artifact
+        env:
+          SIZE_LABEL: ${{ steps.size.outputs.result }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           mkdir -p pr-size
-          echo "${{ steps.size.outputs.result }}" > pr-size/label.txt
-          echo "${{ github.event.pull_request.number }}" > pr-size/pr-number.txt
+          echo "$SIZE_LABEL" > pr-size/label.txt
+          echo "$PR_NUMBER" > pr-size/pr-number.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

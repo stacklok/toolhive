@@ -18,6 +18,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -467,9 +468,11 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 
 	// Same malformed-Modern rejection payload as
 	// TestIntegration_RealBackend_ModernRequestRejectedByClassification: a
-	// reserved _meta key signals Modern, but no valid protocolVersion is
-	// present and the header names a different (Legacy) version, so
-	// classifyingHandler rejects with -32020 before dispatch.
+	// A reserved _meta key with no valid protocolVersion cannot be validated
+	// against the Modern header, so classifyingHandler rejects with -32020
+	// before dispatch. The header must be the MODERN version: an explicit
+	// non-Modern header now outranks a stray reserved key and classifies the
+	// request Legacy instead (#6188).
 	body := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -486,7 +489,7 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/mcp", bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

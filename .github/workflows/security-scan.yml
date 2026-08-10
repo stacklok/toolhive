@@ -1,12 +1,14 @@
 name: Security Scan
 
 on:
+  # Called by run-on-main.yml on push to main, where image-build-and-push gates
+  # on the result. There is deliberately no `push:` trigger here as well — that
+  # would run every scan twice for each push to main.
   workflow_call:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+  # PRs trigger this directly rather than through run-on-pr.yml, for the same
+  # reason. Unfiltered by branch, to match the coverage run-on-pr.yml gave.
   pull_request:
-    branches: [ main ]
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'

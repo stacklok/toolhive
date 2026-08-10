@@ -2599,6 +2599,7 @@ func TestHTTPMiddleware_TruncatesMetricLabelsKeepsSpanFull(t *testing.T) {
 	}
 	assert.Contains(t, checked, "gen_ai.tool.name", "operation duration tool label should have been asserted")
 	assert.Contains(t, checked, "tool", "tool call counter label should have been asserted")
+	assert.Contains(t, checked, "mcp_resource_id", "request metric mcp_resource_id label should have been asserted")
 
 	// The span keeps the full, untruncated value.
 	spans := recorder.Ended()

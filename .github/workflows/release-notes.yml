@@ -24,7 +24,14 @@
 name: Generate Release Notes
 
 on:
-  workflow_run:
+  # `workflow_run` is required here, not incidental: claude-code-action rejects
+  # the `release` event outright (see the note above), and this needs to run
+  # after the tag workflow completes.
+  #
+  # The risk this audit flags is a privileged workflow checking out an
+  # event-supplied ref. This one deliberately does not — it checks out the
+  # default branch, for the reasons set out on the checkout step below.
+  workflow_run:   # zizmor: ignore[dangerous-triggers]
     workflows: ["Create Release Tag"]
     types: [completed]
   workflow_dispatch:

@@ -2204,6 +2204,51 @@ func TestHTTPMiddleware_OperationDuration(t *testing.T) {
 			shouldHaveData: true,
 		},
 		{
+			name: "unregistered method collapses to the other sentinel",
+			setupRequest: func(t *testing.T) (*http.Request, context.Context) {
+				t.Helper()
+				// An unauthenticated scanner controls the JSON-RPC method field.
+				// debug_traceTransaction is an Ethereum RPC method, not an MCP
+				// method. The parser leaves ResourceID empty for it.
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:    "debug_traceTransaction",
+					ID:        "test-789",
+					IsRequest: true,
+				}
+				req := httptest.NewRequest("POST", "/messages", nil)
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+				return req, ctx
+			},
+			verifyMetric: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				var foundMetric bool
+				for _, sm := range rm.ScopeMetrics {
+					for _, m := range sm.Metrics {
+						if m.Name == metricOperationDuration {
+							foundMetric = true
+							histData, ok := m.Data.(metricdata.Histogram[float64])
+							require.True(t, ok)
+							require.NotEmpty(t, histData.DataPoints)
+
+							dp := histData.DataPoints[0]
+							attrMap := make(map[string]interface{})
+							for _, attr := range dp.Attributes.ToSlice() {
+								attrMap[string(attr.Key)] = attr.Value.AsInterface()
+							}
+
+							// The raw method never reaches the label.
+							assert.Equal(t, "other", attrMap["mcp.method.name"])
+							assert.NotEqual(t, "debug_traceTransaction", attrMap["mcp.method.name"])
+							_, hasTool := attrMap["gen_ai.tool.name"]
+							assert.False(t, hasTool, "no tool label for a non-tools/call method")
+						}
+					}
+				}
+				assert.True(t, foundMetric, "operation duration still records, with a bounded label")
+			},
+			shouldHaveData: true,
+		},
+		{
 			name: "non-MCP request does not record operation duration",
 			setupRequest: func(t *testing.T) (*http.Request, context.Context) {
 				t.Helper()

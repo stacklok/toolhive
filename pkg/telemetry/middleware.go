@@ -689,12 +689,15 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		mcpResourceID = parsedMCP.ResourceID
 	}
 
-	// Common attributes for all metrics
+	// Common attributes for all metrics.
+	// Sanitize mcp_method to a bounded set. An unauthenticated caller controls
+	// the JSON-RPC method field, so the raw value would grow the registry without
+	// limit. See sanitizeMCPMethod and knownMCPMethods.
 	attrs := metric.WithAttributes(
 		attribute.String("method", r.Method),
 		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
 		attribute.String("status", status),
-		attribute.String("mcp_method", mcpMethod),
+		attribute.String("mcp_method", sanitizeMCPMethod(mcpMethod)),
 		attribute.String("mcp_resource_id", mcpResourceID),
 		attribute.String("server", m.serverName),
 		attribute.String("transport", m.transport),
@@ -740,7 +743,8 @@ func (m *HTTPMiddleware) recordOperationDuration(
 	networkTransport, protocolName, _ := mapTransport(m.transport)
 
 	specAttrs := []attribute.KeyValue{
-		attribute.String("mcp.method.name", mcpMethod),
+		// Sanitize to a bounded set. The caller controls the raw method value.
+		attribute.String("mcp.method.name", sanitizeMCPMethod(mcpMethod)),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 		attribute.String("network.transport", networkTransport),
 	}

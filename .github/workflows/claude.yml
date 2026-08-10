@@ -54,8 +54,13 @@ jobs:
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      # Unlike every other checkout in this repository, this one keeps its
+      # credentials on purpose. The job holds contents: write precisely so
+      # Claude can push commits to a pull request, and that push uses the
+      # credential actions/checkout leaves in .git/config. Setting
+      # persist-credentials: false here would break the action.
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6   # zizmor: ignore[artipacked]
         with:
           fetch-depth: 1
 

@@ -52,12 +52,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    env:
-      # Pinned by digest, not just by version: a tag can be repointed, a digest
-      # cannot. This is the same image and digest that zizmorcore/zizmor-action
-      # resolves 1.29.0 to, so it is the artifact upstream publishes and vets.
-      # Renovate updates digest pins; bump the tag and the digest together.
-      ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor:1.29.0@sha256:863026d54f91271b10b60b67ad8054cb37120167e162482597db102b3026a284
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -65,64 +59,37 @@ jobs:
           # This job only reads the workflow files; it never pushes.
           persist-credentials: false
 
-      # Reported at every severity so the Security tab keeps the full picture,
-      # including the low and informational findings this job does not block
-      # on. --no-exit-codes because the gate below decides pass or fail, not
-      # this step.
-      #
-      # Results are written straight to SARIF and never echoed. Workflow logs
-      # and job summaries are world-readable on a public repository, so
-      # printing findings would publish them; the SARIF upload keeps them in
-      # the Security tab, which requires write access to read.
-      - name: Run zizmor
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          docker run --rm \
-            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
-            --workdir /workspace \
-            --env GH_TOKEN \
-            "${ZIZMOR_IMAGE}" \
-            --persona=regular \
-            --format=sarif \
-            --no-exit-codes \
-            --no-progress \
-            -- .github/ > zizmor.sarif
-
-      # Pull requests from forks get a read-only token, so the upload is
-      # skipped there; those workflows are still scanned on push to main.
-      # Runs before the gate so findings reach the Security tab either way.
-      - name: Upload zizmor results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
-        if: always() && !github.event.pull_request.head.repo.fork
+      # Reports at every severity, including the low and informational findings
+      # the gate below does not block on, so the Security tab keeps the full
+      # picture. This step does not gate: zizmor suppresses its findings exit
+      # code when the output format is SARIF, which is what advanced-security
+      # selects. The upload happens inside the action.
+      - name: Report findings
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
-          sarif_file: zizmor.sarif
-          category: "zizmor"
+          version: "1.29.0"
+          inputs: .github/
+          persona: regular
 
       # The gate. `main` is clear of medium-and-above findings, so anything
-      # this reports was introduced by the change under review — which is why
-      # this step, unlike the one above, prints. The full inventory stays out
-      # of the public log; a finding in the diff under review does not, and a
-      # gate that fails without saying why is not worth having.
+      # this reports was introduced by the change under review.
+      #
+      # advanced-security: false is what makes this block — it swaps SARIF for
+      # human-readable output, which restores the findings exit code, and
+      # avoids uploading a second, severity-filtered SARIF over the first.
       #
       # The remaining low and informational findings are deliberate and are
       # documented where they sit: checkouts whose credentials are in use, and
       # expressions carrying values GitHub constrains to characters that cannot
       # reach a shell. Lowering this threshold means dealing with those first.
       - name: Fail on new findings
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          docker run --rm \
-            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
-            --workdir /workspace \
-            --env GH_TOKEN \
-            "${ZIZMOR_IMAGE}" \
-            --persona=regular \
-            --min-severity=medium \
-            --no-progress \
-            --format=plain \
-            -- .github/
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          version: "1.29.0"
+          inputs: .github/
+          persona: regular
+          min-severity: medium
+          advanced-security: false
 
   govulncheck:
     name: Go Vulnerability Check

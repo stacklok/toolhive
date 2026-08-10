@@ -52,6 +52,12 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      # Pinned by digest, not just by version: a tag can be repointed, a digest
+      # cannot. This is the same image and digest that zizmorcore/zizmor-action
+      # resolves 1.29.0 to, so it is the artifact upstream publishes and vets.
+      # Renovate updates digest pins; bump the tag and the digest together.
+      ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor:1.29.0@sha256:863026d54f91271b10b60b67ad8054cb37120167e162482597db102b3026a284
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -72,12 +78,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pipx run zizmor==1.29.0 \
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --workdir /workspace \
+            --env GH_TOKEN \
+            "${ZIZMOR_IMAGE}" \
             --persona=regular \
             --format=sarif \
             --no-exit-codes \
             --no-progress \
-            .github/ > zizmor.sarif
+            -- .github/ > zizmor.sarif
 
       # Pull requests from forks get a read-only token, so the upload is
       # skipped there; those workflows are still scanned on push to main.
@@ -103,12 +113,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pipx run zizmor==1.29.0 \
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --workdir /workspace \
+            --env GH_TOKEN \
+            "${ZIZMOR_IMAGE}" \
             --persona=regular \
             --min-severity=medium \
             --no-progress \
             --format=plain \
-            .github/
+            -- .github/
 
   govulncheck:
     name: Go Vulnerability Check

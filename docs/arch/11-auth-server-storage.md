@@ -191,8 +191,33 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | Authorization codes | 10 minutes |
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
-| Public clients (DCR) | 30 days |
+| DCR-issued clients (public and confidential) | 30 days |
 | Users / Providers | No expiry |
+
+These TTLs apply to the Redis backend. The in-memory backend holds no
+wall-clock TTL; it instead bounds growth with a capacity cap
+(`DefaultMaxClients`) and evicts the oldest DCR-issued client on overflow. A
+pre-provisioned client (no DCR marker) is never evicted. Both backends renew
+on the same proven-use signal (a successful token exchange/refresh): Redis
+extends the key's TTL, and the in-memory backend moves the client to the back
+of its eviction queue, so an actively-used DCR-issued client survives
+overflow the same way in either backend.
+
+**Behaviour change for public clients registered after this feature:** a
+public client registered before this change was stored as a bare
+`*fosite.DefaultClient` on the Redis backend, which does not carry a
+`token_endpoint_auth_method`, so fosite never enforced one at the token
+endpoint. A public client registered after this change persists
+`token_endpoint_auth_method: "none"` and is rebuilt as a
+`*fosite.DefaultOpenIDConnectClient`, so fosite's method pinning now applies.
+The practical effect: a public client that presents a **non-empty**
+`client_secret` alongside its `client_id` at `/oauth/token` is now rejected
+with `invalid_client`, where it previously succeeded. An empty or absent
+secret is unaffected — fosite only compares secrets when one is actually
+presented. Clients registered before the upgrade keep the old, tolerant
+behavior (their stored row has no auth method and reads back as a bare
+`*fosite.DefaultClient`). This brings the Redis backend in line with the
+in-memory backend, which has always enforced the pinned method.
 
 ## Configuration
 
@@ -238,6 +263,23 @@ When passing configuration across process boundaries (operator → proxy-runner)
 - **Key prefix isolation**: Each auth server is restricted to its own key prefix via Redis ACL rules (`~thv:auth:*`).
 - **Credential handling**: In Kubernetes, credentials are stored in Secrets and injected as environment variables. They are never written to disk or logged.
 - **TLS support**: TLS is supported for both master and Sentinel connections via `tls` and `sentinelTls` in the CRD. For managed services with private CAs (e.g. GCP Memorystore), provide the CA certificate via `caCertSecretRef`.
+
+### Enabling Confidential Client Registration
+
+`AllowConfidentialClientRegistration` is **off by default**. `/oauth/register` is unauthenticated, so turning it on lets any caller who can reach the endpoint obtain a client credential — there is no admission control to gate who receives a `client_secret`. This is the tradeoff an operator accepts by enabling it, not a bug to work around.
+
+Enabling it permits DCR of confidential clients: `/oauth/register` additionally accepts `token_endpoint_auth_method` values `client_secret_basic` and `client_secret_post` (the `"none"` public-client default still applies on omission), and mints a `client_secret` returned exactly once in the registration response — it is never re-displayed or re-issued. Disabling the flag afterward does not revoke or reject secrets already minted; this gate only affects new registrations, not the token endpoint's acceptance of existing credentials.
+
+Two restrictions apply regardless of this flag:
+
+- Confidential registrations are restricted to https non-loopback redirect URIs. A client reachable on loopback or a private scheme is, by construction, a public client that cannot keep a secret (OAuth 2.1 §2.1), so the server declines to mint it one.
+- Combining `AllowConfidentialClientRegistration` with `InsecureAllowHTTP` is rejected outright at validation — an unauthenticated secret-minting endpoint served over plaintext HTTP would let the secret be intercepted in transit.
+
+See the [storage consequences](#ttl-management) above for what happens to a confidential registration over time: it is subject to the same DCR-issued TTL/eviction behavior as public DCR clients (Redis TTL, or the in-memory backend's capacity-bounded eviction).
+
+**Loopback issuers are a known exception to the HTTP restriction above.** The issuer validation that underlies `InsecureAllowHTTP` always permits a plain-`http://` issuer when the host is loopback (e.g. `http://localhost:18080`), independent of that flag. Combined with `AllowConfidentialClientRegistration: true`, this means a locally-run auth server issues client secrets over cleartext without tripping any validation error — this is intended to let local development and testing work without setting up TLS. Do not rely on this shape in a cluster: the server still listens on all interfaces there, "localhost" in the issuer is just a string, and such a deployment is only reachable in practice through something like a port-forward — it does not make the connection loopback-only.
+
+**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it: 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate.
 
 ## Related Documentation
 

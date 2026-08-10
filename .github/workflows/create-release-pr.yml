@@ -36,6 +36,11 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # Without these the token carries every permission the app
+          # installation holds. It is handed to releaseo, which pushes a branch
+          # and opens a pull request, so those two are all it needs.
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -104,9 +109,13 @@ jobs:
           helm_docs_args: --chart-search-root=deploy/charts
 
       - name: Summary
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_PR_NUMBER: ${{ steps.release.outputs.pr_number }}
+          RELEASE_PR_URL: ${{ steps.release.outputs.pr_url }}
         run: |
-          echo "## Release PR Created" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: ${{ steps.release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **PR**: #${{ steps.release.outputs.pr_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **URL**: ${{ steps.release.outputs.pr_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Release PR Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version**: ${RELEASE_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PR**: #${RELEASE_PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL**: ${RELEASE_PR_URL}" >> "$GITHUB_STEP_SUMMARY"

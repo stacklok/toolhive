@@ -35,6 +35,9 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          # The one push in this job supplies its token in the remote URL, so
+          # the credential actions/checkout persists is never used.
+          persist-credentials: false
 
       - name: Read version
         id: version
@@ -49,8 +52,9 @@ jobs:
 
       - name: Verify release PR
         id: verify
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
 
           # Get commit details
           COMMIT_MSG=$(git log -1 --pretty=%s)
@@ -124,8 +128,10 @@ jobs:
 
       - name: Check if tag exists
         id: check-tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists"
             echo "exists=true" >> $GITHUB_OUTPUT
@@ -136,21 +142,28 @@ jobs:
 
       - name: Create tag
         if: steps.check-tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
-          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git "$TAG"
+          # The token is supplied in the URL, so this push does not use the
+          # credential actions/checkout would otherwise leave in .git/config.
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "$TAG"
           echo "Created and pushed tag: $TAG"
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Check if GitHub Release exists
         id: check-release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "GitHub Release $TAG already exists"
             echo "exists=true" >> $GITHUB_OUTPUT
@@ -158,13 +171,11 @@ jobs:
             echo "GitHub Release $TAG does not exist"
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Create GitHub Release
         if: steps.check-release.outputs.exists == 'false'
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
 
           # Create GitHub Release (triggers releaser.yml via release event)
           # Note: Uses a GitHub App installation token rather than GITHUB_TOKEN,
@@ -183,16 +194,19 @@ jobs:
           echo "Created GitHub Release: $TAG"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
           # Read out of a git commit trailer, so unlike the version — which is
           # checked against a semver pattern before use — this one is not
           # constrained by anything. Bound rather than interpolated.
           TRIGGERED_BY: ${{ steps.actor.outputs.triggered_by }}
 
       - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG_EXISTED: ${{ steps.check-tag.outputs.exists }}
+          RELEASE_EXISTED: ${{ steps.check-release.outputs.exists }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          TAG_EXISTED="${{ steps.check-tag.outputs.exists }}"
-          RELEASE_EXISTED="${{ steps.check-release.outputs.exists }}"
+          TAG="v${VERSION}"
 
           echo "## Release Summary for \`$TAG\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

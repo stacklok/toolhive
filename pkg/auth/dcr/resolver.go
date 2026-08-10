@@ -153,13 +153,12 @@ const defaultUpstreamRedirectPath = "/oauth/callback"
 // most preferred first. The resolver intersects this list with the server's
 // advertised methods and picks the first match.
 //
-// Rationale: private_key_jwt is cryptographically strongest (asymmetric, no
-// shared secret on the wire). client_secret_basic and client_secret_post are
-// equally secure in transit but basic is marginally preferred because the
-// credentials do not appear in request-body logs. "none" is the fallback for
-// public PKCE clients.
+// Rationale: client_secret_basic and client_secret_post are equally secure in
+// transit but basic is marginally preferred because the credentials do not
+// appear in request-body logs. "none" is the fallback for public PKCE clients.
+// private_key_jwt is intentionally excluded because the OAuth2 runtime cannot
+// produce the required client assertion.
 var authMethodPreference = []string{
-	"private_key_jwt",
 	"client_secret_basic",
 	"client_secret_post",
 	"none",
@@ -850,9 +849,19 @@ func buildResolution(
 		TokenEndpointAuthMethod: authMethod,
 		RedirectURI:             redirectURI,
 		ClientIDIssuedAt:        epochSecondsToTime(response.ClientIDIssuedAt),
-		ClientSecretExpiresAt:   epochSecondsToTime(response.ClientSecretExpiresAt),
+		ClientSecretExpiresAt:   epochSecondsToTime(derefInt64(response.ClientSecretExpiresAt)),
 		CreatedAt:               time.Now(),
 	}
+}
+
+// derefInt64 unwraps the pointer form of client_secret_expires_at; a nil
+// pointer (key absent) and a pointed-to 0 both mean "does not expire" and
+// collapse to 0, which epochSecondsToTime maps to the zero time.Time.
+func derefInt64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // epochSecondsToTime converts the int64 epoch-seconds form used by RFC 7591

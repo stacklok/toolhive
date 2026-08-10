@@ -40,6 +40,44 @@ jobs:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: "grype"
 
+  zizmor:
+    name: GitHub Actions Static Analysis
+    runs-on: ubuntu-latest
+    # --no-exit-codes stops *findings* failing the job; this stops a tool or
+    # network failure doing so. Both come off when the gate goes blocking.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # Advisory only for now: --no-exit-codes keeps the job green while the
+      # existing backlog is worked through, so this reports without blocking.
+      # Remove it (and add --min-severity) once the backlog is clear.
+      #
+      # Results are written straight to SARIF and never echoed. Workflow logs
+      # and job summaries are world-readable on a public repository, so
+      # printing findings would publish them; the SARIF upload keeps them in
+      # the Security tab, which requires write access to read.
+      - name: Run zizmor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pipx run zizmor==1.29.0 \
+            --persona=regular \
+            --format=sarif \
+            --no-exit-codes \
+            --no-progress \
+            .github/ > zizmor.sarif
+
+      # Pull requests from forks get a read-only token, so the upload is
+      # skipped there; those workflows are still scanned on push to main.
+      - name: Upload zizmor results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        if: always() && !github.event.pull_request.head.repo.fork
+        with:
+          sarif_file: zizmor.sarif
+          category: "zizmor"
+
   govulncheck:
     name: Go Vulnerability Check
     runs-on: ubuntu-latest

@@ -138,6 +138,23 @@ type RunConfig struct {
 	// visible from the config shape alone.
 	//nolint:lll // field tags require full JSON+YAML names
 	TrustedIssuers []tokenexchange.TrustedIssuer `json:"trusted_issuers,omitempty" yaml:"trusted_issuers,omitempty"`
+
+	// AllowConfidentialClientRegistration permits Dynamic Client Registration
+	// of confidential clients: when true, /oauth/register accepts
+	// token_endpoint_auth_method values client_secret_basic and
+	// client_secret_post in addition to "none" (still the default on
+	// omission) and mints a client_secret returned exactly once. Confidential
+	// clients are restricted to https non-loopback redirect URIs, and
+	// registrations idle for more than DefaultDCRClientTTL (30 days) are
+	// evicted and must re-register. This gates registration only: disabling
+	// it does not revoke or reject already-minted secrets at the token
+	// endpoint.
+	//
+	// Security: /oauth/register is unauthenticated, so this issues client
+	// secrets to any caller. Combining it with InsecureAllowHTTP is rejected
+	// by Validate.
+	//nolint:lll // field tags require full JSON+YAML names
+	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -158,6 +175,9 @@ func (c *RunConfig) Validate() error {
 	// after it, which would also orphan an upstream registration on every
 	// restart with the default in-memory DCR store.
 	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
+		return err
+	}
+	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
@@ -723,6 +743,11 @@ type Config struct {
 	// fail-closed AllowedActors semantics and the audience/scope constraints
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
+
+	// AllowConfidentialClientRegistration permits DCR of confidential clients
+	// (client_secret_basic / client_secret_post). See RunConfig for the full
+	// semantics; disabling it does not revoke already-minted secrets.
+	AllowConfidentialClientRegistration bool
 }
 
 // Validate checks that the Config is valid.
@@ -731,6 +756,10 @@ func (c *Config) Validate() error {
 
 	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
 		return fmt.Errorf("issuer: %w", err)
+	}
+
+	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+		return err
 	}
 
 	if c.AuthorizationEndpointBaseURL != "" {
@@ -1175,6 +1204,36 @@ func (c *Config) applyDefaults() error {
 	if c.CIMDEnabled && c.CIMDCacheFallbackTTL == 0 {
 		c.CIMDCacheFallbackTTL = 5 * time.Minute
 		slog.Debug("applied default cimd cache_fallback_ttl", "ttl", c.CIMDCacheFallbackTTL)
+	}
+	return nil
+}
+
+// ValidateConfidentialClientTransport rejects the combination of confidential-client
+// DCR with cleartext HTTP: /oauth/register is unauthenticated, so issuing
+// client secrets over plain HTTP exposes them to anyone on the network path.
+//
+// This check has a deliberate gap: it only looks at InsecureAllowHTTP, but
+// validateIssuerURL separately permits a plain-HTTP issuer whenever the host
+// is loopback, regardless of InsecureAllowHTTP. So a config with
+// allowConfidential=true, insecureAllowHTTP=false, and issuer
+// "http://localhost:18080" passes this function AND validateIssuerURL, and
+// mints client secrets over cleartext. Confirmed by hand in a kind cluster:
+// no validation error, real secret issued in the clear.
+//
+// The loopback exception is intentional and stays: a loopback issuer is the
+// shape of local CLI development, where "the traffic stays on this machine"
+// is actually true and setting up TLS just to run `thv` locally would be
+// needless friction. That assumption breaks down in a Kubernetes deployment,
+// though — the server there still binds all interfaces, and "localhost" in
+// the issuer string is just a string; it does not make the listener loopback-
+// only. In practice such a deployment is close to unusable anyway (no other
+// pod can route to localhost), reachable only via something like a
+// port-forward, but the string alone gives no guarantee, so treat a loopback
+// issuer as safe only when you know the process is genuinely local.
+func ValidateConfidentialClientTransport(allowConfidential, insecureAllowHTTP bool) error {
+	if allowConfidential && insecureAllowHTTP {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
+			"this would issue client secrets over cleartext HTTP on an unauthenticated registration endpoint")
 	}
 	return nil
 }

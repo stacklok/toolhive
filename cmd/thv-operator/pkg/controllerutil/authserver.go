@@ -589,6 +589,9 @@ func BuildAuthServerRunConfig(
 	// This replaces any auto-inference and moves control to the deployer.
 	config.InsecureAllowHTTP = authConfig.InsecureAllowHTTP
 
+	// Wire through the confidential-client DCR flag (default off).
+	config.AllowConfidentialClientRegistration = authConfig.AllowConfidentialClientRegistration
+
 	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
 	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {

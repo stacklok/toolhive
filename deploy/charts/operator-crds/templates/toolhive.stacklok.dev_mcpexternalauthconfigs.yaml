@@ -205,6 +205,24 @@ spec:
                   EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server
                   Only used when Type is "embeddedAuthServer"
                 properties:
+                  allowConfidentialClientRegistration:
+                    default: false
+                    description: |-
+                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+                      Registration of confidential clients: when true, /oauth/register
+                      accepts token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (still the default on
+                      omission) and mints a client_secret returned exactly once.
+                      Confidential registrations are restricted to https non-loopback
+                      redirect URIs, and on the Redis storage backend all DCR-issued
+                      registrations are evicted after 30 days of inactivity and must
+                      re-register. This gates registration only: disabling it does not
+                      revoke or reject already-minted secrets at the token endpoint.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -323,6 +341,11 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
+
+                      One combination is rejected at admission on all three CRDs regardless of the
+                      above: setting this field alongside allowConfidentialClientRegistration, which
+                      would issue client secrets in cleartext over an unauthenticated registration
+                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -1115,6 +1138,12 @@ spec:
                 - issuer
                 - upstreamProviders
                 type: object
+                x-kubernetes-validations:
+                - message: allowConfidentialClientRegistration cannot be combined
+                    with insecureAllowHTTP; client secrets would be issued in cleartext
+                    over an unauthenticated endpoint
+                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection
@@ -1767,6 +1796,24 @@ spec:
                   EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server
                   Only used when Type is "embeddedAuthServer"
                 properties:
+                  allowConfidentialClientRegistration:
+                    default: false
+                    description: |-
+                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+                      Registration of confidential clients: when true, /oauth/register
+                      accepts token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (still the default on
+                      omission) and mints a client_secret returned exactly once.
+                      Confidential registrations are restricted to https non-loopback
+                      redirect URIs, and on the Redis storage backend all DCR-issued
+                      registrations are evicted after 30 days of inactivity and must
+                      re-register. This gates registration only: disabling it does not
+                      revoke or reject already-minted secrets at the token endpoint.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -1885,6 +1932,11 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
+
+                      One combination is rejected at admission on all three CRDs regardless of the
+                      above: setting this field alongside allowConfidentialClientRegistration, which
+                      would issue client secrets in cleartext over an unauthenticated registration
+                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -2677,6 +2729,12 @@ spec:
                 - issuer
                 - upstreamProviders
                 type: object
+                x-kubernetes-validations:
+                - message: allowConfidentialClientRegistration cannot be combined
+                    with insecureAllowHTTP; client secrets would be issued in cleartext
+                    over an unauthenticated endpoint
+                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection

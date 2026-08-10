@@ -165,6 +165,19 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		// Normal HTTP request handling
+		// Reuse an outer holder (for example, audit's) so webhook mutations are
+		// visible to every wrapper. When there is no outer holder, install one for
+		// telemetry itself and seed it with the parse published by the parser.
+		parsedHolder, ok := mcpparser.ParsedRequestHolderFromContext(ctx)
+		if !ok {
+			parsedHolder = &mcpparser.ParsedRequestHolder{
+				Parsed: mcpparser.GetParsedMCPRequest(ctx),
+			}
+			ctx = mcpparser.WithParsedRequestHolder(ctx, parsedHolder)
+		} else if parsedHolder.Parsed == nil {
+			parsedHolder.Parsed = mcpparser.GetParsedMCPRequest(ctx)
+		}
+
 		// Extract trace context from incoming request headers
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
 
@@ -187,12 +200,14 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			attribute.String("transport", m.transport),
 		))
 
-		// Create span name based on MCP method if available, otherwise use HTTP method + path
-		spanName := m.createSpanName(ctx)
-		if spanName == "" {
-			spanName = fmt.Sprintf("%s %s", r.Method, r.URL.Path)
-		}
-		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
+		// Start the request span before rate limiting. MCP identity is populated
+		// after the inner chain returns because a mutating webhook may republish a
+		// different method, resource, or argument set while the request is in flight.
+		ctx, span := m.tracer.Start(
+			ctx,
+			fmt.Sprintf("%s %s", r.Method, r.URL.Path),
+			trace.WithSpanKind(trace.SpanKindServer),
+		)
 		defer span.End()
 
 		// Create a response writer wrapper to capture response details
@@ -205,9 +220,6 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Add HTTP attributes
 		m.addHTTPAttributes(span, r)
 
-		// Add MCP attributes if parsed data is available
-		m.addMCPAttributes(ctx, span, r)
-
 		// Add environment variables as attributes
 		m.addEnvironmentAttributes(span)
 
@@ -217,11 +229,29 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Call the next handler with the instrumented context
 		next.ServeHTTP(rw, r.WithContext(ctx))
 
-		// Record completion metrics and finalize span
+		// A mutating webhook publishes its replacement parse through the shared
+		// holder. Use that final parse for all MCP identity exported by telemetry.
+		finalCtx := contextWithFinalParsedMCPRequest(ctx, parsedHolder)
+		if spanName := m.createSpanName(finalCtx); spanName != "" {
+			span.SetName(spanName)
+		}
+		m.addMCPAttributes(finalCtx, span, r)
+
+		// Record completion metrics and finalize span.
 		duration := time.Since(startTime)
 		m.finalizeSpan(span, rw, duration)
-		m.recordMetrics(ctx, r, rw, duration)
+		m.recordMetrics(finalCtx, r, rw, duration)
 	})
+}
+
+func contextWithFinalParsedMCPRequest(
+	ctx context.Context,
+	holder *mcpparser.ParsedRequestHolder,
+) context.Context {
+	if holder == nil || holder.Parsed == nil || holder.Parsed == mcpparser.GetParsedMCPRequest(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, mcpparser.MCPRequestContextKey, holder.Parsed)
 }
 
 func (*HTTPMiddleware) createSpanName(ctx context.Context) string {

@@ -15,6 +15,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # Neither job in this workflow declares contents: write, so no push is
+          # possible and the credential has no use.
+          persist-credentials: false
 
       - name: Verify tag matches VERSION file
         run: |
@@ -59,9 +63,19 @@ jobs:
             path: deploy/charts/operator
           - name: toolhive-operator-crds
             path: deploy/charts/operator-crds
+    # Matrix and repository values are bound once here. CHART_VERSION cannot
+    # join them: it comes from a step output, which job-level env: cannot see.
+    env:
+      CHART_NAME: ${{ matrix.chart.name }}
+      CHART_PATH: ${{ matrix.chart.path }}
+      REPOSITORY: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # Neither job in this workflow declares contents: write, so no push is
+          # possible and the credential has no use.
+          persist-credentials: false
 
       - name: Extract version
         id: version
@@ -103,8 +117,6 @@ jobs:
       # than pasted into the command unquoted.
       - name: Package Helm chart
         env:
-          CHART_PATH: ${{ matrix.chart.path }}
-          CHART_NAME: ${{ matrix.chart.name }}
           CHART_VERSION: ${{ steps.version.outputs.version }}
         run: |
           helm package "$CHART_PATH" \
@@ -114,68 +126,76 @@ jobs:
 
       - name: Push to GHCR
         id: push
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          OUTPUT=$(helm push ${{ matrix.chart.name }}-${{ steps.version.outputs.version }}.tgz \
-            oci://${{ env.REGISTRY }}/${REPO} 2>&1)
+          REPO=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          OUTPUT=$(helm push "${CHART_NAME}-${CHART_VERSION}.tgz" \
+            "oci://${REGISTRY}/${REPO}" 2>&1)
           echo "$OUTPUT"
 
           # Extract digest from helm push output (e.g., "Digest: sha256:abc123...")
           DIGEST=$(echo "$OUTPUT" | grep 'Digest:' | awk '{print $2}' || echo "")
           if [ -n "$DIGEST" ]; then
-            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
             echo "Captured digest: $DIGEST"
           fi
 
-          echo "Pushed chart to: oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }}"
+          echo "Pushed chart to: oci://${REGISTRY}/${REPO}/${CHART_NAME}:${CHART_VERSION}"
 
       - name: Sign Helm chart with Cosign
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
+          CHART_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          CHART_REF="${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}"
-          DIGEST="${{ steps.push.outputs.digest }}"
+          REPO=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          CHART_REF="${REGISTRY}/${REPO}/${CHART_NAME}"
 
-          if [ -n "$DIGEST" ]; then
-            echo "Signing Helm chart by digest: ${CHART_REF}@${DIGEST}"
-            cosign sign -y "${CHART_REF}@${DIGEST}"
+          if [ -n "$CHART_DIGEST" ]; then
+            echo "Signing Helm chart by digest: ${CHART_REF}@${CHART_DIGEST}"
+            cosign sign -y "${CHART_REF}@${CHART_DIGEST}"
           else
-            echo "Signing Helm chart by tag: ${CHART_REF}:${{ steps.version.outputs.version }}"
-            cosign sign -y "${CHART_REF}:${{ steps.version.outputs.version }}"
+            echo "Signing Helm chart by tag: ${CHART_REF}:${CHART_VERSION}"
+            cosign sign -y "${CHART_REF}:${CHART_VERSION}"
           fi
           echo "Helm chart signed successfully"
 
       - name: Verify published chart
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          helm show chart oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }} \
-            --version ${{ steps.version.outputs.version }}
+          REPO=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          helm show chart "oci://${REGISTRY}/${REPO}/${CHART_NAME}" \
+            --version "$CHART_VERSION"
 
       - name: Summary
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          echo "## Helm Chart Published: ${{ matrix.chart.name }}" >> $GITHUB_STEP_SUMMARY
+          REPO=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "## Helm Chart Published: ${CHART_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Chart | \`${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Registry | \`oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Chart | \`${CHART_NAME}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${CHART_VERSION}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | \`oci://${REGISTRY}/${REPO}/${CHART_NAME}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Signed | ✅ Yes (Cosign keyless) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Installation" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "helm install my-release oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }} --version ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "helm install my-release oci://${REGISTRY}/${REPO}/${CHART_NAME} --version ${CHART_VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Verify Signature" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "cosign verify ${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }} \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "cosign verify ${REGISTRY}/${REPO}/${CHART_NAME}:${CHART_VERSION} \\\\" >> $GITHUB_STEP_SUMMARY
           echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> $GITHUB_STEP_SUMMARY
-          echo "  --certificate-identity-regexp https://github.com/${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "  --certificate-identity-regexp https://github.com/${REPOSITORY}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Logout from GHCR
         if: always()
-        run: helm registry logout ${{ env.REGISTRY }}
+        run: helm registry logout "$REGISTRY"

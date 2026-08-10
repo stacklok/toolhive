@@ -113,7 +113,7 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 			string(fosite.GrantTypeRefreshToken),
 		},
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: []string{sharedobauth.TokenEndpointAuthMethodNone},
+		TokenEndpointAuthMethodsSupported: h.tokenEndpointAuthMethodsSupported(),
 
 		// ClientIDMetadataDocumentSupported is defined in the CIMD draft as an
 		// OAuth AS metadata field (RFC 8414), not in OIDC Discovery 1.0. It is
@@ -122,6 +122,23 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		// CIMD. Spec-compliant OIDC consumers silently ignore unknown fields.
 		ClientIDMetadataDocumentSupported: h.config.CIMDEnabled,
 	}
+}
+
+// tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
+// list for discovery, derived from config. "none" is always first — the public-client
+// default. When AllowConfidentialClientRegistration is on, the two client_secret_* methods the
+// registration endpoint accepts are appended, so what is advertised here always matches
+// what /oauth/register accepts (no advertise/reject skew). RFC 8414 defines no ordering
+// semantics, so "none"-first is a readability convention, not a security control.
+func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
+	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
+	if h.config.AllowConfidentialClientRegistration {
+		methods = append(methods,
+			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
+			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+		)
+	}
+	return methods
 }
 
 // OAuthDiscoveryHandler handles GET /.well-known/oauth-authorization-server requests.

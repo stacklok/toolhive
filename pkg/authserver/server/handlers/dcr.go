@@ -5,15 +5,18 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -27,8 +30,10 @@ import (
 const MaxDCRBodySize = 64 * 1024
 
 // RegisterClientHandler handles POST /oauth/register requests.
-// It implements RFC 7591 Dynamic Client Registration for public clients
-// with loopback redirect URIs only.
+// It implements RFC 7591 Dynamic Client Registration for public clients with
+// loopback redirect URIs, and additionally for confidential clients with
+// https non-loopback redirect URIs when AllowConfidentialClientRegistration
+// is set.
 func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -57,8 +62,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Validate request
-	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq)
+	// Validate request. h.config.AllowConfidentialClientRegistration gates whether
+	// client_secret_basic / client_secret_post registrations are accepted.
+	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClientRegistration)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -101,15 +107,35 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Generate client ID
 	clientID := uuid.NewString()
 
+	// Mint a secret for confidential registrations. Any client_secret field
+	// in the request is ignored — secrets are always server-generated
+	// (oauthproto.DynamicClientRegistrationRequest deliberately has no such
+	// field). The plaintext is returned exactly once in the response and
+	// never logged; only its SHA-256 hash is stored.
+	var clientSecret string
+	if validated.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
+		var err error
+		clientSecret, err = registration.GenerateClientSecret()
+		if err != nil {
+			slog.Error("failed to generate client secret", "error", err)
+			writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
+				Error:            "server_error",
+				ErrorDescription: "failed to create client",
+			})
+			return
+		}
+	}
+
 	// Create fosite client using factory.
 	fositeClient, err := registration.New(registration.Config{
-		ID:            clientID,
-		RedirectURIs:  validated.RedirectURIs,
-		Public:        true,
-		GrantTypes:    validated.GrantTypes,
-		ResponseTypes: validated.ResponseTypes,
-		Scopes:        scopes,
-		Audience:      h.config.AllowedAudiences,
+		ID:                      clientID,
+		Secret:                  clientSecret,
+		RedirectURIs:            validated.RedirectURIs,
+		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
+		GrantTypes:              validated.GrantTypes,
+		ResponseTypes:           validated.ResponseTypes,
+		Scopes:                  scopes,
+		Audience:                h.config.AllowedAudiences,
 	})
 	if err != nil {
 		slog.Error("failed to create client", "error", err)
@@ -122,6 +148,20 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
+		if errors.Is(err, storage.ErrClientCapacity) {
+			slog.Debug("DCR client registration capacity reached", "error", err)
+			// Capacity frees up once the oldest DCR-issued entry crosses
+			// storage.DefaultMinClientAge, so that's the honest worst-case
+			// wait. This uses the default rather than the configured
+			// minClientAge because the value isn't currently threaded from
+			// storage to this handler; wire it through if that gap matters.
+			w.Header().Set("Retry-After", strconv.Itoa(int(storage.DefaultMinClientAge.Seconds())))
+			writeDCRError(w, http.StatusServiceUnavailable, &registration.DCRError{
+				Error:            "server_error",
+				ErrorDescription: "client registration capacity reached; try again later",
+			})
+			return
+		}
 		slog.Error("failed to register client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
 			Error:            "server_error",
@@ -165,15 +205,31 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// validation to be a subset of ScopesSupported. The unioned set is NOT
 	// re-validated here. ScopeList.MarshalJSON emits the RFC 7591 §2
 	// space-delimited wire form on the way out.
+	issuedAt := time.Now().Unix()
 	response := oauthproto.DynamicClientRegistrationResponse{
 		ClientID:                clientID,
-		ClientIDIssuedAt:        time.Now().Unix(),
+		ClientIDIssuedAt:        issuedAt,
 		RedirectURIs:            validated.RedirectURIs,
 		ClientName:              validated.ClientName,
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
 		Scopes:                  oauthproto.ScopeList(scopes),
+	}
+	if clientSecret != "" {
+		// client_secret_expires_at is 0 ("does not expire", RFC 7591 §2): the
+		// storage TTL on a DCR-issued client is refreshed by RenewClientTTL on
+		// every token exchange, so an actively used registration never expires
+		// and advertising issued_at+TTL would be false. Advertising a real
+		// expiry would also make ToolHive's own DCR client (which acts on this
+		// field, pkg/auth/dcr/resolver.go) re-register against a ToolHive auth
+		// server every TTL while its existing registration is still live,
+		// orphaning the old row — the registration bloat the TTL exists to
+		// prevent. An idle registration is still evicted after
+		// DefaultDCRClientTTL, but re-registration mints a new client_id either
+		// way, so the field cannot usefully describe that case.
+		response.ClientSecret = clientSecret
+		response.ClientSecretExpiresAt = new(int64) // 0: does not expire
 	}
 
 	w.Header().Set("Content-Type", "application/json")

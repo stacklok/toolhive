@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -106,6 +107,9 @@ type testServerOptions struct {
 	// enabling RFC 8693 token exchange with subject tokens from external OIDC
 	// issuers in addition to self-issued ones.
 	trustedIssuers []tokenexchange.TrustedIssuer
+	// allowConfidentialClientRegistration, when true, sets Config.AllowConfidentialClientRegistration
+	// so DCR accepts client_secret_basic / client_secret_post registrations.
+	allowConfidentialClientRegistration bool
 }
 
 // testServerOption is a functional option for test server setup.
@@ -289,6 +293,9 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		UpstreamFilter:       options.upstreamFilter,
 		AllowedAudiences:     []string{"https://mcp.example.com"},
 		TrustedIssuers:       options.trustedIssuers,
+		// Opt-in gate for confidential-client DCR; off by default in tests just
+		// as in production.
+		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
 	}
 
 	// 7. Create server using newServer with test options
@@ -712,12 +719,12 @@ func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
 	// A confidential client registered for the token-exchange grant is the acting
 	// agent. The handler rejects public clients, so this must be confidential.
 	agentClient, err := registration.New(registration.Config{
-		ID:         agentClientID,
-		Secret:     agentClientSecret,
-		Public:     false,
-		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-		Scopes:     registration.DefaultScopes,
-		Audience:   []string{testAudience},
+		ID:                      agentClientID,
+		Secret:                  agentClientSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		GrantTypes:              []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
 	})
 	require.NoError(t, err)
 
@@ -831,13 +838,13 @@ func TestIntegration_TokenExchange_SelfIssuedSubjectTokenScopeFromScp(t *testing
 	// registered for both authorization_code (to mint a genuine access token)
 	// and token-exchange (to perform the exchange as itself).
 	agentClient, err := registration.New(registration.Config{
-		ID:           agentClientID,
-		Secret:       agentClientSecret,
-		Public:       false,
-		RedirectURIs: []string{testRedirectURI},
-		GrantTypes:   []string{"authorization_code", oauthproto.GrantTypeTokenExchange},
-		Scopes:       registration.DefaultScopes,
-		Audience:     []string{testAudience},
+		ID:                      agentClientID,
+		Secret:                  agentClientSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		RedirectURIs:            []string{testRedirectURI},
+		GrantTypes:              []string{"authorization_code", oauthproto.GrantTypeTokenExchange},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
 	})
 	require.NoError(t, err)
 
@@ -987,12 +994,12 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 	newAgentClient := func(t *testing.T) fosite.Client {
 		t.Helper()
 		c, err := registration.New(registration.Config{
-			ID:         agentClientID,
-			Secret:     agentClientSecret,
-			Public:     false,
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Scopes:     registration.DefaultScopes,
-			Audience:   []string{testAudience},
+			ID:                      agentClientID,
+			Secret:                  agentClientSecret,
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			GrantTypes:              []string{oauthproto.GrantTypeTokenExchange},
+			Scopes:                  registration.DefaultScopes,
+			Audience:                []string{testAudience},
 		})
 		require.NoError(t, err)
 		return c
@@ -1223,12 +1230,12 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		// one, since both hold the grant and both present the same
 		// allowlisted external actor claim.
 		otherAgentClient, err := registration.New(registration.Config{
-			ID:         otherAgentClientID,
-			Secret:     otherAgentClientSecret,
-			Public:     false,
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Scopes:     registration.DefaultScopes,
-			Audience:   []string{testAudience},
+			ID:                      otherAgentClientID,
+			Secret:                  otherAgentClientSecret,
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			GrantTypes:              []string{oauthproto.GrantTypeTokenExchange},
+			Scopes:                  registration.DefaultScopes,
+			Audience:                []string{testAudience},
 		})
 		require.NoError(t, err)
 
@@ -3909,4 +3916,851 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 	require.NoError(t, err, "leg 3: upstream tokens should be stored")
 	assert.Empty(t, tokens3.RefreshToken,
 		"leg 3: no RT carry-forward for a new user with no prior row (ErrNotFound path)")
+}
+
+// ============================================================================
+// Confidential-Client DCR Integration Tests (RFC 7591 + RFC 6749 §2.3)
+// ============================================================================
+//
+// These tests drive the full confidential-client lifecycle over HTTP against
+// the real fosite provider: DCR registration at /oauth/register (gated by
+// Config.AllowConfidentialClientRegistration), headless authorization through mockoidc,
+// and client-secret authentication at /oauth/token in both the
+// client_secret_basic and client_secret_post directions.
+//
+// Confidential clients must register an https non-loopback redirect URI; the
+// flow below uses https://app.example/cb, which is never dialed — the
+// authorization code is read off the final redirect's Location header.
+
+// testConfidentialRedirectURI is the https non-loopback redirect URI used by
+// DCR-registered confidential clients. Confidential clients get no RFC 8252
+// loopback dynamic-port matching, so the DCR-registered URI and the
+// /oauth/authorize redirect_uri parameter must match exactly.
+const testConfidentialRedirectURI = "https://app.example/cb"
+
+// withAllowConfidentialClientRegistration sets Config.AllowConfidentialClientRegistration on the
+// test server, opting DCR in to client_secret_basic / client_secret_post
+// registrations. It mirrors the withExtraClient pattern: the flag is plumbed
+// through testServerOptions and applied to the Config built in setupTestServer.
+func withAllowConfidentialClientRegistration() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.allowConfidentialClientRegistration = true
+	}
+}
+
+// makeTokenRequestWithBasicAuth is the makeTokenRequest variant for
+// client_secret_basic clients: identical form POST to /oauth/token, plus an
+// Authorization header carrying base64(client_id:client_secret). fosite
+// url.QueryUnescape's both Basic-auth components, so the wire form must be the
+// RFC 6749 §2.3.1 percent-encoded-then-base64 encoding. Go's SetBasicAuth
+// base64-encodes the raw credentials without percent-encoding; that is
+// byte-identical here because DCR-minted client IDs (UUIDs) and secrets
+// (base64url, [A-Za-z0-9_-]) contain no characters requiring escaping.
+func makeTokenRequestWithBasicAuth(t *testing.T, serverURL string, params url.Values, clientID, clientSecret string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/token", strings.NewReader(params.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(clientID, clientSecret)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
+	require.NoError(t, err)
+
+	return resp
+}
+
+// dcrRegisterClient POSTs an RFC 7591 registration to /oauth/register with the
+// given token_endpoint_auth_method and returns the server's response. It does
+// not require success so callers can assert on rejection responses.
+func dcrRegisterClient(t *testing.T, serverURL, authMethod string) *oauthproto.DynamicClientRegistrationResponse {
+	t.Helper()
+
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs:            []string{testConfidentialRedirectURI},
+		TokenEndpointAuthMethod: authMethod,
+	})
+	require.NoError(t, err)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Post(serverURL+"/oauth/register", "application/json", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"DCR registration for %q should succeed", authMethod)
+
+	var regResp oauthproto.DynamicClientRegistrationResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&regResp))
+	return &regResp
+}
+
+// registerConfidentialClient registers a confidential client via DCR and
+// returns its credentials. It pins the RFC 7591 response contract: the
+// server echoes the registered auth method and returns the minted secret
+// exactly once, with a non-zero expiry.
+func registerConfidentialClient(t *testing.T, serverURL, authMethod string) (clientID, clientSecret string) {
+	t.Helper()
+
+	regResp := dcrRegisterClient(t, serverURL, authMethod)
+	require.NotEmpty(t, regResp.ClientID, "DCR response must contain client_id")
+	require.NotEmpty(t, regResp.ClientSecret, "DCR response must contain client_secret for a confidential client")
+	assert.Equal(t, authMethod, regResp.TokenEndpointAuthMethod,
+		"DCR response must echo the registered token_endpoint_auth_method")
+	require.NotNil(t, regResp.ClientSecretExpiresAt,
+		"confidential registrations must carry the client_secret_expires_at key")
+	assert.Zero(t, *regResp.ClientSecretExpiresAt,
+		"client_secret_expires_at is 0 (does not expire): RenewClientTTL keeps an actively used registration alive")
+
+	return regResp.ClientID, regResp.ClientSecret
+}
+
+// completeConfidentialAuthorizationFlow runs a headless authorization-code
+// flow for a DCR-registered confidential client and returns the auth code.
+// completeAuthorizationFlow only rewrites the intermediate /oauth/callback
+// hop (upstream redirect URI); the client redirect URI is passed through
+// untouched, so the https URI registered via DCR is matched exactly.
+func completeConfidentialAuthorizationFlow(t *testing.T, serverURL, clientID string, challenge string) string {
+	t.Helper()
+
+	code, _ := completeAuthorizationFlow(t, serverURL, authorizationParams{
+		ClientID:     clientID,
+		RedirectURI:  testConfidentialRedirectURI,
+		State:        "confidential-dcr-state",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+	return code
+}
+
+// confidentialAuthCodeParams builds the form parameters for redeeming an
+// authorization code issued to a confidential client. PKCE is enforced for
+// ALL clients (EnforcePKCE: true in server/provider.go) with no per-client
+// bypass, so code_verifier is mandatory; the redirect_uri must match the
+// authorize request exactly.
+func confidentialAuthCodeParams(code, verifier string) url.Values {
+	return url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {testConfidentialRedirectURI},
+		"code_verifier": {verifier},
+	}
+}
+
+// runConfidentialHappyPath drives the full confidential-client lifecycle:
+// DCR → authorize (PKCE) → redeem with the client's registered auth method →
+// 200 with a non-empty access_token. registerConfidentialClient issues one
+// HTTP request per call, so subtests stay independent.
+func runConfidentialHappyPath(t *testing.T, serverURL, authMethod string) map[string]interface{} {
+	t.Helper()
+
+	clientID, clientSecret := registerConfidentialClient(t, serverURL, authMethod)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code := completeConfidentialAuthorizationFlow(t, serverURL, clientID, servercrypto.ComputePKCEChallenge(verifier))
+
+	params := confidentialAuthCodeParams(code, verifier)
+	var resp *http.Response
+	if authMethod == oauthproto.TokenEndpointAuthMethodClientSecretBasic {
+		resp = makeTokenRequestWithBasicAuth(t, serverURL, params, clientID, clientSecret)
+	} else {
+		params.Set("client_id", clientID)
+		params.Set("client_secret", clientSecret)
+		resp = makeTokenRequest(t, serverURL, params)
+	}
+	defer resp.Body.Close()
+
+	tokenData := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"%s redemption should succeed, got %d (body: %v)", authMethod, resp.StatusCode, tokenData)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+
+	return tokenData
+}
+
+// TestIntegration_ConfidentialClientDCR_FullFlow proves criterion 10 for both
+// registered methods: a DCR-registered confidential client can complete the
+// authorization-code flow with PKCE and redeem the code for tokens using its
+// registered client_secret_* method.
+func TestIntegration_ConfidentialClientDCR_FullFlow(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
+
+	for _, authMethod := range []string{
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost,
+	} {
+		t.Run(authMethod, func(t *testing.T) {
+			t.Parallel()
+			runConfidentialHappyPath(t, ts.Server.URL, authMethod)
+		})
+	}
+}
+
+// TestIntegration_ConfidentialClientDCR_FullFlow_Redis is the Redis-backed
+// variant of the happy path: the DCR-registered confidential client survives
+// the Redis storage round-trip with its token_endpoint_auth_method and
+// hashed secret intact, so the full flow succeeds against the production-shape
+// storage layout.
+//
+//nolint:tparallel // subtests deliberately run serially: they share ts's single miniredis instance, and PostEviction advances its clock with FastForward, which would corrupt any subtest running concurrently
+func TestIntegration_ConfidentialClientDCR_FullFlow_Redis(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(), withRedisBackedStorage())
+	ts.Miniredis(t) // assert the harness was wired with withRedisBackedStorage
+
+	//nolint:paralleltest // shares the suite's miniredis instance with sibling subtests (PostEviction advances its clock)
+	for _, authMethod := range []string{
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost,
+	} {
+		t.Run(authMethod, func(t *testing.T) {
+			runConfidentialHappyPath(t, ts.Server.URL, authMethod)
+		})
+	}
+
+	// The serialized Redis rows must never carry the plaintext secret: only
+	// the SHA-256 digest is stored. A regression that persisted cfg.Secret (or
+	// a future storedClient field carrying plaintext) would authenticate
+	// successfully and pass every other assertion in this suite.
+	//nolint:paralleltest // shares the suite's miniredis instance with sibling subtests
+	t.Run("PlaintextSecretAbsentFromRedis", func(t *testing.T) {
+		_, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+			oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+		mr := ts.Miniredis(t)
+		for _, key := range mr.Keys() {
+			value, err := mr.Get(key)
+			if err != nil {
+				continue // non-string key types (sets, hashes); the client row is a string
+			}
+			assert.NotContains(t, value, clientSecret,
+				"Redis key %q must not contain the plaintext client secret", key)
+		}
+	})
+
+	// Criterion 4: evicting the client secret (FastForward past the
+	// registration TTL) makes the token endpoint reject the client with 401
+	// invalid_client. Wrong-secret and unknown-client responses are
+	// indistinguishable; a missing secret is the unknown-client path.
+	//nolint:paralleltest // FastForward advances the suite's shared miniredis clock, which would corrupt sibling subtests running concurrently
+	t.Run("PostEviction", func(t *testing.T) {
+		clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+			oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+		// Confirm the client authenticates before eviction.
+		preEvict := makeTokenRequestWithBasicAuth(t, ts.Server.URL, url.Values{
+			"grant_type": {"authorization_code"},
+			"code":       {"some-code"},
+		}, clientID, clientSecret)
+		preEvict.Body.Close()
+		require.NotEqual(t, http.StatusUnauthorized, preEvict.StatusCode,
+			"pre-eviction authentication must not be a client-auth failure")
+
+		// Evict the client secret: the registration store writes secrets with
+		// the DefaultDCRClientTTL (30 days), so FastForward past it drops the key.
+		ts.Miniredis(t).FastForward(storage.DefaultDCRClientTTL + time.Hour)
+
+		resp := makeTokenRequestWithBasicAuth(t, ts.Server.URL, url.Values{
+			"grant_type": {"authorization_code"},
+			"code":       {"some-code"},
+		}, clientID, clientSecret)
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		resp.Body.Close()
+
+		require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+			"post-eviction authentication must be 401, got %d (body: %s)", resp.StatusCode, string(bodyBytes))
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(bodyBytes, &body))
+		assert.Equal(t, "invalid_client", body["error"])
+		assert.NotContains(t, string(bodyBytes), clientSecret, "error response must not leak the secret")
+	})
+}
+
+// TestIntegration_ClientSecretPost_NotPersistedInTokenSessions guards against
+// a client_secret_post redemption writing the plaintext secret into a stored
+// access or refresh token session row. client_secret_post sends the secret in
+// the POST body, which fosite copies into the request form during
+// NewAccessRequest. fosite's own Request.Sanitize([]string{}) — invoked by
+// every code path in this codebase that creates an access/refresh token
+// session (the standard authorization_code and refresh_token grant handlers,
+// and our token-exchange handler via the embedded oauth2.HandleHelper) —
+// already discards every form key outside grant_type/response_type/scope/
+// client_id before the session is handed to storage, so this is a regression
+// guard against that mechanism ever changing, not a demonstration of a live
+// leak: it passes both with and without the extra
+// accessRequest.GetRequestForm().Del("client_secret") in TokenHandler.
+//
+// This asserts against the raw bytes in miniredis, not a decoded Go struct:
+// the point is what actually lands on disk, and a struct-field assertion
+// would miss the secret sitting in a form/query-string blob inside the JSON.
+func TestIntegration_ClientSecretPost_NotPersistedInTokenSessions(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration(), withRedisBackedStorage())
+
+	clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL, oauthproto.TokenEndpointAuthMethodClientSecretPost)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     clientID,
+		RedirectURI:  testConfidentialRedirectURI,
+		State:        "confidential-dcr-state",
+		Challenge:    servercrypto.ComputePKCEChallenge(verifier),
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	params := confidentialAuthCodeParams(code, verifier)
+	params.Set("client_id", clientID)
+	params.Set("client_secret", clientSecret)
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	tokenData := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"client_secret_post redemption should succeed, got %d (body: %v)", resp.StatusCode, tokenData)
+	refreshToken, hasRefresh := tokenData["refresh_token"].(string)
+	require.True(t, hasRefresh, "offline_access scope should have produced a refresh_token")
+	require.NotEmpty(t, refreshToken)
+
+	mr := ts.Miniredis(t)
+	for _, key := range mr.Keys() {
+		value, err := mr.Get(key)
+		if err != nil {
+			continue // non-string key types (sets, hashes); session rows are strings
+		}
+		assert.NotContains(t, value, clientSecret,
+			"Redis key %q must not contain the plaintext client_secret from the token request form", key)
+	}
+}
+
+// TestIntegration_LegacyPublicClient_TolerantOfPresentedSecret pins the
+// end-user-visible half of D3a's symmetry fix: a legacy-shaped client row —
+// no token_endpoint_auth_method ever recorded, Public=true — must still
+// authenticate at /oauth/token even when the caller presents a non-empty
+// client_secret. clientFromStored (pkg/authserver/storage/redis.go) rebuilds
+// this row shape as a bare *fosite.DefaultClient, which does not satisfy
+// fosite.OpenIDConnectClient, so fosite's method-enforcement checks in
+// client_authentication.go never run; IsPublic()==true then short-circuits
+// straight past secret verification regardless of what was presented. This
+// is the fail-open tolerance the row always had, before and after D3a — the
+// storage-layer tests in redis_test.go pin the same shape read-back, this
+// pins the behaviour a real token request sees.
+//
+// withExtraClient registers a bare *fosite.DefaultClient (no
+// fosite.OpenIDConnectClient implementation) directly through the public
+// Storage.RegisterClient API: RegisterClient only populates
+// token_endpoint_auth_method for clients implementing that interface, so
+// this produces the exact legacy row shape without reaching into storage's
+// unexported types.
+func TestIntegration_LegacyPublicClient_TolerantOfPresentedSecret(t *testing.T) {
+	t.Parallel()
+
+	const legacyClientID = "legacy-public-no-method"
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withExtraClient(&fosite.DefaultClient{
+		ID:            legacyClientID,
+		RedirectURIs:  []string{testRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		Scopes:        registration.DefaultScopes,
+		Audience:      []string{testAudience},
+		Public:        true,
+	}))
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     legacyClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "legacy-public-state",
+		Challenge:    servercrypto.ComputePKCEChallenge(verifier),
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+		"client_id":     {legacyClientID},
+		"client_secret": {"whatever-a-caller-might-still-send"},
+	})
+	defer resp.Body.Close()
+
+	tokenData := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"legacy public client must still authenticate with a non-empty client_secret presented, got %d (body: %v)",
+		resp.StatusCode, tokenData)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+}
+
+// TestIntegration_DCRRateLimited pins the anti-DoS gate on the unauthenticated
+// registration endpoint: a burst beyond the limiter's capacity gets 429 with
+// Retry-After, while ordinary use (a single registration) is unaffected.
+func TestIntegration_DCRRateLimited(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+	})
+	require.NoError(t, err)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	// The limiter is rate.NewLimiter(1, 5): the first 5 requests drain the
+	// burst, so within 20 rapid calls at least one must be rejected.
+	saw429 := false
+	sawSuccess := false
+	for range 20 {
+		resp, err := httpClient.Post(ts.Server.URL+"/oauth/register", "application/json", bytes.NewReader(reqBody))
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			saw429 = true
+			assert.NotEmpty(t, resp.Header.Get("Retry-After"), "429 must carry a Retry-After hint")
+		}
+		if resp.StatusCode == http.StatusCreated {
+			sawSuccess = true
+		}
+	}
+	assert.True(t, saw429, "20 rapid registrations must trip the rate limiter")
+	assert.True(t, sawSuccess, "the burst allowance must let ordinary registrations through")
+}
+
+// TestIntegration_ConfidentialClientDCR_FlagOffRejected proves the feature is
+// opt-in: with AllowConfidentialClientRegistration unset, DCR rejects client_secret_*
+// registrations with the historical public-clients-only error.
+func TestIntegration_ConfidentialClientDCR_FlagOffRejected(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m) // no withAllowConfidentialClientRegistration
+
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs:            []string{testConfidentialRedirectURI},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+	})
+	require.NoError(t, err)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Post(ts.Server.URL+"/oauth/register", "application/json", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"confidential DCR with the flag off must be rejected (body: %s)", string(bodyBytes))
+	assert.Contains(t, string(bodyBytes), "invalid_client_metadata")
+}
+
+// TestIntegration_ConfidentialClientDCR_InvalidClient covers criteria 11, 12,
+// and 13: wrong-secret and unknown-client authentication failures are 401
+// invalid_client with no debug detail and no secret leakage, wrong-secret and
+// unknown-client responses are indistinguishable, the registered auth method
+// is pinned in both directions, and a confidential client presenting no
+// credentials is rejected rather than silently treated as public.
+//
+// All cases redeem the same (already-invalid) code: fosite authenticates the
+// client before any grant handling, so every rejection originates from client
+// authentication and the code is never consumed.
+func TestIntegration_ConfidentialClientDCR_InvalidClient(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
+
+	postClientID, postClientSecret := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost)
+	basicClientID, basicClientSecret := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+	// Wrong secrets that are neither equal to nor substrings of the real
+	// secrets, so the leakage assertions below are meaningful.
+	const (
+		wrongSecretForPostClient  = "wrong-post-secret_000000000000000000000000"
+		wrongSecretForBasicClient = "wrong-basic-secret_00000000000000000000000"
+	)
+
+	// A real authorization code for the post client: proves even a well-formed
+	// grant request fails closed on client authentication.
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code := completeConfidentialAuthorizationFlow(t, ts.Server.URL, postClientID, servercrypto.ComputePKCEChallenge(verifier))
+
+	// readInvalidClientBody asserts the shared failure-shape contract (status,
+	// error code, no error_debug, no secret material) and returns the raw body
+	// for indistinguishability comparison.
+	readInvalidClientBody := func(t *testing.T, resp *http.Response, secrets ...string) string {
+		t.Helper()
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		resp.Body.Close()
+
+		require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+			"client-authentication failure must be 401, got %d (body: %s)", resp.StatusCode, string(bodyBytes))
+
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(bodyBytes, &body), "error response must be JSON: %s", string(bodyBytes))
+		assert.Equal(t, "invalid_client", body["error"], "client-authentication failure must be invalid_client")
+		_, hasDebug := body["error_debug"]
+		assert.False(t, hasDebug, "error response must not carry error_debug: %s", string(bodyBytes))
+		for _, s := range secrets {
+			assert.NotContains(t, string(bodyBytes), s, "error response must not echo secret material")
+		}
+		return string(bodyBytes)
+	}
+
+	t.Run("wrong_secret", func(t *testing.T) {
+		t.Parallel()
+		params := confidentialAuthCodeParams(code, verifier)
+		params.Set("client_id", postClientID)
+		params.Set("client_secret", wrongSecretForPostClient)
+		resp := makeTokenRequest(t, ts.Server.URL, params)
+		readInvalidClientBody(t, resp, postClientSecret, wrongSecretForPostClient)
+	})
+
+	t.Run("unknown_client_id_indistinguishable", func(t *testing.T) {
+		t.Parallel()
+		params := confidentialAuthCodeParams(code, verifier)
+		params.Set("client_id", "00000000-0000-0000-0000-000000000000")
+		params.Set("client_secret", wrongSecretForPostClient)
+		resp := makeTokenRequest(t, ts.Server.URL, params)
+		unknownBody := readInvalidClientBody(t, resp, postClientSecret, wrongSecretForPostClient)
+
+		params = confidentialAuthCodeParams(code, verifier)
+		params.Set("client_id", postClientID)
+		params.Set("client_secret", wrongSecretForPostClient)
+		resp = makeTokenRequest(t, ts.Server.URL, params)
+		wrongSecretBody := readInvalidClientBody(t, resp, postClientSecret, wrongSecretForPostClient)
+
+		assert.Equal(t, wrongSecretBody, unknownBody,
+			"unknown client_id must be indistinguishable from a wrong secret")
+	})
+
+	t.Run("method_pinned_post_client_with_basic_auth", func(t *testing.T) {
+		t.Parallel()
+		// Criterion 12, first direction: a client_secret_post client presenting
+		// Basic-auth credentials is rejected. Send the CORRECT secret so only
+		// the method mismatch can cause the failure.
+		resp := makeTokenRequestWithBasicAuth(t, ts.Server.URL,
+			confidentialAuthCodeParams(code, verifier), postClientID, postClientSecret)
+		readInvalidClientBody(t, resp, postClientSecret)
+	})
+
+	t.Run("method_pinned_basic_client_with_post_body", func(t *testing.T) {
+		t.Parallel()
+		// Criterion 12, second direction: a client_secret_basic client
+		// presenting body credentials is rejected. Again the correct secret.
+		params := confidentialAuthCodeParams(code, verifier)
+		params.Set("client_id", basicClientID)
+		params.Set("client_secret", basicClientSecret)
+		resp := makeTokenRequest(t, ts.Server.URL, params)
+		readInvalidClientBody(t, resp, basicClientSecret)
+	})
+
+	t.Run("no_credentials", func(t *testing.T) {
+		t.Parallel()
+		// Criterion 13: a confidential client presenting no credentials at all
+		// must not silently succeed via the public-client path.
+		params := confidentialAuthCodeParams(code, verifier)
+		params.Set("client_id", postClientID)
+		resp := makeTokenRequest(t, ts.Server.URL, params)
+		readInvalidClientBody(t, resp, postClientSecret)
+	})
+}
+
+// TestIntegration_ConfidentialClientDCR_PKCEEnforced covers criterion 14: PKCE
+// has no per-client bypass — a confidential client cannot complete the
+// authorization-code flow without a code_challenge.
+//
+// NOTE on where enforcement fires: this server defers PKCE validation to the
+// callback/code-issuance step (fosite's pkce.Handler runs in
+// NewAuthorizeResponse, and the authorize handler's /oauth/authorize request
+// validation accepts requests without code_challenge per RFC 7636 — the same
+// shape pinned by handlers_test.go's
+// TestAuthorizeHandler_PKCENotValidatedAtAuthorizeEndpoint). The fail-closed
+// guarantee criterion 14 actually requires is therefore observable one step
+// later: issuing a code to a challenge-less request fails closed inside
+// fosite's NewAuthorizeResponse (pkce.validateNoPKCE), and because the request
+// carried a valid registered redirect URI fosite reports it as a 303 redirect
+// to the client carrying error=invalid_request — no code is issued. The test
+// asserts that redirect carries the error and no code, and that the AS metadata
+// advertises code_challenge_methods_supported — the pointer a compliant
+// confidential client follows to learn S256 is mandatory.
+func TestIntegration_ConfidentialClientDCR_PKCEEnforced(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
+
+	clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+	// Drive /oauth/authorize for the confidential client WITHOUT code_challenge.
+	client := noRedirectClient()
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":     {clientID},
+		"redirect_uri":  {testConfidentialRedirectURI},
+		"state":         {"pkce-enforcement-state"},
+		"response_type": {"code"},
+		"scope":         {"openid profile"},
+	}.Encode()
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// The authorize endpoint accepts the request and redirects to the upstream
+	// IDP: fosite deliberately validates code_verifier at the token endpoint,
+	// not code_challenge at the authorize endpoint.
+	require.Equal(t, http.StatusFound, resp.StatusCode,
+		"authorize without code_challenge is accepted per RFC 7636 (validation is deferred to token redemption)")
+
+	// Complete the upstream login to reach the callback, where the challenge-
+	// less code issuance fails closed.
+	mockOIDCLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp, err = client.Get(mockOIDCLocation.String())
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from mockoidc to callback")
+	callbackLocation, err := resp.Location()
+	require.NoError(t, err)
+
+	parsedServerURL, err := url.Parse(ts.Server.URL)
+	require.NoError(t, err)
+	callbackLocation.Scheme = parsedServerURL.Scheme
+	callbackLocation.Host = parsedServerURL.Host
+
+	resp, err = client.Get(callbackLocation.String())
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// The PKCE failure IS enforced at code issuance — the error log above shows
+	// pkce.validateNoPKCE rejecting the challenge-less request inside
+	// NewAuthorizeResponse, and no code is issued (fail-closed holds). However
+	// the callback handler wraps that invalid_request as fosite.ErrServerError
+	// (callback.go's "failed to create authorization response" branch), so the
+	// client observes a 303 redirect carrying error=server_error rather than
+	// invalid_request. Criterion 14's security property — no code is issued to
+	// a challenge-less request — is what we assert here; the error-code masking
+	// is a separate known gap, not a silently-changed production behavior.
+	callbackBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"issuing a code without a PKCE challenge must fail, got %d (body: %s)", resp.StatusCode, string(callbackBody))
+	errLocation, err := resp.Location()
+	require.NoError(t, err)
+	// Assert the concrete observed value, not just non-emptiness: when the
+	// callback handler stops masking invalid_request as server_error, this
+	// fails loudly and the assertion can be tightened to the correct code.
+	assert.Equal(t, "server_error", errLocation.Query().Get("error"),
+		"the callback currently masks the PKCE invalid_request as server_error (see callback.go); "+
+			"if this now reads invalid_request, the masking is fixed and this assertion should be updated")
+	assert.Empty(t, errLocation.Query().Get("code"),
+		"no authorization code may be issued to a challenge-less request")
+
+	// Defense in depth: the confidential client cannot redeem a code that was
+	// never legitimately issued. With no `code` parameter the grant lookup fails
+	// before PKCE runs (invalid_grant), so we also try a fabricated code together
+	// with a well-formed code_verifier — even a correctly-shaped PKCE redemption
+	// for a code that bypassed challenge binding is rejected.
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"redirect_uri":  {testConfidentialRedirectURI},
+		"code":          {"fabricated-challenge-less-code"},
+		"code_verifier": {servercrypto.GeneratePKCEVerifier()},
+	}
+	tokenResp := makeTokenRequestWithBasicAuth(t, ts.Server.URL, params, clientID, clientSecret)
+	defer tokenResp.Body.Close()
+
+	tokenBody, err := io.ReadAll(tokenResp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, tokenResp.StatusCode,
+		"redeeming a code that was never issued must fail, got %d (body: %s)", tokenResp.StatusCode, string(tokenBody))
+	assert.Contains(t, string(tokenBody), "invalid_grant",
+		"a fabricated code is rejected with invalid_grant")
+
+	// The AS metadata names the supported PKCE methods; together with the
+	// fail-closed redemption above this is the contract a confidential client
+	// relies on to discover that S256 is mandatory.
+	discoResp, err := client.Get(ts.Server.URL + "/.well-known/oauth-authorization-server")
+	require.NoError(t, err)
+	defer discoResp.Body.Close()
+	discoBytes, err := io.ReadAll(discoResp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, discoResp.StatusCode, "discovery document must be served")
+	assert.Contains(t, string(discoBytes), "code_challenge_methods_supported")
+	assert.Contains(t, string(discoBytes), "S256")
+}
+
+// TestIntegration_ConfidentialClientDCR_SecretNeverLogged covers criterion 15:
+// the minted client_secret appears in ZERO log records at any level across
+// registration, authorize, and token paths including failures. The capture
+// handler is installed before server construction so even startup-time
+// logging is in scope, and stays installed for the whole flow.
+//
+//nolint:paralleltest // swaps the process-global slog default handler
+func TestIntegration_ConfidentialClientDCR_SecretNeverLogged(t *testing.T) {
+	// Not parallel: swaps the process-global slog default handler.
+
+	capture := newCapturingSlogHandler()
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capture))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// Construct the server while the capture handler is installed.
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
+
+	// Registration path: DCR mints the secret.
+	clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost)
+
+	// Authorize path: full headless flow for the confidential client.
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code := completeConfidentialAuthorizationFlow(t, ts.Server.URL, clientID, servercrypto.ComputePKCEChallenge(verifier))
+
+	// Token path, failure: a wrong-secret attempt logs the rejection.
+	params := confidentialAuthCodeParams(code, verifier)
+	params.Set("client_id", clientID)
+	params.Set("client_secret", "wrong-secret_00000000000000000000000000000")
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+		"setup check: wrong-secret attempt must fail so its log record is captured")
+
+	// Token path, success: a correct redemption of a fresh code.
+	code = completeConfidentialAuthorizationFlow(t, ts.Server.URL, clientID, servercrypto.ComputePKCEChallenge(verifier))
+	params = confidentialAuthCodeParams(code, verifier)
+	params.Set("client_id", clientID)
+	params.Set("client_secret", clientSecret)
+	resp = makeTokenRequest(t, ts.Server.URL, params)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "setup check: correct-secret redemption must succeed")
+
+	// Assert the secret appears in no captured record — message or any
+	// attribute value, at any level.
+	for _, needle := range []string{clientSecret, clientSecret[:16]} {
+		assert.Empty(t, capture.recordsContaining(needle),
+			"client_secret (or a substring of it) must never be logged; needle %q", needle)
+	}
+}
+
+// TestIntegration_TokenEndpointFailuresLogAtDebug pins the log-volume half of
+// the unauthenticated-DoS hardening: wrong-secret token requests must not
+// produce ERROR-level records, because RFC6749Error.Error() carries only the
+// error code (no diagnostic value) and the endpoint is unauthenticated — at
+// Error level an attacker could flood the log stream and drown real errors.
+//
+//nolint:paralleltest // swaps the process-global slog default handler
+func TestIntegration_TokenEndpointFailuresLogAtDebug(t *testing.T) {
+	// Not parallel: swaps the process-global slog default handler.
+
+	capture := newCapturingSlogHandler()
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capture))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
+
+	clientID, _ := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost)
+
+	for range 100 {
+		params := url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {"some-code"},
+			"client_id":     {clientID},
+			"client_secret": {"wrong-secret_00000000000000000000000000000"},
+		}
+		resp := makeTokenRequest(t, ts.Server.URL, params)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	assert.Empty(t, capture.messages(slog.LevelError, "failed to create access"),
+		"100 wrong-secret token requests must produce no ERROR-level records")
+}
+
+// TestIntegration_ConfidentialClientDCR_AudienceParity covers criterion 16: a
+// token issued to a confidential client carries the same aud/resource
+// restriction as one issued to a public client under identical
+// AllowedAudiences. DCR-registered clients inherit the server's
+// AllowedAudiences (handlers/dcr.go passes h.config.AllowedAudiences into
+// registration.New), so redeeming with resource=testAudience must yield
+// aud == [testAudience], mirroring TestIntegration_FullPKCEFlow.
+func TestIntegration_ConfidentialClientDCR_AudienceParity(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	// setupTestServer configures AllowedAudiences: [testAudience] for every
+	// client, exactly as in TestIntegration_FullPKCEFlow.
+	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
+
+	tokenData := runConfidentialHappyPath(t, ts.Server.URL, oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+
+	// The happy path redeems without a resource parameter; assert the
+	// sole-allowed-audience default bound the token identically to a public
+	// client first.
+	accessToken, _ := tokenData["access_token"].(string)
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]interface{}
+	require.NoError(t, parsedToken.Claims(ts.PrivateKey.Public(), &claims))
+	aud, ok := claims["aud"].([]interface{})
+	require.True(t, ok, "aud claim should be an array")
+	require.Len(t, aud, 1, "aud should have exactly one audience")
+	assert.Equal(t, testAudience, aud[0], "confidential client gets the same default audience as a public client")
+
+	// Now the explicit-resource arm: redeem with resource=testAudience, the
+	// same parameter TestIntegration_FullPKCEFlow sends for the public client.
+	clientID, clientSecret := registerConfidentialClient(t, ts.Server.URL,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic)
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code := completeConfidentialAuthorizationFlow(t, ts.Server.URL, clientID, servercrypto.ComputePKCEChallenge(verifier))
+
+	params := confidentialAuthCodeParams(code, verifier)
+	params.Set("resource", testAudience)
+	resp := makeTokenRequestWithBasicAuth(t, ts.Server.URL, params, clientID, clientSecret)
+	defer resp.Body.Close()
+
+	tokenData = parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"redemption with resource parameter should succeed, got %d (body: %v)", resp.StatusCode, tokenData)
+
+	accessToken, ok = tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	parsedToken, err = jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	claims = map[string]interface{}{}
+	require.NoError(t, parsedToken.Claims(ts.PrivateKey.Public(), &claims))
+
+	aud, ok = claims["aud"].([]interface{})
+	require.True(t, ok, "aud claim should be an array")
+	require.Len(t, aud, 1, "aud should have exactly one audience")
+	assert.Equal(t, testAudience, aud[0],
+		"aud from an explicit resource parameter must match the public-client result")
 }

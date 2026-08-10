@@ -25,7 +25,8 @@ func newMCPOIDCConfigWithCABundle(name, namespace, cmName, key string) *mcpv1bet
 		Spec: mcpv1beta1.MCPOIDCConfigSpec{
 			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
-				Issuer: "http://localhost:9090",
+				Issuer:            "http://localhost:9090",
+				InsecureAllowHTTP: true,
 				CABundleRef: &mcpv1beta1.CABundleSource{
 					ConfigMapRef: &corev1.ConfigMapKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cmName},

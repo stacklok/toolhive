@@ -559,6 +559,14 @@
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
+                    "trusted_issuers": {
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nPrerequisite: the token-exchange grant requires a confidential client,\nand no supported deployment path provisions one today (DCR and CIMD\nclients are both public-only, and there is no client-seeding field on\nthis RunConfig), so this grant is not yet usable end to end for\nself-issued or external subject tokens alike. Tracked in\nhttps://github.com/stacklok/toolhive/issues/6082.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
@@ -711,6 +719,51 @@
                     },
                     "http_method": {
                         "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer": {
+                "properties": {
+                    "actor_claim": {
+                        "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
+                        "type": "string"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
+                        "type": "boolean"
+                    },
+                    "allowed_actors": {
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim; empty means only may_act-bearing tokens are\naccepted. By itself names no ToolHive client — see\nAllowedDelegateClients and docs/arch/17-token-exchange-delegation.md\n(\"Accepted limitations\" #1).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "allowed_delegate_clients": {
+                        "description": "AllowedDelegateClients restricts which ToolHive client IDs may\nexchange a subject token from this issuer, for BOTH consent paths.\nRequired (validateTrustedIssuer rejects empty/absent); \"*\" permits\nany confidential client holding the grant. See\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "expected_audience": {
+                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin the token's audience list (a resource/API identifier, not a\nclient ID — required, but not enforced; see looksLikeResourceIdentifier).\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
+                        "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches\nfor THIS issuer only. Development and testing only — never set in\nproduction. Does not relax the private-IP guard; see AllowPrivateIPs.\nDeliberately per-issuer: this server's own InsecureAllowHTTP must not\nsilently permit plaintext discovery for every trusted external issuer\ntoo — a network attacker who can intercept that traffic could\nsubstitute a JWKS and forge subject tokens for that issuer's\nnamespace.",
+                        "type": "boolean"
+                    },
+                    "issuer_url": {
+                        "description": "IssuerURL is the expected \"iss\" claim value (exact match).",
+                        "type": "string"
+                    },
+                    "jwks_url": {
+                        "description": "JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.\nIf empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.",
                         "type": "string"
                     }
                 },

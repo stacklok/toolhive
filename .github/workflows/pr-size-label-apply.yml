@@ -23,19 +23,56 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
 
-      - name: Read PR number and size label
-        id: read
-        run: |
-          PR_NUMBER=$(cat pr-size/pr-number.txt)
-          SIZE_LABEL=$(cat pr-size/label.txt | tr -d '"')
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "size_label=$SIZE_LABEL" >> $GITHUB_OUTPUT
-          echo "PR #$PR_NUMBER should get label: $SIZE_LABEL"
+      # The artifact is produced by a `pull_request` workflow, so its contents
+      # come from the pull request author — including authors from forks. This
+      # job runs in the base repository with `pull-requests: write`, so the
+      # artifact is treated as untrusted input: the label must be one we
+      # recognise, and the pull request number is derived from this job's own
+      # trigger event rather than read from the artifact.
+      - name: Resolve pull request and validate label
+        id: resolve
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('fs');
+            const run = context.payload.workflow_run;
+
+            const ALLOWED = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+            const label = fs.readFileSync('pr-size/label.txt', 'utf8').trim().replace(/^"|"$/g, '');
+            if (!ALLOWED.includes(label)) {
+              core.setFailed(`Refusing to apply unrecognised label ${JSON.stringify(label)}`);
+              return;
+            }
+
+            // workflow_run.pull_requests is empty for pull requests from forks,
+            // and frequently empty for same-repository ones too, so treat it as
+            // a fast path and fall back to looking the head commit up.
+            let number = run.pull_requests?.[0]?.number;
+            if (!number) {
+              const { data: associated } =
+                await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: run.head_sha,
+                });
+              const open = associated.filter((pr) => pr.state === 'open');
+              if (open.length !== 1) {
+                core.setFailed(
+                  `Expected exactly one open pull request for ${run.head_sha}, found ${open.length}`
+                );
+                return;
+              }
+              number = open[0].number;
+            }
+
+            console.log(`PR #${number} should get label: ${label}`);
+            core.setOutput('pr_number', String(number));
+            core.setOutput('size_label', label);
 
       - name: Remove old size labels
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         with:
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER);
@@ -62,8 +99,8 @@ jobs:
       - name: Add new size label
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
-          SIZE_LABEL: ${{ steps.read.outputs.size_label }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          SIZE_LABEL: ${{ steps.resolve.outputs.size_label }}
         with:
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER);

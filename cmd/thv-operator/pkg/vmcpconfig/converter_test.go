@@ -1424,6 +1424,56 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 	}
 }
 
+// TestConvert_DefaultToolVisibilityPreserved guards against silently dropping the
+// aggregation visibility setting. convertAggregation hand-copies fields rather
+// than deep-copying, so omitting DefaultToolVisibility there would let the CRD accept
+// `defaultToolVisibility: deny` while the rendered vMCP config falls back to
+// advertise-everything — a security-relevant setting that looks applied and is
+// not. An empty value must survive as empty (the aggregator treats it as allow),
+// so pre-existing CRs keep today's behavior.
+func TestConvert_DefaultToolVisibilityPreserved(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		set  vmcpconfig.DefaultToolVisibility
+		want vmcpconfig.DefaultToolVisibility
+	}{
+		{name: "deny is carried through to the rendered config", set: vmcpconfig.DefaultToolVisibilityDeny, want: vmcpconfig.DefaultToolVisibilityDeny},
+		{name: "allow is carried through to the rendered config", set: vmcpconfig.DefaultToolVisibilityAllow, want: vmcpconfig.DefaultToolVisibilityAllow},
+		{name: "unset stays unset (treated as allow downstream)", set: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Aggregation: &vmcpconfig.AggregationConfig{
+						DefaultToolVisibility: tt.set,
+						Tools:                 []*vmcpconfig.WorkloadToolConfig{{Workload: "backend1"}},
+					},
+				}),
+			)
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			converter.k8sClient = newTestK8sClient(t)
+
+			got, _, err := converter.Convert(ctx, vmcpServer, nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.NotNil(t, got.Aggregation)
+			assert.Equal(t, tt.want, got.Aggregation.DefaultToolVisibility,
+				"defaultToolVisibility must survive CRD-to-config conversion")
+		})
+	}
+}
+
 // TestConverter_InlineTelemetryIgnored verifies that the operator-side converter
 // ignores Config.Telemetry (the standalone CLI field) and only uses TelemetryConfigRef.
 func TestConverter_InlineTelemetryIgnored(t *testing.T) {

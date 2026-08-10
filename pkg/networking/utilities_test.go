@@ -363,6 +363,22 @@ func TestIsPrivateIP(t *testing.T) {
 		// decoded, so it is blocked wholesale even when the low 32 bits look
 		// public (would otherwise be a false-negative SSRF bypass).
 		{"NAT64 local-use non-/96 blocked", "64:ff9b:1:1::8.8.8.8", true},
+
+		// 6to4 (RFC 3056): classified by the embedded IPv4, decoded from bits 16-47.
+		{"6to4 -> IMDS link-local", "2002:a9fe:a9fe::", true},
+		{"6to4 -> RFC1918 192.168.x", "2002:c0a8:0101::", true},
+		{"6to4 -> loopback", "2002:7f00:0001::", true},
+		// 6to4 embedding a genuinely public IPv4 must stay allowed, proving the
+		// prefix is decoded rather than blocked wholesale.
+		{"6to4 -> public", "2002:0808:0808::", false},
+		// Just outside the 6to4 prefix: no embedded-IPv4 decoding applies.
+		{"just outside 6to4 prefix", "2003::", false},
+
+		// Teredo (RFC 4380): the embedded client IPv4 is obfuscated via bitwise
+		// NOT and cannot be decoded from the address alone, so the whole prefix
+		// is blocked regardless of what the low 32 bits would decode to.
+		{"Teredo simple address", "2001::1", true},
+		{"Teredo address decoding to a public-looking IPv4", "2001:0:4136:e378:8000:63bf:3fff:fdf6", true},
 	}
 
 	for _, tt := range tests {

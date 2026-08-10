@@ -884,3 +884,88 @@ func TestDefaultAggregator_FilterPreservesRoutingTableForCompositeTools(t *testi
 		assert.Len(t, result.RoutingTable.Tools, 2)
 	})
 }
+
+// TestDefaultAggregator_DefaultToolVisibilityDenyMixedBackends covers the motivating
+// scenario for defaultToolVisibility (issue #6073): a group holding both a listed and
+// an unlisted backend. Under "deny" the listed backend's tools are advertised and
+// the unlisted backend contributes nothing — so adding a workload to the group no
+// longer exposes it by default. Both backends' tools stay routable, keeping
+// composite tools working over hidden ones.
+func TestDefaultAggregator_DefaultToolVisibilityDenyMixedBackends(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	backends, capsByID := twoBackendCaps()
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	expectListCapabilities(mockClient, capsByID)
+
+	// backend1 is listed (opted in); backend2 is not mentioned at all.
+	aggCfg := &config.AggregationConfig{
+		DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+		Tools:                 []*config.WorkloadToolConfig{{Workload: "backend1"}},
+	}
+
+	agg := NewDefaultAggregator(mockClient, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
+	result, err := agg.AggregateCapabilities(context.Background(), backends)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	advertised := make([]string, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		advertised = append(advertised, tool.Name)
+	}
+	assert.ElementsMatch(t, []string{"backend1_fetch", "backend1_tool_a"}, advertised,
+		"only the listed backend's tools may be advertised under deny")
+	for _, tool := range result.Tools {
+		assert.Equalf(t, "backend1", tool.BackendID,
+			"no unlisted backend's tool may be advertised, but %q was", tool.Name)
+	}
+
+	// Advertising-only: the unlisted backend stays fully routable so composite
+	// tools can still reach it.
+	require.NotNil(t, result.RoutingTable)
+	assert.Len(t, result.RoutingTable.Tools, 4,
+		"deny must not remove tools from the routing table")
+	assert.Contains(t, result.RoutingTable.Tools, "backend2_tool_b",
+		"an unlisted backend's tools remain routable for composite tools")
+}
+
+// TestDefaultAggregator_WarnsOnUnmatchedToolConfig pins the diagnostic for a typo
+// in tools[].workload. Under deny a typo means the real backend has no entry and
+// so contributes nothing, and the only other symptom is a short tools/list — the
+// detection is what makes that debuggable.
+func TestDefaultAggregator_WarnsOnUnmatchedToolConfig(t *testing.T) {
+	t.Parallel()
+
+	backends, _ := twoBackendCaps()
+
+	t.Run("reports an entry matching no backend", func(t *testing.T) {
+		t.Parallel()
+		aggCfg := &config.AggregationConfig{
+			DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+			Tools: []*config.WorkloadToolConfig{
+				{Workload: "backend1"},
+				{Workload: "backend1typo"},
+			},
+		}
+		agg := NewDefaultAggregator(nil, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
+
+		da, ok := agg.(*defaultAggregator)
+		require.True(t, ok)
+		assert.Equal(t, []string{"backend1typo"}, da.unmatchedToolConfigWorkloads(backends),
+			"only the entry naming no backend in the group is reported")
+	})
+
+	t.Run("reports nothing when every entry matches", func(t *testing.T) {
+		t.Parallel()
+		aggCfg := &config.AggregationConfig{
+			Tools: []*config.WorkloadToolConfig{{Workload: "backend1"}, {Workload: "backend2"}},
+		}
+		agg := NewDefaultAggregator(nil, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
+
+		da, ok := agg.(*defaultAggregator)
+		require.True(t, ok)
+		assert.Empty(t, da.unmatchedToolConfigWorkloads(backends))
+	})
+}

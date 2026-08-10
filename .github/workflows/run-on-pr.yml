@@ -18,12 +18,8 @@ jobs:
   linting:
     name: Linting
     uses: ./.github/workflows/lint.yml
-  security-scan:
-    name: Security Scan
-    permissions:
-      contents: read
-      security-events: write
-    uses: ./.github/workflows/security-scan.yml
+  # Security Scan is not called from here: security-scan.yml has its own
+  # `pull_request` trigger, so calling it as well ran every scan twice per PR.
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml

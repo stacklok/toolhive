@@ -1,27 +1,35 @@
 name: Security Scan
 
 on:
+  # Called by run-on-main.yml on push to main, where image-build-and-push gates
+  # on the result. There is deliberately no `push:` trigger here as well — that
+  # would run every scan twice for each push to main.
   workflow_call:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+  # PRs trigger this directly rather than through run-on-pr.yml, for the same
+  # reason. Unfiltered by branch, to match the coverage run-on-pr.yml gave.
   pull_request:
-    branches: [ main ]
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# security-events: write is granted per job rather than here, so only the two
+# jobs that upload SARIF can write security events.
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   grype-repo-scan:
     name: Grype Repository Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Run Grype vulnerability scanner
         id: grype-scan
@@ -32,11 +40,55 @@ jobs:
           fail-build: false
 
       - name: Upload Grype scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         if: always()
         with:
           sarif_file: ${{ steps.grype-scan.outputs.sarif }}
           category: "grype"
+
+  zizmor:
+    name: GitHub Actions Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    # --no-exit-codes stops *findings* failing the job; this stops a tool or
+    # network failure doing so. Both come off when the gate goes blocking.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # This job only reads the workflow files; it never pushes.
+          persist-credentials: false
+
+      # Advisory only for now: --no-exit-codes keeps the job green while the
+      # existing backlog is worked through, so this reports without blocking.
+      # Remove it (and add --min-severity) once the backlog is clear.
+      #
+      # Results are written straight to SARIF and never echoed. Workflow logs
+      # and job summaries are world-readable on a public repository, so
+      # printing findings would publish them; the SARIF upload keeps them in
+      # the Security tab, which requires write access to read.
+      - name: Run zizmor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pipx run zizmor==1.29.0 \
+            --persona=regular \
+            --format=sarif \
+            --no-exit-codes \
+            --no-progress \
+            .github/ > zizmor.sarif
+
+      # Pull requests from forks get a read-only token, so the upload is
+      # skipped there; those workflows are still scanned on push to main.
+      - name: Upload zizmor results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        if: always() && !github.event.pull_request.head.repo.fork
+        with:
+          sarif_file: zizmor.sarif
+          category: "zizmor"
 
   govulncheck:
     name: Go Vulnerability Check
@@ -44,6 +96,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1

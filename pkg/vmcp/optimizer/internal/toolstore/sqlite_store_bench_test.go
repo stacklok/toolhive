@@ -56,7 +56,7 @@ func BenchmarkSearch_FTS5Only_1000Tools(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = store.Search(ctx, "task operation", names)
+		_, _ = store.Search(ctx, types.SearchQuery{Description: "task operation"}, names)
 	}
 }
 
@@ -86,7 +86,7 @@ func BenchmarkSearch_Hybrid_1000Tools(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = store.Search(ctx, "task operation", names)
+		_, _ = store.Search(ctx, types.SearchQuery{Description: "task operation"}, names)
 	}
 }
 

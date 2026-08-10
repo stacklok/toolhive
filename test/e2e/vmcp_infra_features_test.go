@@ -104,12 +104,12 @@ var _ = Describe("vMCP infra features", Label("vmcp", "e2e", "infra"), func() {
 		BeforeEach(func() {
 			fx.setup("vmcp-auth-oidc", "vmcp-auth-oidc-*")
 
-			oidcPort = allocateVMCPPort()
 			var err error
-			oidcServer, err = e2e.NewOIDCMockServer(oidcPort, "test-client", "test-secret",
+			oidcServer, err = e2e.NewOIDCMockServer(0, "test-client", "test-secret",
 				e2e.WithClientAudience("vmcp-e2e-test"),
 			)
 			Expect(err).ToNot(HaveOccurred())
+			oidcPort = oidcServer.Port()
 			Expect(oidcServer.Start()).To(Succeed())
 			discoveryURL := fmt.Sprintf("http://localhost:%d/.well-known/openid-configuration", oidcPort)
 			Eventually(func() error {

@@ -140,7 +140,7 @@ func TestIntegration_ModernCall_Discover(t *testing.T) {
 		} `json:"capabilities"`
 		SupportedVersions []string `json:"supportedVersions"`
 	}
-	err := modernCall(context.Background(), hc, vmcpSrv.URL+"/mcp", "server/discover", nil, "", nil, &out)
+	err := modernCall(context.Background(), hc, vmcpSrv.URL+"/mcp", "server/discover", nil, "", nil, &out, "", nil)
 	require.NoError(t, err)
 
 	// Request shaping reached the real server intact.

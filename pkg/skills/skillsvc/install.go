@@ -60,14 +60,14 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// re-resolution uses, so the two cannot drift.
 	return dispatchSource(ctx, s, opts.Name, sourceOps[*skills.InstallResult]{
 		git: func(ctx context.Context, _ string) (*skills.InstallResult, error) {
-			result, err := s.installFromGit(ctx, opts, scope)
+			result, err := s.installFromGit(ctx, &opts, scope)
 			if err != nil {
 				return nil, err
 			}
 			return s.installAndRegister(ctx, opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope)
 		},
 		oci: func(ctx context.Context, ref nameref.Reference) (*skills.InstallResult, error) {
-			result, err := s.installFromOCI(ctx, opts, scope, ref)
+			result, err := s.installFromOCI(ctx, &opts, scope, ref)
 			if err != nil {
 				slog.Debug("OCI pull failed, registry fallback may apply", "name", opts.Name, "error", err)
 				return nil, err
@@ -124,6 +124,17 @@ func (s *service) installByName(
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
 
+	// Local-store artifacts and raw layer data carry no registry signature
+	// to verify — installing them project-scoped is an unsigned trust
+	// decision that must be explicit.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := verifyLocalInstall(opts, opts.Name)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
+	}
+
 	result, err := s.installWithExtraction(ctx, opts, scope)
 	if err != nil {
 		return nil, err
@@ -168,7 +179,7 @@ func (s *service) installFromResolvedRegistry(
 	case resolved.OCIRef != nil:
 		slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())
 		opts.Name = resolved.OCIRef.String()
-		result, ociErr := s.installFromOCI(ctx, opts, scope, resolved.OCIRef)
+		result, ociErr := s.installFromOCI(ctx, &opts, scope, resolved.OCIRef)
 		if ociErr != nil {
 			return nil, ociErr
 		}
@@ -179,7 +190,7 @@ func (s *service) installFromResolvedRegistry(
 	case resolved.GitURL != "":
 		slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
 		opts.Name = resolved.GitURL
-		result, gitErr := s.installFromGit(ctx, opts, scope)
+		result, gitErr := s.installFromGit(ctx, &opts, scope)
 		if gitErr != nil {
 			return nil, gitErr
 		}

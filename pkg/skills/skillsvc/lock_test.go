@@ -25,6 +25,7 @@ import (
 	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -32,7 +33,7 @@ import (
 // store and the real default Installer, so extracted files and lock file
 // state can be inspected on disk exactly as they would be in production.
 // Only the git resolver and path resolver are test doubles.
-func newLockTestService(t *testing.T, gr *gitmocks.MockResolver) (skills.SkillService, string) {
+func newLockTestService(t *testing.T, gr *gitmocks.MockResolver, extra ...Option) (skills.SkillService, string) {
 	t.Helper()
 	t.Setenv(skills.LockFileEnvVar, "true")
 
@@ -60,7 +61,22 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver) (skills.SkillSe
 	// client" (see TestUpgrade_PreservesExistingClients).
 	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
 
-	svc := New(store, WithPathResolver(pr), WithGitResolver(gr))
+	// Default verifier: everything verifies as signed by a fixed test
+	// identity, so tests exercising lock mechanics don't trip install-time
+	// verification. Tests about verification pass their own WithVerifier
+	// via extra (later options win).
+	mv := verifiermocks.NewMockVerifier(ctrl)
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+
+	opts := append([]Option{WithPathResolver(pr), WithGitResolver(gr), WithVerifier(mv)}, extra...)
+	svc := New(store, opts...)
 	return svc, projectRoot
 }
 

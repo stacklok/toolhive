@@ -19,14 +19,15 @@ import (
 )
 
 // completeEnvelope is a minimal valid Modern success body for a given method's
-// result payload merged with the resultType envelope key.
-func completeEnvelope(t *testing.T, id any, payload map[string]any) []byte {
+// result payload merged with the resultType envelope key. The id is always 1:
+// these fakes serve the JSON (not SSE) path, which does not match by id.
+func completeEnvelope(t *testing.T, payload map[string]any) []byte {
 	t.Helper()
 	result := map[string]any{"resultType": "complete"}
 	for k, v := range payload {
 		result[k] = v
 	}
-	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	require.NoError(t, err)
 	return body
 }
@@ -86,7 +87,7 @@ func TestModernCall_RequestShaping(t *testing.T) {
 				gotReq = r
 				gotBody, _ = readAll(t, r)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(completeEnvelope(t, 1, map[string]any{}))
+				_, _ = w.Write(completeEnvelope(t, map[string]any{}))
 			}))
 			t.Cleanup(srv.Close)
 
@@ -94,7 +95,7 @@ func TestModernCall_RequestShaping(t *testing.T) {
 			if tt.callerMeta != nil {
 				params["_meta"] = tt.callerMeta
 			}
-			err := modernCall(context.Background(), srv.Client(), srv.URL, tt.method, params, tt.mcpName, nil, nil)
+			err := modernCall(context.Background(), srv.Client(), srv.URL, tt.method, params, tt.mcpName, nil, nil, "", nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, "application/json", gotReq.Header.Get("Content-Type"))
@@ -129,13 +130,13 @@ func TestModernCall_CallerMetaNotMutated(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(completeEnvelope(t, 1, map[string]any{}))
+		_, _ = w.Write(completeEnvelope(t, map[string]any{}))
 	}))
 	t.Cleanup(srv.Close)
 
 	callerMeta := map[string]any{"userKey": "v"}
 	params := map[string]any{"_meta": callerMeta, "name": "x"}
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "tools/list", params, "", nil, nil))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "tools/list", params, "", nil, nil, "", nil))
 
 	assert.Equal(t, map[string]any{"userKey": "v"}, callerMeta, "caller _meta must be untouched")
 	assert.NotContains(t, params, "does-not-add-keys")
@@ -150,7 +151,7 @@ func TestModernCall_Decode(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(completeEnvelope(t, 1, map[string]any{
+		_, _ = w.Write(completeEnvelope(t, map[string]any{
 			"supportedVersions": []string{"2026-07-28"},
 		}))
 	}))
@@ -160,7 +161,7 @@ func TestModernCall_Decode(t *testing.T) {
 		ResultType        string   `json:"resultType"`
 		SupportedVersions []string `json:"supportedVersions"`
 	}
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out, "", nil))
 	assert.Equal(t, "complete", out.ResultType)
 	assert.Equal(t, []string{"2026-07-28"}, out.SupportedVersions)
 }
@@ -224,11 +225,104 @@ func TestModernCall_SSEResponse(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			var out map[string]any
-			require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out))
+			require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out, "", nil))
 			assert.Equal(t, "complete", out["resultType"])
 			assert.Equal(t, true, out["ok"])
 		})
 	}
+}
+
+// TestModernCall_LogLevelMeta verifies the logLevel argument is overlaid onto
+// the minted request _meta as io.modelcontextprotocol/logLevel — the Modern
+// (2026-07-28) replacement for the removed logging/setLevel RPC — and that an
+// empty logLevel leaves the key unset (so a conformant backend MUST NOT emit
+// notifications/message for the request).
+func TestModernCall_LogLevelMeta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		logLevel     string
+		wantKey      bool
+		wantLogLevel any
+	}{
+		{name: "non-empty logLevel is injected", logLevel: "debug", wantKey: true, wantLogLevel: "debug"},
+		{name: "empty logLevel omits the key", logLevel: "", wantKey: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = readAll(t, r)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(completeEnvelope(t, map[string]any{}))
+			}))
+			t.Cleanup(srv.Close)
+
+			require.NoError(t, modernCall(
+				context.Background(), srv.Client(), srv.URL, "tools/call",
+				map[string]any{"name": "x"}, "x", nil, nil, tt.logLevel, nil,
+			))
+
+			var decoded struct {
+				Params struct {
+					Meta map[string]any `json:"_meta"`
+				} `json:"params"`
+			}
+			require.NoError(t, json.Unmarshal(gotBody, &decoded))
+			if tt.wantKey {
+				assert.Equal(t, tt.wantLogLevel, decoded.Params.Meta["io.modelcontextprotocol/logLevel"])
+			} else {
+				assert.NotContains(t, decoded.Params.Meta, "io.modelcontextprotocol/logLevel")
+			}
+		})
+	}
+}
+
+// TestModernCall_SSENotificationRelay verifies that when an onNotification
+// listener is bound, an interleaved server->client notification is handed to it
+// (method + params) AND the matching response is still returned — the listener
+// must not swallow the response the caller is waiting on.
+func TestModernCall_SSENotificationRelay(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(body, &req))
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		// A log notification (method, no id) then the matching response.
+		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"," +
+			"\"params\":{\"level\":\"info\",\"data\":\"hello\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":" + string(req.ID) +
+			",\"result\":{\"resultType\":\"complete\",\"ok\":true}}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	var gotMethod string
+	var gotParams map[string]any
+	onNotification := func(method string, params json.RawMessage) {
+		gotMethod = method
+		_ = json.Unmarshal(params, &gotParams)
+	}
+
+	var out map[string]any
+	require.NoError(t, modernCall(
+		context.Background(), srv.Client(), srv.URL, "tools/call",
+		map[string]any{"name": "x"}, "x", nil, &out, "debug", onNotification,
+	))
+
+	assert.Equal(t, "notifications/message", gotMethod)
+	assert.Equal(t, "info", gotParams["level"])
+	assert.Equal(t, "hello", gotParams["data"])
+	assert.Equal(t, "complete", out["resultType"], "the response must still be delivered to the caller")
 }
 
 // TestModernCall_ErrorMapping verifies the era/error classification: a valid
@@ -343,7 +437,7 @@ func TestModernCall_ErrorMapping(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			err := modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, nil)
+			err := modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, nil, "", nil)
 			require.Error(t, err)
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
@@ -383,7 +477,7 @@ func TestModernCall_LargeSSEEvent(t *testing.T) {
 	var got struct {
 		Blob string `json:"blob"`
 	}
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &got))
+	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &got, "", nil))
 	assert.Len(t, got.Blob, len(big))
 }
 

@@ -14,6 +14,19 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 )
 
+// SearchQuery describes a tool search request.
+//
+// The two fields feed different arms of hybrid search: Description is embedded
+// for semantic matching, Keywords build the FTS5/BM25 expression. When Keywords
+// is empty the lexical arm falls back to Description.
+type SearchQuery struct {
+	// Description is a natural language description of the desired capability.
+	Description string
+
+	// Keywords are optional discrete terms for the keyword-search arm.
+	Keywords []string
+}
+
 // ToolStore defines the interface for storing and searching tools.
 // Implementations may use in-memory maps, SQLite FTS5, or other backends.
 //
@@ -24,12 +37,14 @@ type ToolStore interface {
 	// Tools are identified by name; duplicate names are overwritten.
 	UpsertTools(ctx context.Context, tools []server.ServerTool) error
 
-	// Search finds tools matching the query string.
+	// Search finds tools matching q. Description is embedded for semantic
+	// matching; Keywords build the FTS5/BM25 expression, falling back to
+	// Description when empty.
 	// The allowedTools parameter limits results to only tools with names in the given set.
 	// If allowedTools is empty, no results are returned (empty = no access).
 	// Returns matches ranked by relevance. The returned mcp.Tool values contain
 	// only Name and Description; the caller is responsible for enriching with schemas.
-	Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error)
+	Search(ctx context.Context, q SearchQuery, allowedTools []string) ([]mcp.Tool, error)
 
 	// Close releases any resources held by the store (e.g., database connections).
 	// For in-memory stores this is a no-op.

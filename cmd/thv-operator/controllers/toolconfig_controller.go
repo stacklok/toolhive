@@ -12,15 +12,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -99,17 +94,6 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleConfigHashChange(ctx, toolConfig, configHash)
 	}
 
-	// Refresh ReferencingWorkloads list
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, toolConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(toolConfig.Status.ReferencingWorkloads, referencingWorkloads) ||
-		toolConfig.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads) {
-		toolConfig.Status.ReferencingWorkloads = referencingWorkloads
-		toolConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-		conditionChanged = true
-	}
-
 	// Update condition if it changed (even without hash change)
 	if conditionChanged {
 		if err := r.Status().Update(ctx, toolConfig); err != nil {
@@ -130,21 +114,9 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	logger := log.FromContext(ctx)
 	logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
 
-	// Find all MCPServers that reference this MCPToolConfig
-	refs, err := r.findReferencingWorkloads(ctx, toolConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing MCPServers")
-		// Don't persist the new hash on error; returning the error requeues so
-		// the next reconcile recomputes referencing workloads.
-		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
-	}
-
-	// Update the status with the new hash only after successful server lookup
+	// Record the new observed hash and generation.
 	toolConfig.Status.ConfigHash = configHash
 	toolConfig.Status.ObservedGeneration = toolConfig.Generation
-
-	toolConfig.Status.ReferencingWorkloads = refs
-	toolConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 
 	// Update the MCPToolConfig status
 	if err := r.Status().Update(ctx, toolConfig); err != nil {
@@ -184,8 +156,6 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
 				ObservedGeneration: toolConfig.Generation,
 			})
-			toolConfig.Status.ReferencingWorkloads = referencingWorkloads
-			toolConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 			if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
@@ -246,7 +216,6 @@ func (r *ToolConfigReconciler) findReferencingWorkloads(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field index backing findReferencingWorkloads: lets the controller query only
 	// the MCPServers referencing a given config rather than listing every MCPServer
@@ -257,39 +226,7 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to set up MCPServer toolConfigRef index: %w", err)
 	}
 
-	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPToolConfigs.
-	// The map function only returns the MCPToolConfig the server currently references.
-	// EnqueueRequestsFromMapFunc runs it on both the old and new object on update (and
-	// on the object for create/delete), so removing or changing the ref enqueues both
-	// the previously- and newly-referenced config — the previously-referenced config
-	// then reconciles and prunes the stale entry. No manual stale-reference scan needed.
-	//
-	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
-	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
-	// operator was down) is this config's own For() resync, which re-runs Reconcile and
-	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPToolConfig{}).
-		Watches(&mcpv1beta1.MCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToToolConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
-}
-
-// mapMCPServerToToolConfig maps an MCPServer to the MCPToolConfig it currently
-// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on
-// update (and on the object for create/delete), so a ref change or deletion automatically
-// enqueues both the previously- and newly-referenced config; the previously-referenced
-// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
-func (*ToolConfigReconciler) mapMCPServerToToolConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok || server.Spec.ToolConfigRef == nil || server.Spec.ToolConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      server.Spec.ToolConfigRef.Name,
-		Namespace: server.Namespace,
-	}}}
 }

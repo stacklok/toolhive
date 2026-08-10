@@ -566,6 +566,14 @@ const docTemplate = `{
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
+                    "trusted_issuers": {
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nPrerequisite: the token-exchange grant requires a confidential client,\nand no supported deployment path provisions one today (DCR and CIMD\nclients are both public-only, and there is no client-seeding field on\nthis RunConfig), so this grant is not yet usable end to end for\nself-issued or external subject tokens alike. Tracked in\nhttps://github.com/stacklok/toolhive/issues/6082.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "upstreams": {
                         "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
@@ -723,6 +731,51 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer": {
+                "properties": {
+                    "actor_claim": {
+                        "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
+                        "type": "string"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
+                        "type": "boolean"
+                    },
+                    "allowed_actors": {
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim; empty means only may_act-bearing tokens are\naccepted. By itself names no ToolHive client — see\nAllowedDelegateClients and docs/arch/17-token-exchange-delegation.md\n(\"Accepted limitations\" #1).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "allowed_delegate_clients": {
+                        "description": "AllowedDelegateClients restricts which ToolHive client IDs may\nexchange a subject token from this issuer, for BOTH consent paths.\nRequired (validateTrustedIssuer rejects empty/absent); \"*\" permits\nany confidential client holding the grant. See\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "expected_audience": {
+                        "description": "ExpectedAudience is the expected \"aud\" claim value that must appear\nin the token's audience list (a resource/API identifier, not a\nclient ID — required, but not enforced; see looksLikeResourceIdentifier).\nSee docs/arch/17-token-exchange-delegation.md (\"ID/access-token\ndiscrimination\") for why and its limits.",
+                        "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches\nfor THIS issuer only. Development and testing only — never set in\nproduction. Does not relax the private-IP guard; see AllowPrivateIPs.\nDeliberately per-issuer: this server's own InsecureAllowHTTP must not\nsilently permit plaintext discovery for every trusted external issuer\ntoo — a network attacker who can intercept that traffic could\nsubstitute a JWKS and forge subject tokens for that issuer's\nnamespace.",
+                        "type": "boolean"
+                    },
+                    "issuer_url": {
+                        "description": "IssuerURL is the expected \"iss\" claim value (exact match).",
+                        "type": "string"
+                    },
+                    "jwks_url": {
+                        "description": "JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.\nIf empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authz.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
@@ -852,6 +905,301 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "skills": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.BuildResult": {
+                "properties": {
+                    "reference": {
+                        "description": "Reference is the OCI reference of the built skill artifact.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.ComponentInventory": {
+                "additionalProperties": {
+                    "type": "integer"
+                },
+                "description": "Components is the inventory of component types declared by the plugin\n(e.g. {\"commands\": 3, \"skills\": 2}). Extracted from the OCI artifact.",
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.ComponentType": {
+                "enum": [
+                    "commands",
+                    "agents",
+                    "skills",
+                    "hooks",
+                    "mcpServers",
+                    "lspServers"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "ComponentCommands",
+                    "ComponentAgents",
+                    "ComponentSkills",
+                    "ComponentHooks",
+                    "ComponentMCP",
+                    "ComponentLSP"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.Dependency": {
+                "properties": {
+                    "digest": {
+                        "description": "Digest is the OCI digest for upgrade detection.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the dependency name.",
+                        "type": "string"
+                    },
+                    "reference": {
+                        "description": "Reference is the OCI reference for the dependency.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.InstallStatus": {
+                "description": "Status is the current installation status.",
+                "enum": [
+                    "installed",
+                    "pending",
+                    "failed"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "InstallStatusInstalled",
+                    "InstallStatusPending",
+                    "InstallStatusFailed"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin": {
+                "description": "InstalledPlugin contains the full installation record.",
+                "properties": {
+                    "clients": {
+                        "description": "Clients is the list of client identifiers the plugin is installed for.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "components": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ComponentInventory"
+                    },
+                    "dependencies": {
+                        "description": "Dependencies is the list of external plugin dependencies.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Dependency"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest (sha256:...) for upgrade detection.",
+                        "type": "string"
+                    },
+                    "installed_at": {
+                        "description": "InstalledAt is the timestamp when the plugin was installed.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped plugins. Empty for user-scoped.",
+                        "type": "string"
+                    },
+                    "reference": {
+                        "description": "Reference is the full OCI reference (e.g. ghcr.io/org/plugin:v1).",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope"
+                    },
+                    "signature": {
+                        "description": "Signature is the optional signing signature for the plugin artifact.",
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstallStatus"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag (e.g. v1.0.0).",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.LocalBuild": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the skill description extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest of the artifact (sha256:...).",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag or name used to reference the artifact.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.PluginContent": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the plugin description from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "files": {
+                        "description": "Files is the list of all files in the artifact with their sizes.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginFileEntry"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "manifest": {
+                        "description": "Manifest is the raw .claude-plugin/plugin.json body.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the plugin name from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the plugin version from the OCI config labels.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.PluginFileEntry": {
+                "properties": {
+                    "path": {
+                        "description": "Path is the file path within the artifact.",
+                        "type": "string"
+                    },
+                    "size": {
+                        "description": "Size is the uncompressed file size in bytes.",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.PluginInfo": {
+                "properties": {
+                    "installed_plugin": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin"
+                    },
+                    "metadata": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata"
+                    },
+                    "project_scope_degraded_clients": {
+                        "description": "ProjectScopeDegradedClients lists the client types for which a\nproject-scoped install degraded (the adapter could only materialize at\nuser scope — e.g. Codex always writes to the user-scoped config.toml).\nPopulated by Info; empty for user-scoped installs. Recomputed at read\ntime from the stored scope + each adapter's capability, mirroring the\nUnmaterializedComponents pattern (no persistence needed — the degradation\nis deterministic from scope + client type).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "unmaterialized_components": {
+                        "additionalProperties": {
+                            "items": {
+                                "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ComponentType"
+                            },
+                            "type": "array"
+                        },
+                        "description": "UnmaterializedComponents lists, per client type, the component types the\nplugin declares that the installed client adapter does NOT load. Populated\nby Info by diffing InstalledPlugin.Components against each installed\nclient adapter's SupportedComponents.",
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.PluginMetadata": {
+                "description": "Metadata contains the plugin's metadata.",
+                "properties": {
+                    "author": {
+                        "description": "Author is the plugin author or maintainer.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is a human-readable description of the plugin.",
+                        "type": "string"
+                    },
+                    "keywords": {
+                        "description": "Keywords is a list of keywords for categorization/search.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier for the plugin.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the unique name of the plugin (kebab-case).",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the semantic version of the plugin.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.Scope": {
+                "description": "Scope for the installation",
+                "enum": [
+                    "user",
+                    "project"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "ScopeUser",
+                    "ScopeProject"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_plugins.ValidationResult": {
+                "properties": {
+                    "errors": {
+                        "description": "Errors is a list of validation errors, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "valid": {
+                        "description": "Valid indicates whether the skill definition is valid.",
+                        "type": "boolean"
+                    },
+                    "warnings": {
+                        "description": "Warnings is a list of non-blocking validation warnings, if any.",
                         "items": {
                             "type": "string"
                         },
@@ -1299,6 +1647,9 @@ const docTemplate = `{
                     "digest-missing",
                     "validation-rejected",
                     "lock-write-failed",
+                    "signature-invalid",
+                    "signer-mismatch",
+                    "unsigned-rejected",
                     "unknown"
                 ],
                 "type": "string",
@@ -1307,6 +1658,9 @@ const docTemplate = `{
                     "FailureReasonDigestMissing",
                     "FailureReasonValidationRejected",
                     "FailureReasonLockWriteFailed",
+                    "FailureReasonSignatureInvalid",
+                    "FailureReasonSignerMismatch",
+                    "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
             },
@@ -1606,6 +1960,10 @@ const docTemplate = `{
                         "description": "NewResolvedReference is the new resolvedReference when it changed.",
                         "type": "string"
                     },
+                    "new_signer_identity": {
+                        "description": "NewSignerIdentity is the candidate's signer identity when it differs\nfrom the recorded one (empty when the candidate is unsigned).",
+                        "type": "string"
+                    },
                     "old_digest": {
                         "description": "OldDigest is the digest pinned in the lock file before this operation.",
                         "type": "string"
@@ -1639,6 +1997,7 @@ const docTemplate = `{
                     "up-to-date",
                     "not-upgradable",
                     "ref-change-blocked",
+                    "signer-change-blocked",
                     "failed"
                 ],
                 "type": "string",
@@ -1647,6 +2006,7 @@ const docTemplate = `{
                     "UpgradeStatusUpToDate",
                     "UpgradeStatusNotUpgradable",
                     "UpgradeStatusRefChangeBlocked",
+                    "UpgradeStatusSignerChangeBlocked",
                     "UpgradeStatusFailed"
                 ]
             },
@@ -2352,6 +2712,20 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.buildPluginRequest": {
+                "description": "Request to build a plugin from a local directory",
+                "properties": {
+                    "path": {
+                        "description": "Path to the plugin definition directory",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "OCI tag for the built artifact",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.buildSkillRequest": {
                 "description": "Request to build a skill from a local directory",
                 "properties": {
@@ -2751,9 +3125,59 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.installPluginRequest": {
+                "description": "Request to install a plugin",
+                "properties": {
+                    "clients": {
+                        "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every plugin-supporting client.\nOmitting this field installs to all available clients.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "force": {
+                        "description": "Force allows overwriting unmanaged plugin directories",
+                        "type": "boolean"
+                    },
+                    "group": {
+                        "description": "Group is the group name to add the plugin to after installation",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name or OCI reference of the plugin to install",
+                        "type": "string"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped installs",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope"
+                    },
+                    "version": {
+                        "description": "Version to install (empty means latest)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.installPluginResponse": {
+                "description": "Response after successfully installing a plugin",
+                "properties": {
+                    "plugin": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits installing a project-scoped skill without a\nverified signature; the exception is recorded in the project's lock\nfile.",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
                         "items": {
@@ -2889,6 +3313,51 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.pluginBuildListResponse": {
+                "description": "Response containing a list of locally-built OCI plugin artifacts",
+                "properties": {
+                    "builds": {
+                        "description": "List of locally-built OCI plugin artifacts",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.LocalBuild"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.pluginListResponse": {
+                "description": "Response containing a list of installed plugins",
+                "properties": {
+                    "plugins": {
+                        "description": "List of installed plugins",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.InstalledPlugin"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.pluginsV01Response": {
+                "description": "Paginated list of plugins from the registry",
+                "properties": {
+                    "metadata": {
+                        "$ref": "#/components/schemas/pkg_api_v1.paginationV01Metadata"
+                    },
+                    "plugins": {
+                        "description": "Plugins is the list of plugins on the current page",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Plugin"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.providerCapabilitiesResponse": {
                 "description": "Capabilities of the secrets provider",
                 "properties": {
@@ -2911,6 +3380,16 @@ const docTemplate = `{
                     "can_write": {
                         "description": "Whether the provider can write secrets",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.pushPluginRequest": {
+                "description": "Request to push a built plugin artifact",
+                "properties": {
+                    "reference": {
+                        "description": "OCI reference to push",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -3149,6 +3628,10 @@ const docTemplate = `{
                         "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
                         "type": "boolean"
                     },
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits adopting skills whose signature state cannot be\nestablished, recording them as unsigned",
+                        "type": "boolean"
+                    },
                     "check": {
                         "description": "Check verifies on-disk content against the lock file without installing or writing anything",
                         "type": "boolean"
@@ -3383,6 +3866,10 @@ const docTemplate = `{
                         "description": "AllowRefChange permits resolvedReference changes during upgrade",
                         "type": "boolean"
                     },
+                    "allow_signer_change": {
+                        "description": "AllowSignerChange permits upgrading to an artifact signed by a\ndifferent identity than the recorded one",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers. Empty means every\nskill-supporting client detected on this host.",
                         "items": {
@@ -3409,6 +3896,16 @@ const docTemplate = `{
                     },
                     "project_root": {
                         "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.validatePluginRequest": {
+                "description": "Request to validate a plugin definition",
+                "properties": {
+                    "path": {
+                        "description": "Path to the plugin definition directory",
                         "type": "string"
                     }
                 },
@@ -3754,6 +4251,68 @@ const docTemplate = `{
                     "use_pkce": {
                         "description": "UsePKCE indicates whether to use PKCE for the OAuth flow\nDefaults to true for enhanced security",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.Plugin": {
+                "properties": {
+                    "_meta": {
+                        "additionalProperties": {},
+                        "description": "Meta is an opaque payload with extended meta data details of the plugin.",
+                        "type": "object"
+                    },
+                    "description": {
+                        "description": "Description is the description of the plugin.",
+                        "type": "string"
+                    },
+                    "icons": {
+                        "description": "Icons is the list of icons for the plugin.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillIcon"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier of the plugin.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "additionalProperties": {},
+                        "description": "Metadata is the official metadata of the plugin as reported in the\nplugin manifest file.",
+                        "type": "object"
+                    },
+                    "name": {
+                        "description": "Name is the name of the plugin.\nThe format is that of identifiers, e.g. \"my-plugin\".",
+                        "type": "string"
+                    },
+                    "namespace": {
+                        "description": "Namespace is the namespace of the plugin.\nThe format is reverse-DNS, e.g. \"io.github.user\".",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "description": "Packages is the list of packages for the plugin.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillPackage"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/registry.SkillRepository"
+                    },
+                    "status": {
+                        "description": "Status is the status of the plugin.\nCan be one of \"active\", \"deprecated\", or \"archived\".",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is the title of the plugin.\nThis is for human consumption, not an identifier.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the version of the plugin.\nAny non-empty string is valid, but ideally it should be either a\nsemantic version or a commit hash.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -5053,6 +5612,742 @@ const docTemplate = `{
                 "summary": "Get group details",
                 "tags": [
                     "groups"
+                ]
+            }
+        },
+        "/api/v1beta/plugins": {
+            "get": {
+                "description": "Get a list of all installed plugins",
+                "parameters": [
+                    {
+                        "description": "Filter by scope (user or project)",
+                        "in": "query",
+                        "name": "scope",
+                        "schema": {
+                            "enum": [
+                                "user",
+                                "project"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by client app",
+                        "in": "query",
+                        "name": "client",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by project root path",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by group name",
+                        "in": "query",
+                        "name": "group",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.pluginListResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "List all installed plugins",
+                "tags": [
+                    "plugins"
+                ]
+            },
+            "post": {
+                "description": "Install a plugin from a remote source",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.installPluginRequest",
+                                        "summary": "request",
+                                        "description": "Install request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Install request",
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.installPluginResponse"
+                                }
+                            }
+                        },
+                        "description": "Created",
+                        "headers": {
+                            "Location": {
+                                "description": "URI of the installed plugin resource",
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway (upstream registry failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
+                    }
+                },
+                "summary": "Install a plugin",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/build": {
+            "post": {
+                "description": "Build a plugin from a local directory",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.buildPluginRequest",
+                                        "summary": "request",
+                                        "description": "Build request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Build request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.BuildResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Build a plugin",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/builds": {
+            "get": {
+                "description": "Get a list of all locally-built OCI plugin artifacts in the local store",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.pluginBuildListResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "List locally-built plugin artifacts",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/builds/{tag}": {
+            "delete": {
+                "description": "Remove a locally-built OCI plugin artifact and its blobs from the local store",
+                "parameters": [
+                    {
+                        "description": "Artifact tag",
+                        "in": "path",
+                        "name": "tag",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Delete a locally-built plugin artifact",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/content": {
+            "get": {
+                "description": "Retrieve the plugin.json body and file listing from an artifact\nwithout installing it. Accepts OCI refs, git refs, or local tags.",
+                "parameters": [
+                    {
+                        "description": "OCI reference or local build tag",
+                        "in": "query",
+                        "name": "ref",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginContent"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway (upstream registry or git resolver failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
+                    }
+                },
+                "summary": "Get plugin content",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/push": {
+            "post": {
+                "description": "Push a built plugin artifact to a remote registry",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.pushPluginRequest",
+                                        "summary": "request",
+                                        "description": "Push request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Push request",
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Push a plugin",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/validate": {
+            "post": {
+                "description": "Validate a plugin definition",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.validatePluginRequest",
+                                        "summary": "request",
+                                        "description": "Validate request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Validate request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.ValidationResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Validate a plugin",
+                "tags": [
+                    "plugins"
+                ]
+            }
+        },
+        "/api/v1beta/plugins/{name}": {
+            "delete": {
+                "description": "Remove an installed plugin",
+                "parameters": [
+                    {
+                        "description": "Plugin name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Scope to uninstall from (user or project)",
+                        "in": "query",
+                        "name": "scope",
+                        "schema": {
+                            "enum": [
+                                "user",
+                                "project"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Project root path for project-scoped plugins",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Uninstall a plugin",
+                "tags": [
+                    "plugins"
+                ]
+            },
+            "get": {
+                "description": "Get detailed information about a specific plugin",
+                "parameters": [
+                    {
+                        "description": "Plugin name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by scope (user or project)",
+                        "in": "query",
+                        "name": "scope",
+                        "schema": {
+                            "enum": [
+                                "user",
+                                "project"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Project root path for project-scoped plugins",
+                        "in": "query",
+                        "name": "project_root",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginInfo"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Get plugin details",
+                "tags": [
+                    "plugins"
                 ]
             }
         },
@@ -7960,6 +9255,162 @@ const docTemplate = `{
                 "summary": "Get a registry server",
                 "tags": [
                     "registry-servers"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/plugins": {
+            "get": {
+                "description": "Get a paginated list of plugins from the registry. Supports optional full-text search and pagination.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Search filter — matches against plugin name, namespace, and description",
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Page number, 1-based (default: 1)",
+                        "in": "query",
+                        "name": "page",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Items per page, max 200 (default: 50)",
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.pluginsV01Response"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "List available registry plugins",
+                "tags": [
+                    "registry-plugins"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/plugins/{namespace}/{pluginName}": {
+            "get": {
+                "description": "Retrieve a single plugin by its namespace and name from the registry.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Plugin namespace in reverse-DNS format (e.g. io.github.stacklok)",
+                        "in": "path",
+                        "name": "namespace",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Plugin name",
+                        "in": "path",
+                        "name": "pluginName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/registry.Plugin"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Plugin not found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Get a registry plugin",
+                "tags": [
+                    "registry-plugins"
                 ]
             }
         },

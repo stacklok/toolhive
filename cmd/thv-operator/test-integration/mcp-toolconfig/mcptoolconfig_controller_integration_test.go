@@ -305,25 +305,6 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should track referencing workloads in status", func() {
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPToolConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" && ref.Name == mcpServerName {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
-
 		It("should propagate MCPToolConfig changes to referencing MCPServers", func() {
 			var initialHash string
 			Eventually(func() string {
@@ -373,24 +354,6 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 				}
 				return updated.Status.ToolConfigHash
 			}, timeout, interval).Should(Equal(updatedConfigHash))
-		})
-
-		It("should remove server from status when MCPServer is deleted", func() {
-			// Delete the MCPServer
-			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
-
-			// Eventually the referencing workloads list should be empty
-			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPToolConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				return len(updated.Status.ReferencingWorkloads) == 0
-			}, timeout, interval).Should(BeTrue())
 		})
 	})
 
@@ -457,22 +420,18 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			}
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			// Wait for ReferencingWorkloads to be populated
+			// Wait for the MCPServer to be wired to the config (ToolConfigHash
+			// populated) so the config is observably referenced before deletion.
 			Eventually(func() bool {
-				updated := &mcpv1beta1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
+					Name:      mcpServerName,
 					Namespace: namespace,
 				}, updated)
 				if err != nil {
 					return false
 				}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" && ref.Name == mcpServerName {
-						return true
-					}
-				}
-				return false
+				return updated.Status.ToolConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
 
 			// Attempt to delete the MCPToolConfig (should be blocked by finalizer)
@@ -497,8 +456,9 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should not be deleted while referenced", func() {
-			// The object should still exist because the finalizer blocks deletion
+		It("should not be deleted while referenced and should set DeletionBlocked condition", func() {
+			// The object should still exist (finalizer blocks deletion) with a
+			// pending deletion timestamp and a DeletionBlocked=True condition.
 			Eventually(func() bool {
 				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -508,7 +468,11 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				return !updated.DeletionTimestamp.IsZero()
+				if updated.DeletionTimestamp.IsZero() {
+					return false
+				}
+				cond := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
+				return cond != nil && cond.Status == metav1.ConditionTrue
 			}, timeout, interval).Should(BeTrue())
 		})
 
@@ -528,11 +492,11 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 		})
 	})
 
-	// These tests assert that an MCPToolConfig's ToolsFilter and ToolsOverride are
-	// not merely tracked via Status.ReferencingWorkloads, but actually propagate
-	// into the referencing MCPServer's rendered RunConfig ConfigMap. Both ride the
-	// same code path in createRunConfigFromMCPServer (WithToolsFilter /
-	// WithToolsOverride), so this single context covers filtering and renaming.
+	// These tests assert that an MCPToolConfig's ToolsFilter and ToolsOverride
+	// actually propagate into the referencing MCPServer's rendered RunConfig
+	// ConfigMap. Both ride the same code path in createRunConfigFromMCPServer
+	// (WithToolsFilter / WithToolsOverride), so this single context covers
+	// filtering and renaming.
 	Context("When a referencing MCPServer renders its RunConfig", Ordered, func() {
 		var (
 			namespace     string
@@ -705,25 +669,6 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			}
 			_ = k8sClient.Delete(ctx, toolConfig)
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
-		})
-
-		It("tracks every referencing MCPServer in status", func() {
-			Eventually(func() []string {
-				updated := &mcpv1beta1.MCPToolConfig{}
-				if err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated); err != nil {
-					return nil
-				}
-				var names []string
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref.Kind == "MCPServer" {
-						names = append(names, ref.Name)
-					}
-				}
-				return names
-			}, timeout, interval).Should(ConsistOf(serverNames))
 		})
 
 		It("propagates a config change to every referencing MCPServer", func() {

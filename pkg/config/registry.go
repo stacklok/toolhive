@@ -177,9 +177,9 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 }
 
 // parseAndValidateUpstreamRegistry parses data as an UpstreamRegistry and
-// verifies that it contains at least one server or skill. If the data looks
-// like the legacy ToolHive registry format, returns an error containing the
-// migration hint message.
+// verifies that it contains at least one server, skill, or plugin. If the data
+// looks like the legacy ToolHive registry format, returns an error containing
+// the migration hint message.
 func parseAndValidateUpstreamRegistry(data []byte) error {
 	if legacyhint.Looks(data) {
 		return errors.New(legacyhint.MigrationMessage)
@@ -188,8 +188,8 @@ func parseAndValidateUpstreamRegistry(data []byte) error {
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return fmt.Errorf("invalid upstream registry format: %w", err)
 	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 {
-		return errors.New("upstream registry contains no servers or skills")
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 && len(upstream.Data.Plugins) == 0 {
+		return errors.New("upstream registry contains no servers, skills, or plugins")
 	}
 	return nil
 }

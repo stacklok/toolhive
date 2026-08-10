@@ -42,7 +42,8 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 				Spec: mcpv1beta1.MCPOIDCConfigSpec{
 					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
-						Issuer: "http://localhost:9090",
+						Issuer:            "http://localhost:9090",
+						InsecureAllowHTTP: true,
 					},
 				},
 			}
@@ -154,7 +155,8 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 				Spec: mcpv1beta1.MCPOIDCConfigSpec{
 					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
-						Issuer: "http://localhost:9090",
+						Issuer:            "http://localhost:9090",
+						InsecureAllowHTTP: true,
 					},
 				},
 			}
@@ -340,7 +342,8 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 				Spec: mcpv1beta1.MCPOIDCConfigSpec{
 					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
-						Issuer: "http://localhost:9090",
+						Issuer:            "http://localhost:9090",
+						InsecureAllowHTTP: true,
 					},
 				},
 			}

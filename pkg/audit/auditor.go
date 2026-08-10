@@ -23,7 +23,7 @@ import (
 )
 
 // LevelAudit is a custom audit log level - between Info and Warn
-const LevelAudit = slog.Level(2)
+const LevelAudit = coreaudit.LevelAudit
 
 // contextKey is an unexported type for context keys to avoid collisions
 type contextKey struct{}
@@ -51,27 +51,7 @@ func BackendInfoFromContext(ctx context.Context) (*BackendInfo, bool) {
 
 // NewAuditLogger creates a new structured audit logger that writes to the specified writer.
 func NewAuditLogger(w io.Writer) *slog.Logger {
-	if w == nil {
-		w = os.Stdout
-	}
-
-	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level: LevelAudit,
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			// Replace the custom audit level with "AUDIT" string for better
-			// compatibility with log aggregation systems (Loki, Elasticsearch, etc.)
-			// that expect standard level names. This prevents audit events from
-			// appearing as "INFO+2" which breaks level-based filtering.
-			if a.Key == slog.LevelKey {
-				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelAudit {
-					a.Value = slog.StringValue("AUDIT")
-				}
-			}
-			return a
-		},
-	})
-
-	return slog.New(handler)
+	return coreaudit.NewAuditLogger(w)
 }
 
 // Auditor handles audit logging for HTTP requests.
@@ -196,9 +176,11 @@ func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
 
 // ensureAuditContext injects the mutable carriers the auditor reads after the
 // inner chain returns: BackendInfo (backend routing), an auth.IdentityHolder
-// (identity attached by an auth middleware running INSIDE audit), and an
+// (identity attached by an auth middleware running INSIDE audit), an
 // mcp.ParsedRequestHolder (parsed MCP data from a parser running INSIDE
-// audit). Each is only injected when absent so nested auditors share carriers.
+// audit), and an mcp.AuthzDenialMarker (pre-parse refusals flagged by the
+// authz middleware running INSIDE audit). Each is only injected when absent
+// so nested auditors share carriers.
 func ensureAuditContext(r *http.Request) *http.Request {
 	ctx := r.Context()
 	changed := false
@@ -212,6 +194,10 @@ func ensureAuditContext(r *http.Request) *http.Request {
 	}
 	if _, ok := mcp.ParsedRequestHolderFromContext(ctx); !ok {
 		ctx = mcp.WithParsedRequestHolder(ctx, &mcp.ParsedRequestHolder{})
+		changed = true
+	}
+	if _, ok := mcp.AuthzDenialMarkerFromContext(ctx); !ok {
+		ctx = mcp.WithAuthzDenialMarker(ctx, &mcp.AuthzDenialMarker{})
 		changed = true
 	}
 	if !changed {
@@ -294,6 +280,14 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Determine outcome based on status code
 	outcome := a.determineOutcome(rw.statusCode)
+
+	// A refusal by the authz middleware before message-level authorization
+	// could run (e.g. a non-JSON POST carrying a smuggled JSON-RPC body)
+	// writes a 400, which determineOutcome maps to a generic failure. The
+	// marker reclassifies it as a denial so blocked sweeps are alertable.
+	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
+		outcome = OutcomeDenied
+	}
 
 	// When HTTP status indicates success, check for JSON-RPC errors
 	// hidden inside HTTP 200 responses.

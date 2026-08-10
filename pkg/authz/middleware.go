@@ -19,6 +19,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
@@ -110,10 +112,12 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 }
 
 // shouldSkipInitialAuthorization checks if the request should skip authorization
-// before reading the request body.
+// before reading the request body. Content-Type is deliberately NOT consulted
+// here: the middleware body refuses non-JSON POSTs with an explicit early
+// return before this function is reached.
 func shouldSkipInitialAuthorization(r *http.Request) bool {
-	// Skip authorization for non-POST requests and non-JSON content types
-	if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	// Skip authorization for non-POST requests
+	if r.Method != http.MethodPost {
 		return true
 	}
 
@@ -164,6 +168,13 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	_ = mcp.WriteJSONRPCError(w, http.StatusForbidden, errorResponse)
 }
 
+// rejectInvalidMCPRequest writes the 400 response for requests that arrive
+// without a parsed MCP message: non-JSON POSTs refused by the middleware
+// (the load-bearing security refusal) and malformed JSON POSTs.
+func rejectInvalidMCPRequest(w http.ResponseWriter) {
+	http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
+}
+
 // Middleware creates an HTTP middleware that authorizes MCP requests.
 // This middleware extracts the MCP message from the request, determines the feature,
 // operation, and resource ID, and authorizes the request using the configured authorizer.
@@ -186,6 +197,22 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 	annotationCache := NewAnnotationCache()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Non-JSON POSTs are rejected deliberately and must never be passed
+		// through. Such a request is not parsed as MCP, so message-level
+		// authorization cannot run, but the proxy still forwards the body
+		// verbatim and MCP backends parse JSON-RPC without checking
+		// Content-Type. This early return is load-bearing for security: it is
+		// the only point that keeps a JSON-RPC body smuggled under text/plain
+		// from reaching the backend un-authorized. The marker lets the outer
+		// audit middleware record the refusal as a denial, not a 400 failure.
+		if r.Method == http.MethodPost && !mcp.RequestHasJSONContentType(r) {
+			if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
+				marker.Denied = true
+			}
+			rejectInvalidMCPRequest(w)
+			return
+		}
+
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
 			next.ServeHTTP(w, r)
@@ -195,9 +222,11 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// Get parsed MCP request from context (set by parsing middleware)
 		parsedRequest := mcp.GetParsedMCPRequest(r.Context())
 		if parsedRequest == nil {
-			// No parsed MCP request available for a request that should have been parsed
-			// This indicates either a malformed request or missing parsing middleware
-			http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
+			// Non-JSON POSTs are already rejected by the early return above,
+			// so a nil parsed request here means a malformed JSON body or a
+			// missing parsing middleware. This branch is now only a
+			// belt-and-braces fallback behind the content-type refusal.
+			rejectInvalidMCPRequest(w)
 			return
 		}
 
@@ -287,7 +316,9 @@ func authorizeAndServe(
 // It always fully handles the request (authorization, unauthorized response, or serving).
 //
 // For pass-through meta-tools (find_tool, call_tool):
-//   - call_tool: authorizes the real inner tool name from arguments["tool_name"].
+//   - call_tool: authorizes the real inner tool name, decoded from the request
+//     arguments exactly as dispatch decodes them, so the two cannot disagree about
+//     which tool a request names. Arguments that do not decode are denied.
 //   - find_tool (and other pass-through tools without a tool_name): allowed through
 //     as a discovery operation with no policy check.
 //
@@ -303,12 +334,28 @@ func handleToolsCall(
 	next http.Handler,
 ) {
 	if _, isPassThrough := passThroughTools[parsedRequest.ResourceID]; isPassThrough {
-		if toolName, ok := parsedRequest.Arguments[optimizerdec.CallToolArgToolName].(string); ok && toolName != "" {
+		// Decode with the same call the two call_tool dispatch sites use rather than
+		// indexing the arguments map. encoding/json matches struct fields
+		// case-insensitively, so a map index on "tool_name" misses a request carrying
+		// "Tool_Name" that dispatch resolves and runs. Going through CallToolInput
+		// also applies the nested-tool_name hoist, so the name authorized here is the
+		// one that will execute.
+		input, err := schema.Translate[optimizer.CallToolInput](parsedRequest.Arguments)
+		if err != nil {
+			// The arguments are not a decodable call_tool payload, so the tool they
+			// target cannot be established. Deny rather than pass through; dispatch
+			// decodes the same map with the same call and rejects it too, so no
+			// legitimate invocation is lost.
+			slog.Warn("denying pass-through tool call with undecodable arguments",
+				"tool", parsedRequest.ResourceID, "error", err)
+			handleUnauthorized(w, parsedRequest.ID, nil)
+			return
+		}
+		if input.ToolName != "" {
 			// call_tool: authorize the real backend tool name.
-			innerArgs, _ := parsedRequest.Arguments[optimizerdec.CallToolArgParameters].(map[string]interface{})
 			authorizeAndServe(w, r, a, annotationCache,
 				featureOp.Feature, featureOp.Operation,
-				parsedRequest.ID, toolName, innerArgs, next)
+				parsedRequest.ID, input.ToolName, input.Parameters, next)
 			return
 		}
 		// find_tool: allow through but filter the tools list in the response so

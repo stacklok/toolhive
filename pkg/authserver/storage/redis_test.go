@@ -10,6 +10,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -26,7 +27,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // --- Test Helpers ---
@@ -93,6 +96,23 @@ func requireRedisNotFoundError(t *testing.T, err error) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotFound, "should match storage.ErrNotFound")
 	assert.ErrorIs(t, err, fosite.ErrNotFound, "should match fosite.ErrNotFound")
+}
+
+// newDCRClient builds a DCR-issued client via the real registration.New path so
+// TTL tests exercise the registration.DCRIssued marker that gates the TTL. It
+// fails the test (not silently works around it) if registration.New ever stops
+// marking its output DCR-issued.
+func newDCRClient(t *testing.T, id, method, secret string) fosite.Client {
+	t.Helper()
+	client, err := registration.New(registration.Config{
+		ID:                      id,
+		TokenEndpointAuthMethod: method,
+		Secret:                  secret,
+		RedirectURIs:            []string{"http://127.0.0.1/callback"},
+	})
+	require.NoError(t, err)
+	require.True(t, registration.DCRIssued(client), "registration.New must return a DCR-issued client")
+	return client
 }
 
 // --- Configuration Tests ---
@@ -273,21 +293,296 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 	})
 }
 
-// TestRedisStorage_RenewClientTTL verifies that RenewClientTTL extends the
-// registration TTL for public (DCR) clients — keeping actively-used clients from
-// being evicted mid-lifecycle — while leaving confidential clients (which have no
-// TTL) untouched, and that renewing an unknown/evicted client is a safe no-op.
+// TestRedisStorage_ClientAuthMethodPersistence pins the fail-closed read/write
+// behaviour for token_endpoint_auth_method: drift between the Public flag and
+// the stored method may only ever add secret verification, never remove it,
+// and rows written before confidential-client support must keep their exact
+// pre-upgrade behaviour.
+func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
+	t.Parallel()
+
+	newOIDCClient := func(method string, public bool) *fosite.DefaultOpenIDConnectClient {
+		return &fosite.DefaultOpenIDConnectClient{
+			DefaultClient: &fosite.DefaultClient{
+				ID:            "oidc-client",
+				Secret:        []byte("already-hashed-secret"),
+				RedirectURIs:  []string{"https://app.example/cb"},
+				GrantTypes:    []string{"authorization_code", "refresh_token"},
+				ResponseTypes: []string{"code"},
+				Scopes:        []string{"openid"},
+				Audience:      []string{"https://mcp.example"},
+				Public:        public,
+			},
+			TokenEndpointAuthMethod: method,
+		}
+	}
+
+	t.Run("OIDC client round-trips method and confidential status", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := newOIDCClient(oauthproto.TokenEndpointAuthMethodClientSecretBasic, false)
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			retrieved, err := s.GetClient(ctx, "oidc-client")
+			require.NoError(t, err)
+
+			// The returned value must satisfy fosite.OpenIDConnectClient: that
+			// assertion, not the Public field, is what activates fosite's
+			// token-endpoint method enforcement.
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "modern row must deserialize as fosite.OpenIDConnectClient")
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, oidc.GetTokenEndpointAuthMethod())
+			assert.False(t, retrieved.IsPublic())
+
+			// The stored secret is already hashed; round-tripping must not re-hash it.
+			assert.Equal(t, []byte("already-hashed-secret"), retrieved.GetHashedSecret())
+		})
+	})
+
+	// writeLegacyRow bypasses RegisterClient to simulate a row written by a
+	// release that predates the token_endpoint_auth_method column, with ttl
+	// controlling whether the key carries an expiry (mirroring how
+	// RegisterClient originally wrote DCR-issued vs. pre-provisioned rows).
+	writeLegacyRow := func(ctx context.Context, s *RedisStorage, id string, public bool, secret []byte, ttl time.Duration) {
+		key := redisKey(s.keyPrefix, KeyTypeClient, id)
+		data, err := json.Marshal(storedClient{
+			ID:           id,
+			Secret:       secret,
+			RedirectURIs: []string{"https://app.example/cb"},
+			GrantTypes:   []string{"authorization_code"},
+			Public:       public,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.client.Set(ctx, key, data, ttl).Err())
+	}
+
+	t.Run("legacy public row with a live TTL stays non-OIDC and reads back DCR-marked", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// A TTL on the key is how RegisterClient originally wrote a
+			// DCR-issued public client, so this shape must be compensated for.
+			writeLegacyRow(ctx, s, "legacy-public-ttl", true, nil, DefaultDCRClientTTL)
+
+			retrieved, err := s.GetClient(ctx, "legacy-public-ttl")
+			require.NoError(t, err)
+			assert.True(t, retrieved.IsPublic())
+
+			// A legacy row never had a pinned method, public or confidential
+			// alike, so it must not gain method enforcement on read-back: the
+			// rebuilt client must not satisfy fosite.OpenIDConnectClient,
+			// matching the pre-branch behaviour fosite applied to it.
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "legacy public row must not satisfy fosite.OpenIDConnectClient")
+
+			assert.True(t, registration.DCRIssued(retrieved),
+				"a legacy public row with a live TTL must be treated as DCR-issued so it keeps renewing on use")
+		})
+	})
+
+	t.Run("legacy public row with no TTL stays non-OIDC and reads back unmarked", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// No TTL on the key is how RegisterClient originally wrote a
+			// pre-provisioned public client. Marking it DCR-issued would let its
+			// first token exchange call EXPIRE on a key that never had a TTL,
+			// handing a permanent client a 30-day expiry.
+			writeLegacyRow(ctx, s, "legacy-public-no-ttl", true, nil, 0)
+
+			retrieved, err := s.GetClient(ctx, "legacy-public-no-ttl")
+			require.NoError(t, err)
+			assert.True(t, retrieved.IsPublic())
+
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "legacy public row must not satisfy fosite.OpenIDConnectClient")
+
+			assert.False(t, registration.DCRIssued(retrieved),
+				"a legacy public row with no TTL must not be treated as DCR-issued")
+		})
+	})
+
+	t.Run("legacy confidential row keeps pre-upgrade behaviour and stays unmarked", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			writeLegacyRow(ctx, s, "legacy-confidential", false, []byte("hashed"), 0)
+
+			retrieved, err := s.GetClient(ctx, "legacy-confidential")
+			require.NoError(t, err)
+			assert.False(t, retrieved.IsPublic())
+
+			// Upgrade-safety pin: pre-upgrade confidential rows had no method
+			// recorded and fosite skipped method enforcement for them. The
+			// rebuilt client must NOT satisfy fosite.OpenIDConnectClient so the
+			// skip stays in place and the upgrade is a no-op.
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "legacy confidential row must remain a non-OIDC client")
+			assert.Equal(t, []byte("hashed"), retrieved.GetHashedSecret())
+
+			// A legacy confidential row predates confidential DCR support
+			// entirely, so it must never be marked DCR-issued — doing so
+			// would hand a pre-provisioned permanent client an anti-bloat TTL.
+			assert.False(t, registration.DCRIssued(retrieved),
+				"legacy confidential row must not be treated as DCR-issued")
+		})
+	})
+
+	t.Run("row with recorded method still enforces it regardless of Public", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Regression guard for the fail-closed path: a row that DOES carry
+			// a recorded token_endpoint_auth_method must still satisfy
+			// fosite.OpenIDConnectClient and pin that method, unaffected by
+			// the no-method symmetry fix above.
+			key := redisKey(s.keyPrefix, KeyTypeClient, "pinned-method")
+			data, err := json.Marshal(storedClient{
+				ID:                      "pinned-method",
+				Secret:                  []byte("hashed"),
+				RedirectURIs:            []string{"https://app.example/cb"},
+				GrantTypes:              []string{"authorization_code"},
+				Public:                  false,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+
+			retrieved, err := s.GetClient(ctx, "pinned-method")
+			require.NoError(t, err)
+
+			oidc, ok := retrieved.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "a row with a recorded method must satisfy fosite.OpenIDConnectClient")
+			assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretBasic, oidc.GetTokenEndpointAuthMethod())
+			assert.False(t, retrieved.IsPublic())
+		})
+	})
+
+	t.Run("explicit DCRIssued=true row reads back marked regardless of TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			for name, ttl := range map[string]time.Duration{"no-ttl": 0, "with-ttl": DefaultDCRClientTTL} {
+				id := "explicit-dcr-" + name
+				key := redisKey(s.keyPrefix, KeyTypeClient, id)
+				data, err := json.Marshal(storedClient{
+					ID:                      id,
+					RedirectURIs:            []string{"https://app.example/cb"},
+					Public:                  false,
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+					Secret:                  []byte("hashed"),
+					DCRIssued:               true,
+				})
+				require.NoError(t, err)
+				require.NoError(t, s.client.Set(ctx, key, data, ttl).Err())
+
+				retrieved, err := s.GetClient(ctx, id)
+				require.NoError(t, err)
+				assert.True(t, registration.DCRIssued(retrieved),
+					"row persisted with DCRIssued=true must read back marked (%s)", name)
+			}
+		})
+	})
+
+	t.Run("drift row fails closed to confidential", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// public=true combined with a secret-based method: impossible via
+			// RegisterClient, but if it ever occurs the row must read back
+			// confidential so secret verification is added, not dropped.
+			key := redisKey(s.keyPrefix, KeyTypeClient, "drift-client")
+			data, err := json.Marshal(storedClient{
+				ID:                      "drift-client",
+				Secret:                  []byte("hashed"),
+				RedirectURIs:            []string{"https://app.example/cb"},
+				Public:                  true,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.client.Set(ctx, key, data, 0).Err())
+
+			retrieved, err := s.GetClient(ctx, "drift-client")
+			require.NoError(t, err)
+			assert.False(t, retrieved.IsPublic(), "drift row must fail closed to confidential")
+		})
+	})
+
+	t.Run("non-OIDC client round-trips as non-public without method", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// mockClient does not implement fosite.OpenIDConnectClient; the
+			// write path must leave the method column empty rather than
+			// substituting a "none" fallback that would reclassify the row.
+			require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "mock-conf", public: false}))
+
+			retrieved, err := s.GetClient(ctx, "mock-conf")
+			require.NoError(t, err)
+			assert.False(t, retrieved.IsPublic())
+			_, ok := retrieved.(fosite.OpenIDConnectClient)
+			assert.False(t, ok, "non-OIDC client must round-trip as a non-OIDC client")
+		})
+	})
+}
+
+// TestRedisStorage_DCRClientTTL pins the RegisterClient TTL gating contract:
+// only clients carrying the registration.DCRIssued marker expire, regardless of
+// public/confidential status. Pre-provisioned clients (no marker) are stored
+// without a TTL so a permanent client never acquires an expiry — Redis EXPIRE on
+// a TTL-less key would otherwise create one, handing an existing permanent client
+// an expiry on its first token request after upgrade.
+func TestRedisStorage_DCRClientTTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("DCR-issued confidential client gets a TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := newDCRClient(t, "dcr-confidential",
+				oauthproto.TokenEndpointAuthMethodClientSecretBasic, "secret")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "dcr-confidential")
+			assert.Positive(t, mr.TTL(key), "DCR-issued confidential client must carry a TTL")
+		})
+	})
+
+	t.Run("DCR-issued public client gets a TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := newDCRClient(t, "dcr-public", oauthproto.TokenEndpointAuthMethodNone, "")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "dcr-public")
+			assert.Positive(t, mr.TTL(key), "DCR-issued public client must carry a TTL")
+		})
+	})
+
+	t.Run("pre-provisioned confidential client has no TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// mockClient is a plain fosite.Client with no DCRIssued marker — the
+			// shape of a pre-provisioned confidential client not issued via DCR.
+			client := &mockClient{id: "preprov-conf", public: false, secret: []byte("hashed")}
+			require.False(t, registration.DCRIssued(client), "precondition: mockClient must not be DCR-issued")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "preprov-conf")
+			assert.Equal(t, time.Duration(0), mr.TTL(key), "pre-provisioned client must not acquire a TTL")
+		})
+	})
+
+	t.Run("pre-provisioned public client has no TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := &mockClient{id: "preprov-public", public: true}
+			require.False(t, registration.DCRIssued(client), "precondition: mockClient must not be DCR-issued")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "preprov-public")
+			assert.Equal(t, time.Duration(0), mr.TTL(key), "pre-provisioned public client must not acquire a TTL")
+		})
+	})
+}
+
+// TestRedisStorage_RenewClientTTL pins the RenewClientTTL contract: it refreshes
+// a DCR-issued client's TTL to DefaultDCRClientTTL on proven use, leaves
+// pre-provisioned clients (no DCRIssued marker) untouched so a permanent client
+// never gains an expiry, and is a safe no-op for a client whose row was never
+// persisted or has been evicted.
 func TestRedisStorage_RenewClientTTL(t *testing.T) {
 	t.Parallel()
 
-	t.Run("public client TTL is renewed", func(t *testing.T) {
+	t.Run("DCR-issued public client TTL is renewed", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-			key := redisKey(s.keyPrefix, KeyTypeClient, "public-client")
-			client := &mockClient{id: "public-client", public: true}
+			client := newDCRClient(t, "dcr-public-renew", oauthproto.TokenEndpointAuthMethodNone, "")
 			require.NoError(t, s.RegisterClient(ctx, client))
 
+			key := redisKey(s.keyPrefix, KeyTypeClient, "dcr-public-renew")
+
 			// Age the registration so only a small slice of the TTL remains.
-			mr.FastForward(DefaultPublicClientTTL - time.Hour)
+			mr.FastForward(DefaultDCRClientTTL - time.Hour)
 			ttlBefore := mr.TTL(key)
 			require.Positive(t, ttlBefore)
 			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")
@@ -295,30 +590,82 @@ func TestRedisStorage_RenewClientTTL(t *testing.T) {
 			require.NoError(t, s.RenewClientTTL(ctx, client))
 
 			ttlAfter := mr.TTL(key)
-			assert.Greater(t, ttlAfter, ttlBefore, "RenewClientTTL should extend the public client TTL")
-			assert.InDelta(t, DefaultPublicClientTTL.Seconds(), ttlAfter.Seconds(), 60,
-				"renewed TTL should be ~DefaultPublicClientTTL")
+			assert.Greater(t, ttlAfter, ttlBefore, "RenewClientTTL should extend the client TTL")
+			assert.InDelta(t, DefaultDCRClientTTL.Seconds(), ttlAfter.Seconds(), 60,
+				"renewed TTL should be ~DefaultDCRClientTTL")
 		})
 	})
 
-	t.Run("confidential client is left without a TTL", func(t *testing.T) {
+	t.Run("pre-provisioned confidential client stays TTL-less", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-			key := redisKey(s.keyPrefix, KeyTypeClient, "conf-client")
-			client := &mockClient{id: "conf-client", public: false}
+			client := &mockClient{id: "preprov-conf-renew", public: false, secret: []byte("hashed")}
 			require.NoError(t, s.RegisterClient(ctx, client))
-			require.Equal(t, time.Duration(0), mr.TTL(key), "confidential clients must not have a TTL")
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "preprov-conf-renew")
+			require.Equal(t, time.Duration(0), mr.TTL(key), "precondition: no TTL after RegisterClient")
 
 			require.NoError(t, s.RenewClientTTL(ctx, client))
 
 			assert.Equal(t, time.Duration(0), mr.TTL(key),
-				"RenewClientTTL must not introduce a TTL on a confidential client")
+				"RenewClientTTL must not introduce a TTL on a pre-provisioned client")
+		})
+	})
+
+	t.Run("pre-provisioned public client stays TTL-less", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := &mockClient{id: "preprov-public-renew", public: true}
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "preprov-public-renew")
+			require.Equal(t, time.Duration(0), mr.TTL(key), "precondition: no TTL after RegisterClient")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"RenewClientTTL must not introduce a TTL on a pre-provisioned public client")
+		})
+	})
+
+	t.Run("pre-provisioned OIDC confidential client stays TTL-less", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// The natural pre-provisioned shape: a DefaultOpenIDConnectClient
+			// with a pinned auth method but no DCRIssued marker. RegisterClient
+			// records the method, so a GetClient round-trip must not infer
+			// DCR-issued from it — otherwise RenewClientTTL would hand this
+			// permanent client an expiry on its first token request.
+			client := &fosite.DefaultOpenIDConnectClient{
+				DefaultClient: &fosite.DefaultClient{
+					ID:     "preprov-oidc-renew",
+					Secret: []byte("hashed"),
+				},
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			}
+			require.False(t, registration.DCRIssued(client), "precondition: pre-provisioned client is not DCR-issued")
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			key := redisKey(s.keyPrefix, KeyTypeClient, "preprov-oidc-renew")
+			require.Equal(t, time.Duration(0), mr.TTL(key), "precondition: no TTL after RegisterClient")
+
+			reread, err := s.GetClient(ctx, "preprov-oidc-renew")
+			require.NoError(t, err)
+			require.False(t, registration.DCRIssued(reread),
+				"a pre-provisioned client must not read back as DCR-issued")
+
+			require.NoError(t, s.RenewClientTTL(ctx, reread))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"RenewClientTTL must not introduce a TTL on a pre-provisioned OIDC client")
 		})
 	})
 
 	t.Run("unknown client is a safe no-op", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// A DCR-issued client whose row was never persisted (or has been
+			// evicted): RenewClientTTL reaches EXPIRE, which is a no-op on a
+			// missing key, so no key is created.
+			ghost := newDCRClient(t, "ghost", oauthproto.TokenEndpointAuthMethodNone, "")
 			key := redisKey(s.keyPrefix, KeyTypeClient, "ghost")
-			require.NoError(t, s.RenewClientTTL(ctx, &mockClient{id: "ghost", public: true}))
+			require.NoError(t, s.RenewClientTTL(ctx, ghost))
 			assert.False(t, mr.Exists(key), "renewing an unknown client must not create a key")
 		})
 	})

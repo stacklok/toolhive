@@ -25,14 +25,19 @@ on:
   release:
     types: [published]
 
+# Read-only by default. The jobs that need to write — release-binaries and the
+# reusable workflows this calls — already declare their own permissions, which
+# replace this rather than extend it, so they are unaffected.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
 
   verify-release:
     name: Verify Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -67,6 +72,8 @@ jobs:
   compute-build-flags:
     name: Compute Build Flags
     runs-on: ubuntu-slim
+    permissions:
+      contents: read
     outputs:
       commit-date: ${{ steps.ldflags.outputs.commit-date }}
       commit: ${{ steps.ldflags.outputs.commit }}
@@ -176,11 +183,15 @@ jobs:
       - name: Remove existing release assets (allows re-runs)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bound to the environment rather than interpolated: a git ref name
+          # may contain ';', '$', backticks and '|', and this is a command
+          # substitution.
+          TAG: ${{ github.ref_name }}
         run: |
           # Delete existing assets so GoReleaser can re-upload when re-running a failed job
           set +e
-          for name in $(gh release view "${{ github.ref_name }}" --json assets --jq '.assets[].name' 2>/dev/null); do
-            gh release delete-asset "${{ github.ref_name }}" "$name" -y 2>/dev/null || true
+          for name in $(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null); do
+            gh release delete-asset "$TAG" "$name" -y 2>/dev/null || true
           done
           set -e
 

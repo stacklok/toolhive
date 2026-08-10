@@ -52,9 +52,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    # --no-exit-codes stops *findings* failing the job; this stops a tool or
-    # network failure doing so. Both come off when the gate goes blocking.
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -62,9 +59,10 @@ jobs:
           # This job only reads the workflow files; it never pushes.
           persist-credentials: false
 
-      # Advisory only for now: --no-exit-codes keeps the job green while the
-      # existing backlog is worked through, so this reports without blocking.
-      # Remove it (and add --min-severity) once the backlog is clear.
+      # Reported at every severity so the Security tab keeps the full picture,
+      # including the low and informational findings this job does not block
+      # on. --no-exit-codes because the gate below decides pass or fail, not
+      # this step.
       #
       # Results are written straight to SARIF and never echoed. Workflow logs
       # and job summaries are world-readable on a public repository, so
@@ -83,12 +81,34 @@ jobs:
 
       # Pull requests from forks get a read-only token, so the upload is
       # skipped there; those workflows are still scanned on push to main.
+      # Runs before the gate so findings reach the Security tab either way.
       - name: Upload zizmor results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         if: always() && !github.event.pull_request.head.repo.fork
         with:
           sarif_file: zizmor.sarif
           category: "zizmor"
+
+      # The gate. `main` is clear of medium-and-above findings, so anything
+      # this reports was introduced by the change under review — which is why
+      # this step, unlike the one above, prints. The full inventory stays out
+      # of the public log; a finding in the diff under review does not, and a
+      # gate that fails without saying why is not worth having.
+      #
+      # The remaining low and informational findings are deliberate and are
+      # documented where they sit: checkouts whose credentials are in use, and
+      # expressions carrying values GitHub constrains to characters that cannot
+      # reach a shell. Lowering this threshold means dealing with those first.
+      - name: Fail on new findings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pipx run zizmor==1.29.0 \
+            --persona=regular \
+            --min-severity=medium \
+            --no-progress \
+            --format=plain \
+            .github/
 
   govulncheck:
     name: Go Vulnerability Check

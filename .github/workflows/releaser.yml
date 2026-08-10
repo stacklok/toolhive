@@ -203,6 +203,11 @@ jobs:
           private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
           owner: stacklok
           repositories: homebrew-tap
+          # Already limited to one repository by the two lines above; this
+          # limits it to one permission as well. GoReleaser commits the formula
+          # straight to the tap's default branch — the brews block configures no
+          # pull request — so contents is all it uses.
+          permission-contents: write
 
       - name: Run GoReleaser
         id: run-goreleaser

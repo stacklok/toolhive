@@ -52,7 +52,7 @@ jobs:
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
 
@@ -68,7 +68,7 @@ jobs:
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi
 
@@ -194,7 +194,7 @@ jobs:
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
 
@@ -210,7 +210,7 @@ jobs:
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi
 
@@ -264,7 +264,7 @@ jobs:
           TAG=${{ steps.version-string.outputs.tag }}
           TAGS="-t $TAG"
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-proxyrunner \
@@ -279,7 +279,7 @@ jobs:
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi
 
@@ -306,16 +306,16 @@ jobs:
       - name: Compute version number
         id: version-string
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
             # For main branch, use semver with -dev suffix
             echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             # For tags, use the tag as is (assuming it's semver)
-            TAG="${{ github.ref_name }}"
+            TAG="$GITHUB_REF_NAME"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           else
             # For other branches, use branch name and run number
-            BRANCH="${{ github.ref_name }}"
+            BRANCH="$GITHUB_REF_NAME"
             echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
@@ -343,7 +343,7 @@ jobs:
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
 
@@ -359,6 +359,6 @@ jobs:
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi

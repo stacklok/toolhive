@@ -136,8 +136,9 @@ func (c *Converter) Convert(
 	// Use Operational from spec.config directly
 	config.Operational = vmcp.Spec.Config.Operational
 
-	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
-	// The inline config.telemetry field is no longer read by the operator.
+	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig).
+	// Inline config.telemetry remains as a deprecated operator fallback for compatibility
+	// with docs and existing CRs; TelemetryConfigRef always wins when both are present.
 	normalizedTelemetry := c.normalizeTelemetry(ctx, vmcp, telemetryCfg)
 	config.Telemetry = normalizedTelemetry
 
@@ -482,12 +483,17 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 	return config
 }
 
-// normalizeTelemetry resolves and normalizes the telemetry config from a
-// pre-fetched MCPTelemetryConfig. Returns nil when TelemetryConfigRef is not set.
-// The Config.Telemetry field is still valid for standalone CLI deployments but is
-// no longer read by the operator — use TelemetryConfigRef instead.
+// normalizeTelemetry resolves and normalizes the telemetry config.
+// Preference order:
+//  1. TelemetryConfigRef → shared MCPTelemetryConfig (preferred for operator deployments)
+//  2. Inline spec.config.telemetry (deprecated for operator; still applied for compatibility)
+//
+// Returning nil disables telemetry (no OTLP, no Prometheus /metrics handler).
+// When /metrics is not registered, GET /metrics falls through to the MCP streamable
+// HTTP handler and returns HTTP 406 JSON-RPC ("Client must accept text/event-stream"),
+// which looks like a broken Prometheus scrape rather than a missing feature.
 func (*Converter) normalizeTelemetry(
-	_ context.Context,
+	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 ) *telemetry.Config {
@@ -495,6 +501,19 @@ func (*Converter) normalizeTelemetry(
 		return spectoconfig.NormalizeMCPTelemetryConfig(
 			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
 	}
+
+	if vmcp.Spec.Config.Telemetry != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info(
+			"VirtualMCPServer.spec.config.telemetry is deprecated for operator deployments; "+
+				"migrate to spec.telemetryConfigRef referencing an MCPTelemetryConfig. "+
+				"Inline telemetry is still applied for compatibility.",
+			"name", vmcp.Name,
+			"namespace", vmcp.Namespace,
+		)
+		return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
+	}
+
 	return nil
 }
 

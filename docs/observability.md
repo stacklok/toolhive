@@ -166,11 +166,12 @@ spec:
 See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
 for a complete example.
 
-**Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)
-and `spec.config.telemetry` (VirtualMCPServer) fields still work but are
-deprecated and will be removed in a future API version. They are mutually exclusive with
-`telemetryConfigRef` (CEL enforced). All three resource types now support
-`spec.telemetryConfigRef`.
+**Inline (deprecated)**: For VirtualMCPServer, inline `spec.config.telemetry`
+is still applied by the operator when `spec.telemetryConfigRef` is unset
+(deprecated; controller logs a migration warning). Prefer
+`MCPTelemetryConfig` + `telemetryConfigRef` for MCPServer, MCPRemoteProxy, and
+VirtualMCPServer. Without either path, Prometheus `/metrics` is not registered
+on VirtualMCPServer and scrapes receive MCP protocol 406 responses.
 
 For VirtualMCPServer telemetry, see the
 [vMCP observability docs](./operator/virtualmcpserver-observability.md).

@@ -72,8 +72,9 @@ func NormalizeMCPTelemetryConfig(
 // runtime in telemetry.NewProvider() to always reflect the running binary version,
 // avoiding stale versions persisted in configs. See #2296.
 //
-// This function is used by both the VirtualMCPServer converter (for spec.config.telemetry)
-// and indirectly by NormalizeMCPTelemetryConfig (for MCPTelemetryConfig-based configs).
+// This function is used by the VirtualMCPServer converter for deprecated
+// inline spec.config.telemetry and by NormalizeMCPTelemetryConfig for
+// MCPTelemetryConfig-based configs.
 func NormalizeTelemetryConfig(config *telemetry.Config, defaultServiceName string) *telemetry.Config {
 	if config == nil {
 		return nil

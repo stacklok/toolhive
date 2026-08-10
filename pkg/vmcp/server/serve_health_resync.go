@@ -34,7 +34,9 @@ import (
 // for backend-health-driven fan-out. The zero value is usable.
 //
 // Lifecycle: a session is added after registration succeeds
-// (handleSessionRegistrationImpl) and removed eagerly on every termination
+// (handleSessionRegistrationImpl; passthrough mode only — optimizer-mode
+// sessions are never registered because the fan-out is a no-op for them in
+// PR1) and removed eagerly on every termination
 // path the server observes — registration failure, binding-failure
 // termination, and SDK-initiated termination (HTTP DELETE), the last via
 // pruneOnTerminateSessionIDManager. Sessions that end without any Terminate
@@ -112,7 +114,9 @@ func (r *healthResyncRegistry) snapshot() []*listChangedResyncWorker {
 func (s *Server) resyncSessionsOnBackendHealthChange(generation uint64) {
 	// #5786 PR1 is passthrough-only: in optimizer mode the advertised
 	// meta-tools are unchanged by a health flip and rebuilding the per-session
-	// optimizer index is deferred to the optimizer-mode follow-up.
+	// optimizer index is deferred to the optimizer-mode follow-up. Optimizer-
+	// mode sessions are never registered (handleSessionRegistrationImpl skips
+	// the add), so this gate is defense in depth keeping the no-op explicit.
 	if s.optimizerFactory != nil {
 		slog.Debug("skipping session resync on backend health change (optimizer mode)",
 			"generation", generation)

@@ -1277,9 +1277,22 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// Register the session's tools resync worker for backend-health-driven
 	// fan-out (#5786, serve_health_resync.go) as soon as the session exists:
 	// a health change firing during the capability injection below then
-	// triggers a (coalesced) re-derivation rather than being missed. The
-	// error-path defer above deregisters alongside Terminate.
-	s.healthResync.add(sessionID, toolsResyncWorker)
+	// triggers a (coalesced) re-derivation rather than being missed. That
+	// early registration means a fan-out can run the worker's SetSessionTools
+	// (replace) concurrently with injectCoreSessionCapabilities' merge below;
+	// both derive from the live health-filtered core view and the SDK tool
+	// store is internally locked, so the overlap is benign and self-heals on
+	// the next fan-out. The error-path defer above deregisters alongside
+	// Terminate.
+	//
+	// Optimizer-mode sessions are not registered: the health fan-out is a
+	// no-op there (#5786 PR1 is passthrough-only, see
+	// resyncSessionsOnBackendHealthChange), so registering would only retain
+	// the worker closure until termination. The optimizer-mode follow-up (PR2)
+	// removes this gate together with the fan-out's.
+	if s.optimizerFactory == nil {
+		s.healthResync.add(sessionID, toolsResyncWorker)
+	}
 
 	// The core is the single authoritative aggregation: source the advertised tool/resource
 	// set from core.ListTools/ListResources (called once per session here) and install

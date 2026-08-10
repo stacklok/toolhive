@@ -194,7 +194,7 @@ func (*statusTracker) copyState(state *backendHealthState) *State {
 // If the backend was previously unhealthy, this transition is logged.
 //
 // The returned bool reports whether the backend's advertisability changed
-// (see advertisable): true when a previously-excluded backend becomes part of
+// (see ShouldAdvertise): true when a previously-excluded backend becomes part of
 // the advertised catalog (recovery), or when a previously-untracked backend
 // records its first result. The Monitor uses it to drive OnChange listeners.
 //
@@ -258,7 +258,7 @@ func (t *statusTracker) RecordSuccess(
 	// Update circuit breaker
 	state.circuitBreaker.RecordSuccess()
 
-	return advertisable(previousStatus) != advertisable(state.status)
+	return ShouldAdvertise(previousStatus) != ShouldAdvertise(state.status)
 }
 
 // RecordRevision stores the backend's negotiated MCP revision read-model. It is
@@ -278,7 +278,7 @@ func (t *statusTracker) RecordRevision(backendID, revision string) {
 // if the threshold is exceeded. Status transitions are logged.
 //
 // The returned bool reports whether the backend's advertisability changed
-// (see advertisable): true when a previously-advertised backend crosses the
+// (see ShouldAdvertise): true when a previously-advertised backend crosses the
 // unhealthy threshold and drops out of the catalog, or when a
 // previously-untracked backend records its first result. The Monitor uses it
 // to drive OnChange listeners.
@@ -371,19 +371,7 @@ func (t *statusTracker) RecordFailure(
 	// Update circuit breaker
 	state.circuitBreaker.RecordFailure()
 
-	return advertisable(previousStatus) != advertisable(state.status)
-}
-
-// advertisable reports whether a backend with this health status participates
-// in capability aggregation. It mirrors the inclusion rule of the core's
-// filterHealthyBackends (pkg/vmcp/core): healthy, degraded, and zero-value
-// statuses are advertised; unhealthy, unknown, and unauthenticated are not.
-// Keep the two in sync — a divergence would fire (or suppress) OnChange for
-// transitions the catalog does not (or does) observe.
-func advertisable(status vmcp.BackendHealthStatus) bool {
-	return status == "" ||
-		status == vmcp.BackendHealthy ||
-		status == vmcp.BackendDegraded
+	return ShouldAdvertise(previousStatus) != ShouldAdvertise(state.status)
 }
 
 // GetStatus returns the current health status for a backend.

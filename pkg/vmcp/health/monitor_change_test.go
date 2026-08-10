@@ -162,7 +162,7 @@ func TestMonitor_OnChange_FiresOnRecoveryTransition(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		status, err := monitor.GetBackendStatus("backend-1")
-		return err == nil && advertisable(status)
+		return err == nil && ShouldAdvertise(status)
 	}, 2*time.Second, 10*time.Millisecond, "backend must become advertisable after recovery")
 
 	// Steady healthy state: no further deliveries.

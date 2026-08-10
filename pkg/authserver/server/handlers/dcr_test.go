@@ -804,6 +804,39 @@ func TestRegisterClientHandler_ForceConfidentialOverride(t *testing.T) {
 		assert.True(t, captured.IsPublic())
 	})
 
+	t.Run("matching https uri mixed with a loopback uri is rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := forceConfidentialConfig([]string{"https://forced.example.com/cb"})
+		w, captured := runDCR(t, cfg,
+			`{"redirect_uris":["https://forced.example.com/cb","http://127.0.0.1:8080/cb"],`+
+				`"token_endpoint_auth_method":"none"}`)
+
+		require.Equal(t, http.StatusBadRequest, w.Code,
+			"the override must not mint a secret for a registration that also carries a loopback redirect_uri")
+		var dcrErr registration.DCRError
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &dcrErr))
+		assert.Equal(t, registration.DCRErrorInvalidRedirectURI, dcrErr.Error)
+		assert.Nil(t, captured, "a rejected registration must not reach storage")
+	})
+
+	t.Run("matching redirect_uri with all-https list still succeeds", func(t *testing.T) {
+		t.Parallel()
+		cfg := forceConfidentialConfig([]string{"https://forced.example.com/cb"})
+		w, captured := runDCR(t, cfg,
+			`{"redirect_uris":["https://forced.example.com/cb","https://forced.example.com/cb2"],`+
+				`"token_endpoint_auth_method":"none"}`)
+
+		require.Equal(t, http.StatusCreated, w.Code)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost, raw["token_endpoint_auth_method"])
+		_, hasSecret := raw["client_secret"]
+		assert.True(t, hasSecret)
+
+		require.NotNil(t, captured)
+		assert.False(t, captured.IsPublic())
+	})
+
 	t.Run("matching redirect_uri that explicitly requests a confidential method is unaffected", func(t *testing.T) {
 		t.Parallel()
 		cfg := forceConfidentialConfig([]string{"https://forced.example.com/cb"})

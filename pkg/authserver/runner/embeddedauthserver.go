@@ -242,6 +242,7 @@ func NewEmbeddedAuthServerWithStorage(
 		CIMDCacheFallbackTTL:                cimdCacheFallbackTTL,
 		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		ForceConfidentialRedirectURIs:       slices.Clone(cfg.ForceConfidentialRedirectURIs),
 		// slices.Clone is shallow: each TrustedIssuer's own AllowedActors
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the

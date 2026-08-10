@@ -315,6 +315,68 @@ func New(cfg Config) (fosite.Client, error) {
 	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient}, nil
 }
 
+// NewConfidentialPlain creates a DCR-issued confidential client as a plain
+// *fosite.DefaultClient (Public: false, hashed secret), NOT the
+// *fosite.DefaultOpenIDConnectClient shape New produces for an ordinary
+// confidential registration.
+//
+// The difference matters: fosite only enforces token_endpoint_auth_method for
+// clients implementing fosite.OpenIDConnectClient (see
+// client_authentication.go in fosite v0.49.0 — AuthenticateClient type-
+// switches on that interface before checking the method at all). A plain
+// *fosite.DefaultClient with Public=false accepts credentials via either HTTP
+// Basic or the form body and verifies whichever is presented. Use this
+// constructor when the caller does not know which presentation the client
+// will use — pinning the wrong one yields an invalid_client the operator
+// cannot debug remotely.
+//
+// This is the shape ValidateDCRRequest's override path uses when a request's
+// redirect_uris matches an operator-configured
+// Config.ForceConfidentialRedirectURIs entry: such a client declared itself
+// public but requires a secret, and the operator cannot know in advance
+// whether its OAuth library presents credentials via Basic or form body.
+//
+// TokenEndpointAuthMethod on cfg is ignored; the returned client has no
+// pinned method by construction. Ignores cfg.GrantTypes/ResponseTypes
+// defaulting the same way New does. The returned client always carries the
+// DCRIssued marker (see MarkDCRIssued) so storage retention applies.
+func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("confidential client requires a secret")
+	}
+
+	grantTypes := cfg.GrantTypes
+	if len(grantTypes) == 0 {
+		grantTypes = defaultGrantTypes
+	}
+	responseTypes := cfg.ResponseTypes
+	if len(responseTypes) == 0 {
+		responseTypes = defaultResponseTypes
+	}
+	scopes := cfg.Scopes
+	if len(scopes) == 0 {
+		scopes = DefaultScopes
+	}
+
+	hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	}
+
+	defaultClient := &fosite.DefaultClient{
+		ID:            cfg.ID,
+		Secret:        hashedSecret,
+		RedirectURIs:  cfg.RedirectURIs,
+		ResponseTypes: responseTypes,
+		GrantTypes:    grantTypes,
+		Scopes:        scopes,
+		Audience:      cfg.Audience,
+		Public:        false,
+	}
+
+	return MarkDCRIssued(defaultClient), nil
+}
+
 // Compile-time interface compliance check
 var _ fosite.Client = (*LoopbackClient)(nil)
 

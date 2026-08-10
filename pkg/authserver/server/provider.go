@@ -74,6 +74,11 @@ type AuthorizationServerConfig struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
+	// always registers as confidential clients, overriding a requested "none"
+	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
+	// full semantics.
+	ForceConfidentialRedirectURIs []string
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -116,6 +121,11 @@ type AuthorizationServerParams struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
+	// always registers as confidential clients, overriding a requested "none"
+	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
+	// full semantics.
+	ForceConfidentialRedirectURIs []string
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -279,6 +289,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 	}, nil
 }
 

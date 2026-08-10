@@ -261,33 +261,9 @@ func validateAuthMethod(
 		// Server policy (not a spec mandate): confidential registrations must
 		// use https non-loopback redirect URIs. A client reachable on loopback
 		// or a private scheme is typically a distributed native app that cannot
-		// keep a secret, so this server declines to mint it one. This also
-		// rejects https://localhost, which has no security argument behind it —
-		// it is a deliberate simplicity tradeoff, not a spec requirement.
-		for _, uri := range redirectURIs {
-			if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
-				return "", &DCRError{
-					Error:            DCRErrorInvalidRedirectURI,
-					ErrorDescription: err.Error(),
-				}
-			}
-			// isLoopbackURI is a literal-string check (127.0.0.0/8, ::1,
-			// ::ffff:127.0.0.1, localhost); it does not resolve the hostname,
-			// so a registrant-controlled name that merely resolves to a
-			// loopback address slips through. This is acceptable: the
-			// registrant controls both its own redirect URI and its own DNS,
-			// so at worst this lets an actor mint a secret for its own
-			// loopback app, not attack another tenant. Resolving DNS at
-			// registration time would add an unreliable (TTL/rebinding) and
-			// unnecessary network dependency to a request that should stay
-			// purely local.
-			if isLoopbackURI(uri) {
-				return "", &DCRError{
-					Error: DCRErrorInvalidRedirectURI,
-					ErrorDescription: "token_endpoint_auth_method '" + authMethod +
-						"' requires https non-loopback redirect_uris; native and loopback clients must use 'none'",
-				}
-			}
+		// keep a secret, so this server declines to mint it one.
+		if dcrErr := ValidateConfidentialRedirectURIs(redirectURIs, authMethod); dcrErr != nil {
+			return "", dcrErr
 		}
 		return authMethod, nil
 	default:
@@ -296,6 +272,45 @@ func validateAuthMethod(
 			ErrorDescription: "unsupported token_endpoint_auth_method: " + authMethod,
 		}
 	}
+}
+
+// ValidateConfidentialRedirectURIs checks that every entry in redirectURIs
+// meets the confidential-client policy: https non-loopback, RFC 8252 strict
+// scheme rules. authMethod is embedded in the loopback-rejection message and
+// should be the auth method the client is being registered with.
+//
+// Shared by the ordinary confidential registration path (validateAuthMethod)
+// and the force-confidential override (resolveForceConfidentialOverride in
+// pkg/authserver/server/handlers/dcr.go), so a registration cannot become
+// confidential by either path while carrying a loopback redirect_uri.
+func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) *DCRError {
+	for _, uri := range redirectURIs {
+		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+			return &DCRError{
+				Error:            DCRErrorInvalidRedirectURI,
+				ErrorDescription: err.Error(),
+			}
+		}
+		// isLoopbackURI is a literal-string check (127.0.0.0/8, ::1,
+		// ::ffff:127.0.0.1, localhost); it does not resolve the hostname,
+		// so a registrant-controlled name that merely resolves to a
+		// loopback address slips through. This is acceptable: the
+		// registrant controls both its own redirect URI and its own DNS,
+		// so at worst this lets an actor mint a secret for its own
+		// loopback app, not attack another tenant. Resolving DNS at
+		// registration time would add an unreliable (TTL/rebinding) and
+		// unnecessary network dependency to a request that should stay
+		// purely local.
+		if isLoopbackURI(uri) {
+			return &DCRError{
+				Error: DCRErrorInvalidRedirectURI,
+				ErrorDescription: "token_endpoint_auth_method '" + authMethod +
+					"' requires https non-loopback redirect_uris; native and loopback clients must use 'none'" +
+					" (offending redirect_uri: " + uri + ")",
+			}
+		}
+	}
+	return nil
 }
 
 func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {

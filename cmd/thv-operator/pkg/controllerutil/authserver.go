@@ -592,6 +592,9 @@ func BuildAuthServerRunConfig(
 	// Wire through the confidential-client DCR flag (default off).
 	config.AllowConfidentialClientRegistration = authConfig.AllowConfidentialClientRegistration
 
+	// Wire through the force-confidential-redirect-uris override list.
+	config.ForceConfidentialRedirectURIs = authConfig.ForceConfidentialRedirectURIs
+
 	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
 	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {

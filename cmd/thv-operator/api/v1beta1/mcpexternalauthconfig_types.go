@@ -356,6 +356,7 @@ type BearerTokenConfig struct {
 // enforced at admission for both CRDs.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type EmbeddedAuthServerConfig struct {
@@ -514,6 +515,39 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
+
+	// ForceConfidentialRedirectURIs lists redirect URIs that must be
+	// registered as confidential clients regardless of the
+	// token_endpoint_auth_method the DCR request declares. A registration
+	// whose redirectUris contains an EXACT match for one of these entries is
+	// issued a real client_secret and reported back as
+	// token_endpoint_auth_method "client_secret_post", even if the request
+	// said "none" or omitted the field.
+	//
+	// Intended for MCP clients that declare themselves public
+	// (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
+	// proceed because the response carries no client_secret — a
+	// self-contradictory request. RFC 7591 §3.2.1 permits the server to
+	// substitute client metadata, so this takes such a client at its word
+	// that it wants a secret. Remove an entry once the client is fixed to
+	// handle "none" registrations correctly.
+	//
+	// Exact matching is deliberate: an attacker who registers with someone
+	// else's callback URI is issued a secret for a client whose
+	// authorization codes are delivered to that someone else's redirect
+	// endpoint, not to the attacker, so this is not a way to obtain a usable
+	// credential for another client.
+	//
+	// Requires allowConfidentialClientRegistration to be true. Every entry
+	// must be an https non-loopback URI — a loopback client is a public
+	// client by construction (OAuth 2.1 §2.1) and must not be issued a
+	// secret; this is enforced at reconcile time since CEL cannot express
+	// the loopback-hostname check.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:Pattern=`^https://[^\s?#]+$`
+	// +listType=atomic
+	// +optional
+	ForceConfidentialRedirectURIs []string `json:"forceConfidentialRedirectUris,omitempty"`
 
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
@@ -1629,6 +1663,17 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// admission for both MCPExternalAuthConfig and VirtualMCPServer.
 	if err := authserver.ValidateConfidentialClientTransport(
 		cfg.AllowConfidentialClientRegistration, cfg.InsecureAllowHTTP,
+	); err != nil {
+		return err
+	}
+
+	// The "requires allowConfidentialClientRegistration" half is also
+	// enforced by the type-level XValidation rule above (defense-in-depth,
+	// same reasoning as ValidateConfidentialClientTransport). The
+	// https-non-loopback-per-entry check has no CEL equivalent here since it
+	// needs the loopback-hostname helper, so it lives only in Go.
+	if err := authserver.ValidateForceConfidentialRedirectURIs(
+		cfg.ForceConfidentialRedirectURIs, cfg.AllowConfidentialClientRegistration,
 	); err != nil {
 		return err
 	}

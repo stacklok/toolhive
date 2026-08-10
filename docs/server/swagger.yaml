@@ -644,6 +644,39 @@ components:
             backend receives an unauthenticated request. Incompatible with token exchange
             and AWS STS, which would re-add credentials after the strip.
           type: boolean
+        force_confidential_redirect_uris:
+          description: |-
+            ForceConfidentialRedirectURIs lists redirect URIs that must be registered
+            as confidential clients regardless of the token_endpoint_auth_method the
+            DCR request declares. A registration whose redirect_uris contains an
+            EXACT match for one of these entries is issued a real client_secret and
+            reported back as token_endpoint_auth_method "client_secret_post", even
+            if the request said "none" or omitted the field.
+
+            This exists for MCP clients (Perplexity is the known case) that declare
+            themselves public (token_endpoint_auth_method: "none") per RFC 7591 but
+            then refuse to proceed because the response carries no client_secret —
+            a self-contradictory request no conformant server can satisfy as
+            written. RFC 7591 §3.2.1 permits the server to substitute metadata, so
+            this takes such a client at its word that it wants a secret.
+
+            Exact matching is deliberate: it is not a way to obtain a usable
+            credential for another client. An attacker who registers with someone
+            else's callback URI is issued a secret for a client whose authorization
+            codes are delivered to that someone else's redirect endpoint, not to
+            the attacker — the secret is useless without also controlling the
+            callback.
+
+            Requires AllowConfidentialClientRegistration; every entry must be a
+            valid https non-loopback URI (Validate rejects loopback entries — the
+            same restriction AllowConfidentialClientRegistration itself enforces
+            exists so secrets do not land in distributed native apps, and this
+            override must not bypass it). Remove an entry once the client is fixed
+            to handle "none" registrations correctly.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         hmac_secret_files:
           description: |-
             HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes

@@ -537,6 +537,88 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 	}
 }
 
+// TestValidateForceConfidentialRedirectURIs pins the validation rules for the
+// force-confidential-redirect-uris override: it requires
+// allow_confidential_client_registration, and every entry must be an https
+// non-loopback redirect URI.
+func TestValidateForceConfidentialRedirectURIs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		uris              []string
+		allowConfidential bool
+		wantErr           bool
+		errMsg            string
+	}{
+		{name: "empty list passes regardless of allowConfidential"},
+		{
+			name:    "empty list passes even with allowConfidential false",
+			uris:    nil,
+			wantErr: false,
+		},
+		{
+			name:              "valid https non-loopback entry passes",
+			uris:              []string{"https://client.example.com/callback"},
+			allowConfidential: true,
+		},
+		{
+			name:              "multiple valid entries pass",
+			uris:              []string{"https://a.example.com/cb", "https://b.example.com/cb"},
+			allowConfidential: true,
+		},
+		{
+			name:    "non-empty list without allowConfidential rejects",
+			uris:    []string{"https://client.example.com/callback"},
+			wantErr: true,
+			errMsg:  "requires allow_confidential_client_registration",
+		},
+		{
+			name:              "loopback IP entry rejects",
+			uris:              []string{"https://127.0.0.1/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "loopback localhost entry rejects",
+			uris:              []string{"https://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "http loopback entry rejects (must be https)",
+			uris:              []string{"http://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "http non-loopback entry rejects",
+			uris:              []string{"http://client.example.com/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must use http (for loopback) or https scheme",
+		},
+		{
+			name:              "one bad entry among good ones rejects",
+			uris:              []string{"https://good.example.com/cb", "https://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateForceConfidentialRedirectURIs(tt.uris, tt.allowConfidential)
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
 func TestDCRUpstreamConfigValidate(t *testing.T) {
 	t.Parallel()
 

@@ -596,6 +596,70 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: true,
 			errMsg:    "allow_confidential_client_registration cannot be combined with insecure_allow_http",
 		},
+		{
+			name: "forceConfidentialRedirectUris without allowConfidentialClientRegistration - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                        "https://auth.example.com",
+						ForceConfidentialRedirectURIs: []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "requires allow_confidential_client_registration",
+		},
+		{
+			name: "forceConfidentialRedirectUris with loopback entry - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://localhost/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "must not be a loopback redirect URI",
+		},
+		{
+			name: "forceConfidentialRedirectUris with valid https entry and flag on - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tt := range tests {

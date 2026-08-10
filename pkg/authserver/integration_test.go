@@ -110,6 +110,9 @@ type testServerOptions struct {
 	// allowConfidentialClientRegistration, when true, sets Config.AllowConfidentialClientRegistration
 	// so DCR accepts client_secret_basic / client_secret_post registrations.
 	allowConfidentialClientRegistration bool
+	// forceConfidentialRedirectURIs, when non-empty, sets
+	// Config.ForceConfidentialRedirectURIs.
+	forceConfidentialRedirectURIs []string
 }
 
 // testServerOption is a functional option for test server setup.
@@ -159,6 +162,16 @@ func withExtraClient(c fosite.Client) testServerOption {
 func withTrustedIssuers(issuers []tokenexchange.TrustedIssuer) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.trustedIssuers = issuers
+	}
+}
+
+// withForceConfidentialRedirectURIs sets Config.ForceConfidentialRedirectURIs,
+// which also requires withAllowConfidentialClientRegistration on the same
+// setup call — the server-side validation Config.Validate performs rejects
+// the override otherwise.
+func withForceConfidentialRedirectURIs(uris ...string) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.forceConfidentialRedirectURIs = uris
 	}
 }
 
@@ -296,6 +309,12 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
 		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
+		ForceConfidentialRedirectURIs:       options.forceConfidentialRedirectURIs,
+		// The test server's issuer is a plain-HTTP loopback URL (genuinely
+		// local: an in-process httptest server), so opt in to the same
+		// combination withAllowConfidentialClientRegistration would otherwise
+		// be rejected for in production.
+		InsecureAllowConfidentialOverLoopbackHTTP: options.allowConfidentialClientRegistration,
 	}
 
 	// 7. Create server using newServer with test options
@@ -4089,18 +4108,96 @@ func runConfidentialHappyPath(t *testing.T, serverURL, authMethod string) map[st
 func TestIntegration_ConfidentialClientDCR_FullFlow(t *testing.T) {
 	t.Parallel()
 
-	m := startMockOIDC(t)
-	ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
-
 	for _, authMethod := range []string{
 		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 		oauthproto.TokenEndpointAuthMethodClientSecretPost,
 	} {
 		t.Run(authMethod, func(t *testing.T) {
 			t.Parallel()
+
+			// Each subtest gets its own mockoidc instance: mockoidc's
+			// SessionStore is not concurrency-safe, so sharing one across
+			// parallel subtests races on session creation.
+			m := startMockOIDC(t)
+			ts := setupTestServerWithMockOIDC(t, m, withAllowConfidentialClientRegistration())
 			runConfidentialHappyPath(t, ts.Server.URL, authMethod)
 		})
 	}
+}
+
+// runForceConfidentialOverrideHappyPath registers a client declaring
+// token_endpoint_auth_method "none" against a redirect_uri that matches a
+// configured ForceConfidentialRedirectURIs entry, then completes the
+// authorization-code flow with PKCE and redeems the code using redeemVia
+// (either form-body or HTTP Basic credential presentation). Both must
+// succeed: the whole point of the plain (non-OIDC) client shape the override
+// builds is that fosite does not pin the presentation, so it must accept
+// either.
+func runForceConfidentialOverrideHappyPath(
+	t *testing.T, serverURL string, redeemVia func(*testing.T, string, url.Values, string, string) *http.Response,
+) {
+	t.Helper()
+
+	regResp := dcrRegisterClient(t, serverURL, oauthproto.TokenEndpointAuthMethodNone)
+	require.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost, regResp.TokenEndpointAuthMethod,
+		"an overridden registration must be reported as client_secret_post, never client_secret_basic "+
+			"(the Python MCP SDK these clients are built on rejects basic) or the requested 'none'")
+	require.NotEmpty(t, regResp.ClientSecret, "an overridden registration must be issued a client_secret")
+	clientID, clientSecret := regResp.ClientID, regResp.ClientSecret
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code := completeConfidentialAuthorizationFlow(t, serverURL, clientID, servercrypto.ComputePKCEChallenge(verifier))
+
+	params := confidentialAuthCodeParams(code, verifier)
+	resp := redeemVia(t, serverURL, params, clientID, clientSecret)
+	defer resp.Body.Close()
+
+	tokenData := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"redemption should succeed, got %d (body: %v)", resp.StatusCode, tokenData)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+}
+
+// TestIntegration_ForceConfidentialRedirectURIs_FullFlow covers the DCR
+// force-confidential override end to end: a client that declares itself
+// public (token_endpoint_auth_method "none") but registers a redirect_uri
+// matching an operator-configured ForceConfidentialRedirectURIs entry is
+// issued a real secret and can complete the token exchange presenting it via
+// EITHER the form body or HTTP Basic — proving the plain (non-OIDC) client
+// shape the override builds does not pin the client to one presentation.
+func TestIntegration_ForceConfidentialRedirectURIs_FullFlow(t *testing.T) {
+	t.Parallel()
+
+	// Each subtest builds its own mockoidc instance and server rather than
+	// sharing one across the parallel subtests: mockoidc's SessionStore is
+	// not concurrency-safe, so a shared instance races on session creation.
+	newServer := func(t *testing.T) *testServerWithUpstream {
+		t.Helper()
+		m := startMockOIDC(t)
+		return setupTestServerWithMockOIDC(t, m,
+			withAllowConfidentialClientRegistration(),
+			withForceConfidentialRedirectURIs(testConfidentialRedirectURI))
+	}
+
+	t.Run("form body", func(t *testing.T) {
+		t.Parallel()
+		ts := newServer(t)
+		runForceConfidentialOverrideHappyPath(t, ts.Server.URL,
+			func(t *testing.T, serverURL string, params url.Values, clientID, clientSecret string) *http.Response {
+				t.Helper()
+				params.Set("client_id", clientID)
+				params.Set("client_secret", clientSecret)
+				return makeTokenRequest(t, serverURL, params)
+			})
+	})
+
+	t.Run("HTTP Basic", func(t *testing.T) {
+		t.Parallel()
+		ts := newServer(t)
+		runForceConfidentialOverrideHappyPath(t, ts.Server.URL, makeTokenRequestWithBasicAuth)
+	})
 }
 
 // TestIntegration_ConfidentialClientDCR_FullFlow_Redis is the Redis-backed

@@ -350,6 +350,53 @@ func TestNewClient_ConfidentialClientWithoutSecret(t *testing.T) {
 	assert.Contains(t, err.Error(), "confidential client requires a secret")
 }
 
+// TestNewConfidentialPlain pins the shape NewConfidentialPlain produces: a
+// DCR-issued, non-public *fosite.DefaultClient with a hashed secret and no
+// fosite.OpenIDConnectClient implementation — the shape whose auth method
+// fosite does not enforce, so a client can present credentials via either
+// HTTP Basic or the form body.
+func TestNewConfidentialPlain(t *testing.T) {
+	t.Parallel()
+
+	t.Run("builds a plain non-OIDC confidential DCR-issued client", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{
+			ID:           "forced-client",
+			Secret:       "my-secret",
+			RedirectURIs: []string{"https://example.com/callback"},
+		}
+
+		client, err := NewConfidentialPlain(cfg)
+		require.NoError(t, err)
+
+		assert.Equal(t, "forced-client", client.GetID())
+		assert.False(t, client.IsPublic())
+		assert.Equal(t, []string{"https://example.com/callback"}, client.GetRedirectURIs())
+		assert.True(t, DCRIssued(client), "must carry the DCRIssued marker so storage retention applies")
+
+		_, isOIDC := client.(fosite.OpenIDConnectClient)
+		assert.False(t, isOIDC,
+			"must NOT implement fosite.OpenIDConnectClient: fosite only enforces "+
+				"token_endpoint_auth_method on that interface, and this shape must accept "+
+				"either Basic or form-body credential presentation")
+
+		err = SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("my-secret"))
+		assert.NoError(t, err, "stored secret must be a SHA-256 hash of the plaintext")
+
+		assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
+		assert.ElementsMatch(t, defaultResponseTypes, client.GetResponseTypes())
+		assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
+	})
+
+	t.Run("requires a secret", func(t *testing.T) {
+		t.Parallel()
+		client, err := NewConfidentialPlain(Config{ID: "forced-client"})
+		assert.Nil(t, client)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "confidential client requires a secret")
+	})
+}
+
 // TestNewClient_AuthMethodValidation pins the fail-closed constructor: an
 // empty or unrecognized token_endpoint_auth_method is rejected outright —
 // silently defaulting would reclassify the client one layer up.

@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // CurrentSchemaVersion is the current version of the authserver RunConfig schema.
@@ -155,6 +156,36 @@ type RunConfig struct {
 	// by Validate.
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
+
+	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
+	// as confidential clients regardless of the token_endpoint_auth_method the
+	// DCR request declares. A registration whose redirect_uris contains an
+	// EXACT match for one of these entries is issued a real client_secret and
+	// reported back as token_endpoint_auth_method "client_secret_post", even
+	// if the request said "none" or omitted the field.
+	//
+	// This exists for MCP clients (Perplexity is the known case) that declare
+	// themselves public (token_endpoint_auth_method: "none") per RFC 7591 but
+	// then refuse to proceed because the response carries no client_secret —
+	// a self-contradictory request no conformant server can satisfy as
+	// written. RFC 7591 §3.2.1 permits the server to substitute metadata, so
+	// this takes such a client at its word that it wants a secret.
+	//
+	// Exact matching is deliberate: it is not a way to obtain a usable
+	// credential for another client. An attacker who registers with someone
+	// else's callback URI is issued a secret for a client whose authorization
+	// codes are delivered to that someone else's redirect endpoint, not to
+	// the attacker — the secret is useless without also controlling the
+	// callback.
+	//
+	// Requires AllowConfidentialClientRegistration; every entry must be a
+	// valid https non-loopback URI (Validate rejects loopback entries — the
+	// same restriction AllowConfidentialClientRegistration itself enforces
+	// exists so secrets do not land in distributed native apps, and this
+	// override must not bypass it). Remove an entry once the client is fixed
+	// to handle "none" registrations correctly.
+	//nolint:lll // field tags require full JSON+YAML names
+	ForceConfidentialRedirectURIs []string `json:"force_confidential_redirect_uris,omitempty" yaml:"force_confidential_redirect_uris,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -178,6 +209,10 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+		return err
+	}
+	if err := ValidateForceConfidentialRedirectURIs(
+		c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
@@ -748,6 +783,12 @@ type Config struct {
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
 	AllowConfidentialClientRegistration bool
+
+	// ForceConfidentialRedirectURIs lists redirect URIs that are always
+	// registered as confidential clients, even when the DCR request declares
+	// "none". See the identically named field on RunConfig for the full
+	// semantics and rationale.
+	ForceConfidentialRedirectURIs []string
 }
 
 // Validate checks that the Config is valid.
@@ -758,7 +799,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("issuer: %w", err)
 	}
 
-	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+	if err := c.validateConfidentialClientConfig(); err != nil {
 		return err
 	}
 
@@ -830,6 +871,17 @@ func (c *Config) Validate() error {
 		"upstream_count", len(c.Upstreams),
 	)
 	return nil
+}
+
+// validateConfidentialClientConfig groups the two confidential-client DCR
+// checks (cleartext-transport rejection and the force-confidential-redirect-
+// uris override) behind a single call site, keeping Config.Validate's own
+// cyclomatic complexity down.
+func (c *Config) validateConfidentialClientConfig() error {
+	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+		return err
+	}
+	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
 }
 
 // validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.
@@ -1234,6 +1286,41 @@ func ValidateConfidentialClientTransport(allowConfidential, insecureAllowHTTP bo
 	if allowConfidential && insecureAllowHTTP {
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
 			"this would issue client secrets over cleartext HTTP on an unauthenticated registration endpoint")
+	}
+	return nil
+}
+
+// ValidateForceConfidentialRedirectURIs rejects a misconfigured
+// force_confidential_redirect_uris list: a non-empty list requires
+// allowConfidential (there is no confidential-client path to force a
+// registration onto otherwise), and every entry must be a valid https
+// non-loopback redirect URI. The https-non-loopback requirement mirrors the
+// restriction validateAuthMethod (pkg/authserver/server/registration/dcr.go)
+// already applies to ordinary confidential DCR: a redirect URI reachable on
+// loopback or a private scheme is by construction a public client (OAuth 2.1
+// §2.1), and this override must not be a way to punch through that
+// restriction and hand a distributed native app a secret.
+func ValidateForceConfidentialRedirectURIs(uris []string, allowConfidential bool) error {
+	if len(uris) == 0 {
+		return nil
+	}
+	if !allowConfidential {
+		return fmt.Errorf(
+			"force_confidential_redirect_uris requires allow_confidential_client_registration to be true")
+	}
+	for _, uri := range uris {
+		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+			return fmt.Errorf("force_confidential_redirect_uris: %q: %w", uri, err)
+		}
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			return fmt.Errorf("force_confidential_redirect_uris: %q: invalid URL: %w", uri, err)
+		}
+		if networking.IsLocalhost(parsed.Hostname()) {
+			return fmt.Errorf(
+				"force_confidential_redirect_uris: %q must not be a loopback redirect URI; "+
+					"a loopback client is a public client by construction and must not be issued a secret", uri)
+		}
 	}
 	return nil
 }

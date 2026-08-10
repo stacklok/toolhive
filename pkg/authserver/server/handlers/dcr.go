@@ -6,6 +6,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -107,36 +109,27 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Generate client ID
 	clientID := uuid.NewString()
 
-	// Mint a secret for confidential registrations. Any client_secret field
-	// in the request is ignored — secrets are always server-generated
-	// (oauthproto.DynamicClientRegistrationRequest deliberately has no such
-	// field). The plaintext is returned exactly once in the response and
-	// never logged; only its SHA-256 hash is stored.
-	var clientSecret string
-	if validated.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
-		var err error
-		clientSecret, err = registration.GenerateClientSecret()
-		if err != nil {
-			slog.Error("failed to generate client secret", "error", err)
-			writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
-				Error:            "server_error",
-				ErrorDescription: "failed to create client",
-			})
-			return
-		}
+	// A request that declared itself public but whose redirect_uris exactly
+	// matches an operator-configured force-confidential entry is registered
+	// as confidential anyway (RFC 7591 §3.2.1 permits the server to
+	// substitute client metadata). See Config.ForceConfidentialRedirectURIs
+	// for the rationale: some MCP clients declare "none" and then refuse to
+	// proceed without a client_secret.
+	forcedURI, effectiveAuthMethod, dcrErr := resolveForceConfidentialOverride(validated, h.config.ForceConfidentialRedirectURIs)
+	if dcrErr != nil {
+		writeDCRError(w, http.StatusBadRequest, dcrErr)
+		return
+	}
+	if forcedURI != "" {
+		slog.Warn("DCR: forcing confidential client registration for redirect_uri "+
+			"that requested token_endpoint_auth_method 'none'",
+			"client_id", clientID,
+			"redirect_uri", forcedURI,
+		)
 	}
 
-	// Create fosite client using factory.
-	fositeClient, err := registration.New(registration.Config{
-		ID:                      clientID,
-		Secret:                  clientSecret,
-		RedirectURIs:            validated.RedirectURIs,
-		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
-		GrantTypes:              validated.GrantTypes,
-		ResponseTypes:           validated.ResponseTypes,
-		Scopes:                  scopes,
-		Audience:                h.config.AllowedAudiences,
-	})
+	fositeClient, clientSecret, err := buildDCRClient(
+		clientID, forcedURI != "", effectiveAuthMethod, validated, scopes, h.config.AllowedAudiences)
 	if err != nil {
 		slog.Error("failed to create client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
@@ -188,7 +181,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	logAttrs := []any{
 		"client_id", clientID,
 		"software_id", validated.SoftwareID,
-		"token_endpoint_auth_method", validated.TokenEndpointAuthMethod,
+		"token_endpoint_auth_method", effectiveAuthMethod,
 		"scopes", scopes,
 	}
 	if issuer := h.issuer(); issuer != "" {
@@ -211,7 +204,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		ClientIDIssuedAt:        issuedAt,
 		RedirectURIs:            validated.RedirectURIs,
 		ClientName:              validated.ClientName,
-		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
+		TokenEndpointAuthMethod: effectiveAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
 		Scopes:                  oauthproto.ScopeList(scopes),
@@ -239,6 +232,115 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		slog.Error("failed to encode DCR response", "error", err)
 	}
+}
+
+// resolveForceConfidentialOverride checks whether validated's redirect_uris
+// match an operator-configured force-confidential entry and the request
+// declared (or defaulted to) "none". It returns the matched URI ("" if no
+// override applies) and the auth method that should actually be used to
+// build and report the client.
+//
+// The override is reported as client_secret_post, never client_secret_basic:
+// the Python MCP SDK these clients are typically built on constrains
+// token_endpoint_auth_method to ["none", "client_secret_post"], and
+// client_secret_basic is rejected there.
+//
+// A matched override upgrades the WHOLE registration to confidential, so the
+// entire redirect_uris list — not just the matched entry — must pass the
+// same https non-loopback policy the ordinary confidential path enforces
+// (validateAuthMethod). Without this, a request mixing a matched https URI
+// with an unrelated loopback URI would mint a secret for a client that also
+// has a loopback callback, which the ordinary path already rejects. The
+// registration is rejected rather than silently downgraded to public: a
+// silent downgrade would hand back a public registration with no secret,
+// reproducing the exact confusing failure this override exists to fix.
+func resolveForceConfidentialOverride(
+	validated *oauthproto.DynamicClientRegistrationRequest, forceConfidentialURIs []string,
+) (forcedURI, effectiveAuthMethod string, dcrErr *registration.DCRError) {
+	effectiveAuthMethod = validated.TokenEndpointAuthMethod
+	if effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
+		return "", effectiveAuthMethod, nil
+	}
+	forcedURI = matchForceConfidentialRedirectURI(validated.RedirectURIs, forceConfidentialURIs)
+	if forcedURI == "" {
+		return "", effectiveAuthMethod, nil
+	}
+	effectiveAuthMethod = oauthproto.TokenEndpointAuthMethodClientSecretPost
+	if dcrErr := registration.ValidateConfidentialRedirectURIs(validated.RedirectURIs, effectiveAuthMethod); dcrErr != nil {
+		return "", "", dcrErr
+	}
+	return forcedURI, effectiveAuthMethod, nil
+}
+
+// buildDCRClient mints a client_secret when effectiveAuthMethod requires one
+// and constructs the fosite client for a DCR registration. forced selects the
+// plain *fosite.DefaultClient shape (registration.NewConfidentialPlain) used
+// for a force-confidential override, rather than the OIDC shape
+// registration.New produces for an ordinary confidential registration: fosite
+// only enforces token_endpoint_auth_method on clients implementing
+// fosite.OpenIDConnectClient, and an overridden client's credential
+// presentation (HTTP Basic vs. form body) is unknown in advance, so the
+// plain shape — which accepts either — is required there.
+//
+// Any client_secret field on the incoming request is ignored — secrets are
+// always server-generated. The plaintext is returned to the caller exactly
+// once; only its SHA-256 hash is stored.
+func buildDCRClient(
+	clientID string,
+	forced bool,
+	effectiveAuthMethod string,
+	validated *oauthproto.DynamicClientRegistrationRequest,
+	scopes, allowedAudiences []string,
+) (fositeClient fosite.Client, clientSecret string, err error) {
+	if effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
+		clientSecret, err = registration.GenerateClientSecret()
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to generate client secret: %w", err)
+		}
+	}
+
+	if forced {
+		fositeClient, err = registration.NewConfidentialPlain(registration.Config{
+			ID:            clientID,
+			Secret:        clientSecret,
+			RedirectURIs:  validated.RedirectURIs,
+			GrantTypes:    validated.GrantTypes,
+			ResponseTypes: validated.ResponseTypes,
+			Scopes:        scopes,
+			Audience:      allowedAudiences,
+		})
+	} else {
+		fositeClient, err = registration.New(registration.Config{
+			ID:                      clientID,
+			Secret:                  clientSecret,
+			RedirectURIs:            validated.RedirectURIs,
+			TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
+			GrantTypes:              validated.GrantTypes,
+			ResponseTypes:           validated.ResponseTypes,
+			Scopes:                  scopes,
+			Audience:                allowedAudiences,
+		})
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return fositeClient, clientSecret, nil
+}
+
+// matchForceConfidentialRedirectURI returns the first entry in redirectURIs
+// that is an exact match for one of the operator-configured
+// forceConfidentialURIs, or "" if none match. Matching is deliberately exact
+// (not prefix or scheme-relaxed): an attacker who registers with someone
+// else's callback URI is issued a secret for a client whose authorization
+// codes are delivered to that someone else's redirect endpoint, so exact
+// matching does not hand out a usable credential for another client.
+func matchForceConfidentialRedirectURI(redirectURIs, forceConfidentialURIs []string) string {
+	for _, uri := range redirectURIs {
+		if slices.Contains(forceConfidentialURIs, uri) {
+			return uri
+		}
+	}
+	return ""
 }
 
 // writeDCRError writes a DCR error response per RFC 7591 Section 3.2.2.

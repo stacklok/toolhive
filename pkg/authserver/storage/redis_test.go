@@ -511,6 +511,41 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_ForceConfidentialPlainClientRoundTrip pins the storage
+// shape of registration.NewConfidentialPlain (the client the DCR force-
+// confidential override builds): it must round-trip through Redis as a
+// non-public, non-OIDC client that still reads back DCR-marked, so the
+// TTL/anti-bloat retention behaviour applies to it exactly as it does to any
+// other DCR-issued client.
+func TestRedisStorage_ForceConfidentialPlainClientRoundTrip(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		client, err := registration.NewConfidentialPlain(registration.Config{
+			ID:           "forced-plain-client",
+			Secret:       "my-secret",
+			RedirectURIs: []string{"https://app.example/cb"},
+		})
+		require.NoError(t, err)
+		require.True(t, registration.DCRIssued(client), "precondition: NewConfidentialPlain must be DCR-issued")
+
+		require.NoError(t, s.RegisterClient(ctx, client))
+
+		retrieved, err := s.GetClient(ctx, "forced-plain-client")
+		require.NoError(t, err)
+
+		assert.False(t, retrieved.IsPublic(), "must round-trip as a confidential client")
+		_, isOIDC := retrieved.(fosite.OpenIDConnectClient)
+		assert.False(t, isOIDC,
+			"must round-trip as a non-OIDC client: registration.New/RegisterClient only "+
+				"records token_endpoint_auth_method for fosite.OpenIDConnectClient implementations, "+
+				"and this shape was never that")
+		assert.True(t, registration.DCRIssued(retrieved),
+			"must still read back DCR-marked so it keeps the anti-bloat TTL")
+
+		err = registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("my-secret"))
+		assert.NoError(t, err, "hashed secret must round-trip and verify against the original plaintext")
+	})
+}
+
 // TestRedisStorage_DCRClientTTL pins the RegisterClient TTL gating contract:
 // only clients carrying the registration.DCRIssued marker expire, regardless of
 // public/confidential status. Pre-provisioned clients (no marker) are stored

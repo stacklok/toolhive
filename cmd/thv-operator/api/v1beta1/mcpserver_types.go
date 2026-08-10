@@ -449,16 +449,22 @@ type ProxyDeploymentOverrides struct {
 	// NodeSelector constrains the proxy pod to nodes with matching labels.
 	// Mirrors the scheduling control podTemplateSpec gives the MCP server pod, so
 	// the proxy can be steered onto the same nodes (e.g. a pre-warmed pool).
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+	// maps are merged, and podTemplateSpec wins on keys set in both.
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
 	// Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
 	// dedicated pre-warmed pool.
+	// On MCPRemoteProxy, a spec.podTemplateSpec that sets tolerations replaces this
+	// field entirely rather than adding to it.
 	// +listType=atomic
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
 	// Affinity sets node/pod affinity and anti-affinity for the proxy pod.
+	// On MCPRemoteProxy, a spec.podTemplateSpec that sets affinity replaces this
+	// field entirely.
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 }

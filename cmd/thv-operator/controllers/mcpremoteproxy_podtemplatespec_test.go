@@ -301,4 +301,51 @@ func TestMCPRemoteProxySchedulingOverridesAndPodTemplateSpec(t *testing.T) {
 		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
 			"scheduling from podTemplateSpec must not be mistaken for drift against empty overrides")
 	})
+
+	// Locks the precedence the API godoc promises when both routes are used, which
+	// is not uniform across the three fields: the nodeSelector maps merge, while
+	// tolerations and affinity are replaced wholesale.
+	t.Run("podTemplateSpec precedence over the overrides", func(t *testing.T) {
+		t.Parallel()
+
+		overrideToleration := corev1.Toleration{
+			Key:      "workload-class",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "mcp-warm",
+			Effect:   corev1.TaintEffectNoSchedule,
+		}
+		proxy := &mcpv1beta1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "both-sched-proxy", Namespace: "default"},
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL: "https://mcp.example.com",
+				PodTemplateSpec: rawPodTemplateSpecJSON(t, `{"spec":{
+					"nodeSelector":{"zone":"from-template","disk":"ssd"},
+					"tolerations":[{"key":"from-template","operator":"Exists","effect":"NoSchedule"}]
+				}}`),
+				ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						NodeSelector: map[string]string{"zone": "from-override", "workload-class": "mcp-warm"},
+						Tolerations:  []corev1.Toleration{overrideToleration},
+					},
+				},
+			},
+		}
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+
+		// nodeSelector merges: podTemplateSpec wins on "zone", the override's
+		// unique "workload-class" key survives.
+		assert.Equal(t,
+			map[string]string{"zone": "from-template", "disk": "ssd", "workload-class": "mcp-warm"},
+			deployment.Spec.Template.Spec.NodeSelector)
+
+		// tolerations are replaced, not appended — the override's is dropped.
+		require.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
+		assert.Equal(t, "from-template", deployment.Spec.Template.Spec.Tolerations[0].Key)
+		assert.NotContains(t, deployment.Spec.Template.Spec.Tolerations, overrideToleration)
+
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"the overridden fields must not be reported as perpetual drift")
+	})
 }

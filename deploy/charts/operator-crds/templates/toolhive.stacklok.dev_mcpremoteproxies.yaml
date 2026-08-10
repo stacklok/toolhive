@@ -387,8 +387,10 @@ spec:
                       resource (toolhive proxy)
                     properties:
                       affinity:
-                        description: Affinity sets node/pod affinity and anti-affinity
-                          for the proxy pod.
+                        description: |-
+                          Affinity sets node/pod affinity and anti-affinity for the proxy pod.
+                          On MCPRemoteProxy, a spec.podTemplateSpec that sets affinity replaces this
+                          field entirely.
                         properties:
                           nodeAffinity:
                             description: Describes node affinity scheduling rules
@@ -1373,6 +1375,8 @@ spec:
                           NodeSelector constrains the proxy pod to nodes with matching labels.
                           Mirrors the scheduling control podTemplateSpec gives the MCP server pod, so
                           the proxy can be steered onto the same nodes (e.g. a pre-warmed pool).
+                          On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+                          maps are merged, and podTemplateSpec wins on keys set in both.
                         type: object
                       podTemplateMetadataOverrides:
                         description: ResourceMetadataOverrides defines metadata overrides
@@ -1393,6 +1397,8 @@ spec:
                         description: |-
                           Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
                           dedicated pre-warmed pool.
+                          On MCPRemoteProxy, a spec.podTemplateSpec that sets tolerations replaces this
+                          field entirely rather than adding to it.
                         items:
                           description: |-
                             The pod this Toleration is attached to tolerates any taint that matches
@@ -2101,8 +2107,10 @@ spec:
                       resource (toolhive proxy)
                     properties:
                       affinity:
-                        description: Affinity sets node/pod affinity and anti-affinity
-                          for the proxy pod.
+                        description: |-
+                          Affinity sets node/pod affinity and anti-affinity for the proxy pod.
+                          On MCPRemoteProxy, a spec.podTemplateSpec that sets affinity replaces this
+                          field entirely.
                         properties:
                           nodeAffinity:
                             description: Describes node affinity scheduling rules
@@ -3087,6 +3095,8 @@ spec:
                           NodeSelector constrains the proxy pod to nodes with matching labels.
                           Mirrors the scheduling control podTemplateSpec gives the MCP server pod, so
                           the proxy can be steered onto the same nodes (e.g. a pre-warmed pool).
+                          On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+                          maps are merged, and podTemplateSpec wins on keys set in both.
                         type: object
                       podTemplateMetadataOverrides:
                         description: ResourceMetadataOverrides defines metadata overrides
@@ -3107,6 +3117,8 @@ spec:
                         description: |-
                           Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
                           dedicated pre-warmed pool.
+                          On MCPRemoteProxy, a spec.podTemplateSpec that sets tolerations replaces this
+                          field entirely rather than adding to it.
                         items:
                           description: |-
                             The pod this Toleration is attached to tolerates any taint that matches

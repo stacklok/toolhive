@@ -81,23 +81,36 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Login to GHCR (Helm)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} \
-            --username ${{ github.actor }} \
+          echo "$GHCR_TOKEN" | helm registry login "$REGISTRY" \
+            --username "$GHCR_USERNAME" \
             --password-stdin
 
       - name: Login to GHCR (Cosign)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ${{ env.REGISTRY }} \
-            --username ${{ github.actor }} \
+          echo "$GHCR_TOKEN" | cosign login "$REGISTRY" \
+            --username "$GHCR_USERNAME" \
             --password-stdin
 
+      # CHART_VERSION derives from GITHUB_REF_NAME, and git ref names may
+      # contain ';', '$', backticks and '|' — so it is bound and quoted rather
+      # than pasted into the command unquoted.
       - name: Package Helm chart
+        env:
+          CHART_PATH: ${{ matrix.chart.path }}
+          CHART_NAME: ${{ matrix.chart.name }}
+          CHART_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          helm package ${{ matrix.chart.path }} \
-            --version ${{ steps.version.outputs.version }} \
-            --app-version ${{ steps.version.outputs.version }}
-          echo "Packaged chart: ${{ matrix.chart.name }}-${{ steps.version.outputs.version }}.tgz"
+          helm package "$CHART_PATH" \
+            --version "$CHART_VERSION" \
+            --app-version "$CHART_VERSION"
+          echo "Packaged chart: ${CHART_NAME}-${CHART_VERSION}.tgz"
 
       - name: Push to GHCR
         id: push

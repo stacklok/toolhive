@@ -26,6 +26,10 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # Without this the token carries every permission the app
+          # installation holds. It is used to push the tag and to create the
+          # GitHub Release, both of which are contents.
+          permission-contents: write
 
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -161,7 +165,6 @@ jobs:
         if: steps.check-release.outputs.exists == 'false'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
-          TRIGGERED_BY="${{ steps.actor.outputs.triggered_by }}"
 
           # Create GitHub Release (triggers releaser.yml via release event)
           # Note: Uses a GitHub App installation token rather than GITHUB_TOKEN,
@@ -180,6 +183,10 @@ jobs:
           echo "Created GitHub Release: $TAG"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Read out of a git commit trailer, so unlike the version — which is
+          # checked against a semver pattern before use — this one is not
+          # constrained by anything. Bound rather than interpolated.
+          TRIGGERED_BY: ${{ steps.actor.outputs.triggered_by }}
 
       - name: Summary
         run: |

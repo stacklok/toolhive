@@ -102,7 +102,7 @@ jobs:
 
         # Pull and load all test server images in parallel to speed up CI
         echo "Pulling and loading test server images..."
-        docker pull ${{ env.YARDSTICK_IMAGE }} &
+        docker pull "$YARDSTICK_IMAGE" &
         docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
         docker pull python:3.9-slim &
@@ -112,7 +112,7 @@ jobs:
         wait
 
         # Load all images into kind
-        kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
+        kind load docker-image --name toolhive "$YARDSTICK_IMAGE"
         kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
         kind load docker-image --name toolhive python:3.9-slim
@@ -123,7 +123,7 @@ jobs:
     - name: Deploy operator with VMCP_IMAGE
       run: |
         export KUBECONFIG=kconfig.yaml
-        echo "Deploying operator with vmcp image: ${{ env.VMCP_IMAGE }}"
+        echo "Deploying operator with vmcp image: ${VMCP_IMAGE}"
 
         # Build operator and proxyrunner images
         OPERATOR_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1)
@@ -137,7 +137,7 @@ jobs:
         helm upgrade --install toolhive-operator deploy/charts/operator \
           --set operator.image=${OPERATOR_IMAGE} \
           --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
-          --set operator.vmcpImage=${{ env.VMCP_IMAGE }} \
+          --set operator.vmcpImage=${VMCP_IMAGE} \
           --namespace toolhive-system \
           --create-namespace \
           --kubeconfig kconfig.yaml

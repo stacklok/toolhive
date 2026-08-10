@@ -13,14 +13,18 @@ on:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# security-events: write is granted per job rather than here, so only the two
+# jobs that upload SARIF can write security events.
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   grype-repo-scan:
     name: Grype Repository Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -45,6 +49,9 @@ jobs:
   zizmor:
     name: GitHub Actions Static Analysis
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     # --no-exit-codes stops *findings* failing the job; this stops a tool or
     # network failure doing so. Both come off when the gate goes blocking.
     continue-on-error: true

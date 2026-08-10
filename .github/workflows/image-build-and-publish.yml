@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -48,7 +50,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
@@ -62,8 +64,10 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
@@ -86,6 +90,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Compute version number
         id: version-string
@@ -129,8 +135,10 @@ jobs:
 
       - name: Sign container image
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           cosign sign -y $BASE_REPO:$TAG
           cosign sign -y $BASE_REPO:latest
 
@@ -148,6 +156,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -190,7 +200,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
@@ -204,8 +214,10 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
@@ -228,6 +240,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -261,7 +275,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           TAGS="-t $TAG"
           # Add latest tag only if building from a tag
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
@@ -273,8 +287,10 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
@@ -297,6 +313,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -339,7 +357,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=$(echo "$VERSION" | sed 's/+/_/g')
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
@@ -353,8 +371,10 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=$(echo "$VERSION" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 

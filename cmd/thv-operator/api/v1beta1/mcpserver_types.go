@@ -456,15 +456,16 @@ type ProxyDeploymentOverrides struct {
 
 	// Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
 	// dedicated pre-warmed pool.
-	// On MCPRemoteProxy, a spec.podTemplateSpec that sets tolerations replaces this
-	// field entirely rather than adding to it.
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod, and this
+	// list is atomic: a podTemplateSpec that sets tolerations replaces this field
+	// rather than adding to it.
 	// +listType=atomic
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
 	// Affinity sets node/pod affinity and anti-affinity for the proxy pod.
-	// On MCPRemoteProxy, a spec.podTemplateSpec that sets affinity replaces this
-	// field entirely.
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+	// are merged per sub-field, and podTemplateSpec wins on sub-fields set in both.
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 }

@@ -302,9 +302,10 @@ func TestMCPRemoteProxySchedulingOverridesAndPodTemplateSpec(t *testing.T) {
 			"scheduling from podTemplateSpec must not be mistaken for drift against empty overrides")
 	})
 
-	// Locks the precedence the API godoc promises when both routes are used, which
-	// is not uniform across the three fields: the nodeSelector maps merge, while
-	// tolerations and affinity are replaced wholesale.
+	// Locks the precedence the API godoc promises when both routes are used: it is
+	// a merge in which podTemplateSpec wins on whatever it sets, so nodeSelector
+	// merges per key and affinity per sub-field, while tolerations -- an atomic
+	// list -- is replaced.
 	t.Run("podTemplateSpec precedence over the overrides", func(t *testing.T) {
 		t.Parallel()
 
@@ -320,12 +321,19 @@ func TestMCPRemoteProxySchedulingOverridesAndPodTemplateSpec(t *testing.T) {
 				RemoteURL: "https://mcp.example.com",
 				PodTemplateSpec: rawPodTemplateSpecJSON(t, `{"spec":{
 					"nodeSelector":{"zone":"from-template","disk":"ssd"},
-					"tolerations":[{"key":"from-template","operator":"Exists","effect":"NoSchedule"}]
+					"tolerations":[{"key":"from-template","operator":"Exists","effect":"NoSchedule"}],
+					"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{
+						"nodeSelectorTerms":[{"matchExpressions":[{"key":"from-template","operator":"Exists"}]}]}}}
 				}}`),
 				ResourceOverrides: &mcpv1beta1.ResourceOverrides{
 					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
 						NodeSelector: map[string]string{"zone": "from-override", "workload-class": "mcp-warm"},
 						Tolerations:  []corev1.Toleration{overrideToleration},
+						Affinity: &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						}},
 					},
 				},
 			},
@@ -340,10 +348,18 @@ func TestMCPRemoteProxySchedulingOverridesAndPodTemplateSpec(t *testing.T) {
 			map[string]string{"zone": "from-template", "disk": "ssd", "workload-class": "mcp-warm"},
 			deployment.Spec.Template.Spec.NodeSelector)
 
-		// tolerations are replaced, not appended — the override's is dropped.
+		// tolerations is an atomic list, so it is replaced, not appended.
 		require.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
 		assert.Equal(t, "from-template", deployment.Spec.Template.Spec.Tolerations[0].Key)
 		assert.NotContains(t, deployment.Spec.Template.Spec.Tolerations, overrideToleration)
+
+		// affinity merges per sub-field: podTemplateSpec supplied only
+		// nodeAffinity, so the override's podAntiAffinity survives alongside it.
+		require.NotNil(t, deployment.Spec.Template.Spec.Affinity)
+		assert.NotNil(t, deployment.Spec.Template.Spec.Affinity.NodeAffinity,
+			"nodeAffinity from podTemplateSpec must be applied")
+		assert.NotNil(t, deployment.Spec.Template.Spec.Affinity.PodAntiAffinity,
+			"podAntiAffinity set only in the overrides must survive the merge")
 
 		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
 			"the overridden fields must not be reported as perpetual drift")

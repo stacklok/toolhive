@@ -389,8 +389,8 @@ spec:
                       affinity:
                         description: |-
                           Affinity sets node/pod affinity and anti-affinity for the proxy pod.
-                          On MCPRemoteProxy, a spec.podTemplateSpec that sets affinity replaces this
-                          field entirely.
+                          On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+                          are merged per sub-field, and podTemplateSpec wins on sub-fields set in both.
                         properties:
                           nodeAffinity:
                             description: Describes node affinity scheduling rules
@@ -1397,8 +1397,9 @@ spec:
                         description: |-
                           Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
                           dedicated pre-warmed pool.
-                          On MCPRemoteProxy, a spec.podTemplateSpec that sets tolerations replaces this
-                          field entirely rather than adding to it.
+                          On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod, and this
+                          list is atomic: a podTemplateSpec that sets tolerations replaces this field
+                          rather than adding to it.
                         items:
                           description: |-
                             The pod this Toleration is attached to tolerates any taint that matches
@@ -2109,8 +2110,8 @@ spec:
                       affinity:
                         description: |-
                           Affinity sets node/pod affinity and anti-affinity for the proxy pod.
-                          On MCPRemoteProxy, a spec.podTemplateSpec that sets affinity replaces this
-                          field entirely.
+                          On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+                          are merged per sub-field, and podTemplateSpec wins on sub-fields set in both.
                         properties:
                           nodeAffinity:
                             description: Describes node affinity scheduling rules
@@ -3117,8 +3118,9 @@ spec:
                         description: |-
                           Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
                           dedicated pre-warmed pool.
-                          On MCPRemoteProxy, a spec.podTemplateSpec that sets tolerations replaces this
-                          field entirely rather than adding to it.
+                          On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod, and this
+                          list is atomic: a podTemplateSpec that sets tolerations replaces this field
+                          rather than adding to it.
                         items:
                           description: |-
                             The pod this Toleration is attached to tolerates any taint that matches

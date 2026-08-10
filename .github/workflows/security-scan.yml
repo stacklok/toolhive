@@ -52,9 +52,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    # --no-exit-codes stops *findings* failing the job; this stops a tool or
-    # network failure doing so. Both come off when the gate goes blocking.
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -62,33 +59,37 @@ jobs:
           # This job only reads the workflow files; it never pushes.
           persist-credentials: false
 
-      # Advisory only for now: --no-exit-codes keeps the job green while the
-      # existing backlog is worked through, so this reports without blocking.
-      # Remove it (and add --min-severity) once the backlog is clear.
-      #
-      # Results are written straight to SARIF and never echoed. Workflow logs
-      # and job summaries are world-readable on a public repository, so
-      # printing findings would publish them; the SARIF upload keeps them in
-      # the Security tab, which requires write access to read.
-      - name: Run zizmor
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pipx run zizmor==1.29.0 \
-            --persona=regular \
-            --format=sarif \
-            --no-exit-codes \
-            --no-progress \
-            .github/ > zizmor.sarif
-
-      # Pull requests from forks get a read-only token, so the upload is
-      # skipped there; those workflows are still scanned on push to main.
-      - name: Upload zizmor results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
-        if: always() && !github.event.pull_request.head.repo.fork
+      # Reports at every severity, including the low and informational findings
+      # the gate below does not block on, so the Security tab keeps the full
+      # picture. This step does not gate: zizmor suppresses its findings exit
+      # code when the output format is SARIF, which is what advanced-security
+      # selects. The upload happens inside the action.
+      - name: Report findings
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
-          sarif_file: zizmor.sarif
-          category: "zizmor"
+          version: "1.29.0"
+          inputs: .github/
+          persona: regular
+
+      # The gate. `main` is clear of medium-and-above findings, so anything
+      # this reports was introduced by the change under review.
+      #
+      # advanced-security: false is what makes this block — it swaps SARIF for
+      # human-readable output, which restores the findings exit code, and
+      # avoids uploading a second, severity-filtered SARIF over the first.
+      #
+      # The remaining low and informational findings are deliberate and are
+      # documented where they sit: checkouts whose credentials are in use, and
+      # expressions carrying values GitHub constrains to characters that cannot
+      # reach a shell. Lowering this threshold means dealing with those first.
+      - name: Fail on new findings
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          version: "1.29.0"
+          inputs: .github/
+          persona: regular
+          min-severity: medium
+          advanced-security: false
 
   govulncheck:
     name: Go Vulnerability Check

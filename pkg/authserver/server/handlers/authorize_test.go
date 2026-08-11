@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
@@ -263,9 +264,9 @@ func registerLoopbackClient(t *testing.T, storState *testStorageState, clientID 
 	t.Helper()
 
 	client, err := registration.New(registration.Config{
-		ID:           clientID,
-		RedirectURIs: redirectURIs,
-		Public:       true,
+		ID:                      clientID,
+		RedirectURIs:            redirectURIs,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
 	})
 	require.NoError(t, err)
 	storState.clients[clientID] = client
@@ -453,17 +454,17 @@ func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {
 	t.Parallel()
 
 	loopbackClient, err := registration.New(registration.Config{
-		ID:           "wrapper-test-client",
-		RedirectURIs: []string{"http://localhost/callback"},
-		Public:       true,
+		ID:                      "wrapper-test-client",
+		RedirectURIs:            []string{"http://localhost/callback"},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
 	})
 	require.NoError(t, err)
 
 	confidentialClient, err := registration.New(registration.Config{
-		ID:           "wrapper-test-confidential-client",
-		Secret:       "s3cr3t-plaintext",
-		RedirectURIs: []string{"https://example.com/callback"},
-		Public:       false,
+		ID:                      "wrapper-test-confidential-client",
+		Secret:                  "s3cr3t-plaintext",
+		RedirectURIs:            []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 	})
 	require.NoError(t, err)
 

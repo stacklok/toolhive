@@ -629,9 +629,9 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 func TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		client, err := registration.New(registration.Config{
-			ID:           "loopback-redis-client",
-			RedirectURIs: []string{"http://localhost/callback"},
-			Public:       true,
+			ID:                      "loopback-redis-client",
+			RedirectURIs:            []string{"http://localhost/callback"},
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
 		})
 		require.NoError(t, err)
 		require.NoError(t, s.RegisterClient(ctx, client))
@@ -651,10 +651,10 @@ func TestRedisStorage_GetClient_SupportsLoopbackRedirectMatching(t *testing.T) {
 func TestRedisStorage_GetClient_ConfidentialClientDoesNotMatchAsLoopback(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		client, err := registration.New(registration.Config{
-			ID:           "confidential-redis-client",
-			Secret:       "s3cr3t",
-			RedirectURIs: []string{"http://localhost/callback"},
-			Public:       false,
+			ID:                      "confidential-redis-client",
+			Secret:                  "s3cr3t",
+			RedirectURIs:            []string{"http://localhost/callback"},
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 		})
 		require.NoError(t, err)
 		require.NoError(t, s.RegisterClient(ctx, client))

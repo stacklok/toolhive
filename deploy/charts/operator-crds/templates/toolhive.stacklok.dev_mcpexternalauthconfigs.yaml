@@ -361,6 +361,21 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowConfidentialOverLoopbackHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
+                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
+                      is rejected at reconcile time: a loopback http:// issuer is normally
+                      fine for local development since the traffic never leaves the machine,
+                      but combined with confidential registration it means /oauth/register —
+                      which is unauthenticated — mints client secrets over cleartext. Forcing
+                      TLS onto every loopback deployment instead would just push operators
+                      toward insecureAllowHTTP, which is worse: that also disables the
+                      non-loopback host check. Has no effect when
+                      allowConfidentialClientRegistration is false or issuer is https.
+                    type: boolean
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -1991,6 +2006,21 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowConfidentialOverLoopbackHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
+                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
+                      is rejected at reconcile time: a loopback http:// issuer is normally
+                      fine for local development since the traffic never leaves the machine,
+                      but combined with confidential registration it means /oauth/register —
+                      which is unauthenticated — mints client secrets over cleartext. Forcing
+                      TLS onto every loopback deployment instead would just push operators
+                      toward insecureAllowHTTP, which is worse: that also disables the
+                      non-loopback host check. Has no effect when
+                      allowConfidentialClientRegistration is false or issuer is https.
+                    type: boolean
                   insecureAllowHTTP:
                     default: false
                     description: |-

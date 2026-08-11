@@ -358,6 +358,16 @@ type BearerTokenConfig struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 //
+// The allowConfidentialClientRegistration + plain-HTTP-loopback-issuer combination
+// (see insecureAllowConfidentialOverLoopbackHTTP below) has no CEL rule here: CEL has
+// no URL parser, only regex over the raw string, and this codebase already declined
+// a regex-based loopback check for forceConfidentialRedirectUris above for the same
+// reason — an approximate regex (port, path, case, IPv6 forms) can drift from the
+// authoritative net.ParseIP-based classifier (networking.IsLocalhost) the real check
+// uses, which is exactly the kind of gap this validation exists to close. It is
+// enforced in Go instead, at the same reconcile-time call site as the two rules
+// above (validateEmbeddedAuthServer -> authserver.ValidateConfidentialClientTransport).
+//
 //nolint:lll // CEL validation rule exceeds line length limit
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
@@ -515,6 +525,21 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	AllowConfidentialClientRegistration bool `json:"allowConfidentialClientRegistration,omitempty"`
+
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to
+	// allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+	// URL (e.g. "http://localhost:8080"). Without this flag, that combination
+	// is rejected at reconcile time: a loopback http:// issuer is normally
+	// fine for local development since the traffic never leaves the machine,
+	// but combined with confidential registration it means /oauth/register —
+	// which is unauthenticated — mints client secrets over cleartext. Forcing
+	// TLS onto every loopback deployment instead would just push operators
+	// toward insecureAllowHTTP, which is worse: that also disables the
+	// non-loopback host check. Has no effect when
+	// allowConfidentialClientRegistration is false or issuer is https.
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be
 	// registered as confidential clients regardless of the
@@ -1663,6 +1688,7 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// admission for both MCPExternalAuthConfig and VirtualMCPServer.
 	if err := authserver.ValidateConfidentialClientTransport(
 		cfg.AllowConfidentialClientRegistration, cfg.InsecureAllowHTTP,
+		cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 	); err != nil {
 		return err
 	}

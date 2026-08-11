@@ -186,6 +186,17 @@ type RunConfig struct {
 	// to handle "none" registrations correctly.
 	//nolint:lll // field tags require full JSON+YAML names
 	ForceConfidentialRedirectURIs []string `json:"force_confidential_redirect_uris,omitempty" yaml:"force_confidential_redirect_uris,omitempty"`
+
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
+	// DCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP
+	// loopback URL. Without this flag, that combination is rejected: a
+	// loopback http:// issuer is normally fine for local development (the
+	// traffic never leaves the machine), but combined with confidential
+	// registration it means /oauth/register — which is unauthenticated —
+	// mints client secrets over cleartext. Defaults to false. Has no effect
+	// when AllowConfidentialClientRegistration is false or Issuer is https.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -208,7 +219,9 @@ func (c *RunConfig) Validate() error {
 	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
 		return err
 	}
-	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+	if err := ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP,
+		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
 	if err := ValidateForceConfidentialRedirectURIs(
@@ -789,6 +802,11 @@ type Config struct {
 	// "none". See the identically named field on RunConfig for the full
 	// semantics and rationale.
 	ForceConfidentialRedirectURIs []string
+
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
+	// DCR when Issuer is a plain-HTTP loopback URL. See the identically named
+	// field on RunConfig for the full semantics and rationale.
+	InsecureAllowConfidentialOverLoopbackHTTP bool
 }
 
 // Validate checks that the Config is valid.
@@ -878,7 +896,9 @@ func (c *Config) Validate() error {
 // uris override) behind a single call site, keeping Config.Validate's own
 // cyclomatic complexity down.
 func (c *Config) validateConfidentialClientConfig() error {
-	if err := ValidateConfidentialClientTransport(c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP); err != nil {
+	if err := ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP,
+		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
@@ -1260,32 +1280,50 @@ func (c *Config) applyDefaults() error {
 	return nil
 }
 
-// ValidateConfidentialClientTransport rejects the combination of confidential-client
-// DCR with cleartext HTTP: /oauth/register is unauthenticated, so issuing
-// client secrets over plain HTTP exposes them to anyone on the network path.
+// ValidateConfidentialClientTransport rejects the two ways confidential-client
+// DCR can end up minting client secrets over cleartext HTTP:
+// /oauth/register is unauthenticated, so either one exposes the secret to
+// anyone on the network path.
 //
-// This check has a deliberate gap: it only looks at InsecureAllowHTTP, but
-// validateIssuerURL separately permits a plain-HTTP issuer whenever the host
-// is loopback, regardless of InsecureAllowHTTP. So a config with
-// allowConfidential=true, insecureAllowHTTP=false, and issuer
-// "http://localhost:18080" passes this function AND validateIssuerURL, and
-// mints client secrets over cleartext. Confirmed by hand in a kind cluster:
-// no validation error, real secret issued in the clear.
-//
-// The loopback exception is intentional and stays: a loopback issuer is the
-// shape of local CLI development, where "the traffic stays on this machine"
-// is actually true and setting up TLS just to run `thv` locally would be
-// needless friction. That assumption breaks down in a Kubernetes deployment,
-// though — the server there still binds all interfaces, and "localhost" in
-// the issuer string is just a string; it does not make the listener loopback-
-// only. In practice such a deployment is close to unusable anyway (no other
-// pod can route to localhost), reachable only via something like a
-// port-forward, but the string alone gives no guarantee, so treat a loopback
-// issuer as safe only when you know the process is genuinely local.
-func ValidateConfidentialClientTransport(allowConfidential, insecureAllowHTTP bool) error {
-	if allowConfidential && insecureAllowHTTP {
+//  1. insecureAllowHTTP is set: the server accepts a plain-HTTP issuer for
+//     any host, not just loopback. Always rejected when combined with
+//     allowConfidential — there is no opt-in for this one.
+//  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
+//     validateIssuerURL permits this independently of insecureAllowHTTP,
+//     because a loopback issuer is the shape of local CLI development,
+//     where "the traffic stays on this machine" is actually true and
+//     setting up TLS just to run `thv` locally would be needless friction.
+//     That assumption breaks down in a Kubernetes deployment, though — the
+//     server there still binds all interfaces, and "localhost" in the
+//     issuer string is just a string; it does not make the listener
+//     loopback-only. Because forcing TLS onto every loopback deployment
+//     would just push operators toward insecureAllowHTTP instead — a worse
+//     outcome, since that also disables the host check — this case is
+//     rejected by default but stays opt-in-able via
+//     insecureAllowConfidentialOverLoopbackHTTP, so the operator makes the
+//     tradeoff explicitly rather than getting it for free.
+func ValidateConfidentialClientTransport(
+	allowConfidential, insecureAllowHTTP bool,
+	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
+) error {
+	if !allowConfidential {
+		return nil
+	}
+	if insecureAllowHTTP {
 		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
 			"this would issue client secrets over cleartext HTTP on an unauthenticated registration endpoint")
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP {
+		return nil
+	}
+	// Malformed issuers are reported by validateIssuerURL; nothing more to
+	// check here if parsing fails.
+	if parsed, err := url.Parse(issuer); err == nil &&
+		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback "+
+			"issuer (%q) unless insecure_allow_confidential_over_loopback_http is set: /oauth/register is "+
+			"unauthenticated, so this would issue client secrets over cleartext even on a purely local deployment",
+			issuer)
 	}
 	return nil
 }

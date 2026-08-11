@@ -492,6 +492,36 @@ func TestRunConfigValidate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
 		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
+			config: RunConfig{
+				Issuer:                              "http://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+			},
+			wantErr: true,
+			errMsg:  "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer passes with the opt-in",
+			config: RunConfig{
+				Issuer:                              "http://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+		},
+		{
+			name: "confidential clients with https loopback issuer is unaffected",
+			config: RunConfig{
+				Issuer:                              "https://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+			},
+		},
+		{
+			name: "confidential clients disabled with plain-HTTP loopback issuer is unaffected",
+			config: RunConfig{
+				Issuer: "http://localhost:8080",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -505,31 +535,60 @@ func TestRunConfigValidate(t *testing.T) {
 
 // TestValidateConfidentialClientTransport pins the shared predicate that both
 // RunConfig.Validate and Config.Validate call, and that the operator's
-// validateEmbeddedAuthServer reuses: the only rejected combination is both
-// flags true.
+// validateEmbeddedAuthServer reuses: confidential-client DCR is rejected when
+// combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
+// loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
 func TestValidateConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name              string
-		allowConfidential bool
-		insecureAllowHTTP bool
-		wantErr           bool
+		name                  string
+		allowConfidential     bool
+		insecureAllowHTTP     bool
+		issuer                string
+		allowLoopbackOverride bool
+		wantErr               bool
+		errContains           string
 	}{
 		{name: "both false passes"},
-		{name: "confidential only passes", allowConfidential: true},
+		{name: "confidential only, https issuer passes", allowConfidential: true, issuer: "https://auth.example.com"},
 		{name: "insecure HTTP only passes", insecureAllowHTTP: true},
-		{name: "both true rejects", allowConfidential: true, insecureAllowHTTP: true, wantErr: true},
+		{
+			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
+			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
+			allowConfidential: true, issuer: "http://localhost:8080",
+			wantErr: true, errContains: "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name:              "confidential with plain-HTTP loopback issuer passes with the opt-in",
+			allowConfidential: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
+		},
+		{
+			name:              "confidential with https loopback issuer passes without the opt-in",
+			allowConfidential: true, issuer: "https://localhost:8080",
+		},
+		{
+			name:   "confidential disabled with plain-HTTP loopback issuer passes",
+			issuer: "http://localhost:8080",
+		},
+		{
+			name: "confidential with plain-HTTP non-loopback issuer passes here " +
+				"(caught separately by insecureAllowHTTP/validateIssuerURL)",
+			allowConfidential: true, issuer: "http://auth.example.com",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP)
+			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "allow_confidential_client_registration")
-				assert.Contains(t, err.Error(), "insecure_allow_http")
+				assert.Contains(t, err.Error(), tt.errContains)
 			} else {
 				require.NoError(t, err)
 			}

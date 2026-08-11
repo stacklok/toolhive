@@ -542,6 +542,10 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "insecure_allow_confidential_over_loopback_http": {
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client\nDCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP\nloopback URL. Without this flag, that combination is rejected: a\nloopback http:// issuer is normally fine for local development (the\ntraffic never leaves the machine), but combined with confidential\nregistration it means /oauth/register — which is unauthenticated —\nmints client secrets over cleartext. Defaults to false. Has no effect\nwhen AllowConfidentialClientRegistration is false or Issuer is https.",
+                        "type": "boolean"
+                    },
                     "insecure_allow_http": {
                         "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",
                         "type": "boolean"

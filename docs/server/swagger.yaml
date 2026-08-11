@@ -688,6 +688,17 @@ components:
             type: string
           type: array
           uniqueItems: false
+        insecure_allow_confidential_over_loopback_http:
+          description: |-
+            InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
+            DCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP
+            loopback URL. Without this flag, that combination is rejected: a
+            loopback http:// issuer is normally fine for local development (the
+            traffic never leaves the machine), but combined with confidential
+            registration it means /oauth/register — which is unauthenticated —
+            mints client secrets over cleartext. Defaults to false. Has no effect
+            when AllowConfidentialClientRegistration is false or Issuer is https.
+          type: boolean
         insecure_allow_http:
           description: |-
             InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.

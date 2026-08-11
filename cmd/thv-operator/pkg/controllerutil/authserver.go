@@ -595,6 +595,9 @@ func BuildAuthServerRunConfig(
 	// Wire through the force-confidential-redirect-uris override list.
 	config.ForceConfidentialRedirectURIs = authConfig.ForceConfidentialRedirectURIs
 
+	// Wire through the confidential-over-loopback-http opt-in (default off).
+	config.InsecureAllowConfidentialOverLoopbackHTTP = authConfig.InsecureAllowConfidentialOverLoopbackHTTP
+
 	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
 	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {

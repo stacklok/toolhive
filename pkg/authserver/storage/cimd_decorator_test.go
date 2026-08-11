@@ -629,9 +629,23 @@ func TestFetch_ScopeResolution(t *testing.T) {
 			wantScopes:      registration.DefaultScopes,
 		},
 		{
-			name:            "omitted scope with restrictive ScopesSupported requires explicit scope",
+			// The #6186 shape: the server's scopes_supported lacks one default
+			// (profile); the client must still register with the intersection.
+			name:            "omitted scope with reduced ScopesSupported grants the intersection",
+			docScope:        "",
+			scopesSupported: []string{"openid", "email", "offline_access"},
+			wantScopes:      []string{"openid", "email", "offline_access"},
+		},
+		{
+			name:            "omitted scope with restrictive ScopesSupported grants the single-scope intersection",
 			docScope:        "",
 			scopesSupported: []string{"openid"},
+			wantScopes:      []string{"openid"},
+		},
+		{
+			name:            "omitted scope with ScopesSupported disjoint from defaults rejected",
+			docScope:        "",
+			scopesSupported: []string{"custom_scope"},
 			wantErr:         true,
 		},
 		{

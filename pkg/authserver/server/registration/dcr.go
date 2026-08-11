@@ -20,6 +20,7 @@ package registration
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -376,13 +377,20 @@ func ValidateRedirectURI(uri string) *DCRError {
 // ValidateScopes validates a slice of already-parsed scope tokens against
 // the server's allowed set per RFC 7591 §2.
 //
-//   - Empty/nil input falls back to DefaultScopes (which must itself be a
-//     subset of allowedScopes; otherwise the call returns an error).
+//   - Empty/nil input falls back to the intersection of DefaultScopes with
+//     allowedScopes (RFC 7591 §2 permits the server to register a client
+//     with a default set of scopes). Defaults the server does not support
+//     are returned in droppedDefaults so callers can surface them; only an
+//     empty intersection is rejected, because no sensible default exists
+//     and the client must declare scope explicitly.
 //   - Each requested scope must appear in allowedScopes; otherwise returns
 //     invalid_client_metadata.
 //   - Duplicates in the input are tolerated and deduplicated per RFC 6749
 //     §3.3 (scope is a set of case-sensitive strings).
-func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRError) {
+//
+// droppedDefaults is non-nil only on the default-fallback path; requested
+// scopes are validated strictly and never dropped.
+func ValidateScopes(requestedScopes, allowedScopes []string) (scopes, droppedDefaults []string, dcrErr *DCRError) {
 	// Build allowed scope set for O(1) lookup
 	allowed := make(map[string]bool, len(allowedScopes))
 	for _, s := range allowedScopes {
@@ -391,12 +399,11 @@ func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRErro
 
 	// Deduplicate while validating each requested scope against the
 	// allowed set.
-	var scopes []string
 	if len(requestedScopes) > 0 {
 		seen := make(map[string]bool)
 		for _, s := range requestedScopes {
 			if !allowed[s] {
-				return nil, &DCRError{
+				return nil, nil, &DCRError{
 					Error:            DCRErrorInvalidClientMetadata,
 					ErrorDescription: "unsupported scope: " + s,
 				}
@@ -406,22 +413,29 @@ func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRErro
 				scopes = append(scopes, s)
 			}
 		}
+		return scopes, nil, nil
 	}
 
-	// If no scopes requested, use defaults validated against allowed scopes
-	if len(scopes) == 0 {
-		for _, s := range DefaultScopes {
-			if !allowed[s] {
-				return nil, &DCRError{
-					Error:            DCRErrorInvalidClientMetadata,
-					ErrorDescription: "default scope not supported by server: " + s,
-				}
-			}
+	// No scopes requested: fall back to the intersection of DefaultScopes
+	// with the allowed set. Requiring every default to be supported would
+	// reject any client that omits scope against a server whose
+	// scopes_supported does not carry the full default set, even though a
+	// perfectly usable subset exists (see issue #6186).
+	for _, s := range DefaultScopes {
+		if allowed[s] {
+			scopes = append(scopes, s)
+		} else {
+			droppedDefaults = append(droppedDefaults, s)
 		}
-		return DefaultScopes, nil
 	}
-
-	return scopes, nil
+	if len(scopes) == 0 {
+		return nil, nil, &DCRError{
+			Error: DCRErrorInvalidClientMetadata,
+			ErrorDescription: "none of the default scopes (" + strings.Join(DefaultScopes, " ") +
+				") are supported by this server; the client must declare scope explicitly",
+		}
+	}
+	return scopes, droppedDefaults, nil
 }
 
 // UnionScopes returns the union of requested and baseline scopes, preserving

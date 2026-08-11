@@ -690,6 +690,7 @@ func TestValidateScopes(t *testing.T) {
 		expectError     bool
 		errorCode       string
 		expectedScopes  []string
+		expectedDropped []string
 	}{
 		{
 			name:            "valid subset of allowed scopes",
@@ -737,7 +738,21 @@ func TestValidateScopes(t *testing.T) {
 			expectedScopes:  []string{"openid", "profile"},
 		},
 		{
-			name:            "empty input rejected when defaults not in allowed set",
+			name:            "empty input returns intersection when some defaults unsupported",
+			requestedScopes: nil,
+			allowedScopes:   []string{"openid", "email", "offline_access"},
+			expectedScopes:  []string{"openid", "email", "offline_access"},
+			expectedDropped: []string{"profile"},
+		},
+		{
+			name:            "empty input returns single-scope intersection",
+			requestedScopes: nil,
+			allowedScopes:   []string{"email", "custom_scope"},
+			expectedScopes:  []string{"email"},
+			expectedDropped: []string{"openid", "profile", "offline_access"},
+		},
+		{
+			name:            "empty input rejected when no default scope is in the allowed set",
 			requestedScopes: nil,
 			allowedScopes:   []string{"custom_scope"},
 			expectError:     true,
@@ -749,15 +764,17 @@ func TestValidateScopes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scopes, dcrErr := ValidateScopes(tt.requestedScopes, tt.allowedScopes)
+			scopes, dropped, dcrErr := ValidateScopes(tt.requestedScopes, tt.allowedScopes)
 
 			if tt.expectError {
 				require.NotNil(t, dcrErr, "expected error")
 				assert.Equal(t, tt.errorCode, dcrErr.Error)
 				assert.Nil(t, scopes)
+				assert.Nil(t, dropped)
 			} else {
 				require.Nil(t, dcrErr, "unexpected error: %v", dcrErr)
 				assert.Equal(t, tt.expectedScopes, scopes)
+				assert.Equal(t, tt.expectedDropped, dropped)
 			}
 		})
 	}

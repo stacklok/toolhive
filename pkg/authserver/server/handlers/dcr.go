@@ -75,10 +75,20 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	// Validate requested scopes against server's supported scopes
-	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
+	scopes, droppedDefaults, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
+	}
+	if len(droppedDefaults) > 0 {
+		// The request omitted scope and scopes_supported does not carry the
+		// full default set: registration proceeds with the intersection.
+		// Warn so operators can see which defaults the client did not get.
+		slog.Warn("DCR request omitted scope; registering the intersection of default scopes with scopes_supported",
+			"client_name", validated.ClientName,
+			"granted", scopes,
+			"dropped_defaults", droppedDefaults,
+		)
 	}
 
 	// Union with the operator-configured scope baseline. RFC 7591 §3.2.1 permits

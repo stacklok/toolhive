@@ -209,7 +209,22 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		return nil, err
 	}
 
-	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod)
+	client := registration.MarkDCRIssued(buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes, authMethod))
+
+	// Best-effort write-through: persist the resolved client in the underlying
+	// storage so backends whose session rehydration resolves the client
+	// through their own row lookup — Redis's unmarshalRequester, which never
+	// consults this decorator — find CIMD clients at the token endpoint (see
+	// issue #6187). The client carries the DCR-issued marker (above) so the
+	// row gets the same anti-bloat TTL as DCR registrations: unauthenticated
+	// /oauth/authorize traffic can mint these rows, so they must never be
+	// permanent. Re-persisting on every fresh fetch keeps the snapshot
+	// current with the document. A persistence failure only degrades
+	// token-path rehydration, so it must not fail the resolution itself.
+	if err := d.Storage.RegisterClient(ctx, client); err != nil {
+		slog.WarnContext(ctx, "failed to persist resolved CIMD client",
+			"client_id", id, "error", err)
+	}
 
 	d.cache.Add(id, &cimdCacheEntry{
 		client:  client,

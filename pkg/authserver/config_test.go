@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -150,6 +151,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "CIMD enabled negative cache_fallback_ttl rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: -time.Second}, wantErr: true, errMsg: "cache_fallback_ttl must be non-negative"},
 		{name: "CIMD disabled ignores invalid cache fields", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: false, CIMDCacheMaxSize: -1, CIMDCacheFallbackTTL: -time.Second}},
 		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
+
+		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
+		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -479,12 +483,196 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
 		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
+		// Confidential-client transport gate
+		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
+		{
+			name:    "confidential clients combined with insecure HTTP rejects",
+			config:  RunConfig{AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true},
+			wantErr: true,
+			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
+			config: RunConfig{
+				Issuer:                              "http://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+			},
+			wantErr: true,
+			errMsg:  "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer passes with the opt-in",
+			config: RunConfig{
+				Issuer:                              "http://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+		},
+		{
+			name: "confidential clients with https loopback issuer is unaffected",
+			config: RunConfig{
+				Issuer:                              "https://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+			},
+		},
+		{
+			name: "confidential clients disabled with plain-HTTP loopback issuer is unaffected",
+			config: RunConfig{
+				Issuer: "http://localhost:8080",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestValidateConfidentialClientTransport pins the shared predicate that both
+// RunConfig.Validate and Config.Validate call, and that the operator's
+// validateEmbeddedAuthServer reuses: confidential-client DCR is rejected when
+// combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
+// loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+func TestValidateConfidentialClientTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		allowConfidential     bool
+		insecureAllowHTTP     bool
+		issuer                string
+		allowLoopbackOverride bool
+		wantErr               bool
+		errContains           string
+	}{
+		{name: "both false passes"},
+		{name: "confidential only, https issuer passes", allowConfidential: true, issuer: "https://auth.example.com"},
+		{name: "insecure HTTP only passes", insecureAllowHTTP: true},
+		{
+			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
+			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
+			allowConfidential: true, issuer: "http://localhost:8080",
+			wantErr: true, errContains: "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name:              "confidential with plain-HTTP loopback issuer passes with the opt-in",
+			allowConfidential: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
+		},
+		{
+			name:              "confidential with https loopback issuer passes without the opt-in",
+			allowConfidential: true, issuer: "https://localhost:8080",
+		},
+		{
+			name:   "confidential disabled with plain-HTTP loopback issuer passes",
+			issuer: "http://localhost:8080",
+		},
+		{
+			name: "confidential with plain-HTTP non-loopback issuer passes here " +
+				"(caught separately by insecureAllowHTTP/validateIssuerURL)",
+			allowConfidential: true, issuer: "http://auth.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "allow_confidential_client_registration")
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateForceConfidentialRedirectURIs pins the validation rules for the
+// force-confidential-redirect-uris override: it requires
+// allow_confidential_client_registration, and every entry must be an https
+// non-loopback redirect URI.
+func TestValidateForceConfidentialRedirectURIs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		uris              []string
+		allowConfidential bool
+		wantErr           bool
+		errMsg            string
+	}{
+		{name: "empty list passes regardless of allowConfidential"},
+		{
+			name:    "empty list passes even with allowConfidential false",
+			uris:    nil,
+			wantErr: false,
+		},
+		{
+			name:              "valid https non-loopback entry passes",
+			uris:              []string{"https://client.example.com/callback"},
+			allowConfidential: true,
+		},
+		{
+			name:              "multiple valid entries pass",
+			uris:              []string{"https://a.example.com/cb", "https://b.example.com/cb"},
+			allowConfidential: true,
+		},
+		{
+			name:    "non-empty list without allowConfidential rejects",
+			uris:    []string{"https://client.example.com/callback"},
+			wantErr: true,
+			errMsg:  "requires allow_confidential_client_registration",
+		},
+		{
+			name:              "loopback IP entry rejects",
+			uris:              []string{"https://127.0.0.1/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "loopback localhost entry rejects",
+			uris:              []string{"https://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "http loopback entry rejects (must be https)",
+			uris:              []string{"http://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "http non-loopback entry rejects",
+			uris:              []string{"http://client.example.com/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must use http (for loopback) or https scheme",
+		},
+		{
+			name:              "one bad entry among good ones rejects",
+			uris:              []string{"https://good.example.com/cb", "https://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateForceConfidentialRedirectURIs(tt.uris, tt.allowConfidential)
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}

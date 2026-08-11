@@ -124,7 +124,7 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			RegistrationClientURI:   server.URL + "/register/" + clientID,
 			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 			ClientIDIssuedAt:        cfg.clientIDIssuedAt,
-			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			ClientSecretExpiresAt:   &cfg.clientSecretExpiresAt,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -819,9 +819,9 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			expected:  "client_secret_basic",
 		},
 		{
-			name:      "prefers private_key_jwt over others",
+			name:      "selects client_secret_basic when private_key_jwt is also advertised",
 			supported: []string{"client_secret_basic", "private_key_jwt", "none"},
-			expected:  "private_key_jwt",
+			expected:  "client_secret_basic",
 		},
 		{
 			name:          "falls back to none when only none supported and S256 advertised",
@@ -1896,7 +1896,7 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 					ClientID:              "id",
 					ClientSecret:          "secret",
 					ClientIDIssuedAt:      tc.issuedAt,
-					ClientSecretExpiresAt: tc.expiresAt,
+					ClientSecretExpiresAt: &tc.expiresAt,
 				},
 				&dcrEndpoints{
 					authorizationEndpoint: "https://idp.example.com/authorize",

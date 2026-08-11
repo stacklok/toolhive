@@ -275,6 +275,11 @@ func (in *EmbeddedAuthServerConfig) DeepCopyInto(out *EmbeddedAuthServerConfig) 
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ForceConfidentialRedirectURIs != nil {
+		in, out := &in.ForceConfidentialRedirectURIs, &out.ForceConfidentialRedirectURIs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.CIMD != nil {
 		in, out := &in.CIMD, &out.CIMD
 		*out = new(EmbeddedAuthServerCIMDConfig)

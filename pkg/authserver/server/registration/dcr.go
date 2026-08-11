@@ -105,7 +105,14 @@ var allowedResponseTypes = map[string]bool{
 }
 
 // ValidateDCRRequest validates a DCR request according to RFC 7591
-// and the server's security policy (loopback-only public clients).
+// and the server's security policy. When allowConfidential is false the
+// policy is unchanged from the historical default: public clients only.
+// When true, token_endpoint_auth_method may also be client_secret_basic or
+// client_secret_post; such confidential registrations are additionally
+// restricted to https non-loopback redirect URIs, because a client on a
+// loopback or private-scheme URI is by construction a public client
+// (OAuth 2.1 §2.1) and minting it a secret ships that secret inside a
+// distributed binary.
 // Returns the validated request with defaults applied, or an error.
 //
 // The validated request does NOT carry the requested scopes — scope
@@ -113,6 +120,7 @@ var allowedResponseTypes = map[string]bool{
 // handled by ValidateScopes using the caller's policy inputs.
 func ValidateDCRRequest(
 	req *oauthproto.DynamicClientRegistrationRequest,
+	allowConfidential bool,
 ) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
 	// 1. Validate redirect_uris - required
 	if len(req.RedirectURIs) == 0 {
@@ -155,15 +163,9 @@ func ValidateDCRRequest(
 	}
 
 	// 5. Validate/default token_endpoint_auth_method
-	authMethod := req.TokenEndpointAuthMethod
-	if authMethod == "" {
-		authMethod = "none"
-	}
-	if authMethod != "none" {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
-		}
+	authMethod, dcrErr := validateAuthMethod(req.TokenEndpointAuthMethod, req.RedirectURIs, allowConfidential)
+	if dcrErr != nil {
+		return nil, dcrErr
 	}
 
 	// 6. Validate/default grant_types
@@ -211,6 +213,100 @@ func validateSoftwareID(softwareID string) *DCRError {
 			return &DCRError{
 				Error:            DCRErrorInvalidClientMetadata,
 				ErrorDescription: "software_id must contain only printable ASCII characters",
+			}
+		}
+	}
+	return nil
+}
+
+// validateAuthMethod validates token_endpoint_auth_method and returns the
+// effective method with the empty default applied. When allowConfidential is
+// false the policy is unchanged from the historical default: public clients
+// only. When true, the client_secret_* methods are accepted but restricted to
+// https non-loopback redirect URIs, because a client on a loopback or
+// private-scheme URI is by construction a public client (OAuth 2.1 §2.1) and
+// minting it a secret ships that secret inside a distributed binary.
+func validateAuthMethod(
+	authMethod string,
+	redirectURIs []string,
+	allowConfidential bool,
+) (string, *DCRError) {
+	if authMethod == "" {
+		// RFC 7591 §2 says an omitted token_endpoint_auth_method defaults to
+		// "client_secret_basic". We deliberately default to "none" instead.
+		// That RFC default predates PKCE-based public clients becoming the
+		// norm for native and CLI apps, which are most MCP clients today.
+		// Following it here would silently turn any public client that
+		// omits the field into a confidential one — and fosite pins the
+		// auth method at registration, so that client's first token request
+		// would fail with invalid_client because it has no secret and never
+		// asked for one. It also wouldn't help the clients confidential
+		// support was added for: the known cases send "none" explicitly
+		// rather than omitting the field, and an explicit value always
+		// overrides the default.
+		authMethod = oauthproto.TokenEndpointAuthMethodNone
+	}
+	switch authMethod {
+	case oauthproto.TokenEndpointAuthMethodNone:
+		// Always accepted; the public-client default.
+		return authMethod, nil
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !allowConfidential {
+			return "", &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "this authorization server only supports token_endpoint_auth_method 'none'",
+			}
+		}
+		// Server policy (not a spec mandate): confidential registrations must
+		// use https non-loopback redirect URIs. A client reachable on loopback
+		// or a private scheme is typically a distributed native app that cannot
+		// keep a secret, so this server declines to mint it one.
+		if dcrErr := ValidateConfidentialRedirectURIs(redirectURIs, authMethod); dcrErr != nil {
+			return "", dcrErr
+		}
+		return authMethod, nil
+	default:
+		return "", &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "unsupported token_endpoint_auth_method: " + authMethod,
+		}
+	}
+}
+
+// ValidateConfidentialRedirectURIs checks that every entry in redirectURIs
+// meets the confidential-client policy: https non-loopback, RFC 8252 strict
+// scheme rules. authMethod is embedded in the loopback-rejection message and
+// should be the auth method the client is being registered with.
+//
+// Shared by the ordinary confidential registration path (validateAuthMethod)
+// and the force-confidential override (resolveForceConfidentialOverride in
+// pkg/authserver/server/handlers/dcr.go), so a registration cannot become
+// confidential by either path while carrying a loopback redirect_uri.
+func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) *DCRError {
+	for _, uri := range redirectURIs {
+		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+			return &DCRError{
+				Error:            DCRErrorInvalidRedirectURI,
+				ErrorDescription: err.Error(),
+			}
+		}
+		// isLoopbackURI is a literal-string check (127.0.0.0/8, ::1,
+		// ::ffff:127.0.0.1, localhost); it does not resolve the hostname,
+		// so a registrant-controlled name that merely resolves to a
+		// loopback address slips through. This is acceptable: the
+		// registrant controls both its own redirect URI and its own DNS,
+		// so at worst this lets an actor mint a secret for its own
+		// loopback app, not attack another tenant. Resolving DNS at
+		// registration time would add an unreliable (TTL/rebinding) and
+		// unnecessary network dependency to a request that should stay
+		// purely local.
+		if isLoopbackURI(uri) {
+			return &DCRError{
+				Error: DCRErrorInvalidRedirectURI,
+				ErrorDescription: "token_endpoint_auth_method '" + authMethod +
+					"' requires https non-loopback redirect_uris; native and loopback clients must use 'none'" +
+					" (offending redirect_uri: " + uri + ")",
 			}
 		}
 	}

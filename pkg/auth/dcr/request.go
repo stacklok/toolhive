@@ -129,9 +129,12 @@ type Request struct {
 	// a clear error rather than silently downgrading.
 	//
 	// When false (the embedded-authserver default), the resolver picks
-	// the strongest auth method the upstream advertises (private_key_jwt
-	// > client_secret_basic > client_secret_post > none, with the same
-	// S256 gate on "none").
+	// the most preferred auth method the upstream advertises among the
+	// ones our OAuth2 runtime can actually use (client_secret_basic >
+	// client_secret_post > none, with the same S256 gate on "none").
+	// private_key_jwt is excluded from this preference even when
+	// advertised: it requires a signed client assertion the runtime has
+	// no way to produce.
 	//
 	// Has no effect on the RegistrationEndpoint-direct branch when neither
 	// DiscoveryURL nor CodeChallengeMethodsSupported is set: without

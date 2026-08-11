@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // CurrentSchemaVersion is the current version of the authserver RunConfig schema.
@@ -138,6 +139,64 @@ type RunConfig struct {
 	// visible from the config shape alone.
 	//nolint:lll // field tags require full JSON+YAML names
 	TrustedIssuers []tokenexchange.TrustedIssuer `json:"trusted_issuers,omitempty" yaml:"trusted_issuers,omitempty"`
+
+	// AllowConfidentialClientRegistration permits Dynamic Client Registration
+	// of confidential clients: when true, /oauth/register accepts
+	// token_endpoint_auth_method values client_secret_basic and
+	// client_secret_post in addition to "none" (still the default on
+	// omission) and mints a client_secret returned exactly once. Confidential
+	// clients are restricted to https non-loopback redirect URIs, and
+	// registrations idle for more than DefaultDCRClientTTL (30 days) are
+	// evicted and must re-register. This gates registration only: disabling
+	// it does not revoke or reject already-minted secrets at the token
+	// endpoint.
+	//
+	// Security: /oauth/register is unauthenticated, so this issues client
+	// secrets to any caller. Combining it with InsecureAllowHTTP is rejected
+	// by Validate.
+	//nolint:lll // field tags require full JSON+YAML names
+	AllowConfidentialClientRegistration bool `json:"allow_confidential_client_registration,omitempty" yaml:"allow_confidential_client_registration,omitempty"`
+
+	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
+	// as confidential clients regardless of the token_endpoint_auth_method the
+	// DCR request declares. A registration whose redirect_uris contains an
+	// EXACT match for one of these entries is issued a real client_secret and
+	// reported back as token_endpoint_auth_method "client_secret_post", even
+	// if the request said "none" or omitted the field.
+	//
+	// This exists for MCP clients (Perplexity is the known case) that declare
+	// themselves public (token_endpoint_auth_method: "none") per RFC 7591 but
+	// then refuse to proceed because the response carries no client_secret —
+	// a self-contradictory request no conformant server can satisfy as
+	// written. RFC 7591 §3.2.1 permits the server to substitute metadata, so
+	// this takes such a client at its word that it wants a secret.
+	//
+	// Exact matching is deliberate: it is not a way to obtain a usable
+	// credential for another client. An attacker who registers with someone
+	// else's callback URI is issued a secret for a client whose authorization
+	// codes are delivered to that someone else's redirect endpoint, not to
+	// the attacker — the secret is useless without also controlling the
+	// callback.
+	//
+	// Requires AllowConfidentialClientRegistration; every entry must be a
+	// valid https non-loopback URI (Validate rejects loopback entries — the
+	// same restriction AllowConfidentialClientRegistration itself enforces
+	// exists so secrets do not land in distributed native apps, and this
+	// override must not bypass it). Remove an entry once the client is fixed
+	// to handle "none" registrations correctly.
+	//nolint:lll // field tags require full JSON+YAML names
+	ForceConfidentialRedirectURIs []string `json:"force_confidential_redirect_uris,omitempty" yaml:"force_confidential_redirect_uris,omitempty"`
+
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
+	// DCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP
+	// loopback URL. Without this flag, that combination is rejected: a
+	// loopback http:// issuer is normally fine for local development (the
+	// traffic never leaves the machine), but combined with confidential
+	// registration it means /oauth/register — which is unauthenticated —
+	// mints client secrets over cleartext. Defaults to false. Has no effect
+	// when AllowConfidentialClientRegistration is false or Issuer is https.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -158,6 +217,15 @@ func (c *RunConfig) Validate() error {
 	// after it, which would also orphan an upstream registration on every
 	// restart with the default in-memory DCR store.
 	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
+		return err
+	}
+	if err := ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP,
+		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
+		return err
+	}
+	if err := ValidateForceConfidentialRedirectURIs(
+		c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
@@ -723,6 +791,22 @@ type Config struct {
 	// fail-closed AllowedActors semantics and the audience/scope constraints
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
+
+	// AllowConfidentialClientRegistration permits DCR of confidential clients
+	// (client_secret_basic / client_secret_post). See RunConfig for the full
+	// semantics; disabling it does not revoke already-minted secrets.
+	AllowConfidentialClientRegistration bool
+
+	// ForceConfidentialRedirectURIs lists redirect URIs that are always
+	// registered as confidential clients, even when the DCR request declares
+	// "none". See the identically named field on RunConfig for the full
+	// semantics and rationale.
+	ForceConfidentialRedirectURIs []string
+
+	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
+	// DCR when Issuer is a plain-HTTP loopback URL. See the identically named
+	// field on RunConfig for the full semantics and rationale.
+	InsecureAllowConfidentialOverLoopbackHTTP bool
 }
 
 // Validate checks that the Config is valid.
@@ -731,6 +815,10 @@ func (c *Config) Validate() error {
 
 	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
 		return fmt.Errorf("issuer: %w", err)
+	}
+
+	if err := c.validateConfidentialClientConfig(); err != nil {
+		return err
 	}
 
 	if c.AuthorizationEndpointBaseURL != "" {
@@ -801,6 +889,19 @@ func (c *Config) Validate() error {
 		"upstream_count", len(c.Upstreams),
 	)
 	return nil
+}
+
+// validateConfidentialClientConfig groups the two confidential-client DCR
+// checks (cleartext-transport rejection and the force-confidential-redirect-
+// uris override) behind a single call site, keeping Config.Validate's own
+// cyclomatic complexity down.
+func (c *Config) validateConfidentialClientConfig() error {
+	if err := ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration, c.InsecureAllowHTTP,
+		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
+		return err
+	}
+	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
 }
 
 // validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.
@@ -1175,6 +1276,89 @@ func (c *Config) applyDefaults() error {
 	if c.CIMDEnabled && c.CIMDCacheFallbackTTL == 0 {
 		c.CIMDCacheFallbackTTL = 5 * time.Minute
 		slog.Debug("applied default cimd cache_fallback_ttl", "ttl", c.CIMDCacheFallbackTTL)
+	}
+	return nil
+}
+
+// ValidateConfidentialClientTransport rejects the two ways confidential-client
+// DCR can end up minting client secrets over cleartext HTTP:
+// /oauth/register is unauthenticated, so either one exposes the secret to
+// anyone on the network path.
+//
+//  1. insecureAllowHTTP is set: the server accepts a plain-HTTP issuer for
+//     any host, not just loopback. Always rejected when combined with
+//     allowConfidential — there is no opt-in for this one.
+//  2. issuer is a plain-HTTP loopback URL (e.g. "http://localhost:18080").
+//     validateIssuerURL permits this independently of insecureAllowHTTP,
+//     because a loopback issuer is the shape of local CLI development,
+//     where "the traffic stays on this machine" is actually true and
+//     setting up TLS just to run `thv` locally would be needless friction.
+//     That assumption breaks down in a Kubernetes deployment, though — the
+//     server there still binds all interfaces, and "localhost" in the
+//     issuer string is just a string; it does not make the listener
+//     loopback-only. Because forcing TLS onto every loopback deployment
+//     would just push operators toward insecureAllowHTTP instead — a worse
+//     outcome, since that also disables the host check — this case is
+//     rejected by default but stays opt-in-able via
+//     insecureAllowConfidentialOverLoopbackHTTP, so the operator makes the
+//     tradeoff explicitly rather than getting it for free.
+func ValidateConfidentialClientTransport(
+	allowConfidential, insecureAllowHTTP bool,
+	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
+) error {
+	if !allowConfidential {
+		return nil
+	}
+	if insecureAllowHTTP {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
+			"this would issue client secrets over cleartext HTTP on an unauthenticated registration endpoint")
+	}
+	if insecureAllowConfidentialOverLoopbackHTTP {
+		return nil
+	}
+	// Malformed issuers are reported by validateIssuerURL; nothing more to
+	// check here if parsing fails.
+	if parsed, err := url.Parse(issuer); err == nil &&
+		parsed.Scheme == "http" && networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback "+
+			"issuer (%q) unless insecure_allow_confidential_over_loopback_http is set: /oauth/register is "+
+			"unauthenticated, so this would issue client secrets over cleartext even on a purely local deployment",
+			issuer)
+	}
+	return nil
+}
+
+// ValidateForceConfidentialRedirectURIs rejects a misconfigured
+// force_confidential_redirect_uris list: a non-empty list requires
+// allowConfidential (there is no confidential-client path to force a
+// registration onto otherwise), and every entry must be a valid https
+// non-loopback redirect URI. The https-non-loopback requirement mirrors the
+// restriction validateAuthMethod (pkg/authserver/server/registration/dcr.go)
+// already applies to ordinary confidential DCR: a redirect URI reachable on
+// loopback or a private scheme is by construction a public client (OAuth 2.1
+// §2.1), and this override must not be a way to punch through that
+// restriction and hand a distributed native app a secret.
+func ValidateForceConfidentialRedirectURIs(uris []string, allowConfidential bool) error {
+	if len(uris) == 0 {
+		return nil
+	}
+	if !allowConfidential {
+		return fmt.Errorf(
+			"force_confidential_redirect_uris requires allow_confidential_client_registration to be true")
+	}
+	for _, uri := range uris {
+		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+			return fmt.Errorf("force_confidential_redirect_uris: %q: %w", uri, err)
+		}
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			return fmt.Errorf("force_confidential_redirect_uris: %q: invalid URL: %w", uri, err)
+		}
+		if networking.IsLocalhost(parsed.Hostname()) {
+			return fmt.Errorf(
+				"force_confidential_redirect_uris: %q must not be a loopback redirect URI; "+
+					"a loopback client is a public client by construction and must not be issued a secret", uri)
+		}
 	}
 	return nil
 }

@@ -491,6 +491,10 @@
             "github_com_stacklok_toolhive_pkg_authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
+                    "allow_confidential_client_registration": {
+                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
+                        "type": "boolean"
+                    },
                     "allowed_audiences": {
                         "description": "AllowedAudiences is the list of valid resource URIs that tokens can be issued for.\nPer RFC 8707, the \"resource\" parameter in authorization and token requests is\nvalidated against this list. Required for MCP compliance.",
                         "items": {
@@ -522,6 +526,14 @@
                         "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
                         "type": "boolean"
                     },
+                    "force_confidential_redirect_uris": {
+                        "description": "ForceConfidentialRedirectURIs lists redirect URIs that must be registered\nas confidential clients regardless of the token_endpoint_auth_method the\nDCR request declares. A registration whose redirect_uris contains an\nEXACT match for one of these entries is issued a real client_secret and\nreported back as token_endpoint_auth_method \"client_secret_post\", even\nif the request said \"none\" or omitted the field.\n\nThis exists for MCP clients (Perplexity is the known case) that declare\nthemselves public (token_endpoint_auth_method: \"none\") per RFC 7591 but\nthen refuse to proceed because the response carries no client_secret —\na self-contradictory request no conformant server can satisfy as\nwritten. RFC 7591 §3.2.1 permits the server to substitute metadata, so\nthis takes such a client at its word that it wants a secret.\n\nExact matching is deliberate: it is not a way to obtain a usable\ncredential for another client. An attacker who registers with someone\nelse's callback URI is issued a secret for a client whose authorization\ncodes are delivered to that someone else's redirect endpoint, not to\nthe attacker — the secret is useless without also controlling the\ncallback.\n\nRequires AllowConfidentialClientRegistration; every entry must be a\nvalid https non-loopback URI (Validate rejects loopback entries — the\nsame restriction AllowConfidentialClientRegistration itself enforces\nexists so secrets do not land in distributed native apps, and this\noverride must not bypass it). Remove an entry once the client is fixed\nto handle \"none\" registrations correctly.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {
@@ -529,6 +541,10 @@
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "insecure_allow_confidential_over_loopback_http": {
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client\nDCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP\nloopback URL. Without this flag, that combination is rejected: a\nloopback http:// issuer is normally fine for local development (the\ntraffic never leaves the machine), but combined with confidential\nregistration it means /oauth/register — which is unauthenticated —\nmints client secrets over cleartext. Defaults to false. Has no effect\nwhen AllowConfidentialClientRegistration is false or Issuer is https.",
+                        "type": "boolean"
                     },
                     "insecure_allow_http": {
                         "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",

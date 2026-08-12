@@ -78,16 +78,6 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
 	}
-	if len(droppedDefaults) > 0 {
-		// The request omitted scope and scopes_supported does not carry the
-		// full default set: registration proceeds with the intersection.
-		// Warn so operators can see which defaults the client did not get.
-		slog.Warn("DCR request omitted scope; registering the intersection of default scopes with scopes_supported",
-			"client_name", validated.ClientName,
-			"granted", scopes,
-			"dropped_defaults", droppedDefaults,
-		)
-	}
 
 	// Union with the operator-configured scope baseline. RFC 7591 §3.2.1 permits
 	// the AS to replace requested client metadata values during registration; we
@@ -193,6 +183,16 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		"software_id", validated.SoftwareID,
 		"token_endpoint_auth_method", effectiveAuthMethod,
 		"scopes", scopes,
+	}
+	// The request omitted scope and scopes_supported does not carry the full
+	// default set: registration proceeded with the intersection (see issue
+	// #6186). Recorded on this line — after the baseline union and the
+	// client_id mint — so "scopes" is the set the client actually holds and
+	// the drop correlates with the client's later log lines. The drop itself
+	// is fully determined by startup config; the one-time operator-facing
+	// signal lives in Config.applyDefaults.
+	if len(droppedDefaults) > 0 {
+		logAttrs = append(logAttrs, "dropped_defaults", droppedDefaults)
 	}
 	if issuer := h.issuer(); issuer != "" {
 		logAttrs = append(logAttrs, "issuer", issuer)

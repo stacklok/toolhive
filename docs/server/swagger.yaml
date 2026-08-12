@@ -655,7 +655,8 @@ components:
             BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
             DCR registration. All values must appear in ScopesSupported; the auth server
             rejects this RunConfig at startup otherwise. Empty means current behavior is
-            preserved (registered scope = client-requested, or DefaultScopes if empty).
+            preserved (registered scope = client-requested, or the intersection of
+            DefaultScopes with ScopesSupported if the client requested none).
             When ScopesSupported is empty, the subset check uses registration.DefaultScopes
             (the same set applyDefaults would substitute at startup) — so
             BaselineClientScopes containing standard OIDC scopes works without enumerating

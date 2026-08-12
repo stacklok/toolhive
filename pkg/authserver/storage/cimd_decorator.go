@@ -198,6 +198,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// In both cases BaselineClientScopes is unioned in after validation,
 	// matching the DCR handler's behaviour.
 	var resolvedScopes []string
+	var droppedDefaults []string
 	if len(d.scopesSupported) > 0 {
 		if doc.Scope != "" {
 			computed, _, dcrErr := registration.ValidateScopes(strings.Fields(doc.Scope), d.scopesSupported)
@@ -221,17 +222,24 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 					fosite.ErrInvalidClient.WithHint("scope field required"),
 					id)
 			}
-			if len(dropped) > 0 {
-				slog.WarnContext(ctx, "CIMD document omits scope; granting the intersection of default scopes with scopes_supported",
-					"client_id", id, "granted", computed, "dropped_defaults", dropped)
-			}
 			resolvedScopes = computed
+			droppedDefaults = dropped
 		}
 	} else if doc.Scope != "" {
 		resolvedScopes = strings.Fields(doc.Scope)
 	}
 	if len(d.baselineClientScopes) > 0 {
 		resolvedScopes = registration.UnionScopes(resolvedScopes, d.baselineClientScopes)
+	}
+	// The document omitted scope and scopes_supported does not carry the full
+	// default set: resolution proceeded with the intersection (see issue
+	// #6186). Recorded after the baseline union so "scopes" is the set the
+	// client actually receives; Debug because the drop is fully determined by
+	// startup config — the one-time operator-facing signal lives in
+	// Config.applyDefaults.
+	if len(droppedDefaults) > 0 {
+		slog.DebugContext(ctx, "CIMD document omits scope; granted the intersection of default scopes with scopes_supported",
+			"client_id", id, "scopes", resolvedScopes, "dropped_defaults", droppedDefaults)
 	}
 
 	client := buildFositeClient(doc, resolvedScopes, grantTypes, responseTypes)

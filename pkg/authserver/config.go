@@ -209,6 +209,14 @@ type RunConfig struct {
 	//
 	// See DelegateClientRunConfig for the per-client field reference.
 	DelegateClients []DelegateClientRunConfig `json:"delegate_clients,omitempty" yaml:"delegate_clients,omitempty"`
+
+	// SPIFFETrustDomains declares SPIFFE trust roots. Each declaration must be
+	// referenced by an inbound_grants.spiffe_client_auth association policy.
+	SPIFFETrustDomains []SPIFFETrustDomainRunConfig `json:"spiffe_trust_domains,omitempty" yaml:"spiffe_trust_domains,omitempty"`
+
+	// InboundGrants enables inbound grant purposes for configured trust roots.
+	// SPIFFE client authentication entries are references to SPIFFETrustDomains.
+	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -275,6 +283,9 @@ func (c *RunConfig) Validate() error {
 	}
 	if err := ValidateForceConfidentialRedirectURIs(
 		c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration); err != nil {
+		return err
+	}
+	if err := ValidateSPIFFETrust(c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
@@ -958,6 +969,13 @@ type Config struct {
 	// or environment-variable reference. See RunConfig.DelegateClients for the
 	// serialized configuration.
 	DelegateClients []DelegateClient
+
+	// SPIFFETrustDomains and InboundGrants preserve the serialized form for
+	// compatibility with deferred startup wiring. SPIFFETrust is the validated,
+	// immutable runtime model and must be used by new runtime consumers.
+	SPIFFETrustDomains []SPIFFETrustDomainRunConfig
+	InboundGrants      *InboundGrantsRunConfig
+	SPIFFETrust        *SPIFFETrustConfig
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -1046,6 +1064,12 @@ func (c *Config) Validate() error {
 	// that, same as the BaselineClientScopes check above.
 	if err := c.validateDelegationConfig(); err != nil {
 		return err
+	}
+	if err := ValidateSPIFFETrust(c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if c.SPIFFETrust != nil && !c.SPIFFETrust.validated {
+		return fmt.Errorf("SPIFFE trust config must be constructed with NewSPIFFETrustConfig")
 	}
 	c.warnTrustedIssuerAudiences()
 

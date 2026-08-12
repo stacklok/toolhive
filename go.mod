@@ -48,6 +48,7 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/shirou/gopsutil/v4 v4.26.7
 	github.com/spf13/viper v1.21.0
+	github.com/spiffe/go-spiffe/v2 v2.7.0
 	github.com/stacklok/toolhive-catalog v0.20260817.0
 	github.com/stacklok/toolhive-core v0.0.41
 	github.com/stretchr/testify v1.11.1

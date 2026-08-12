@@ -28,9 +28,11 @@ var ErrKeyRequired = errors.New("signing key required: pass --key with a cosign 
 
 // Options configures OCI signing.
 type Options struct {
-	// Key is the path to a cosign PEM-encoded private key file. An
-	// encrypted key is decrypted with the COSIGN_PASSWORD environment
-	// variable, matching the cosign CLI.
+	// Key is the path to a cosign PEM-encoded private key file, including
+	// the format `cosign generate-key-pair` writes. An encrypted key is
+	// decrypted with the COSIGN_PASSWORD environment variable of the
+	// process doing the signing — for ToolHive that is the API server, not
+	// the CLI invoking it.
 	Key string
 }
 

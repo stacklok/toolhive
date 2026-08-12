@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/secure-systems-lab/go-securesystemslib/encrypted"
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
@@ -181,9 +183,10 @@ func TestSignOCIEncryptedKey(t *testing.T) {
 	t.Cleanup(reg.Close)
 	host := strings.TrimPrefix(reg.URL, "http://")
 
-	// Generate an encrypted cosign-style key: the "ENCRYPTED SIGSTORE
-	// PRIVATE KEY" PEM type wrapping password-encrypted DER, which is what
-	// `cosign generate-key-pair` produces.
+	// PKCS#8 standard encryption under the "ENCRYPTED SIGSTORE PRIVATE KEY"
+	// label. NOT what `cosign generate-key-pair` produces — that is covered
+	// by TestSignOCIAcceptsCosignCLIKeyFormat — but the same label is used
+	// for both, so this path must keep working too.
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	encDER, err := cryptoutils.MarshalPrivateKeyToEncryptedDER(
@@ -333,4 +336,80 @@ func TestResolveKeyPath(t *testing.T) {
 		_, err := resolveKeyPath("")
 		require.ErrorIs(t, err, ErrKeyRequired)
 	})
+}
+
+// writeCosignFormatKey writes a private key in the exact format the cosign
+// CLI produces: PKCS#8 sealed with scrypt + nacl/secretbox by
+// go-securesystemslib, under the "ENCRYPTED SIGSTORE PRIVATE KEY" label.
+//
+// This differs from cryptoutils.MarshalPrivateKeyToEncryptedDER, which
+// writes PKCS#8 standard encryption under the *same* label. Fixtures built
+// with cryptoutils therefore look like cosign keys but are not, which is how
+// `thv skill push --key` shipped unable to read any key from
+// `cosign generate-key-pair` while its tests passed.
+func writeCosignFormatKey(t *testing.T, password []byte) (keyPath string, pubPEM []byte) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	sealed, err := encrypted.Encrypt(der, password)
+	require.NoError(t, err)
+
+	keyPath = filepath.Join(t.TempDir(), "cosign.key")
+	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{
+		Type:  "ENCRYPTED SIGSTORE PRIVATE KEY",
+		Bytes: sealed,
+	}), 0o600))
+
+	pubPEM, err = cryptoutils.MarshalPublicKeyToPEM(priv.Public())
+	require.NoError(t, err)
+	return keyPath, pubPEM
+}
+
+// TestSignOCIAcceptsCosignCLIKeyFormat is the regression test for the
+// interop gap: a key straight from `cosign generate-key-pair` must sign, and
+// the resulting bundle must verify against the matching public key.
+//
+//nolint:paralleltest // uses t.Setenv
+func TestSignOCIAcceptsCosignCLIKeyFormat(t *testing.T) {
+	reg := httptest.NewServer(registry.New())
+	t.Cleanup(reg.Close)
+	host := strings.TrimPrefix(reg.URL, "http://")
+
+	for _, tc := range []struct {
+		name     string
+		password string
+	}{
+		{name: "empty password, as cosign writes by default", password: ""},
+		{name: "password protected", password: "hunter2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, pubPEM := writeCosignFormatKey(t, []byte(tc.password))
+			ref, digestStr := pushTestArtifact(t, host)
+
+			t.Setenv("COSIGN_PASSWORD", tc.password)
+			raw, err := NewDefault(nil).SignOCI(t.Context(), ref, digestStr, Options{Key: keyPath})
+			require.NoError(t, err, "a key from `cosign generate-key-pair` must be usable")
+
+			payload, err := SimpleSigningPayload(ref, digestStr)
+			require.NoError(t, err)
+			payloadDigest := sha256.Sum256(payload)
+			require.NoError(t, verifyKeyBundle(t, raw, pubPEM, payloadDigest[:]))
+		})
+	}
+}
+
+//nolint:paralleltest // uses t.Setenv
+func TestSignOCICosignKeyWrongPasswordIsReported(t *testing.T) {
+	keyPath, _ := writeCosignFormatKey(t, []byte("correct-password"))
+
+	t.Setenv("COSIGN_PASSWORD", "wrong-password")
+	_, err := NewDefault(nil).SignOCI(t.Context(), "example.com/org/skill:v1",
+		"sha256:"+strings.Repeat("a", 64), Options{Key: keyPath})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "COSIGN_PASSWORD",
+		"a wrong password must point at the password, not surface an opaque ASN.1 error")
 }

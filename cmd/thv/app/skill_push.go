@@ -25,7 +25,9 @@ var skillPushCmd = &cobra.Command{
 func init() {
 	skillCmd.AddCommand(skillPushCmd)
 	skillPushCmd.Flags().StringVar(&skillPushKey, "key", "",
-		"Path to a cosign private key to sign the pushed artifact (COSIGN_PASSWORD decrypts encrypted keys)")
+		"Path to a cosign private key to sign the pushed artifact. "+
+			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
+			"which performs the signing")
 	skillPushCmd.Flags().BoolVar(&skillPushNoSign, "no-sign", false,
 		"Push without signing (consumers will need an explicit unsigned exception to install project-scoped)")
 }

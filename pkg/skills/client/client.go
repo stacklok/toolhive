@@ -218,7 +218,11 @@ func (c *Client) Install(ctx context.Context, opts skills.InstallOptions) (*skil
 	if err := c.doJSONRequest(ctx, http.MethodPost, "", nil, body, &resp); err != nil {
 		return nil, err
 	}
-	return &skills.InstallResult{Skill: resp.Skill}, nil
+	return &skills.InstallResult{
+		Skill:      resp.Skill,
+		Provenance: resp.Provenance,
+		Unsigned:   resp.Unsigned,
+	}, nil
 }
 
 // Uninstall removes an installed skill.

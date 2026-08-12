@@ -45,6 +45,12 @@ type installSkillRequest struct {
 type installSkillResponse struct {
 	// The installed skill
 	Skill skills.InstalledSkill `json:"skill"`
+	// The signer identity trust-on-first-use pinned for this install, when
+	// the artifact was verified. Omitted for unsigned or non-lock-managed
+	// installs.
+	Provenance *skills.ProvenanceInfo `json:"provenance,omitempty"`
+	// Whether the install was recorded as an explicit unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // validateSkillRequest represents the request to validate a skill.

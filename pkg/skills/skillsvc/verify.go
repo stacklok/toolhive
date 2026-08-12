@@ -272,6 +272,20 @@ func classifySignatureError(err error) skills.FailureReason {
 	}
 }
 
+// provenanceInfoFromLock converts a lock provenance block to the API shape.
+func provenanceInfoFromLock(p *lockfile.Provenance) *skills.ProvenanceInfo {
+	if p == nil {
+		return nil
+	}
+	return &skills.ProvenanceInfo{
+		SignerIdentity: p.SignerIdentity,
+		CertIssuer:     p.CertIssuer,
+		RepositoryURI:  p.RepositoryURI,
+		SigstoreURL:    p.SigstoreURL,
+		Provisional:    p.Provisional,
+	}
+}
+
 // provenanceInfoToLock converts the internal provenance shape to the lock
 // file's.
 func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
@@ -283,6 +297,7 @@ func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
 		CertIssuer:     p.CertIssuer,
 		RepositoryURI:  p.RepositoryURI,
 		SigstoreURL:    p.SigstoreURL,
+		Provisional:    p.Provisional,
 	}
 }
 
@@ -297,5 +312,6 @@ func provenanceInfoFromResult(r *verifier.Result) *skills.ProvenanceInfo {
 		CertIssuer:     r.CertIssuer,
 		RepositoryURI:  r.RepositoryURI,
 		SigstoreURL:    r.SigstoreURL,
+		Provisional:    r.Provisional,
 	}
 }

@@ -947,3 +947,73 @@ func TestCallerCancellationIsNeitherSentinel(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrRequestTimeout)
 	assert.NotErrorIs(t, err, ErrServerUnreachable)
 }
+
+// TestInstallCarriesTrustStateBackToCaller pins the full wire round-trip for
+// the fields the CLI uses to report trust. The CLI is a pure HTTP client, so a
+// field the server sets but the response DTO omits is invisible in production
+// even though a direct unit test of the printer would still pass — every
+// install would silently render as untracked.
+func TestInstallCarriesTrustStateBackToCaller(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response installResponse
+	}{
+		{
+			name: "signed install reports the pinned identity",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "signed-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/build-skills.yml",
+					CertIssuer:     "https://token.actions.githubusercontent.com",
+					RepositoryURI:  "https://github.com/stacklok/dockyard",
+				},
+			},
+		},
+		{
+			name: "provisional provenance survives the round trip",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "git-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity: "someone@example.com",
+					CertIssuer:     "https://accounts.google.com",
+					Provisional:    true,
+				},
+			},
+		},
+		{
+			name: "explicit unsigned exception is reported as such",
+			response: installResponse{
+				Skill:    skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "unsigned-skill"}},
+				Unsigned: true,
+			},
+		},
+		{
+			name: "an install with neither reports neither",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "plain-skill"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				require.NoError(t, json.NewEncoder(w).Encode(tt.response))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv).Install(t.Context(), skills.InstallOptions{Name: "x"})
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.response.Provenance, got.Provenance,
+				"provenance must survive the HTTP boundary — the CLI has no other source for it")
+			assert.Equal(t, tt.response.Unsigned, got.Unsigned)
+		})
+	}
+}

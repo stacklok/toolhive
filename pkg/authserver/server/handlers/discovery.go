@@ -111,6 +111,7 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		GrantTypesSupported: []string{
 			string(fosite.GrantTypeAuthorizationCode),
 			string(fosite.GrantTypeRefreshToken),
+			sharedobauth.GrantTypeTokenExchange,
 		},
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
 		TokenEndpointAuthMethodsSupported: h.tokenEndpointAuthMethodsSupported(),
@@ -126,13 +127,13 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 
 // tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
 // list for discovery, derived from config. "none" is always first — the public-client
-// default. When AllowConfidentialClientRegistration is on, the two client_secret_* methods the
-// registration endpoint accepts are appended, so what is advertised here always matches
-// what /oauth/register accepts (no advertise/reject skew). RFC 8414 defines no ordering
-// semantics, so "none"-first is a readability convention, not a security control.
+// default. When confidential DCR is enabled or static delegate clients are configured,
+// the two client_secret_* methods are appended. Static clients need these methods even
+// though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
+// "none"-first is a readability convention, not a security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	if h.config.AllowConfidentialClientRegistration {
+	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
 		methods = append(methods,
 			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 			sharedobauth.TokenEndpointAuthMethodClientSecretPost,

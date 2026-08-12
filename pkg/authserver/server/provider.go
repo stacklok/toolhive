@@ -74,6 +74,10 @@ type AuthorizationServerConfig struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
+	// delegate client is registered at startup. Discovery advertises client-secret
+	// authentication methods when this is true.
+	HasStaticDelegateClients bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -121,6 +125,10 @@ type AuthorizationServerParams struct {
 	// the DCR handler accepts client_secret_basic / client_secret_post and the
 	// discovery document advertises them in token_endpoint_auth_methods_supported.
 	AllowConfidentialClientRegistration bool
+	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
+	// delegate client is registered at startup. Discovery advertises client-secret
+	// authentication methods when this is true.
+	HasStaticDelegateClients bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -289,6 +297,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 	}, nil
 }

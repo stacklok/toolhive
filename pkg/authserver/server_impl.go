@@ -149,6 +149,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)

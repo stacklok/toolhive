@@ -39,6 +39,12 @@ type listResponse struct {
 
 type installResponse struct {
 	Skill skills.InstalledSkill `json:"skill"`
+	// Provenance and Unsigned mirror installSkillResponse. Without them the
+	// CLI — which is a pure HTTP client — could never report the trust state
+	// the server recorded, and would silently print every install as if it
+	// were untracked.
+	Provenance *skills.ProvenanceInfo `json:"provenance,omitempty"`
+	Unsigned   bool                   `json:"unsigned,omitempty"`
 }
 
 type listBuildsResponse struct {

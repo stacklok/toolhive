@@ -3053,8 +3053,13 @@ components:
     pkg_api_v1.installSkillResponse:
       description: Response after successfully installing a skill
       properties:
+        provenance:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo'
         skill:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill'
+        unsigned:
+          description: Whether the install was recorded as an explicit unsigned exception.
+          type: boolean
       type: object
     pkg_api_v1.listSecretsResponse:
       description: Response containing a list of secret keys

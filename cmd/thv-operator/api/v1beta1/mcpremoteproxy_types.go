@@ -394,6 +394,10 @@ const (
 	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
 	ConditionReasonMCPRemoteProxyAuthServerRefInvalidType = "AuthServerRefInvalidType"
 
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidConfig indicates the
+	// referenced embedded auth server configuration is invalid.
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidConfig = "AuthServerRefInvalidConfig"
+
 	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
 	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
 

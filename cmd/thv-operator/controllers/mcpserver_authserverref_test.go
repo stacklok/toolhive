@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 	"time"
 
@@ -13,11 +14,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -193,4 +197,123 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth"),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(server).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.handleInvalidEmbeddedAuthServerConfig(
+		t.Context(), server,
+		&ctrlutil.InvalidEmbeddedAuthServerConfigError{
+			Err:    stderrors.New("invalid delegate client"),
+			Source: ctrlutil.EmbeddedAuthServerConfigSourceAuthServerRef,
+		},
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, server.Status.Phase)
+	assert.Equal(t, server.Generation, server.Status.ObservedGeneration)
+	ready := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonNotReady, ready.Reason)
+	validated := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	require.NotNil(t, validated)
+	assert.Equal(t, metav1.ConditionFalse, validated.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerRefInvalidConfig, validated.Reason)
+
+	persisted := &mcpv1beta1.MCPServer{}
+	key := types.NamespacedName{Name: server.Name, Namespace: server.Namespace}
+	require.NoError(t, fakeClient.Get(t.Context(), key, persisted))
+	resourceVersion := persisted.ResourceVersion
+	require.NoError(t, reconciler.handleInvalidEmbeddedAuthServerConfig(t.Context(), persisted,
+		&ctrlutil.InvalidEmbeddedAuthServerConfigError{
+			Err:    stderrors.New("invalid delegate client"),
+			Source: ctrlutil.EmbeddedAuthServerConfigSourceAuthServerRef,
+		},
+	))
+	require.NoError(t, fakeClient.Get(t.Context(), key, persisted))
+	assert.Equal(t, resourceVersion, persisted.ResourceVersion)
+}
+
+func TestMCPServerReconciler_handleInvalidEmbeddedAuthServerConfigExternalAuthConfigRef(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("external-auth"),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(server).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.handleInvalidEmbeddedAuthServerConfig(t.Context(), server,
+		&ctrlutil.InvalidEmbeddedAuthServerConfigError{
+			Err:    stderrors.New("invalid delegate client"),
+			Source: ctrlutil.EmbeddedAuthServerConfigSourceExternalAuthConfigRef,
+		})
+	require.NoError(t, err)
+
+	assert.Nil(t, meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated))
+	validated := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, validated)
+	assert.Equal(t, metav1.ConditionFalse, validated.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
+}
+
+func TestMCPServerReconciler_InvalidEmbeddedAuthServerConfigSteadyState(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate"}},
+			},
+		},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(server, authConfig).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: server.Name, Namespace: server.Namespace}}
+
+	result, err := reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
+	initial := actual.DeepCopy()
+
+	result, err = reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
+	assert.Equal(t, initial.Status, actual.Status)
 }

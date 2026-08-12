@@ -1086,7 +1086,9 @@ func (a *Authorizer) authorizeResourceRead(
 
 	// Resource is the resource being accessed. Use the exact URI as the
 	// entity ID: entities are built programmatically via cedar.NewEntityUID,
-	// which accepts any string, so no character rewriting is needed. A lossy
+	// which accepts any string on the request side, so no character rewriting
+	// is needed. (Policy authors still write the ID as a Cedar string literal,
+	// so " and \ need escaping in policy source; see docs/authz.md.) A lossy
 	// mapping would let distinct URIs collide onto one entity ID, and a
 	// policy grant on one URI would then silently cover every colliding URI.
 	resource := fmt.Sprintf("Resource::%s", resourceURI)

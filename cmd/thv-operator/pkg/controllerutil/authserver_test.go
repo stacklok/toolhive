@@ -1149,6 +1149,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, "https://okta.example.com", upstream.OIDCConfig.IssuerURL)
 				assert.Equal(t, "client-id", upstream.OIDCConfig.ClientID)
 				assert.Equal(t, []string{"openid", "profile"}, upstream.OIDCConfig.Scopes)
+				assert.False(t, upstream.OIDCConfig.AllowPrivateIPs,
+					"allowPrivateIP must default to false")
 			},
 		},
 		{
@@ -1206,6 +1208,52 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				require.NotNil(t, upstream.OAuth2Config.UserInfo.FieldMapping)
 				assert.Equal(t, []string{"id", "login"},
 					upstream.OAuth2Config.UserInfo.FieldMapping.SubjectFields)
+			},
+		},
+		{
+			name:        "upstream provider allowPrivateIP reaches the run config",
+			resourceURL: defaultResourceURL,
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "internal-oidc",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:       "https://idp.internal.example",
+							ClientID:        "client-id",
+							RedirectURI:     "https://auth.example.com/callback",
+							AllowPrivateIPs: true,
+						},
+					},
+					{
+						Name: "internal-oauth2",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://idp.internal.example/oauth/authorize",
+							TokenEndpoint:         "https://idp.internal.example/oauth/token",
+							ClientID:              "client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							AllowPrivateIPs:       true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 2)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				assert.True(t, config.Upstreams[0].OIDCConfig.AllowPrivateIPs)
+				require.NotNil(t, config.Upstreams[1].OAuth2Config)
+				assert.True(t, config.Upstreams[1].OAuth2Config.AllowPrivateIPs)
 			},
 		},
 		{

@@ -1103,6 +1103,53 @@ func TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop(t *testing.
 		"deploymentNeedsUpdate must not loop on a vMCP with AuthServerConfig (regression #5616)")
 }
 
+// TestDeploymentForVirtualMCPServer_AuthServerSigningKeyVolumeDrift verifies that
+// changing an embedded auth-server signing key Secret reference rolls the vMCP
+// Deployment. The mounted Secret is selected by the PodSpec rather than an env
+// var, so container drift checks alone cannot observe this change.
+func TestDeploymentForVirtualMCPServer_AuthServerSigningKeyVolumeDrift(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "keys-v1", Key: "signing-key.pem"}},
+		}),
+	)
+
+	const cfgChecksum = "test-checksum"
+	initialDeployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, nil, nil)
+	require.NotNil(t, initialDeployment)
+	require.NotEmpty(t, initialDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"])
+
+	updatedVMCP := vmcp.DeepCopy()
+	updatedVMCP.Spec.AuthServerConfig.SigningKeySecretRefs[0].Name = "keys-v2"
+	updatedDeployment := r.deploymentForVirtualMCPServer(t.Context(), updatedVMCP, cfgChecksum, nil, nil)
+	require.NotNil(t, updatedDeployment)
+
+	assert.NotEqual(t,
+		initialDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"],
+		updatedDeployment.Annotations["toolhive.stacklok.io/podvolumes-hash"],
+		"changing the signing key Secret reference must change the pod volume hash")
+	assert.True(t, r.deploymentNeedsUpdate(t.Context(), initialDeployment, updatedVMCP, cfgChecksum, nil, nil))
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), updatedDeployment, updatedVMCP, cfgChecksum, nil, nil))
+
+	var signingKeySecretName string
+	for _, volume := range updatedDeployment.Spec.Template.Spec.Volumes {
+		if volume.Name == ctrlutil.AuthServerKeysVolumePrefix+"0" && volume.Secret != nil {
+			signingKeySecretName = volume.Secret.SecretName
+			break
+		}
+	}
+	assert.Equal(t, "keys-v2", signingKeySecretName)
+}
+
 // TestImagePullSecretsHash verifies the hash helper normalizes order, treats an
 // empty list as the sentinel "" hash, and produces stable hashes across calls.
 func TestImagePullSecretsHash(t *testing.T) {

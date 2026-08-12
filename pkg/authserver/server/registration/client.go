@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/ory/fosite"
@@ -375,6 +376,42 @@ func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
 	}
 
 	return MarkDCRIssued(defaultClient), nil
+}
+
+// NewStaticDelegateClient creates an unmarked, pre-provisioned confidential
+// client for token exchange. A bare DefaultClient intentionally leaves the
+// token endpoint authentication method unpinned, allowing both HTTP Basic and
+// form-body client-secret authentication.
+func NewStaticDelegateClient(cfg Config) (*fosite.DefaultClient, error) {
+	if cfg.ID == "" {
+		return nil, fmt.Errorf("delegate client requires an ID")
+	}
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("confidential client requires a secret")
+	}
+	if len(cfg.GrantTypes) != 1 || cfg.GrantTypes[0] != oauthproto.GrantTypeTokenExchange {
+		return nil, fmt.Errorf("delegate client grant types must be exactly [%q]", oauthproto.GrantTypeTokenExchange)
+	}
+	if len(cfg.Scopes) == 0 {
+		return nil, fmt.Errorf("delegate client requires at least one scope")
+	}
+	if len(cfg.Audience) == 0 {
+		return nil, fmt.Errorf("delegate client requires at least one audience")
+	}
+
+	hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	}
+
+	return &fosite.DefaultClient{
+		ID:         cfg.ID,
+		Secret:     hashedSecret,
+		GrantTypes: slices.Clone(cfg.GrantTypes),
+		Scopes:     slices.Clone(cfg.Scopes),
+		Audience:   slices.Clone(cfg.Audience),
+		Public:     false,
+	}, nil
 }
 
 // Compile-time interface compliance check

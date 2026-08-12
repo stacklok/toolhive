@@ -16,6 +16,7 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -120,6 +121,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
+	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
+		return nil, err
+	}
+
 	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
@@ -220,6 +225,25 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		upstreams:         upstreams,
 		upstreamRefresher: refresher,
 	}, nil
+}
+
+func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
+	for _, delegateClient := range delegateClients {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:         delegateClient.ClientID,
+			Secret:     delegateClient.ClientSecret,
+			GrantTypes: delegateClient.GrantTypes,
+			Scopes:     delegateClient.Scopes,
+			Audience:   delegateClient.Audiences,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
+		}
+		if err := stor.RegisterClient(ctx, client); err != nil {
+			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
+		}
+	}
+	return nil
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,

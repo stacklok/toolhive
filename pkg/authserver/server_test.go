@@ -18,6 +18,7 @@ import (
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -450,4 +451,46 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	if refresher != nil {
 		t.Fatalf("expected a true nil interface, got non-nil %T", refresher)
 	}
+}
+
+func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		DelegateClients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: "delegate-secret",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		}},
+	}
+
+	factory := func(ctx context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		client, err := stor.GetClient(ctx, "delegate")
+		require.NoError(t, err)
+		assert.False(t, registration.DCRIssued(client))
+		assert.False(t, client.IsPublic())
+		return nil, assert.AnError
+	}
+
+	_, err := newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	require.ErrorIs(t, err, assert.AnError)
+
+	// Startup registration is an upsert. Replacing a same-ID DCR client makes
+	// it permanent and unmarked rather than retaining DCR eviction semantics.
+	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
+	require.NoError(t, err)
+	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
+	_, err = newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	require.ErrorIs(t, err, assert.AnError)
+	client, err := stor.GetClient(ctx, "delegate")
+	require.NoError(t, err)
+	assert.False(t, registration.DCRIssued(client))
 }

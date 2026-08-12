@@ -240,6 +240,26 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_StaticClientReplacesDCRClient(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		dcrClient := dcrClient(t, "delegate")
+		require.True(t, registration.DCRIssued(dcrClient))
+		require.NoError(t, s.RegisterClient(ctx, dcrClient))
+
+		staticClient, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: "delegate", Secret: "new-secret", GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.RegisterClient(ctx, staticClient))
+
+		retrieved, err := s.GetClient(ctx, "delegate")
+		require.NoError(t, err)
+		assert.False(t, registration.DCRIssued(retrieved))
+		assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+	})
+}
+
 // TestMemoryStorage_RegisterClient_Bounded pins the anti-DoS cap: the client
 // map is bounded by maxClients with oldest-first eviction among DCR-issued
 // clients only, a re-registered client refreshes its eviction position, and

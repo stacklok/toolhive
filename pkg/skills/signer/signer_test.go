@@ -413,3 +413,83 @@ func TestSignOCICosignKeyWrongPasswordIsReported(t *testing.T) {
 	assert.Contains(t, err.Error(), "COSIGN_PASSWORD",
 		"a wrong password must point at the password, not surface an opaque ASN.1 error")
 }
+
+// sigLayers returns the layer descriptors of the cosign signature manifest
+// attached to digestStr.
+func sigLayers(t *testing.T, ref, digestStr string) []v1.Descriptor {
+	t.Helper()
+	parsed, err := name.ParseReference(ref)
+	require.NoError(t, err)
+	h, err := v1.NewHash(digestStr)
+	require.NoError(t, err)
+	sigTag := parsed.Context().Tag(h.Algorithm + "-" + h.Hex + ".sig")
+	img, err := remote.Image(sigTag)
+	require.NoError(t, err)
+	m, err := img.Manifest()
+	require.NoError(t, err)
+	return m.Layers
+}
+
+// TestSignOCIAppendsRatherThanReplacingSignatures covers the multi-signer
+// case: an artifact can legitimately carry signatures from several parties,
+// and signing it again must not delete trust material belonging to someone
+// else. Building the manifest from empty.Image and writing it to the .sig
+// tag silently did exactly that.
+//
+//nolint:paralleltest // uses t.Setenv
+func TestSignOCIAppendsRatherThanReplacingSignatures(t *testing.T) {
+	reg := httptest.NewServer(registry.New())
+	t.Cleanup(reg.Close)
+	host := strings.TrimPrefix(reg.URL, "http://")
+
+	t.Setenv("COSIGN_PASSWORD", "")
+	keyA, pubA := writeTestKey(t)
+	keyB, pubB := writeTestKey(t)
+	ref, digestStr := pushTestArtifact(t, host)
+
+	rawA, err := NewDefault(nil).SignOCI(t.Context(), ref, digestStr, Options{Key: keyA})
+	require.NoError(t, err)
+	require.Len(t, sigLayers(t, ref, digestStr), 1, "first signature creates the manifest")
+
+	rawB, err := NewDefault(nil).SignOCI(t.Context(), ref, digestStr, Options{Key: keyB})
+	require.NoError(t, err)
+
+	payload, err := SimpleSigningPayload(ref, digestStr)
+	require.NoError(t, err)
+	payloadDigest := sha256.Sum256(payload)
+
+	layers := sigLayers(t, ref, digestStr)
+	require.Len(t, layers, 2, "a second signer must not evict the first signature")
+
+	// Both signatures must still verify — the manifest carries two distinct
+	// annotations, one per key.
+	require.NoError(t, verifyKeyBundle(t, rawA, pubA, payloadDigest[:]))
+	require.NoError(t, verifyKeyBundle(t, rawB, pubB, payloadDigest[:]))
+
+	sigs := map[string]bool{}
+	for _, l := range layers {
+		sigs[l.Annotations[annotationCosignSignature]] = true
+	}
+	assert.Len(t, sigs, 2, "the two layers must carry distinct signatures")
+}
+
+// TestSignOCIWithSameKeyIsIdempotent keeps repeated pushes from growing the
+// signature manifest without bound.
+//
+//nolint:paralleltest // uses t.Setenv
+func TestSignOCIWithSameKeyIsIdempotent(t *testing.T) {
+	reg := httptest.NewServer(registry.New())
+	t.Cleanup(reg.Close)
+	host := strings.TrimPrefix(reg.URL, "http://")
+
+	t.Setenv("COSIGN_PASSWORD", "")
+	key, _ := writeTestKey(t)
+	ref, digestStr := pushTestArtifact(t, host)
+
+	for range 3 {
+		_, err := NewDefault(nil).SignOCI(t.Context(), ref, digestStr, Options{Key: key})
+		require.NoError(t, err)
+	}
+	assert.Len(t, sigLayers(t, ref, digestStr), 1,
+		"re-signing with the same key must not append a duplicate layer")
+}

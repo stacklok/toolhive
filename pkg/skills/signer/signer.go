@@ -96,7 +96,9 @@ func (d *Default) SignOCI(ctx context.Context, ref, digestStr string, opts Optio
 		return nil, errors.New("signing produced no message signature")
 	}
 
-	if err := attachCosignSignature(ctx, d.keychain, ref, digestStr, payload, msgSig.GetSignature()); err != nil {
+	if err := attachCosignSignature(
+		ctx, d.keychain, ref, digestStr, payload, msgSig.GetSignature(), keypair.GetPublicKey(),
+	); err != nil {
 		return nil, fmt.Errorf("attaching signature manifest: %w", err)
 	}
 

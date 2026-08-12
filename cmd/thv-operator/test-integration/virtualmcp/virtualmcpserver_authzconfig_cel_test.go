@@ -57,18 +57,34 @@ var _ = Describe("CEL Validation for authzConfig vs authzConfigRef on VirtualMCP
 				Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
 			})
 
-			It("should reject when both authzConfig and authzConfigRef are set", func() {
+			It("should reject when authServerConfig delegate clients use a plaintext issuer", func() {
 				vmcp := newVirtualMCPServerWithIncomingAuth(
-					"vmcp-authzmutex-both",
-					&mcpv1beta1.AuthzConfigRef{
-						Type:   "inline",
-						Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
-					},
-					&mcpv1beta1.MCPAuthzConfigReference{Name: "shared-authz"},
+					"vmcp-delegate-client-plaintext-issuer",
+					nil,
+					nil,
 				)
+				vmcp.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer:            "http://vmcp.default.svc.cluster.local:4483",
+					InsecureAllowHTTP: true,
+					UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+						Name: "upstream",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL: "https://idp.example.com",
+							ClientID:  "upstream-client",
+						},
+					}},
+					DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+						ClientID:        "delegate-client",
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+						Scopes:          []string{"openid"},
+						Audiences:       []string{"https://api.example.com"},
+					}},
+				}
+
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("authzConfig and authzConfigRef are mutually exclusive"))
+				Expect(err.Error()).To(ContainSubstring("delegateClients require an https:// issuer"))
 			})
 		})
 	})

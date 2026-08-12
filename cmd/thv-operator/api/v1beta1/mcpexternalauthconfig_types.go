@@ -349,6 +349,43 @@ type BearerTokenConfig struct {
 	TokenSecretRef *SecretKeyRef `json:"tokenSecretRef"`
 }
 
+// DelegateClientConfig configures a pre-provisioned confidential OAuth client
+// for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+// Secret and is never represented inline.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.clientSecretRef) && size(self.clientSecretRef.name) > 0 && size(self.clientSecretRef.key) > 0",message="clientSecretRef.name and clientSecretRef.key are required and must be non-empty"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
+type DelegateClientConfig struct {
+	// ClientID is the OAuth client_id presented at the token endpoint.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	ClientID string `json:"clientId"`
+
+	// ClientSecretRef references the Kubernetes Secret key containing the client secret.
+	// +kubebuilder:validation:Required
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef"`
+
+	// Scopes is the narrowed set of OAuth scopes this client may request.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=atomic
+	Scopes []string `json:"scopes"`
+
+	// Audiences is the narrowed set of RFC 8707 resources this client may request.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +listType=atomic
+	Audiences []string `json:"audiences"`
+}
+
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 // This enables running an authorization server that delegates authentication to upstream IDPs.
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
@@ -356,17 +393,14 @@ type BearerTokenConfig struct {
 // enforced at admission for both CRDs.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)",message="allowConfidentialClientRegistration cannot be combined with insecureAllowHTTP; client secrets would be issued in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://')",message="delegateClients require an https:// issuer; delegate client secrets must not be sent over plaintext HTTP"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 //
-// The allowConfidentialClientRegistration + plain-HTTP-loopback-issuer combination
-// (see insecureAllowConfidentialOverLoopbackHTTP below) has no CEL rule here: CEL has
-// no URL parser, only regex over the raw string, and this codebase already declined
-// a regex-based loopback check for forceConfidentialRedirectUris above for the same
-// reason — an approximate regex (port, path, case, IPv6 forms) can drift from the
-// authoritative net.ParseIP-based classifier (networking.IsLocalhost) the real check
-// uses, which is exactly the kind of gap this validation exists to close. It is
-// enforced in Go instead, at the same reconcile-time call site as the two rules
-// above (validateEmbeddedAuthServer -> authserver.ValidateConfidentialClientTransport).
+// Delegate clients categorically require HTTPS at admission. CEL has no URL
+// parser, so this deliberately conservative check rejects every plaintext HTTP
+// issuer rather than attempting a loopback exception that could admit a
+// non-loopback host. The runtime transport validation remains defense in depth
+// for direct Go callers and confidential DCR.
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type EmbeddedAuthServerConfig struct {
@@ -541,6 +575,20 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`
 
+	// DelegateClients configures pre-provisioned confidential clients for RFC 8693
+	// token exchange. Each secret is referenced from a Kubernetes Secret; no
+	// plaintext secret, redirect URI, or grant selection is accepted here. The
+	// operator always supplies the token-exchange grant when it converts this
+	// configuration to the runtime contract.
+	//
+	// This is independent of allowConfidentialClientRegistration: it neither
+	// enables nor requires unauthenticated confidential dynamic client
+	// registration.
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	// +optional
+	DelegateClients []DelegateClientConfig `json:"delegateClients,omitempty"`
+
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be
 	// registered as confidential clients regardless of the
 	// token_endpoint_auth_method the DCR request declares. A registration
@@ -577,6 +625,19 @@ type EmbeddedAuthServerConfig struct {
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
+}
+
+// ValidateConfidentialClientTransport rejects cleartext issuer configurations
+// when confidential DCR or delegate clients are configured. Delegate clients
+// do not enable DCR; they share its transport policy because they send a
+// secret to the token endpoint.
+func (c *EmbeddedAuthServerConfig) ValidateConfidentialClientTransport() error {
+	return authserver.ValidateConfidentialClientTransport(
+		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0,
+		c.InsecureAllowHTTP,
+		c.Issuer,
+		c.InsecureAllowConfidentialOverLoopbackHTTP,
+	)
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -1683,13 +1744,9 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
 
-	// Defense-in-depth: mirrors the type-level XValidation rule on
-	// EmbeddedAuthServerConfig, which already rejects this combination at
-	// admission for both MCPExternalAuthConfig and VirtualMCPServer.
-	if err := authserver.ValidateConfidentialClientTransport(
-		cfg.AllowConfidentialClientRegistration, cfg.InsecureAllowHTTP,
-		cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
-	); err != nil {
+	// Defense-in-depth with the shared runtime policy. This checks confidential
+	// DCR and statically declared delegate clients for unsafe HTTP issuers.
+	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
 		return err
 	}
 

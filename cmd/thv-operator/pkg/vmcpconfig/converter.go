@@ -503,14 +503,6 @@ func (*Converter) normalizeTelemetry(
 	}
 
 	if vmcp.Spec.Config.Telemetry != nil {
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info(
-			"VirtualMCPServer.spec.config.telemetry is deprecated for operator deployments; "+
-				"migrate to spec.telemetryConfigRef referencing an MCPTelemetryConfig. "+
-				"Inline telemetry is still applied for compatibility.",
-			"name", vmcp.Name,
-			"namespace", vmcp.Namespace,
-		)
 		return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 	}
 

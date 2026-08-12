@@ -685,6 +685,27 @@ func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 			"move the value to spec.authServerConfig.primaryUpstreamProvider")
 }
 
+// emitInlineTelemetryDeprecatedEvent emits a Warning event when the VirtualMCPServer
+// uses the deprecated spec.config.telemetry field instead of spec.telemetryConfigRef.
+// Only emits when the spec has changed since the last observed generation, so the event
+// fires once per spec change instead of on every reconcile.
+func (r *VirtualMCPServerReconciler) emitInlineTelemetryDeprecatedEvent(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	usesInlineTelemetry bool,
+) {
+	if !usesInlineTelemetry || r.Recorder == nil {
+		return
+	}
+	if vmcp.Generation == vmcp.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
+		"InlineTelemetryDeprecated", "ConvertTelemetry",
+		"spec.config.telemetry is deprecated for operator deployments; "+
+			"migrate to spec.telemetryConfigRef referencing an MCPTelemetryConfig. "+
+			"Inline telemetry is still applied for compatibility.")
+}
+
 func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,

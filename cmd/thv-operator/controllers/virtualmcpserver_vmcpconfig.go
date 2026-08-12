@@ -50,6 +50,10 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
+	// Emit deprecation event if inline telemetry is used instead of telemetryConfigRef
+	usesInlineTelemetry := vmcp.Spec.Config.Telemetry != nil && vmcp.Spec.TelemetryConfigRef == nil
+	r.emitInlineTelemetryDeprecatedEvent(vmcp, usesInlineTelemetry)
+
 	// Process outgoing auth configuration for both inline and discovered modes
 	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
 		return err

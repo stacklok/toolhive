@@ -47,6 +47,7 @@ require (
 	github.com/prometheus/common v0.70.1
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/shirou/gopsutil/v4 v4.26.5
+	github.com/spiffe/go-spiffe/v2 v2.7.0
 	github.com/spf13/viper v1.21.0
 	github.com/stacklok/toolhive-catalog v0.20260804.0
 	github.com/stacklok/toolhive-core v0.0.38

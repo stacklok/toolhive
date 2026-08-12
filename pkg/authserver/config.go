@@ -197,6 +197,14 @@ type RunConfig struct {
 	// when AllowConfidentialClientRegistration is false or Issuer is https.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
+
+	// SPIFFETrustDomains declares SPIFFE trust roots. Each declaration must be
+	// referenced by an inbound_grants.spiffe_client_auth association policy.
+	SPIFFETrustDomains []SPIFFETrustDomainRunConfig `json:"spiffe_trust_domains,omitempty" yaml:"spiffe_trust_domains,omitempty"`
+
+	// InboundGrants enables inbound grant purposes for configured trust roots.
+	// SPIFFE client authentication entries are references to SPIFFETrustDomains.
+	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -226,6 +234,9 @@ func (c *RunConfig) Validate() error {
 	}
 	if err := ValidateForceConfidentialRedirectURIs(
 		c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration); err != nil {
+		return err
+	}
+	if err := ValidateSPIFFETrust(c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
@@ -792,6 +803,7 @@ type Config struct {
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
+<<<<<<< HEAD
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
@@ -807,6 +819,14 @@ type Config struct {
 	// DCR when Issuer is a plain-HTTP loopback URL. See the identically named
 	// field on RunConfig for the full semantics and rationale.
 	InsecureAllowConfidentialOverLoopbackHTTP bool
+=======
+	// SPIFFETrustDomains and InboundGrants preserve the serialized form for
+	// compatibility with deferred startup wiring. SPIFFETrust is the validated,
+	// immutable runtime model and must be used by new runtime consumers.
+	SPIFFETrustDomains []SPIFFETrustDomainRunConfig
+	InboundGrants      *InboundGrantsRunConfig
+	SPIFFETrust        *SPIFFETrustConfig
+>>>>>>> c0ec5fbb9 (Add SPIFFE trust configuration model)
 }
 
 // Validate checks that the Config is valid.
@@ -881,6 +901,12 @@ func (c *Config) Validate() error {
 	// same as the BaselineClientScopes check above.
 	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
 		return err
+	}
+	if err := ValidateSPIFFETrust(c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if c.SPIFFETrust != nil && !c.SPIFFETrust.validated {
+		return fmt.Errorf("SPIFFE trust config must be constructed with NewSPIFFETrustConfig")
 	}
 	c.warnTrustedIssuerAudiences()
 

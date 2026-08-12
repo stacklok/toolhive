@@ -834,6 +834,16 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:MaxLength=128
 	// +kubebuilder:validation:Pattern=`^([a-zA-Z_][a-zA-Z0-9_]*)?$`
 	SubjectClaim string `json:"subjectClaim,omitempty"`
+
+	// AllowPrivateIP permits the upstream provider's HTTP client to connect
+	// to endpoints that resolve to private IP addresses. Required when the
+	// IdP is hosted on a private network (a self-hosted provider behind
+	// split-horizon DNS): without it the auth server refuses the connection
+	// at OIDC discovery and exits, crash-looping the pod. Disabled by
+	// default as SSRF protection — enable only for operator-controlled,
+	// trusted issuer URLs. Mirrors jwksAllowPrivateIP on MCPOIDCConfig.
+	// +optional
+	AllowPrivateIP bool `json:"allowPrivateIP,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.

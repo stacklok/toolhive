@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -37,6 +38,18 @@ const (
 	networkTransportTCP = "tcp"
 	// networkProtocolHTTP is the OTEL value for HTTP protocol
 	networkProtocolHTTP = "http"
+	// maxLabelValueBytes bounds the length of client-controlled metric label
+	// values. Cumulative metric readers (Prometheus, OTLP PeriodicReader) keep
+	// every distinct attribute set resident for the process lifetime, so an
+	// unbounded label value (e.g. an 8 MB MCP method name) stays in memory
+	// permanently and can exhaust the pod. This caps the byte length; the OTEL
+	// SDK's 2000-series limit caps the count. Spans are left untruncated on
+	// purpose — they are sampled and ephemeral, and the OTEL MCP semconv wants
+	// the real value.
+	maxLabelValueBytes = 128
+	// labelTruncationMarker is appended to truncated label values so consumers
+	// can tell a value was clamped.
+	labelTruncationMarker = "..."
 )
 
 // MCPHistogramBuckets are the bucket boundaries defined by the MCP OTEL semantic conventions
@@ -697,6 +710,24 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
+// truncateLabelValue bounds a client-controlled metric label value to
+// maxLabelValueBytes, clamping on a UTF-8 rune boundary so the result is never
+// invalid UTF-8, and appending labelTruncationMarker to signal truncation.
+// Values within the cap are returned unchanged. Use this only for metric
+// labels; span attributes keep the full value.
+func truncateLabelValue(s string) string {
+	if len(s) <= maxLabelValueBytes {
+		return s
+	}
+	// Reserve room for the marker so the returned value stays within the cap.
+	limit := maxLabelValueBytes - len(labelTruncationMarker)
+	// Back up to a rune boundary so we never split a multi-byte character.
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + labelTruncationMarker
+}
+
 // recordMetrics records request metrics.
 func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw *responseWriter, duration time.Duration) {
 	// Get MCP method from context if available
@@ -724,8 +755,8 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		attribute.String("method", r.Method),
 		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
 		attribute.String("status", status),
-		attribute.String("mcp_method", mcpMethod),
-		attribute.String("mcp_resource_id", mcpResourceID),
+		attribute.String("mcp_method", truncateLabelValue(mcpMethod)),
+		attribute.String("mcp_resource_id", truncateLabelValue(mcpResourceID)),
 		attribute.String("server", m.serverName),
 		attribute.String("transport", m.transport),
 	)
@@ -754,7 +785,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
 			toolAttrs := metric.WithAttributes(
 				attribute.String("server", m.serverName),
-				attribute.String("tool", parsedMCP.ResourceID),
+				attribute.String("tool", truncateLabelValue(parsedMCP.ResourceID)),
 				attribute.String("status", status),
 			)
 			m.toolCallCounter.Add(ctx, 1, toolAttrs)
@@ -770,7 +801,7 @@ func (m *HTTPMiddleware) recordOperationDuration(
 	networkTransport, protocolName, _ := mapTransport(m.transport)
 
 	specAttrs := []attribute.KeyValue{
-		attribute.String("mcp.method.name", mcpMethod),
+		attribute.String("mcp.method.name", truncateLabelValue(mcpMethod)),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 		attribute.String("network.transport", networkTransport),
 	}
@@ -795,11 +826,11 @@ func (m *HTTPMiddleware) recordOperationDuration(
 	case string(mcp.MethodToolsCall):
 		specAttrs = append(specAttrs, attribute.String("gen_ai.operation.name", "execute_tool"))
 		if resourceID != "" {
-			specAttrs = append(specAttrs, attribute.String("gen_ai.tool.name", resourceID))
+			specAttrs = append(specAttrs, attribute.String("gen_ai.tool.name", truncateLabelValue(resourceID)))
 		}
 	case methodPromptsGet:
 		if resourceID != "" {
-			specAttrs = append(specAttrs, attribute.String("gen_ai.prompt.name", resourceID))
+			specAttrs = append(specAttrs, attribute.String("gen_ai.prompt.name", truncateLabelValue(resourceID)))
 		}
 	}
 

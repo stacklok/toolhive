@@ -99,6 +99,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
+
 	// Validate storage is provided
 	if stor == nil {
 		return nil, fmt.Errorf("storage is required")
@@ -128,19 +130,21 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                       cfg.Issuer,
-		AccessTokenLifespan:          cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:         cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:             cfg.AuthCodeLifespan,
-		HMACSecrets:                  cfg.HMACSecrets,
-		SigningKeyID:                 signingKey.KeyID,
-		SigningKeyAlgorithm:          signingKey.Algorithm,
-		SigningKey:                   signingKey.Key,
-		ScopesSupported:              cfg.ScopesSupported,
-		BaselineClientScopes:         cfg.BaselineClientScopes,
-		AllowedAudiences:             cfg.AllowedAudiences,
-		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                  cfg.CIMDEnabled,
+		Issuer:                              cfg.Issuer,
+		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
+		HMACSecrets:                         cfg.HMACSecrets,
+		SigningKeyID:                        signingKey.KeyID,
+		SigningKeyAlgorithm:                 signingKey.Algorithm,
+		SigningKey:                          signingKey.Key,
+		ScopesSupported:                     cfg.ScopesSupported,
+		BaselineClientScopes:                cfg.BaselineClientScopes,
+		AllowedAudiences:                    cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -249,7 +253,7 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (fosite.OAuth2Provider, error) {
-	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan)
+	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan, cfg.TrustedIssuers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 	}
@@ -412,6 +416,18 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 		}
 	}
 	return nil
+}
+
+// logConfidentialClientStartup emits an Info line naming the consequence of
+// enabling confidential-client DCR. Combining it with cleartext HTTP is
+// rejected by Config.Validate (see ValidateConfidentialClientTransport), so
+// that combination can no longer reach this function.
+func logConfidentialClientStartup(allowConfidentialClientRegistration bool) {
+	if !allowConfidentialClientRegistration {
+		return
+	}
+	slog.Info("confidential-client dynamic registration is enabled: " +
+		"this server issues client secrets over unauthenticated dynamic registration")
 }
 
 // wrapComposeFactory adapts a compose.Factory to a server.Factory.

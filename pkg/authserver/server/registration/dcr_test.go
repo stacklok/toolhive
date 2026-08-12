@@ -478,7 +478,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := ValidateDCRRequest(tt.request)
+			result, err := ValidateDCRRequest(tt.request, false)
 
 			if tt.expectError {
 				require.NotNil(t, err, "expected error")

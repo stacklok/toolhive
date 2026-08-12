@@ -187,6 +187,14 @@ func (f *Flow) generateState() error {
 	return nil
 }
 
+// listenAddr returns the address the callback server binds to. The redirect
+// URL points at localhost, so the listener is bound to the IPv4 loopback
+// instead of all interfaces: a wildcard bind would expose the callback
+// endpoint to every host on the LAN for the lifetime of the login.
+func (f *Flow) listenAddr() string {
+	return fmt.Sprintf("127.0.0.1:%d", f.port)
+}
+
 // Start starts the OAuth authentication flow
 func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error) {
 	// Create channels for communication
@@ -199,7 +207,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 	mux.HandleFunc("/", f.handleRoot())
 
 	f.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", f.port),
+		Addr:              f.listenAddr(),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}

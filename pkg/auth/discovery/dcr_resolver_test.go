@@ -135,7 +135,7 @@ func newDCRDiscoveryServer(t *testing.T, cfg dcrTestServerConfig) *httptest.Serv
 		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
 			ClientID:                "cli-registered-client",
-			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			ClientSecretExpiresAt:   &cfg.clientSecretExpiresAt,
 			RegistrationAccessToken: cfg.registrationAccessToken,
 			RegistrationClientURI:   cfg.registrationClientURI,
 			TokenEndpointAuthMethod: "none",

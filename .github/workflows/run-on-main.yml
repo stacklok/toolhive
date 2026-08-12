@@ -22,7 +22,11 @@ jobs:
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
-    secrets: inherit
+    # Named rather than inherited: this job runs the Go test suite, and so
+    # executes repository code and its dependency tree. It has no business
+    # holding the release signing keys.
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
   codegen:
     name: Codegen
     uses: ./.github/workflows/verify-gen.yml
@@ -30,7 +34,6 @@ jobs:
   helm-charts:
     name: Helm Charts
     uses: ./.github/workflows/helm-charts-test.yml
-    secrets: inherit
   e2e-tests:
     name: E2E Tests
     needs: [linting, tests, codegen]

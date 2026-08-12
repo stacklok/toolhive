@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -55,6 +56,7 @@ func TestNewSQLiteToolStore(t *testing.T) {
 		t.Parallel()
 		store := newTestStore(t, nil, nil)
 		require.NotNil(t, store.db)
+		require.NotNil(t, store.keepAlive)
 		require.Nil(t, store.embeddingClient)
 	})
 
@@ -64,6 +66,45 @@ func TestNewSQLiteToolStore(t *testing.T) {
 		store := newTestStore(t, client, nil)
 		require.NotNil(t, store.embeddingClient)
 	})
+}
+
+// TestSQLiteToolStore_SurvivesCanceledStatement is a regression test for #5889.
+//
+// Canceling a statement mid-flight makes modernc.org/sqlite interrupt the
+// connection, which database/sql then discards rather than returning to the
+// pool. Without the store's keep-alive connection that empties the pool, and
+// emptying the pool destroys the shared in-memory database: every later
+// operation fails with "no such table: llm_capabilities" until the process
+// restarts.
+func TestSQLiteToolStore_SurvivesCanceledStatement(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, nil, nil)
+	tools := makeTools(mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")))
+	require.NoError(t, store.UpsertTools(context.Background(), tools))
+
+	// Counting to 200 million takes far longer than the deadline below, so the
+	// statement is always canceled while it is still executing.
+	const slowQuery = `WITH RECURSIVE counter(x) AS (
+		SELECT 1 UNION ALL SELECT x + 1 FROM counter WHERE x < 200000000
+	) SELECT count(*) FROM counter`
+
+	for range 3 {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		var count int
+		require.Error(t, store.db.QueryRowContext(ctx, slowQuery).Scan(&count))
+		cancel()
+	}
+
+	// The store still works: schema, FTS5 index and rows all intact.
+	results, err := store.Search(
+		context.Background(),
+		types.SearchQuery{Description: "read a file"},
+		toolNames(tools),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "read_file", results[0].Name)
 }
 
 func TestSQLiteToolStore_UpsertTools(t *testing.T) {

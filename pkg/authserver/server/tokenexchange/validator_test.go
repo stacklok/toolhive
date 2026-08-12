@@ -296,6 +296,69 @@ func TestSelfIssuedTokenValidator_Validate(t *testing.T) {
 			wantErr:     true,
 			errContains: "malformed 'may_act' claim",
 		},
+		{
+			name: "may_act with iss matching this server's own issuer accepted",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["may_act"] = map[string]any{"sub": "authorized-agent", "iss": testIssuer}
+				return tj.signToken(t, validClaims(), extra)
+			},
+			check: func(t *testing.T, vc *ValidatedClaims) {
+				t.Helper()
+				require.NotNil(t, vc.MayAct)
+				assert.Equal(t, "authorized-agent", vc.MayAct.Sub)
+				assert.Equal(t, testIssuer, vc.MayAct.Iss)
+			},
+		},
+		{
+			// RFC 8693 §4.4: sub is only meaningful together with iss. This
+			// server only ever grants delegation to its own clients, so an
+			// iss naming a different issuer is namespace confusion, not a
+			// legitimate qualifier — reject rather than silently ignore it.
+			name: "malformed may_act — iss not matching this server's own issuer",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["may_act"] = map[string]any{"sub": "authorized-agent", "iss": "https://evil.example.com"}
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "malformed 'may_act' claim",
+		},
+		{
+			name: "malformed may_act — empty iss",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["may_act"] = map[string]any{"sub": "authorized-agent", "iss": ""}
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "malformed 'may_act' claim",
+		},
+		{
+			name: "ID token masquerading as subject token rejected — at_hash present",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["at_hash"] = "some-hash-value"
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "'at_hash'",
+		},
+		{
+			name: "ID token masquerading as subject token rejected — c_hash present",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["c_hash"] = "some-hash-value"
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "'c_hash'",
+		},
 	}
 
 	for _, tt := range tests {
@@ -526,5 +589,56 @@ func TestSelfIssuedTokenValidator_MultiKeyJWKS(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.Equal(t, "user-123", result.Subject)
+	})
+
+	t.Run("key marked for a non-signing use is never tried", func(t *testing.T) {
+		t.Parallel()
+
+		// Same key material a signature could actually verify against, but
+		// declared "enc" in the JWKS — RFC 7517 §4.2 reserves it for a
+		// different purpose. Without the use filter, this key would still
+		// verify the signature below and wrongly accept the token.
+		jwk := newECDSAJWK(t, "enc-key")
+		jwk.Use = "enc"
+		jwks := publicJWKSOf(jwk)
+
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
+		require.NoError(t, err)
+
+		// No kid on the token, so verifySignature must fall back to trying
+		// every key in the JWKS — and skip this one.
+		signingKeyNoKID := jwk
+		signingKeyNoKID.KeyID = ""
+		rawToken := signWithJWK(t, signingKeyNoKID, jose.ES256, validClaims())
+
+		result, err := validator.Validate(context.Background(), rawToken)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "signature verification failed")
+		assert.Nil(t, result)
+	})
+
+	t.Run("key with a mismatched declared algorithm is never tried", func(t *testing.T) {
+		t.Parallel()
+
+		// The JWKS entry claims RS256, but the token header (and the actual
+		// signing) uses ES256 — a misconfigured or spoofed JWKS entry.
+		// Without the alg filter, go-jose would still attempt (and, for an
+		// EC key, fail) this candidate; the point here is that it must be
+		// skipped rather than tried at all.
+		jwk := newECDSAJWK(t, "mismatched-alg-key")
+		jwk.Algorithm = string(jose.RS256)
+		jwks := publicJWKSOf(jwk)
+
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
+		require.NoError(t, err)
+
+		signingKeyNoKID := jwk
+		signingKeyNoKID.KeyID = ""
+		rawToken := signWithJWK(t, signingKeyNoKID, jose.ES256, validClaims())
+
+		result, err := validator.Validate(context.Background(), rawToken)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "signature verification failed")
+		assert.Nil(t, result)
 	})
 }

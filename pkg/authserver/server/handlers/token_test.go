@@ -4,22 +4,87 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
+
+// capturingHandler is a minimal slog.Handler that records every log call, so
+// tests can assert on the level a message was logged at without depending on
+// output formatting.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (*capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestLogAccessError asserts that logAccessError splits on the wrapped
+// fosite error's HTTP status: a 5xx (e.g. a storage outage surfacing as
+// ErrServerError) must be visible at Error level, while a 4xx (the only
+// class an unauthenticated caller can trigger) stays at Debug so a flood
+// can't drown real errors.
+//
+//nolint:paralleltest // mutates the process-global slog default (slog.SetDefault); racing with any concurrent test that logs via the default logger
+func TestLogAccessError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantLevel slog.Level
+	}{
+		{
+			name:      "5xx error logs at Error",
+			err:       fosite.ErrServerError,
+			wantLevel: slog.LevelError,
+		},
+		{
+			name:      "4xx error logs at Debug",
+			err:       fosite.ErrInvalidRequest,
+			wantLevel: slog.LevelDebug,
+		},
+	}
+
+	//nolint:paralleltest // subtests serialize slog.SetDefault/slog.Default swaps; running them in parallel would race on the global default
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &capturingHandler{}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(handler))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			logAccessError(context.Background(), "test message", tc.err)
+
+			require.Len(t, handler.records, 1)
+			assert.Equal(t, tc.wantLevel, handler.records[0].Level)
+		})
+	}
+}
 
 func TestTokenHandler_MissingGrantType(t *testing.T) {
 	t.Parallel()

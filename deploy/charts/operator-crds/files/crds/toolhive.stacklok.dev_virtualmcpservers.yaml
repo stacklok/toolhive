@@ -78,6 +78,24 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  allowConfidentialClientRegistration:
+                    default: false
+                    description: |-
+                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+                      Registration of confidential clients: when true, /oauth/register
+                      accepts token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (still the default on
+                      omission) and mints a client_secret returned exactly once.
+                      Confidential registrations are restricted to https non-loopback
+                      redirect URIs, and on the Redis storage backend all DCR-issued
+                      registrations are evicted after 30 days of inactivity and must
+                      re-register. This gates registration only: disabling it does not
+                      revoke or reject already-minted secrets at the token endpoint.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -158,6 +176,41 @@ spec:
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
+                  forceConfidentialRedirectUris:
+                    description: |-
+                      ForceConfidentialRedirectURIs lists redirect URIs that must be
+                      registered as confidential clients regardless of the
+                      token_endpoint_auth_method the DCR request declares. A registration
+                      whose redirectUris contains an EXACT match for one of these entries is
+                      issued a real client_secret and reported back as
+                      token_endpoint_auth_method "client_secret_post", even if the request
+                      said "none" or omitted the field.
+
+                      Intended for MCP clients that declare themselves public
+                      (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
+                      proceed because the response carries no client_secret — a
+                      self-contradictory request. RFC 7591 §3.2.1 permits the server to
+                      substitute client metadata, so this takes such a client at its word
+                      that it wants a secret. Remove an entry once the client is fixed to
+                      handle "none" registrations correctly.
+
+                      Exact matching is deliberate: an attacker who registers with someone
+                      else's callback URI is issued a secret for a client whose
+                      authorization codes are delivered to that someone else's redirect
+                      endpoint, not to the attacker, so this is not a way to obtain a usable
+                      credential for another client.
+
+                      Requires allowConfidentialClientRegistration to be true. Every entry
+                      must be an https non-loopback URI — a loopback client is a public
+                      client by construction (OAuth 2.1 §2.1) and must not be issued a
+                      secret; this is enforced at reconcile time since CEL cannot express
+                      the loopback-hostname check.
+                    items:
+                      pattern: ^https://[^\s?#]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -181,6 +234,21 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowConfidentialOverLoopbackHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
+                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
+                      is rejected at reconcile time: a loopback http:// issuer is normally
+                      fine for local development since the traffic never leaves the machine,
+                      but combined with confidential registration it means /oauth/register —
+                      which is unauthenticated — mints client secrets over cleartext. Forcing
+                      TLS onto every loopback deployment instead would just push operators
+                      toward insecureAllowHTTP, which is worse: that also disables the
+                      non-loopback host check. Has no effect when
+                      allowConfidentialClientRegistration is false or issuer is https.
+                    type: boolean
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -196,6 +264,11 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
+
+                      One combination is rejected at admission on all three CRDs regardless of the
+                      above: setting this field alongside allowConfidentialClientRegistration, which
+                      would issue client secrets in cleartext over an unauthenticated registration
+                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -988,6 +1061,16 @@ spec:
                 - issuer
                 - upstreamProviders
                 type: object
+                x-kubernetes-validations:
+                - message: allowConfidentialClientRegistration cannot be combined
+                    with insecureAllowHTTP; client secrets would be issued in cleartext
+                    over an unauthenticated endpoint
+                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
+                    to be true
+                  rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
+                    == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -1032,6 +1115,28 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultToolVisibility:
+                        description: |-
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -1077,24 +1182,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -1322,6 +1437,57 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            idempotentHint:
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            openWorldHint:
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            readOnlyHint:
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            title:
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string
@@ -3542,6 +3708,24 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
+                  allowConfidentialClientRegistration:
+                    default: false
+                    description: |-
+                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
+                      Registration of confidential clients: when true, /oauth/register
+                      accepts token_endpoint_auth_method values client_secret_basic and
+                      client_secret_post in addition to "none" (still the default on
+                      omission) and mints a client_secret returned exactly once.
+                      Confidential registrations are restricted to https non-loopback
+                      redirect URIs, and on the Redis storage backend all DCR-issued
+                      registrations are evicted after 30 days of inactivity and must
+                      re-register. This gates registration only: disabling it does not
+                      revoke or reject already-minted secrets at the token endpoint.
+
+                      Security: registration is unauthenticated, so enabling this lets any
+                      caller who can reach the endpoint obtain a client credential.
+                      Combining it with insecureAllowHTTP is rejected at validation.
+                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -3622,6 +3806,41 @@ spec:
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
+                  forceConfidentialRedirectUris:
+                    description: |-
+                      ForceConfidentialRedirectURIs lists redirect URIs that must be
+                      registered as confidential clients regardless of the
+                      token_endpoint_auth_method the DCR request declares. A registration
+                      whose redirectUris contains an EXACT match for one of these entries is
+                      issued a real client_secret and reported back as
+                      token_endpoint_auth_method "client_secret_post", even if the request
+                      said "none" or omitted the field.
+
+                      Intended for MCP clients that declare themselves public
+                      (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
+                      proceed because the response carries no client_secret — a
+                      self-contradictory request. RFC 7591 §3.2.1 permits the server to
+                      substitute client metadata, so this takes such a client at its word
+                      that it wants a secret. Remove an entry once the client is fixed to
+                      handle "none" registrations correctly.
+
+                      Exact matching is deliberate: an attacker who registers with someone
+                      else's callback URI is issued a secret for a client whose
+                      authorization codes are delivered to that someone else's redirect
+                      endpoint, not to the attacker, so this is not a way to obtain a usable
+                      credential for another client.
+
+                      Requires allowConfidentialClientRegistration to be true. Every entry
+                      must be an https non-loopback URI — a loopback client is a public
+                      client by construction (OAuth 2.1 §2.1) and must not be issued a
+                      secret; this is enforced at reconcile time since CEL cannot express
+                      the loopback-hostname check.
+                    items:
+                      pattern: ^https://[^\s?#]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -3645,6 +3864,21 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowConfidentialOverLoopbackHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
+                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
+                      is rejected at reconcile time: a loopback http:// issuer is normally
+                      fine for local development since the traffic never leaves the machine,
+                      but combined with confidential registration it means /oauth/register —
+                      which is unauthenticated — mints client secrets over cleartext. Forcing
+                      TLS onto every loopback deployment instead would just push operators
+                      toward insecureAllowHTTP, which is worse: that also disables the
+                      non-loopback host check. Has no effect when
+                      allowConfidentialClientRegistration is false or issuer is https.
+                    type: boolean
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -3660,6 +3894,11 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
+
+                      One combination is rejected at admission on all three CRDs regardless of the
+                      above: setting this field alongside allowConfidentialClientRegistration, which
+                      would issue client secrets in cleartext over an unauthenticated registration
+                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -4452,6 +4691,16 @@ spec:
                 - issuer
                 - upstreamProviders
                 type: object
+                x-kubernetes-validations:
+                - message: allowConfidentialClientRegistration cannot be combined
+                    with insecureAllowHTTP; client secrets would be issued in cleartext
+                    over an unauthenticated endpoint
+                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
+                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
+                    to be true
+                  rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
+                    == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -4496,6 +4745,28 @@ spec:
                               type: string
                             type: array
                         type: object
+                      defaultToolVisibility:
+                        description: |-
+                          DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+                          tools advertised to MCP clients.
+                            - allow (default): every tool from an unlisted backend is advertised, so
+                              adding a workload to the group exposes it without further configuration.
+                            - deny: an unlisted backend contributes no tools, so only backends named in
+                              Tools are advertised. Use this when the set of exposed tools must be
+                              enumerated deliberately rather than inherited from group membership.
+
+                          A backend that DOES have a Tools entry is unaffected by this setting: the
+                          entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+                          every other visibility setting here, this controls advertising only — hidden
+                          tools remain in the routing table for composite tools (see the type doc).
+
+                          This gates TOOLS only. An unlisted backend's resources, resource templates,
+                          and prompts are still advertised under deny; mergeResources/mergePrompts have
+                          no equivalent check.
+                        enum:
+                        - allow
+                        - deny
+                        type: string
                       excludeAllTools:
                         description: |-
                           ExcludeAllTools hides all backend tools from MCP clients when true.
@@ -4541,24 +4812,34 @@ spec:
                                       Only specified fields are overridden; others pass through from the backend.
                                     properties:
                                       destructiveHint:
-                                        description: DestructiveHint overrides the
-                                          destructive hint annotation.
+                                        description: |-
+                                          DestructiveHint sets the destructive hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       idempotentHint:
-                                        description: IdempotentHint overrides the
-                                          idempotent hint annotation.
+                                        description: |-
+                                          IdempotentHint sets the idempotent hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       openWorldHint:
-                                        description: OpenWorldHint overrides the open-world
-                                          hint annotation.
+                                        description: |-
+                                          OpenWorldHint sets the open-world hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       readOnlyHint:
-                                        description: ReadOnlyHint overrides the read-only
-                                          hint annotation.
+                                        description: |-
+                                          ReadOnlyHint sets the read-only hint annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: boolean
                                       title:
-                                        description: Title overrides the human-readable
-                                          title annotation.
+                                        description: |-
+                                          Title sets the human-readable title annotation.
+                                          For tool overrides this replaces the backend value; for composite tools
+                                          it is an explicit declaration merged over the derived safety floor.
                                         type: string
                                     type: object
                                   description:
@@ -4786,6 +5067,57 @@ spec:
                         CompositeToolConfig defines a composite tool workflow.
                         This matches the YAML structure from the proposal (lines 173-255).
                       properties:
+                        annotations:
+                          description: |-
+                            Annotations declares MCP tool annotations for the composite tool.
+
+                            Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+                            and the backend tools are aggregated), not at CRD admission — thv vmcp
+                            validate does NOT check annotation contradictions. The derived floor is
+                            fail-closed: when the workflow has one or more tool steps the floor is
+                            always non-nil, and any step whose annotations are nil/unknown taints the
+                            floor conservatively (readOnly=false, destructive=true, openWorld=true).
+                            A workflow with no tool steps (e.g. only elicitation) has no floor.
+
+                            When nil, annotations are derived from the annotations of the backend tools
+                            referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+                            step tool is read-only). When set, the values are an explicit author
+                            declaration merged over the derived floor — subject to a safety-floor
+                            guardrail that drops the composite tool (with a warning naming the offending
+                            step tools) if an explicit hint would make the tool look safer than its
+                            steps allow.
+                          properties:
+                            destructiveHint:
+                              description: |-
+                                DestructiveHint sets the destructive hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            idempotentHint:
+                              description: |-
+                                IdempotentHint sets the idempotent hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            openWorldHint:
+                              description: |-
+                                OpenWorldHint sets the open-world hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            readOnlyHint:
+                              description: |-
+                                ReadOnlyHint sets the read-only hint annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: boolean
+                            title:
+                              description: |-
+                                Title sets the human-readable title annotation.
+                                For tool overrides this replaces the backend value; for composite tools
+                                it is an explicit declaration merged over the derived safety floor.
+                              type: string
+                          type: object
                         description:
                           description: Description describes what the workflow does.
                           type: string

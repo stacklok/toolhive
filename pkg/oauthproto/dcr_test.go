@@ -52,7 +52,7 @@ func TestRegisterClientDynamically(t *testing.T) {
 				ClientID:                "test-client-id",
 				ClientSecret:            "test-client-secret",
 				ClientIDIssuedAt:        1234567890,
-				ClientSecretExpiresAt:   0,
+				ClientSecretExpiresAt:   new(int64), // explicit 0: does not expire
 				RegistrationAccessToken: "reg-token",
 				RegistrationClientURI:   "https://example.com/oauth/register/test-client-id",
 			},

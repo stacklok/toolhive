@@ -712,3 +712,133 @@ func TestRoundTripReinitializesOnDialError(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "client should see 200 after transparent re-init on dial error")
 	assert.GreaterOrEqual(t, freshHit.Load(), int32(2), "fresh backend should receive initialize + replay")
 }
+
+// TestRoundTripStripsSessionIDFromInitialize verifies that a client-initiated
+// initialize reaches the backend with no Mcp-Session-Id header, whether or not
+// the session it carries maps to a backend session ID recorded by a prior
+// transparent re-initialization.
+//
+// MCP requires a re-initializing client to "start a new session by sending a
+// new InitializeRequest without a session ID attached". Forwarding the client's
+// session ID — or the backend SID mapped from it — hands an already-initialized
+// backend session a second handshake, which go-sdk v1.7+ rejects with
+// `duplicate "initialize" received`, turning a client-side handshake retry into
+// a hard failure.
+func TestRoundTripStripsSessionIDFromInitialize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		priorBackend bool // session carries a backend_sid from an earlier re-init
+	}{
+		{name: "session mapped to a backend SID", priorBackend: true},
+		{name: "session with no backend SID", priorBackend: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			var receivedSIDs []string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				receivedSIDs = append(receivedSIDs, r.Header.Get("Mcp-Session-Id"))
+				mu.Unlock()
+				w.Header().Set("Mcp-Session-Id", uuid.New().String())
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+
+			proxy, addr := startProxy(t, backend.URL)
+
+			clientSessionID := uuid.New().String()
+			sess := session.NewProxySession(clientSessionID)
+			if tt.priorBackend {
+				sess.SetMetadata(sessionMetadataBackendSID, uuid.New().String())
+			}
+			require.NoError(t, proxy.sessionManager.AddSession(sess))
+
+			ctx := context.Background()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				"http://"+addr+"/mcp",
+				strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Mcp-Session-Id", clientSessionID)
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, receivedSIDs, 1, "backend should receive exactly one request")
+			assert.Empty(t, receivedSIDs[0], "initialize must reach the backend with no Mcp-Session-Id")
+		})
+	}
+}
+
+// TestRoundTripDoesNotReplayInitializeOnDialError verifies that a dial error on
+// an initialize does not trigger transparent re-initialization.
+//
+// reinitializeAndReplay sends its own initialize and then replays the original
+// request; for an initialize that would give the freshly created backend session
+// a second handshake — the exact failure the session-ID strip exists to avoid.
+// The client is already starting a new session, so the proxy instead unpins the
+// session from the unreachable pod and lets the error surface, leaving the
+// client's retry to route via the target service.
+func TestRoundTripDoesNotReplayInitializeOnDialError(t *testing.T) {
+	t.Parallel()
+
+	// A server closed immediately after creation: its URL refuses connections.
+	dead := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		w.Header().Set("Mcp-Session-Id", uuid.New().String())
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	proxy, addr := startProxy(t, target.URL)
+
+	clientSessionID := uuid.New().String()
+	sess := session.NewProxySession(clientSessionID)
+	sess.SetMetadata(sessionMetadataBackendURL, deadURL)
+	sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	require.NoError(t, proxy.sessionManager.AddSession(sess))
+
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+addr+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", clientSessionID)
+
+	// A dedicated client, not http.DefaultClient: the shared transport pools
+	// keep-alive connections across the package's parallel tests, and reusing
+	// one whose proxy has since been closed surfaces here as a transport error.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
+	// Either outcome is legitimate for a dial failure -- the reverse proxy may
+	// synthesize a 502, or the connection may fail outright. Neither is what
+	// this test is about; the assertions below are.
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+
+	assert.Zero(t, targetHits.Load(),
+		"the proxy must not send its own initialize to the target service for an initialize dial error")
+
+	updated, ok := proxy.sessionManager.Get(normalizeSessionID(clientSessionID))
+	require.True(t, ok, "session should survive the dial error")
+	backendURL, exists := updated.GetMetadataValue(sessionMetadataBackendURL)
+	require.True(t, exists, "backend_url should still be set")
+	assert.Equal(t, target.URL, backendURL,
+		"session must be unpinned from the unreachable pod so the client's retry routes via the target service")
+}

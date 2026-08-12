@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 )
 
 // var _ ensures *service continues to satisfy the full lock service surface
@@ -137,13 +139,29 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	if newRef != entry.ResolvedReference && !opts.AllowRefChange {
-		outcome.Status = skills.UpgradeStatusRefChangeBlocked
-		outcome.NewResolvedReference = newRef
-		return upgradePlan{entry: entry, outcome: outcome}
-	}
 	if newRef != entry.ResolvedReference {
 		outcome.NewResolvedReference = newRef
+		// Only a move to a different repository is a supply-chain event. A
+		// tag moving within the same repository is how a catalog-sourced
+		// skill advances at all, and blocking it would force automation to
+		// pass --allow-ref-change on every routine upgrade — which would
+		// also disable the repository check this guard exists for.
+		if repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
+			outcome.Status = skills.UpgradeStatusRefChangeBlocked
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
+	}
+
+	// Signer-change guard: when the entry records a signer identity, the
+	// candidate must verify with the same one before the upgrade is even
+	// planned. Verification happens here (plan-only modes stay
+	// install-free) with a nil expected identity so a differing signer is
+	// reported as a change rather than a bare failure; blocked plans carry
+	// no pinnedRef, exactly like ref changes.
+	if entry.Provenance != nil && !opts.AllowSignerChange {
+		if blocked := s.guardSignerChange(ctx, entry, newRef, newDigest, &outcome); blocked {
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
 	}
 
 	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: newRef, Digest: newDigest})
@@ -156,6 +174,60 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 
 	outcome.Status = skills.UpgradeStatusUpgraded
 	return upgradePlan{entry: entry, outcome: outcome, pinnedRef: pinnedRef, resolvedRef: newRef}
+}
+
+// guardSignerChange probes the candidate artifact's signer identity and
+// fills outcome when the upgrade must not proceed: the candidate is signed
+// by a different identity (or unsigned) versus the recorded provenance, or
+// its signature cannot be verified at all. Returns true when blocked.
+func (s *service) guardSignerChange(
+	ctx context.Context,
+	entry lockfile.Entry,
+	newRef, newDigest string,
+	outcome *skills.UpgradeOutcome,
+) bool {
+	probe, probeErr := s.probeCandidateSigner(ctx, newRef, newDigest)
+	switch {
+	case probeErr != nil && errors.Is(probeErr, verifier.ErrUnsigned):
+		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
+		return true
+	case probeErr != nil:
+		outcome.Status = skills.UpgradeStatusFailed
+		outcome.Reason = classifySignatureError(probeErr)
+		if outcome.Reason == "" {
+			outcome.Reason = skills.FailureReasonUnknown
+		}
+		outcome.Error = probeErr.Error()
+		return true
+	case probe.SignerIdentity != entry.Provenance.SignerIdentity ||
+		probe.CertIssuer != entry.Provenance.CertIssuer:
+		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
+		outcome.NewSignerIdentity = probe.SignerIdentity
+		return true
+	}
+	return false
+}
+
+// probeCandidateSigner verifies the candidate artifact chain-of-trust-only
+// (nil expected identity) and returns the observed identity. Git candidates
+// are re-resolved at the pinned commit to obtain the signature material.
+func (s *service) probeCandidateSigner(ctx context.Context, newRef, newDigest string) (*verifier.Result, error) {
+	if strings.Contains(newDigest, ":") {
+		return s.artifactVerifier().VerifyOCI(ctx, newRef, newDigest, nil)
+	}
+	pinned, err := buildPinnedReference(lockfile.Entry{ResolvedReference: newRef, Digest: newDigest})
+	if err != nil {
+		return nil, err
+	}
+	gitRef, err := gitresolver.ParseGitReference(pinned)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := s.gitResolver.Resolve(ctx, gitRef)
+	if err != nil {
+		return nil, err
+	}
+	return s.artifactVerifier().VerifyGit(ctx, resolved.CommitPayload, []byte(resolved.CommitSignature), nil)
 }
 
 // applyUpgrade installs plan's pinned content when the plan calls for it.
@@ -179,6 +251,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		Clients:               clients,
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: plan.resolvedRef,
+		AllowSignerChange:     opts.AllowSignerChange,
 	}); err != nil {
 		outcome := plan.outcome
 		outcome.Status = skills.UpgradeStatusFailed

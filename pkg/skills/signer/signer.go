@@ -76,7 +76,7 @@ func (d *Default) SignOCI(ctx context.Context, ref, digestStr string, opts Optio
 		return nil, err
 	}
 
-	payload, err := simpleSigningPayload(ref, digestStr)
+	payload, err := SimpleSigningPayload(ref, digestStr)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -259,11 +260,15 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			// Presence of a reserved io.modelcontextprotocol/* _meta key is
-			// itself a Modern signal, regardless of its value (see
-			// pkg/mcp/revision.go). No protocolVersion is present, so the
-			// non-empty header below cannot be validated against the body
-			// and the request is a hard rejection.
+			// A reserved io.modelcontextprotocol/* _meta key with no
+			// protocolVersion cannot be validated against the Modern header
+			// below, so the request is a hard rejection (see
+			// pkg/mcp/revision.go).
+			//
+			// The header must be the MODERN version: an explicit non-Modern
+			// header is the client's negotiated declaration and now outranks a
+			// stray reserved key, classifying the request Legacy instead
+			// (#6188). This case is about the still-rejected Modern shape.
 			"_meta":     map[string]any{"io.modelcontextprotocol/clientInfo": map[string]any{"name": "test"}},
 			"name":      "echo",
 			"arguments": map[string]any{},
@@ -276,7 +281,7 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 		context.Background(), http.MethodPost, ts.URL+"/mcp", bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 
 	resp, err := ts.Client().Do(req)
 	require.NoError(t, err)

@@ -574,6 +574,154 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			},
 			expectErr: false, // validateEmbeddedAuthServer returns nil if config is nil
 		},
+		{
+			name: "confidential clients combined with insecure HTTP - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://auth.example.com",
+						InsecureAllowHTTP:                   true,
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer and opt-in - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						InsecureAllowConfidentialOverLoopbackHTTP: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "confidential clients with https issuer unaffected by loopback opt-in default",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "forceConfidentialRedirectUris without allowConfidentialClientRegistration - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                        "https://auth.example.com",
+						ForceConfidentialRedirectURIs: []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "requires allow_confidential_client_registration",
+		},
+		{
+			name: "forceConfidentialRedirectUris with loopback entry - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://localhost/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "must not be a loopback redirect URI",
+		},
+		{
+			name: "forceConfidentialRedirectUris with valid https entry and flag on - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tt := range tests {

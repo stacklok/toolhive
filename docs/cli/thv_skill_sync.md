@@ -37,6 +37,7 @@ thv skill sync [flags]
 
 ```
       --adopt                 Write lock entries for existing unmanaged project-scope installs
+      --allow-unsigned        Allow adopting skills whose signature state cannot be established (recorded as unsigned)
       --check                 Report drift without installing, writing, or removing anything
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --format string         Output format (json, text) (default "text")

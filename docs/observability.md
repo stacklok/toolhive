@@ -340,6 +340,33 @@ The `mcp.resource.uri` attribute is set only for the following methods:
 `resources/read`, `resources/subscribe`, `resources/unsubscribe`,
 `notifications/resources/updated`.
 
+### Rate Limit Attributes
+
+Redis-backed rate limit checks annotate the existing request span; they do not
+create a separate span. Normal allowed and rejected outcomes set all three
+attributes below.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `rate_limit.decision` | string | `"allowed"` or `"rejected"` |
+| `rate_limit.rejected_by` | string | `"none"` for allowed requests, otherwise the bucket that rejected the request |
+| `rate_limit.fail_open` | bool | `false` for normal allowed and rejected outcomes |
+
+The bounded `rate_limit.rejected_by` values are:
+
+| Value | Limiting bucket |
+|-------|-----------------|
+| `shared_server` | Server-wide shared limit |
+| `shared_tool` | Tool-specific shared limit |
+| `per_user_server` | Server-wide per-user limit |
+| `per_user_tool` | Tool-specific per-user limit |
+
+When no configured bucket applies to a tool call, the span records
+`rate_limit.decision="allowed"`, `rate_limit.rejected_by="none"`, and
+`rate_limit.fail_open=false`. Redis check failures do not receive these normal
+outcome attributes. If multiple rate limit checks use the same request span,
+the latest normal outcome replaces earlier values.
+
 ### Tool, Prompt, and Resource Attributes
 
 **For `tools/call`:**

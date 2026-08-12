@@ -222,7 +222,7 @@ func TestClassifyRevision(t *testing.T) {
 			// Legacy.
 			name:        "legacy: logLevel reserved key alone is not a Modern signal",
 			method:      "tools/call",
-			meta:        map[string]any{metaKeyLogLevel: "debug"},
+			meta:        map[string]any{MetaKeyLogLevel: "debug"},
 			protoHeader: "",
 			expectedRev: RevisionLegacy,
 			checkErr: func(t *testing.T, err error) {
@@ -290,12 +290,34 @@ func TestClassifyRevision(t *testing.T) {
 			},
 		},
 		{
-			name:   "modern signal via reserved key with non-modern header is a header mismatch",
+			// #6188: the ChatGPT connector negotiates 2025-11-25 and sets
+			// reserved keys without a _meta protocolVersion. The explicit
+			// non-Modern header is its negotiated declaration and outranks the
+			// stray key; rejecting this broke every tools/call it sent. Note
+			// the same request WITHOUT the reserved key is classified Legacy by
+			// hasModernSignal, so rejecting it was incoherent, not strict.
+			name:   "legacy: reserved key with an explicit non-modern header",
 			method: "tools/call",
 			meta: map[string]any{
 				metaKeyClientCapabilities: map[string]any{},
 			},
 			protoHeader: "2025-11-25",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			// Modern enforcement is untouched: a Modern header with no _meta
+			// protocolVersion is still the malformed shape go-sdk sends for a
+			// removed RPC, and still -32020.
+			name:   "modern header with reserved key but no body version is still a mismatch",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyClientCapabilities: map[string]any{},
+			},
+			protoHeader: MCPVersionModern,
 			expectedRev: RevisionModern,
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
@@ -303,8 +325,24 @@ func TestClassifyRevision(t *testing.T) {
 				var mismatchErr *HeaderMismatchError
 				require.ErrorAs(t, err, &mismatchErr)
 				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
-				assert.Equal(t, "2025-11-25", mismatchErr.Header)
+				assert.Equal(t, MCPVersionModern, mismatchErr.Header)
 				assert.Empty(t, mismatchErr.Body)
+			},
+		},
+		{
+			// An unrecognised header is still non-Modern, so it is classified
+			// Legacy for the same reason. Version validity is the transport's
+			// job (isSupportedMCPVersion), not the classifier's.
+			name:   "legacy: reserved key with an unrecognised header",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyClientInfo: map[string]any{"name": "openai-mcp"},
+			},
+			protoHeader: "1999-01-01",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
 			},
 		},
 		{
@@ -697,7 +735,7 @@ func TestStripReservedMeta(t *testing.T) {
 			metaKeyProtocolVersion:    MCPVersionModern,
 			metaKeyClientInfo:         map[string]any{"name": "x"},
 			metaKeyClientCapabilities: map[string]any{},
-			metaKeyLogLevel:           "debug",
+			MetaKeyLogLevel:           "debug",
 			// Response/notification-side reserved keys: a backend must not be able
 			// to speak for vMCP on the way back to the client (#5986).
 			"io.modelcontextprotocol/serverInfo":     map[string]any{"name": "attacker"},

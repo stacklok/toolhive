@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -511,6 +512,103 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	// Check that the handler was called and the response is OK
 	assert.True(t, handlerCalled, "Handler should be called for GET requests")
 	assert.Equal(t, http.StatusOK, rr.Code, "Response status code should be OK")
+}
+
+func TestMiddlewareRejectsNonJSONPost(t *testing.T) {
+	t.Parallel()
+	// Even a permissive policy must not see this request: a non-JSON POST is
+	// never parsed as MCP, so message-level authorization cannot run, while the
+	// proxy would still forward the body verbatim to a backend that parses
+	// JSON-RPC without checking Content-Type.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action, resource);`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err, "Failed to create Cedar authorizer")
+
+	var handlerCalled bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
+	req, err := http.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	require.NoError(t, err, "Failed to create HTTP request")
+	req.Header.Set("Content-Type", "text/plain")
+
+	rr := httptest.NewRecorder()
+	middleware.ServeHTTP(rr, req)
+
+	assert.False(t, handlerCalled, "handler must not be reached by a non-JSON POST carrying JSON-RPC")
+	assert.Equal(t, http.StatusBadRequest, rr.Code, "non-JSON POST should be rejected")
+}
+
+// TestMiddlewareNonJSONPostVariants pins the content-type handling around the
+// explicit non-JSON refusal: which declarations still authorize and reach the
+// handler, and which get the 400.
+func TestMiddlewareNonJSONPostVariants(t *testing.T) {
+	t.Parallel()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
+
+	cases := []struct {
+		name        string
+		path        string
+		contentType string // empty means the header is not set at all
+		wantStatus  int
+		wantHandled bool
+	}{
+		{"charset variant still authorizes", "/mcp", "application/json; charset=utf-8", http.StatusOK, true},
+		{"uppercase media type still authorizes", "/mcp", "Application/JSON", http.StatusOK, true},
+		{"missing Content-Type is rejected", "/mcp", "", http.StatusBadRequest, false},
+		{"non-JSON POST to SSE path is rejected", "/sse", "text/plain", http.StatusBadRequest, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+				Policies: []string{
+					`permit(principal, action, resource);`,
+				},
+				EntitiesJSON: `[]`,
+			}, "")
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			var handlerCalled bool
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+			req, err := http.NewRequest(http.MethodPost, tc.path, strings.NewReader(body))
+			require.NoError(t, err, "Failed to create HTTP request")
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			}
+
+			// Attach an identity so the permissive policy has a principal to
+			// authorize, matching the other authorized-call tests.
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user",
+				Claims:  jwt.MapClaims{"sub": "test-user"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			middleware.ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.wantHandled, handlerCalled, "handler reached")
+			assert.Equal(t, tc.wantStatus, rr.Code, "response status")
+		})
+	}
 }
 
 func TestFactoryCreateMiddleware(t *testing.T) {
@@ -1080,15 +1178,21 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 
 // TestMiddlewareOptimizerMetaTools tests the optimizer meta-tool interception logic.
 // When a tool is in the passThroughTools set, the middleware handles it specially:
-//   - call_tool (has "tool_name" in arguments): authorize the inner backend tool
-//   - find_tool (no "tool_name" in arguments): allow through as a discovery operation
+//   - call_tool (arguments decode to a tool_name): authorize the inner backend tool
+//   - find_tool (arguments name no tool): allow through as a discovery operation
+//
+// The arguments are decoded exactly as dispatch decodes them, so the name authorized
+// here and the name that runs are always the same one.
 func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 	t.Parallel()
 
-	// Cedar policy that only permits "allowed_backend" — not "call_tool" or "find_tool".
+	// Cedar policies permitting "allowed_backend" unconditionally and "args_backend"
+	// only when the inner arguments reach the authorizer. Neither permits "call_tool"
+	// or "find_tool" themselves.
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"allowed_backend");`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"args_backend") when { context.arg_query == "x" };`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
@@ -1145,6 +1249,71 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			arguments: map[string]interface{}{
 				"tool_name":  "forbidden_backend",
 				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			// Dispatch hoists a nested name and runs the tool, so authorization must
+			// see the same target rather than treating the request as naming no tool.
+			name:     "call_tool with nested unauthorized inner tool is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"parameters": map[string]interface{}{
+					"tool_name": "forbidden_backend",
+					"query":     "x",
+				},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			name:     "call_tool with nested authorized inner tool passes through",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"parameters": map[string]interface{}{
+					"tool_name": "allowed_backend",
+					"query":     "x",
+				},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
+			// encoding/json matches struct fields case-insensitively, so dispatch
+			// resolves and runs this tool. A map index on "tool_name" does not see it
+			// and would wave the request through with no policy check at all.
+			name:     "call_tool with a case-variant tool_name key is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"Tool_Name":  "forbidden_backend",
+				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			// The policy for args_backend only permits the call when the inner
+			// arguments reach the authorizer. A map index on "parameters" drops them
+			// here, so the tool would be denied a call the policy allows.
+			name:     "call_tool with a case-variant parameters key still carries the inner arguments",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "args_backend",
+				"PARAMETERS": map[string]interface{}{"query": "x"},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
+			// The target cannot be established, so the middleware refuses rather than
+			// passing through. Dispatch decodes the same arguments with the same call
+			// and rejects them too, so no legitimate invocation is lost.
+			name:     "call_tool with undecodable arguments is denied",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "allowed_backend",
+				"parameters": "not an object",
 			},
 			expectStatus:     http.StatusForbidden,
 			expectHandlerHit: false,

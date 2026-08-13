@@ -25,9 +25,9 @@ type SPIFFEClient struct {
 }
 
 // NewSPIFFEClient creates an immutable, secretless, non-public client for a
-// configured SPIFFE association. Resources and token audiences remain distinct
-// from Fosite's GetAudience field because existing token-exchange handling uses
-// that field for its established semantics.
+// configured SPIFFE association. GetAudience() derives from the union of
+// resources and audiences; Resources() and Audiences() remain separately
+// queryable for callers that need to distinguish the two.
 func NewSPIFFEClient(
 	id string,
 	grantTypes, scopes, resources, audiences []string,
@@ -75,10 +75,20 @@ func (c *SPIFFEClient) Audiences() []string { return slices.Clone(c.audiences) }
 // TokenExchangeEnabled reports whether RFC 8693 token exchange is permitted.
 func (c *SPIFFEClient) TokenExchangeEnabled() bool { return c.tokenExchangeEnabled }
 
-// GetAudience returns nil. Resource and token-audience policies are deliberately
-// not represented through Fosite's single audience field, which existing token
-// exchange code uses for both request parameters.
-func (*SPIFFEClient) GetAudience() fosite.Arguments { return nil }
+// GetAudience returns the union of configured resources and audiences. Fosite's
+// DefaultAudienceMatchingStrategy checks both the "audience" and RFC 8707
+// "resource" request parameters against this single field, so omitting either
+// set here would make audience/resource matching fail for a SPIFFE client.
+func (c *SPIFFEClient) GetAudience() fosite.Arguments {
+	audience := make(fosite.Arguments, 0, len(c.audiences)+len(c.resources))
+	audience = append(audience, c.audiences...)
+	for _, resource := range c.resources {
+		if !slices.Contains(audience, resource) {
+			audience = append(audience, resource)
+		}
+	}
+	return audience
+}
 
 // IsPublic returns false so Fosite does not treat unauthenticated requests as
 // public-client requests. Future SPIFFE credential validation remains separate.

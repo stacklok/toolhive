@@ -35,7 +35,7 @@ func TestNewSPIFFEClient(t *testing.T) {
 	assert.Equal(t, "https://resource.example.com", client.Resources()[0])
 	assert.Equal(t, "https://api.example.com", client.Audiences()[0])
 	assert.True(t, client.TokenExchangeEnabled())
-	assert.Empty(t, client.GetAudience())
+	assert.ElementsMatch(t, []string{"https://resource.example.com", "https://api.example.com"}, client.GetAudience())
 
 	client.GetScopes()[0] = "mutated"
 	client.Resources()[0] = "mutated"
@@ -54,4 +54,48 @@ func TestNewSPIFFEClient_RequiresID(t *testing.T) {
 
 	_, err := NewSPIFFEClient("", nil, nil, nil, nil, false)
 	require.Error(t, err)
+}
+
+func TestSPIFFEClient_GetAudience(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		resources []string
+		audiences []string
+		want      []string
+	}{
+		{
+			name:      "overlapping resources and audiences dedup",
+			resources: []string{"https://shared.example.com", "https://resource-only.example.com"},
+			audiences: []string{"https://shared.example.com", "https://audience-only.example.com"},
+			want: []string{
+				"https://shared.example.com",
+				"https://resource-only.example.com",
+				"https://audience-only.example.com",
+			},
+		},
+		{
+			name:      "resources only",
+			resources: []string{"https://resource.example.com"},
+			audiences: nil,
+			want:      []string{"https://resource.example.com"},
+		},
+		{
+			name:      "audiences only",
+			resources: nil,
+			audiences: []string{"https://api.example.com"},
+			want:      []string{"https://api.example.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := NewSPIFFEClient("spiffe-client", nil, nil, tt.resources, tt.audiences, false)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.want, client.GetAudience())
+		})
+	}
 }

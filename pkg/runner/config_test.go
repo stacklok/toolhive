@@ -2190,6 +2190,50 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 				},
 				ScopesSupported:  []string{"openid", "profile", "email"},
 				AllowedAudiences: []string{"https://api.example.com", "https://mcp.example.com"},
+				SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{
+					{
+						Name:        "production",
+						TrustDomain: "example.org",
+						Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+						BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+							Type:     authserver.SPIFFEBundleSourceTypeEndpoint,
+							Endpoint: &authserver.SPIFFEBundleEndpointSourceRunConfig{URL: "https://bundles.example.org/"},
+						},
+					},
+					{
+						Name:        "development",
+						TrustDomain: "dev.example.org",
+						Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
+						BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+							Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+							WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+						},
+					},
+				},
+				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{
+					{
+						TrustDomainRef: "production",
+						Principal:      "spiffe://example.org/ns/default/agent",
+						ClientID:       "spiffe-client",
+						Methods:        []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+						GrantTypes:     []string{authserver.SPIFFEGrantTypeTokenExchange},
+						Scopes:         []string{"openid"},
+						Resources:      []string{"https://api.example.com"},
+						Audiences:      []string{"https://mcp.example.com"},
+						TokenExchange:  &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
+					},
+					{
+						TrustDomainRef: "development",
+						Principal:      "spiffe://dev.example.org/ns/default/agent",
+						ClientID:       "development-spiffe-client",
+						Methods:        []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
+						GrantTypes:     []string{authserver.SPIFFEGrantTypeTokenExchange},
+						Scopes:         []string{"profile"},
+						Resources:      []string{"https://mcp.example.com"},
+						Audiences:      []string{"https://api.example.com"},
+						TokenExchange:  &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
+					},
+				}},
 			},
 		}
 
@@ -2254,6 +2298,36 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 		// Verify scopes and audiences
 		assert.Equal(t, []string{"openid", "profile", "email"}, authConfig.ScopesSupported, "ScopesSupported should match")
 		assert.Equal(t, []string{"https://api.example.com", "https://mcp.example.com"}, authConfig.AllowedAudiences, "AllowedAudiences should match")
+		require.Len(t, authConfig.SPIFFETrustDomains, 2)
+		assert.Equal(t, authserver.SPIFFEBundleSourceTypeEndpoint, authConfig.SPIFFETrustDomains[0].BundleSource.Type)
+		require.NotNil(t, authConfig.SPIFFETrustDomains[0].BundleSource.Endpoint)
+		assert.Equal(t, "https://bundles.example.org/", authConfig.SPIFFETrustDomains[0].BundleSource.Endpoint.URL)
+		assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, authConfig.SPIFFETrustDomains[0].Methods)
+		assert.Equal(t, authserver.SPIFFEBundleSourceTypeWorkloadAPI, authConfig.SPIFFETrustDomains[1].BundleSource.Type)
+		require.NotNil(t, authConfig.SPIFFETrustDomains[1].BundleSource.WorkloadAPI)
+		assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT}, authConfig.SPIFFETrustDomains[1].Methods)
+		require.NotNil(t, authConfig.InboundGrants)
+		require.Len(t, authConfig.InboundGrants.SPIFFEClientAuth, 2)
+		assert.Equal(t, []string{"https://api.example.com"}, authConfig.InboundGrants.SPIFFEClientAuth[0].Resources)
+		assert.Equal(t, []string{"https://mcp.example.com"}, authConfig.InboundGrants.SPIFFEClientAuth[0].Audiences)
+		assert.Equal(t, []string{"https://mcp.example.com"}, authConfig.InboundGrants.SPIFFEClientAuth[1].Resources)
+		assert.Equal(t, []string{"https://api.example.com"}, authConfig.InboundGrants.SPIFFEClientAuth[1].Audiences)
+		trust, err := authserver.NewSPIFFETrustConfig(
+			authConfig.SPIFFETrustDomains, authConfig.InboundGrants, authConfig.ScopesSupported, authConfig.AllowedAudiences,
+		)
+		require.NoError(t, err)
+		registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
+		require.NoError(t, err)
+		principal, err := registry.Resolve(
+			"spiffe://example.org/ns/default/agent", "spiffe-client", authserver.SPIFFEAuthenticationMethodX509,
+		)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"openid"}, principal.AuthorizationPolicy().Scopes())
+		principal, err = registry.Resolve(
+			"spiffe://dev.example.org/ns/default/agent", "development-spiffe-client", authserver.SPIFFEAuthenticationMethodJWT,
+		)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"profile"}, principal.AuthorizationPolicy().Scopes())
 	})
 
 	t.Run("serializes and deserializes with OIDC upstream", func(t *testing.T) {

@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/ory/fosite"
+
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
@@ -52,6 +54,12 @@ type Server interface {
 	// MemoryStorage continues to serve reads; a RedisStorage will error on
 	// its closed connection pool).
 	DCRStore() storage.DCRCredentialStore
+
+	// ClientRegistry returns the active read-only client lookup boundary used by
+	// Fosite. It includes configured static overlays as well as the dynamic
+	// backend, but intentionally does not grant registration or TTL-renewal
+	// authority. The returned handle is lifecycle-bound to Server.Close.
+	ClientRegistry() fosite.ClientManager
 
 	// Close releases resources held by the server.
 	Close() error

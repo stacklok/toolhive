@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ory/fosite"
+
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -147,6 +149,12 @@ func newEmbeddedAuthServerWithStorage(
 	stor storage.Storage,
 	delegateClients []authserver.DelegateClient,
 ) (retEAS *EmbeddedAuthServer, retErr error) {
+	// Validate required inputs before the deferred cleanup is installed: cfg is
+	// dereferenced during validation and stor is closed by that cleanup.
+	if err := validateEmbeddedAuthServerInputs(cfg, stor); err != nil {
+		return nil, err
+	}
+
 	// From here on, any error must close stor before returning.
 	//
 	// Both errors are passed through dcr.SanitizeErrorForLog before being
@@ -180,6 +188,16 @@ func newEmbeddedAuthServerWithStorage(
 	delegateClients, err = validateAndResolveDelegateClients(cfg, delegateClients)
 	if err != nil {
 		return nil, err
+	}
+	trust, err := authserver.NewSPIFFETrustConfig(
+		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+	}
+
+	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, trust); err != nil {
+		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
 	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
@@ -271,6 +289,7 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
+		SPIFFETrust:     trust,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR
@@ -345,6 +364,13 @@ func (e *EmbeddedAuthServer) DCRStore() storage.DCRCredentialStore {
 	return e.server.DCRStore()
 }
 
+// ClientRegistry returns the active read-only Fosite client lookup boundary.
+// Unlike the DCR store, it includes configuration-only static client overlays
+// while intentionally withholding registration and TTL-renewal authority.
+func (e *EmbeddedAuthServer) ClientRegistry() fosite.ClientManager {
+	return e.server.ClientRegistry()
+}
+
 // Routes returns the authorization server's HTTP route map.
 //
 // The /.well-known/ paths are registered explicitly because that namespace is shared:
@@ -374,6 +400,18 @@ func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
 	for pattern, handler := range e.Routes() {
 		mux.Handle(pattern, handler)
 	}
+}
+
+// validateEmbeddedAuthServerInputs rejects required inputs before construction
+// can dereference cfg or install cleanup that closes stor.
+func validateEmbeddedAuthServerInputs(cfg *authserver.RunConfig, stor storage.Storage) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	if stor == nil {
+		return fmt.Errorf("storage is required")
+	}
+	return nil
 }
 
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.

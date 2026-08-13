@@ -22,12 +22,12 @@ type SPIFFEStorageDecorator struct {
 	clients map[string]*registration.SPIFFEClient
 }
 
-// NewSPIFFEStorageDecorator overlays clients from a validated immutable SPIFFE
-// trust configuration over base. It checks the durable backend for client-ID
+// NewSPIFFEStorageDecorator overlays clients from an immutable SPIFFE
+// association registry over base. It checks the durable backend for client-ID
 // collisions before creating the overlay, but it does not load bundles,
 // authenticate SPIFFE credentials, or resolve SPIFFE IDs.
 //
-// A nil trust config leaves base unchanged. The caller must install this
+// A nil registry leaves base unchanged. The caller must install this
 // decorator before accepting traffic and route all later registrations through
 // the returned overlay. Under that startup invariant, the collision check and
 // reserved-ID rejection prevent a dynamic client from claiming a static ID.
@@ -37,52 +37,71 @@ type SPIFFEStorageDecorator struct {
 func NewSPIFFEStorageDecorator(
 	ctx context.Context,
 	base storage.Storage,
-	trust *SPIFFETrustConfig,
+	registry *SPIFFEAssociationRegistry,
 ) (storage.Storage, error) {
 	if base == nil {
 		return nil, fmt.Errorf("storage is required")
 	}
-	if trust == nil {
-		return base, nil
-	}
-	if !trust.validated {
-		return nil, fmt.Errorf("SPIFFE trust config must be constructed with NewSPIFFETrustConfig")
-	}
-
-	associations := trust.Associations()
-	if len(associations) == 0 {
+	if registry == nil {
 		return base, nil
 	}
 
-	clients := make(map[string]*registration.SPIFFEClient, len(associations))
-	durableBase := storage.Unwrap(base)
-	for _, association := range associations {
-		policy := association.AuthorizationPolicy()
-		client, err := registration.NewSPIFFEClient(
-			association.ClientID(),
-			policy.GrantTypes(),
-			policy.Scopes(),
-			policy.Resources(),
-			policy.Audiences(),
-			policy.TokenExchangeEnabled(),
-		)
+	clientIDs := registry.clientIDs()
+	if len(clientIDs) == 0 {
+		return base, nil
+	}
+
+	if err := registry.preflightDurableCollisions(ctx, base); err != nil {
+		return nil, err
+	}
+
+	clients := make(map[string]*registration.SPIFFEClient, len(clientIDs))
+	for _, clientID := range clientIDs {
+		client, found, err := registry.staticClient(clientID)
 		if err != nil {
-			return nil, fmt.Errorf("SPIFFE client %q: %w", association.ClientID(), err)
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("SPIFFE association registry lost client ID %q", clientID)
 		}
 		if _, exists := clients[client.GetID()]; exists {
 			return nil, fmt.Errorf("%w: duplicate static SPIFFE client ID %q", storage.ErrAlreadyExists, client.GetID())
-		}
-
-		if _, err := durableBase.GetClient(ctx, client.GetID()); err == nil {
-			return nil, fmt.Errorf("%w: static SPIFFE client ID %q collides with durable client", storage.ErrAlreadyExists, client.GetID())
-		} else if !errors.Is(err, storage.ErrNotFound) && !errors.Is(err, fosite.ErrNotFound) {
-			return nil, fmt.Errorf("check durable client collision for SPIFFE client ID %q: %w", client.GetID(), err)
 		}
 
 		clients[client.GetID()] = client
 	}
 
 	return &SPIFFEStorageDecorator{Storage: base, clients: clients}, nil
+}
+
+// PreflightSPIFFEStaticClientCollisions rejects static client IDs that already
+// exist in durable storage. It performs no network I/O and creates no durable
+// reservation; configured SPIFFE clients remain static, config-only authority.
+func PreflightSPIFFEStaticClientCollisions(
+	ctx context.Context, base storage.Storage, trust *SPIFFETrustConfig,
+) error {
+	registry, err := NewSPIFFEAssociationRegistry(trust)
+	if err != nil {
+		return fmt.Errorf("create SPIFFE association registry: %w", err)
+	}
+	if registry == nil {
+		return nil
+	}
+	return registry.preflightDurableCollisions(ctx, base)
+}
+
+func (r *SPIFFEAssociationRegistry) preflightDurableCollisions(ctx context.Context, base storage.Storage) error {
+	if base == nil {
+		return fmt.Errorf("storage is required")
+	}
+	for _, clientID := range r.clientIDs() {
+		if _, err := storage.Unwrap(base).GetClient(ctx, clientID); err == nil {
+			return fmt.Errorf("%w: static SPIFFE client ID %q collides with durable client", storage.ErrAlreadyExists, clientID)
+		} else if !errors.Is(err, storage.ErrNotFound) && !errors.Is(err, fosite.ErrNotFound) {
+			return fmt.Errorf("check durable client collision for SPIFFE client ID %q: %w", clientID, err)
+		}
+	}
+	return nil
 }
 
 // GetClient returns a configured SPIFFE client before consulting the dynamic

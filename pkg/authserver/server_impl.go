@@ -122,6 +122,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
+	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
 		return nil, err
 	}
@@ -187,15 +192,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, err
 	}
 
-	// Wrap storage with the CIMD decorator before constructing the fosite provider
-	// so that GetClient calls for HTTPS client_id values are intercepted at the
-	// fosite level (not just the handler level).
-	stor, err = decorateStorageForCIMD(cfg, stor)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create fosite provider with the (possibly decorated) storage.
+	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
 	fositeProvider, err := buildProvider(cfg, authServerConfig, stor)
 	if err != nil {
@@ -252,6 +249,38 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
 	}
 	return nil
+}
+
+// decorateStorageForSPIFFE validates SPIFFE policy, resolves its immutable
+// association registry, and installs the static overlay outside CIMD.
+func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Storage) (storage.Storage, error) {
+	trust := cfg.SPIFFETrust
+	if trust == nil {
+		var err error
+		trust, err = NewSPIFFETrustConfig(
+			cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+		}
+	}
+
+	registry, err := NewSPIFFEAssociationRegistry(trust)
+	if err != nil {
+		return nil, fmt.Errorf("create SPIFFE association registry: %w", err)
+	}
+
+	// Install dynamic CIMD lookup before the static SPIFFE overlay so configured
+	// clients always take precedence over remotely resolved HTTPS client IDs.
+	stor, err = decorateStorageForCIMD(cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	stor, err = NewSPIFFEStorageDecorator(ctx, stor, registry)
+	if err != nil {
+		return nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
+	}
+	return stor, nil
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,
@@ -362,6 +391,12 @@ func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 // against. See the Server interface doc for SECURITY and lifecycle notes.
 func (s *server) DCRStore() storage.DCRCredentialStore {
 	return s.dcrStore
+}
+
+// ClientRegistry returns the active read-only Fosite client lookup boundary,
+// including configured static overlays.
+func (s *server) ClientRegistry() fosite.ClientManager {
+	return s.storage
 }
 
 // UpstreamTokenRefresher returns the single shared refresher constructed in

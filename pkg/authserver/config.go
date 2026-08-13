@@ -1058,18 +1058,20 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// RunConfig.Validate() also runs these checks (see the comment there for
-	// why: buildUpstreamConfigs's live DCR registration happens before this
-	// method is reached), but a caller that constructs Config directly bypasses
-	// that, same as the BaselineClientScopes check above.
+	return c.validateDelegationAndTrustConfig()
+}
+
+// validateDelegationAndTrustConfig groups the delegate-client and SPIFFE
+// trust checks. RunConfig.Validate() also runs these checks (see the comment
+// there for why: buildUpstreamConfigs's live DCR registration happens before
+// this method is reached), but a caller that constructs Config directly
+// bypasses that, same as the BaselineClientScopes check in Validate above.
+func (c *Config) validateDelegationAndTrustConfig() error {
 	if err := c.validateDelegationConfig(); err != nil {
 		return err
 	}
-	if err := ValidateSPIFFETrust(c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences); err != nil {
+	if err := c.validateSPIFFETrust(); err != nil {
 		return err
-	}
-	if c.SPIFFETrust != nil && !c.SPIFFETrust.validated {
-		return fmt.Errorf("SPIFFE trust config must be constructed with NewSPIFFETrustConfig")
 	}
 	c.warnTrustedIssuerAudiences()
 
@@ -1110,6 +1112,16 @@ func (c *Config) validateConfidentialClientConfig() error {
 		return err
 	}
 	return ValidateForceConfidentialRedirectURIs(c.ForceConfidentialRedirectURIs, c.AllowConfidentialClientRegistration)
+}
+
+func (c *Config) validateSPIFFETrust() error {
+	if err := ValidateSPIFFETrust(c.SPIFFETrustDomains, c.InboundGrants, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if c.SPIFFETrust != nil && !c.SPIFFETrust.validated {
+		return fmt.Errorf("SPIFFE trust config must be constructed with NewSPIFFETrustConfig")
+	}
+	return nil
 }
 
 // validateCIMDBounds rejects invalid CIMD cache bounds when CIMD is enabled.

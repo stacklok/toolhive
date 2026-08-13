@@ -96,3 +96,68 @@ func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testin
 	_, err = NewEmbeddedAuthServerWithStorage(ctx, &collision, collisionStorage)
 	require.ErrorIs(t, err, storage.ErrAlreadyExists)
 }
+
+// TestIntegration_EmbeddedAuthServer_DelegateClientRedisRestart pins a
+// restart regression: registerDelegateClients runs on every boot, and a
+// blanket create-only RegisterClient would make the second boot against a
+// persistent backend fail with ErrAlreadyExists once the delegate client was
+// already registered by the first boot.
+func TestIntegration_EmbeddedAuthServer_DelegateClientRedisRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "redis:7-alpine",
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForListeningPort("6379/tcp"),
+		},
+		Started: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
+
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	port, err := container.MappedPort(ctx, "6379/tcp")
+	require.NoError(t, err)
+
+	t.Setenv("DELEGATE_CLIENT_SECRET", "delegate-secret-well-above-the-minimum-length")
+	cfg := authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://auth.example.com",
+		ScopesSupported:  []string{"openid"},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "upstream-client-id",
+				RedirectURI:           "https://auth.example.com/oauth/callback",
+			},
+		}},
+		DelegateClients: []authserver.DelegateClientRunConfig{{
+			ClientID:           "delegate",
+			ClientSecretEnvVar: "DELEGATE_CLIENT_SECRET",
+			Scopes:             []string{"openid"},
+			Audiences:          []string{"https://mcp.example.com"},
+		}},
+	}
+
+	// Same key prefix on both boots: the second EmbeddedAuthServer reuses the
+	// first boot's persisted delegate-client registration in Redis.
+	newStorage := func() *storage.RedisStorage {
+		return storage.NewRedisStorageWithClient(redis.NewClient(&redis.Options{
+			Addr: fmt.Sprintf("%s:%s", host, port.Port()),
+		}), "integration:delegate-restart:")
+	}
+
+	first, err := NewEmbeddedAuthServerWithStorage(ctx, &cfg, newStorage())
+	require.NoError(t, err)
+	require.NoError(t, first.Close())
+
+	second, err := NewEmbeddedAuthServerWithStorage(ctx, &cfg, newStorage())
+	require.NoError(t, err, "second boot must not fail re-registering the same delegate client")
+	require.NoError(t, second.Close())
+}

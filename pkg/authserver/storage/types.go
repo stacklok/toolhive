@@ -592,7 +592,10 @@ type ClientRegistry interface {
 
 	// RegisterClient registers a new OAuth client.
 	// This supports both static configuration and dynamic client registration (RFC 7591).
-	// Returns ErrAlreadyExists if a client with the same ID already exists.
+	// A DCR-issued client is create-only: it returns ErrAlreadyExists if a
+	// client with the same ID already exists. A static/operator-declared
+	// client is authoritative and replaces any existing client with the same
+	// ID, including one that was DCR-issued.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or

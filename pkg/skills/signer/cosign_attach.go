@@ -4,10 +4,14 @@
 package signer
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -16,9 +20,11 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/opencontainers/go-digest"
+	"github.com/sigstore/sigstore/pkg/signature"
 )
 
 const (
@@ -100,6 +106,7 @@ func attachCosignSignature(
 	keychain authn.Keychain,
 	imageRef, digestStr string,
 	payload, signatureBytes []byte,
+	pub crypto.PublicKey,
 ) error {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
@@ -110,11 +117,42 @@ func attachCosignSignature(
 		return err
 	}
 
+	h, err := v1.NewHash(d.String())
+	if err != nil {
+		return fmt.Errorf("parsing digest hash: %w", err)
+	}
+	sigTag := ref.Context().Tag(fmt.Sprint(h.Algorithm, "-", h.Hex, ".sig"))
+	remoteOpts := []remote.Option{remote.WithAuthFromKeychain(keychain), remote.WithContext(ctx)}
+
+	// An artifact can carry signatures from several signers, so the new
+	// layer is appended to whatever is already at the .sig tag rather than
+	// replacing it. Building from empty.Image unconditionally would delete
+	// every existing signature — including other people's trust material —
+	// on the next push. This mirrors cosign's own append behaviour.
+	base, err := existingSignatureImage(sigTag, remoteOpts)
+	if err != nil {
+		return err
+	}
+
+	already, err := signedByKey(base, payload, pub)
+	if err != nil {
+		return err
+	}
+	if already {
+		// Re-signing with the same key is a no-op; pushing repeatedly must
+		// not grow the manifest without bound. Comparing signature bytes
+		// would not work — ECDSA is randomised, so the same key produces a
+		// different signature every time — so this asks the question that
+		// actually matters: is one of the existing signatures already ours?
+		return nil
+	}
+	encodedSig := base64.StdEncoding.EncodeToString(signatureBytes)
+
 	layer := static.NewLayer(payload, mediaTypeCosignSimpleSigningV1JSON)
-	img, err := mutate.Append(empty.Image, mutate.Addendum{
+	img, err := mutate.Append(base, mutate.Addendum{
 		Layer: layer,
 		Annotations: map[string]string{
-			annotationCosignSignature: base64.StdEncoding.EncodeToString(signatureBytes),
+			annotationCosignSignature: encodedSig,
 		},
 		MediaType: mediaTypeCosignSimpleSigningV1JSON,
 	})
@@ -123,14 +161,77 @@ func attachCosignSignature(
 	}
 	img = mutate.MediaType(img, types.OCIManifestSchema1)
 
-	h, err := v1.NewHash(d.String())
-	if err != nil {
-		return fmt.Errorf("parsing digest hash: %w", err)
-	}
-	sigTag := ref.Context().Tag(fmt.Sprint(h.Algorithm, "-", h.Hex, ".sig"))
-	remoteOpts := []remote.Option{remote.WithAuthFromKeychain(keychain), remote.WithContext(ctx)}
 	if err := remote.Write(sigTag, img, remoteOpts...); err != nil {
 		return fmt.Errorf("pushing signature manifest: %w", err)
 	}
 	return nil
+}
+
+// existingSignatureImage fetches the signature manifest already at tag, or
+// an empty image when none exists yet. Only a genuine "absent" answer from
+// the registry is treated as empty — any other failure is returned, because
+// silently starting from empty would discard existing signatures.
+func existingSignatureImage(tag name.Tag, remoteOpts []remote.Option) (v1.Image, error) {
+	img, err := remote.Image(tag, remoteOpts...)
+	if err == nil {
+		return img, nil
+	}
+	if isAbsentFromRegistry(err) {
+		return empty.Image, nil
+	}
+	return nil, fmt.Errorf("reading existing signature manifest: %w", err)
+}
+
+// isAbsentFromRegistry reports whether err means "this tag does not exist"
+// as opposed to a transport, auth, or server failure.
+func isAbsentFromRegistry(err error) bool {
+	var terr *transport.Error
+	if !errors.As(err, &terr) {
+		return false
+	}
+	if terr.StatusCode == http.StatusNotFound {
+		return true
+	}
+	for _, diag := range terr.Errors {
+		if diag.Code == transport.ManifestUnknownErrorCode || diag.Code == transport.NameUnknownErrorCode {
+			return true
+		}
+	}
+	return false
+}
+
+// signedByKey reports whether img already carries a signature over payload
+// that verifies with pub — i.e. whether this key has already signed this
+// artifact. This is the same question cosign's dupe detector asks, and the
+// only reliable one: ECDSA signatures are randomised, so two signatures
+// from one key never match byte-for-byte.
+func signedByKey(img v1.Image, payload []byte, pub crypto.PublicKey) (bool, error) {
+	manifest, err := img.Manifest()
+	if err != nil {
+		return false, fmt.Errorf("reading signature manifest layers: %w", err)
+	}
+	if len(manifest.Layers) == 0 {
+		return false, nil
+	}
+	sigVerifier, err := signature.LoadVerifier(pub, crypto.SHA256)
+	if err != nil {
+		return false, fmt.Errorf("loading verifier for duplicate detection: %w", err)
+	}
+	for _, l := range manifest.Layers {
+		encoded := l.Annotations[annotationCosignSignature]
+		if encoded == "" {
+			continue
+		}
+		raw, decodeErr := base64.StdEncoding.DecodeString(encoded)
+		if decodeErr != nil {
+			// A layer we cannot decode is not one of ours; leave it alone
+			// rather than failing the whole push over someone else's
+			// malformed annotation.
+			continue
+		}
+		if sigVerifier.VerifySignature(bytes.NewReader(raw), bytes.NewReader(payload)) == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }

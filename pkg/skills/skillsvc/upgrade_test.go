@@ -15,17 +15,6 @@ import (
 )
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestUpgrade_FeatureDisabledReturnsForbidden(t *testing.T) {
-	gr, _ := newGitResolverMock(t)
-	svc, projectRoot := newLockTestService(t, gr)
-	t.Setenv(skills.LockFileEnvVar, "false")
-
-	_, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
-	require.Error(t, err)
-	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-}
-
-//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_ReportsUpToDateWhenSourceUnchanged(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
 	fx.register("my-skill", gitSkill("my-skill"))

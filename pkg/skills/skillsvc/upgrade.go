@@ -29,9 +29,6 @@ var _ skills.SkillLockService = (*service)(nil)
 // pinned to an immutable reference (an OCI digest or a full git commit hash)
 // are reported not-upgradable: there is nothing newer to resolve to.
 func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
-	if !skills.LockFileFeatureEnabled() {
-		return nil, errExperimentalLockFeature
-	}
 
 	_, projectRoot, err := normalizeProjectRoot(skills.ScopeProject, opts.ProjectRoot)
 	if err != nil {

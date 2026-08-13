@@ -31,6 +31,8 @@ type buildRequest struct {
 
 type pushRequest struct {
 	Reference string `json:"reference"`
+	Key       string `json:"key,omitempty"`
+	NoSign    bool   `json:"no_sign,omitempty"`
 }
 
 type listResponse struct {

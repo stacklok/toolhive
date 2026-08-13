@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -368,4 +369,54 @@ func TestClassifyVerifyFailureKeepsPinnedFieldDiagnosis(t *testing.T) {
 	require.ErrorIs(t, err, ErrSignerMismatch)
 	assert.Contains(t, err.Error(), "repository ref")
 	assert.NotErrorIs(t, err, ErrSignatureInvalid)
+}
+
+// TestMostUsefulVerifyErrorPrefersPinnedFieldMismatch is the regression test
+// for the multi-bundle case TestClassifyVerifyFailureKeepsPinnedFieldDiagnosis
+// does not reach: verifyKeylessBundles' loop calls this once per candidate
+// bundle on the artifact, and a pinned-field mismatch from an EARLIER bundle
+// must survive a LATER bundle's plain policy failure — not be overwritten by
+// simple iteration order — or classifyVerifyFailure's ErrSignerMismatch
+// short-circuit never triggers and the confusing "locked to X, verifies as
+// X" message reappears exactly the way it did before that fix.
+func TestMostUsefulVerifyErrorPrefersPinnedFieldMismatch(t *testing.T) {
+	t.Parallel()
+
+	pinErr := pinnedFieldMismatch("repository ref", "refs/tags/v0.1.0", "refs/heads/attacker")
+	genericErr := errors.New("certificate does not chain to a trusted root")
+
+	tests := []struct {
+		name string
+		errs []error
+		want error
+	}{
+		{name: "no errors", errs: nil, want: nil},
+		{name: "single generic failure", errs: []error{genericErr}, want: genericErr},
+		{
+			name: "pinned mismatch first, generic failure overwrites nothing",
+			errs: []error{pinErr, genericErr},
+			want: pinErr,
+		},
+		{
+			name: "generic failure first, pinned mismatch still wins",
+			errs: []error{genericErr, pinErr},
+			want: pinErr,
+		},
+		{
+			name: "two pinned mismatches: the first is reported",
+			errs: []error{pinErr, pinnedFieldMismatch("runner environment", "github-hosted", "self-hosted")},
+			want: pinErr,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := mostUsefulVerifyError(tc.errs)
+			if tc.want == nil {
+				assert.NoError(t, got)
+				return
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

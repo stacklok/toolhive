@@ -70,37 +70,76 @@ func (d *Default) VerifyOCIWithKey(
 
 // verifyKeylessBundles verifies bundles until one passes the keyless policy
 // AND the pinned certificate fields the policy cannot express, returning its
-// result, or nil with the last verification error.
+// result, or nil with the most useful verification error.
 func verifyKeylessBundles(
 	bundles []coreverifier.Bundle,
 	tm root.TrustedMaterial,
 	opts []verify.VerifierOption,
 	expected *lockfile.Provenance,
 ) (*Result, error) {
-	var lastErr error
+	var errs []error
 	for _, b := range bundles {
-		vr, verifyErr := coreverifier.VerifyBundle(b, tm, expectedIdentity(expected), opts...)
-		if verifyErr != nil {
-			lastErr = verifyErr
+		result, err := verifyOneKeylessBundle(b, tm, opts, expected)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		observed, idErr := observedFromResult(vr)
-		if idErr != nil {
-			lastErr = idErr
-			continue
-		}
-		// The Sigstore policy accepted this certificate's signer identity and
-		// issuer; the pinned ref and runner class are enforced against the
-		// same certificate here. A mismatch disqualifies the bundle exactly
-		// like a policy failure — another bundle on the artifact may satisfy
-		// the full expectation.
-		if pinErr := checkPinnedCertificateFields(observed, expected); pinErr != nil {
-			lastErr = pinErr
-			continue
-		}
-		return resultFromCore(observed, b.Raw), nil
+		return result, nil
 	}
-	return nil, lastErr
+	return nil, mostUsefulVerifyError(errs)
+}
+
+// verifyOneKeylessBundle verifies a single bundle against the keyless
+// policy, then the pinned certificate fields the policy cannot express. A
+// pinned-field mismatch disqualifies the bundle exactly like a policy
+// failure — another bundle on the artifact may satisfy the full
+// expectation.
+func verifyOneKeylessBundle(
+	b coreverifier.Bundle,
+	tm root.TrustedMaterial,
+	opts []verify.VerifierOption,
+	expected *lockfile.Provenance,
+) (*Result, error) {
+	vr, verifyErr := coreverifier.VerifyBundle(b, tm, expectedIdentity(expected), opts...)
+	if verifyErr != nil {
+		return nil, verifyErr
+	}
+	observed, idErr := observedFromResult(vr)
+	if idErr != nil {
+		return nil, idErr
+	}
+	// The Sigstore policy accepted this certificate's signer identity and
+	// issuer; the pinned ref and runner class are enforced against the same
+	// certificate here.
+	if err := checkPinnedCertificateFields(observed, expected); err != nil {
+		return nil, err
+	}
+	return resultFromCore(observed, b.Raw), nil
+}
+
+// mostUsefulVerifyError picks the most specific diagnosis out of a set of
+// per-bundle verification failures. A pinned-field mismatch
+// (ErrSignerMismatch from checkPinnedCertificateFields) is preferred over
+// any other failure regardless of which bundle in the loop produced it: to
+// reach that mismatch, the bundle's signer identity and issuer were already
+// accepted by the Sigstore policy, which is a more specific and more useful
+// diagnosis than a bundle that failed the policy outright. Without this, a
+// later bundle's bare policy failure would overwrite the pinned-field
+// diagnosis by iteration order alone, and classifyVerifyFailure's
+// ErrSignerMismatch short-circuit would never trigger — silently falling
+// back to the confusing "locked to X, verifies as X" message it exists to
+// avoid. When no pinned-field mismatch occurred, the last error is
+// returned, preserving prior behavior.
+func mostUsefulVerifyError(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	for _, err := range errs {
+		if errors.Is(err, ErrSignerMismatch) {
+			return err
+		}
+	}
+	return errs[len(errs)-1]
 }
 
 // retrieveBundles fetches the signature bundles for the artifact pinned to

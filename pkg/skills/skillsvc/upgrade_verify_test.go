@@ -179,6 +179,109 @@ func TestRefRelaxedExpectation(t *testing.T) {
 		"trust on first use has nothing to relax")
 }
 
+func TestRefTransitionAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		recordedRef string
+		candidate   string
+		want        bool
+	}{
+		{name: "unpinned entry allows anything", recordedRef: "", candidate: "refs/heads/attacker", want: true},
+		{name: "tag rotates to another tag", recordedRef: "refs/tags/v0.1.0", candidate: "refs/tags/v0.2.0", want: true},
+		{name: "tag to a branch is blocked", recordedRef: "refs/tags/v0.1.0", candidate: "refs/heads/main", want: false},
+		{name: "tag to no ref at all is blocked", recordedRef: "refs/tags/v0.1.0", candidate: "", want: false},
+		{name: "identical branch stays allowed", recordedRef: "refs/heads/main", candidate: "refs/heads/main", want: true},
+		{
+			name: "branch to a different branch is blocked", recordedRef: "refs/heads/main",
+			candidate: "refs/heads/attacker", want: false,
+		},
+		{name: "branch to a tag is blocked", recordedRef: "refs/heads/main", candidate: "refs/tags/v0.1.0", want: false},
+		{name: "branch to no ref at all is blocked", recordedRef: "refs/heads/main", candidate: "", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, refTransitionAllowed(tc.recordedRef, tc.candidate))
+		})
+	}
+}
+
+// TestUpgrade_RefTransitionBlocked is the regression test for the guard the
+// P1 fix restores: guardSignerChange must reject a ref transition
+// refTransitionAllowed disallows, and — critically — the transition must
+// never reach applyUpgrade's refRelaxedExpectation at all, so the lock stays
+// untouched. Before the fix, every upgrade unconditionally cleared the
+// expected ref (AllowRefRepin: true) with no prior check, so a candidate
+// signed by the same identity/issuer/runner from a different branch would
+// pass and silently replace the locked ref — the exact substitution this
+// PR's ref pinning exists to catch.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_RefTransitionBlocked(t *testing.T) {
+	tests := []struct {
+		name        string
+		lockedRef   string
+		candidate   string
+		description string
+	}{
+		{
+			name: "attacker branch", lockedRef: "refs/heads/main", candidate: "refs/heads/attacker",
+			description: "same identity, issuer, and runner, signed from a different branch",
+		},
+		{
+			name: "candidate lost its ref extension", lockedRef: "refs/tags/v0.1.0", candidate: "",
+			description: "a certificate that stopped carrying a ref extension must not silently unpin one",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gr, fx := newGitResolverMock(t)
+			fx.register("ref-guarded-skill", gitSkill("ref-guarded-skill"))
+
+			calls := 0
+			mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+			mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				AnyTimes().
+				DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+					calls++
+					if calls == 1 {
+						return refSignedResult(tc.lockedRef), nil // initial install (TOFU)
+					}
+					candidate := refSignedResult(tc.candidate)
+					if expected == nil {
+						return candidate, nil // the upgrade's plan-time signer probe
+					}
+					// A blocked transition must never reach here: applyUpgrade
+					// is only called when guardSignerChange did not block.
+					t.Fatalf("install-time verification must not run for a blocked ref transition: %s", tc.description)
+					return nil, nil
+				})
+			mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+			svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+			ref, _ := gitRef("ref-guarded-skill")
+			_, err := svc.Install(t.Context(), skills.InstallOptions{
+				Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+			})
+			require.NoError(t, err)
+
+			fx.register("ref-guarded-skill", gitSkillVersion("ref-guarded-skill"))
+			result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
+			require.NoError(t, err)
+			require.Len(t, result.Outcomes, 1)
+			assert.Equal(t, skills.UpgradeStatusSignerChangeBlocked, result.Outcomes[0].Status, tc.description)
+
+			entry, ok := readLockfile(t, projectRoot).Get("ref-guarded-skill")
+			require.True(t, ok)
+			require.NotNil(t, entry.Provenance)
+			assert.Equal(t, tc.lockedRef, entry.Provenance.RepositoryRef,
+				"a blocked transition must leave the locked ref untouched")
+		})
+	}
+}
+
 func TestRunnerEnvironmentChanged(t *testing.T) {
 	t.Parallel()
 

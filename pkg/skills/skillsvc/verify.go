@@ -206,6 +206,15 @@ func expectedLockTrust(projectRoot, skillName string) (*lockfile.Provenance, boo
 // disables the whole guard. The newly observed ref is recorded in the lock
 // entry in its place, visible in the diff next to the digest change.
 //
+// This relaxation is safe only because upgrade already validated the
+// specific transition before reaching here — guardSignerChange's
+// refTransitionAllowed rejects anything other than a git ref staying
+// identical or an OCI tag rotating to another tag, blocking the upgrade
+// outright (same as a genuine signer-identity change) rather than reaching
+// this relaxed re-verify at all. This function does not repeat that check;
+// it exists only to stop the exact-ref requirement from re-rejecting a
+// transition already vetted.
+//
 // Only the ref is relaxed, and only here: install and sync keep the exact
 // match, and a runner-class change is never an expected part of a release.
 func refRelaxedExpectation(expected *lockfile.Provenance, opts skills.InstallOptions) *lockfile.Provenance {

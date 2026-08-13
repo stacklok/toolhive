@@ -175,14 +175,17 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 
 // guardSignerChange probes the candidate artifact's signer identity and
 // fills outcome when the upgrade must not proceed: the candidate is signed
-// by a different identity (or unsigned) versus the recorded provenance, or
-// its signature cannot be verified at all. Returns true when blocked.
+// by a different identity (or unsigned) versus the recorded provenance, its
+// signature cannot be verified at all, or its certificate's repository ref
+// does not fit an allowed transition (see refTransitionAllowed) — the ref
+// itself is then relaxed for the actual re-verify in applyUpgrade
+// (refRelaxedExpectation), but only because THIS check already vetted the
+// transition; that relaxation is not a substitute for this one. Returns true
+// when blocked.
 //
-// The recorded repository ref is deliberately NOT compared: a release
-// workflow signs each version on its own ref, and the upgrade re-pins the
-// new one (see refRelaxedExpectation). The runner class is compared, because
-// the same workflow moving to a different runner class is not part of
-// publishing a new version.
+// The runner class IS compared here (unlike the ref): the same workflow
+// moving to a different runner class is not part of publishing a new
+// version, so it stays exact.
 func (s *service) guardSignerChange(
 	ctx context.Context,
 	entry lockfile.Entry,
@@ -204,12 +207,49 @@ func (s *service) guardSignerChange(
 		return true
 	case probe.SignerIdentity != entry.Provenance.SignerIdentity ||
 		probe.CertIssuer != entry.Provenance.CertIssuer ||
-		runnerEnvironmentChanged(probe, entry.Provenance):
+		runnerEnvironmentChanged(probe, entry.Provenance) ||
+		!refTransitionAllowed(entry.Provenance.RepositoryRef, probe.RepositoryRef):
 		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
 		outcome.NewSignerIdentity = probe.SignerIdentity
 		return true
 	}
 	return false
+}
+
+// refTransitionAllowed reports whether a candidate's certificate ref may
+// replace the one recorded, WITHOUT an explicit --allow-signer-change. The
+// allowed transition depends on the recorded ref's SHAPE, not on whether the
+// artifact is git- or OCI-sourced — a tag-triggered release workflow signs
+// each version on its own tag regardless of how the resulting artifact is
+// delivered, and a git-sourced skill tracking tagged releases (see
+// TestUpgrade_RepinsRepositoryRef) rotates refs on every upgrade exactly
+// like an OCI one does:
+//
+//   - An unpinned entry (recorded ref empty — pre-existing entries, or a
+//     certificate that carries no ref extension at all) has nothing to
+//     transition from, so anything is allowed; enforcement resumes once a
+//     ref is recorded.
+//   - A recorded tag ref (under "refs/tags/") may rotate to another tag ref
+//     — a new release is exactly a new tag.
+//   - Anything else (a branch ref, or a non-standard ref) must stay
+//     IDENTICAL. A workflow's branch trigger is not expected to move on its
+//     own between upgrades; a change here is exactly the "signed by the
+//     right workflow, but from a different branch" substitution this field
+//     exists to catch — allowing it unconditionally would undo the
+//     enforcement PR #6315 added.
+//
+// Anything outside these cases requires the operator to confirm the change
+// explicitly via --allow-signer-change, the same override already used for
+// a genuine signer-identity change.
+func refTransitionAllowed(recordedRef, candidateRef string) bool {
+	if recordedRef == "" {
+		return true
+	}
+	const tagRefPrefix = "refs/tags/"
+	if strings.HasPrefix(recordedRef, tagRefPrefix) {
+		return strings.HasPrefix(candidateRef, tagRefPrefix)
+	}
+	return candidateRef == recordedRef
 }
 
 // runnerEnvironmentChanged reports whether the candidate's runner class

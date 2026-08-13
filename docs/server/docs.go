@@ -2402,15 +2402,11 @@ const docTemplate = `{
             "model.ArgumentType": {
                 "enum": [
                     "positional",
-                    "named",
-                    "positional",
                     "named"
                 ],
                 "example": "positional",
                 "type": "string",
                 "x-enum-varnames": [
-                    "ArgumentTypePositional",
-                    "ArgumentTypeNamed",
                     "ArgumentTypePositional",
                     "ArgumentTypeNamed"
                 ]
@@ -2420,18 +2416,10 @@ const docTemplate = `{
                     "string",
                     "number",
                     "boolean",
-                    "filepath",
-                    "string",
-                    "number",
-                    "boolean",
                     "filepath"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
-                    "FormatString",
-                    "FormatNumber",
-                    "FormatBoolean",
-                    "FormatFilePath",
                     "FormatString",
                     "FormatNumber",
                     "FormatBoolean",

@@ -62,14 +62,19 @@ func TestConfiguredDelegateClientTokenExchange(t *testing.T) {
 			wantStatus:   http.StatusOK,
 		},
 		{
+			// fosite treats a request with no credentials presented at all (neither
+			// Basic auth nor a client_id/client_secret form pair) as a malformed
+			// request, not an authentication failure -- 401 invalid_client is reserved
+			// for credentials that were presented but are wrong (see "invalid_secret"
+			// below).
 			name:         "missing_credentials",
 			authenticate: func(_ *http.Request) {},
 			mutateRequest: func(values url.Values) {
 				values.Del("client_id")
 				values.Del("client_secret")
 			},
-			wantStatus: http.StatusUnauthorized,
-			wantError:  "invalid_client",
+			wantStatus: http.StatusBadRequest,
+			wantError:  "invalid_request",
 		},
 		{
 			name:         "invalid_secret",

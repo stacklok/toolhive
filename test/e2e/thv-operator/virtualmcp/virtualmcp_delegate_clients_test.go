@@ -38,7 +38,7 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		timeout      = 5 * time.Minute
 		pollInterval = 2 * time.Second
 		clientID     = "e2e-delegate-client"
-		clientSecret = "e2e-delegate-client-secret"
+		clientSecret = "e2e-delegate-client-secret-testing" // 34 chars, above the 32-char minimum
 	)
 
 	var (

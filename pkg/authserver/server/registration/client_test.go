@@ -501,10 +501,15 @@ func TestNewStaticDelegateClient(t *testing.T) {
 	assert.False(t, client.IsPublic())
 	assert.False(t, DCRIssued(client))
 	assert.Empty(t, client.GetRedirectURIs())
-	assert.Empty(t, client.GetResponseTypes())
-	assert.Equal(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, client.GetGrantTypes())
-	assert.Equal(t, []string{"openid"}, client.GetScopes())
-	assert.Equal(t, []string{"https://mcp.example"}, client.GetAudience())
+	// Asserts on the underlying field, not GetResponseTypes(): fosite.DefaultClient's
+	// getter falls back to Arguments{"code"} whenever ResponseTypes is unset (per the
+	// OIDC dynamic registration default), regardless of client type, so the getter
+	// is never empty for this or any other client that doesn't set it explicitly.
+	assert.Empty(t, client.ResponseTypes)
+	// Use ElementsMatch since fosite returns fosite.Arguments type.
+	assert.ElementsMatch(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, client.GetGrantTypes())
+	assert.ElementsMatch(t, []string{"openid"}, client.GetScopes())
+	assert.ElementsMatch(t, []string{"https://mcp.example"}, client.GetAudience())
 	assert.NoError(t, SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("test-secret")))
 	assert.Error(t, SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("wrong-secret")))
 }

@@ -467,3 +467,66 @@ func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
 	return validateResponseTypes(responseTypes)
 }
+
+// FilterPublicGrantTypes returns the subset of grantTypes this server supports
+// for public clients, dropping unsupported entries instead of rejecting the
+// whole set the way ValidatePublicGrantTypes does.
+//
+// This is the right semantics for CIMD: a Client ID Metadata Document
+// describes the client's capabilities across every authorization server it
+// talks to, and the client cannot tailor it per server — VS Code, for
+// example, declares the device_code grant alongside authorization_code, and
+// rejecting the document over a grant type this flow never uses breaks the
+// client entirely. A DCR request, by contrast, is addressed to this server
+// specifically, so ValidatePublicGrantTypes' rejection remains the correct
+// feedback on that path.
+//
+// The surviving set must still include "authorization_code": a client whose
+// supported grant types do not intersect with the only redemption flow this
+// server offers cannot function against it, and a clear error beats a client
+// that registers and then fails every token request. nil/empty input gets the
+// same defaults as DCR.
+func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	if len(grantTypes) == 0 {
+		return defaultGrantTypes, nil
+	}
+	filtered := make([]string, 0, len(grantTypes))
+	for _, gt := range grantTypes {
+		if allowedGrantTypes[gt] {
+			filtered = append(filtered, gt)
+		}
+	}
+	if !slices.Contains(filtered, "authorization_code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "grant_types must include 'authorization_code'",
+		}
+	}
+	return filtered, nil
+}
+
+// FilterPublicResponseTypes returns the subset of responseTypes this server
+// supports for public clients, dropping unsupported entries instead of
+// rejecting the whole set. Same reasoning as FilterPublicGrantTypes: a CIMD
+// document declares capabilities across all servers, so an entry this server
+// does not support must not be fatal — but "code" must survive the filter,
+// since it is the only response type this server can serve. nil/empty input
+// gets the same defaults as DCR.
+func FilterPublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	if len(responseTypes) == 0 {
+		return defaultResponseTypes, nil
+	}
+	filtered := make([]string, 0, len(responseTypes))
+	for _, rt := range responseTypes {
+		if allowedResponseTypes[rt] {
+			filtered = append(filtered, rt)
+		}
+	}
+	if !slices.Contains(filtered, "code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "response_types must include 'code'",
+		}
+	}
+	return filtered, nil
+}

@@ -189,50 +189,6 @@ func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPoli
 	}
 }
 
-// NormalizeSPIFFEClientAuth validates and normalizes configured SPIFFE
-// associations. It emits one normalized principal for every explicitly enabled
-// method, without accepting a credential or advertising authentication.
-func NormalizeSPIFFEClientAuth(
-	trustDomains []SPIFFETrustDomainRunConfig,
-	inboundGrants *InboundGrantsRunConfig,
-	scopesSupported []string,
-	allowedAudiences []string,
-) ([]NormalizedSPIFFEPrincipal, error) {
-	if err := ValidateSPIFFETrust(trustDomains, inboundGrants, scopesSupported, allowedAudiences); err != nil {
-		return nil, err
-	}
-	if inboundGrants == nil {
-		return nil, nil
-	}
-	domains, err := validateSPIFFETrustDomains(trustDomains)
-	if err != nil {
-		return nil, err
-	}
-	principals := make([]NormalizedSPIFFEPrincipal, 0, len(inboundGrants.SPIFFEClientAuth)*2)
-	for _, association := range inboundGrants.SPIFFEClientAuth {
-		id, err := parseSPIFFEID(strings.TrimSuffix(association.Principal, "/*"))
-		if err != nil {
-			return nil, err
-		}
-		for _, method := range association.Methods {
-			principals = append(principals, NormalizedSPIFFEPrincipal{
-				clientID:    association.ClientID,
-				spiffeID:    id.String(),
-				trustDomain: domains[association.TrustDomainRef].trustDomain.String(),
-				authMethod:  method,
-				authorization: SPIFFEAuthorizationPolicy{
-					grantTypes:    slices.Clone(association.GrantTypes),
-					scopes:        slices.Clone(association.Scopes),
-					resources:     slices.Clone(association.Resources),
-					audiences:     slices.Clone(association.Audiences),
-					tokenExchange: association.TokenExchange != nil && association.TokenExchange.Enabled,
-				},
-			})
-		}
-	}
-	return principals, nil
-}
-
 // NormalizeSPIFFEPrincipal parses a concrete SPIFFE ID with go-spiffe. It
 // rejects wildcard patterns; use MatchSPIFFEPrincipalPattern for policy
 // patterns.

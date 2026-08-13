@@ -191,45 +191,6 @@ func TestValidateSPIFFETrust(t *testing.T) {
 	}
 }
 
-func TestNormalizeSPIFFEClientAuth(t *testing.T) {
-	t.Parallel()
-
-	trustDomains := []SPIFFETrustDomainRunConfig{{
-		Name:        "production",
-		TrustDomain: "example.org",
-		Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
-		BundleSource: SPIFFEBundleSourceRunConfig{
-			Type:        SPIFFEBundleSourceTypeWorkloadAPI,
-			WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
-		},
-	}}
-	grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-		TrustDomainRef: "production",
-		Principal:      "spiffe://example.org/ns/default/agent",
-		ClientID:       "agent-client",
-		Methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
-		Resources:      []string{"https://resource.example.org"},
-		Audiences:      []string{"mcp-api"},
-		Scopes:         []string{"openid"},
-		GrantTypes:     []string{SPIFFEGrantTypeTokenExchange},
-		TokenExchange:  &SPIFFETokenExchangeRunConfig{Enabled: true},
-	}}}
-
-	principals, err := NormalizeSPIFFEClientAuth(trustDomains, grants, nil, []string{"https://resource.example.org"})
-	require.NoError(t, err)
-	require.Len(t, principals, 2)
-	assert.Equal(t, principals[0].ClientID(), principals[1].ClientID())
-	assert.Equal(t, principals[0].SPIFFEID(), principals[1].SPIFFEID())
-	assert.Equal(t, principals[0].TrustDomain(), principals[1].TrustDomain())
-	assert.NotEqual(t, principals[0].AuthenticationMethod(), principals[1].AuthenticationMethod())
-	assert.Equal(t, principals[0].AuthorizationPolicy().Resources(), principals[1].AuthorizationPolicy().Resources())
-	assert.Equal(t, principals[0].AuthorizationPolicy().Audiences(), principals[1].AuthorizationPolicy().Audiences())
-
-	policy := principals[0].AuthorizationPolicy()
-	policy.resources[0] = "https://changed.example.org"
-	assert.Equal(t, []string{"https://resource.example.org"}, principals[0].AuthorizationPolicy().Resources())
-}
-
 func TestSPIFFETrustConfigPreservesBundleSource(t *testing.T) {
 	t.Parallel()
 

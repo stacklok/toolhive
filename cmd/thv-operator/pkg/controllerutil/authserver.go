@@ -636,6 +636,67 @@ func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error 
 	return nil
 }
 
+// buildSPIFFETrustRunConfig converts the SPIFFE API transport fields to the
+// shared authserver RunConfig model. Parsing and policy validation remain in
+// authserver; this boundary only preserves declarative configuration.
+func buildSPIFFETrustRunConfig(
+	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
+) ([]authserver.SPIFFETrustDomainRunConfig, *authserver.InboundGrantsRunConfig) {
+	trustDomains := make([]authserver.SPIFFETrustDomainRunConfig, len(authConfig.SPIFFETrustDomains))
+	for i, domain := range authConfig.SPIFFETrustDomains {
+		trustDomains[i] = authserver.SPIFFETrustDomainRunConfig{
+			Name:        domain.Name,
+			TrustDomain: domain.TrustDomain,
+			Methods:     convertSPIFFEMethods(domain.Methods),
+			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+				Type: authserver.SPIFFEBundleSourceType(domain.BundleSource.Type),
+			},
+		}
+		if domain.BundleSource.Endpoint != nil {
+			trustDomains[i].BundleSource.Endpoint = &authserver.SPIFFEBundleEndpointSourceRunConfig{
+				URL: domain.BundleSource.Endpoint.URL,
+			}
+		}
+		if domain.BundleSource.WorkloadAPI != nil {
+			trustDomains[i].BundleSource.WorkloadAPI = &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{}
+		}
+	}
+	if authConfig.InboundGrants == nil {
+		return trustDomains, nil
+	}
+
+	clientAuth := authConfig.InboundGrants.SPIFFEClientAuth
+	inboundGrants := &authserver.InboundGrantsRunConfig{
+		SPIFFEClientAuth: make([]authserver.SPIFFEClientAuthRunConfig, len(clientAuth)),
+	}
+	for i, association := range clientAuth {
+		inboundGrants.SPIFFEClientAuth[i] = authserver.SPIFFEClientAuthRunConfig{
+			TrustDomainRef: association.TrustDomainRef,
+			Principal:      association.Principal,
+			ClientID:       association.ClientID,
+			Methods:        convertSPIFFEMethods(association.Methods),
+			Resources:      append([]string(nil), association.Resources...),
+			Audiences:      append([]string(nil), association.Audiences...),
+			Scopes:         append([]string(nil), association.Scopes...),
+			GrantTypes:     append([]string(nil), association.GrantTypes...),
+		}
+		if association.TokenExchange != nil {
+			inboundGrants.SPIFFEClientAuth[i].TokenExchange = &authserver.SPIFFETokenExchangeRunConfig{
+				Enabled: association.TokenExchange.Enabled,
+			}
+		}
+	}
+	return trustDomains, inboundGrants
+}
+
+func convertSPIFFEMethods(methods []mcpv1beta1.SPIFFEAuthenticationMethod) []authserver.SPIFFEAuthenticationMethod {
+	converted := make([]authserver.SPIFFEAuthenticationMethod, len(methods))
+	for i, method := range methods {
+		converted[i] = authserver.SPIFFEAuthenticationMethod(method)
+	}
+	return converted
+}
+
 // BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
@@ -659,6 +720,7 @@ func BuildAuthServerRunConfig(
 		}
 	}()
 
+	trustDomains, inboundGrants := buildSPIFFETrustRunConfig(authConfig)
 	config = &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
 		Issuer:                       authConfig.Issuer,
@@ -666,6 +728,8 @@ func BuildAuthServerRunConfig(
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
+		SPIFFETrustDomains:           trustDomains,
+		InboundGrants:                inboundGrants,
 	}
 
 	if len(authConfig.DelegateClients) > 0 {

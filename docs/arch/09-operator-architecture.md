@@ -232,6 +232,8 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
+`EmbeddedAuthServerConfig` can also optionally carry SPIFFE trust-domain and client-association declarations (`spiffeTrustDomains` and `inboundGrants` in `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustRunConfig` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, which flows into the RunConfig delivered to the proxy-runner alongside the rest of the embedded auth server settings. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full configuration and policy model — this is a configuration boundary only, not a live authentication mechanism.
+
 ### MCPOIDCConfig
 
 Defines shared OIDC provider configuration that can be referenced by multiple workload CRDs (MCPServer, MCPRemoteProxy, VirtualMCPServer) in the same namespace.

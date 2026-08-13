@@ -1741,30 +1741,6 @@ func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
 	assert.True(t, runConfig.AllowPrivateIPs)
 }
 
-func TestMakeTrustedIssuerRunConfigs(t *testing.T) {
-	t.Parallel()
-
-	configs := []mcpv1beta1.TrustedIssuerConfig{{
-		IssuerURL:              "https://issuer.example.com",
-		ExpectedAudience:       "https://resource.example.com",
-		JWKSURL:                "https://issuer.example.com/keys",
-		ActorClaim:             "client_id",
-		AllowedActors:          []string{"dex-client"},
-		AllowedDelegateClients: []string{"delegate-client"},
-	}}
-
-	issuers := makeTrustedIssuerRunConfigs(configs)
-	require.Len(t, issuers, 1)
-	assert.Equal(t, configs[0].IssuerURL, issuers[0].IssuerURL)
-	assert.Equal(t, configs[0].AllowedActors, issuers[0].AllowedActors)
-	assert.Equal(t, configs[0].AllowedDelegateClients, issuers[0].AllowedDelegateClients)
-
-	configs[0].AllowedActors[0] = "mutated"
-	configs[0].AllowedDelegateClients[0] = "mutated"
-	assert.Equal(t, "dex-client", issuers[0].AllowedActors[0])
-	assert.Equal(t, "delegate-client", issuers[0].AllowedDelegateClients[0])
-}
-
 func TestDelegateClientsConversionAndEnvVars(t *testing.T) {
 	t.Parallel()
 

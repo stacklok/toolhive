@@ -102,16 +102,6 @@ func Setup(
 		return nil
 	}
 
-	// Only build the shell-string token helper if a detected tool actually
-	// consumes it — its shell-safety check on the thv executable path would
-	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
-	var tokenHelperCommand string
-	if tokenHelperCommandNeeded(gm, detected) {
-		tokenHelperCommand, err = buildTokenHelperCommand()
-		if err != nil {
-			return err
-		}
-	}
 	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
 	if err != nil {
 		return err
@@ -143,7 +133,7 @@ func Setup(
 	anthropicPrefix := resolveAnthropicPrefix(ctx, gm, detected, llmCfg, anthropicPathPrefix, anthropicPathPrefixSet)
 
 	configured, err := configureDetectedTools(
-		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
+		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL,
 		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, llmCfg.Bedrock,
 	)
 	if err != nil {
@@ -502,7 +492,7 @@ func configureDetectedTools(
 	out, errOut io.Writer,
 	gm GatewayManager,
 	detected []string,
-	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	gatewayURL, proxyBaseURL string,
 	tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
@@ -530,7 +520,7 @@ func configureDetectedTools(
 			GatewayURL:         gatewayURL,
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperCommand,
+			TokenHelperCommand: tokenHelperShellCommand,
 			TokenHelperPath:    tokenHelperPath,
 			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
@@ -644,46 +634,22 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
-// tokenHelperCommandNeeded reports whether any detected client's mode consumes
-// the shell-string token helper (TokenHelperCommand) — direct-mode's
-// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
-// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
-func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
-	for _, clientType := range detected {
-		switch gm.LLMGatewayModeFor(clientType) {
-		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
-			return true
-		}
-	}
-	return false
-}
-
-// buildTokenHelperCommand returns the shell command string used as the
-// token-helper for direct-mode tools. It rejects executable paths that contain
-// shell metacharacters, since the command is written verbatim into long-lived
-// tool config files and re-executed by the shell inside Claude Code / Gemini CLI.
-// A path with '"', '\', ';', '$', '`', newline, or carriage-return would
-// silently produce a broken or exploitable command. '$' and '`' are included
-// because they trigger variable/command substitution inside double-quoted strings.
+// tokenHelperShellCommand is the shell command written into direct-mode tools'
+// config as their token helper — e.g. Claude Code's apiKeyHelper, which is run
+// through a shell (execa with shell:true; see anthropics/claude-code#42593).
 //
-// Note: backslashes are Windows path separators, so this effectively makes
-// "thv llm setup" unsupported on Windows — consistent with the rest of the LLM
-// gateway feature (token-helper tools use POSIX-style shells).
-func buildTokenHelperCommand() (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolving thv executable path: %w", err)
-	}
-	const shellUnsafe = `"\;$` + "`\n\r"
-	if strings.ContainsAny(self, shellUnsafe) {
-		return "", fmt.Errorf(
-			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, semicolons, "+
-				"dollar signs, or backticks "+
-				"(Windows paths are not supported by thv llm setup)", self)
-	}
-	return fmt.Sprintf(`"%s" llm token`, self), nil
-}
+// It deliberately names "thv" bare rather than interpolating os.Executable().
+// An absolute path has to be quoted into a string that a different shell parses
+// on each platform — /bin/sh on POSIX, cmd.exe via ComSpec on Windows — and Go
+// has no portable shell-escaping primitive. Every Windows path also contains
+// backslashes, which no single quoting scheme survives in both shells. A bare
+// command has nothing to escape, so it is correct on every platform by
+// construction.
+//
+// The trade-off is that "thv" resolves via PATH when the tool invokes it, so a
+// binary earlier on PATH can shadow it and return an attacker-chosen token.
+// That requires an attacker who can already write to the user's PATH.
+const tokenHelperShellCommand = "thv llm token" //nolint:gosec // G101: a command line, not a credential
 
 // buildTokenHelperArgv returns the argv-form of the token helper, for config
 // formats that invoke an executable directly (no shell) — e.g. Codex's

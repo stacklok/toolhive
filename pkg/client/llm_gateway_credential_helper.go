@@ -269,37 +269,28 @@ func (cm *ClientManager) writeCredentialHelperShim(tokenHelperCommand string) (s
 	return shimPath, nil
 }
 
-// isSafeTokenHelperCommand reports whether tokenHelperCommand matches the shape
-// produced by buildTokenHelperCommand: a double-quoted path followed by the
-// literal args "llm token", with no shell metacharacters that could break out
-// of the exec line the shim concatenates. The shim is a 0700 /bin/sh script
-// built by string concatenation, so a caller-supplied command containing ";",
-// "&", "|", "`", "$", "#", or newlines would be stored command injection.
+// isSafeTokenHelperCommand reports whether tokenHelperCommand is safe to splice
+// into the shim. The shim is a 0700 /bin/sh script built by string
+// concatenation, so a caller-supplied command containing ";", "&", "|", "`",
+// "$", "#", quotes, or newlines would be stored command injection.
 //
-// buildTokenHelperCommand (pkg/llm/setup.go) is shell-safe today — it rejects
-// paths containing those characters before formatting — but TokenHelperCommand
-// is exposed as a general ApplyConfig field consumed by multiple writers. This
-// check makes the shim writer fail closed on any command it cannot prove safe,
-// rather than trusting every future caller to uphold the contract.
+// The producer (tokenHelperShellCommand in pkg/llm) is a constant today, but
+// TokenHelperCommand is a general ApplyConfig field consumed by multiple
+// writers, so this check makes the shim writer fail closed rather than trusting
+// every future caller to uphold the contract. It deliberately validates only
+// that the command is metacharacter-free, not that it matches one exact string:
+// pinning the shape would couple this writer to the producer's formatting.
 func isSafeTokenHelperCommand(tokenHelperCommand string) bool {
 	if tokenHelperCommand == "" {
 		return false
 	}
 	for _, r := range tokenHelperCommand {
 		switch r {
-		case ';', '&', '|', '`', '$', '#', '\n', '\r':
+		case ';', '&', '|', '`', '$', '#', '\'', '"', '\\', '\n', '\r':
 			return false
 		}
 	}
-	// Must be a double-quoted path followed by exactly " llm token".
-	if len(tokenHelperCommand) < 2 || tokenHelperCommand[0] != '"' {
-		return false
-	}
-	closeQuote := strings.IndexByte(tokenHelperCommand[1:], '"')
-	if closeQuote == -1 {
-		return false
-	}
-	return tokenHelperCommand[2+closeQuote:] == " llm token"
+	return true
 }
 
 // managedProfilePresent reports whether an MDM/managed-preferences profile for

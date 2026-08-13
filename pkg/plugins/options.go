@@ -96,3 +96,35 @@ type BuildResult = skills.BuildResult
 // PushOptions configures the behavior of the Push operation. Alias for
 // skills.PushOptions (Reference).
 type PushOptions = skills.PushOptions
+
+// SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
+// (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).
+type SyncOptions = skills.SyncOptions
+
+// SyncResult is the outcome of a lock-file sync. Alias for skills.SyncResult.
+type SyncResult = skills.SyncResult
+
+// SyncFailure describes one plugin that failed to sync. Alias for
+// skills.SyncFailure.
+type SyncFailure = skills.SyncFailure
+
+// FailureReason is a typed sync/upgrade failure reason. Alias for
+// skills.FailureReason.
+type FailureReason = skills.FailureReason
+
+// UpgradeOptions configures a lock-file upgrade. Alias for
+// skills.UpgradeOptions (identical shape including AllowRefChange /
+// AllowSignerChange).
+type UpgradeOptions = skills.UpgradeOptions
+
+// UpgradeResult is the outcome of a lock-file upgrade. Alias for
+// skills.UpgradeResult.
+type UpgradeResult = skills.UpgradeResult
+
+// UpgradeOutcome describes one plugin considered for upgrade. Alias for
+// skills.UpgradeOutcome.
+type UpgradeOutcome = skills.UpgradeOutcome
+
+// UpgradeStatus is the per-entry upgrade outcome. Alias for
+// skills.UpgradeStatus.
+type UpgradeStatus = skills.UpgradeStatus

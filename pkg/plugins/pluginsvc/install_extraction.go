@@ -40,6 +40,35 @@ func (s *service) installWithExtraction(
 		return nil, fmt.Errorf("checking existing plugin: %w", storeErr)
 	}
 
+	contentDigest, err := lockContentDigest(opts, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.dispatchExtraction(ctx, opts, scope, existing, storeErr, clientTypes)
+	if err != nil {
+		return nil, err
+	}
+	if storeErr == nil {
+		// Preserve the pre-install record so a later rollback (e.g. a failed
+		// lock write) can restore it rather than delete it.
+		pre := existing
+		result.PreExisting = &pre
+	}
+	result.ContentDigest = contentDigest
+	return result, nil
+}
+
+// dispatchExtraction routes an extraction-based install to the no-op,
+// same-digest, upgrade, or fresh path based on the pre-install store state.
+func (s *service) dispatchExtraction(
+	ctx context.Context,
+	opts plugins.InstallOptions,
+	scope plugins.Scope,
+	existing plugins.InstalledPlugin,
+	storeErr error,
+	clientTypes []string,
+) (*plugins.InstallResult, error) {
 	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &plugins.InstallResult{Plugin: existing}, nil
 	}
@@ -56,7 +85,8 @@ func (s *service) installWithExtraction(
 
 // isExtractionNoOp reports whether the install can be short-circuited because
 // the same digest and all requested clients are already present. Mirror of
-// skillsvc.isExtractionNoOp.
+// skillsvc.isExtractionNoOp. Sync (a later PR) will need a SyncRestore bypass
+// so a lock-driven reinstall can repair on-disk drift at the same digest.
 func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plugins.InstallOptions, clientTypes []string) bool {
 	if storeErr != nil || existing.Digest != opts.Digest {
 		return false
@@ -85,6 +115,7 @@ func (s *service) installExtractionSameDigestNewClients(
 		return nil, err
 	}
 	pl := buildInstalledPlugin(opts, scope, clientTypes, existing.Clients)
+	pl.Managed = existing.Managed
 	if err := s.store.Update(ctx, pl); err != nil {
 		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
 		return nil, err
@@ -108,6 +139,7 @@ func (s *service) installExtractionUpgradeDigest(
 		return nil, err
 	}
 	pl := buildInstalledPlugin(opts, scope, allClients, nil)
+	pl.Managed = existing.Managed
 	if err := s.store.Update(ctx, pl); err != nil {
 		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
 		return nil, err
@@ -353,4 +385,21 @@ func missingClients(existing, requested []string) []string {
 		}
 	}
 	return out
+}
+
+// lockContentDigest computes the canonical-tree dirhash for a project-scope
+// install when the lock file feature is enabled. Empty when the install is
+// not lock-scoped, so user-scope and ungated installs skip the extra extract.
+func lockContentDigest(opts plugins.InstallOptions, scope plugins.Scope) (string, error) {
+	if scope != plugins.ScopeProject || !plugins.LockFileFeatureEnabled() {
+		return "", nil
+	}
+	digest, err := computeContentDigest(opts.LayerData)
+	if err != nil {
+		return "", httperr.WithCode(
+			fmt.Errorf("computing content digest: %w", err),
+			http.StatusInternalServerError,
+		)
+	}
+	return digest, nil
 }

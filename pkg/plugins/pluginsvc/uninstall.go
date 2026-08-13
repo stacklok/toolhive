@@ -45,6 +45,17 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		return err
 	}
 
+	// The lock entry is removed FIRST, and its failure aborts the uninstall
+	// while everything is still intact. The reverse order (files/DB first,
+	// lock entry best-effort) had a resurrection hazard: a lock-write
+	// failure after the record and files were gone left a stale entry that
+	// the next sync silently reinstalled.
+	if scope == plugins.ScopeProject && existing.Managed {
+		if lockErr := removeLockEntry(opts); lockErr != nil {
+			return fmt.Errorf("updating project lock file: %w", lockErr)
+		}
+	}
+
 	// Dematerialize for each client — best-effort.
 	var cleanupErrs []error
 	for _, clientType := range existing.Clients {

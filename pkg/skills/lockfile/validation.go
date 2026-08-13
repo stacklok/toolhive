@@ -27,15 +27,28 @@ const (
 	sha1HexLength   = 40
 )
 
-// validateLockfile checks the schema version, every entry, and
-// cross-references requiredBy links against the set of known entries.
+// validateLockfile checks the schema version and every entry. skills: and
+// plugins: are validated as independent name/requiredBy graphs, so a skill
+// and a plugin may share a name, and a requiredBy parent must live in the
+// same key as the entry that names it.
 func validateLockfile(lf *Lockfile) error {
 	if lf.Version != CurrentVersion {
 		return fmt.Errorf("%w: version %d (upgrade thv to read this lock file)", ErrUnsupportedVersion, lf.Version)
 	}
+	if err := validateEntryGraph(lf.Skills); err != nil {
+		return err
+	}
+	if err := validateEntryGraph(lf.Plugins); err != nil {
+		return fmt.Errorf("plugins: %w", err)
+	}
+	return nil
+}
 
-	names := make(map[string]struct{}, len(lf.Skills))
-	for _, entry := range lf.Skills {
+// validateEntryGraph checks uniqueness, per-entry fields, requiredBy
+// cross-references, and cycles within one lock-file key.
+func validateEntryGraph(entries []Entry) error {
+	names := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
 		if err := validateEntry(entry); err != nil {
 			return err
 		}
@@ -45,7 +58,7 @@ func validateLockfile(lf *Lockfile) error {
 		names[entry.Name] = struct{}{}
 	}
 
-	for _, entry := range lf.Skills {
+	for _, entry := range entries {
 		for _, parent := range entry.RequiredBy {
 			if parent == entry.Name {
 				return fmt.Errorf("entry %q: requiredBy references itself", entry.Name)
@@ -56,7 +69,7 @@ func validateLockfile(lf *Lockfile) error {
 		}
 	}
 
-	if cycle := findRequiredByCycle(lf.Skills); len(cycle) > 0 {
+	if cycle := findRequiredByCycle(entries); len(cycle) > 0 {
 		return fmt.Errorf("requiredBy cycle: %s", strings.Join(cycle, " -> "))
 	}
 	return nil

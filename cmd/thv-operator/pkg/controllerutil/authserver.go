@@ -995,6 +995,8 @@ func buildOAuth2UpstreamRunConfig(
 	if cfg.DCRConfig != nil {
 		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
 	}
+	runConfig.InsecureAllowHTTP = cfg.InsecureAllowHTTP
+	runConfig.AllowPrivateIPs = cfg.AllowPrivateIPs
 	return runConfig, nil
 }
 

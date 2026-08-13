@@ -927,6 +927,21 @@ type OAuth2UpstreamConfig struct {
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 
+	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+	// for this upstream. Only for in-cluster development environments (e.g. an
+	// OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+	// available. Never set this in production.
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
+	// hosted inside the same cluster and has no public endpoint. HTTP-scheme
+	// restrictions are unchanged — HTTPS is still required for non-localhost
+	// hosts unless InsecureAllowHTTP is set. Defaults to false.
+	// +optional
+	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
+
 	// DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream
 	// authorization server. When set, the client credentials are obtained at
 	// runtime rather than being pre-provisioned, and ClientID must be left empty.

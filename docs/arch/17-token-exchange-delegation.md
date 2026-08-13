@@ -16,18 +16,134 @@ IdP (e.g. a corporate IdP), so a client already holding a token from that IdP
 can exchange it for a ToolHive delegated token without a separate ToolHive
 login.
 
-## Prerequisite: not yet usable end to end
+## Deployment and configuration
 
-- Using this grant requires a confidential client holding the token-exchange
-  grant. No supported deployment path provisions one today: DCR always
-  registers public clients restricted to `authorization_code`/`refresh_token`,
-  CIMD clients are public-only, and `RunConfig` has no client-seeding field.
-- Discovery metadata does not yet advertise the token-exchange grant or any
-  secret-based client auth method, so a metadata-driven client will conclude
-  the grant is unsupported and never attempt it.
-- This applies to the self-issued subject-token path too, not only
-  `trustedIssuers`.
-- Tracked in [#6082](https://github.com/stacklok/toolhive/issues/6082).
+RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
+client is a confidential client registered when the embedded authorization server
+starts. It is limited to the token-exchange grant and authenticates at
+`/oauth/token` with `client_secret_basic` or `client_secret_post`.
+
+### RunConfig
+
+`RunConfig.delegate_clients` is the portable runtime configuration surface. Each
+client must name a unique `client_id`, a secret **reference**, one or more scopes,
+and one or more audiences. The grant list must contain exactly
+`urn:ietf:params:oauth:grant-type:token-exchange`. Scopes must be a subset of
+`scopes_supported` (or the default supported OIDC scopes when that field is
+omitted), and audiences must be a subset of `allowed_audiences`. These required
+narrowing lists prevent a delegate client from inheriting every server scope or
+resource.
+
+The following is a relevant `RunConfig` excerpt. `client_secret_env_var` may be
+replaced by `client_secret_file`; an inline secret is not supported.
+
+```yaml
+issuer: https://auth.example.com
+scopes_supported: [openid, profile]
+allowed_audiences: [https://mcp.example.com]
+delegate_clients:
+  - client_id: reporting-delegate
+    client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
+    grant_types: [urn:ietf:params:oauth:grant-type:token-exchange]
+    scopes: [openid]
+    audiences: [https://mcp.example.com]
+trusted_issuers:
+  - issuer_url: https://login.example-idp.com
+    expected_audience: https://mcp.example.com
+    allowed_actors: [external-reporting-client]
+    allowed_delegate_clients: [reporting-delegate]
+```
+
+`trusted_issuers` remains a `RunConfig`-only surface. It is needed only when
+subject tokens originate at an external issuer; a configured delegate client can
+also exchange a self-issued subject token. See [Trust model](#trust-model) for
+the required external-issuer binding.
+
+### Kubernetes operator
+
+The operator exposes delegate clients on the shared
+`EmbeddedAuthServerConfig`, which has two supported consumers:
+
+- `MCPExternalAuthConfig.spec.embeddedAuthServer.delegateClients`, for an
+  embedded authorization server referenced by an `MCPServer` or
+  `MCPRemoteProxy`.
+- `VirtualMCPServer.spec.authServerConfig.delegateClients`, for a vMCP's inline
+  embedded authorization server.
+
+The following `MCPExternalAuthConfig` excerpt declares the same client. The
+operator converts the Secret reference into a pod environment-variable reference
+and always supplies the token-exchange grant; it does not copy the secret into
+the generated ConfigMap or `RunConfig`.
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: embedded-auth
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    # Other required embedded-auth-server fields, including upstreamProviders,
+    # are omitted here.
+    delegateClients:
+      - clientId: reporting-delegate
+        clientSecretRef:
+          name: reporting-delegate-secret
+          key: client-secret
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+```
+
+For a `VirtualMCPServer`, place the list under `spec.authServerConfig`:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: reporting-gateway
+spec:
+  # Other required VirtualMCPServer fields are omitted here.
+  authServerConfig:
+    issuer: https://auth.example.com
+    # Other required embedded-auth-server fields, including upstreamProviders,
+    # are omitted here.
+    delegateClients:
+      - clientId: reporting-delegate
+        clientSecretRef:
+          name: reporting-delegate-secret
+          key: client-secret
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+```
+
+The CRD accepts Secret references only: no plaintext secret, redirect URI, or
+arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
+`.key`, at least one scope, and at least one audience are required. Delegate
+clients require an HTTPS issuer at admission.
+
+Static delegate clients and confidential Dynamic Client Registration (DCR) are
+independent. Declaring `delegateClients` neither enables nor requires
+`allowConfidentialClientRegistration`; the latter governs unauthenticated
+`/oauth/register` requests. If a persisted DCR client has the same ID as a
+static delegate client, the static client is registered at server startup and
+replaces the DCR registration, including its secret and permissions. Do not
+reuse IDs between the two mechanisms.
+
+### Discovery and secret rotation
+
+Both `/.well-known/oauth-authorization-server` and
+`/.well-known/openid-configuration` advertise the token-exchange grant in
+`grant_types_supported`. When confidential DCR is enabled **or** at least one
+static delegate client is configured, they also advertise
+`client_secret_basic` and `client_secret_post` in
+`token_endpoint_auth_methods_supported`; otherwise only `none` is advertised.
+
+On Kubernetes, a delegate-client Secret is injected as a pod environment
+variable and is resolved when the authorization server starts. Updating that
+Secret does not change the environment of an already running pod. The operator
+has no delegate-client Secret watch or automatic rollout for this feature, so
+restart or otherwise roll out the workload after rotating the secret.
 
 ## Trust model
 
@@ -107,11 +223,6 @@ whether to grant the exchange, in this order:
    has no `allowedDelegateClients` equivalent and is unaffected — it remains
    bound by `may_act.sub` alone.
 
-   Nothing can reach this code path in production today: the token-exchange
-   grant requires a confidential client, and no supported deployment path
-   provisions one (see issue #6082). That makes the fail-closed default free
-   right now — it would be a breaking change once a client can actually reach
-   this grant.
 2. **Subject namespace collisions are closed, not accepted.** A trusted
    issuer is trusted to assert *any* subject this server accepts for
    delegation, and downstream authorization decisions (Cedar) key on `sub`
@@ -236,10 +347,10 @@ whether to grant the exchange, in this order:
   `insecure_allow_http` is set. There is no separate runtime scheme check for
   `issuer_url` — only `jwks_url` gets one (`ValidateJWKSURL`, on every fetch;
   shared verbatim between the runtime choke point and the config-time check
-  so the two can't drift). There is no operator (CRD) surface for this
-  feature yet — see [#6082](https://github.com/stacklok/toolhive/issues/6082)
-  — so today `trustedIssuers` is reachable only via a hand-written
-  `authserver.RunConfig`.
+  so the two can't drift). The operator exposes delegate clients, but not
+  `trusted_issuers`; external-issuer trust therefore still requires a
+  `RunConfig` supplied outside the CRD, while self-issued token exchange is
+  fully configurable through the supported delegate-client CRD surfaces.
 - **`allowPrivateIPs` requires `jwksUrl`.** Enforced at config time by
   `validateTrustedIssuers` (`pkg/authserver/config.go`) for every RunConfig.
   Without a hand-configured `jwksUrl`, OIDC discovery — a document fetched
@@ -254,4 +365,9 @@ whether to grant the exchange, in this order:
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveAllowedActor`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
-- `pkg/authserver/config.go` — `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`
+- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`
+- `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup
+- `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration
+- `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange grant and client-secret authentication methods
+- `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract
+- `cmd/thv-operator/pkg/controllerutil/authserver.go` — Secret-reference to pod-environment conversion

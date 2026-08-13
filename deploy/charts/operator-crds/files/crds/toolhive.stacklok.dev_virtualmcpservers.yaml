@@ -664,6 +664,14 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -815,6 +823,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -4371,6 +4386,14 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -4522,6 +4545,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.

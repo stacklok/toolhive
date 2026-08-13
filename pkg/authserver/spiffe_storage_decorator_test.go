@@ -78,7 +78,7 @@ func TestSPIFFEStorageDecorator_StaticClients(t *testing.T) {
 	assert.True(t, staticClient.TokenExchangeEnabled())
 	assert.Empty(t, client.GetRedirectURIs())
 	assert.Empty(t, client.GetResponseTypes())
-	assert.Empty(t, client.GetAudience())
+	assert.ElementsMatch(t, []string{"https://resource.example.com", "https://api.example.com"}, client.GetAudience())
 
 	client.GetGrantTypes()[0] = "mutated"
 	client.GetScopes()[0] = "mutated"

@@ -69,7 +69,7 @@ func TestBuildAuthServerRunConfigConvertsSPIFFETrust(t *testing.T) {
 	}
 
 	config, err := BuildAuthServerRunConfig(
-		"default", "server", authConfig, []string{"https://mcp.example.org"}, []string{"openid"}, "https://mcp.example.org")
+		"default", "server", authConfig, []string{"https://mcp.example.org", "mcp"}, []string{"openid"}, "https://mcp.example.org")
 	require.NoError(t, err)
 	require.NoError(t, config.Validate())
 	require.Len(t, config.SPIFFETrustDomains, 2)
@@ -82,4 +82,41 @@ func TestBuildAuthServerRunConfigConvertsSPIFFETrust(t *testing.T) {
 	require.Equal(t, "production", config.InboundGrants.SPIFFEClientAuth[0].TrustDomainRef)
 	require.Equal(t, "spiffe://example.org/ns/default/agent", config.InboundGrants.SPIFFEClientAuth[0].Principal)
 	require.True(t, config.InboundGrants.SPIFFEClientAuth[0].TokenExchange.Enabled)
+}
+
+func TestBuildAuthServerRunConfigRejectsUnknownTrustDomainRef(t *testing.T) {
+	t.Parallel()
+
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.org",
+		SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{
+			{
+				Name:        "production",
+				TrustDomain: "example.org",
+				Methods:     []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+				BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+					Type:     mcpv1beta1.SPIFFEBundleSourceTypeEndpoint,
+					Endpoint: &mcpv1beta1.SPIFFEBundleEndpointSourceConfig{URL: "https://bundles.example.org/"},
+				},
+			},
+		},
+		InboundGrants: &mcpv1beta1.InboundGrantsConfig{SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientAuthConfig{
+			{
+				// TrustDomainRef typo'd — no such declared trust domain.
+				TrustDomainRef: "productio",
+				Principal:      "spiffe://example.org/ns/default/agent",
+				ClientID:       "production-agent",
+				Methods:        []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+				Resources:      []string{"https://mcp.example.org"},
+				Audiences:      []string{"mcp"},
+				Scopes:         []string{"openid"},
+				GrantTypes:     []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			},
+		}},
+	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "server", authConfig, []string{"https://mcp.example.org"}, []string{"openid"}, "https://mcp.example.org")
+	require.Error(t, err)
+	require.Nil(t, config)
 }

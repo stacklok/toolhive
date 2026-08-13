@@ -586,6 +586,9 @@ func BuildAuthServerRunConfig(
 	resourceURL string,
 ) (*authserver.RunConfig, error) {
 	trustDomains, inboundGrants := buildSPIFFETrustRunConfig(authConfig)
+	if err := authserver.ValidateSPIFFETrust(trustDomains, inboundGrants, scopesSupported, allowedAudiences); err != nil {
+		return nil, fmt.Errorf("invalid SPIFFE trust configuration: %w", err)
+	}
 	config := &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
 		Issuer:                       authConfig.Issuer,

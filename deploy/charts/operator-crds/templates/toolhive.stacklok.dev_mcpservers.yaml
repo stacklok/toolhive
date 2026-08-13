@@ -294,6 +294,13 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              maxRequestBodySize:
+                description: |-
+                  MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+                  Zero uses the default limit of 8 MiB.
+                format: int64
+                minimum: 0
+                type: integer
               mcpPort:
                 description: MCPPort is the port that MCP server listens to
                 format: int32
@@ -1238,6 +1245,13 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              maxRequestBodySize:
+                description: |-
+                  MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+                  Zero uses the default limit of 8 MiB.
+                format: int64
+                minimum: 0
+                type: integer
               mcpPort:
                 description: MCPPort is the port that MCP server listens to
                 format: int32

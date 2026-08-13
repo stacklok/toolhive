@@ -786,6 +786,19 @@ func TestRunner_RejectsMultiUpstreamConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not support multiple upstream providers")
 }
 
+func TestRunner_RejectsNegativeMaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	runConfig := NewRunConfig()
+	runConfig.MaxRequestBodySize = -1
+	runner := NewRunner(runConfig, nil)
+
+	err := runner.Run(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_request_body_size must be non-negative")
+}
+
 func TestRunner_GetUpstreamTokenReader(t *testing.T) {
 	t.Parallel()
 

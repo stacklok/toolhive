@@ -375,6 +375,12 @@ type MCPServerSpec struct {
 	// +optional
 	EndpointPrefix string `json:"endpointPrefix,omitempty"`
 
+	// MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+	// Zero uses the default limit of 8 MiB.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxRequestBodySize int64 `json:"maxRequestBodySize,omitempty"`
+
 	// GroupRef references the MCPGroup this server belongs to.
 	// The referenced MCPGroup must be in the same namespace.
 	// +optional

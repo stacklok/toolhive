@@ -1288,6 +1288,14 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			errMsg:  "actor_claim",
 		},
 		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
+		},
+		{
 			// Unlike Config.Issuer, a trusted issuer_url permits a trailing
 			// slash: Microsoft Entra ID v1 (the default for a newly
 			// registered API) issues "iss": "https://sts.windows.net/{tenant}/"
@@ -1405,6 +1413,14 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "actor_claim",
+		},
+		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
 		},
 		{
 			name: "jwks_url private IP literal rejected without allow_private_ips",

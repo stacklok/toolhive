@@ -9,11 +9,9 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,19 +29,24 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-// This test proves that TrustedIssuerConfig.AllowMayAct is reachable and
-// enforced through the CRD/operator surface: a VirtualMCPServer with
-// spec.authServerConfig.trustedIssuers[].allowMayAct unset (the default)
-// rejects a may_act-bearing external subject token, and one with it set to
-// true accepts the same shaped token and produces a delegated token whose
-// "act" claim names the delegate client.
-var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Ordered, func() {
+// This test proves that TrustedIssuerConfig.ActorMatcher is reachable and
+// enforced through the CRD/operator surface: a VirtualMCPServer whose
+// trustedIssuers entry has NO allowedActors and only an actorMatcher CEL
+// expression still authorizes a matching subject token, and a VirtualMCPServer
+// whose actorMatcher does not match the token's claims still rejects it —
+// deliberately keyed on "appid" rather than the default ActorClaim ("azp"),
+// proving the matcher evaluates the token's complete claims map rather than
+// re-checking whatever the allowlist path already looks at.
+var _ = ginkgo.Describe("VirtualMCPServer trusted issuer actorMatcher", ginkgo.Ordered, func() {
 	const (
-		timeout      = 5 * time.Minute
-		pollInterval = 2 * time.Second
-		clientID     = "e2e-mayact-delegate-client"
-		clientSecret = "e2e-mayact-delegate-client-secret-testing" // 35 chars, above the 32-char minimum
-		externalSub  = "external-agent"
+		timeout          = 5 * time.Minute
+		pollInterval     = 2 * time.Second
+		clientID         = "e2e-actormatcher-delegate-client"
+		clientSecret     = "e2e-actormatcher-delegate-client-secret-testing" // above the 32-char minimum
+		externalSub      = "external-agent"
+		matchingAppID    = "trusted-app"
+		mismatchedAppID  = "some-other-app"
+		actorClaimTarget = "appid"
 	)
 
 	var (
@@ -56,29 +59,29 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 		oidcLocalPort                                        int
 		oidcPortForwardCleanup                               func()
 
-		// One VirtualMCPServer per AllowMayAct value under test.
-		vmcpDeniedName, vmcpDeniedIssuer            string
-		vmcpAllowedName, vmcpAllowedIssuer          string
-		oidcConfigDeniedName, oidcConfigAllowedName string
+		// One VirtualMCPServer per actorMatcher outcome under test.
+		vmcpMatchedName, vmcpMatchedIssuer              string
+		vmcpMismatchedName, vmcpMismatchedIssuer        string
+		oidcConfigMatchedName, oidcConfigMismatchedName string
 	)
 
 	ginkgo.BeforeAll(func() {
 		suffix := fmt.Sprintf("%d-%d", ginkgo.GinkgoParallelProcess(), time.Now().UnixNano())
-		backendName = "e2e-mayact-backend-" + suffix
-		delegateSecretName = "e2e-mayact-secret-" + suffix
-		dexClientSecretName = "e2e-mayact-dex-secret-" + suffix
-		dexName = "e2e-mayact-dex-" + suffix
-		groupName = "e2e-mayact-group-" + suffix
-		hmacSecretName = "e2e-mayact-hmac-" + suffix
-		oidcName = "e2e-mayact-oidc-" + suffix
-		signingKeySecretName = "e2e-mayact-key-" + suffix
-		vmcpDeniedName = "e2e-mayact-denied-" + suffix
-		vmcpAllowedName = "e2e-mayact-allowed-" + suffix
-		oidcConfigDeniedName = "e2e-mayact-oidccfg-denied-" + suffix
-		oidcConfigAllowedName = "e2e-mayact-oidccfg-allowed-" + suffix
+		backendName = "e2e-actormatcher-backend-" + suffix
+		delegateSecretName = "e2e-actormatcher-secret-" + suffix
+		dexClientSecretName = "e2e-actormatcher-dex-secret-" + suffix
+		dexName = "e2e-actormatcher-dex-" + suffix
+		groupName = "e2e-actormatcher-group-" + suffix
+		hmacSecretName = "e2e-actormatcher-hmac-" + suffix
+		oidcName = "e2e-actormatcher-oidc-" + suffix
+		signingKeySecretName = "e2e-actormatcher-key-" + suffix
+		vmcpMatchedName = "e2e-actormatcher-matched-" + suffix
+		vmcpMismatchedName = "e2e-actormatcher-mismatched-" + suffix
+		oidcConfigMatchedName = "e2e-actormatcher-oidccfg-matched-" + suffix
+		oidcConfigMismatchedName = "e2e-actormatcher-oidccfg-mismatched-" + suffix
 
-		vmcpDeniedIssuer = fmt.Sprintf("https://vmcp-%s.%s.svc.cluster.local:4483", vmcpDeniedName, defaultNamespace)
-		vmcpAllowedIssuer = fmt.Sprintf("https://vmcp-%s.%s.svc.cluster.local:4483", vmcpAllowedName, defaultNamespace)
+		vmcpMatchedIssuer = fmt.Sprintf("https://vmcp-%s.%s.svc.cluster.local:4483", vmcpMatchedName, defaultNamespace)
+		vmcpMismatchedIssuer = fmt.Sprintf("https://vmcp-%s.%s.svc.cluster.local:4483", vmcpMismatchedName, defaultNamespace)
 
 		ginkgo.By("creating shared secrets (delegate client secret, signing key, HMAC, Dex client secret)")
 		gomega.Expect(k8sClient.Create(ctx, &corev1.Secret{
@@ -108,14 +111,14 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 
 		ginkgo.By("deploying Dex as the (unexercised) embedded authorization server upstream")
 		dexInfo, cleanupDexFn = deployDex(ctx, k8sClient, dexName,
-			vmcpDeniedIssuer+"/oauth/callback")
+			vmcpMatchedIssuer+"/oauth/callback")
 
 		ginkgo.By("deploying the parameterized OIDC server as the trusted external issuer")
 		oidcIssuer, _, oidcCleanupFn = DeployParameterizedOIDCServer(ctx, k8sClient, oidcName, defaultNamespace, timeout, pollInterval)
 		oidcLocalPort, oidcPortForwardCleanup, err = startRateLimitServicePortForward(oidcName, 80)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-		CreateMCPGroupAndWait(ctx, k8sClient, groupName, defaultNamespace, "trusted issuer mayact e2e group", timeout, pollInterval)
+		CreateMCPGroupAndWait(ctx, k8sClient, groupName, defaultNamespace, "trusted issuer actorMatcher e2e group", timeout, pollInterval)
 		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewMCPServer(backendName, defaultNamespace,
 			v1beta1test.WithImage(images.YardstickServerImage),
 			v1beta1test.WithTransport("streamable-http"),
@@ -146,75 +149,79 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 			Scopes: []string{"profile"},
 		}
 
-		ginkgo.By("creating the MCPOIDCConfig and VirtualMCPServer with allowMayAct=false (the default)")
+		ginkgo.By("creating the MCPOIDCConfig and VirtualMCPServer whose actorMatcher matches the token")
 		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPOIDCConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigDeniedName, Namespace: defaultNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigMatchedName, Namespace: defaultNamespace},
 			Spec: mcpv1beta1.MCPOIDCConfigSpec{Type: mcpv1beta1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: vmcpDeniedIssuer, JWKSAllowPrivateIP: true}},
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: vmcpMatchedIssuer, JWKSAllowPrivateIP: true}},
 		})).To(gomega.Succeed())
-		delegate.Audiences = []string{vmcpDeniedIssuer}
-		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewVirtualMCPServer(vmcpDeniedName, defaultNamespace,
+		delegate.Audiences = []string{vmcpMatchedIssuer}
+		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewVirtualMCPServer(vmcpMatchedName, defaultNamespace,
 			v1beta1test.WithVMCPGroupRef(groupName),
 			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-				Name: oidcConfigDeniedName, Audience: vmcpDeniedIssuer, ResourceURL: vmcpDeniedIssuer,
+				Name: oidcConfigMatchedName, Audience: vmcpMatchedIssuer, ResourceURL: vmcpMatchedIssuer,
 			}}),
 			v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-				Issuer:               vmcpDeniedIssuer,
+				Issuer:               vmcpMatchedIssuer,
 				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: signingKeySecretName, Key: "private-key"}},
 				HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: hmacSecretName, Key: "hmac"}},
 				DelegateClients:      []mcpv1beta1.DelegateClientConfig{delegate},
 				UpstreamProviders:    []mcpv1beta1.UpstreamProviderConfig{upstream},
 				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
 					IssuerURL:              oidcIssuer,
-					ExpectedAudience:       vmcpDeniedIssuer,
+					ExpectedAudience:       vmcpMatchedIssuer,
 					AllowedDelegateClients: []string{clientID},
 					JWKSURL:                oidcIssuer + "/jwks",
 					InsecureAllowHTTP:      true,
 					AllowPrivateIPs:        true,
-					// AllowMayAct intentionally omitted: defaults to false.
+					// AllowedActors intentionally omitted: the matcher is the
+					// sole consent signal for this issuer.
+					ActorMatcher: fmt.Sprintf("claims.%s == %q", actorClaimTarget, matchingAppID),
 				}},
 			}),
 		))).To(gomega.Succeed())
 
-		ginkgo.By("creating the MCPOIDCConfig and VirtualMCPServer with allowMayAct=true")
+		ginkgo.By("creating the MCPOIDCConfig and VirtualMCPServer whose actorMatcher does not match")
 		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPOIDCConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigAllowedName, Namespace: defaultNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: oidcConfigMismatchedName, Namespace: defaultNamespace},
 			Spec: mcpv1beta1.MCPOIDCConfigSpec{Type: mcpv1beta1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: vmcpAllowedIssuer, JWKSAllowPrivateIP: true}},
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: vmcpMismatchedIssuer, JWKSAllowPrivateIP: true}},
 		})).To(gomega.Succeed())
-		delegate.Audiences = []string{vmcpAllowedIssuer}
-		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewVirtualMCPServer(vmcpAllowedName, defaultNamespace,
+		delegate.Audiences = []string{vmcpMismatchedIssuer}
+		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewVirtualMCPServer(vmcpMismatchedName, defaultNamespace,
 			v1beta1test.WithVMCPGroupRef(groupName),
 			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-				Name: oidcConfigAllowedName, Audience: vmcpAllowedIssuer, ResourceURL: vmcpAllowedIssuer,
+				Name: oidcConfigMismatchedName, Audience: vmcpMismatchedIssuer, ResourceURL: vmcpMismatchedIssuer,
 			}}),
 			v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-				Issuer:               vmcpAllowedIssuer,
+				Issuer:               vmcpMismatchedIssuer,
 				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: signingKeySecretName, Key: "private-key"}},
 				HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: hmacSecretName, Key: "hmac"}},
 				DelegateClients:      []mcpv1beta1.DelegateClientConfig{delegate},
 				UpstreamProviders:    []mcpv1beta1.UpstreamProviderConfig{upstream},
 				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
 					IssuerURL:              oidcIssuer,
-					ExpectedAudience:       vmcpAllowedIssuer,
+					ExpectedAudience:       vmcpMismatchedIssuer,
 					AllowedDelegateClients: []string{clientID},
 					JWKSURL:                oidcIssuer + "/jwks",
 					InsecureAllowHTTP:      true,
 					AllowPrivateIPs:        true,
-					AllowMayAct:            true,
+					// No AllowedActors either: with the matcher false, there
+					// is no other consent signal, so this must fail closed.
+					ActorMatcher: fmt.Sprintf("claims.%s == %q", actorClaimTarget, mismatchedAppID),
 				}},
 			}),
 		))).To(gomega.Succeed())
 
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpDeniedName, defaultNamespace, timeout, pollInterval)
-		WaitForCondition(ctx, k8sClient, vmcpDeniedName, defaultNamespace, mcpv1beta1.ConditionTypeAuthServerConfigValidated, "True", timeout, pollInterval)
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpAllowedName, defaultNamespace, timeout, pollInterval)
-		WaitForCondition(ctx, k8sClient, vmcpAllowedName, defaultNamespace, mcpv1beta1.ConditionTypeAuthServerConfigValidated, "True", timeout, pollInterval)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpMatchedName, defaultNamespace, timeout, pollInterval)
+		WaitForCondition(ctx, k8sClient, vmcpMatchedName, defaultNamespace, mcpv1beta1.ConditionTypeAuthServerConfigValidated, "True", timeout, pollInterval)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpMismatchedName, defaultNamespace, timeout, pollInterval)
+		WaitForCondition(ctx, k8sClient, vmcpMismatchedName, defaultNamespace, mcpv1beta1.ConditionTypeAuthServerConfigValidated, "True", timeout, pollInterval)
 	})
 
 	ginkgo.AfterAll(func() {
-		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpDeniedName, defaultNamespace))
-		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpAllowedName, defaultNamespace))
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpMatchedName, defaultNamespace))
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpMismatchedName, defaultNamespace))
 		_ = k8sClient.Delete(ctx, v1beta1test.NewMCPServer(backendName, defaultNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{ObjectMeta: metav1.ObjectMeta{Name: groupName, Namespace: defaultNamespace}})
 		for _, name := range []string{delegateSecretName, dexClientSecretName, hmacSecretName, signingKeySecretName} {
@@ -230,39 +237,21 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 			cleanupDexFn()
 		}
 		gomega.Eventually(func() bool {
-			deniedGone := apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpDeniedName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{}))
-			allowedGone := apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpAllowedName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{}))
-			return deniedGone && allowedGone
+			matchedGone := apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpMatchedName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{}))
+			mismatchedGone := apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpMismatchedName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{}))
+			return matchedGone && mismatchedGone
 		}, timeout, pollInterval).Should(gomega.BeTrue())
 	})
 
-	ginkgo.It("rejects a may_act subject token when allowMayAct is unset (the default)", func() {
-		port, cleanup, err := startRateLimitServicePortForward("vmcp-"+vmcpDeniedName, 4483)
+	ginkgo.It("grants an exchange with no allowedActors when actorMatcher matches", func() {
+		port, cleanup, err := startRateLimitServicePortForward("vmcp-"+vmcpMatchedName, 4483)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		defer cleanup()
 		localURL := fmt.Sprintf("http://localhost:%d", port)
 
-		subjectToken := mintExternalSubjectToken(oidcLocalPort, externalSub, vmcpDeniedIssuer, clientID, vmcpDeniedIssuer)
-		status, body := exchangeExternalSubjectToken(localURL, subjectToken, vmcpDeniedIssuer, clientID, clientSecret)
-		gomega.Expect(status).To(gomega.Equal(http.StatusBadRequest), string(body))
-
-		var tokenError struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description"`
-		}
-		gomega.Expect(json.Unmarshal(body, &tokenError)).To(gomega.Succeed())
-		gomega.Expect(tokenError.Error).To(gomega.Equal("invalid_request"))
-		gomega.Expect(tokenError.ErrorDescription).To(gomega.ContainSubstring("invalid or could not be verified"))
-	})
-
-	ginkgo.It("accepts a may_act subject token and delegates when allowMayAct is true", func() {
-		port, cleanup, err := startRateLimitServicePortForward("vmcp-"+vmcpAllowedName, 4483)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		defer cleanup()
-		localURL := fmt.Sprintf("http://localhost:%d", port)
-
-		subjectToken := mintExternalSubjectToken(oidcLocalPort, externalSub, vmcpAllowedIssuer, clientID, vmcpAllowedIssuer)
-		status, body := exchangeExternalSubjectToken(localURL, subjectToken, vmcpAllowedIssuer, clientID, clientSecret)
+		subjectToken := mintExternalSubjectTokenWithExtraClaim(
+			oidcLocalPort, externalSub, vmcpMatchedIssuer, actorClaimTarget, matchingAppID)
+		status, body := exchangeExternalSubjectToken(localURL, subjectToken, vmcpMatchedIssuer, clientID, clientSecret)
 		gomega.Expect(status).To(gomega.Equal(http.StatusOK), string(body))
 
 		var token struct {
@@ -271,10 +260,6 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 		gomega.Expect(json.Unmarshal(body, &token)).To(gomega.Succeed())
 		gomega.Expect(token.AccessToken).NotTo(gomega.BeEmpty())
 
-		// Decode without verification: the point of this assertion is only to
-		// confirm the delegated token's "act" claim names the delegate client
-		// that presented the may_act-bearing subject token, proving the
-		// exchange actually delegated rather than merely returning 200.
 		parts := strings.Split(token.AccessToken, ".")
 		gomega.Expect(parts).To(gomega.HaveLen(3))
 		payload, err := jwtBase64URLDecode(parts[1])
@@ -285,20 +270,42 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 			} `json:"act"`
 		}
 		gomega.Expect(json.Unmarshal(payload, &claims)).To(gomega.Succeed())
-		gomega.Expect(claims.Act.Sub).To(gomega.Equal(clientID))
+		gomega.Expect(claims.Act.Sub).To(gomega.Equal(clientID),
+			"act.sub must be the ToolHive delegate client, proving genuine delegation rather than a false-positive 200")
+	})
+
+	ginkgo.It("rejects the exchange when actorMatcher does not match and there is no allowedActors fallback", func() {
+		port, cleanup, err := startRateLimitServicePortForward("vmcp-"+vmcpMismatchedName, 4483)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		defer cleanup()
+		localURL := fmt.Sprintf("http://localhost:%d", port)
+
+		// This token's appid does not equal mismatchedAppID's matcher target
+		// (it carries matchingAppID instead), so the matcher must evaluate
+		// false with no other consent signal configured for this issuer.
+		subjectToken := mintExternalSubjectTokenWithExtraClaim(
+			oidcLocalPort, externalSub, vmcpMismatchedIssuer, actorClaimTarget, matchingAppID)
+		status, body := exchangeExternalSubjectToken(localURL, subjectToken, vmcpMismatchedIssuer, clientID, clientSecret)
+		gomega.Expect(status).To(gomega.Equal(http.StatusBadRequest), string(body))
+
+		var tokenError struct {
+			Error string `json:"error"`
+		}
+		gomega.Expect(json.Unmarshal(body, &tokenError)).To(gomega.Succeed())
+		gomega.Expect(tokenError.Error).To(gomega.Equal("invalid_request"))
 	})
 })
 
-// mintExternalSubjectToken requests a may_act-bearing JWT from the
+// mintExternalSubjectTokenWithExtraClaim requests a JWT from the
 // parameterized OIDC server (reachable at localhost:oidcLocalPort via
-// port-forward), acting as the trusted external issuer. issuer is used both
-// as the token's "aud" (matching TrustedIssuerConfig.ExpectedAudience) and as
-// the may_act claim's "iss" (the authorization server's own issuer, required
-// on the external path — see validateMayActShape).
-func mintExternalSubjectToken(oidcLocalPort int, subject, audience, mayActClientID, mayActIssuer string) string {
-	reqURL := fmt.Sprintf("http://localhost:%d/token?subject=%s&aud=%s&may_act_sub=%s&may_act_iss=%s",
+// port-forward) carrying one arbitrary extra top-level claim, for exercising
+// TrustedIssuer.ActorMatcher against a claim other than the default
+// ActorClaim ("azp"). audience is used as the token's "aud", matching
+// TrustedIssuerConfig.ExpectedAudience.
+func mintExternalSubjectTokenWithExtraClaim(oidcLocalPort int, subject, audience, claimName, claimValue string) string {
+	reqURL := fmt.Sprintf("http://localhost:%d/token?subject=%s&aud=%s&extra_claim_name=%s&extra_claim_value=%s",
 		oidcLocalPort, url.QueryEscape(subject), url.QueryEscape(audience),
-		url.QueryEscape(mayActClientID), url.QueryEscape(mayActIssuer))
+		url.QueryEscape(claimName), url.QueryEscape(claimValue))
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, reqURL, nil)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	resp, err := http.DefaultClient.Do(req)
@@ -311,32 +318,4 @@ func mintExternalSubjectToken(oidcLocalPort int, subject, audience, mayActClient
 	gomega.Expect(json.NewDecoder(resp.Body).Decode(&body)).To(gomega.Succeed())
 	gomega.Expect(body.AccessToken).NotTo(gomega.BeEmpty())
 	return body.AccessToken
-}
-
-// exchangeExternalSubjectToken performs an RFC 8693 token-exchange request
-// against endpoint's /oauth/token, authenticating as the delegate client.
-// Returns the raw HTTP status and body so both success and failure paths can
-// be asserted without the helper deciding what "success" means.
-func exchangeExternalSubjectToken(endpoint, subjectToken, audience, clientID, clientSecret string) (int, []byte) {
-	form := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"subject_token":      {subjectToken},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
-		"audience":           {audience},
-	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint+"/oauth/token", strings.NewReader(form.Encode()))
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	return resp.StatusCode, body
-}
-
-// jwtBase64URLDecode decodes an unpadded base64url JWT segment.
-func jwtBase64URLDecode(segment string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(segment)
 }

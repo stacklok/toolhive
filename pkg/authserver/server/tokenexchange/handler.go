@@ -582,8 +582,8 @@ func chainToAct(hops []coreaudit.DelegatedActor) (map[string]any, error) {
 }
 
 // delegateClientAllowed reports whether actorID may use an issuer's
-// AllowedDelegateClients-bound consent grant (a may_act.sub match or an
-// AllowedActors match): either the list contains the wildcard
+// AllowedDelegateClients-bound consent grant (a may_act.sub match or external
+// actor authorization): either the list contains the wildcard
 // anyDelegateClient, or it contains actorID directly. An empty list denies
 // every client — validateTrustedIssuer rejects that configuration outright
 // for any TrustedIssuer, so the empty case here is an extra fail-closed
@@ -610,15 +610,15 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 //     concept with no self-issued equivalent, so a self-issued may_act (a
 //     ToolHive user token delegating to a ToolHive client directly) is
 //     bound by may_act.sub alone, the same as before this check existed.
-//     On the external path, may_act bypasses AllowedActors, not per-client
-//     containment — delegateClientAllowed still applies there.
+//     On the external path, may_act bypasses AllowedActors and ActorMatcher,
+//     not per-client containment — delegateClientAllowed still applies there.
 //
-//  2. ExternalActor: if may_act is absent but the multi-issuer validator has
-//     already established consent for this token (multi_issuer_validator.go),
-//     it did so by matching the subject token's actor claim against that
-//     issuer's operator-configured AllowedActors. That actor claim — even
-//     when configured as "client_id" — names a client in the EXTERNAL
-//     issuer's namespace, not ToolHive's, so it must never be compared
+//  2. External actor authorization: if may_act is absent but the multi-issuer
+//     validator has already established consent for this token
+//     (multi_issuer_validator.go), it did so by matching the subject token's
+//     actor claim against that issuer's operator-configured AllowedActors or
+//     ActorMatcher. An allowlisted actor claim — even when configured as
+//     "client_id" — names a client in the EXTERNAL issuer's namespace, not ToolHive's, so it must never be compared
 //     against actorID the way case 3 below compares ValidatedClaims.ClientID.
 //     This case MUST be checked before case 3: it is not a fallback for an
 //     empty ClientID, it is a distinct, already-verified consent signal that
@@ -689,21 +689,22 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
-	case validatedClaims.ExternalActor != "":
-		// Consent was already established by the external-issuer validator: the
-		// subject token's actor claim matched this issuer's operator-configured
-		// AllowedActors. That claim lives in the external issuer's client
-		// namespace, not ToolHive's, so — even when ClientID is also populated
-		// (ActorClaim: "client_id") — it must never be compared against
-		// clientID or actorSub. This case must be checked before the
+	case validatedClaims.ExternalActorAuthorized:
+		// Consent was already established by the external-issuer validator:
+		// either the subject token's actor claim matched this issuer's
+		// operator-configured AllowedActors or its complete verified claims
+		// matched ActorMatcher. An allowlisted actor claim lives in the external
+		// issuer's client namespace, not ToolHive's, so — even when ClientID is
+		// also populated (ActorClaim: "client_id") — it must never be compared
+		// against clientID or actorSub. This case must be checked before the
 		// client_id cases below, not merged with them.
 		//
-		// AllowedDelegateClients binds this allowlisted external actor to a
-		// specific set of ToolHive clients — see delegateClientAllowed. This
-		// must be the authenticated client (clientID), not the asserted
-		// actor (actorSub): the allowlist is "this external actor's tokens
-		// may be exchanged by this ToolHive client", independent of whatever
-		// actor identity that client asserts via actor_token.
+		// AllowedDelegateClients binds this authorization to a specific set of
+		// ToolHive clients — see delegateClientAllowed. This must be the
+		// authenticated client (clientID), not the asserted actor (actorSub):
+		// the allowlist is "this external actor's tokens may be exchanged by
+		// this ToolHive client", independent of whatever actor identity that
+		// client asserts via actor_token.
 		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))

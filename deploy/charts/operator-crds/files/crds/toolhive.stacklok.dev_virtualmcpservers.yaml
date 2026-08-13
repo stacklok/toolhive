@@ -643,6 +643,18 @@ spec:
                             client_id claim instead.
                           maxLength: 64
                           type: string
+                        actorMatcher:
+                          description: |-
+                            ActorMatcher is an admin-authored CEL expression evaluated against the
+                            subject token's complete signature-verified claims map (bound as
+                            "claims") to authorize a class of external actors, in addition to (not
+                            instead of) allowedActors — either signal is sufficient. Must evaluate
+                            to a boolean; a non-boolean result denies the token at evaluation time,
+                            not at reconcile time. A syntactically invalid expression fails
+                            reconciliation (surfaced via the AuthServerConfigValidated condition),
+                            not admission — there is no validating webhook for this field.
+                          maxLength: 4096
+                          type: string
                         allowMayAct:
                           default: false
                           description: |-
@@ -4487,6 +4499,18 @@ spec:
                             for Okta. The special value "client_id" reads the subject token's
                             client_id claim instead.
                           maxLength: 64
+                          type: string
+                        actorMatcher:
+                          description: |-
+                            ActorMatcher is an admin-authored CEL expression evaluated against the
+                            subject token's complete signature-verified claims map (bound as
+                            "claims") to authorize a class of external actors, in addition to (not
+                            instead of) allowedActors — either signal is sufficient. Must evaluate
+                            to a boolean; a non-boolean result denies the token at evaluation time,
+                            not at reconcile time. A syntactically invalid expression fails
+                            reconciliation (surfaced via the AuthServerConfigValidated condition),
+                            not admission — there is no validating webhook for this field.
+                          maxLength: 4096
                           type: string
                         allowMayAct:
                           default: false

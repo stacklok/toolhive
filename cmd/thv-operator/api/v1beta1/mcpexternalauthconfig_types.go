@@ -462,6 +462,18 @@ type TrustedIssuerConfig struct {
 	// +optional
 	AllowedActors []string `json:"allowedActors,omitempty"`
 
+	// ActorMatcher is an admin-authored CEL expression evaluated against the
+	// subject token's complete signature-verified claims map (bound as
+	// "claims") to authorize a class of external actors, in addition to (not
+	// instead of) allowedActors — either signal is sufficient. Must evaluate
+	// to a boolean; a non-boolean result denies the token at evaluation time,
+	// not at reconcile time. A syntactically invalid expression fails
+	// reconciliation (surfaced via the AuthServerConfigValidated condition),
+	// not admission — there is no validating webhook for this field.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	ActorMatcher string `json:"actorMatcher,omitempty"`
+
 	// AllowedDelegateClients restricts which ToolHive client IDs may
 	// exchange a subject token from this issuer. Required; set it to ["*"]
 	// to permit any confidential client holding the token-exchange grant. The

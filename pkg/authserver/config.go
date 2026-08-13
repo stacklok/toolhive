@@ -1117,8 +1117,8 @@ func (c *Config) validateDelegationTokenLifespan() error {
 }
 
 // validateTrustedIssuers checks every configured TrustedIssuer as early as
-// RunConfig.Validate can catch it, so a bad actor_claim or duplicate
-// issuer_url fails before buildUpstreamConfigs performs live RFC 7591
+// RunConfig.Validate can catch it, so a bad actor_claim, actor_matcher, or
+// duplicate issuer_url fails before buildUpstreamConfigs performs live RFC 7591
 // registration against upstream IdPs — not after it, on a crash loop that
 // orphans an upstream registration on every restart. Shared by
 // RunConfig.Validate() and Config.Validate() (mirrors
@@ -1128,8 +1128,8 @@ func (c *Config) validateDelegationTokenLifespan() error {
 // issuer_url is checked by validateTrustedIssuerURL, jwks_url (when set) by
 // validateJWKSEndpointURL — see their doc comments for the URL rules each
 // enforces. The remaining structural checks (required fields, self-issuer
-// collision, duplicate issuers, ActorClaim reachability) run via
-// tokenexchange.ValidateTrustedIssuers.
+// collision, duplicate issuers, ActorClaim reachability, and ActorMatcher
+// compilation) run via tokenexchange.ValidateTrustedIssuers.
 func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string) error {
 	for _, ti := range issuers {
 		if err := validateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {

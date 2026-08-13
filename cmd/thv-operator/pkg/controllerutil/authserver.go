@@ -256,6 +256,7 @@ func buildTrustedIssuerRunConfigs(issuers []mcpv1beta1.TrustedIssuerConfig) []to
 			AllowPrivateIPs:        ti.AllowPrivateIPs,
 			ActorClaim:             ti.ActorClaim,
 			AllowedActors:          append([]string(nil), ti.AllowedActors...),
+			ActorMatcher:           ti.ActorMatcher,
 			AllowedDelegateClients: append([]string(nil), ti.AllowedDelegateClients...),
 			AllowMayAct:            ti.AllowMayAct,
 		}

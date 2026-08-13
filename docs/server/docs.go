@@ -794,6 +794,10 @@ const docTemplate = `{
                         "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
                         "type": "string"
                     },
+                    "actor_matcher": {
+                        "description": "ActorMatcher is an admin-authored CEL expression evaluated against the\ncomplete signature-verified JWT claims map as \"claims\". A true result\nauthorizes delegation alongside AllowedActors; a syntax or type error\nfails configuration validation. An expression that compiles but does\nnot return bool is NOT caught at that point, though — it compiles\nsuccessfully and is only rejected the first time it is evaluated\nagainst a real token, denying that token (and every one after it, since\nthe expression will never return bool). Any other runtime evaluation\nerror denies the token the same way.",
+                        "type": "string"
+                    },
                     "allow_may_act": {
                         "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors. It does not affect\nself-issued subject tokens. When enabled, AllowedDelegateClients must\nname specific ToolHive clients rather than use the wildcard.",
                         "type": "boolean"
@@ -803,7 +807,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "allowed_actors": {
-                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim. Empty denies every token unless AllowMayAct is true\nand the token carries a permitted may_act claim. By itself names no\nToolHive client — see AllowedDelegateClients and\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim. ActorMatcher can additionally authorize a token by\nmatching its complete verified claims map; either signal is sufficient.\nWhen both are empty, only may_act-bearing tokens are accepted, and only\nif AllowMayAct is also true for this issuer. By itself names no\nToolHive client — see AllowedDelegateClients and\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
                         "items": {
                             "type": "string"
                         },

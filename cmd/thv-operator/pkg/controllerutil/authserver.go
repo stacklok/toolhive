@@ -721,6 +721,9 @@ func BuildAuthServerRunConfig(
 	}()
 
 	trustDomains, inboundGrants := buildSPIFFETrustRunConfig(authConfig)
+	if err := authserver.ValidateSPIFFETrust(trustDomains, inboundGrants, scopesSupported, allowedAudiences); err != nil {
+		return nil, fmt.Errorf("invalid SPIFFE trust configuration: %w", err)
+	}
 	config = &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
 		Issuer:                       authConfig.Issuer,
@@ -744,36 +747,8 @@ func BuildAuthServerRunConfig(
 		config.TrustedIssuers = buildTrustedIssuerRunConfigs(authConfig.TrustedIssuers)
 	}
 
-	// Build signing key configuration
-	if len(authConfig.SigningKeySecretRefs) > 0 {
-		signingKeyConfig := &authserver.SigningKeyRunConfig{
-			KeyDir: AuthServerKeysMountPath,
-		}
-		for idx := range authConfig.SigningKeySecretRefs {
-			fileName := fmt.Sprintf(AuthServerKeyFilePattern, idx)
-			if idx == 0 {
-				signingKeyConfig.SigningKeyFile = fileName
-			} else {
-				signingKeyConfig.FallbackKeyFiles = append(signingKeyConfig.FallbackKeyFiles, fileName)
-			}
-		}
-		config.SigningKeyConfig = signingKeyConfig
-	}
-
-	// Build HMAC secret file paths
-	for idx := range authConfig.HMACSecretRefs {
-		hmacPath := fmt.Sprintf("%s/%s", AuthServerHMACMountPath, fmt.Sprintf(AuthServerHMACFilePattern, idx))
-		config.HMACSecretFiles = append(config.HMACSecretFiles, hmacPath)
-	}
-
-	// Set token lifespans from config (as strings, will be parsed at runtime)
-	if authConfig.TokenLifespans != nil {
-		config.TokenLifespans = &authserver.TokenLifespanRunConfig{
-			AccessTokenLifespan:  authConfig.TokenLifespans.AccessTokenLifespan,
-			RefreshTokenLifespan: authConfig.TokenLifespans.RefreshTokenLifespan,
-			AuthCodeLifespan:     authConfig.TokenLifespans.AuthCodeLifespan,
-		}
-	}
+	// Wire signing-key file paths, HMAC secret file paths, and token lifespans.
+	buildAuthServerSecretsConfig(config, authConfig)
 
 	// Build upstream provider configs using shared bindings
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
@@ -823,8 +798,47 @@ func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig 
 	// Wire through the confidential-over-loopback-http opt-in (default off).
 	config.InsecureAllowConfidentialOverLoopbackHTTP = authConfig.InsecureAllowConfidentialOverLoopbackHTTP
 
-	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
-	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
+	if err := validateDelegateClients(config); err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+// buildAuthServerSecretsConfig wires signing-key file paths, HMAC secret file
+// paths, token lifespans, and CIMD settings from the CRD onto config.
+func buildAuthServerSecretsConfig(config *authserver.RunConfig, authConfig *mcpv1beta1.EmbeddedAuthServerConfig) {
+	if len(authConfig.SigningKeySecretRefs) > 0 {
+		signingKeyConfig := &authserver.SigningKeyRunConfig{
+			KeyDir: AuthServerKeysMountPath,
+		}
+		for idx := range authConfig.SigningKeySecretRefs {
+			fileName := fmt.Sprintf(AuthServerKeyFilePattern, idx)
+			if idx == 0 {
+				signingKeyConfig.SigningKeyFile = fileName
+			} else {
+				signingKeyConfig.FallbackKeyFiles = append(signingKeyConfig.FallbackKeyFiles, fileName)
+			}
+		}
+		config.SigningKeyConfig = signingKeyConfig
+	}
+
+	for idx := range authConfig.HMACSecretRefs {
+		hmacPath := fmt.Sprintf("%s/%s", AuthServerHMACMountPath, fmt.Sprintf(AuthServerHMACFilePattern, idx))
+		config.HMACSecretFiles = append(config.HMACSecretFiles, hmacPath)
+	}
+
+	// Set token lifespans from config (as strings, will be parsed at runtime)
+	if authConfig.TokenLifespans != nil {
+		config.TokenLifespans = &authserver.TokenLifespanRunConfig{
+			AccessTokenLifespan:  authConfig.TokenLifespans.AccessTokenLifespan,
+			RefreshTokenLifespan: authConfig.TokenLifespans.RefreshTokenLifespan,
+			AuthCodeLifespan:     authConfig.TokenLifespans.AuthCodeLifespan,
+		}
+	}
+
+	// CacheFallbackTTL is passed as-is (string); resolveCIMDConfig in the
+	// runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {
 		config.CIMD = &authserver.CIMDRunConfig{
 			Enabled:          authConfig.CIMD.Enabled,

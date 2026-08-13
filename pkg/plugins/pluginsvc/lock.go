@@ -5,11 +5,17 @@ package pluginsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// errLockWrite marks failures to write the project lock file, so
+// classifySyncFailure can map them to FailureReasonLockWriteFailed without
+// matching on error text or treating every HTTP 500 as a lock-write failure.
+var errLockWrite = errors.New("lock file write failed")
 
 // recordLockState updates opts.ProjectRoot's lock file to reflect a
 // just-completed project-scope install: a plugins: entry for pl. It also
@@ -48,7 +54,7 @@ func (s *service) recordLockState(
 		Digest:            pl.Digest,
 		ContentDigest:     contentDigest,
 	}); err != nil {
-		return pl, fmt.Errorf("writing lock entry: %w", err)
+		return pl, fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
 
 	if !pl.Managed {

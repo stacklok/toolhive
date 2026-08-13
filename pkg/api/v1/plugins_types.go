@@ -76,3 +76,20 @@ type pluginBuildListResponse struct {
 	// List of locally-built OCI plugin artifacts
 	Builds []plugins.LocalBuild `json:"builds"`
 }
+
+// syncPluginsRequest represents the request to sync a project's plugins.
+//
+//	@Description	Request to restore a project's installed plugins to match its lock file
+type syncPluginsRequest struct {
+	// ProjectRoot is the project root path whose lock file should be synced
+	ProjectRoot string `json:"project_root"`
+	// Clients lists target client identifiers. Empty means every
+	// plugin-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+	// Prune removes project-scoped plugins installed but not present in the lock file
+	Prune bool `json:"prune,omitempty"`
+	// Check verifies on-disk content against the lock file without installing or writing anything
+	Check bool `json:"check,omitempty"`
+	// Adopt writes lock entries for existing unmanaged project-scope installs
+	Adopt bool `json:"adopt,omitempty"`
+}

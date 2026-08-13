@@ -73,12 +73,12 @@ func (s *service) dispatchExtraction(
 	storeErr error,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
+	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &plugins.InstallResult{Plugin: existing}, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest
-	if digestMatches {
+	if digestMatches && !opts.SyncRestore {
 		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes)
 	}
 	if storeErr == nil {
@@ -89,8 +89,9 @@ func (s *service) dispatchExtraction(
 
 // isExtractionNoOp reports whether the install can be short-circuited because
 // the same digest and all requested clients are already present. Mirror of
-// skillsvc.isExtractionNoOp. Sync (a later PR) will need a SyncRestore bypass
-// so a lock-driven reinstall can repair on-disk drift at the same digest.
+// skillsvc.isExtractionNoOp. Callers must also check SyncRestore: a lock-driven
+// reinstall repairs on-disk drift at the same digest, so the no-op path must
+// not apply.
 func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plugins.InstallOptions, clientTypes []string) bool {
 	if storeErr != nil || existing.Digest != opts.Digest {
 		return false

@@ -1084,10 +1084,14 @@ func (a *Authorizer) authorizeResourceRead(
 	// Action is to read a resource
 	action := "Action::read_resource"
 
-	// Resource is the resource being accessed
-	// Use the URI as the resource ID, but sanitize it for Cedar
-	sanitizedURI := sanitizeURIForCedar(resourceURI)
-	resource := fmt.Sprintf("Resource::%s", sanitizedURI)
+	// Resource is the resource being accessed. Use the exact URI as the
+	// entity ID: entities are built programmatically via cedar.NewEntityUID,
+	// which accepts any string on the request side, so no character rewriting
+	// is needed. (Policy authors still write the ID as a Cedar string literal,
+	// so " and \ need escaping in policy source; see docs/authz.md.) A lossy
+	// mapping would let distinct URIs collide onto one entity ID, and a
+	// policy grant on one URI would then silently cover every colliding URI.
+	resource := fmt.Sprintf("Resource::%s", resourceURI)
 
 	// Create attributes for the entities
 	attributes := mergeContexts(map[string]interface{}{
@@ -1159,25 +1163,6 @@ func parseCedarEntityID(entityID string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid entity ID format: %s", entityID)
 	}
 	return parts[0], parts[1], nil
-}
-
-// sanitizeURIForCedar sanitizes a URI for use in Cedar policies.
-// Cedar entity IDs have restrictions on characters, so we need to sanitize the URI.
-func sanitizeURIForCedar(uri string) string {
-	// Replace characters that are not allowed in Cedar entity IDs
-	// This is a simple implementation - you may need to enhance it based on your needs
-	replacer := strings.NewReplacer(
-		":", "_",
-		"/", "_",
-		"\\", "_",
-		"?", "_",
-		"&", "_",
-		"=", "_",
-		"#", "_",
-		" ", "_",
-		".", "_",
-	)
-	return replacer.Replace(uri)
 }
 
 // AuthorizeWithJWTClaims demonstrates how to use JWT claims with the Cedar authorization middleware.

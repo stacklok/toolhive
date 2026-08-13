@@ -616,6 +616,72 @@ func TestDefaultGrantTypesAndResponseTypes(t *testing.T) {
 	assert.Contains(t, defaultResponseTypes, "code")
 }
 
+func TestFilterPublicGrantTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		grantTypes []string
+		want       []string
+		wantErr    bool
+	}{
+		{"nil gets defaults", nil, []string{"authorization_code", "refresh_token"}, false},
+		{"empty gets defaults", []string{}, []string{"authorization_code", "refresh_token"}, false},
+		{"supported set passes through", []string{"authorization_code", "refresh_token"},
+			[]string{"authorization_code", "refresh_token"}, false},
+		{"unsupported entries are dropped, not fatal",
+			[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"},
+			[]string{"authorization_code", "refresh_token"}, false},
+		{"unsupported-only list rejected (authorization_code missing)",
+			[]string{"urn:ietf:params:oauth:grant-type:device_code", "client_credentials"}, nil, true},
+		{"refresh_token only rejected (authorization_code missing)", []string{"refresh_token"}, nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, dcrErr := FilterPublicGrantTypes(tt.grantTypes)
+			if tt.wantErr {
+				require.NotNil(t, dcrErr)
+				assert.Equal(t, DCRErrorInvalidClientMetadata, dcrErr.Error)
+				return
+			}
+			require.Nil(t, dcrErr)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFilterPublicResponseTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		responseTypes []string
+		want          []string
+		wantErr       bool
+	}{
+		{"nil gets defaults", nil, []string{"code"}, false},
+		{"code passes through", []string{"code"}, []string{"code"}, false},
+		{"unsupported entries are dropped, not fatal", []string{"code", "token"}, []string{"code"}, false},
+		{"unsupported-only list rejected (code missing)", []string{"token"}, nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, dcrErr := FilterPublicResponseTypes(tt.responseTypes)
+			if tt.wantErr {
+				require.NotNil(t, dcrErr)
+				assert.Equal(t, DCRErrorInvalidClientMetadata, dcrErr.Error)
+				return
+			}
+			require.Nil(t, dcrErr)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestValidateScopeSubset(t *testing.T) {
 	t.Parallel()
 

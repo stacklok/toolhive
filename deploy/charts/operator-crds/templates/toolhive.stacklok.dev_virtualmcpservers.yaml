@@ -2926,7 +2926,9 @@ spec:
                         default: false
                         description: |-
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                          The metrics are served on the main transport port at /metrics.
+                          The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+                          main transport port, so the endpoint is not exposed alongside application traffic.
+                          See PrometheusPort and pkg/diagnostics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
@@ -2959,6 +2961,18 @@ spec:
                           When false, OTLP metrics are not sent even if an endpoint is configured.
                           This is independent of EnablePrometheusMetricsPath.
                         type: boolean
+                      prometheusPort:
+                        description: |-
+                          PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+                          EnablePrometheusMetricsPath is true. It is deliberately not the main transport port:
+                          Go's ServeMux resolves an explicit "/metrics" ahead of the "/" catch-all that carries
+                          the middleware chain, so sharing the transport port leaves /metrics unauthenticated
+                          even when OIDC is configured.
+
+                          Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+                          Prometheus exporter default). If that port is taken the listener falls back to an
+                          available one and logs the resolved address. Do not route this port publicly.
+                        type: integer
                       samplingRate:
                         default: "0.05"
                         description: |-
@@ -6556,7 +6570,9 @@ spec:
                         default: false
                         description: |-
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-                          The metrics are served on the main transport port at /metrics.
+                          The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+                          main transport port, so the endpoint is not exposed alongside application traffic.
+                          See PrometheusPort and pkg/diagnostics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
@@ -6589,6 +6605,18 @@ spec:
                           When false, OTLP metrics are not sent even if an endpoint is configured.
                           This is independent of EnablePrometheusMetricsPath.
                         type: boolean
+                      prometheusPort:
+                        description: |-
+                          PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+                          EnablePrometheusMetricsPath is true. It is deliberately not the main transport port:
+                          Go's ServeMux resolves an explicit "/metrics" ahead of the "/" catch-all that carries
+                          the middleware chain, so sharing the transport port leaves /metrics unauthenticated
+                          even when OIDC is configured.
+
+                          Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+                          Prometheus exporter default). If that port is taken the listener falls back to an
+                          available one and logs the resolved address. Do not route this port publicly.
+                        type: integer
                       samplingRate:
                         default: "0.05"
                         description: |-

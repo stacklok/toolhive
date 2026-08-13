@@ -70,11 +70,25 @@ type Config struct {
 	Insecure bool `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 
 	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-	// The metrics are served on the main transport port at /metrics.
+	// The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+	// main transport port, so the endpoint is not exposed alongside application traffic.
+	// See PrometheusPort and pkg/diagnostics.
 	// This is separate from OTLP metrics which are sent to the Endpoint.
 	// +kubebuilder:default=false
 	// +optional
 	EnablePrometheusMetricsPath bool `json:"enablePrometheusMetricsPath,omitempty" yaml:"enablePrometheusMetricsPath,omitempty"`
+
+	// PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+	// EnablePrometheusMetricsPath is true. It is deliberately not the main transport port:
+	// Go's ServeMux resolves an explicit "/metrics" ahead of the "/" catch-all that carries
+	// the middleware chain, so sharing the transport port leaves /metrics unauthenticated
+	// even when OIDC is configured.
+	//
+	// Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+	// Prometheus exporter default). If that port is taken the listener falls back to an
+	// available one and logs the resolved address. Do not route this port publicly.
+	// +optional
+	PrometheusPort int `json:"prometheusPort,omitempty" yaml:"prometheusPort,omitempty"`
 
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
@@ -124,11 +138,11 @@ func (c Config) String() string {
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
-		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, EnvironmentVariables: %v, CustomAttributes: %v, "+
 		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
-		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes,
+		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.EnvironmentVariables, c.CustomAttributes,
 		c.UseLegacyAttributes, c.CACertPath)
 }
 

@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -289,27 +290,21 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 
 // Helper functions for metrics analysis
 
-// extractMetricsURL constructs the metrics URL from the server URL
+// extractMetricsURL constructs the metrics URL from the server URL.
+//
+// Metrics are served on the diagnostics listener, not on the transport port the
+// server URL points at, so only the host is reused here. See pkg/diagnostics.
 func extractMetricsURL(serverURL string) (string, error) {
-	// Parse the server URL to extract host and port
+	// Parse the server URL to extract the host
 	// serverURL format: http://localhost:PORT/sse#servername
 	parts := strings.Split(serverURL, ":")
 	if len(parts) < 3 {
 		return "", fmt.Errorf("invalid server URL format: %s", serverURL)
 	}
 
-	// The metrics are exposed on the same host and port at /metrics path
 	host := parts[1][2:] // Remove "//" prefix
-	portAndPath := parts[2]
 
-	// Extract just the port (remove /sse#servername part)
-	portParts := strings.Split(portAndPath, "/")
-	if len(portParts) < 1 {
-		return "", fmt.Errorf("invalid server URL format: %s", serverURL)
-	}
-	port := portParts[0]
-
-	metricsURL := fmt.Sprintf("http://%s:%s/metrics", host, port)
+	metricsURL := fmt.Sprintf("http://%s:%d%s", host, diagnostics.DefaultPort, diagnostics.MetricsPath)
 
 	return metricsURL, nil
 }

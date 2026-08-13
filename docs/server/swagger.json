@@ -4918,7 +4918,7 @@
                         "type": "object"
                     },
                     "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served at /metrics on a dedicated diagnostics port rather than on the\nmain transport port, so the endpoint is not exposed alongside application traffic.\nSee PrometheusPort and pkg/diagnostics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "endpoint": {
@@ -4947,6 +4947,10 @@
                     "metricsEnabled": {
                         "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
+                    },
+                    "prometheusPort": {
+                        "description": "PrometheusPort is the port the Prometheus /metrics endpoint is served on when\nEnablePrometheusMetricsPath is true. It is deliberately not the main transport port:\nGo's ServeMux resolves an explicit \"/metrics\" ahead of the \"/\" catch-all that carries\nthe middleware chain, so sharing the transport port leaves /metrics unauthenticated\neven when OIDC is configured.\n\nZero selects the default diagnostics port (9464, the OpenTelemetry specification's\nPrometheus exporter default). If that port is taken the listener falls back to an\navailable one and logs the resolved address. Do not route this port publicly.\n+optional",
+                        "type": "integer"
                     },
                     "samplingRate": {
                         "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",

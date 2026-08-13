@@ -1318,10 +1318,18 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.HandleFunc("/health", http.NotFound)
 	}
 
-	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares)
+	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares),
+	// otherwise return 404 (prevents /metrics from being proxied to the backend).
+	//
+	// The runner no longer supplies a handler here: metrics are served on a
+	// separate diagnostics listener (see pkg/diagnostics), because an explicit
+	// "/metrics" on this mux outranks the "/" catch-all below and would bypass
+	// the middleware chain.
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 		slog.Debug("prometheus metrics endpoint enabled at /metrics")
+	} else {
+		mux.HandleFunc("/metrics", http.NotFound)
 	}
 
 	// 4. Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares)

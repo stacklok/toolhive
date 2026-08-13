@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
@@ -88,6 +89,11 @@ type Runner struct {
 
 	// prometheusHandler is the Prometheus metrics handler set by telemetry middleware
 	prometheusHandler http.Handler
+
+	// diagnosticsServer serves the Prometheus /metrics endpoint on its own
+	// listener, keeping it off the application listener where it would bypass
+	// the middleware chain. Nil unless the metrics path is enabled.
+	diagnosticsServer *diagnostics.Server
 
 	statusManager statuses.StatusManager
 
@@ -366,7 +372,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set all named middleware and handlers on transport config
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
-	transportConfig.PrometheusHandler = r.prometheusHandler
+
+	// Serve Prometheus metrics on a dedicated diagnostics listener rather than
+	// handing the handler to the transport, which would register it on the
+	// application mux where it outranks the middleware chain and stays
+	// unauthenticated. Leaving transportConfig.PrometheusHandler nil is what
+	// keeps the proxies from mounting /metrics at all.
+	if err := r.startDiagnosticsServer(); err != nil {
+		return err
+	}
 
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)
@@ -955,6 +969,15 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			if lastErr == nil {
 				lastErr = err
 			}
+		}
+	}
+
+	// Stop the diagnostics listener before the telemetry provider it scrapes
+	// from is shut down.
+	if err := r.stopDiagnosticsServer(ctx); err != nil {
+		slog.Warn("Failed to stop diagnostics server", "error", err)
+		if lastErr == nil {
+			lastErr = err
 		}
 	}
 

@@ -105,7 +105,7 @@ maintaining the modular architecture of ToolHive's middleware system.
 | `--otel-service-name` | string | `"toolhive-mcp-proxy"` | Service name for telemetry resource |
 | `--otel-headers` | string[] | `nil` | OTLP authentication headers (`key=value` format) |
 | `--otel-insecure` | bool | `false` | Use HTTP instead of HTTPS for the OTLP endpoint |
-| `--otel-enable-prometheus-metrics-path` | bool | `false` | Expose Prometheus `/metrics` endpoint on the transport port |
+| `--otel-enable-prometheus-metrics-path` | bool | `false` | Expose Prometheus `/metrics` endpoint on a dedicated diagnostics port (see [Metrics endpoint exposure](#metrics-endpoint-exposure)) |
 | `--otel-env-vars` | string[] | `nil` | Environment variables to include in spans (comma-separated) |
 | `--otel-custom-attributes` | string | `""` | Custom resource attributes (`key1=value1,key2=value2`) |
 | `--otel-use-legacy-attributes` | bool | `true` | Emit legacy attribute names alongside new OTEL semantic convention names |
@@ -182,6 +182,42 @@ For VirtualMCPServer telemetry, see the
 - If only `enablePrometheusMetricsPath` is enabled (no OTLP endpoint),
   Prometheus metrics are served without OTLP export.
 - If nothing is configured (no endpoint, no Prometheus), telemetry is disabled.
+
+### Metrics endpoint exposure
+
+When `enablePrometheusMetricsPath` is on, `/metrics` is served on a **dedicated
+diagnostics listener**, not on the transport port that serves MCP traffic.
+
+This is deliberate. Go's `ServeMux` resolves the most specific registered pattern
+first, so an explicitly registered `/metrics` always outranks the `/` catch-all
+that carries the proxy middleware chain. Serving metrics on the transport port
+therefore leaves the endpoint outside authentication, rate limiting, body limits,
+and audit — even on a fully OIDC-configured deployment. A dedicated port keeps the
+endpoint scrapeable without putting it on the listener you expose to clients. The
+ToolHive operator already binds its own metrics endpoint this way
+(`--metrics-bind-address`), as do etcd (`--listen-metrics-urls`) and
+controller-runtime.
+
+Port selection:
+
+- **Default** — port `9464`, the OpenTelemetry specification's Prometheus exporter
+  default (`OTEL_EXPORTER_PROMETHEUS_PORT`), so scrapers already expect it there.
+- **Explicit** — set `prometheusPort` to override it.
+- **Fallback** — if the requested port is already bound (several CLI workloads on
+  one machine, for example) an available port is chosen instead. The resolved
+  address is logged at startup.
+
+Do not route the diagnostics port publicly: leave it out of any Service or Ingress
+that faces the internet, and restrict it with a `NetworkPolicy`.
+
+`/health` deliberately stays on the transport port so Kubernetes liveness and
+readiness probes keep working. It exposes no version or build information.
+
+> **Cardinality warning.** Metric label values derived from client input (MCP
+> method, tool, and prompt names) are bounded in length, and the OpenTelemetry SDK
+> caps attribute sets at 2000 per instrument. Both readers aggregate cumulatively,
+> so every distinct attribute set stays resident for the process lifetime. Avoid
+> adding new client-controlled values as metric labels; put them on spans instead.
 
 ## Metrics Reference
 

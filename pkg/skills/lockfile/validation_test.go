@@ -255,6 +255,65 @@ func TestValidateLockfile(t *testing.T) {
 				{Name: "root", Source: "r", Digest: validSHA256Digest, Explicit: true},
 			}},
 		},
+		{
+			name: "valid plugin entry",
+			lf: Lockfile{Version: CurrentVersion, Plugins: []Entry{
+				{Name: "my-plugin", Source: "my-plugin", Digest: validSHA256Digest},
+			}},
+		},
+		{
+			name: "skill and plugin may share a name",
+			lf: Lockfile{Version: CurrentVersion,
+				Skills:  []Entry{{Name: "shared", Source: "s", Digest: validSHA256Digest}},
+				Plugins: []Entry{{Name: "shared", Source: "p", Digest: validSHA256Digest}},
+			},
+		},
+		{
+			name: "duplicate plugin entry names",
+			lf: Lockfile{Version: CurrentVersion, Plugins: []Entry{
+				{Name: "dup", Source: "a", Digest: validSHA256Digest},
+				{Name: "dup", Source: "b", Digest: validSHA256Digest},
+			}},
+			wantErr: "duplicate entry",
+		},
+		{
+			name: "plugin requiredBy references unknown parent",
+			lf: Lockfile{Version: CurrentVersion, Plugins: []Entry{
+				{Name: "dep", Source: "dep", Digest: validSHA256Digest, RequiredBy: []string{"ghost"}},
+			}},
+			wantErr: "unknown parent",
+		},
+		{
+			name: "plugin requiredBy cycle",
+			lf: Lockfile{Version: CurrentVersion, Plugins: []Entry{
+				{Name: "ring-a", Source: "a", Digest: validSHA256Digest, RequiredBy: []string{"ring-b"}},
+				{Name: "ring-b", Source: "b", Digest: validSHA256Digest, RequiredBy: []string{"ring-a"}},
+			}},
+			wantErr: "requiredBy cycle",
+		},
+		{
+			name: "skill requiredBy cannot name a plugin",
+			lf: Lockfile{Version: CurrentVersion,
+				Skills:  []Entry{{Name: "dep", Source: "d", Digest: validSHA256Digest, RequiredBy: []string{"plug"}}},
+				Plugins: []Entry{{Name: "plug", Source: "p", Digest: validSHA256Digest}},
+			},
+			wantErr: "unknown parent",
+		},
+		{
+			name: "plugin requiredBy cannot name a skill",
+			lf: Lockfile{Version: CurrentVersion,
+				Skills:  []Entry{{Name: "sk", Source: "s", Digest: validSHA256Digest}},
+				Plugins: []Entry{{Name: "dep", Source: "d", Digest: validSHA256Digest, RequiredBy: []string{"sk"}}},
+			},
+			wantErr: "unknown parent",
+		},
+		{
+			name: "plugin missing source",
+			lf: Lockfile{Version: CurrentVersion, Plugins: []Entry{
+				{Name: "my-plugin", Digest: validSHA256Digest},
+			}},
+			wantErr: "source is required",
+		},
 	}
 
 	for _, tt := range tests {

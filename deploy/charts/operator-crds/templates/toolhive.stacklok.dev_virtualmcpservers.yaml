@@ -81,24 +81,6 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
-                  allowConfidentialClientRegistration:
-                    default: false
-                    description: |-
-                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
-                      Registration of confidential clients: when true, /oauth/register
-                      accepts token_endpoint_auth_method values client_secret_basic and
-                      client_secret_post in addition to "none" (still the default on
-                      omission) and mints a client_secret returned exactly once.
-                      Confidential registrations are restricted to https non-loopback
-                      redirect URIs, and on the Redis storage backend all DCR-issued
-                      registrations are evicted after 30 days of inactivity and must
-                      re-register. This gates registration only: disabling it does not
-                      revoke or reject already-minted secrets at the token endpoint.
-
-                      Security: registration is unauthenticated, so enabling this lets any
-                      caller who can reach the endpoint obtain a client credential.
-                      Combining it with insecureAllowHTTP is rejected at validation.
-                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -179,41 +161,6 @@ spec:
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
-                  forceConfidentialRedirectUris:
-                    description: |-
-                      ForceConfidentialRedirectURIs lists redirect URIs that must be
-                      registered as confidential clients regardless of the
-                      token_endpoint_auth_method the DCR request declares. A registration
-                      whose redirectUris contains an EXACT match for one of these entries is
-                      issued a real client_secret and reported back as
-                      token_endpoint_auth_method "client_secret_post", even if the request
-                      said "none" or omitted the field.
-
-                      Intended for MCP clients that declare themselves public
-                      (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
-                      proceed because the response carries no client_secret — a
-                      self-contradictory request. RFC 7591 §3.2.1 permits the server to
-                      substitute client metadata, so this takes such a client at its word
-                      that it wants a secret. Remove an entry once the client is fixed to
-                      handle "none" registrations correctly.
-
-                      Exact matching is deliberate: an attacker who registers with someone
-                      else's callback URI is issued a secret for a client whose
-                      authorization codes are delivered to that someone else's redirect
-                      endpoint, not to the attacker, so this is not a way to obtain a usable
-                      credential for another client.
-
-                      Requires allowConfidentialClientRegistration to be true. Every entry
-                      must be an https non-loopback URI — a loopback client is a public
-                      client by construction (OAuth 2.1 §2.1) and must not be issued a
-                      secret; this is enforced at reconcile time since CEL cannot express
-                      the loopback-hostname check.
-                    items:
-                      pattern: ^https://[^\s?#]+$
-                      type: string
-                    maxItems: 10
-                    type: array
-                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -237,21 +184,108 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
-                  insecureAllowConfidentialOverLoopbackHTTP:
-                    default: false
-                    description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
-                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
-                      is rejected at reconcile time: a loopback http:// issuer is normally
-                      fine for local development since the traffic never leaves the machine,
-                      but combined with confidential registration it means /oauth/register —
-                      which is unauthenticated — mints client secrets over cleartext. Forcing
-                      TLS onto every loopback deployment instead would just push operators
-                      toward insecureAllowHTTP, which is worse: that also disables the
-                      non-loopback host check. Has no effect when
-                      allowConfidentialClientRegistration is false or issuer is https.
-                    type: boolean
+                  inboundGrants:
+                    description: InboundGrants configures grants accepted from inbound
+                      clients.
+                    properties:
+                      spiffeClientAuth:
+                        description: SPIFFEClientAuth associates SPIFFE principal
+                          patterns with explicit OAuth clients.
+                        items:
+                          description: SPIFFEClientAuthConfig associates a SPIFFE
+                            principal pattern with an explicit OAuth client.
+                          properties:
+                            audiences:
+                              description: Audiences are token audiences and are not
+                                inferred from Resources.
+                              items:
+                                minLength: 1
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            clientId:
+                              description: ClientID is the explicit OAuth client_id.
+                                It is never derived from Principal.
+                              minLength: 1
+                              type: string
+                            grantTypes:
+                              description: GrantTypes contains the OAuth grants permitted
+                                for this association.
+                              items:
+                                enum:
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 1
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            methods:
+                              items:
+                                description: SPIFFEAuthenticationMethod identifies
+                                  a configured SPIFFE credential type.
+                                enum:
+                                - spiffe_x509
+                                - spiffe_jwt
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            principal:
+                              description: Principal is a SPIFFE ID or a terminal
+                                /* pattern.
+                              pattern: ^spiffe://[^/?#*]+(?:/[^/?#*]+)*(?:/\*)?$
+                              type: string
+                            resources:
+                              description: Resources are RFC 8707 resource indicators
+                                and remain distinct from Audiences.
+                              items:
+                                minLength: 1
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            scopes:
+                              description: Scopes are the OAuth scopes granted to
+                                this association.
+                              items:
+                                minLength: 1
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            tokenExchange:
+                              description: TokenExchange enables token exchange for
+                                this association.
+                              properties:
+                                enabled:
+                                  type: boolean
+                              required:
+                              - enabled
+                              type: object
+                              x-kubernetes-validations:
+                              - message: tokenExchange must be enabled
+                                rule: self.enabled == true
+                            trustDomainRef:
+                              minLength: 1
+                              type: string
+                          required:
+                          - audiences
+                          - clientId
+                          - grantTypes
+                          - methods
+                          - principal
+                          - resources
+                          - scopes
+                          - tokenExchange
+                          - trustDomainRef
+                          type: object
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    required:
+                    - spiffeClientAuth
+                    type: object
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -267,11 +301,6 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
-
-                      One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -321,6 +350,85 @@ spec:
                       - name
                       type: object
                     maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  spiffeTrustDomains:
+                    description: SPIFFETrustDomains declares SPIFFE trust domains
+                      for configured workload clients.
+                    items:
+                      description: SPIFFETrustDomainConfig declares a SPIFFE trust
+                        domain for the embedded authorization server.
+                      properties:
+                        bundleSource:
+                          description: BundleSource declares exactly one future trust-bundle
+                            source. It does not load a bundle.
+                          properties:
+                            endpoint:
+                              description: Endpoint configures a HTTPS SPIFFE Bundle
+                                Endpoint.
+                              properties:
+                                url:
+                                  pattern: ^https://[^\s?#@]+$
+                                  type: string
+                              required:
+                              - url
+                              type: object
+                            type:
+                              description: SPIFFEBundleSourceType identifies the selected
+                                SPIFFE trust-bundle source.
+                              enum:
+                              - bundle_endpoint
+                              - workload_api
+                              type: string
+                            workloadApi:
+                              description: WorkloadAPI selects the local SPIFFE Workload
+                                API.
+                              type: object
+                          required:
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type != 'bundle_endpoint' || (has(self.endpoint)
+                              && !has(self.workloadApi))
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type != 'workload_api' || (has(self.workloadApi)
+                              && !has(self.endpoint))
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type == 'bundle_endpoint' || self.type == 'workload_api'
+                        methods:
+                          description: Methods explicitly enables the credential types
+                            accepted for this trust domain.
+                          items:
+                            description: SPIFFEAuthenticationMethod identifies a configured
+                              SPIFFE credential type.
+                            enum:
+                            - spiffe_x509
+                            - spiffe_jwt
+                            type: string
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: Name uniquely identifies this declaration for
+                            spiffeClientAuth references.
+                          minLength: 1
+                          type: string
+                        trustDomain:
+                          description: TrustDomain is the SPIFFE trust domain accepted
+                            by this declaration.
+                          minLength: 1
+                          type: string
+                      required:
+                      - bundleSource
+                      - methods
+                      - name
+                      - trustDomain
+                      type: object
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
                   storage:
@@ -1065,15 +1173,9 @@ spec:
                 - upstreamProviders
                 type: object
                 x-kubernetes-validations:
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
-                    to be true
-                  rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
-                    == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: spiffeTrustDomains and inboundGrants must be configured
+                    together
+                  rule: has(self.spiffeTrustDomains) == has(self.inboundGrants)
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -3711,24 +3813,6 @@ spec:
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
-                  allowConfidentialClientRegistration:
-                    default: false
-                    description: |-
-                      AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client
-                      Registration of confidential clients: when true, /oauth/register
-                      accepts token_endpoint_auth_method values client_secret_basic and
-                      client_secret_post in addition to "none" (still the default on
-                      omission) and mints a client_secret returned exactly once.
-                      Confidential registrations are restricted to https non-loopback
-                      redirect URIs, and on the Redis storage backend all DCR-issued
-                      registrations are evicted after 30 days of inactivity and must
-                      re-register. This gates registration only: disabling it does not
-                      revoke or reject already-minted secrets at the token endpoint.
-
-                      Security: registration is unauthenticated, so enabling this lets any
-                      caller who can reach the endpoint obtain a client credential.
-                      Combining it with insecureAllowHTTP is rejected at validation.
-                    type: boolean
                   authorizationEndpointBaseUrl:
                     description: |-
                       AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
@@ -3809,41 +3893,6 @@ spec:
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
-                  forceConfidentialRedirectUris:
-                    description: |-
-                      ForceConfidentialRedirectURIs lists redirect URIs that must be
-                      registered as confidential clients regardless of the
-                      token_endpoint_auth_method the DCR request declares. A registration
-                      whose redirectUris contains an EXACT match for one of these entries is
-                      issued a real client_secret and reported back as
-                      token_endpoint_auth_method "client_secret_post", even if the request
-                      said "none" or omitted the field.
-
-                      Intended for MCP clients that declare themselves public
-                      (token_endpoint_auth_method: "none") per RFC 7591 but then refuse to
-                      proceed because the response carries no client_secret — a
-                      self-contradictory request. RFC 7591 §3.2.1 permits the server to
-                      substitute client metadata, so this takes such a client at its word
-                      that it wants a secret. Remove an entry once the client is fixed to
-                      handle "none" registrations correctly.
-
-                      Exact matching is deliberate: an attacker who registers with someone
-                      else's callback URI is issued a secret for a client whose
-                      authorization codes are delivered to that someone else's redirect
-                      endpoint, not to the attacker, so this is not a way to obtain a usable
-                      credential for another client.
-
-                      Requires allowConfidentialClientRegistration to be true. Every entry
-                      must be an https non-loopback URI — a loopback client is a public
-                      client by construction (OAuth 2.1 §2.1) and must not be issued a
-                      secret; this is enforced at reconcile time since CEL cannot express
-                      the loopback-hostname check.
-                    items:
-                      pattern: ^https://[^\s?#]+$
-                      type: string
-                    maxItems: 10
-                    type: array
-                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -3867,21 +3916,108 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
-                  insecureAllowConfidentialOverLoopbackHTTP:
-                    default: false
-                    description: |-
-                      InsecureAllowConfidentialOverLoopbackHTTP opts in to
-                      allowConfidentialClientRegistration when issuer is a plain-HTTP loopback
-                      URL (e.g. "http://localhost:8080"). Without this flag, that combination
-                      is rejected at reconcile time: a loopback http:// issuer is normally
-                      fine for local development since the traffic never leaves the machine,
-                      but combined with confidential registration it means /oauth/register —
-                      which is unauthenticated — mints client secrets over cleartext. Forcing
-                      TLS onto every loopback deployment instead would just push operators
-                      toward insecureAllowHTTP, which is worse: that also disables the
-                      non-loopback host check. Has no effect when
-                      allowConfidentialClientRegistration is false or issuer is https.
-                    type: boolean
+                  inboundGrants:
+                    description: InboundGrants configures grants accepted from inbound
+                      clients.
+                    properties:
+                      spiffeClientAuth:
+                        description: SPIFFEClientAuth associates SPIFFE principal
+                          patterns with explicit OAuth clients.
+                        items:
+                          description: SPIFFEClientAuthConfig associates a SPIFFE
+                            principal pattern with an explicit OAuth client.
+                          properties:
+                            audiences:
+                              description: Audiences are token audiences and are not
+                                inferred from Resources.
+                              items:
+                                minLength: 1
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            clientId:
+                              description: ClientID is the explicit OAuth client_id.
+                                It is never derived from Principal.
+                              minLength: 1
+                              type: string
+                            grantTypes:
+                              description: GrantTypes contains the OAuth grants permitted
+                                for this association.
+                              items:
+                                enum:
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 1
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            methods:
+                              items:
+                                description: SPIFFEAuthenticationMethod identifies
+                                  a configured SPIFFE credential type.
+                                enum:
+                                - spiffe_x509
+                                - spiffe_jwt
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            principal:
+                              description: Principal is a SPIFFE ID or a terminal
+                                /* pattern.
+                              pattern: ^spiffe://[^/?#*]+(?:/[^/?#*]+)*(?:/\*)?$
+                              type: string
+                            resources:
+                              description: Resources are RFC 8707 resource indicators
+                                and remain distinct from Audiences.
+                              items:
+                                minLength: 1
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            scopes:
+                              description: Scopes are the OAuth scopes granted to
+                                this association.
+                              items:
+                                minLength: 1
+                                type: string
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                            tokenExchange:
+                              description: TokenExchange enables token exchange for
+                                this association.
+                              properties:
+                                enabled:
+                                  type: boolean
+                              required:
+                              - enabled
+                              type: object
+                              x-kubernetes-validations:
+                              - message: tokenExchange must be enabled
+                                rule: self.enabled == true
+                            trustDomainRef:
+                              minLength: 1
+                              type: string
+                          required:
+                          - audiences
+                          - clientId
+                          - grantTypes
+                          - methods
+                          - principal
+                          - resources
+                          - scopes
+                          - tokenExchange
+                          - trustDomainRef
+                          type: object
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    required:
+                    - spiffeClientAuth
+                    type: object
                   insecureAllowHTTP:
                     default: false
                     description: |-
@@ -3897,11 +4033,6 @@ spec:
                       structurally present but enforcement is deferred to pod startup via Config.Validate();
                       a misconfigured issuer will cause the pod to crash at startup rather than surface
                       as an operator condition.
-
-                      One combination is rejected at admission on all three CRDs regardless of the
-                      above: setting this field alongside allowConfidentialClientRegistration, which
-                      would issue client secrets in cleartext over an unauthenticated registration
-                      endpoint (see the XValidation rule on EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
                     description: |-
@@ -3951,6 +4082,85 @@ spec:
                       - name
                       type: object
                     maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  spiffeTrustDomains:
+                    description: SPIFFETrustDomains declares SPIFFE trust domains
+                      for configured workload clients.
+                    items:
+                      description: SPIFFETrustDomainConfig declares a SPIFFE trust
+                        domain for the embedded authorization server.
+                      properties:
+                        bundleSource:
+                          description: BundleSource declares exactly one future trust-bundle
+                            source. It does not load a bundle.
+                          properties:
+                            endpoint:
+                              description: Endpoint configures a HTTPS SPIFFE Bundle
+                                Endpoint.
+                              properties:
+                                url:
+                                  pattern: ^https://[^\s?#@]+$
+                                  type: string
+                              required:
+                              - url
+                              type: object
+                            type:
+                              description: SPIFFEBundleSourceType identifies the selected
+                                SPIFFE trust-bundle source.
+                              enum:
+                              - bundle_endpoint
+                              - workload_api
+                              type: string
+                            workloadApi:
+                              description: WorkloadAPI selects the local SPIFFE Workload
+                                API.
+                              type: object
+                          required:
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type != 'bundle_endpoint' || (has(self.endpoint)
+                              && !has(self.workloadApi))
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type != 'workload_api' || (has(self.workloadApi)
+                              && !has(self.endpoint))
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type == 'bundle_endpoint' || self.type == 'workload_api'
+                        methods:
+                          description: Methods explicitly enables the credential types
+                            accepted for this trust domain.
+                          items:
+                            description: SPIFFEAuthenticationMethod identifies a configured
+                              SPIFFE credential type.
+                            enum:
+                            - spiffe_x509
+                            - spiffe_jwt
+                            type: string
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: Name uniquely identifies this declaration for
+                            spiffeClientAuth references.
+                          minLength: 1
+                          type: string
+                        trustDomain:
+                          description: TrustDomain is the SPIFFE trust domain accepted
+                            by this declaration.
+                          minLength: 1
+                          type: string
+                      required:
+                      - bundleSource
+                      - methods
+                      - name
+                      - trustDomain
+                      type: object
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
                   storage:
@@ -4695,15 +4905,9 @@ spec:
                 - upstreamProviders
                 type: object
                 x-kubernetes-validations:
-                - message: allowConfidentialClientRegistration cannot be combined
-                    with insecureAllowHTTP; client secrets would be issued in cleartext
-                    over an unauthenticated endpoint
-                  rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
-                    && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
-                - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
-                    to be true
-                  rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
-                    == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
+                - message: spiffeTrustDomains and inboundGrants must be configured
+                    together
+                  rule: has(self.spiffeTrustDomains) == has(self.inboundGrants)
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.

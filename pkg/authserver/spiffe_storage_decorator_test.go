@@ -17,13 +17,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-func testSPIFFEAssociationRegistry(t *testing.T, clientID string) (*SPIFFEAssociationRegistry, []SPIFFEClientAuthRunConfig) {
+func testSPIFFEAssociationRegistry(t *testing.T) (*SPIFFEAssociationRegistry, []SPIFFEClientAuthRunConfig) {
 	t.Helper()
 
 	associations := []SPIFFEClientAuthRunConfig{{
 		TrustDomainRef: "production",
 		Principal:      "spiffe://example.org/ns/default/agent",
-		ClientID:       clientID,
+		ClientID:       "spiffe-client",
 		Methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		GrantTypes:     []string{SPIFFEGrantTypeTokenExchange},
 		Scopes:         []string{"openid"},
@@ -51,7 +51,7 @@ func TestSPIFFEStorageDecorator_StaticClients(t *testing.T) {
 
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
-	registry, sourceAssociations := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	registry, sourceAssociations := testSPIFFEAssociationRegistry(t)
 
 	// Neither the caller-owned source config nor the immutable registry may
 	// change the static client authority.
@@ -104,7 +104,7 @@ func TestSPIFFEStorageDecorator_StaticClients(t *testing.T) {
 func TestSPIFFEStorageDecorator_RebuildsOnFreshMemoryRestart(t *testing.T) {
 	t.Parallel()
 
-	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	registry, _ := testSPIFFEAssociationRegistry(t)
 	for range 2 {
 		base := storage.NewMemoryStorage()
 		decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
@@ -122,7 +122,7 @@ func TestSPIFFEStorageDecorator_RemovedConfigDoesNotRestoreStaticClient(t *testi
 
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
-	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	registry, _ := testSPIFFEAssociationRegistry(t)
 	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
 	require.NoError(t, err)
 	client, err := decorated.GetClient(context.Background(), "spiffe-client")
@@ -146,7 +146,7 @@ func TestSPIFFEStorageDecorator_ReservedIDCannotReachDurableStorage(t *testing.T
 
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
-	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	registry, _ := testSPIFFEAssociationRegistry(t)
 	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
 	require.NoError(t, err)
 
@@ -190,18 +190,18 @@ func TestSPIFFEStorageDecorator_DelegatesCIMDAndUnknownSPIFFEIDs(t *testing.T) {
 	t.Cleanup(func() { _ = base.Close() })
 	cimd, err := storage.NewCIMDStorageDecorator(base, storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1})
 	require.NoError(t, err)
-	registry, _ := testSPIFFEAssociationRegistry(t, "https://static.example/client")
+	registry, _ := testSPIFFEAssociationRegistry(t)
 
 	decorated, err := NewSPIFFEStorageDecorator(context.Background(), cimd, registry)
 	require.NoError(t, err)
 	assert.Same(t, base, storage.Unwrap(decorated))
 
-	// A configured HTTPS ID wins over CIMD, while an unknown spiffe:// ID is
-	// delegated. CIMD recognizes HTTPS IDs only, so no SPIFFE value is resolved
-	// over the network.
-	client, err := decorated.GetClient(context.Background(), "https://static.example/client")
+	// A configured static client ID wins over CIMD, while an unknown spiffe://
+	// ID is delegated. CIMD recognizes HTTPS IDs only, so no SPIFFE value is
+	// resolved over the network.
+	client, err := decorated.GetClient(context.Background(), "spiffe-client")
 	require.NoError(t, err)
-	assert.Equal(t, "https://static.example/client", client.GetID())
+	assert.Equal(t, "spiffe-client", client.GetID())
 
 	_, err = decorated.GetClient(context.Background(), "spiffe://example.org/ns/default/unknown")
 	require.ErrorIs(t, err, storage.ErrNotFound)
@@ -213,7 +213,7 @@ func TestNewSPIFFEStorageDecorator_RejectsDurableCollision(t *testing.T) {
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
 	require.NoError(t, base.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
-	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	registry, _ := testSPIFFEAssociationRegistry(t)
 
 	_, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
 	require.ErrorIs(t, err, storage.ErrAlreadyExists)

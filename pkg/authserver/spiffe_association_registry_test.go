@@ -115,7 +115,8 @@ func newTestSPIFFEAssociationRegistry(t *testing.T, associations []SPIFFEClientA
 			Type:        SPIFFEBundleSourceTypeWorkloadAPI,
 			WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
 		},
-	}}, &InboundGrantsRunConfig{SPIFFEClientAuth: associations}, []string{"openid", "profile"}, []string{"https://resource.example.com"})
+	}}, &InboundGrantsRunConfig{SPIFFEClientAuth: associations}, []string{"openid", "profile"},
+		[]string{"https://resource.example.com", "https://audience.example.com"})
 	require.NoError(t, err)
 	registry, err := NewSPIFFEAssociationRegistry(trust)
 	require.NoError(t, err)

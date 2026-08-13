@@ -1739,7 +1739,7 @@ func TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR(t *testing.
 			GrantTypes:     []string{authserver.SPIFFEGrantTypeTokenExchange},
 			Scopes:         []string{"openid"},
 			Resources:      []string{"https://mcp.example.com"},
-			Audiences:      []string{"mcp"},
+			Audiences:      []string{"https://mcp.example.com"},
 			TokenExchange:  &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}},
 		Upstreams: []authserver.UpstreamRunConfig{{
@@ -1801,7 +1801,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 			GrantTypes:     []string{authserver.SPIFFEGrantTypeTokenExchange},
 			Scopes:         []string{scope},
 			Resources:      []string{"https://mcp.example.com"},
-			Audiences:      []string{"mcp"},
+			Audiences:      []string{"https://mcp.example.com"},
 			TokenExchange:  &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}}
 		return cfg
@@ -1962,7 +1962,7 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 			GrantTypes:    []string{authserver.SPIFFEGrantTypeTokenExchange},
 			Scopes:        []string{scope},
 			Resources:     []string{"https://mcp.example.com"},
-			Audiences:     []string{"mcp-api"},
+			Audiences:     []string{"https://mcp.example.com"},
 			TokenExchange: &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}}
 		return cfg
@@ -1986,7 +1986,7 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 		assert.Equal(t, fosite.Arguments{authserver.SPIFFEGrantTypeTokenExchange}, spiffeClient.GetGrantTypes())
 		assert.Equal(t, fosite.Arguments{scope}, spiffeClient.GetScopes())
 		assert.Equal(t, []string{"https://mcp.example.com"}, spiffeClient.Resources())
-		assert.Equal(t, []string{"mcp-api"}, spiffeClient.Audiences())
+		assert.Equal(t, []string{"https://mcp.example.com"}, spiffeClient.Audiences())
 		assert.True(t, spiffeClient.TokenExchangeEnabled())
 	}
 	assertMethodEquivalence := func(t *testing.T, cfg authserver.RunConfig) {

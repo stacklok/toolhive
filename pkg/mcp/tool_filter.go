@@ -643,6 +643,13 @@ func processUnrecognizedMimeType(
 		return fmt.Errorf("%w: %s", errUnsupportedMimeType, mimeType)
 	}
 
+	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
+	// before parsing, so strip it here too: otherwise a BOM-prefixed body
+	// fails both the JSON sniff below (encoding/json rejects EF BB BF) and
+	// sniffSSEToolsList's "data:" prefix match, letting an unfiltered tools
+	// list pass through under a mislabeled/absent Content-Type.
+	buffer = bytes.TrimPrefix(buffer, []byte("\xEF\xBB\xBF"))
+
 	var candidate toolsListResponse
 	if err := json.Unmarshal(buffer, &candidate); err == nil && candidate.Result.Tools != nil {
 		return processToolsListResponse(config, candidate, w)

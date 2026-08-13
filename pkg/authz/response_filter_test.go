@@ -1490,6 +1490,87 @@ func TestResponseFilteringWriter_SSE_LeadingBOMBypass(t *testing.T) {
 		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
 }
 
+// TestResponseFilteringWriter_JSON_LeadingBOMBypass is a regression test for a
+// #5257-class leak: a client strips a leading UTF-8 BOM per the WHATWG decode
+// algorithm before parsing JSON, but the filter decoded the raw body. The BOM
+// made jsonrpc2.DecodeMessage fail and carriesResult return false, so the
+// unauthorized tool passed through unfiltered on the application/json path.
+func TestResponseFilteringWriter_JSON_LeadingBOMBypass(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":` + string(resultJSON) + "}"
+
+	run := func(contentType string) string {
+		rr := httptest.NewRecorder()
+		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw.ResponseWriter.Header().Set("Content-Type", contentType)
+		_, err := rfw.Write([]byte(body))
+		require.NoError(t, err)
+		require.NoError(t, rfw.FlushAndFilter())
+		return rr.Body.String()
+	}
+
+	// A BOM-prefixed JSON-RPC result must be filtered on the application/json
+	// path.
+	out := run("application/json")
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the filter on the JSON path")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+	assert.False(t, strings.HasPrefix(out, "\xEF\xBB\xBF"),
+		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
+
+	// The same body under an unrecognized media type must be caught by the
+	// JSON sniff in the default branch (carriesResult), which used to return
+	// false on the BOM prefix and pass the body through.
+	out = run("application/x-unknown")
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the JSON sniff for unrecognized media types")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+}
+
+// TestResponseFilteringWriter_Sniff_SSE_LeadingBOMBypass is a regression test
+// for the SSE half of the same #5257-class leak: the unrecognized-media-type
+// branch sniffs the body with sseCarriesResult, which used to fail to match a
+// BOM-prefixed "data:" line and pass the unfiltered list through.
+func TestResponseFilteringWriter_Sniff_SSE_LeadingBOMBypass(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	body := "\xEF\xBB\xBF" + `data: {"jsonrpc":"2.0","id":1,"result":` + string(resultJSON) + "}\n\n"
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/x-unknown")
+
+	_, err = rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the SSE sniff for unrecognized media types")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+}
+
 // TestResponseFilteringWriter_SSE_ErrorAndResultBypass is a regression test
 // for a #5257-class leak: jsonrpc2.DecodeMessage and EncodeMessage both
 // populate/re-emit "error" and "result" together on one Response, and

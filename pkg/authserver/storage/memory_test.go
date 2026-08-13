@@ -270,6 +270,7 @@ func TestMemoryStorage_RegisterClient_Bounded(t *testing.T) {
 		require.NoError(t, err, "surviving client %q must still authenticate", id)
 		assert.Equal(t, id, client.GetID())
 	}
+}
 
 // TestMemoryStorage_RegisterClient_MinAgeGraceWindow pins the eviction floor:
 // a DCR-issued client younger than minClientAge is never picked as an

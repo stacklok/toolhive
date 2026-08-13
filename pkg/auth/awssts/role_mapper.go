@@ -92,15 +92,59 @@ type compiledMapping struct {
 // Claim-based mappings bind claim_value and role_claim_key as variables so that
 // user-supplied values are never interpolated into CEL expression strings,
 // eliminating CEL injection by design. Matcher-based mappings only need claims.
-func (cm *compiledMapping) evalContext(claims map[string]any, roleClaim string) map[string]any {
+func (cm *compiledMapping) evalContext(claims map[string]any, roleClaim string) (map[string]any, error) {
 	if cm.claimValue != "" {
+		claims, err := normalizeRoleClaim(claims, roleClaim)
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"claims":         claims,
 			"claim_value":    cm.claimValue,
 			"role_claim_key": roleClaim,
-		}
+		}, nil
 	}
-	return map[string]any{"claims": claims}
+	return map[string]any{"claims": claims}, nil
+}
+
+// normalizeRoleClaim returns a copy of claims whose role claim value is
+// normalized to a list so the claim binding expression
+// `claim_value in claims[role_claim_key]` performs exact element membership
+// regardless of how the IdP serializes the claim: a single string is wrapped
+// into a one-element list, and a list passes through unchanged.
+//
+// The documented contract (config.go) treats the role claim as a value list, so
+// any other shape is an unsupported deviation and fails closed: without this
+// guard, a string-typed claim made CEL `in` raise a "no such overload" error
+// that SelectRole swallowed as a non-match (silently granting FallbackRoleArn),
+// and an object-typed claim made `in` test map-key membership (spuriously
+// matching when the configured value was a key).
+func normalizeRoleClaim(claims map[string]any, roleClaim string) (map[string]any, error) {
+	v, ok := claims[roleClaim]
+	if !ok {
+		// A missing role claim is a normal "no match", not an error: index the
+		// expression against an empty list so it evaluates false and SelectRole
+		// falls back as it always did.
+		clone := make(map[string]any, len(claims)+1)
+		for k, val := range claims {
+			clone[k] = val
+		}
+		clone[roleClaim] = []any{}
+		return clone, nil
+	}
+	switch t := v.(type) {
+	case string:
+		clone := make(map[string]any, len(claims)+1)
+		for k, val := range claims {
+			clone[k] = val
+		}
+		clone[roleClaim] = []any{t}
+		return clone, nil
+	case []any, []string:
+		return claims, nil
+	default:
+		return nil, fmt.Errorf("role claim %q has unsupported value type %T (want string or list of strings)", roleClaim, v)
+	}
 }
 
 // RoleMapper handles mapping JWT claims to IAM roles with priority-based selection.
@@ -180,10 +224,30 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 
 	var matches []compiledMapping
 	for _, mapping := range rm.mappings {
-		match, err := mapping.expr.EvaluateBool(mapping.evalContext(claims, roleClaim))
+		ctx, err := mapping.evalContext(claims, roleClaim)
 		if err != nil {
+			// Unsupported role claim shape: fail closed rather than granting
+			// the fallback role or a spuriously matched mapping.
+			slog.Warn("role claim has unsupported shape, failing closed",
+				"role_arn", mapping.roleArn, "error", err)
+			return "", fmt.Errorf("%w: %w", ErrNoRoleMapping, err)
+		}
+
+		match, err := mapping.expr.EvaluateBool(ctx)
+		if err != nil {
+			if mapping.claimValue != "" {
+				// Claim-based mappings are normalized before evaluation, so an
+				// error here indicates an unexpected claim shape. Fail closed
+				// instead of silently falling back to FallbackRoleArn.
+				slog.Warn("claim-based role mapping evaluation failed, failing closed",
+					"role_arn", mapping.roleArn, "error", err)
+				return "", fmt.Errorf("%w: %w", ErrNoRoleMapping, err)
+			}
+			// Matcher expressions are admin-authored; keep the historical
+			// skip-and-fall-back behavior but surface the failure at Warn so
+			// operators can see it.
 			//nolint:gosec // G706: role ARN is from server configuration
-			slog.Debug("CEL expression evaluation failed, skipping mapping",
+			slog.Warn("CEL expression evaluation failed, skipping mapping",
 				"role_arn", mapping.roleArn, "error", err)
 			continue
 		}

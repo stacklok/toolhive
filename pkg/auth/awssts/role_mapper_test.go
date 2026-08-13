@@ -674,3 +674,108 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 		}
 	}
 }
+
+// TestRoleMapper_SelectRole_StringRoleClaim verifies that a string-typed role
+// claim matches the mapping exactly (same as a single-element list), and that a
+// string merely containing the configured claim value does not match. Previously
+// string claims made CEL `in` raise "no such overload", the error was swallowed,
+// and the user silently got FallbackRoleArn.
+func TestRoleMapper_SelectRole_StringRoleClaim(t *testing.T) {
+	t.Parallel()
+
+	cfg := &awssts.Config{
+		Region:          "us-east-1",
+		RoleClaim:       "groups",
+		FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
+		RoleMappings: []awssts.RoleMapping{
+			{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
+		},
+	}
+
+	rm, err := awssts.NewRoleMapper(cfg)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		claims   map[string]any
+		expected string
+	}{
+		{
+			name:     "string claim exactly equal matches",
+			claims:   map[string]any{"sub": "user1", "groups": "admins"},
+			expected: "arn:aws:iam::123456789012:role/AdminRole",
+		},
+		{
+			name:     "string claim containing claim value does not match",
+			claims:   map[string]any{"sub": "user2", "groups": "superadmins"},
+			expected: "arn:aws:iam::123456789012:role/DefaultRole",
+		},
+		{
+			name:     "string claim with suffix does not match",
+			claims:   map[string]any{"sub": "user3", "groups": "admins-readonly"},
+			expected: "arn:aws:iam::123456789012:role/DefaultRole",
+		},
+		{
+			name:     "list claim exact element still matches",
+			claims:   map[string]any{"sub": "user4", "groups": []any{"users", "admins"}},
+			expected: "arn:aws:iam::123456789012:role/AdminRole",
+		},
+		{
+			name:     "missing claim still falls back",
+			claims:   map[string]any{"sub": "user5"},
+			expected: "arn:aws:iam::123456789012:role/DefaultRole",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			role, err := rm.SelectRole(tt.claims)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, role)
+		})
+	}
+}
+
+// TestRoleMapper_SelectRole_UnsupportedRoleClaimShape verifies that a role claim
+// whose value is neither a string nor a list (e.g. an object or a number) fails
+// closed with an error instead of silently granting a role. An object-typed claim
+// would otherwise be matched by CEL `in` as a map-key membership test, and other
+// types made CEL evaluation error while SelectRole swallowed the error.
+func TestRoleMapper_SelectRole_UnsupportedRoleClaimShape(t *testing.T) {
+	t.Parallel()
+
+	cfg := &awssts.Config{
+		Region:    "us-east-1",
+		RoleClaim: "groups",
+		RoleMappings: []awssts.RoleMapping{
+			{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
+		},
+	}
+
+	rm, err := awssts.NewRoleMapper(cfg)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		claims map[string]any
+	}{
+		{
+			name:   "object-typed role claim fails closed",
+			claims: map[string]any{"sub": "user1", "groups": map[string]any{"admins": map[string]any{}}},
+		},
+		{
+			name:   "numeric role claim fails closed",
+			claims: map[string]any{"sub": "user2", "groups": 7},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			role, err := rm.SelectRole(tt.claims)
+			require.ErrorIs(t, err, awssts.ErrNoRoleMapping)
+			assert.Empty(t, role)
+		})
+	}
+}

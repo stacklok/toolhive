@@ -506,10 +506,12 @@ func TestProvenanceRoundTrip(t *testing.T) {
 		ResolvedReference: "ghcr.io/org/signed-skill:latest",
 		Digest:            ociDigest(1),
 		Provenance: &Provenance{
-			SignerIdentity: "/.github/workflows/release.yml",
-			CertIssuer:     "https://token.actions.githubusercontent.com",
-			RepositoryURI:  "https://github.com/org/signed-skill",
-			SigstoreURL:    "https://rekor.sigstore.dev",
+			SignerIdentity:    "/.github/workflows/release.yml",
+			CertIssuer:        "https://token.actions.githubusercontent.com",
+			RepositoryURI:     "https://github.com/org/signed-skill",
+			RepositoryRef:     "refs/heads/main",
+			RunnerEnvironment: "github-hosted",
+			SigstoreURL:       "https://rekor.sigstore.dev",
 		},
 		Explicit: true,
 	}
@@ -537,6 +539,56 @@ func TestProvenanceRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, gotUnsigned.Unsigned)
 	assert.Nil(t, gotUnsigned.Provenance)
+}
+
+// TestProvenanceWithoutRefFieldsIsUnconstrained pins the compatibility
+// contract for repositoryRef and runnerEnvironment: every lock file written
+// before they existed omits them, so absent must mean unconstrained. Such a
+// file must load with both empty, must not gain the new keys when re-saved,
+// and must reach a byte-stable form so an install by a newer binary produces
+// no spurious diff for entries it did not touch.
+func TestProvenanceWithoutRefFieldsIsUnconstrained(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	path, err := root.Path()
+	require.NoError(t, err)
+
+	preExisting := "" +
+		"version: 1\n" +
+		"skills:\n" +
+		"  - name: legacy-skill\n" +
+		"    source: ghcr.io/org/legacy-skill\n" +
+		"    digest: " + ociDigest(1) + "\n" +
+		"    provenance:\n" +
+		"      signerIdentity: /.github/workflows/release.yml\n" +
+		"      certIssuer: https://token.actions.githubusercontent.com\n" +
+		"      repositoryUri: https://github.com/org/legacy-skill\n" +
+		"    explicit: true\n"
+	require.NoError(t, os.WriteFile(path, []byte(preExisting), 0o644))
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+	entry, ok := loaded.Get("legacy-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Empty(t, entry.Provenance.RepositoryRef)
+	assert.Empty(t, entry.Provenance.RunnerEnvironment)
+	assert.Equal(t, "https://github.com/org/legacy-skill", entry.Provenance.RepositoryURI)
+	assert.Empty(t, entry.Extra, "the new keys must not surface through the inline Extra map")
+
+	require.NoError(t, loaded.Save(root))
+	saved, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	assert.NotContains(t, string(saved), "repositoryRef")
+	assert.NotContains(t, string(saved), "runnerEnvironment")
+
+	reloaded, err := Load(root)
+	require.NoError(t, err)
+	require.NoError(t, reloaded.Save(root))
+	resaved, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	assert.Equal(t, string(saved), string(resaved),
+		"a lock file predating the ref fields must reach a byte-stable form")
 }
 
 // TestProvenanceGraduatesFromExtraMap: before this schema change, a

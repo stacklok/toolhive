@@ -241,6 +241,39 @@ func TestValidateLockfile(t *testing.T) {
 			wantErr: "exceeds",
 		},
 		{
+			name: "provenance with ref and runner environment is valid",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity:    "/.github/workflows/release.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryRef:     "refs/heads/main",
+					RunnerEnvironment: "github-hosted",
+				}},
+			}},
+		},
+		{
+			name: "provenance repositoryRef with control characters rejected",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity: "dev@example.com",
+					CertIssuer:     "https://accounts.example.com",
+					RepositoryRef:  "refs/heads/ma\x1b[31min",
+				}},
+			}},
+			wantErr: "non-graphic",
+		},
+		{
+			name: "provenance runnerEnvironment too long rejected",
+			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
+				{Name: "signed", Source: "s", Digest: validSHA256Digest, Provenance: &Provenance{
+					SignerIdentity:    "dev@example.com",
+					CertIssuer:        "https://accounts.example.com",
+					RunnerEnvironment: strings.Repeat("a", maxReferenceLength+1),
+				}},
+			}},
+			wantErr: "exceeds",
+		},
+		{
 			name: "unsigned exception alone is valid",
 			lf: Lockfile{Version: CurrentVersion, Skills: []Entry{
 				{Name: "unsigned", Source: "s", Digest: validSHA256Digest, Unsigned: true},

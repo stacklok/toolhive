@@ -309,6 +309,25 @@ func TestInfo(t *testing.T) {
 			statusCode: http.StatusOK,
 		},
 		{
+			// `thv skill info` reports trust state from this response alone, so
+			// a provenance field the server records but the wire shape drops is
+			// invisible to the user.
+			name:     "provenance reaches the info renderer",
+			opts:     skills.InfoOptions{Name: "signed-skill"},
+			wantPath: skillsBasePath + "/signed-skill",
+			response: skills.SkillInfo{
+				Metadata: skills.SkillMetadata{Name: "signed-skill", Version: "1.0.0"},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity:    "/.github/workflows/release.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryURI:     "https://github.com/org/signed-skill",
+					RepositoryRef:     "refs/tags/v1.0.0",
+					RunnerEnvironment: "github-hosted",
+				},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
 			name:       "not found",
 			opts:       skills.InfoOptions{Name: "missing"},
 			wantPath:   skillsBasePath + "/missing",
@@ -968,6 +987,19 @@ func TestInstallCarriesTrustStateBackToCaller(t *testing.T) {
 					SignerIdentity: "/.github/workflows/build-skills.yml",
 					CertIssuer:     "https://token.actions.githubusercontent.com",
 					RepositoryURI:  "https://github.com/stacklok/dockyard",
+				},
+			},
+		},
+		{
+			name: "certificate ref and runner environment survive the round trip",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "pinned-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity:    "/.github/workflows/build-skills.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryURI:     "https://github.com/stacklok/dockyard",
+					RepositoryRef:     "refs/heads/main",
+					RunnerEnvironment: "github-hosted",
 				},
 			},
 		},

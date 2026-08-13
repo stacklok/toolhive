@@ -277,11 +277,13 @@ func provenanceInfoFromLock(p *lockfile.Provenance) *skills.ProvenanceInfo {
 		return nil
 	}
 	return &skills.ProvenanceInfo{
-		SignerIdentity: p.SignerIdentity,
-		CertIssuer:     p.CertIssuer,
-		RepositoryURI:  p.RepositoryURI,
-		SigstoreURL:    p.SigstoreURL,
-		Provisional:    p.Provisional,
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
 	}
 }
 
@@ -292,11 +294,13 @@ func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
 		return nil
 	}
 	return &lockfile.Provenance{
-		SignerIdentity: p.SignerIdentity,
-		CertIssuer:     p.CertIssuer,
-		RepositoryURI:  p.RepositoryURI,
-		SigstoreURL:    p.SigstoreURL,
-		Provisional:    p.Provisional,
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
 	}
 }
 

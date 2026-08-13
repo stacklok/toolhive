@@ -5,6 +5,7 @@ package skillsvc
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -309,6 +310,45 @@ func TestVerifyLocalInstall(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.unsigned, decision.unsigned)
 		})
+	}
+}
+
+// TestProvenanceConversionsPreserveEveryField guards the lock <-> API
+// plumbing. A field added to one provenance shape but forgotten in a
+// conversion silently drops recorded trust data in transit, and no
+// printer-level test would notice.
+func TestProvenanceConversionsPreserveEveryField(t *testing.T) {
+	t.Parallel()
+
+	locked := &lockfile.Provenance{
+		SignerIdentity:    testSignerIdentity,
+		CertIssuer:        testCertIssuer,
+		RepositoryURI:     "https://github.com/org/repo",
+		RepositoryRef:     "refs/heads/main",
+		RunnerEnvironment: "github-hosted",
+		SigstoreURL:       "https://rekor.sigstore.dev",
+		Provisional:       true,
+	}
+	requireAllFieldsSet(t, locked)
+
+	info := provenanceInfoFromLock(locked)
+	requireAllFieldsSet(t, info)
+	assert.Equal(t, locked, provenanceInfoToLock(info))
+
+	assert.Nil(t, provenanceInfoFromLock(nil))
+	assert.Nil(t, provenanceInfoToLock(nil))
+}
+
+// requireAllFieldsSet fails when any field of the struct pointed to by v holds
+// its zero value, so a field added to one provenance shape without a matching
+// line in the conversions is caught here rather than in production.
+func requireAllFieldsSet(t *testing.T, v any) {
+	t.Helper()
+	rv := reflect.ValueOf(v).Elem()
+	for i := range rv.NumField() {
+		assert.False(t, rv.Field(i).IsZero(),
+			"%s.%s is zero: wire it through the provenance conversions and this fixture",
+			rv.Type().Name(), rv.Type().Field(i).Name)
 	}
 }
 

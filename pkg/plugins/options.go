@@ -112,6 +112,19 @@ type SyncFailure = skills.SyncFailure
 // skills.FailureReason.
 type FailureReason = skills.FailureReason
 
+// Typed failure reasons for sync/upgrade operations. Aliased from
+// skills.FailureReason because the RFC THV-0080 contract is shared.
+const (
+	FailureReasonRegistryUnreachable = skills.FailureReasonRegistryUnreachable
+	FailureReasonDigestMissing       = skills.FailureReasonDigestMissing
+	FailureReasonValidationRejected  = skills.FailureReasonValidationRejected
+	FailureReasonLockWriteFailed     = skills.FailureReasonLockWriteFailed
+	FailureReasonSignatureInvalid    = skills.FailureReasonSignatureInvalid
+	FailureReasonSignerMismatch      = skills.FailureReasonSignerMismatch
+	FailureReasonUnsignedRejected    = skills.FailureReasonUnsignedRejected
+	FailureReasonUnknown             = skills.FailureReasonUnknown
+)
+
 // UpgradeOptions configures a lock-file upgrade. Alias for
 // skills.UpgradeOptions (identical shape including AllowRefChange /
 // AllowSignerChange).
@@ -128,3 +141,14 @@ type UpgradeOutcome = skills.UpgradeOutcome
 // UpgradeStatus is the per-entry upgrade outcome. Alias for
 // skills.UpgradeStatus.
 type UpgradeStatus = skills.UpgradeStatus
+
+// Per-entry upgrade outcomes. Aliased from skills.UpgradeStatus because the
+// RFC THV-0080 contract is shared.
+const (
+	UpgradeStatusUpgraded            = skills.UpgradeStatusUpgraded
+	UpgradeStatusUpToDate            = skills.UpgradeStatusUpToDate
+	UpgradeStatusNotUpgradable       = skills.UpgradeStatusNotUpgradable
+	UpgradeStatusRefChangeBlocked    = skills.UpgradeStatusRefChangeBlocked
+	UpgradeStatusSignerChangeBlocked = skills.UpgradeStatusSignerChangeBlocked
+	UpgradeStatusFailed              = skills.UpgradeStatusFailed
+)

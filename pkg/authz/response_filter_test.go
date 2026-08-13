@@ -1525,7 +1525,40 @@ func TestResponseFilteringWriter_JSON_LeadingBOMBypass(t *testing.T) {
 		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
 }
 
-// TestResponseFilteringWriter_SSE_ErrorAndResultBypass is a regression test
+// TestResponseFilteringWriter_JSON_LeadingBOMUnrecognizedMediaType is a
+// regression test for the same #5257-class leak on the unrecognized-media-type
+// sniff: a BOM-prefixed list body labeled with an MCP-unsupported media type
+// must still be detected as carrying a result and filtered, not passed through
+// as if it were a benign, result-free body.
+func TestResponseFilteringWriter_JSON_LeadingBOMUnrecognizedMediaType(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/x-unknown")
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":` + string(resultJSON) + "}"
+
+	_, err = rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the unrecognized-media-type sniff")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+	assert.False(t, strings.HasPrefix(out, "\xEF\xBB\xBF"),
+		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
+}
 // for a #5257-class leak: jsonrpc2.DecodeMessage and EncodeMessage both
 // populate/re-emit "error" and "result" together on one Response, and
 // filterListResponse's `response.Error != nil` check returned the whole

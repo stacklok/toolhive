@@ -531,6 +531,14 @@ func requiresResponseFiltering(method string) bool {
 // decoder can't parse value-by-value isn't a single parseable JSON document
 // either, so no strict client can read past that point.
 func carriesResult(data []byte) bool {
+	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
+	// before parsing JSON, so strip it here too: otherwise a BOM-prefixed
+	// payload (which the client will parse as a successful response) looks
+	// undecodable to the sniff and the filter passes it through unfiltered.
+	// This mirrors the strip in processSSEResponse (see #6088) and covers the
+	// unrecognized-media-type sniff at FlushAndFilter.
+	data = bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
+
 	dec := json.NewDecoder(bytes.NewReader(data))
 	for {
 		var value json.RawMessage

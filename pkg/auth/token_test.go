@@ -3077,28 +3077,37 @@ func TestEnsureJWKSRegistered_NonFatalRegistrationErrors(t *testing.T) {
 }
 
 func TestNewTokenValidator_GoogleTokeninfoRequiresAudience(t *testing.T) {
-	t.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+	t.Parallel()
 
-	// Google tokeninfo + no audience must be rejected at startup: tokeninfo
-	// returns no iss claim (the provider synthesises it locally), so an
-	// issuer check is self-satisfying and the audience check is the only
-	// binding to this deployment. Without it, any valid Google access token
-	// passes regardless of which OAuth client minted it.
-	_, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
-		Issuer:           "https://accounts.google.com",
-		JWKSURL:          "https://www.googleapis.com/oauth2/v3/certs",
-		IntrospectionURL: GoogleTokeninfoURL,
-		Audience:         "",
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "audience is required")
+	// Google tokeninfo returns no iss claim (the provider synthesises it
+	// locally), so an issuer check is self-satisfying and the audience check
+	// is the only binding to this deployment. Without it, any valid Google
+	// access token passes regardless of which OAuth client minted it.
+	tests := []struct {
+		name      string
+		audience  string
+		expectErr bool
+	}{
+		{name: "empty audience rejected", audience: "", expectErr: true},
+		{name: "whitespace-only audience rejected", audience: "   ", expectErr: true},
+		{name: "audience configured accepted", audience: "my-client-id.apps.googleusercontent.com", expectErr: false},
+	}
 
-	// With an audience configured, the same setup must be accepted.
-	_, err = NewTokenValidator(context.Background(), TokenValidatorConfig{
-		Issuer:           "https://accounts.google.com",
-		JWKSURL:          "https://www.googleapis.com/oauth2/v3/certs",
-		IntrospectionURL: GoogleTokeninfoURL,
-		Audience:         "my-client-id.apps.googleusercontent.com",
-	})
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+				Issuer:           "https://accounts.google.com",
+				JWKSURL:          "https://www.googleapis.com/oauth2/v3/certs",
+				IntrospectionURL: GoogleTokeninfoURL,
+				Audience:         tt.audience,
+			})
+			if tt.expectErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "audience is required")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

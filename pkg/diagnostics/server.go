@@ -77,6 +77,10 @@ const (
 	maxHeaderBytes = 1 << 20 // 1 MiB
 )
 
+// bindAttempts bounds how many times Start re-resolves and re-binds when the
+// port is claimed between the availability check and the bind. See Server.bind.
+const bindAttempts = 3
+
 // Server serves diagnostics endpoints on a dedicated listener.
 //
 // The zero value is not usable; construct one with New.
@@ -93,11 +97,13 @@ type Server struct {
 
 // New creates a diagnostics server that serves metricsHandler at MetricsPath.
 //
-// host is the bind address. port is the requested port; 0 requests an
-// arbitrary available port, which is the default for CLI runs where several
-// workloads share a machine and a fixed port would collide. Callers that need a
-// deterministic port for a scraper to target (the Kubernetes operator, for
-// example) must pass one explicitly.
+// host is the bind address. port is the requested port; pass DefaultPort unless
+// a deployment needs a different one, since a predictable port is what lets a
+// scraper find the endpoint. Passing 0 asks the OS for an arbitrary available
+// port, which is useful in tests but leaves nothing for a scraper to target.
+// Either way, Start falls back to an available port if the requested one is
+// taken, so the resolved port is only known after Start — read it from Addr or
+// Port.
 //
 // The port is not bound until Start is called.
 func New(host string, port int, metricsHandler http.Handler) (*Server, error) {
@@ -130,30 +136,17 @@ func (s *Server) Start() error {
 		return errors.New("diagnostics: server already started")
 	}
 
-	// Resolve the port the same way the proxy listeners do, so a requested
-	// port that is busy falls back to an available one instead of failing the
-	// whole workload.
-	port, err := networking.FindOrUsePort(s.port)
-	if err != nil {
-		return fmt.Errorf("diagnostics: failed to resolve port: %w", err)
-	}
-
-	addr := fmt.Sprintf("%s:%d", s.host, port)
-
 	mux := http.NewServeMux()
 	mux.Handle(MetricsPath, s.metricsHandler)
 
-	// Use SO_REUSEADDR for parity with the proxy listeners, which allows port
-	// reuse after an unclean shutdown left a zombie holding the port.
-	lc := socket.ListenConfig()
-	listener, err := lc.Listen(context.Background(), "tcp", addr)
+	listener, err := s.bind()
 	if err != nil {
-		return fmt.Errorf("diagnostics: failed to listen on %s: %w", addr, err)
+		return err
 	}
 
 	s.listener = listener
 	s.server = &http.Server{
-		Addr:              addr,
+		Addr:              listener.Addr().String(),
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
@@ -182,6 +175,43 @@ func (s *Server) Start() error {
 		"address", listener.Addr().String(), "path", MetricsPath)
 
 	return nil
+}
+
+// bind resolves a port and binds it, retrying a bounded number of times.
+//
+// networking.FindOrUsePort only *checks* availability, so another process can
+// claim the port in the window before the actual bind. Retrying rather than
+// failing keeps a lost race from taking down the whole workload over a
+// diagnostics listener; each retry re-resolves, so a genuinely occupied port
+// converges on an alternative. Exhausting the attempts is reported as an error,
+// because silently serving nothing would hide the metrics endpoint.
+//
+// Callers must hold s.mu.
+func (s *Server) bind() (net.Listener, error) {
+	// Use SO_REUSEADDR for parity with the proxy listeners, which allows port
+	// reuse after an unclean shutdown left a zombie holding the port.
+	lc := socket.ListenConfig()
+
+	var lastErr error
+	for attempt := 1; attempt <= bindAttempts; attempt++ {
+		port, err := networking.FindOrUsePort(s.port)
+		if err != nil {
+			return nil, fmt.Errorf("diagnostics: failed to resolve port: %w", err)
+		}
+
+		addr := fmt.Sprintf("%s:%d", s.host, port)
+		listener, err := lc.Listen(context.Background(), "tcp", addr)
+		if err == nil {
+			return listener, nil
+		}
+
+		lastErr = err
+		slog.Debug("diagnostics port was claimed between availability check and bind, retrying",
+			"address", addr, "attempt", attempt, "error", err)
+	}
+
+	return nil, fmt.Errorf("diagnostics: failed to bind a listener on %s after %d attempts: %w",
+		s.host, bindAttempts, lastErr)
 }
 
 // Addr returns the resolved listen address, or an empty string before Start

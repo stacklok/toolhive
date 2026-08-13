@@ -294,6 +294,13 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 //
 // Metrics are served on the diagnostics listener, not on the transport port the
 // server URL points at, so only the host is reused here. See pkg/diagnostics.
+//
+// This assumes the listener bound diagnostics.DefaultPort. That holds on a CI
+// runner, where nothing else is on 9464, but the listener does fall back to
+// another port when it is taken — so on a busy machine this points at the wrong
+// endpoint and the assertions read empty metrics. There is no way to discover
+// the resolved port today; exposing it in workload status is the follow-up that
+// makes this deterministic.
 func extractMetricsURL(serverURL string) (string, error) {
 	// Parse the server URL to extract the host
 	// serverURL format: http://localhost:PORT/sse#servername

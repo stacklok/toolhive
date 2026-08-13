@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -132,6 +133,38 @@ func TestOnlyMetricsPathIsServed(t *testing.T) {
 		status, _ := get(t, fmt.Sprintf("http://%s%s", server.Addr(), path))
 		assert.Equal(t, http.StatusNotFound, status, "path %q must not be served", path)
 	}
+}
+
+// TestStartFallsBackWhenPortTaken covers the case a diagnostics listener must
+// survive: the requested port is already in use. Losing the port must not fail
+// the caller — the workload it accompanies is more important than the metrics
+// endpoint keeping a specific port.
+func TestStartFallsBackWhenPortTaken(t *testing.T) {
+	t.Parallel()
+
+	// Hold a port for the whole test so the requested one is genuinely occupied.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = occupied.Close() })
+
+	takenPort := occupied.Addr().(*net.TCPAddr).Port
+
+	server, err := New("127.0.0.1", takenPort, metricsHandler("thv_requests_total 1"))
+	require.NoError(t, err)
+	require.NoError(t, server.Start())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		assert.NoError(t, server.Stop(ctx))
+	})
+
+	require.NotZero(t, server.Port())
+	assert.NotEqual(t, takenPort, server.Port(), "must not claim the occupied port")
+
+	// The fallback listener still serves metrics.
+	status, body := get(t, fmt.Sprintf("http://%s%s", server.Addr(), MetricsPath))
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, "thv_requests_total 1", body)
 }
 
 func TestStartTwiceFails(t *testing.T) {

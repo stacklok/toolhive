@@ -284,7 +284,8 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 	return oidcClient
 }
 
-// RegisterClient adds or updates a client in the storage.
+// RegisterClient creates a client in storage. It atomically returns
+// ErrAlreadyExists when a client with the same ID is already registered.
 func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
 
@@ -329,7 +330,14 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		ttl = DefaultDCRClientTTL
 	}
 
-	return s.client.Set(ctx, key, data, ttl).Err()
+	created, err := s.client.SetNX(ctx, key, data, ttl).Result()
+	if err != nil {
+		return fmt.Errorf("failed to register client: %w", err)
+	}
+	if !created {
+		return fmt.Errorf("%w: client %q", ErrAlreadyExists, client.GetID())
+	}
+	return nil
 }
 
 // GetClient loads the client by its ID.

@@ -422,26 +422,19 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 	return expTime
 }
 
-// RegisterClient adds or updates a client in the storage.
-// This is useful for setting up test clients.
-//
-// When the client map is at maxClients, the oldest DCR-issued registration
-// that has aged past minClientAge is evicted to make room. A pre-provisioned
-// client (no registration.DCRIssued marker) is never evicted; if no current
-// DCR-issued client is old enough to evict, RegisterClient returns
-// ErrClientCapacity. Re-registering an existing ID moves it to the back of the
-// eviction queue.
+// RegisterClient creates a client in storage. It returns ErrAlreadyExists when
+// a client with the same ID is already registered.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id := client.GetID()
-	now := time.Now()
 	if _, exists := s.clients[id]; exists {
-		// Refresh the eviction position: an actively re-registering client is
-		// not the oldest.
-		s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	} else if s.maxClients > 0 && len(s.clients) >= s.maxClients {
+		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
+	}
+
+	now := time.Now()
+	if s.maxClients > 0 && len(s.clients) >= s.maxClients {
 		if idx := s.oldestEvictableClientIndex(now); idx >= 0 {
 			victim := s.clientOrder[idx].id
 			s.clientOrder = append(s.clientOrder[:idx], s.clientOrder[idx+1:]...)

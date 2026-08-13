@@ -25,8 +25,8 @@ type PluginsRoutes struct {
 
 // PluginsRouter creates a new router for plugin management endpoints. If
 // pluginService's concrete implementation also satisfies plugins.PluginLockService
-// (as pluginsvc.New's does once Sync exists), /sync is served; otherwise it
-// returns 501.
+// (as pluginsvc.New's does), /sync and /upgrade are served; otherwise both
+// return 501.
 func PluginsRouter(pluginService plugins.PluginService) http.Handler {
 	routes := PluginsRoutes{
 		pluginService: pluginService,
@@ -54,6 +54,7 @@ func PluginsRouter(pluginService plugins.PluginService) http.Handler {
 	r.With(stdTimeout).Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
 	r.With(stdTimeout).Get("/content", apierrors.ErrorHandler(routes.getPluginContent))
 	r.With(longTimeout).Post("/sync", apierrors.ErrorHandler(routes.syncPlugins))
+	r.With(longTimeout).Post("/upgrade", apierrors.ErrorHandler(routes.upgradePlugins))
 
 	return r
 }
@@ -441,6 +442,53 @@ func (s *PluginsRoutes) syncPlugins(w http.ResponseWriter, r *http.Request) erro
 		Prune:       req.Prune,
 		Check:       req.Check,
 		Adopt:       req.Adopt,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
+}
+
+// upgradePlugins re-resolves a project's lock entries and installs newer
+// content where available. With fail_on_changes set, it evaluates the plan
+// and returns the outcomes without installing anything — clients derive the
+// freshness verdict from the outcome statuses, mirroring sync's check mode.
+//
+//	@Summary		Upgrade project plugins
+//	@Description	Re-resolve a project's lock entries and install newer content where available
+//	@Tags			plugins
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		upgradePluginsRequest	true	"Upgrade request"
+//	@Success		200		{object}	plugins.UpgradeResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (feature not enabled)"
+//	@Failure		404		{string}	string	"Not Found (a requested name is not in the lock file)"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Failure		501		{string}	string	"Not Implemented"
+//	@Router			/api/v1beta/plugins/upgrade [post]
+func (s *PluginsRoutes) upgradePlugins(w http.ResponseWriter, r *http.Request) error {
+	if s.lockService == nil {
+		return httperr.WithCode(errors.New("plugin upgrade is not supported by this server"), http.StatusNotImplemented)
+	}
+
+	var req upgradePluginsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.lockService.Upgrade(r.Context(), plugins.UpgradeOptions{
+		ProjectRoot:    req.ProjectRoot,
+		Names:          req.Names,
+		Preview:        req.Preview,
+		FailOnChanges:  req.FailOnChanges,
+		AllowRefChange: req.AllowRefChange,
+		Clients:        req.Clients,
 	})
 	if err != nil {
 		return err

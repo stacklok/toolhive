@@ -18,12 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
-// var _ ensures *service satisfies the lock service surface. Upgrade is a
-// stub until the next PR in this stack lands the real implementation; the
-// compile-time check still requires both methods so PluginsRouter's type
-// assert succeeds and /sync can be served.
-var _ plugins.PluginLockService = (*service)(nil)
-
 // Sync restores a project's installed plugins to match its lock file: missing
 // or drifted entries are reinstalled at their pinned digest (never
 // re-resolved from source — see buildPinnedReference), unmanaged installs are
@@ -77,13 +71,6 @@ func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.
 	}
 
 	return result, nil
-}
-
-// Upgrade is implemented in the next PR of this stack. The stub exists so
-// *service satisfies PluginLockService (and /sync can be type-asserted)
-// without exposing a half-built upgrade path.
-func (*service) Upgrade(_ context.Context, _ plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
-	return nil, httperr.WithCode(errors.New("plugin upgrade is not implemented"), http.StatusNotImplemented)
 }
 
 // syncOne re-reads the lock entry and DB row under the per-plugin lock, then

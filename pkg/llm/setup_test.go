@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,44 +356,54 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 	assert.Equal(t, []string{"cursor"}, gm.reverted)
 }
 
-// TestTeardown_BedrockClearedWithClaudeCode verifies that the persisted Bedrock
-// settings are cleared exactly when Claude Code is reverted — they apply to no
-// other client, so leaving them would let a later "thv llm setup" silently
-// re-pin the Bedrock model IDs the user just tore down.
-func TestTeardown_BedrockClearedWithClaudeCode(t *testing.T) {
+// TestTeardown_ClearsStrandedClientScopedSettings verifies that a persisted
+// client-scoped setting is cleared exactly when the last client that consumes it
+// is reverted. Leaving one behind would let a later "thv llm setup" silently
+// re-apply settings the user just tore down. Bedrock has a single consumer
+// (Claude Code); Models has two (Claude Desktop and, under Bedrock compat,
+// Claude Code), so it must survive until both are gone.
+func TestTeardown_ClearsStrandedClientScopedSettings(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
-		configured  []ToolConfig
+		configured  []string
 		targetTool  string
-		wantCompat  bool
+		wantBedrock bool
+		wantModels  bool
 		wantRemains []string
 	}{
 		{
-			name:       "reverting claude-code clears bedrock",
-			configured: []ToolConfig{{Tool: "claude-code", ConfigPath: "/tmp/claude.json"}},
-			targetTool: "claude-code",
-			wantCompat: false,
+			name:        "reverting the only consumer clears both settings",
+			configured:  []string{"claude-code"},
+			targetTool:  "claude-code",
+			wantBedrock: false,
+			wantModels:  false,
 		},
 		{
-			name: "reverting another tool keeps bedrock for claude-code",
-			configured: []ToolConfig{
-				{Tool: "claude-code", ConfigPath: "/tmp/claude.json"},
-				{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
-			},
+			name:        "reverting an unrelated tool keeps both settings",
+			configured:  []string{"claude-code", "cursor"},
 			targetTool:  "cursor",
-			wantCompat:  true,
+			wantBedrock: true,
+			wantModels:  true,
 			wantRemains: []string{"claude-code"},
 		},
 		{
-			name: "reverting all tools clears bedrock",
-			configured: []ToolConfig{
-				{Tool: "claude-code", ConfigPath: "/tmp/claude.json"},
-				{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
-			},
-			targetTool: "",
-			wantCompat: false,
+			// Models has a second consumer, so it must outlive Claude Code here
+			// while Bedrock — which only Claude Code reads — is cleared.
+			name:        "second models consumer keeps models but not bedrock",
+			configured:  []string{"claude-code", "claude-desktop"},
+			targetTool:  "claude-code",
+			wantBedrock: false,
+			wantModels:  true,
+			wantRemains: []string{"claude-desktop"},
+		},
+		{
+			name:        "reverting all tools clears both settings",
+			configured:  []string{"claude-code", "claude-desktop", "cursor"},
+			targetTool:  "",
+			wantBedrock: false,
+			wantModels:  false,
 		},
 	}
 
@@ -400,9 +411,14 @@ func TestTeardown_BedrockClearedWithClaudeCode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			configured := make([]ToolConfig, len(tt.configured))
+			for i, tool := range tt.configured {
+				configured[i] = ToolConfig{Tool: tool, ConfigPath: "/tmp/" + tool + ".json"}
+			}
 			provider := &stubConfigUpdater{cfg: Config{
-				ConfiguredTools: tt.configured,
+				ConfiguredTools: configured,
 				Bedrock:         BedrockConfig{Compat: true, Enable1M: true},
+				Models:          []string{"us.anthropic.claude-opus-4-8"},
 			}}
 
 			var stdout, stderr bytes.Buffer
@@ -410,9 +426,15 @@ func TestTeardown_BedrockClearedWithClaudeCode(t *testing.T) {
 				&stubGatewayManager{}, tt.targetTool, false, provider, nil)
 			require.NoError(t, err)
 
-			assert.Equal(t, tt.wantCompat, provider.cfg.Bedrock.Compat)
-			// Enable1M rides the same config and must not outlive Compat.
-			assert.Equal(t, tt.wantCompat, provider.cfg.Bedrock.Enable1M)
+			assert.Equal(t, tt.wantBedrock, provider.cfg.Bedrock.Compat)
+			// Enable1M rides the same struct and must not outlive Compat.
+			assert.Equal(t, tt.wantBedrock, provider.cfg.Bedrock.Enable1M)
+			assert.Equal(t, tt.wantModels, len(provider.cfg.Models) > 0)
+
+			// A cleared setting must be reported so the user is not surprised when
+			// a later setup no longer applies it.
+			assert.Equal(t, !tt.wantBedrock, strings.Contains(stdout.String(), "Bedrock compatibility"))
+			assert.Equal(t, !tt.wantModels, strings.Contains(stdout.String(), "model list"))
 
 			var remaining []string
 			for _, tc := range provider.cfg.ConfiguredTools {
@@ -421,6 +443,15 @@ func TestTeardown_BedrockClearedWithClaudeCode(t *testing.T) {
 			assert.Equal(t, tt.wantRemains, remaining)
 		})
 	}
+}
+
+// TestClearStrandedSettings_SilentWhenUnset verifies that teardown reports
+// nothing for settings the user never set, so the notice stays signal.
+func TestClearStrandedSettings_SilentWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{}
+	assert.Empty(t, clearStrandedSettings(cfg, nil))
 }
 
 func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {

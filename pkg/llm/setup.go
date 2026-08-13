@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -191,8 +192,9 @@ func Setup(
 // configured tools. An error is returned when targetTool is non-empty but not
 // found in the configured tool list.
 //
-// Reverting Claude Code also clears the persisted Bedrock compat settings, which
-// apply to no other client, so a later "thv llm setup" does not re-apply them.
+// Persisted settings that only apply to specific clients (see
+// clientScopedSettings) are cleared once the last client that consumes them is
+// reverted, so a later "thv llm setup" does not silently re-apply them.
 //
 // If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
 // are deleted after the config update succeeds.
@@ -242,16 +244,10 @@ func Teardown(
 	// Persist the updated tool list (and clear token metadata if purging) in a
 	// single write before mutating any tool config files. If this fails,
 	// nothing on disk has changed and the caller can retry.
+	var cleared []string
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
 		c.ConfiguredTools = remaining
-		// Bedrock compat only ever applies to Claude Code, so tearing Claude Code
-		// down leaves it with no consumer. Clear it rather than letting it persist:
-		// otherwise a later "thv llm setup" — possibly against a gateway that no
-		// longer forwards to Bedrock — silently re-pins the Bedrock model IDs the
-		// user just removed, and only an explicit --bedrock-compat=false clears it.
-		if isTarget(toRevert, claudeCodeClient) {
-			c.Bedrock = BedrockConfig{}
-		}
+		cleared = clearStrandedSettings(c, remaining)
 		if purgeTokens {
 			c.OIDC.CachedRefreshTokenRef = ""
 			c.OIDC.CachedTokenExpiry = time.Time{}
@@ -259,6 +255,12 @@ func Teardown(
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persisting tool configuration: %w", err)
+	}
+
+	// Tell the user which persisted settings went away with the tools that used
+	// them, so a later setup that no longer applies them is not a surprise.
+	for _, name := range cleared {
+		_, _ = fmt.Fprintf(out, "Cleared the persisted %s: no configured tool uses it anymore.\n", name)
 	}
 
 	// Revert tool config files best-effort; warn on failure but do not undo
@@ -368,10 +370,76 @@ func filterDetectedClients(detected []string, targetClient string) ([]string, er
 	return nil, fmt.Errorf("client %q is not installed or not detected", targetClient)
 }
 
-// claudeCodeClient is the canonical client identifier for Claude Code. Declared
-// here as a string literal because pkg/llm does not import pkg/client (which
-// owns the ClientApp constant) to avoid an import cycle.
-const claudeCodeClient = "claude-code"
+// Canonical client identifiers. Declared here as string literals because
+// pkg/llm does not import pkg/client (which owns the ClientApp constants) to
+// avoid an import cycle.
+const (
+	claudeCodeClient    = "claude-code"
+	claudeDesktopClient = "claude-desktop"
+)
+
+// clientScopedSetting describes a persisted setting that is only ever applied to
+// a known subset of clients. Such a setting is deliberately sticky so an ordinary
+// re-run of "thv llm setup" keeps it, but that stickiness becomes a bug once the
+// last client that consumes it is torn down: the value survives in config.yaml
+// with nothing to apply it to, and the next setup silently re-applies it — even
+// against a gateway the user has since repointed elsewhere. Clearing it on
+// teardown keeps "sticky across re-runs" without "immortal across teardowns".
+type clientScopedSetting struct {
+	// name identifies the setting in the teardown notice shown to the user.
+	name string
+	// consumers lists the clients that apply this setting. The setting is cleared
+	// once none of them remain configured.
+	consumers []string
+	// isSet reports whether the setting currently holds a value worth clearing,
+	// so teardown stays silent for settings the user never set.
+	isSet func(*Config) bool
+	// clear resets the setting to its zero value.
+	clear func(*Config)
+}
+
+// clientScopedSettings is the registry of settings that must not outlive their
+// consumers. Add an entry here when introducing a persisted setting that applies
+// to only some clients; a setting consumed by every client (e.g. TLSSkipVerify,
+// which rides the shared gateway connection) does not belong here.
+var clientScopedSettings = []clientScopedSetting{
+	{
+		// Bedrock compat writes CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS and the
+		// per-tier Bedrock model IDs, and is read only by the Claude Code path.
+		name:      "Bedrock compatibility",
+		consumers: []string{claudeCodeClient},
+		isSet:     func(c *Config) bool { return c.Bedrock != BedrockConfig{} },
+		clear:     func(c *Config) { c.Bedrock = BedrockConfig{} },
+	},
+	{
+		// Models feeds Claude Desktop's inferenceModels and, under Bedrock compat,
+		// Claude Code's per-tier mapping. No other client reads it.
+		name:      "model list",
+		consumers: []string{claudeDesktopClient, claudeCodeClient},
+		isSet:     func(c *Config) bool { return len(c.Models) > 0 },
+		clear:     func(c *Config) { c.Models = nil },
+	},
+}
+
+// clearStrandedSettings zeroes every client-scoped setting left with no consumer
+// among the still-configured tools. It returns the names of the settings it
+// cleared so the caller can tell the user what was removed.
+//
+// It is called with the post-teardown tool list, so a setting is preserved as
+// long as any client that reads it is still configured.
+func clearStrandedSettings(c *Config, remaining []ToolConfig) []string {
+	var cleared []string
+	for _, s := range clientScopedSettings {
+		if !s.isSet(c) || slices.ContainsFunc(s.consumers, func(tool string) bool {
+			return isTarget(remaining, tool)
+		}) {
+			continue
+		}
+		s.clear(c)
+		cleared = append(cleared, s.name)
+	}
+	return cleared
+}
 
 // Default Bedrock inference-profile model IDs written for Claude Code in
 // bedrock-compat mode when --models does not override a tier. These track the

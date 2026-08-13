@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-func testSPIFFETrustConfig(t *testing.T, clientID string) (*SPIFFETrustConfig, []SPIFFEClientAuthRunConfig) {
+func testSPIFFEAssociationRegistry(t *testing.T, clientID string) (*SPIFFEAssociationRegistry, []SPIFFEClientAuthRunConfig) {
 	t.Helper()
 
 	associations := []SPIFFEClientAuthRunConfig{{
@@ -41,7 +41,9 @@ func testSPIFFETrustConfig(t *testing.T, clientID string) (*SPIFFETrustConfig, [
 		},
 	}}, &InboundGrantsRunConfig{SPIFFEClientAuth: associations}, []string{"openid"}, []string{"https://resource.example.com", "https://api.example.com"})
 	require.NoError(t, err)
-	return trust, associations
+	registry, err := NewSPIFFEAssociationRegistry(trust)
+	require.NoError(t, err)
+	return registry, associations
 }
 
 func TestSPIFFEStorageDecorator_StaticClients(t *testing.T) {
@@ -49,26 +51,19 @@ func TestSPIFFEStorageDecorator_StaticClients(t *testing.T) {
 
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
-	trust, sourceAssociations := testSPIFFETrustConfig(t, "spiffe-client")
+	registry, sourceAssociations := testSPIFFEAssociationRegistry(t, "spiffe-client")
 
-	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, trust)
-	require.NoError(t, err)
-
-	// Neither the caller-owned source config nor data returned from the immutable
-	// trust model may change the static client authority.
+	// Neither the caller-owned source config nor the immutable registry may
+	// change the static client authority.
 	sourceAssociations[0].ClientID = "changed-client"
 	sourceAssociations[0].GrantTypes[0] = "changed"
 	sourceAssociations[0].Scopes[0] = "changed"
 	sourceAssociations[0].Resources[0] = "changed"
 	sourceAssociations[0].Audiences[0] = "changed"
 	sourceAssociations[0].TokenExchange.Enabled = false
-	returnedAssociations := trust.Associations()
-	returnedPolicy := returnedAssociations[0].AuthorizationPolicy()
-	returnedPolicy.GrantTypes()[0] = "changed-again"
-	returnedPolicy.Scopes()[0] = "changed-again"
-	returnedPolicy.Resources()[0] = "changed-again"
-	returnedPolicy.Audiences()[0] = "changed-again"
 
+	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
+	require.NoError(t, err)
 	client, err := decorated.GetClient(context.Background(), "spiffe-client")
 	require.NoError(t, err)
 	assert.Equal(t, "spiffe-client", client.GetID())
@@ -106,13 +101,53 @@ func TestSPIFFEStorageDecorator_StaticClients(t *testing.T) {
 	assert.Equal(t, "dcr-client", client.GetID())
 }
 
+func TestSPIFFEStorageDecorator_RebuildsOnFreshMemoryRestart(t *testing.T) {
+	t.Parallel()
+
+	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	for range 2 {
+		base := storage.NewMemoryStorage()
+		decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
+		require.NoError(t, err)
+
+		client, err := decorated.GetClient(context.Background(), "spiffe-client")
+		require.NoError(t, err)
+		assert.Equal(t, "spiffe-client", client.GetID())
+		require.NoError(t, base.Close())
+	}
+}
+
+func TestSPIFFEStorageDecorator_RemovedConfigDoesNotRestoreStaticClient(t *testing.T) {
+	t.Parallel()
+
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
+	require.NoError(t, err)
+	client, err := decorated.GetClient(context.Background(), "spiffe-client")
+	require.NoError(t, err)
+	_, ok := client.(*registration.SPIFFEClient)
+	require.True(t, ok)
+
+	// A row that exists after configuration removal is dynamic authority, not a
+	// restored static policy. The static client was never persisted.
+	require.NoError(t, base.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
+	removed, err := NewSPIFFEStorageDecorator(context.Background(), base, nil)
+	require.NoError(t, err)
+	client, err = removed.GetClient(context.Background(), "spiffe-client")
+	require.NoError(t, err)
+	_, ok = client.(*registration.SPIFFEClient)
+	assert.False(t, ok)
+}
+
 func TestSPIFFEStorageDecorator_ReservedIDCannotReachDurableStorage(t *testing.T) {
 	t.Parallel()
 
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
-	trust, _ := testSPIFFETrustConfig(t, "spiffe-client")
-	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, trust)
+	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
+	decorated, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
 	require.NoError(t, err)
 
 	const registrations = 16
@@ -155,9 +190,9 @@ func TestSPIFFEStorageDecorator_DelegatesCIMDAndUnknownSPIFFEIDs(t *testing.T) {
 	t.Cleanup(func() { _ = base.Close() })
 	cimd, err := storage.NewCIMDStorageDecorator(base, storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1})
 	require.NoError(t, err)
-	trust, _ := testSPIFFETrustConfig(t, "https://static.example/client")
+	registry, _ := testSPIFFEAssociationRegistry(t, "https://static.example/client")
 
-	decorated, err := NewSPIFFEStorageDecorator(context.Background(), cimd, trust)
+	decorated, err := NewSPIFFEStorageDecorator(context.Background(), cimd, registry)
 	require.NoError(t, err)
 	assert.Same(t, base, storage.Unwrap(decorated))
 
@@ -178,23 +213,20 @@ func TestNewSPIFFEStorageDecorator_RejectsDurableCollision(t *testing.T) {
 	base := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
 	require.NoError(t, base.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
-	trust, _ := testSPIFFETrustConfig(t, "spiffe-client")
+	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
 
-	_, err := NewSPIFFEStorageDecorator(context.Background(), base, trust)
+	_, err := NewSPIFFEStorageDecorator(context.Background(), base, registry)
 	require.ErrorIs(t, err, storage.ErrAlreadyExists)
 }
 
-func TestNewSPIFFEStorageDecorator_RejectsUnvalidatedTrust(t *testing.T) {
+func TestNewSPIFFEAssociationRegistry_RejectsUnvalidatedTrust(t *testing.T) {
 	t.Parallel()
 
-	base := storage.NewMemoryStorage()
-	t.Cleanup(func() { _ = base.Close() })
-
-	_, err := NewSPIFFEStorageDecorator(context.Background(), base, &SPIFFETrustConfig{})
+	_, err := NewSPIFFEAssociationRegistry(&SPIFFETrustConfig{})
 	require.Error(t, err)
 }
 
-func TestNewSPIFFEStorageDecorator_NilTrustLeavesDynamicStorage(t *testing.T) {
+func TestNewSPIFFEStorageDecorator_NilRegistryLeavesDynamicStorage(t *testing.T) {
 	t.Parallel()
 
 	base := storage.NewMemoryStorage()

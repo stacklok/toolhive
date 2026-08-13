@@ -149,9 +149,21 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "method not enabled by trust domain", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 		}, wantErr: "not enabled by trust domain"},
-		{name: "bundle endpoint accepts IP host, port, query, and fragment", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
-			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://127.0.0.1:8443/bundle?version=1#latest"}}
-		}},
+		{name: "bundle endpoint rejects userinfo", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://token@bundle.example.org/bundle"}}
+		}, wantErr: "must not contain credentials"},
+		{name: "bundle endpoint rejects query", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://bundle.example.org/bundle?version=1"}}
+		}, wantErr: "must not contain credentials"},
+		{name: "bundle endpoint rejects fragment", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://bundle.example.org/bundle#latest"}}
+		}, wantErr: "must not contain credentials"},
+		{name: "bundle endpoint rejects IPv4 literal", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://127.0.0.1:8443/bundle"}}
+		}, wantErr: "IP-literal"},
+		{name: "bundle endpoint rejects IPv6 literal", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://[::1]/bundle"}}
+		}, wantErr: "IP-literal"},
 		{name: "bundle endpoint accepts localhost", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://localhost/bundle"}}
 		}},
@@ -228,7 +240,7 @@ func TestSPIFFETrustConfigPreservesBundleSource(t *testing.T) {
 			Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 			BundleSource: SPIFFEBundleSourceRunConfig{
 				Type:     SPIFFEBundleSourceTypeEndpoint,
-				Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://127.0.0.1:8443/bundle?version=1#latest"},
+				Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://bundle.example.org:8443/bundle"},
 			},
 		}},
 		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
@@ -250,7 +262,7 @@ func TestSPIFFETrustConfigPreservesBundleSource(t *testing.T) {
 	domain, ok := config.TrustDomain("production")
 	require.True(t, ok)
 	assert.Equal(t, SPIFFEBundleSourceTypeEndpoint, domain.BundleSource().Type())
-	assert.Equal(t, "https://127.0.0.1:8443/bundle?version=1#latest", domain.BundleSource().Endpoint())
+	assert.Equal(t, "https://bundle.example.org:8443/bundle", domain.BundleSource().Endpoint())
 }
 
 func TestCloneSPIFFETrustDomains(t *testing.T) {

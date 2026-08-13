@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -369,7 +370,9 @@ func (c SPIFFETrustDomainConfig) Name() string { return c.name }
 func (c SPIFFETrustDomainConfig) TrustDomain() string { return c.trustDomain.String() }
 
 // Methods returns a copy of the explicitly enabled credential methods.
-func (c SPIFFETrustDomainConfig) Methods() []SPIFFEAuthenticationMethod { return slices.Clone(c.methods) }
+func (c SPIFFETrustDomainConfig) Methods() []SPIFFEAuthenticationMethod {
+	return slices.Clone(c.methods)
+}
 
 // BundleSource returns the selected, immutable bundle-source declaration.
 func (c SPIFFETrustDomainConfig) BundleSource() SPIFFEBundleSourceConfig { return c.bundleSource }
@@ -419,7 +422,9 @@ func (c SPIFFEClientAuthConfig) Principal() string { return c.principal }
 func (c SPIFFEClientAuthConfig) ClientID() string { return c.clientID }
 
 // Methods returns a copy of permitted authentication methods.
-func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod { return slices.Clone(c.methods) }
+func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod {
+	return slices.Clone(c.methods)
+}
 
 // AuthorizationPolicy returns a defensive copy of the association policy.
 func (c SPIFFEClientAuthConfig) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
@@ -519,6 +524,14 @@ func validateSPIFFEBundleEndpoint(endpointURL string, index int) error {
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" {
 		return fmt.Errorf(
 			"spiffe_trust_domains[%d].bundle_source.endpoint.url must be an absolute HTTPS URL with a valid authority",
+			index,
+		)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		strings.Contains(endpointURL, "?") || strings.Contains(endpointURL, "#") ||
+		net.ParseIP(u.Hostname()) != nil {
+		return fmt.Errorf(
+			"spiffe_trust_domains[%d].bundle_source.endpoint.url must not contain credentials, query, fragment, or an IP-literal host",
 			index,
 		)
 	}

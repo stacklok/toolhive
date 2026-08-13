@@ -75,7 +75,7 @@ func (s *service) verifyOCIInstall(
 		return unsignedLockedDecision(opts, skillName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, expected)
+	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, refRelaxedExpectation(expected, opts))
 	if verifyErr != nil {
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
@@ -108,7 +108,8 @@ func (s *service) verifyGitInstall(
 		return unsignedLockedDecision(opts, skillName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyGit(ctx, payload, []byte(signature), expected)
+	result, verifyErr := s.artifactVerifier().VerifyGit(
+		ctx, payload, []byte(signature), refRelaxedExpectation(expected, opts))
 	if verifyErr != nil {
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
@@ -195,6 +196,26 @@ func expectedLockTrust(projectRoot, skillName string) (*lockfile.Provenance, boo
 		return nil, true, nil
 	}
 	return entry.Provenance, false, nil
+}
+
+// refRelaxedExpectation returns expected with the pinned repository ref
+// cleared when this install is an upgrade re-pin. A tag-based release
+// workflow signs every version on a new ref (refs/tags/v0.1.0 →
+// refs/tags/v0.2.0), so enforcing the recorded one would reject every
+// legitimate upgrade and train users into --allow-signer-change, which
+// disables the whole guard. The newly observed ref is recorded in the lock
+// entry in its place, visible in the diff next to the digest change.
+//
+// Only the ref is relaxed, and only here: install and sync keep the exact
+// match, and a runner-class change is never an expected part of a release.
+func refRelaxedExpectation(expected *lockfile.Provenance, opts skills.InstallOptions) *lockfile.Provenance {
+	if expected == nil || !opts.AllowRefRepin || expected.RepositoryRef == "" {
+		return expected
+	}
+	// Copy: expected points at the caller's loaded lock entry.
+	relaxed := *expected
+	relaxed.RepositoryRef = ""
+	return &relaxed
 }
 
 // isAllowedUnsigned reports whether a verification failure is the unsigned
@@ -311,10 +332,12 @@ func provenanceInfoFromResult(r *verifier.Result) *skills.ProvenanceInfo {
 		return nil
 	}
 	return &skills.ProvenanceInfo{
-		SignerIdentity: r.SignerIdentity,
-		CertIssuer:     r.CertIssuer,
-		RepositoryURI:  r.RepositoryURI,
-		SigstoreURL:    r.SigstoreURL,
-		Provisional:    r.Provisional,
+		SignerIdentity:    r.SignerIdentity,
+		CertIssuer:        r.CertIssuer,
+		RepositoryURI:     r.RepositoryURI,
+		RepositoryRef:     r.RepositoryRef,
+		RunnerEnvironment: r.RunnerEnvironment,
+		SigstoreURL:       r.SigstoreURL,
+		Provisional:       r.Provisional,
 	}
 }

@@ -68,8 +68,9 @@ func (d *Default) VerifyOCIWithKey(
 	return nil, wrapInvalid(lastErr)
 }
 
-// verifyKeylessBundles verifies bundles until one passes the keyless policy,
-// returning its result, or nil with the last verification error.
+// verifyKeylessBundles verifies bundles until one passes the keyless policy
+// AND the pinned certificate fields the policy cannot express, returning its
+// result, or nil with the last verification error.
 func verifyKeylessBundles(
 	bundles []coreverifier.Bundle,
 	tm root.TrustedMaterial,
@@ -83,12 +84,21 @@ func verifyKeylessBundles(
 			lastErr = verifyErr
 			continue
 		}
-		identity, idErr := coreverifier.IdentityFromResult(vr)
+		observed, idErr := observedFromResult(vr)
 		if idErr != nil {
 			lastErr = idErr
 			continue
 		}
-		return resultFromCore(identity, b.Raw), nil
+		// The Sigstore policy accepted this certificate's signer identity and
+		// issuer; the pinned ref and runner class are enforced against the
+		// same certificate here. A mismatch disqualifies the bundle exactly
+		// like a policy failure — another bundle on the artifact may satisfy
+		// the full expectation.
+		if pinErr := checkPinnedCertificateFields(observed, expected); pinErr != nil {
+			lastErr = pinErr
+			continue
+		}
+		return resultFromCore(observed, b.Raw), nil
 	}
 	return nil, lastErr
 }
@@ -143,6 +153,13 @@ func classifyVerifyFailure(
 	expected *lockfile.Provenance,
 	lastErr error,
 ) error {
+	// A pinned ref or runner mismatch is already the precise diagnosis, and
+	// naming the field is the whole value of it: the Sigstore policy accepted
+	// the certificate, so re-verifying without the identity constraint would
+	// report the expected signer identity back as the observed one.
+	if errors.Is(lastErr, ErrSignerMismatch) {
+		return lastErr
+	}
 	if expected != nil {
 		for _, b := range bundles {
 			vr, err := coreverifier.VerifyBundle(b, tm, nil, opts...)

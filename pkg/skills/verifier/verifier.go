@@ -11,6 +11,10 @@
 // (nil expected identity verifies the chain of trust only; the caller
 // records the observed identity).
 //
+// It also enforces the two pinned certificate fields core's Identity cannot
+// express — the signing workflow's git ref and runner class — against the
+// certificate a successful policy verification produced.
+//
 // Verification uses the trusted root embedded in toolhive-core — hermetic,
 // no TUF fetch — so results are reproducible offline at the cost of
 // snapshot freshness (see core's OfflineTrustedMaterial).
@@ -31,9 +35,10 @@ type Verifier interface {
 	// VerifyOCI discovers the Sigstore signature material attached to the
 	// OCI artifact and verifies it (keyless/Fulcio flow). A non-nil
 	// expected identity is enforced inside the Sigstore verification
-	// policy; nil expected is the trust-on-first-use case and verifies the
-	// chain of trust only. Returns ErrUnsigned when the artifact carries
-	// no signature material.
+	// policy, and its recorded repository ref and runner environment
+	// against the verified certificate; nil expected is the
+	// trust-on-first-use case and verifies the chain of trust only.
+	// Returns ErrUnsigned when the artifact carries no signature material.
 	VerifyOCI(ctx context.Context, imageRef, digest string, expected *lockfile.Provenance) (*Result, error)
 
 	// VerifyOCIWithKey discovers the signature material and verifies it

@@ -69,6 +69,140 @@ func signerChangeFixture(
 	return svc, projectRoot
 }
 
+// TestUpgrade_RepinsRepositoryRef proves the release-workflow case: a new
+// version signed on a new ref upgrades and the lock entry re-records the new
+// ref, while every other pinned field — the runner class included — is still
+// enforced at install-time verification.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_RepinsRepositoryRef(t *testing.T) {
+	const (
+		installedRef = "refs/tags/v0.1.0"
+		releaseRef   = "refs/tags/v0.2.0"
+	)
+	gr, fx := newGitResolverMock(t)
+	fx.register("repin-skill", gitSkill("repin-skill"))
+
+	// installExpected captures the provenance the upgrade's install-time
+	// verification enforces — the value refRelaxedExpectation produced.
+	var installExpected *lockfile.Provenance
+	calls := 0
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().
+		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+			calls++
+			if calls == 1 {
+				return refSignedResult(installedRef), nil // initial install (TOFU)
+			}
+			candidate := refSignedResult(releaseRef)
+			if expected == nil {
+				return candidate, nil // the upgrade's plan-time signer probe
+			}
+			installExpected = expected
+			if expected.RepositoryRef != "" && expected.RepositoryRef != candidate.RepositoryRef {
+				return nil, verifier.ErrSignerMismatch
+			}
+			return candidate, nil
+		})
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	ref, _ := gitRef("repin-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	entry, ok := readLockfile(t, projectRoot).Get("repin-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	require.Equal(t, installedRef, entry.Provenance.RepositoryRef, "the install must pin the observed ref")
+
+	fx.register("repin-skill", gitSkillVersion("repin-skill"))
+	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status,
+		"a release signed on a new ref must not need --allow-signer-change")
+
+	require.NotNil(t, installExpected)
+	assert.Empty(t, installExpected.RepositoryRef,
+		"upgrade must relax the pinned ref rather than reject the new release ref")
+	assert.Equal(t, testRunnerEnvironment, installExpected.RunnerEnvironment,
+		"the runner class has no release-workflow carve-out and stays enforced")
+	assert.Equal(t, testSignerIdentity, installExpected.SignerIdentity)
+
+	entry, ok = readLockfile(t, projectRoot).Get("repin-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, releaseRef, entry.Provenance.RepositoryRef,
+		"the upgrade must re-record the new ref, so the next install enforces it")
+}
+
+func TestRefRelaxedExpectation(t *testing.T) {
+	t.Parallel()
+
+	locked := &lockfile.Provenance{
+		SignerIdentity:    testSignerIdentity,
+		RepositoryRef:     "refs/tags/v0.1.0",
+		RunnerEnvironment: testRunnerEnvironment,
+	}
+
+	tests := []struct {
+		name    string
+		opts    skills.InstallOptions
+		relaxed bool
+	}{
+		{name: "plain install enforces the pinned ref", opts: skills.InstallOptions{}},
+		{
+			name: "sync restore enforces the pinned ref",
+			opts: skills.InstallOptions{SyncRestore: true, LockResolvedReference: "https://github.com/org/repo"},
+		},
+		{name: "upgrade re-pin relaxes it", opts: skills.InstallOptions{AllowRefRepin: true}, relaxed: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := refRelaxedExpectation(locked, tc.opts)
+			require.NotNil(t, got)
+			if !tc.relaxed {
+				assert.Equal(t, locked, got)
+				return
+			}
+			assert.Empty(t, got.RepositoryRef)
+			assert.Equal(t, testRunnerEnvironment, got.RunnerEnvironment, "only the ref is relaxed")
+			assert.Equal(t, "refs/tags/v0.1.0", locked.RepositoryRef, "the caller's lock entry must not be mutated")
+		})
+	}
+
+	assert.Nil(t, refRelaxedExpectation(nil, skills.InstallOptions{AllowRefRepin: true}),
+		"trust on first use has nothing to relax")
+}
+
+func TestRunnerEnvironmentChanged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		probe    string
+		recorded string
+		want     bool
+	}{
+		{name: "same runner class", probe: testRunnerEnvironment, recorded: testRunnerEnvironment},
+		{name: "entry recorded none is unconstrained", probe: "self-hosted"},
+		{name: "runner class change blocked", probe: "self-hosted", recorded: testRunnerEnvironment, want: true},
+		{name: "candidate carrying none blocked", recorded: testRunnerEnvironment, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, runnerEnvironmentChanged(
+				&verifier.Result{RunnerEnvironment: tc.probe},
+				&lockfile.Provenance{RunnerEnvironment: tc.recorded}))
+		})
+	}
+}
+
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_SignerChangeBlocked(t *testing.T) {
 	svc, projectRoot := signerChangeFixture(t, func() (*verifier.Result, error) {

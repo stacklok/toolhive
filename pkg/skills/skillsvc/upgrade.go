@@ -177,6 +177,12 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 // fills outcome when the upgrade must not proceed: the candidate is signed
 // by a different identity (or unsigned) versus the recorded provenance, or
 // its signature cannot be verified at all. Returns true when blocked.
+//
+// The recorded repository ref is deliberately NOT compared: a release
+// workflow signs each version on its own ref, and the upgrade re-pins the
+// new one (see refRelaxedExpectation). The runner class is compared, because
+// the same workflow moving to a different runner class is not part of
+// publishing a new version.
 func (s *service) guardSignerChange(
 	ctx context.Context,
 	entry lockfile.Entry,
@@ -197,12 +203,21 @@ func (s *service) guardSignerChange(
 		outcome.Error = probeErr.Error()
 		return true
 	case probe.SignerIdentity != entry.Provenance.SignerIdentity ||
-		probe.CertIssuer != entry.Provenance.CertIssuer:
+		probe.CertIssuer != entry.Provenance.CertIssuer ||
+		runnerEnvironmentChanged(probe, entry.Provenance):
 		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
 		outcome.NewSignerIdentity = probe.SignerIdentity
 		return true
 	}
 	return false
+}
+
+// runnerEnvironmentChanged reports whether the candidate's runner class
+// differs from the one recorded. An entry that recorded none is
+// unconstrained — lock entries written before the field existed have it
+// empty, as do certificates that carry no such extension.
+func runnerEnvironmentChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RunnerEnvironment != "" && probe.RunnerEnvironment != recorded.RunnerEnvironment
 }
 
 // probeCandidateSigner verifies the candidate artifact chain-of-trust-only
@@ -249,6 +264,9 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: plan.resolvedRef,
 		AllowSignerChange:     opts.AllowSignerChange,
+		// A new version is normally signed on a new ref; the plan-time guard
+		// above already vetted every other identity field.
+		AllowRefRepin: true,
 	}); err != nil {
 		outcome := plan.outcome
 		outcome.Status = skills.UpgradeStatusFailed

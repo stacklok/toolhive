@@ -81,6 +81,13 @@ type InstallOptions struct {
 	// Internal use only — set by upgrade when its signer-change guard was
 	// explicitly overridden.
 	AllowSignerChange bool `json:"-"`
+	// AllowRefRepin lets install-time verification accept a certificate whose
+	// repository ref differs from the locked one, re-recording the observed
+	// ref. Internal use only — set by upgrade, where a tag-based release
+	// workflow signs every version on a new ref; install and sync keep the
+	// exact-ref requirement. Every other identity field, the runner class
+	// included, stays enforced.
+	AllowRefRepin bool `json:"-"`
 	// Unsigned records the trust decision that this install proceeded
 	// without a verified signature (via AllowUnsigned). Set internally by
 	// install-time verification; recorded as `unsigned: true` in the lock

@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
@@ -239,17 +240,21 @@ func TestToLockProvenance(t *testing.T) {
 		{
 			name: "identity-bearing result maps all fields",
 			result: &Result{
-				Signed:         true,
-				SignerIdentity: "/.github/workflows/release.yml",
-				CertIssuer:     "https://token.actions.githubusercontent.com",
-				RepositoryURI:  "https://github.com/org/repo",
-				SigstoreURL:    sigstorePublicGoodRekorURL,
+				Signed:            true,
+				SignerIdentity:    "/.github/workflows/release.yml",
+				CertIssuer:        "https://token.actions.githubusercontent.com",
+				RepositoryURI:     "https://github.com/org/repo",
+				RepositoryRef:     "refs/tags/v0.1.0",
+				RunnerEnvironment: "github-hosted",
+				SigstoreURL:       sigstorePublicGoodRekorURL,
 			},
 			want: &lockfile.Provenance{
-				SignerIdentity: "/.github/workflows/release.yml",
-				CertIssuer:     "https://token.actions.githubusercontent.com",
-				RepositoryURI:  "https://github.com/org/repo",
-				SigstoreURL:    sigstorePublicGoodRekorURL,
+				SignerIdentity:    "/.github/workflows/release.yml",
+				CertIssuer:        "https://token.actions.githubusercontent.com",
+				RepositoryURI:     "https://github.com/org/repo",
+				RepositoryRef:     "refs/tags/v0.1.0",
+				RunnerEnvironment: "github-hosted",
+				SigstoreURL:       sigstorePublicGoodRekorURL,
 			},
 		},
 	}
@@ -267,12 +272,100 @@ func TestExpectedIdentityConversion(t *testing.T) {
 	assert.Nil(t, expectedIdentity(nil), "TOFU first use must yield a nil core identity")
 
 	got := expectedIdentity(&lockfile.Provenance{
-		SignerIdentity: "/.github/workflows/release.yml",
-		CertIssuer:     "https://token.actions.githubusercontent.com",
-		RepositoryURI:  "https://github.com/org/repo",
+		SignerIdentity:    "/.github/workflows/release.yml",
+		CertIssuer:        "https://token.actions.githubusercontent.com",
+		RepositoryURI:     "https://github.com/org/repo",
+		RepositoryRef:     "refs/tags/v0.1.0",
+		RunnerEnvironment: "github-hosted",
 	})
 	require.NotNil(t, got)
 	assert.Equal(t, "/.github/workflows/release.yml", got.SignerIdentity)
 	assert.Equal(t, "https://token.actions.githubusercontent.com", got.CertIssuer)
 	assert.Equal(t, "https://github.com/org/repo", got.SourceRepositoryURI)
+}
+
+func TestCheckPinnedCertificateFields(t *testing.T) {
+	t.Parallel()
+
+	observed := observedCertificate{
+		Identity:          coreverifier.Identity{SignerIdentity: "/.github/workflows/release.yml"},
+		RepositoryRef:     "refs/tags/v0.1.0",
+		RunnerEnvironment: "github-hosted",
+	}
+
+	tests := []struct {
+		name        string
+		observed    observedCertificate
+		expected    *lockfile.Provenance
+		wantErr     bool
+		wantMessage string
+	}{
+		{
+			name:     "trust on first use constrains nothing",
+			observed: observed,
+		},
+		{
+			name:     "entry predating the fields is unconstrained",
+			observed: observed,
+			expected: &lockfile.Provenance{SignerIdentity: "/.github/workflows/release.yml"},
+		},
+		{
+			name:     "both fields match",
+			observed: observed,
+			expected: &lockfile.Provenance{RepositoryRef: "refs/tags/v0.1.0", RunnerEnvironment: "github-hosted"},
+		},
+		{
+			name:        "different ref rejected",
+			observed:    observed,
+			expected:    &lockfile.Provenance{RepositoryRef: "refs/heads/attacker-branch"},
+			wantErr:     true,
+			wantMessage: "repository ref",
+		},
+		{
+			name:        "different runner class rejected",
+			observed:    observed,
+			expected:    &lockfile.Provenance{RunnerEnvironment: "self-hosted"},
+			wantErr:     true,
+			wantMessage: "runner environment",
+		},
+		{
+			name:        "certificate that stopped carrying the pinned ref rejected",
+			observed:    observedCertificate{RunnerEnvironment: "github-hosted"},
+			expected:    &lockfile.Provenance{RepositoryRef: "refs/tags/v0.1.0"},
+			wantErr:     true,
+			wantMessage: "carries none",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkPinnedCertificateFields(tc.observed, tc.expected)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrSignerMismatch)
+			assert.Contains(t, err.Error(), tc.wantMessage,
+				"the error must name which pinned field differed")
+		})
+	}
+}
+
+// TestClassifyVerifyFailureKeepsPinnedFieldDiagnosis guards the interaction
+// between the two mismatch sources: a pinned ref/runner failure is reported
+// verbatim instead of being re-derived as a signer-identity mismatch, which
+// would print the expected identity back as the observed one.
+func TestClassifyVerifyFailureKeepsPinnedFieldDiagnosis(t *testing.T) {
+	t.Parallel()
+
+	expected := &lockfile.Provenance{
+		SignerIdentity: "/.github/workflows/release.yml",
+		RepositoryRef:  "refs/tags/v0.1.0",
+	}
+	pinErr := pinnedFieldMismatch("repository ref", expected.RepositoryRef, "refs/heads/main")
+
+	err := classifyVerifyFailure(nil, nil, nil, expected, pinErr)
+	require.ErrorIs(t, err, ErrSignerMismatch)
+	assert.Contains(t, err.Error(), "repository ref")
+	assert.NotErrorIs(t, err, ErrSignatureInvalid)
 }

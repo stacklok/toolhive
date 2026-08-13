@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	testSignerIdentity = "/.github/workflows/release.yml"
-	testCertIssuer     = "https://token.actions.githubusercontent.com"
+	testSignerIdentity    = "/.github/workflows/release.yml"
+	testCertIssuer        = "https://token.actions.githubusercontent.com"
+	testRunnerEnvironment = "github-hosted"
 )
 
 func signedResult() *verifier.Result {
@@ -34,6 +35,15 @@ func signedResult() *verifier.Result {
 		SigstoreURL:    "https://rekor.sigstore.dev",
 		Bundle:         []byte(`{"bundle":true}`),
 	}
+}
+
+// refSignedResult is a verification result whose certificate pins ref and the
+// standard runner class, as a GitHub Actions certificate does.
+func refSignedResult(ref string) *verifier.Result {
+	r := signedResult()
+	r.RepositoryRef = ref
+	r.RunnerEnvironment = testRunnerEnvironment
+	return r
 }
 
 // loadLockEntry reads the lock entry for name from projectRoot.
@@ -185,6 +195,49 @@ func TestInstallVerification_SignerMismatchRejectedAndLockIntact(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, entry.Provenance)
 	assert.Equal(t, testSignerIdentity, entry.Provenance.SignerIdentity)
+}
+
+// TestInstallVerification_EnforcesPinnedRef proves install gets no re-pin
+// relaxation: unlike upgrade, a reinstall that resolves to a certificate
+// signed on a different ref is a substitution, and the recorded ref must
+// reach the verifier as the expected one.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallVerification_EnforcesPinnedRef(t *testing.T) {
+	gr, fixtures := newGitResolverMock(t)
+	ref, _ := gitRef("ref-pinned-skill")
+	fixtures.register("ref-pinned-skill", gitSkill("ref-pinned-skill"))
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Nil()).
+		Return(refSignedResult("refs/tags/v0.1.0"), nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithVerifier(mv))
+	installOpts := skills.InstallOptions{
+		Name:        ref,
+		Scope:       skills.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	}
+	_, err := svc.Install(t.Context(), installOpts)
+	require.NoError(t, err)
+
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _, _ []byte, expected *lockfile.Provenance) (*verifier.Result, error) {
+			require.NotNil(t, expected)
+			assert.Equal(t, "refs/tags/v0.1.0", expected.RepositoryRef,
+				"install must enforce the recorded ref, not relax it like upgrade")
+			return nil, verifier.ErrSignerMismatch
+		})
+	installOpts.Force = true
+	_, err = svc.Install(t.Context(), installOpts)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+
+	entry, ok := loadLockEntry(t, projectRoot, "ref-pinned-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, "refs/tags/v0.1.0", entry.Provenance.RepositoryRef, "the rejected install must not re-pin")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel

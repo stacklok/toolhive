@@ -1021,9 +1021,6 @@
                 "enum": [
                     "installed",
                     "pending",
-                    "failed",
-                    "installed",
-                    "pending",
                     "failed"
                 ],
                 "type": "string",
@@ -1232,8 +1229,6 @@
             "github_com_stacklok_toolhive_pkg_plugins.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
-                    "user",
-                    "project",
                     "user",
                     "project"
                 ],
@@ -1728,9 +1723,6 @@
                 "enum": [
                     "installed",
                     "pending",
-                    "failed",
-                    "installed",
-                    "pending",
                     "failed"
                 ],
                 "type": "string",
@@ -1857,8 +1849,6 @@
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
-                    "user",
-                    "project",
                     "user",
                     "project"
                 ],

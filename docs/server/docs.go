@@ -1028,9 +1028,6 @@ const docTemplate = `{
                 "enum": [
                     "installed",
                     "pending",
-                    "failed",
-                    "installed",
-                    "pending",
                     "failed"
                 ],
                 "type": "string",
@@ -1239,8 +1236,6 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_plugins.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
-                    "user",
-                    "project",
                     "user",
                     "project"
                 ],
@@ -1735,9 +1730,6 @@ const docTemplate = `{
                 "enum": [
                     "installed",
                     "pending",
-                    "failed",
-                    "installed",
-                    "pending",
                     "failed"
                 ],
                 "type": "string",
@@ -1864,8 +1856,6 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
-                    "user",
-                    "project",
                     "user",
                     "project"
                 ],

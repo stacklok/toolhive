@@ -213,6 +213,22 @@ jobs:
           # pull request — so contents is all it uses.
           permission-contents: write
 
+      # Gates the notarize.macos pipe in .goreleaser.yaml, and warns when the
+      # signing secrets are absent so unsigned releases are visible in the log.
+      - name: Determine macOS signing configuration
+        id: macos-signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APPLE_CERTIFICATE" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Apple signing credentials present — darwin binaries will be Developer ID signed"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=macOS binaries unsigned::APPLE_CERTIFICATE is not configured, so the darwin thv binaries ship ad-hoc signed with no Team ID. See issue #5862."
+          fi
+
       - name: Run GoReleaser
         id: run-goreleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
@@ -228,6 +244,12 @@ jobs:
           COMMIT: ${{ needs.compute-build-flags.outputs.commit }}
           COMMIT_DATE: ${{ needs.compute-build-flags.outputs.commit-date }}
           TREE_STATE: ${{ needs.compute-build-flags.outputs.tree-state }}
+          # macOS signing, consumed by the notarize.macos pipe in
+          # .goreleaser.yaml. Same Developer ID cert toolhive-studio uses; no
+          # keychain needed, since quill reads the .p12 directly.
+          MACOS_SIGN_ENABLED: ${{ steps.macos-signing.outputs.enabled }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Generate subject
         id: hash

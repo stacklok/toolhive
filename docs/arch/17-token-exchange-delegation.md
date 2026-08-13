@@ -190,9 +190,52 @@ whether to grant the exchange, in this order:
    on this path.
 3. **`client_id` binding.** For a self-issued subject token (not part of the
    external path above), the token's `client_id` must match the authenticated
-   client.
+   client — **unless** the authenticated client is a configured delegate
+   client (`Handler.configuredDelegateClients`, sourced from
+   `Config.DelegateClients`), in which case the binding is skipped and any
+   self-issued subject token is accepted regardless of which client it was
+   originally issued to. This exception applies only on the self-issued path
+   (`ExternalIssuer == ""`); a delegate client presenting an externally-issued
+   token with a mismatched `client_id` is still rejected here.
 4. **No binding.** If none of the above apply, the token carries no
    verifiable client binding and the exchange is rejected.
+
+### Delegate clients and self-issued token exchange
+
+A configured delegate client can convert *any* self-issued ToolHive access
+token it can obtain — for any user, regardless of which client originally
+obtained that token — into a delegated token asserting that user's `sub`.
+This is an intentional blanket-trust model, not an oversight: delegate
+clients are declared by the operator at server startup (`RunConfig`/CRD),
+not obtained through self-service registration, so the same trust already
+placed in them by granting the token-exchange grant extends to any
+self-issued subject token rather than only ones issued to that specific
+client.
+
+The relaxation is bounded the same way every other exchange is: `grantScopes`
+and `grantAndBoundAudiences`'s `ensureAudienceSubsetOfSubject` still narrow
+the delegated token to what both the delegate client and the subject token
+are authorized for, and the delegated token's lifetime is still capped by
+`min(subject token's remaining lifetime, configured delegationLifespan)`.
+It is **not** bounded by per-`jti` single-use enforcement — there is none in
+this codebase today, for any token-exchange path, self-issued or external
+(see the `Handler` doc comment in `handler.go` for why: replay is bounded by
+lifetime, not single-use tracking, pending the broader M2M/sender-constrained-
+token effort).
+
+Revoking a delegate client (removing it from config) revokes this specific
+relaxation for that client on the next server restart — it does **not**
+retroactively delete the client's already-registered row, its hashed secret,
+or its token-exchange grant from storage. No `DeleteClient` path exists in
+this codebase today; that is a separate, pre-existing gap, unrelated to this
+relaxation, and not something this change addresses.
+
+RFC 8693 §2.1 permits this: it defines the subject token only as a token
+that represents "the identity of the party on behalf of whom the request is
+being made," with no requirement that the token be validated against the
+identity of the client presenting it as `subject_token`. Applying a
+client-authentication-based policy on top of that — as this exception does —
+is within the authorization server's discretion as the token-exchange STS.
 
 ## Accepted limitations
 

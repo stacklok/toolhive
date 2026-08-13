@@ -385,13 +385,10 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 						Namespace: testNamespace,
 					},
 					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-						Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
-						HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
-							HeaderName: "X-API-Key",
-							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-								Name: "api-key-secret",
-								Key:  "key",
-							},
+						Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+							TokenURL: "https://oauth.example.com/token",
+							Audience: "remote-service",
 						},
 					},
 				}
@@ -444,13 +441,10 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 						Namespace: testNamespace,
 					},
 					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-						Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
-						HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
-							HeaderName: "X-Original-Header",
-							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-								Name: "original-secret",
-								Key:  "key",
-							},
+						Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+							TokenURL: "https://oauth.example.com/token",
+							Audience: "original-audience",
 						},
 					},
 				}
@@ -493,7 +487,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 					}, config); err != nil {
 						return err
 					}
-					config.Spec.HeaderInjection.HeaderName = "X-Updated-Header"
+					config.Spec.TokenExchange.Audience = "updated-audience"
 					return k8sClient.Update(testCtx, config)
 				}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
 

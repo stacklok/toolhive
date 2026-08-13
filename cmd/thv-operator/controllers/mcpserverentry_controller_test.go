@@ -19,6 +19,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 const (
@@ -76,14 +77,19 @@ func newMCPServerEntry(
 // newMCPExternalAuthConfig creates a minimal MCPExternalAuthConfig object.
 func newMCPExternalAuthConfig(name, namespace string) *mcpv1beta1.MCPExternalAuthConfig {
 	return &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 		},
 	}
+}
+
+func newMCPExternalAuthConfigOfType(
+	t *testing.T,
+	authType mcpv1beta1.ExternalAuthType,
+) *mcpv1beta1.MCPExternalAuthConfig {
+	t.Helper()
+	return newExternalAuthConfigForConsumerTest(t, testAuthConfig, authType)
 }
 
 // newConfigMap creates a minimal ConfigMap object.
@@ -223,6 +229,107 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated},
 				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigNotFound},
 				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
+			name: "OBO source validation failure is mirrored before support validation",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				entry := newMCPServerEntry(testEntryGroupRef,
+					&mcpv1beta1.ExternalAuthConfigRef{Name: testAuthConfig}, nil)
+				entry.Generation = 33
+				return entry
+			}(),
+			objects: []client.Object{
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+				func() *mcpv1beta1.MCPExternalAuthConfig {
+					authConfig := newMCPExternalAuthConfigOfType(t, mcpv1beta1.ExternalAuthTypeOBO)
+					authConfig.Status.Conditions = []metav1.Condition{{
+						Type:    mcpv1beta1.ConditionTypeValid,
+						Status:  metav1.ConditionFalse,
+						Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+						Message: obo.ErrEnterpriseRequired.Error(),
+					}}
+					return authConfig
+				}(),
+			},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonEnterpriseRequired},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+			extraCheck: func(t *testing.T, entry *mcpv1beta1.MCPServerEntry) {
+				t.Helper()
+				cond := meta.FindStatusCondition(
+					entry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
+				require.NotNil(t, cond)
+				assert.Equal(t, entry.Generation, cond.ObservedGeneration)
+				assert.Equal(t, obo.ErrEnterpriseRequired.Error(), cond.Message)
+			},
+		},
+		{
+			name: "bearer token auth is unsupported",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				entry := newMCPServerEntry(testEntryGroupRef,
+					&mcpv1beta1.ExternalAuthConfigRef{Name: testAuthConfig}, nil)
+				entry.Generation = 31
+				return entry
+			}(),
+			objects: []client.Object{
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+				newMCPExternalAuthConfigOfType(t, mcpv1beta1.ExternalAuthTypeBearerToken),
+			},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonUnsupportedAuthType},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+			extraCheck: func(t *testing.T, entry *mcpv1beta1.MCPServerEntry) {
+				t.Helper()
+				cond := meta.FindStatusCondition(
+					entry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
+				require.NotNil(t, cond)
+				assert.Equal(t, entry.Generation, cond.ObservedGeneration)
+				assert.Contains(t, cond.Message, string(mcpv1beta1.ExternalAuthTypeBearerToken))
+				assert.Contains(t, cond.Message, "MCPServerEntry")
+			},
+		},
+		{
+			name: "embedded auth server is unsupported",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				entry := newMCPServerEntry(testEntryGroupRef,
+					&mcpv1beta1.ExternalAuthConfigRef{Name: testAuthConfig}, nil)
+				entry.Generation = 32
+				return entry
+			}(),
+			objects: []client.Object{
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+				newMCPExternalAuthConfigOfType(t, mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer),
+			},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonUnsupportedAuthType},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+			extraCheck: func(t *testing.T, entry *mcpv1beta1.MCPServerEntry) {
+				t.Helper()
+				cond := meta.FindStatusCondition(
+					entry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
+				require.NotNil(t, cond)
+				assert.Equal(t, entry.Generation, cond.ObservedGeneration)
+				assert.Contains(t, cond.Message, string(mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer))
+				assert.Contains(t, cond.Message, "MCPServerEntry")
 			},
 		},
 		{
@@ -532,6 +639,127 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPServerEntryReconciler_ExternalAuthConfigMirrorRecovery(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+
+	entry := newMCPServerEntry(testEntryGroupRef,
+		&mcpv1beta1.ExternalAuthConfigRef{Name: testAuthConfig}, nil)
+	entry.Generation = 41
+	authConfig := newMCPExternalAuthConfigOfType(t, mcpv1beta1.ExternalAuthTypeOBO)
+	authConfig.Status.Conditions = []metav1.Condition{{
+		Type:    mcpv1beta1.ConditionTypeValid,
+		Status:  metav1.ConditionFalse,
+		Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+		Message: obo.ErrEnterpriseRequired.Error(),
+	}}
+
+	fakeClient := newEntryFakeClient(
+		t,
+		scheme,
+		entry,
+		newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+		authConfig,
+	)
+	reconciler := &MCPServerEntryReconciler{Client: fakeClient}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{
+		Name:      entry.Name,
+		Namespace: entry.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "source validation failure should be terminal until a watched resource changes")
+
+	var failedEntry mcpv1beta1.MCPServerEntry
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &failedEntry))
+	assert.Equal(t, mcpv1beta1.MCPServerEntryPhaseFailed, failedEntry.Status.Phase)
+	failedCondition := meta.FindStatusCondition(
+		failedEntry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
+	require.NotNil(t, failedCondition)
+	assert.Equal(t, metav1.ConditionFalse, failedCondition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, failedCondition.Reason)
+	assert.Equal(t, obo.ErrEnterpriseRequired.Error(), failedCondition.Message)
+	assert.Equal(t, failedEntry.Generation, failedCondition.ObservedGeneration)
+
+	var healedAuthConfig mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+		Name: testAuthConfig, Namespace: testEntryNS,
+	}, &healedAuthConfig))
+	meta.SetStatusCondition(&healedAuthConfig.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ValidationSucceeded",
+		Message:            "External auth configuration is valid",
+		ObservedGeneration: healedAuthConfig.Generation,
+	})
+	require.NoError(t, fakeClient.Update(ctx, &healedAuthConfig))
+
+	result, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "healed source should reconcile without an explicit retry")
+
+	var recoveredEntry mcpv1beta1.MCPServerEntry
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &recoveredEntry))
+	assert.Equal(t, mcpv1beta1.MCPServerEntryPhaseValid, recoveredEntry.Status.Phase)
+	recoveredCondition := meta.FindStatusCondition(
+		recoveredEntry.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
+	require.NotNil(t, recoveredCondition)
+	assert.Equal(t, metav1.ConditionTrue, recoveredCondition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigValid, recoveredCondition.Reason)
+	assert.Equal(t, "Referenced MCPExternalAuthConfig exists", recoveredCondition.Message)
+	assert.Equal(t, recoveredEntry.Generation, recoveredCondition.ObservedGeneration)
+	assertCondition(t, recoveredEntry.Status.Conditions,
+		mcpv1beta1.ConditionTypeMCPServerEntryValid,
+		metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonMCPServerEntryValid,
+	)
+}
+
+func TestMCPServerEntryReconciler_TerminalExternalAuthStatusIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+	entry := newMCPServerEntry(testEntryGroupRef,
+		&mcpv1beta1.ExternalAuthConfigRef{Name: testAuthConfig}, nil)
+	entry.Generation = 42
+	fakeClient := newEntryFakeClient(
+		t,
+		scheme,
+		entry,
+		newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+		newMCPExternalAuthConfigOfType(t, mcpv1beta1.ExternalAuthTypeBearerToken),
+	)
+	reconciler := &MCPServerEntryReconciler{Client: fakeClient}
+	request := reconcile.Request{NamespacedName: types.NamespacedName{
+		Name: entry.Name, Namespace: entry.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero())
+
+	afterFirst := &mcpv1beta1.MCPServerEntry{}
+	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, afterFirst))
+	condition := meta.FindStatusCondition(
+		afterFirst.Status.Conditions, mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, condition.Reason)
+	steadyResourceVersion := afterFirst.ResourceVersion
+
+	result, err = reconciler.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero())
+
+	afterSecond := &mcpv1beta1.MCPServerEntry{}
+	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, afterSecond))
+	assert.Equal(t, steadyResourceVersion, afterSecond.ResourceVersion,
+		"steady terminal status must not enqueue itself through another status write")
 }
 
 // TestMCPGroupReconciler_MCPServerEntryIntegration verifies the MCPGroup controller

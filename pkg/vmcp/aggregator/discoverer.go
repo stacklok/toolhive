@@ -32,6 +32,7 @@ type backendDiscoverer struct {
 	workloadsManager workloads.Discoverer
 	groupsManager    groups.Manager
 	authConfig       *config.OutgoingAuthConfig
+	excludedBackends map[string]struct{}
 	staticBackends   []config.StaticBackendConfig // Pre-configured backends for static mode
 	groupRef         string                       // Group reference for static mode metadata
 
@@ -59,6 +60,7 @@ func NewUnifiedBackendDiscoverer(
 		workloadsManager: workloadsManager,
 		groupsManager:    groupsManager,
 		authConfig:       authConfig,
+		excludedBackends: outgoingAuthExclusionSet(authConfig),
 		staticBackends:   nil, // Dynamic mode - discover backends at runtime
 	}
 }
@@ -80,10 +82,37 @@ func NewUnifiedBackendDiscovererWithStaticBackends(
 		workloadsManager:       nil, // Not needed in static mode
 		groupsManager:          nil, // Not needed in static mode
 		authConfig:             authConfig,
+		excludedBackends:       outgoingAuthExclusionSet(authConfig),
 		staticBackends:         staticBackends,
 		groupRef:               groupRef,
 		headerForwardByBackend: headerForwardByBackend,
 	}
+}
+
+// outgoingAuthExclusionSet builds the runtime deny set emitted by the
+// operator for backends whose explicit authentication failed to resolve.
+// Empty names are ignored because they cannot identify a workload.
+func outgoingAuthExclusionSet(authConfig *config.OutgoingAuthConfig) map[string]struct{} {
+	if authConfig == nil || len(authConfig.ExcludedBackends) == 0 {
+		return nil
+	}
+
+	excluded := make(map[string]struct{}, len(authConfig.ExcludedBackends))
+	for _, name := range authConfig.ExcludedBackends {
+		if name != "" {
+			excluded[name] = struct{}{}
+		}
+	}
+	return excluded
+}
+
+func (d *backendDiscoverer) isBackendExcluded(name string) bool {
+	_, excluded := d.excludedBackends[name]
+	return excluded
+}
+
+func (d *backendDiscoverer) dependsOnFailedDefault(backend *vmcp.Backend) bool {
+	return d.authConfig != nil && d.authConfig.DefaultAuthFailed && backend.AuthConfig == nil
 }
 
 // NewBackendDiscoverer creates a unified BackendDiscoverer based on the runtime environment.
@@ -106,7 +135,7 @@ func NewBackendDiscoverer(
 	var workloadDiscoverer workloads.Discoverer
 
 	if rt.IsKubernetesRuntime() {
-		k8sDiscoverer, err := workloads.NewK8SDiscoverer() // Uses detected namespace for CLI usage
+		k8sDiscoverer, err := workloads.NewK8SDiscovererWithAuthConfig(authConfig) // Uses detected namespace for CLI usage
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Kubernetes workload discoverer: %w", err)
 		}
@@ -183,8 +212,31 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 
 	slog.Debug("found workloads in group, discovering backends", "count", len(typedWorkloads), "group", groupRef)
 
-	// Query each workload and convert to backend
+	backends = d.discoverWorkloadBackends(ctx, groupRef, typedWorkloads)
+
+	if len(backends) == 0 {
+		slog.Info("no accessible backends found in group (all workloads lack URLs)", "group", groupRef)
+		return []vmcp.Backend{}, nil
+	}
+
+	slog.Info("discovered backends in group", "count", len(backends), "group", groupRef)
+	return backends, nil
+}
+
+// discoverWorkloadBackends converts the listed group members while enforcing
+// the same outgoing-auth exclusions and fallback rules used by the watch path.
+func (d *backendDiscoverer) discoverWorkloadBackends(
+	ctx context.Context,
+	groupRef string,
+	typedWorkloads []workloads.TypedWorkload,
+) []vmcp.Backend {
+	backends := make([]vmcp.Backend, 0, len(typedWorkloads))
 	for _, workload := range typedWorkloads {
+		if d.isBackendExcluded(workload.Name) {
+			slog.Warn("skipping backend with unresolved outgoing authentication", "workload", workload.Name)
+			continue
+		}
+
 		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, workload)
 		if err != nil {
 			slog.Warn("failed to get workload, skipping", "workload", workload.Name, "error", err)
@@ -198,6 +250,10 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 
 		// Apply authentication configuration to backend
 		d.applyAuthConfigToBackend(backend, workload.Name)
+		if d.dependsOnFailedDefault(backend) {
+			slog.Warn("skipping backend that depends on unresolved default authentication", "workload", workload.Name)
+			continue
+		}
 
 		// Set group metadata (override user labels to prevent conflicts)
 		if backend.Metadata == nil {
@@ -207,25 +263,19 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 
 		backends = append(backends, *backend)
 	}
-
-	if len(backends) == 0 {
-		slog.Info("no accessible backends found in group (all workloads lack URLs)", "group", groupRef)
-		return []vmcp.Backend{}, nil
-	}
-
-	slog.Info("discovered backends in group", "count", len(backends), "group", groupRef)
-	return backends, nil
+	return backends
 }
 
 // applyAuthConfigToBackend applies authentication configuration to a backend based on the source mode.
 // It determines whether to use discovered auth from the MCPServer or auth from the vMCP config.
 //
 // Auth resolution logic:
-// - "discovered" mode: Use discovered auth if available, otherwise fall back to Default or backend-specific config
-// - "inline" mode (or ""): Always use config-based auth, ignore discovered auth
-// - unknown mode: Default to config-based auth for safety
+//   - "discovered" mode: Use a valid explicit per-backend override first, then
+//     discovered auth, then the configured backend/default fallback
+//   - "inline" mode (or ""): Always use config-based auth, ignore discovered auth
+//   - unknown mode: Default to config-based auth for safety
 //
-// When useDiscoveredAuth is false, ResolveForBackend is called which handles:
+// Config fallback resolution handles:
 // 1. Backend-specific config (d.authConfig.Backends[backendName])
 // 2. Default config fallback (d.authConfig.Default)
 // 3. No auth if neither is configured
@@ -234,34 +284,42 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 		return
 	}
 
-	// Determine if we should use discovered auth or config-based auth
-	var useDiscoveredAuth bool
 	switch d.authConfig.Source {
 	case "discovered":
-		// In discovered mode, use auth discovered from MCPServer (if any exists)
-		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
-		// which will use backend-specific config, then Default, then no auth
-		useDiscoveredAuth = backend.AuthConfig != nil
+		if explicitAuth, ok := d.authConfig.ResolveExplicitForBackend(backendName); ok {
+			backend.AuthConfig = explicitAuth
+			slog.Debug("backend configured with explicit auth override",
+				"backend", backendName, "strategy", explicitAuth.Type)
+			return
+		}
+
+		if backend.AuthConfig != nil {
+			// Keep the auth discovered from the backend resource.
+			slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
+			return
+		}
+
+		// No backend auth was discovered. Fall back to the converted backend
+		// entry (including type="discovered"'s unauthenticated fallback), then
+		// Default, then no auth.
+		if authConfig := d.authConfig.ResolveForBackend(backendName); authConfig != nil {
+			backend.AuthConfig = authConfig
+			slog.Debug("backend configured with fallback auth strategy from config",
+				"backend", backendName, "strategy", authConfig.Type)
+		}
+		return
 	case "inline", "":
 		// For inline mode or empty source, always use config-based auth
 		// Ignore any discovered auth from backends
-		useDiscoveredAuth = false
 	default:
 		// Unknown source mode - default to config-based auth for safety
 		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", d.authConfig.Source)
-		useDiscoveredAuth = false
 	}
 
-	if useDiscoveredAuth {
-		// Keep the auth discovered from MCPServer (already populated in backend)
-		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
-	} else {
-		// Use auth from config (inline mode)
-		authConfig := d.authConfig.ResolveForBackend(backendName)
-		if authConfig != nil {
-			backend.AuthConfig = authConfig
-			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
-		}
+	// Inline and unknown modes use config-based auth.
+	if authConfig := d.authConfig.ResolveForBackend(backendName); authConfig != nil {
+		backend.AuthConfig = authConfig
+		slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
 	}
 }
 
@@ -271,6 +329,11 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 	backends := make([]vmcp.Backend, 0, len(d.staticBackends))
 
 	for _, staticBackend := range d.staticBackends {
+		if d.isBackendExcluded(staticBackend.Name) {
+			slog.Warn("skipping static backend with unresolved outgoing authentication", "backend", staticBackend.Name)
+			continue
+		}
+
 		backend := vmcp.Backend{
 			ID:            staticBackend.Name,
 			Name:          staticBackend.Name,
@@ -285,6 +348,11 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 
 		// Apply auth configuration from OutgoingAuthConfig
 		d.applyAuthConfigToBackend(&backend, staticBackend.Name)
+		if d.dependsOnFailedDefault(&backend) {
+			slog.Warn("skipping static backend that depends on unresolved default authentication",
+				"backend", staticBackend.Name)
+			continue
+		}
 
 		// Set group metadata (reserved key, always overridden)
 		if backend.Metadata == nil {

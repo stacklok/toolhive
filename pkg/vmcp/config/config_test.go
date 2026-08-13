@@ -109,6 +109,32 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 			description: "Should fall back to default when backend strategy is nil",
 		},
 		{
+			name: "failed default marker blocks default fallback",
+			config: &OutgoingAuthConfig{
+				Default: &authtypes.BackendAuthStrategy{
+					Type: "unauthenticated",
+				},
+				DefaultAuthFailed: true,
+			},
+			backendID:   "backend1",
+			wantNil:     true,
+			description: "A failed configured default must not become an unauthenticated fallback",
+		},
+		{
+			name: "backend-specific strategy survives failed default marker",
+			config: &OutgoingAuthConfig{
+				DefaultAuthFailed: true,
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"backend1": {
+						Type: "header_injection",
+					},
+				},
+			},
+			backendID:   "backend1",
+			wantType:    "header_injection",
+			description: "Independent backend auth must remain usable when only the default failed",
+		},
+		{
 			name: "returns nil when only default is nil",
 			config: &OutgoingAuthConfig{
 				Default:  nil,
@@ -163,6 +189,70 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 				assert.NotNil(t, got, "Expected non-nil strategy: %s", tt.description)
 				assert.Equal(t, tt.wantType, got.Type, "Type mismatch: %s", tt.description)
 			}
+		})
+	}
+}
+
+func TestOutgoingAuthConfig_ResolveExplicitForBackend(t *testing.T) {
+	t.Parallel()
+
+	strategy := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated}
+	tests := []struct {
+		name      string
+		config    *OutgoingAuthConfig
+		backendID string
+		want      *authtypes.BackendAuthStrategy
+		wantOK    bool
+	}{
+		{
+			name:      "nil config",
+			backendID: "backend-1",
+		},
+		{
+			name: "legacy config treats backend entries as explicit",
+			config: &OutgoingAuthConfig{
+				Backends: map[string]*authtypes.BackendAuthStrategy{"backend-1": strategy},
+			},
+			backendID: "backend-1",
+			want:      strategy,
+			wantOK:    true,
+		},
+		{
+			name: "operator marker excludes discovered entry",
+			config: &OutgoingAuthConfig{
+				Backends:         map[string]*authtypes.BackendAuthStrategy{"backend-1": strategy},
+				ExplicitBackends: []string{},
+			},
+			backendID: "backend-1",
+		},
+		{
+			name: "listed backend resolves explicit strategy",
+			config: &OutgoingAuthConfig{
+				Backends:         map[string]*authtypes.BackendAuthStrategy{"backend-1": strategy},
+				ExplicitBackends: []string{"backend-1"},
+			},
+			backendID: "backend-1",
+			want:      strategy,
+			wantOK:    true,
+		},
+		{
+			name: "listed backend with nil strategy is not explicit",
+			config: &OutgoingAuthConfig{
+				Backends:         map[string]*authtypes.BackendAuthStrategy{"backend-1": nil},
+				ExplicitBackends: []string{"backend-1"},
+			},
+			backendID: "backend-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := tt.config.ResolveExplicitForBackend(tt.backendID)
+
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Same(t, tt.want, got)
 		})
 	}
 }

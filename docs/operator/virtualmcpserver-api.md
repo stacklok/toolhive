@@ -145,13 +145,13 @@ spec:
 
 ### `.spec.outgoingAuth` (optional)
 
-Configures authentication from Virtual MCP to backend MCPServers.
+Configures authentication from Virtual MCP to backend resources.
 
 **Type**: `OutgoingAuthConfig`
 
 **Fields**:
 - `source` (string, optional): How backend authentication configurations are determined
-  - `discovered` (default): Automatically discover from backend's `MCPServer.spec.externalAuthConfigRef`
+  - `discovered` (default): Automatically discover from backend `MCPServer`, `MCPRemoteProxy`, and `MCPServerEntry` `externalAuthConfigRef` fields
   - `inline`: Explicit per-backend configuration in VirtualMCPServer
 - `default` (BackendAuthConfig, optional): Default behavior for backends without explicit auth config
 - `backends` (map[string]BackendAuthConfig, optional): Per-backend authentication overrides
@@ -176,13 +176,9 @@ spec:
         externalAuthConfigRef:
           name: github-token-exchange
       slack:
-        type: service_account
-        serviceAccount:
-          credentialsRef:
-            name: slack-bot-token
-            key: token
-          headerName: Authorization
-          headerFormat: "Bearer {token}"
+        type: externalAuthConfigRef
+        externalAuthConfigRef:
+          name: slack-header-injection
 ```
 
 #### BackendAuthConfig
@@ -192,6 +188,13 @@ spec:
   - `discovered`: Automatically discover from backend
   - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
+
+Referenced `MCPExternalAuthConfig` resources support `tokenExchange`,
+`headerInjection`, `unauthenticated`, `awsSts`, `upstreamInject`, `obo`, and
+`xaa`. Unsupported types are reported through an `UnsupportedAuthType`
+condition instead of being silently ignored. A backend whose explicit or
+discovered authentication cannot be resolved is excluded from routing in both
+static and dynamic discovery modes; independently valid peers remain available.
 
 ### `.spec.passthroughHeaders` (optional)
 
@@ -594,11 +597,9 @@ spec:
       type: discovered
     backends:
       slack:  # Override for specific backend
-        type: service_account
-        serviceAccount:
-          credentialsRef:
-            name: slack-bot-token
-            key: token
+        type: externalAuthConfigRef
+        externalAuthConfigRef:
+          name: slack-header-injection
 
   # Composite tools
   compositeTools:

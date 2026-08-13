@@ -690,6 +690,145 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 	}
 }
 
+func TestHandleExternalAuthConfig_UnsupportedAuthType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		authType mcpv1beta1.ExternalAuthType
+	}{
+		{name: "header injection", authType: mcpv1beta1.ExternalAuthTypeHeaderInjection},
+		{name: "upstream injection", authType: mcpv1beta1.ExternalAuthTypeUpstreamInject},
+		{name: "XAA", authType: mcpv1beta1.ExternalAuthTypeXAA},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const (
+				generation   int64 = 23
+				previousHash       = "previous-supported-hash"
+			)
+			authConfig := newExternalAuthConfigForConsumerTest(t, "auth-config", tt.authType)
+			authConfig.Status.ConfigHash = "unsupported-hash"
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://backend.example/mcp"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: previousHash,
+				}),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Generation = generation
+				}),
+			)
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(authConfig, proxy).
+				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
+				Build()
+			reconciler := &MCPRemoteProxyReconciler{Client: fakeClient, Scheme: scheme}
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), proxy)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), string(tt.authType))
+			assert.Contains(t, err.Error(), "MCPRemoteProxy")
+			cond := meta.FindStatusCondition(
+				proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, cond.Reason)
+			assert.Equal(t, generation, cond.ObservedGeneration)
+			assert.Contains(t, cond.Message, string(tt.authType))
+			assert.Contains(t, cond.Message, "MCPRemoteProxy")
+			assert.Equal(t, previousHash, proxy.Status.ExternalAuthConfigHash,
+				"an unsupported config must not advance the last applied config hash")
+		})
+	}
+}
+
+func TestMCPRemoteProxyReconciler_UnsupportedExternalAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	authConfig := newExternalAuthConfigForConsumerTest(
+		t, "auth-config", mcpv1beta1.ExternalAuthTypeHeaderInjection)
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyURL("https://backend.example/mcp"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
+	proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseReady
+	proxy.Status.Conditions = []metav1.Condition{{
+		Type:               mcpv1beta1.ConditionTypeReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonDeploymentReady,
+		Message:            "Deployment is ready and running",
+		ObservedGeneration: proxy.Generation,
+	}}
+	reconciler, fakeClient := newTestMCPRemoteProxyReconciler(t, authConfig, proxy)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Name: proxy.Name, Namespace: proxy.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "unsupported auth should be terminal until a watched resource changes")
+
+	afterFirst := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(t.Context(), request.NamespacedName, afterFirst))
+	condition := meta.FindStatusCondition(
+		afterFirst.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, condition.Reason)
+	assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhaseFailed, afterFirst.Status.Phase)
+	ready := meta.FindStatusCondition(afterFirst.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonDeploymentNotReady, ready.Reason)
+
+	result, err = reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero())
+
+	afterSecond := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(t.Context(), request.NamespacedName, afterSecond))
+	assert.Equal(t, afterFirst.Status, afterSecond.Status,
+		"a repeated terminal reconcile must preserve the failed status")
+}
+
+func TestMCPRemoteProxyReconciler_MirroredInvalidExternalAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	authConfig := newExternalAuthConfigForConsumerTest(t, "auth-config", mcpv1beta1.ExternalAuthTypeOBO)
+	authConfig.Status.Conditions = []metav1.Condition{{
+		Type:    mcpv1beta1.ConditionTypeValid,
+		Status:  metav1.ConditionFalse,
+		Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+		Message: "enterprise feature required",
+	}}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyURL("https://backend.example/mcp"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
+	reconciler, fakeClient := newTestMCPRemoteProxyReconciler(t, authConfig, proxy)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Name: proxy.Name, Namespace: proxy.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "source Valid=False should wait for the referenced resource watch")
+
+	updated := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(t.Context(), request.NamespacedName, updated))
+	condition := meta.FindStatusCondition(
+		updated.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, condition.Reason)
+}
+
 // TestLabelsForMCPRemoteProxy tests label generation
 func TestLabelsForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()

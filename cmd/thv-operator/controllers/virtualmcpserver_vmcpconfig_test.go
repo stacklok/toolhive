@@ -15,11 +15,14 @@ import (
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -30,6 +33,7 @@ import (
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -486,6 +490,144 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg))
 	assert.Equal(t, "test-vmcp", cfg.Name)
 	assert.Equal(t, "test-group", cfg.Group)
+}
+
+func TestInlineBackendConditionInventory(t *testing.T) {
+	t.Parallel()
+
+	resolvedStrategy := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated}
+	tests := []struct {
+		name          string
+		outgoing      *mcpv1beta1.OutgoingAuthConfig
+		resolved      *vmcpconfig.OutgoingAuthConfig
+		wantInventory []string
+		wantValid     []string
+	}{
+		{
+			name: "no outgoing auth",
+		},
+		{
+			name: "discovered directive is not a concrete override",
+			outgoing: &mcpv1beta1.OutgoingAuthConfig{
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{
+					"discovered-backend": {Type: mcpv1beta1.BackendAuthTypeDiscovered},
+				},
+			},
+			resolved: &vmcpconfig.OutgoingAuthConfig{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"discovered-backend": resolvedStrategy,
+				},
+			},
+			wantInventory: []string{},
+			wantValid:     []string{},
+		},
+		{
+			name: "only successfully resolved concrete overrides are valid",
+			outgoing: &mcpv1beta1.OutgoingAuthConfig{
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{
+					"valid-override": {
+						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					},
+					"failed-override": {
+						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					},
+					"discovered-backend": {Type: mcpv1beta1.BackendAuthTypeDiscovered},
+				},
+			},
+			resolved: &vmcpconfig.OutgoingAuthConfig{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"valid-override":     resolvedStrategy,
+					"discovered-backend": resolvedStrategy,
+				},
+			},
+			wantInventory: []string{"failed-override", "valid-override"},
+			wantValid:     []string{"valid-override"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{OutgoingAuth: tt.outgoing},
+			}
+
+			inventory := extractInlineBackendNames(vmcpServer)
+			valid := determineValidInlineBackends(tt.resolved, inventory)
+
+			assert.Equal(t, tt.wantInventory, inventory)
+			assert.Equal(t, tt.wantValid, valid)
+		})
+	}
+}
+
+// TestProcessOutgoingAuth_DiscoveredDirectiveReplacesInlineCondition verifies
+// changing a concrete per-backend override to type="discovered" removes the
+// stale BackendAuthConfig-* condition and reports only the discovered source.
+func TestProcessOutgoingAuth_DiscoveredDirectiveReplacesInlineCondition(t *testing.T) {
+	t.Parallel()
+
+	const backendName = "switching-backend"
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: OutgoingAuthSourceDiscovered,
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				backendName: {Type: mcpv1beta1.BackendAuthTypeDiscovered},
+			},
+		}),
+	)
+	vmcpServer.Status.Conditions = []metav1.Condition{
+		{
+			Type:    "BackendAuthConfig-" + backendName,
+			Status:  metav1.ConditionTrue,
+			Reason:  "ConversionSucceeded",
+			Message: "Backend auth config is valid",
+		},
+	}
+	server := v1beta1test.NewMCPServer(backendName, "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithExternalAuthConfigRef("discovered-auth"),
+	)
+	discoveredAuth := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "discovered-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, server, discoveredAuth).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+	config := &vmcpconfig.Config{
+		OutgoingAuth: &vmcpconfig.OutgoingAuthConfig{Source: OutgoingAuthSourceDiscovered},
+	}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+
+	err := reconciler.processOutgoingAuth(
+		ctx,
+		vmcpServer,
+		config,
+		[]workloads.TypedWorkload{{Name: backendName, Type: workloads.WorkloadTypeMCPServer}},
+		statusManager,
+	)
+
+	require.NoError(t, err)
+	assert.True(t, statusManager.UpdateStatus(ctx, &vmcpServer.Status))
+	assert.Nil(t, meta.FindStatusCondition(vmcpServer.Status.Conditions, "BackendAuthConfig-"+backendName))
+	discoveredCondition := meta.FindStatusCondition(
+		vmcpServer.Status.Conditions,
+		"DiscoveredAuthConfig-"+backendName,
+	)
+	require.NotNil(t, discoveredCondition)
+	assert.Equal(t, metav1.ConditionTrue, discoveredCondition.Status)
+	assert.Equal(t, "ConversionSucceeded", discoveredCondition.Reason)
 }
 
 // TestSetAuthConfigConditions tests that auth config conditions reflect the current state
@@ -1504,6 +1646,107 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 	t.Log("Dynamic mode ConfigMap contains minimal content without backends")
 }
 
+// TestEnsureVmcpConfigConfigMap_InventoryListErrorsAbortBeforePersistence
+// verifies that discovery inventory failures remain transient reconcile errors.
+// Treating a failed List as an empty inventory would otherwise erase backend
+// auth exclusions and persist a fail-open dynamic configuration.
+func TestEnsureVmcpConfigConfigMap_InventoryListErrorsAbortBeforePersistence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		wantMessage string
+		matchesList func(client.ObjectList) bool
+	}{
+		{
+			name:        "MCPServer inventory",
+			wantMessage: "failed to list MCPServers for outgoing auth discovery",
+			matchesList: func(list client.ObjectList) bool {
+				_, ok := list.(*mcpv1beta1.MCPServerList)
+				return ok
+			},
+		},
+		{
+			name:        "MCPRemoteProxy inventory",
+			wantMessage: "failed to list MCPRemoteProxies for outgoing auth discovery",
+			matchesList: func(list client.ObjectList) bool {
+				_, ok := list.(*mcpv1beta1.MCPRemoteProxyList)
+				return ok
+			},
+		},
+		{
+			name:        "MCPServerEntry inventory",
+			wantMessage: "failed to list MCPServerEntries for outgoing auth discovery",
+			matchesList: func(list client.ObjectList) bool {
+				_, ok := list.(*mcpv1beta1.MCPServerEntryList)
+				return ok
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			testScheme := testutil.NewScheme(t)
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: OutgoingAuthSourceDiscovered,
+				}),
+			)
+			injectedErr := stderrors.New("injected inventory list failure")
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(vmcpServer).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(
+						ctx context.Context,
+						c client.WithWatch,
+						list client.ObjectList,
+						opts ...client.ListOption,
+					) error {
+						if tt.matchesList(list) {
+							return injectedErr
+						}
+						return c.List(ctx, list, opts...)
+					},
+				}).
+				Build()
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+			typedWorkloads := []workloads.TypedWorkload{
+				{Name: "backend", Type: workloads.WorkloadTypeMCPServer},
+			}
+
+			err := reconciler.ensureVmcpConfigConfigMap(
+				ctx,
+				vmcpServer,
+				typedWorkloads,
+				nil,
+				statusManager,
+			)
+
+			require.ErrorIs(t, err, injectedErr)
+			assert.Contains(t, err.Error(), tt.wantMessage)
+			assert.False(t, statusManager.UpdateStatus(ctx, &vmcpServer.Status),
+				"inventory errors must not stage partial auth status")
+
+			configMap := &corev1.ConfigMap{}
+			getErr := fakeClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpConfigMapName(vmcpServer.Name),
+				Namespace: vmcpServer.Namespace,
+			}, configMap)
+			require.Error(t, getErr)
+			assert.True(t, apierrors.IsNotFound(getErr),
+				"inventory errors must abort before the vMCP ConfigMap is persisted")
+		})
+	}
+}
+
 // TestConfigMapContent_StaticMode_InlineOverrides tests that in static mode (inline),
 // explicitly specified backends in the spec are preserved in the ConfigMap.
 // This tests inline overrides, not discovery. See TestConfigMapContent_StaticModeWithDiscovery
@@ -1907,26 +2150,245 @@ func TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth(t *testing.T)
 	assert.Contains(t, servedNames, "b2", "b2 must still be served via the valid Default strategy")
 }
 
-// TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteDiscoveredError
-// is a regression test for an over-exclusion bug introduced by the fix for
-// TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth: backendsWithFailedAuth
-// excluded a backend from the served set whenever ANY AuthConfigError named it, even if
-// that same backend also had a fully valid, resolved strategy from another source.
-//
-// b1 here has both: a discovered ExternalAuthConfigRef on its own MCPServer spec that
-// mirrors a Valid=False condition (mirroredExternalAuthConfigInvalid), which makes
-// discoverExternalAuthConfigs record an AuthConfigError for "b1" unconditionally, and a
-// valid inline override in vmcp.Spec.OutgoingAuth.Backends["b1"], applied in a separate,
-// unconditional pass that ends up correctly populated in authConfig.Backends.
-// discoverExternalAuthConfigs records the mirrored-invalid error before it even checks
-// whether an inline override exists, so both the error and the valid strategy coexist for
-// the same backend name. b1 must still be served using its valid inline strategy.
-//
-// The Valid=False mirror check is unique to the operator's own discovery path
-// (mirroredExternalAuthConfigInvalid) and is not replicated by the independent backend
-// discovery in pkg/vmcp/workloads (converters.DiscoverAndResolveAuth), so this scenario
-// does not also trip that unrelated fail-closed mechanism.
-func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteDiscoveredError(t *testing.T) {
+// TestConfigMapContent_InvalidDefaultAuthFailsClosed verifies that an explicitly
+// configured Default strategy never degrades to unauthenticated access when it
+// cannot be converted. Backends with a valid explicit strategy remain available;
+// every backend that would have depended on the invalid Default is denied in both
+// inline/static and discovered/dynamic modes.
+func TestConfigMapContent_InvalidDefaultAuthFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{OutgoingAuthSourceInline, OutgoingAuthSourceDiscovered} {
+		source := source
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			testScheme := testutil.NewScheme(t)
+			mcpGroup := &mcpv1beta1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+				Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+			}
+
+			unsupportedDefault := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "unsupported-default", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "bearer-token", Key: "token"},
+					},
+				},
+			}
+			validPeerAuth := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "valid-peer-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+				},
+			}
+
+			defaultDependent := v1beta1test.NewMCPServer("default-dependent", "default",
+				v1beta1test.WithMCPGroupRef("test-group"),
+				v1beta1test.WithTransport("sse"),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+					Phase: mcpv1beta1.MCPServerPhaseReady,
+					URL:   "http://default-dependent.default.svc.cluster.local:8080",
+				}),
+			)
+			explicitPeer := v1beta1test.NewMCPServer("explicit-peer", "default",
+				v1beta1test.WithMCPGroupRef("test-group"),
+				v1beta1test.WithTransport("sse"),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+					Phase: mcpv1beta1.MCPServerPhaseReady,
+					URL:   "http://explicit-peer.default.svc.cluster.local:8080",
+				}),
+			)
+
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: source,
+					Default: &mcpv1beta1.BackendAuthConfig{
+						Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "unsupported-default"},
+					},
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"explicit-peer": {
+							Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "valid-peer-auth"},
+						},
+					},
+				}),
+			)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(vmcpServer, mcpGroup, defaultDependent, explicitPeer, unsupportedDefault, validPeerAuth).
+				WithStatusSubresource(defaultDependent, explicitPeer).
+				Build()
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+
+			workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+			require.NoError(t, err)
+			require.Len(t, workloadNames, 2)
+
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusManager)
+			require.NoError(t, err, "an invalid default is a terminal auth condition, not a retryable reconcile error")
+			assert.True(t, statusManager.UpdateStatus(ctx, &vmcpServer.Status))
+
+			defaultCondition := meta.FindStatusCondition(vmcpServer.Status.Conditions, "DefaultAuthConfig")
+			require.NotNil(t, defaultCondition)
+			assert.Equal(t, metav1.ConditionFalse, defaultCondition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, defaultCondition.Reason)
+
+			configMap := &corev1.ConfigMap{}
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+				Name: vmcpConfigMapName(vmcpServer.Name), Namespace: vmcpServer.Namespace,
+			}, configMap))
+
+			var config vmcpconfig.Config
+			require.NoError(t, yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config))
+			require.NotNil(t, config.OutgoingAuth)
+			assert.Nil(t, config.OutgoingAuth.Default)
+			assert.True(t, config.OutgoingAuth.DefaultAuthFailed)
+			assert.Equal(t, []string{"default-dependent"}, config.OutgoingAuth.ExcludedBackends)
+			assert.Contains(t, config.OutgoingAuth.Backends, "explicit-peer")
+
+			if source == OutgoingAuthSourceInline {
+				servedNames := make([]string, 0, len(config.Backends))
+				for _, backend := range config.Backends {
+					servedNames = append(servedNames, backend.Name)
+				}
+				assert.NotContains(t, servedNames, "default-dependent")
+				assert.Contains(t, servedNames, "explicit-peer")
+			} else {
+				assert.Empty(t, config.Backends, "dynamic mode must defer backend discovery to runtime")
+			}
+		})
+	}
+}
+
+// TestConfigMapContent_StaticMode_ExcludesDiscoveredBackendWithUnsupportedAuth
+// protects the discovered-vMCP path from silently dropping an unsupported auth
+// backend without explaining why. The failed backend must be omitted from both
+// outgoing auth and the routable static backend set, while a supported peer
+// remains configured and its success condition remains intact.
+func TestConfigMapContent_StaticMode_ExcludesDiscoveredBackendWithUnsupportedAuth(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+	}
+	unsupportedAuth := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "unsupported-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+			BearerToken: &mcpv1beta1.BearerTokenConfig{
+				TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "bearer-token", Key: "token"},
+			},
+		},
+	}
+	supportedAuth := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "supported-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
+		},
+	}
+
+	unsupportedBackend := v1beta1test.NewMCPServer("unsupported-backend", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithExternalAuthConfigRef("unsupported-auth"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://unsupported-backend.default.svc.cluster.local:8080",
+		}),
+	)
+	supportedBackend := v1beta1test.NewMCPServer("supported-backend", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithExternalAuthConfigRef("supported-auth"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://supported-backend.default.svc.cluster.local:8080",
+		}),
+	)
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: OutgoingAuthSourceInline,
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"unsupported-backend": {Type: mcpv1beta1.BackendAuthTypeDiscovered},
+			},
+		}),
+	)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, unsupportedBackend, supportedBackend, unsupportedAuth, supportedAuth).
+		WithStatusSubresource(unsupportedBackend, supportedBackend).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+	require.NoError(t, err)
+	require.Len(t, workloadNames, 2, "both backends must reach auth validation")
+
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusManager)
+	require.NoError(t, err, "unsupported auth is a backend-local terminal error, not a reconcile failure")
+	assert.True(t, statusManager.UpdateStatus(ctx, &vmcpServer.Status))
+
+	unsupportedCondition := meta.FindStatusCondition(
+		vmcpServer.Status.Conditions, "DiscoveredAuthConfig-unsupported-backend")
+	require.NotNil(t, unsupportedCondition)
+	assert.Equal(t, metav1.ConditionFalse, unsupportedCondition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, unsupportedCondition.Reason)
+	assert.Contains(t, unsupportedCondition.Message, string(mcpv1beta1.ExternalAuthTypeBearerToken))
+
+	supportedCondition := meta.FindStatusCondition(
+		vmcpServer.Status.Conditions, "DiscoveredAuthConfig-supported-backend")
+	require.NotNil(t, supportedCondition)
+	assert.Equal(t, metav1.ConditionTrue, supportedCondition.Status)
+	assert.Equal(t, "ConversionSucceeded", supportedCondition.Reason)
+
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName(vmcpServer.Name),
+		Namespace: vmcpServer.Namespace,
+	}, configMap)
+	require.NoError(t, err)
+
+	var config vmcpconfig.Config
+	require.NoError(t, yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config))
+	require.NotNil(t, config.OutgoingAuth)
+	assert.NotContains(t, config.OutgoingAuth.Backends, "unsupported-backend")
+	assert.Contains(t, config.OutgoingAuth.Backends, "supported-backend")
+
+	servedNames := make([]string, 0, len(config.Backends))
+	for _, backend := range config.Backends {
+		servedNames = append(servedNames, backend.Name)
+	}
+	assert.NotContains(t, servedNames, "unsupported-backend",
+		"unsupported auth must fail closed and make the backend unroutable")
+	assert.Contains(t, servedNames, "supported-backend",
+		"a supported peer must remain routable despite another backend's auth error")
+}
+
+// TestConfigMapContent_StaticMode_ExplicitOverridePrecedesUnsupportedDiscoveredRef
+// verifies that a concrete per-backend override is authoritative before the
+// backend resource's discovered auth reference is inspected. The replaced
+// unsupported reference must not create an error, shadow the override, or
+// remove the backend from the served set.
+func TestConfigMapContent_StaticMode_ExplicitOverridePrecedesUnsupportedDiscoveredRef(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1948,28 +2410,15 @@ func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteD
 		},
 	}
 
-	// b1's own discovered ref exists and is otherwise convertible, but carries a
-	// Valid=False condition (e.g. as set by a validating webhook/controller). This
-	// makes discoverExternalAuthConfigs record an AuthConfigError for "b1" without
-	// affecting the independent, condition-agnostic auth discovery used for backend
-	// listing (converters.DiscoverAndResolveAuth), so b1 remains discoverable.
-	invalidRefAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "invalid-ref-auth", Namespace: "default"},
+	// b1's own discovered ref uses an auth type unsupported by vMCP. The valid
+	// inline override must replace this source before either the operator or the
+	// static workload discoverer attempts to convert it.
+	unsupportedRefAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "unsupported-ref-auth", Namespace: "default"},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
-				TokenURL: "https://broken.example.com/token",
-			},
-		},
-		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
-			Conditions: []metav1.Condition{
-				{
-					Type:               mcpv1beta1.ConditionTypeValid,
-					Status:             metav1.ConditionFalse,
-					Reason:             "SomeValidationFailure",
-					Message:            "this config is not valid",
-					LastTransitionTime: metav1.Now(),
-				},
+			Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+			BearerToken: &mcpv1beta1.BearerTokenConfig{
+				TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token", Key: "value"},
 			},
 		},
 	}
@@ -1977,7 +2426,7 @@ func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteD
 	b1 := v1beta1test.NewMCPServer("b1", "default",
 		v1beta1test.WithMCPGroupRef("test-group"),
 		v1beta1test.WithTransport("sse"),
-		v1beta1test.WithExternalAuthConfigRef("invalid-ref-auth"),
+		v1beta1test.WithExternalAuthConfigRef("unsupported-ref-auth"),
 		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
 			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://b1.default.svc.cluster.local:8080",
@@ -2002,8 +2451,8 @@ func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteD
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(vmcpServer, mcpGroup, b1, validAuthConfig, invalidRefAuthConfig).
-		WithStatusSubresource(b1, invalidRefAuthConfig).
+		WithObjects(vmcpServer, mcpGroup, b1, validAuthConfig, unsupportedRefAuthConfig).
+		WithStatusSubresource(b1, unsupportedRefAuthConfig).
 		Build()
 
 	reconciler := &VirtualMCPServerReconciler{
@@ -2032,14 +2481,14 @@ func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteD
 	require.NoError(t, err)
 
 	require.NotNil(t, config.OutgoingAuth)
+	assert.Equal(t, []string{"b1"}, config.OutgoingAuth.ExplicitBackends)
 	b1Strategy, exists := config.OutgoingAuth.Backends["b1"]
 	require.True(t, exists, "b1's valid inline override must still be assigned")
 	require.NotNil(t, b1Strategy)
 	assert.Equal(t, "token_exchange", b1Strategy.Type)
 
-	// The actual regression: b1 must remain in the served/routable backend set because it
-	// has a valid, resolved strategy, even though an AuthConfigError was also recorded for
-	// it via the unrelated broken discovered ref.
+	// The actual regression: b1 must remain in the served/routable backend set
+	// because its valid explicit strategy takes precedence over the replaced ref.
 	servedNames := make([]string, 0, len(config.Backends))
 	for _, backend := range config.Backends {
 		servedNames = append(servedNames, backend.Name)

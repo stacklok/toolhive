@@ -8,9 +8,9 @@ metadata:
 spec:
   type: tokenExchange
   tokenExchange:
-    token_url: https://oauth.example.com/token
-    client_id: my-client
-    client_secret_ref:
+    tokenUrl: https://oauth.example.com/token
+    clientId: my-client
+    clientSecretRef:
       name: oauth-secret
       key: client-secret
     audience: my-audience

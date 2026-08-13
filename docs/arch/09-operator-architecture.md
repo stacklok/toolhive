@@ -102,7 +102,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 | **MCPServerEntry** | Zero-infrastructure declaration of a remote MCP endpoint |
 | **MCPGroup** | Logical grouping of workloads (status tracking only) |
 | **MCPToolConfig** | Tool filtering and renaming configuration |
-| **MCPExternalAuthConfig** | Token exchange / header injection configuration |
+| **MCPExternalAuthConfig** | Reusable, consumer-specific external authentication configuration |
 | **MCPOIDCConfig** | Shared OIDC provider settings referenced by workload CRDs |
 | **MCPTelemetryConfig** | Shared OpenTelemetry/Prometheus settings referenced by workload CRDs |
 | **MCPWebhookConfig** | Validating/mutating webhook middleware definitions referenced by MCPServer |
@@ -172,7 +172,7 @@ MCPServer resources support various transport types (stdio, SSE, streamable-http
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
 - `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings
-- `externalAuthConfigRef` — references an MCPExternalAuthConfig for outgoing auth (token exchange, AWS STS, bearer token injection, etc.)
+- `externalAuthConfigRef` — references an MCPExternalAuthConfig for outgoing auth. MCPServer supports `tokenExchange`, `unauthenticated`, and `obo`; `embeddedAuthServer` remains supported on this field for backward compatibility.
 - `authServerRef` — references an MCPExternalAuthConfig of type `embeddedAuthServer` for incoming auth (the embedded OAuth 2.0/OIDC authorization server that authenticates MCP clients). This is the preferred path for configuring the embedded auth server, keeping incoming auth separate from `externalAuthConfigRef` which handles outgoing auth.
 
 **Backward compatibility**: Existing configurations using `externalAuthConfigRef` with `type: embeddedAuthServer` continue to work. The `authServerRef` field is optional and additive.
@@ -218,17 +218,25 @@ MCPToolConfig allows you to filter which tools are exposed by an MCP server and 
 
 ### MCPExternalAuthConfig
 
-Manages external authentication configurations that can be shared across multiple MCPServer resources.
+Manages reusable external authentication configurations. Each consumer supports
+a defined subset of auth types; incompatible references are reported with an
+`UnsupportedAuthType` condition rather than ignored.
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+MCPExternalAuthConfig allows you to define reusable authentication configurations referenced by MCPServer, MCPRemoteProxy, VirtualMCPServer, and MCPServerEntry resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+
+VirtualMCPServer handles backend-local conversion failures in a fail-closed,
+degraded mode: it records a condition for the failed strategy, carries a
+deterministic exclusion list into dynamic discovery, and continues serving
+only peers whose authentication was resolved successfully. An invalid explicit
+default never becomes an implicit unauthenticated fallback.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
-- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
+- `externalAuthConfigRef` — for outgoing auth. The supported type subset depends on whether the consumer is MCPServer, MCPRemoteProxy, VirtualMCPServer, or MCPServerEntry.
 - `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
 
-**Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
+**Referenced by MCPServer, MCPRemoteProxy, VirtualMCPServer, and MCPServerEntry** using `externalAuthConfigRef`. MCPServer and MCPRemoteProxy may also use `authServerRef` for `embeddedAuthServer`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
@@ -314,7 +322,7 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server to proxy
 - `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience`, `scopes`, and `resourceUrl`)
-- `externalAuthConfigRef` - Outgoing auth for remote service authentication (token exchange, AWS STS, bearer token injection)
+- `externalAuthConfigRef` - Outgoing auth for remote service authentication (`tokenExchange`, `bearerToken`, `unauthenticated`, `embeddedAuthServer`, `awsSts`, or `obo`)
 - `authServerRef` - Incoming auth via the embedded OAuth 2.0/OIDC authorization server (references an MCPExternalAuthConfig of type `embeddedAuthServer`)
 - `authzConfig` - Authorization policies
 - `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
@@ -350,10 +358,10 @@ Declares a remote MCP endpoint as a zero-infrastructure catalog entry. Unlike MC
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server (required)
 - `groupRef` - MCPGroup membership for discovery by VirtualMCPServer
-- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `externalAuthConfigRef` - Outgoing auth for vMCP connections (`tokenExchange`, `headerInjection`, `unauthenticated`, `awsSts`, `upstreamInject`, `obo`, or `xaa`)
 - `caBundleRef` - Reference to a ConfigMap containing CA certificate data for TLS verification
 
-The MCPServerEntry controller is validation-only: it validates that referenced resources (groupRef, externalAuthConfigRef, caBundleRef ConfigMap) exist and updates status conditions accordingly. It never probes the remote URL or creates infrastructure.
+The MCPServerEntry controller is validation-only: it validates that referenced resources (groupRef, externalAuthConfigRef, caBundleRef ConfigMap) exist, verifies that the referenced external-auth type is supported, and updates status conditions accordingly. It never probes the remote URL or creates infrastructure.
 
 MCPServerEntry backends are discovered by vMCP in both static mode (listed at startup) and dynamic mode (watched by the BackendReconciler). In dynamic mode, ConfigMap changes trigger re-reconciliation of affected MCPServerEntry backends via a field-indexed watch on `spec.caBundleRef.configMapRef.name`.
 

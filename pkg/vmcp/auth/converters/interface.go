@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sync"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -176,6 +178,29 @@ func DiscoverAndResolveAuth(
 
 	if err := k8sClient.Get(ctx, key, externalAuth); err != nil {
 		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigRef.Name, err)
+	}
+
+	// The runtime discovery path must honor the controller's validation result.
+	// A supported converter type does not make a resource usable when its Valid
+	// condition is explicitly False (for example, enterprise-only configuration
+	// in an upstream build).
+	if validCondition := meta.FindStatusCondition(
+		externalAuth.Status.Conditions,
+		mcpv1beta1.ConditionTypeValid,
+	); validCondition != nil && validCondition.Status == metav1.ConditionFalse {
+		return nil, fmt.Errorf(
+			"MCPExternalAuthConfig %s is invalid (%s): %s",
+			externalAuthConfigRef.Name,
+			validCondition.Reason,
+			validCondition.Message,
+		)
+	}
+
+	// Validate the fetched object locally as a defense-in-depth backstop for
+	// resources created before admission rules existed or before their
+	// controller has published a status condition.
+	if err := externalAuth.Validate(); err != nil {
+		return nil, fmt.Errorf("MCPExternalAuthConfig %s failed validation: %w", externalAuthConfigRef.Name, err)
 	}
 
 	// Get the converter registry

@@ -25,6 +25,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -60,6 +61,10 @@ type BackendWatcher struct {
 
 	// registry is the DynamicRegistry to update when backends change
 	registry vmcp.DynamicRegistry
+
+	// authConfig carries resolved per-backend overrides into the watch path so
+	// reconciles preserve the same auth precedence as initial discovery.
+	authConfig *vmcpconfig.OutgoingAuthConfig
 
 	// mu protects the started field for thread-safe access
 	mu sync.Mutex
@@ -101,6 +106,29 @@ func NewBackendWatcher(
 	namespace string,
 	groupRef string,
 	registry vmcp.DynamicRegistry,
+) (*BackendWatcher, error) {
+	return newBackendWatcher(cfg, namespace, groupRef, registry, nil)
+}
+
+// NewBackendWatcherWithAuthConfig creates a BackendWatcher that applies the
+// resolved vMCP outgoing-auth configuration during watch-driven backend
+// conversion. This keeps watch updates consistent with initial discovery.
+func NewBackendWatcherWithAuthConfig(
+	cfg *rest.Config,
+	namespace string,
+	groupRef string,
+	registry vmcp.DynamicRegistry,
+	authConfig *vmcpconfig.OutgoingAuthConfig,
+) (*BackendWatcher, error) {
+	return newBackendWatcher(cfg, namespace, groupRef, registry, authConfig)
+}
+
+func newBackendWatcher(
+	cfg *rest.Config,
+	namespace string,
+	groupRef string,
+	registry vmcp.DynamicRegistry,
+	authConfig *vmcpconfig.OutgoingAuthConfig,
 ) (*BackendWatcher, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("rest config cannot be nil")
@@ -155,6 +183,7 @@ func NewBackendWatcher(
 		namespace:   namespace,
 		groupRef:    groupRef,
 		registry:    registry,
+		authConfig:  authConfig,
 		started:     false,
 	}, nil
 }
@@ -288,18 +317,21 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 func (w *BackendWatcher) addBackendWatchController(ctx context.Context) error {
 	// Create K8s discoverer for backend conversion
 	// This reuses the existing workloads package conversion logic
-	discoverer := workloads.NewK8SDiscovererWithClient(
+	discoverer := workloads.NewK8SDiscovererWithClientAndAuthConfig(
 		w.ctrlManager.GetClient(),
 		w.namespace,
+		w.authConfig,
 	)
 
 	// Create backend reconciler with references to namespace, groupRef, and registry
 	reconciler := &BackendReconciler{
-		Client:     w.ctrlManager.GetClient(),
-		Namespace:  w.namespace,
-		GroupRef:   w.groupRef,
-		Registry:   w.registry,
-		Discoverer: discoverer,
+		Client:           w.ctrlManager.GetClient(),
+		Namespace:        w.namespace,
+		GroupRef:         w.groupRef,
+		Registry:         w.registry,
+		Discoverer:       discoverer,
+		AuthConfig:       w.authConfig,
+		ExcludedBackends: outgoingAuthExclusionSet(w.authConfig),
 	}
 
 	// Register field indexes required by the reconciler's watch handlers.
@@ -316,4 +348,21 @@ func (w *BackendWatcher) addBackendWatchController(ctx context.Context) error {
 
 	slog.Info("backend watch controller registered successfully")
 	return nil
+}
+
+// outgoingAuthExclusionSet copies the operator-emitted deny list into the
+// watcher reconciler. A nil or legacy auth configuration produces a nil set,
+// preserving the behavior that predates runtime backend exclusions.
+func outgoingAuthExclusionSet(authConfig *vmcpconfig.OutgoingAuthConfig) map[string]struct{} {
+	if authConfig == nil || len(authConfig.ExcludedBackends) == 0 {
+		return nil
+	}
+
+	excluded := make(map[string]struct{}, len(authConfig.ExcludedBackends))
+	for _, backendName := range authConfig.ExcludedBackends {
+		if backendName != "" {
+			excluded[backendName] = struct{}{}
+		}
+	}
+	return excluded
 }

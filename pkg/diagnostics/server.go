@@ -21,6 +21,13 @@
 // Note that /health deliberately stays on the application listener. Kubernetes
 // liveness and readiness probes target the application port, and the proxy
 // health response carries no sensitive fields.
+//
+// Anything registered on this listener is served WITHOUT authentication,
+// authorization, rate limiting, or audit — that is the whole point of moving it
+// off the application listener, and it is why the listener must not be routed
+// publicly. Only add read-only, non-sensitive endpoints here. In particular, do
+// not register pprof or any other debug handler that exposes process memory,
+// goroutine state, or configuration.
 package diagnostics
 
 import (
@@ -51,11 +58,23 @@ const MetricsPath = "/metrics"
 // port and logs the resolved address.
 const DefaultPort = 9464
 
+// Timeouts mirror the proxy and vMCP listeners. They matter more here, not less:
+// this listener carries no middleware, so nothing else bounds a slow or
+// abandoned client.
 const (
 	// readHeaderTimeout bounds header reads to prevent Slowloris attacks.
 	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds reading the entire request, including a body that a
+	// client trickles in. The metrics handler ignores request bodies, so without
+	// this a connection could be held open indefinitely past the header phase.
+	readTimeout = 30 * time.Second
+	// writeTimeout bounds writing the response. There are no long-lived streams
+	// on this listener, so it applies unconditionally.
+	writeTimeout = 30 * time.Second
 	// idleTimeout stops idle keep-alive connections from blocking shutdown.
 	idleTimeout = 60 * time.Second
+	// maxHeaderBytes caps request header size.
+	maxHeaderBytes = 1 << 20 // 1 MiB
 )
 
 // Server serves diagnostics endpoints on a dedicated listener.
@@ -137,7 +156,10 @@ func (s *Server) Start() error {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	// Capture the server locally so the goroutine does not race with Stop

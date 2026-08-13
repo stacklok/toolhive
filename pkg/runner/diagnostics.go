@@ -6,11 +6,16 @@ package runner
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 )
+
+// diagnosticsStopTimeout bounds the graceful shutdown of the diagnostics
+// listener on Run's error path, where no caller-supplied context is available.
+const diagnosticsStopTimeout = 10 * time.Second
 
 // startDiagnosticsServer starts the diagnostics listener when the telemetry
 // middleware enabled the Prometheus metrics path, and is a no-op otherwise.

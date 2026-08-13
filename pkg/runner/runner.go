@@ -382,6 +382,24 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Release the listener on every exit from Run, not just the happy path.
+	// Cleanup runs only via stopMCPServer, which several paths skip: the early
+	// error returns below, and the graceful container-exit branch that returns
+	// nil after the transport already stopped. Leaking here would strand a
+	// goroutine and a bound port, and under workloads.Manager's restart loop each
+	// attempt would strand another and push the next onto a different port —
+	// silently breaking the scrape target this change exists to stabilise.
+	//
+	// A duplicate stop is harmless: stopDiagnosticsServer is nil-safe and
+	// idempotent, so the paths that do reach Cleanup are unaffected.
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), diagnosticsStopTimeout)
+		defer cancel()
+		if err := r.stopDiagnosticsServer(stopCtx); err != nil {
+			slog.Warn("failed to stop diagnostics server", "error", err)
+		}
+	}()
+
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)
 

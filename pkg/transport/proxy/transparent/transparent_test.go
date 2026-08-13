@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1646,6 +1647,52 @@ func TestPrefixHandlers_MountingAndRouting(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMetricsNotServedWithoutHandler is the reachability half of the diagnostics
+// split: with no Prometheus handler supplied — which is what the runner now does,
+// serving metrics on a separate listener instead — /metrics must not be reachable
+// on the application listener, and must not fall through to the backend either.
+func TestMetricsNotServedWithoutHandler(t *testing.T) {
+	t.Parallel()
+
+	var backendHit atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		backend.URL,
+		nil, // no prometheusHandler: metrics live on the diagnostics listener
+		nil, // authInfoHandler
+		nil, // prefixHandlers
+		true,
+		false,
+		"streamable-http",
+		nil,
+		nil,
+		"",
+		false,
+	)
+
+	ctx := context.Background()
+	require.NoError(t, proxy.Start(ctx))
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	resp, err := http.Get(fmt.Sprintf("http://%s:%d/metrics", proxy.host, actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"/metrics must not be served on the application listener")
+	assert.False(t, backendHit.Load(),
+		"/metrics must not be proxied to the backend")
 }
 
 // TestPrefixHandlers_NilMapDoesNotPanic tests that a nil PrefixHandlers map doesn't cause panic

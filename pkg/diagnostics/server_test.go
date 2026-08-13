@@ -179,7 +179,7 @@ func TestStopIsIdempotentAndClosesListener(t *testing.T) {
 	// The listener is closed, so the endpoint is no longer reachable.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+MetricsPath, nil)
 	require.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // err is non-nil, there is no body to close
+	resp, err := http.DefaultClient.Do(req)
 	if err == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()

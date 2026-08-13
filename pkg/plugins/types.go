@@ -95,6 +95,11 @@ type InstalledPlugin struct {
 	Signature string `json:"signature,omitempty"`
 	// Dependencies is the list of external plugin dependencies.
 	Dependencies []Dependency `json:"dependencies,omitempty"`
+	// Managed indicates this install is tracked in the project's
+	// toolhive.lock.yaml plugins: key. Only ever true for project-scoped
+	// installs. No omitempty: false is an observable state (unmanaged),
+	// not an absence.
+	Managed bool `json:"managed"`
 }
 
 // ComponentInventory summarizes the component types declared by a plugin

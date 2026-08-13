@@ -1174,6 +1174,13 @@ components:
         installed_at:
           description: InstalledAt is the timestamp when the plugin was installed.
           type: string
+        managed:
+          description: |-
+            Managed indicates this install is tracked in the project's
+            toolhive.lock.yaml plugins: key. Only ever true for project-scoped
+            installs. No omitempty: false is an observable state (unmanaged),
+            not an absence.
+          type: boolean
         metadata:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata'
         project_root:

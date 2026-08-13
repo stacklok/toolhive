@@ -191,6 +191,12 @@ func Setup(
 // configured tools. An error is returned when targetTool is non-empty but not
 // found in the configured tool list.
 //
+// Reverting the last configured tool also resets the persisted LLM config to its
+// zero value, so settings that are deliberately sticky across "thv llm setup"
+// re-runs (e.g. Bedrock compat) are not silently re-applied by a later setup.
+// A targeted teardown that leaves other tools configured keeps the config, which
+// those tools still need to reach the gateway.
+//
 // If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
 // are deleted after the config update succeeds.
 func Teardown(
@@ -239,15 +245,17 @@ func Teardown(
 	// Persist the updated tool list (and clear token metadata if purging) in a
 	// single write before mutating any tool config files. If this fails,
 	// nothing on disk has changed and the caller can retry.
+	lastTool := len(remaining) == 0
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
-		c.ConfiguredTools = remaining
-		if purgeTokens {
-			c.OIDC.CachedRefreshTokenRef = ""
-			c.OIDC.CachedTokenExpiry = time.Time{}
-		}
+		applyTeardownToConfig(c, remaining, purgeTokens)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persisting tool configuration: %w", err)
+	}
+
+	if lastTool {
+		_, _ = fmt.Fprintln(out,
+			"Cleared the LLM gateway configuration: no tools are configured anymore.")
 	}
 
 	// Revert tool config files best-effort; warn on failure but do not undo
@@ -263,6 +271,40 @@ func Teardown(
 	}
 
 	return nil
+}
+
+// applyTeardownToConfig updates the persisted LLM config for a teardown that
+// leaves remaining configured. purgeTokens reports whether the caller also asked
+// to drop cached OIDC token state.
+//
+// When no tool remains, the config is reset wholesale rather than pruned field by
+// field. Settings such as Bedrock compat are deliberately sticky across "thv llm
+// setup" re-runs, so keeping them past the last teardown would let the next setup
+// silently re-apply settings the user just removed — possibly against a gateway
+// they have since repointed elsewhere. While any tool remains the config is left
+// intact, since those tools still need it to reach the gateway.
+//
+// Cached token state survives a reset unless purgeTokens is set: the secret lives
+// in the keyring, and dropping the only reference to it without deleting it would
+// strand it there once the user points at a different gateway (the fallback key is
+// derived from the gateway URL and issuer). Token lifetime stays the exclusive
+// business of --purge-tokens.
+func applyTeardownToConfig(c *Config, remaining []ToolConfig, purgeTokens bool) {
+	if len(remaining) > 0 {
+		c.ConfiguredTools = remaining
+		if purgeTokens {
+			c.OIDC.CachedRefreshTokenRef = ""
+			c.OIDC.CachedTokenExpiry = time.Time{}
+		}
+		return
+	}
+
+	tokenState := c.OIDC
+	*c = Config{}
+	if !purgeTokens {
+		c.OIDC.CachedRefreshTokenRef = tokenState.CachedRefreshTokenRef
+		c.OIDC.CachedTokenExpiry = tokenState.CachedTokenExpiry
+	}
 }
 
 // PurgeTokens deletes all cached OIDC tokens from the provided secrets

@@ -190,18 +190,18 @@ func TestSPIFFEStorageDecorator_DelegatesCIMDAndUnknownSPIFFEIDs(t *testing.T) {
 	t.Cleanup(func() { _ = base.Close() })
 	cimd, err := storage.NewCIMDStorageDecorator(base, storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1})
 	require.NoError(t, err)
-	registry, _ := testSPIFFEAssociationRegistry(t, "https://static.example/client")
+	registry, _ := testSPIFFEAssociationRegistry(t, "spiffe-client")
 
 	decorated, err := NewSPIFFEStorageDecorator(context.Background(), cimd, registry)
 	require.NoError(t, err)
 	assert.Same(t, base, storage.Unwrap(decorated))
 
-	// A configured HTTPS ID wins over CIMD, while an unknown spiffe:// ID is
-	// delegated. CIMD recognizes HTTPS IDs only, so no SPIFFE value is resolved
-	// over the network.
-	client, err := decorated.GetClient(context.Background(), "https://static.example/client")
+	// A configured static client ID wins over CIMD, while an unknown spiffe://
+	// ID is delegated. CIMD recognizes HTTPS IDs only, so no SPIFFE value is
+	// resolved over the network.
+	client, err := decorated.GetClient(context.Background(), "spiffe-client")
 	require.NoError(t, err)
-	assert.Equal(t, "https://static.example/client", client.GetID())
+	assert.Equal(t, "spiffe-client", client.GetID())
 
 	_, err = decorated.GetClient(context.Background(), "spiffe://example.org/ns/default/unknown")
 	require.ErrorIs(t, err, storage.ErrNotFound)

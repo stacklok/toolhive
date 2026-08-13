@@ -562,6 +562,12 @@ func validateSPIFFEClientAssociation(
 	if entry.ClientID == "" {
 		return "", fmt.Errorf("inbound_grants.spiffe_client_auth[%d]: client_id is required", index)
 	}
+	if u, err := url.ParseRequestURI(entry.ClientID); err == nil && u.Scheme != "" && u.Host != "" {
+		return "", fmt.Errorf(
+			"inbound_grants.spiffe_client_auth[%d]: client_id must not be an absolute URL (reserved for CIMD-resolved clients): %q",
+			index, entry.ClientID,
+		)
+	}
 	fieldPrefix := fmt.Sprintf("inbound_grants.spiffe_client_auth[%d]", index)
 	methods, err := validateMethods(entry.Methods, fieldPrefix+".methods")
 	if err != nil {
@@ -582,6 +588,11 @@ func validateSPIFFEClientAssociation(
 	}
 	if err := validateDistinctNonEmpty(entry.Audiences, fieldPrefix+".audiences"); err != nil {
 		return "", err
+	}
+	for _, audience := range entry.Audiences {
+		if !slices.Contains(allowedAudiences, audience) {
+			return "", fmt.Errorf("%s.audiences: audience %q is not allowed by allowed_audiences", fieldPrefix, audience)
+		}
 	}
 	if err := validateDistinctNonEmpty(entry.Scopes, fieldPrefix+".scopes"); err != nil {
 		return "", err
@@ -716,49 +727,3 @@ func spiffePatternsOverlap(first, second string) bool {
 	return MatchSPIFFEPrincipalPattern(second, first)
 }
 
-// CloneSPIFFETrustDomains returns a deep copy. SPIFFE trust-domain declarations
-// currently contain only scalar strings, so each explicitly copied value has no
-// mutable backing storage. Add a deep copy here when a reference field is added.
-func CloneSPIFFETrustDomains(domains []SPIFFETrustDomainRunConfig) []SPIFFETrustDomainRunConfig {
-	clone := make([]SPIFFETrustDomainRunConfig, len(domains))
-	for i, domain := range domains {
-		clone[i] = SPIFFETrustDomainRunConfig{
-			Name:        domain.Name,
-			TrustDomain: domain.TrustDomain,
-			Methods:     slices.Clone(domain.Methods),
-			BundleSource: SPIFFEBundleSourceRunConfig{
-				Type: domain.BundleSource.Type,
-			},
-		}
-		if domain.BundleSource.Endpoint != nil {
-			clone[i].BundleSource.Endpoint = &SPIFFEBundleEndpointSourceRunConfig{URL: domain.BundleSource.Endpoint.URL}
-		}
-		if domain.BundleSource.WorkloadAPI != nil {
-			clone[i].BundleSource.WorkloadAPI = &SPIFFEWorkloadAPIBundleSourceRunConfig{}
-		}
-	}
-	return clone
-}
-
-// CloneInboundGrants returns a deep copy that does not share mutable fields
-// with the caller.
-func CloneInboundGrants(grants *InboundGrantsRunConfig) *InboundGrantsConfig {
-	if grants == nil {
-		return nil
-	}
-	clone := *grants
-	clone.SPIFFEClientAuth = make([]SPIFFEClientAuthRunConfig, len(grants.SPIFFEClientAuth))
-	for i, entry := range grants.SPIFFEClientAuth {
-		clone.SPIFFEClientAuth[i] = entry
-		clone.SPIFFEClientAuth[i].Methods = append([]SPIFFEAuthenticationMethod(nil), entry.Methods...)
-		clone.SPIFFEClientAuth[i].Resources = append([]string(nil), entry.Resources...)
-		clone.SPIFFEClientAuth[i].Audiences = append([]string(nil), entry.Audiences...)
-		clone.SPIFFEClientAuth[i].Scopes = append([]string(nil), entry.Scopes...)
-		clone.SPIFFEClientAuth[i].GrantTypes = append([]string(nil), entry.GrantTypes...)
-		if entry.TokenExchange != nil {
-			tokenExchange := *entry.TokenExchange
-			clone.SPIFFEClientAuth[i].TokenExchange = &tokenExchange
-		}
-	}
-	return &clone
-}

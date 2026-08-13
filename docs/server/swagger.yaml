@@ -407,6 +407,43 @@ components:
             server trusts.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig:
+      properties:
+        audiences:
+          description: |-
+            Audiences are the RFC 8707 resource values this client may request a
+            token for. Required, and must be a subset of RunConfig.AllowedAudiences:
+            a declared client must not receive every allowed audience just because
+            this was left empty.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        client_id:
+          description: ClientID is the OAuth client_id this client presents at the
+            token endpoint.
+          type: string
+        client_secret_env_var:
+          description: |-
+            ClientSecretEnvVar is the name of an environment variable containing
+            the client secret. One of ClientSecretFile or ClientSecretEnvVar is
+            required.
+          type: string
+        client_secret_file:
+          description: |-
+            ClientSecretFile is the path to a file containing the client secret.
+            If both this and ClientSecretEnvVar are set, the file takes precedence.
+          type: string
+        scopes:
+          description: |-
+            Scopes are the OAuth scopes this client may request. Required, and
+            must be a subset of RunConfig.ScopesSupported: a declared client must
+            not receive every supported scope just because this was left empty.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig:
       description: |-
         IdentityFromToken extracts user identity (subject, name, email) directly from the
@@ -629,6 +666,24 @@ components:
           uniqueItems: false
         cimd:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig'
+        delegate_clients:
+          description: |-
+            DelegateClients declares confidential OAuth clients to register at
+            authorization-server startup, including clients intended for RFC 8693
+            token exchange.
+
+            Independent of AllowConfidentialClientRegistration: declaring a client
+            here does not require or enable self-service confidential DCR, and
+            setting that flag does not declare or enable any client here. They
+            govern different endpoints — this field is static configuration the
+            operator controls directly, while the flag is admission policy for the
+            unauthenticated /oauth/register endpoint.
+
+            See DelegateClientRunConfig for the per-client field reference.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig'
+          type: array
+          uniqueItems: false
         delegation_token_lifespan:
           description: |-
             DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
@@ -690,14 +745,17 @@ components:
           uniqueItems: false
         insecure_allow_confidential_over_loopback_http:
           description: |-
-            InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client
-            DCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP
-            loopback URL. Without this flag, that combination is rejected: a
-            loopback http:// issuer is normally fine for local development (the
-            traffic never leaves the machine), but combined with confidential
-            registration it means /oauth/register — which is unauthenticated —
-            mints client secrets over cleartext. Defaults to false. Has no effect
-            when AllowConfidentialClientRegistration is false or Issuer is https.
+            InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients
+            when Issuer is a plain-HTTP loopback URL. Without this flag, that
+            combination is rejected: a loopback http:// issuer is normally fine for
+            local development (the traffic never leaves the machine), but client
+            secrets would otherwise travel over cleartext. Defaults to false. Has no
+            effect when there are no confidential clients or Issuer is https.
+
+            Applies identically to delegate clients and DCR-registered clients; the
+            Kubernetes CRD blocks this combination unconditionally only because CEL
+            cannot express the loopback exception, not because delegate clients need
+            a stricter policy — see EmbeddedAuthServerConfig's doc comment.
           type: boolean
         insecure_allow_http:
           description: |-
@@ -733,13 +791,6 @@ components:
             TrustedIssuers lists external OIDC issuers whose tokens are accepted as
             subject tokens during RFC 8693 token exchange. Empty (the default) means
             only self-issued subject tokens are accepted.
-
-            Prerequisite: the token-exchange grant requires a confidential client,
-            and no supported deployment path provisions one today (DCR and CIMD
-            clients are both public-only, and there is no client-seeding field on
-            this RunConfig), so this grant is not yet usable end to end for
-            self-issued or external subject tokens alike. Tracked in
-            https://github.com/stacklok/toolhive/issues/6082.
 
             See tokenexchange.TrustedIssuer for the per-issuer field reference, and
             docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -1145,6 +1196,9 @@ components:
       - installed
       - pending
       - failed
+      - installed
+      - pending
+      - failed
       type: string
       x-enum-varnames:
       - InstallStatusInstalled
@@ -1316,6 +1370,8 @@ components:
     github_com_stacklok_toolhive_pkg_plugins.Scope:
       description: Scope for the installation
       enum:
+      - user
+      - project
       - user
       - project
       type: string
@@ -1798,6 +1854,9 @@ components:
       - installed
       - pending
       - failed
+      - installed
+      - pending
+      - failed
       type: string
       x-enum-varnames:
       - InstallStatusInstalled
@@ -1912,6 +1971,8 @@ components:
     github_com_stacklok_toolhive_pkg_skills.Scope:
       description: Scope for the installation
       enum:
+      - user
+      - project
       - user
       - project
       type: string
@@ -2350,9 +2411,13 @@ components:
       enum:
       - positional
       - named
+      - positional
+      - named
       example: positional
       type: string
       x-enum-varnames:
+      - ArgumentTypePositional
+      - ArgumentTypeNamed
       - ArgumentTypePositional
       - ArgumentTypeNamed
     model.Format:
@@ -2361,8 +2426,16 @@ components:
       - number
       - boolean
       - filepath
+      - string
+      - number
+      - boolean
+      - filepath
       type: string
       x-enum-varnames:
+      - FormatString
+      - FormatNumber
+      - FormatBoolean
+      - FormatFilePath
       - FormatString
       - FormatNumber
       - FormatBoolean

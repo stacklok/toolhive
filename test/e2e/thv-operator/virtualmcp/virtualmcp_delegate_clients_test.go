@@ -239,15 +239,6 @@ func exchangeDelegateToken(endpoint, subjectToken, audience, secret string) stri
 	return token.AccessToken
 }
 
-func unverifiedJWTClaims(token string) map[string]any {
-	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	claims := map[string]any{}
-	gomega.Expect(parsed.UnsafeClaimsWithoutVerification(&claims)).To(gomega.Succeed())
-	return claims
-}
-
 func verifiedJWTClaims(token string, signingKey *rsa.PublicKey) map[string]any {
 	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())

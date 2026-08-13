@@ -356,6 +356,39 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig": {
+                "properties": {
+                    "audiences": {
+                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth client_id this client presents at the token endpoint.",
+                        "type": "string"
+                    },
+                    "client_secret_env_var": {
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig": {
                 "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
                 "properties": {
@@ -525,6 +558,14 @@ const docTemplate = `{
                     "cimd": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
                     },
+                    "delegate_clients": {
+                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "delegation_token_lifespan": {
                         "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
                         "type": "string"
@@ -550,7 +591,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "insecure_allow_confidential_over_loopback_http": {
-                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential-client\nDCR (AllowConfidentialClientRegistration) when Issuer is a plain-HTTP\nloopback URL. Without this flag, that combination is rejected: a\nloopback http:// issuer is normally fine for local development (the\ntraffic never leaves the machine), but combined with confidential\nregistration it means /oauth/register — which is unauthenticated —\nmints client secrets over cleartext. Defaults to false. Has no effect\nwhen AllowConfidentialClientRegistration is false or Issuer is https.",
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients; the\nKubernetes CRD blocks this combination unconditionally only because CEL\ncannot express the loopback exception, not because delegate clients need\na stricter policy — see EmbeddedAuthServerConfig's doc comment.",
                         "type": "boolean"
                     },
                     "insecure_allow_http": {
@@ -583,7 +624,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "trusted_issuers": {
-                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nPrerequisite: the token-exchange grant requires a confidential client,\nand no supported deployment path provisions one today (DCR and CIMD\nclients are both public-only, and there is no client-seeding field on\nthis RunConfig), so this grant is not yet usable end to end for\nself-issued or external subject tokens alike. Tracked in\nhttps://github.com/stacklok/toolhive/issues/6082.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
                         },
@@ -987,6 +1028,9 @@ const docTemplate = `{
                 "enum": [
                     "installed",
                     "pending",
+                    "failed",
+                    "installed",
+                    "pending",
                     "failed"
                 ],
                 "type": "string",
@@ -1195,6 +1239,8 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_plugins.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
+                    "user",
+                    "project",
                     "user",
                     "project"
                 ],
@@ -1689,6 +1735,9 @@ const docTemplate = `{
                 "enum": [
                     "installed",
                     "pending",
+                    "failed",
+                    "installed",
+                    "pending",
                     "failed"
                 ],
                 "type": "string",
@@ -1815,6 +1864,8 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
+                    "user",
+                    "project",
                     "user",
                     "project"
                 ],
@@ -2351,11 +2402,15 @@ const docTemplate = `{
             "model.ArgumentType": {
                 "enum": [
                     "positional",
+                    "named",
+                    "positional",
                     "named"
                 ],
                 "example": "positional",
                 "type": "string",
                 "x-enum-varnames": [
+                    "ArgumentTypePositional",
+                    "ArgumentTypeNamed",
                     "ArgumentTypePositional",
                     "ArgumentTypeNamed"
                 ]
@@ -2365,10 +2420,18 @@ const docTemplate = `{
                     "string",
                     "number",
                     "boolean",
+                    "filepath",
+                    "string",
+                    "number",
+                    "boolean",
                     "filepath"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
+                    "FormatString",
+                    "FormatNumber",
+                    "FormatBoolean",
+                    "FormatFilePath",
                     "FormatString",
                     "FormatNumber",
                     "FormatBoolean",

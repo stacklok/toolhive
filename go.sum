@@ -994,8 +994,8 @@ golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f h1:W3F4c+6OLc6H2lb//N1q4WpJk
 golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f/go.mod h1:J1xhfL/vlindoeF/aINzNzt2Bket5bjo9sdOYzOsU80=
 golang.org/x/exp/event v0.0.0-20260611194520-c48552f49976 h1:aMc3mP8qjwSEdljznT5CYeyvpoFP7e3VCNqZZwUf3F0=
 golang.org/x/exp/event v0.0.0-20260611194520-c48552f49976/go.mod h1:cV3mj8TmLcC/Zki//yCMYw/nSC1BpHamZNkMSU7lgPw=
-golang.org/x/exp/jsonrpc2 v0.0.0-20260709172345-9ea1abe57597 h1:V+5CIAxiRMu5nXZ2eLlo3mQXPm4zrvbZI6ddjylxYLs=
-golang.org/x/exp/jsonrpc2 v0.0.0-20260709172345-9ea1abe57597/go.mod h1:it3Sp7J2OmdyHxl5q3GMU4d2QZsFQGglbij9kqQVVaI=
+golang.org/x/exp/jsonrpc2 v0.0.0-20260727155853-b88d891fe743 h1:tNPMqv5qH95/OCIcUEpEhBkyhhE86seFwx9GUsnrb7Q=
+golang.org/x/exp/jsonrpc2 v0.0.0-20260727155853-b88d891fe743/go.mod h1:it3Sp7J2OmdyHxl5q3GMU4d2QZsFQGglbij9kqQVVaI=
 golang.org/x/lint v0.0.0-20190930215403-16217165b5de/go.mod h1:6SW0HCj/g11FgYtHlgUYUwCkIfeOF89ocIRzGO/8vkc=
 golang.org/x/mod v0.0.0-20190513183733-4bf6d317e70e/go.mod h1:mXi4GBBbnImb6dmsKGUJ2LatrhH/nqhxcFungHvyanc=
 golang.org/x/mod v0.1.1-0.20191105210325-c90efee705ee/go.mod h1:QqPTAvyqsEbceGzBzNggFXnrqF1CaUcvgkdR5Ot7KZg=

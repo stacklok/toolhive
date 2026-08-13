@@ -105,6 +105,23 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, delegateClients)
 }
 
+func buildSPIFFETrust(
+	ctx context.Context,
+	cfg *authserver.RunConfig,
+	stor storage.Storage,
+) (*authserver.SPIFFETrustConfig, error) {
+	trust, err := authserver.NewSPIFFETrustConfig(
+		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+	}
+	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, trust); err != nil {
+		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
+	}
+	return trust, nil
+}
+
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
 // builds an EmbeddedAuthServer around a caller-supplied storage backend. It
 // lets external composition (e.g. an enterprise build) inject a decorated
@@ -189,15 +206,9 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	trust, err := authserver.NewSPIFFETrustConfig(
-		cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
-	)
+	trust, err := buildSPIFFETrust(ctx, cfg, stor)
 	if err != nil {
-		return nil, fmt.Errorf("build SPIFFE trust config: %w", err)
-	}
-
-	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, trust); err != nil {
-		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
+		return nil, err
 	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
@@ -257,6 +268,10 @@ func newEmbeddedAuthServerWithStorage(
 	// safely. Cost is negligible — each slice is bounded by validation (≤10
 	// for BaselineClientScopes, low cardinality in practice for the others).
 	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
+	bundleRegistry, err := authserver.NewSPIFFEBundleRegistry(trust)
+	if err != nil {
+		return nil, fmt.Errorf("create SPIFFE bundle registry: %w", err)
+	}
 
 	trustedIssuers, err := tokenexchange.ResolveJWTBearerGrantPolicies(cfg.TrustedIssuers)
 	if err != nil {
@@ -287,9 +302,10 @@ func newEmbeddedAuthServerWithStorage(
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the
 		// authorization-critical data is protected without a deep copy here.
-		TrustedIssuers:  trustedIssuers,
-		DelegateClients: delegateClients,
-		SPIFFETrust:     trust,
+		TrustedIssuers:       trustedIssuers,
+		DelegateClients:      delegateClients,
+		SPIFFETrust:          trust,
+		SPIFFEBundleRegistry: bundleRegistry,
 	}
 
 	// 8. Create the auth server. authserver.New also asserts the DCR

@@ -48,6 +48,26 @@ func TestValidateSPIFFEConfig(t *testing.T) {
 			want: "bundleSource must select exactly its matching source",
 		},
 		{
+			name: "duplicate parsed trust domain is rejected despite distinct names",
+			cfg: func() *EmbeddedAuthServerConfig {
+				cfg := validSPIFFEEmbeddedAuthServerConfig()
+				duplicate := cfg.SPIFFETrustDomains[0]
+				duplicate.Name = "production-copy"
+				cfg.SPIFFETrustDomains = append(cfg.SPIFFETrustDomains, duplicate)
+				return cfg
+			}(),
+			want: "duplicate trust domain",
+		},
+		{
+			name: "loopback bundle endpoint is rejected",
+			cfg: func() *EmbeddedAuthServerConfig {
+				cfg := validSPIFFEEmbeddedAuthServerConfig()
+				cfg.SPIFFETrustDomains[0].BundleSource.Endpoint.URL = "https://localhost/bundle"
+				return cfg
+			}(),
+			want: "loopback host",
+		},
+		{
 			name: "disabled token exchange is rejected",
 			cfg: func() *EmbeddedAuthServerConfig {
 				cfg := validSPIFFEEmbeddedAuthServerConfig()

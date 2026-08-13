@@ -5,14 +5,19 @@ package v1beta1
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
+	"strings"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // External auth configuration types
@@ -597,9 +602,10 @@ const (
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 )
 
-// SPIFFETrustDomainConfig declares a SPIFFE trust domain for the embedded authorization server.
-// Configuration is not authentication: no live X.509-SVID or JWT-SVID validation exists yet, so
-// a declared trust domain does not by itself let any workload authenticate.
+// SPIFFETrustDomainConfig declares a SPIFFE trust domain and its bundle source
+// for the embedded authorization server.
+// The runtime bundle registry loads and rotates the declared source, but loaded trust material does not
+// by itself authenticate a workload: live X.509-SVID and JWT-SVID validation does not exist yet.
 type SPIFFETrustDomainConfig struct {
 	// Name uniquely identifies this declaration for spiffeClientAuth references.
 	// +kubebuilder:validation:MinLength=1
@@ -615,11 +621,13 @@ type SPIFFETrustDomainConfig struct {
 	// +listType=set
 	Methods []SPIFFEAuthenticationMethod `json:"methods"`
 
-	// BundleSource declares exactly one future trust-bundle source. It does not load a bundle.
+	// BundleSource selects exactly one trust-bundle source for the runtime registry.
+	// Loading trust material does not authenticate a workload.
 	BundleSource SPIFFEBundleSourceConfig `json:"bundleSource"`
 }
 
-// SPIFFEBundleSourceConfig is a discriminated SPIFFE trust-bundle source declaration.
+// SPIFFEBundleSourceConfig is a discriminated trust-bundle source configuration
+// for the runtime registry.
 // +kubebuilder:validation:XValidation:rule="self.type != 'bundle_endpoint' || (has(self.endpoint) && !has(self.workloadApi))",message="bundleSource type must select exactly its matching source"
 // +kubebuilder:validation:XValidation:rule="self.type != 'workload_api' || (has(self.workloadApi) && !has(self.endpoint))",message="bundleSource type must select exactly its matching source"
 // +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' || self.type == 'workload_api'",message="bundleSource type must select exactly its matching source"
@@ -629,22 +637,28 @@ type SPIFFEBundleSourceConfig struct {
 	// +kubebuilder:validation:Enum=bundle_endpoint;workload_api
 	Type SPIFFEBundleSourceType `json:"type"`
 
-	// Endpoint configures a HTTPS SPIFFE Bundle Endpoint.
+	// Endpoint configures the HTTPS SPIFFE Bundle Endpoint fetched by the
+	// runtime registry.
 	// +optional
 	Endpoint *SPIFFEBundleEndpointSourceConfig `json:"endpoint,omitempty"`
 
-	// WorkloadAPI selects the local SPIFFE Workload API.
+	// WorkloadAPI selects the local SPIFFE Workload API used by the runtime
+	// registry.
+	// It does not deploy SPIRE or mount a Workload API socket.
 	// +optional
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceConfig `json:"workloadApi,omitempty"`
 }
 
-// SPIFFEBundleEndpointSourceConfig configures a HTTPS SPIFFE Bundle Endpoint.
+// SPIFFEBundleEndpointSourceConfig configures the HTTPS SPIFFE Bundle Endpoint
+// fetched by the runtime registry.
 type SPIFFEBundleEndpointSourceConfig struct {
 	// +kubebuilder:validation:Pattern=`^https://[^\s?#@]+$`
 	URL string `json:"url"`
 }
 
-// SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API.
+// SPIFFEWorkloadAPIBundleSourceConfig selects the local SPIFFE Workload API
+// for the runtime registry.
+// Deploying SPIRE and mounting its socket are separate deployment responsibilities.
 type SPIFFEWorkloadAPIBundleSourceConfig struct{}
 
 // InboundGrantsConfig configures grants accepted by the embedded authorization server.
@@ -2183,16 +2197,51 @@ func validateSPIFFEConfigPresence(cfg *EmbeddedAuthServerConfig) error {
 }
 
 func validateSPIFFETrustDomains(trustDomains []SPIFFETrustDomainConfig) error {
+	seenTrustDomains := make(map[spiffeid.TrustDomain]struct{}, len(trustDomains))
 	for i, domain := range trustDomains {
 		if domain.Name == "" || domain.TrustDomain == "" {
 			return fmt.Errorf("spiffeTrustDomains[%d]: name and trustDomain are required", i)
 		}
+		trustDomain, err := spiffeid.TrustDomainFromString(domain.TrustDomain)
+		if err != nil {
+			return fmt.Errorf("spiffeTrustDomains[%d].trustDomain: %w", i, err)
+		}
+		if _, exists := seenTrustDomains[trustDomain]; exists {
+			return fmt.Errorf("spiffeTrustDomains[%d].trustDomain: duplicate trust domain %q", i, trustDomain)
+		}
+		seenTrustDomains[trustDomain] = struct{}{}
 		if err := validateSPIFFEMethods(domain.Methods, fmt.Sprintf("spiffeTrustDomains[%d].methods", i)); err != nil {
 			return err
 		}
 		if !validSPIFFEBundleSource(domain.BundleSource) {
 			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource must select exactly its matching source", i)
 		}
+		if domain.BundleSource.Endpoint != nil {
+			if err := validateSPIFFEBundleEndpoint(domain.BundleSource.Endpoint.URL, i); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSPIFFEBundleEndpoint(endpoint string, index int) error {
+	parsedEndpoint, err := url.ParseRequestURI(endpoint)
+	invalidEndpoint := err != nil || parsedEndpoint.Scheme != networking.HttpsScheme ||
+		parsedEndpoint.Host == "" || parsedEndpoint.Hostname() == ""
+	if invalidEndpoint {
+		return fmt.Errorf(
+			"spiffeTrustDomains[%d].bundleSource.endpoint.url must be an absolute HTTPS URL "+
+				"with a valid authority", index,
+		)
+	}
+	if parsedEndpoint.User != nil || parsedEndpoint.RawQuery != "" || parsedEndpoint.Fragment != "" ||
+		strings.Contains(endpoint, "?") || strings.Contains(endpoint, "#") ||
+		net.ParseIP(parsedEndpoint.Hostname()) != nil || networking.IsLoopbackHost(parsedEndpoint.Hostname()) {
+		return fmt.Errorf(
+			"spiffeTrustDomains[%d].bundleSource.endpoint.url must not contain credentials, query, "+
+				"fragment, an IP-literal host, or a loopback host", index,
+		)
 	}
 	return nil
 }

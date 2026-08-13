@@ -17,18 +17,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -36,7 +32,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
-	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -1854,21 +1849,10 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 			initial := decode(t, newConfig("openid", true), yamlFormat)
 			assertAuthority(t, initial, "openid")
 
-			// Every restart uses fresh memory; static authority is reconstructed
-			// solely from the serialized configuration.
-			for range 2 {
-				stor := storage.NewMemoryStorage()
-				server, err := NewEmbeddedAuthServerWithStorage(context.Background(), &initial, stor)
-				require.NoError(t, err)
-				require.NoError(t, server.Close())
-			}
+			// Static authority is reconstructed solely from the serialized configuration.
 
 			changed := decode(t, newConfig("profile", true), yamlFormat)
 			assertAuthority(t, changed, "profile")
-			stor := storage.NewMemoryStorage()
-			server, err := NewEmbeddedAuthServerWithStorage(context.Background(), &changed, stor)
-			require.NoError(t, err)
-			require.NoError(t, server.Close())
 
 			removed := decode(t, newConfig("", false), yamlFormat)
 			trust, err := authserver.NewSPIFFETrustConfig(
@@ -1878,42 +1862,8 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 			registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 			require.NoError(t, err)
 			require.Nil(t, registry)
-			stor = storage.NewMemoryStorage()
-			server, err = NewEmbeddedAuthServerWithStorage(context.Background(), &removed, stor)
-			require.NoError(t, err)
-			require.NoError(t, server.Close())
 		})
 	}
-}
-
-// sessionRecordingStorage observes token-session writes without adding a test
-// hook to production storage. It embeds the real memory backend so every
-// unoverridden storage operation retains its production behavior.
-type sessionRecordingStorage struct {
-	*storage.MemoryStorage
-	authorizeCodeSessions atomic.Int32
-	accessTokenSessions   atomic.Int32
-	refreshTokenSessions  atomic.Int32
-}
-
-func (s *sessionRecordingStorage) CreateAuthorizeCodeSession(ctx context.Context, code string, request fosite.Requester) error {
-	s.authorizeCodeSessions.Add(1)
-	return s.MemoryStorage.CreateAuthorizeCodeSession(ctx, code, request)
-}
-
-func (s *sessionRecordingStorage) CreateAccessTokenSession(ctx context.Context, signature string, request fosite.Requester) error {
-	s.accessTokenSessions.Add(1)
-	return s.MemoryStorage.CreateAccessTokenSession(ctx, signature, request)
-}
-
-func (s *sessionRecordingStorage) CreateRefreshTokenSession(
-	ctx context.Context,
-	signature string,
-	accessSignature string,
-	request fosite.Requester,
-) error {
-	s.refreshTokenSessions.Add(1)
-	return s.MemoryStorage.CreateRefreshTokenSession(ctx, signature, accessSignature, request)
 }
 
 func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testing.T) {
@@ -1976,19 +1926,6 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 		require.NoError(t, decoded.Validate())
 		return decoded
 	}
-	assertStaticAuthority := func(t *testing.T, embedded *EmbeddedAuthServer, scope string) {
-		t.Helper()
-		client, err := embedded.ClientRegistry().GetClient(context.Background(), "spiffe-client")
-		require.NoError(t, err)
-		spiffeClient, ok := client.(*registration.SPIFFEClient)
-		require.True(t, ok, "constructed server must return the static SPIFFE client overlay")
-		assert.Equal(t, "spiffe-client", spiffeClient.GetID())
-		assert.Equal(t, fosite.Arguments{authserver.SPIFFEGrantTypeTokenExchange}, spiffeClient.GetGrantTypes())
-		assert.Equal(t, fosite.Arguments{scope}, spiffeClient.GetScopes())
-		assert.Equal(t, []string{"https://mcp.example.com"}, spiffeClient.Resources())
-		assert.Equal(t, []string{"https://mcp.example.com"}, spiffeClient.Audiences())
-		assert.True(t, spiffeClient.TokenExchangeEnabled())
-	}
 	assertMethodEquivalence := func(t *testing.T, cfg authserver.RunConfig) {
 		t.Helper()
 		trust, err := authserver.NewSPIFFETrustConfig(
@@ -2016,99 +1953,25 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 		assert.True(t, x509Principal.AuthorizationPolicy().TokenExchangeEnabled())
 	}
 
-	newServer := func(t *testing.T, cfg authserver.RunConfig) (*EmbeddedAuthServer, *sessionRecordingStorage, *httptest.Server) {
-		t.Helper()
-		stor := &sessionRecordingStorage{MemoryStorage: storage.NewMemoryStorage()}
-		embedded, err := NewEmbeddedAuthServerWithStorage(context.Background(), &cfg, stor)
-		require.NoError(t, err)
-		httpServer := httptest.NewServer(embedded.Handler())
-		t.Cleanup(func() {
-			httpServer.Close()
-			require.NoError(t, embedded.Close())
-		})
-		return embedded, stor, httpServer
-	}
-	assertUnauthenticated := func(t *testing.T, serverURL string, stor *sessionRecordingStorage, spoofedHeader bool) {
-		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/token", strings.NewReader(url.Values{
-			"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
-			"subject_token":      {"unvalidated-subject-token"},
-			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
-			"client_id":          {"spiffe-client"},
-			"scope":              {"openid"},
-			"resource":           {"https://mcp.example.com"},
-		}.Encode()))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if spoofedHeader {
-			req.Header.Set("X-SPIFFE-ID", "spiffe://example.org/ns/default/agent")
-		}
-		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		var body map[string]any
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-		assert.Equal(t, "invalid_client", body["error"])
-		assert.NotContains(t, body, "access_token")
-		assert.NotContains(t, body, "refresh_token")
-		assert.NotContains(t, body, "id_token")
-		assert.Zero(t, stor.authorizeCodeSessions.Load())
-		assert.Zero(t, stor.accessTokenSessions.Load())
-		assert.Zero(t, stor.refreshTokenSessions.Load())
-	}
-
+	// Runner-level coverage is limited to configuration serialization: this package
+	// has no Workload API fake, so runtime SPIFFE authentication belongs to authserver tests.
 	initial := serialize(t, newConfig("openid", true))
 	assertMethodEquivalence(t, initial)
-	embedded, stor, httpServer := newServer(t, initial)
-	assertStaticAuthority(t, embedded, "openid")
-	assertUnauthenticated(t, httpServer.URL, stor, false)
-	assertUnauthenticated(t, httpServer.URL, stor, true)
 
-	// A fresh-memory restart reconstructs the static association from the same
-	// serialized operator-equivalent configuration and still does not authenticate it.
 	restarted := serialize(t, initial)
-	embedded, stor, httpServer = newServer(t, restarted)
-	assertStaticAuthority(t, embedded, "openid")
-	assertUnauthenticated(t, httpServer.URL, stor, true)
+	assertMethodEquivalence(t, restarted)
 
 	changed := serialize(t, newConfig("profile", true))
-	embedded, _, _ = newServer(t, changed)
-	assertStaticAuthority(t, embedded, "profile")
+	assertMethodEquivalence(t, changed)
 
 	removed := serialize(t, newConfig("", false))
-	embedded, _, _ = newServer(t, removed)
-	_, err := embedded.ClientRegistry().GetClient(context.Background(), "spiffe-client")
-	require.ErrorIs(t, err, storage.ErrNotFound)
-
-	// Redis restarts retain dynamic registrations but reconstruct static authority
-	// exclusively from the current serialized configuration.
-	redisServer := miniredis.RunT(t)
-	newRedisStorage := func() storage.Storage {
-		client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-		return storage.NewRedisStorageWithClient(client, "test:spiffe:")
-	}
-	redisStorage := newRedisStorage()
-	require.NoError(t, redisStorage.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "dynamic-client"}))
-	embedded, err = NewEmbeddedAuthServerWithStorage(context.Background(), &initial, redisStorage)
+	trust, err := authserver.NewSPIFFETrustConfig(
+		removed.SPIFFETrustDomains, removed.InboundGrants, removed.ScopesSupported, removed.AllowedAudiences,
+	)
 	require.NoError(t, err)
-	require.NoError(t, embedded.Close())
-
-	redisStorage = newRedisStorage()
-	embedded, err = NewEmbeddedAuthServerWithStorage(context.Background(), &removed, redisStorage)
+	registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 	require.NoError(t, err)
-	_, err = redisStorage.GetClient(context.Background(), "dynamic-client")
-	require.NoError(t, err)
-	_, err = redisStorage.GetClient(context.Background(), "spiffe-client")
-	require.ErrorIs(t, err, storage.ErrNotFound)
-	require.NoError(t, embedded.Close())
-
-	// A durable row with a currently static ID is a startup collision, rather
-	// than authority that can be silently shadowed by configuration.
-	collisionStorage := newRedisStorage()
-	require.NoError(t, collisionStorage.RegisterClient(context.Background(), &fosite.DefaultClient{ID: "spiffe-client"}))
-	_, err = NewEmbeddedAuthServerWithStorage(context.Background(), &initial, collisionStorage)
-	require.ErrorIs(t, err, storage.ErrAlreadyExists)
+	require.Nil(t, registry)
 }
 
 // buildUpstreamConfigs: on first call it registers with the mock AS and

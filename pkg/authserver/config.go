@@ -976,6 +976,11 @@ type Config struct {
 	SPIFFETrustDomains []SPIFFETrustDomainRunConfig
 	InboundGrants      *InboundGrantsRunConfig
 	SPIFFETrust        *SPIFFETrustConfig
+
+	// SPIFFEBundleRegistry supplies validated X.509 and JWT bundles for the
+	// declared SPIFFE trust domains. When nil, New constructs it from
+	// SPIFFETrust during startup.
+	SPIFFEBundleRegistry *SPIFFEBundleRegistry
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -998,18 +1003,11 @@ type DelegateClient struct {
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
-	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
-		return fmt.Errorf("issuer: %w", err)
-	}
-
-	if err := c.validateConfidentialClientConfig(); err != nil {
+	if err := c.validateIssuerURLs(); err != nil {
 		return err
 	}
-
-	if c.AuthorizationEndpointBaseURL != "" {
-		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
-			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
-		}
+	if err := c.validateConfidentialClientConfig(); err != nil {
+		return err
 	}
 
 	// KeyProvider is optional - if nil, applyDefaults() will create a GeneratingProvider
@@ -1082,6 +1080,19 @@ func (c *Config) validateDelegationAndTrustConfig() error {
 	return nil
 }
 
+// validateIssuerURLs validates the issuer and optional authorization endpoint base URL.
+func (c *Config) validateIssuerURLs() error {
+	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
+		return fmt.Errorf("issuer: %w", err)
+	}
+	if c.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
+			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
+		}
+	}
+	return nil
+}
+
 // validateBaselineClientScopes ensures every baseline scope is advertised by
 // ScopesSupported. When it is empty, applyDefaults supplies DefaultScopes.
 func (c *Config) validateBaselineClientScopes() error {
@@ -1101,10 +1112,10 @@ func (c *Config) validateDelegationConfig() error {
 	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
 }
 
-// validateConfidentialClientConfig groups cleartext-transport validation for
-// all confidential clients and the force-confidential-redirect-uris override
-// behind a single call site, keeping Config.Validate's own cyclomatic
-// complexity down.
+// validateConfidentialClientConfig groups the two confidential-client DCR
+// checks (cleartext-transport rejection and the force-confidential-redirect-
+// uris override) behind a single call site, keeping Config.Validate's own
+// cyclomatic complexity down.
 func (c *Config) validateConfidentialClientConfig() error {
 	if err := ValidateConfidentialClientTransport(
 		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,

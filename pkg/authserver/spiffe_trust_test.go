@@ -167,9 +167,9 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "bundle endpoint rejects IPv6 literal", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://[::1]/bundle"}}
 		}, wantErr: "IP-literal"},
-		{name: "bundle endpoint accepts localhost", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
+		{name: "bundle endpoint rejects localhost", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://localhost/bundle"}}
-		}},
+		}, wantErr: "loopback host"},
 		{name: "bundle endpoint rejects malformed authority", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://bundle.example.org:invalid/bundle"}}
 		}, wantErr: "valid authority"},
@@ -192,6 +192,16 @@ func TestValidateSPIFFETrust(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestValidateSPIFFETrustDomainsRejectsDuplicateParsedTrustDomain(t *testing.T) {
+	t.Parallel()
+
+	_, err := validateSPIFFETrustDomains([]SPIFFETrustDomainRunConfig{
+		{Name: "production", TrustDomain: "example.org", Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}, BundleSource: SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{}}},
+		{Name: "production-copy", TrustDomain: "example.org", Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}, BundleSource: SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{}}},
+	})
+	require.ErrorContains(t, err, "duplicate trust domain")
 }
 
 func TestSPIFFETrustConfigPreservesBundleSource(t *testing.T) {
@@ -233,20 +243,52 @@ func TestSPIFFETrustRunConfigSerialization(t *testing.T) {
 	t.Parallel()
 
 	input := RunConfig{
-		SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
-			Name:         "production",
-			TrustDomain:  "example.org",
-			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			BundleSource: SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{}},
+		SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{
+			{
+				Name:        "endpoint",
+				TrustDomain: "example.org",
+				Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+				BundleSource: SPIFFEBundleSourceRunConfig{
+					Type:     SPIFFEBundleSourceTypeEndpoint,
+					Endpoint: &SPIFFEBundleEndpointSourceRunConfig{URL: "https://bundles.example.org/bundle"},
+				},
+			},
+			{
+				Name:        "workload-api",
+				TrustDomain: "workload.example.org",
+				Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
+				BundleSource: SPIFFEBundleSourceRunConfig{
+					Type:        SPIFFEBundleSourceTypeWorkloadAPI,
+					WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
+				},
+			},
+		},
+		InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{
+			{
+				TrustDomainRef: "endpoint",
+				Principal:      "spiffe://example.org/ns/default/agent",
+				ClientID:       "endpoint-agent-client",
+				Methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+				Resources:      []string{"https://mcp.example.org/resource"},
+				Audiences:      []string{"https://mcp-api.example.org"},
+				Scopes:         []string{"openid"},
+				GrantTypes:     []string{SPIFFEGrantTypeTokenExchange},
+				TokenExchange:  &SPIFFETokenExchangeRunConfig{Enabled: true},
+			},
+			{
+				TrustDomainRef: "workload-api",
+				Principal:      "spiffe://workload.example.org/ns/default/agent",
+				ClientID:       "workload-agent-client",
+				Methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
+				Resources:      []string{"https://mcp.example.org/resource"},
+				Audiences:      []string{"https://mcp-api.example.org"},
+				Scopes:         []string{"openid"},
+				GrantTypes:     []string{SPIFFEGrantTypeTokenExchange},
+				TokenExchange:  &SPIFFETokenExchangeRunConfig{Enabled: true},
+			},
 		}},
-		InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-			TrustDomainRef: "production",
-			Principal:      "spiffe://example.org/ns/default/agent",
-			ClientID:       "agent-client",
-			Resources:      []string{"https://mcp.example.org/resource"},
-			Audiences:      []string{"mcp-api"},
-			Scopes:         []string{"openid"},
-		}}},
+		ScopesSupported:  []string{"openid"},
+		AllowedAudiences: []string{"https://mcp.example.org/resource", "https://mcp-api.example.org"},
 	}
 
 	for _, tt := range []struct {
@@ -272,10 +314,22 @@ func TestSPIFFETrustRunConfigSerialization(t *testing.T) {
 
 			var output RunConfig
 			require.NoError(t, tt.unmarshal(encoded, &output))
-			require.Len(t, output.InboundGrants.SPIFFEClientAuth, 1)
+			require.NoError(t, output.Validate())
+			require.Len(t, output.SPIFFETrustDomains, 2)
+			require.Len(t, output.InboundGrants.SPIFFEClientAuth, 2)
+
+			endpoint := output.SPIFFETrustDomains[0]
+			assert.Equal(t, SPIFFEBundleSourceTypeEndpoint, endpoint.BundleSource.Type)
+			require.NotNil(t, endpoint.BundleSource.Endpoint)
+			assert.Equal(t, "https://bundles.example.org/bundle", endpoint.BundleSource.Endpoint.URL)
+
+			workloadAPI := output.SPIFFETrustDomains[1]
+			assert.Equal(t, SPIFFEBundleSourceTypeWorkloadAPI, workloadAPI.BundleSource.Type)
+			require.NotNil(t, workloadAPI.BundleSource.WorkloadAPI)
+
 			association := output.InboundGrants.SPIFFEClientAuth[0]
 			assert.Equal(t, []string{"https://mcp.example.org/resource"}, association.Resources)
-			assert.Equal(t, []string{"mcp-api"}, association.Audiences)
+			assert.Equal(t, []string{"https://mcp-api.example.org"}, association.Audiences)
 			assert.NotEqual(t, association.Resources, association.Audiences)
 		})
 	}

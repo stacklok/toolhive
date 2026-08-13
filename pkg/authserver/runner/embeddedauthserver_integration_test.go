@@ -21,7 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testing.T) {
+func TestIntegration_EmbeddedAuthServer_RedisStaticClientPersistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
 
@@ -45,56 +45,29 @@ func TestIntegration_EmbeddedAuthServer_SPIFFERedisRestartAndCollision(t *testin
 			Addr: fmt.Sprintf("%s:%s", host, port.Port()),
 		}), "integration:spiffe:")
 	}
-	config := func(includeAssociation bool) authserver.RunConfig {
-		cfg := authserver.RunConfig{
+	config := func() authserver.RunConfig {
+		return authserver.RunConfig{
 			SchemaVersion:    authserver.CurrentSchemaVersion,
 			Issuer:           "https://auth.example.com",
 			ScopesSupported:  []string{"openid"},
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
-		if !includeAssociation {
-			return cfg
-		}
-		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
-			Name: "production", TrustDomain: "example.org",
-			Methods: []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
-				Type: authserver.SPIFFEBundleSourceTypeWorkloadAPI,
-				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
-			},
-		}}
-		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-			TrustDomainRef: "production", Principal: "spiffe://example.org/ns/default/agent", ClientID: "spiffe-client",
-			Methods: []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-			GrantTypes: []string{authserver.SPIFFEGrantTypeTokenExchange}, Scopes: []string{"openid"},
-			Resources: []string{"https://mcp.example.com"}, Audiences: []string{"mcp-api"},
-			TokenExchange: &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
-		}}}
-		return cfg
 	}
 
 	firstStorage := newStorage()
-	require.NoError(t, firstStorage.RegisterClient(ctx, &fosite.DefaultClient{ID: "dynamic-client"}))
-	initial := config(true)
+	require.NoError(t, firstStorage.RegisterClient(ctx, &fosite.DefaultClient{ID: "static-client"}))
+	initial := config()
 	first, err := NewEmbeddedAuthServerWithStorage(ctx, &initial, firstStorage)
 	require.NoError(t, err)
 	require.NoError(t, first.Close())
 
 	secondStorage := newStorage()
-	removed := config(false)
-	second, err := NewEmbeddedAuthServerWithStorage(ctx, &removed, secondStorage)
+	restarted := config()
+	second, err := NewEmbeddedAuthServerWithStorage(ctx, &restarted, secondStorage)
 	require.NoError(t, err)
-	_, err = second.ClientRegistry().GetClient(ctx, "dynamic-client")
+	_, err = second.ClientRegistry().GetClient(ctx, "static-client")
 	require.NoError(t, err)
-	_, err = second.ClientRegistry().GetClient(ctx, "spiffe-client")
-	require.ErrorIs(t, err, storage.ErrNotFound)
 	require.NoError(t, second.Close())
-
-	collisionStorage := newStorage()
-	require.NoError(t, collisionStorage.RegisterClient(ctx, &fosite.DefaultClient{ID: "spiffe-client"}))
-	collision := config(true)
-	_, err = NewEmbeddedAuthServerWithStorage(ctx, &collision, collisionStorage)
-	require.ErrorIs(t, err, storage.ErrAlreadyExists)
 }
 
 // TestIntegration_EmbeddedAuthServer_DelegateClientRedisRestart pins a

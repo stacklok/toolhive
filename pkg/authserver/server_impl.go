@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,6 +43,7 @@ type server struct {
 	// interface when there are no upstreams, so callers can check == nil safely.
 	upstreamRefresher storage.UpstreamTokenRefresher
 	upstreams         []handlers.NamedUpstream
+	bundleRegistry    *SPIFFEBundleRegistry
 }
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
@@ -78,34 +80,31 @@ func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
 	}
 }
 
-// newServer creates a new OAuth authorization server.
-// The opts parameter allows injecting dependencies for testing.
-func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
-	slog.Debug("initializing OAuth authorization server")
-
-	// Apply server options
-	options := &serverOptions{
-		upstreamFactory: defaultUpstreamFactory,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
+// prepareServerConfig applies defaults to and validates cfg, then prepares
+// the caller-supplied storage for server construction: it asserts DCR
+// capability, applies the SPIFFE static-client overlay, and registers
+// configured delegate clients. cfg is a pointer because applyDefaults
+// mutates it in place; the caller's variable must see the resolved
+// defaults. Returns the (possibly decorated) storage and the DCR-capable
+// handle asserted from the original, undecorated storage.
+func prepareServerConfig(
+	ctx context.Context, cfg *Config, stor storage.Storage,
+) (storage.Storage, storage.DCRCredentialStore, error) {
 	// Apply defaults to config
 	if err := cfg.applyDefaults(); err != nil {
-		return nil, fmt.Errorf("failed to apply config defaults: %w", err)
+		return nil, nil, fmt.Errorf("failed to apply config defaults: %w", err)
 	}
 
 	// Validate config
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+		return nil, nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
 
 	// Validate storage is provided
 	if stor == nil {
-		return nil, fmt.Errorf("storage is required")
+		return nil, nil, fmt.Errorf("storage is required")
 	}
 
 	// Storage no longer embeds DCRCredentialStore (the embed widened secret
@@ -119,15 +118,36 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	baseStore := unwrapStorage(stor)
 	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
-		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
+		return nil, nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
-	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	stor, err := decorateStorageForSPIFFE(ctx, *cfg, stor)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
+		return nil, nil, err
+	}
+
+	return stor, dcrStore, nil
+}
+
+// newServer creates a new OAuth authorization server.
+// The opts parameter allows injecting dependencies for testing.
+func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...serverOption) (*server, error) {
+	slog.Debug("initializing OAuth authorization server")
+
+	// Apply server options
+	options := &serverOptions{
+		upstreamFactory: defaultUpstreamFactory,
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	stor, dcrStore, err := prepareServerConfig(ctx, &cfg, stor)
+	if err != nil {
 		return nil, err
 	}
 
@@ -219,12 +239,18 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"issuer", cfg.Issuer,
 	)
 
+	bundleRegistry, err := newSPIFFEBundleRegistry(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &server{
 		handler:           router,
 		storage:           stor,
 		dcrStore:          dcrStore,
 		upstreams:         upstreams,
 		upstreamRefresher: refresher,
+		bundleRegistry:    bundleRegistry,
 	}, nil
 }
 
@@ -249,6 +275,31 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
 	}
 	return nil
+}
+
+func newSPIFFEBundleRegistry(ctx context.Context, cfg Config) (*SPIFFEBundleRegistry, error) {
+	registry := cfg.SPIFFEBundleRegistry
+	if registry == nil {
+		trust := cfg.SPIFFETrust
+		if trust == nil {
+			var err error
+			trust, err = NewSPIFFETrustConfig(
+				cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+			}
+		}
+		var err error
+		registry, err = NewSPIFFEBundleRegistry(trust)
+		if err != nil {
+			return nil, fmt.Errorf("create SPIFFE bundle registry: %w", err)
+		}
+	}
+	if err := registry.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start SPIFFE bundle registry: %w", err)
+	}
+	return registry, nil
 }
 
 // decorateStorageForSPIFFE validates SPIFFE policy, resolves its immutable
@@ -432,7 +483,7 @@ func newUpstreamTokenRefresher(
 // Close releases resources held by the server.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
-	return s.storage.Close()
+	return errors.Join(s.bundleRegistry.Close(), s.storage.Close())
 }
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.

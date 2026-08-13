@@ -13,6 +13,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -435,6 +436,7 @@ type validatedSPIFFETrustDomain struct {
 
 func validateSPIFFETrustDomains(domains []SPIFFETrustDomainRunConfig) (map[string]validatedSPIFFETrustDomain, error) {
 	byName := make(map[string]validatedSPIFFETrustDomain, len(domains))
+	seenTrustDomains := make(map[spiffeid.TrustDomain]struct{}, len(domains))
 	for i, domain := range domains {
 		if domain.Name == "" {
 			return nil, fmt.Errorf("spiffe_trust_domains[%d]: name is required", i)
@@ -446,6 +448,10 @@ func validateSPIFFETrustDomains(domains []SPIFFETrustDomainRunConfig) (map[strin
 		if err != nil {
 			return nil, fmt.Errorf("spiffe_trust_domains[%d]: %w", i, err)
 		}
+		if _, exists := seenTrustDomains[trustDomain]; exists {
+			return nil, fmt.Errorf("spiffe_trust_domains[%d]: duplicate trust domain %q", i, trustDomain)
+		}
+		seenTrustDomains[trustDomain] = struct{}{}
 		methods, err := validateMethods(domain.Methods, fmt.Sprintf("spiffe_trust_domains[%d].methods", i))
 		if err != nil {
 			return nil, err
@@ -485,9 +491,10 @@ func validateSPIFFEBundleEndpoint(endpointURL string, index int) error {
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		strings.Contains(endpointURL, "?") || strings.Contains(endpointURL, "#") ||
-		net.ParseIP(u.Hostname()) != nil {
+		net.ParseIP(u.Hostname()) != nil || networking.IsLoopbackHost(u.Hostname()) {
 		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.url must not contain credentials, query, fragment, or an IP-literal host",
+			"spiffe_trust_domains[%d].bundle_source.endpoint.url must not contain credentials, query, "+
+				"fragment, an IP-literal host, or a loopback host",
 			index,
 		)
 	}
@@ -569,30 +576,31 @@ func validateSPIFFEClientAssociation(
 		)
 	}
 	fieldPrefix := fmt.Sprintf("inbound_grants.spiffe_client_auth[%d]", index)
-	methods, err := validateMethods(entry.Methods, fieldPrefix+".methods")
-	if err != nil {
-		return "", err
-	}
-	for method := range methods {
-		if _, enabled := trustDomain.methods[method]; !enabled {
-			return "", fmt.Errorf("%s.methods: method %q is not enabled by trust domain %q", fieldPrefix, method, entry.TrustDomainRef)
-		}
-	}
-	if err := validateSPIFFEClientAssociationPermissions(entry, fieldPrefix, index, effectiveScopes, allowedAudiences); err != nil {
+	if err := validateSPIFFEAssociationPolicy(
+		entry, index, fieldPrefix, trustDomain, effectiveScopes, allowedAudiences,
+	); err != nil {
 		return "", err
 	}
 	return principal, nil
 }
 
-// validateSPIFFEClientAssociationPermissions validates the resources,
-// audiences, scopes, and grant types an association is permitted to request.
-func validateSPIFFEClientAssociationPermissions(
+func validateSPIFFEAssociationPolicy(
 	entry SPIFFEClientAuthRunConfig,
-	fieldPrefix string,
 	index int,
+	fieldPrefix string,
+	trustDomain validatedSPIFFETrustDomain,
 	effectiveScopes []string,
 	allowedAudiences []string,
 ) error {
+	methods, err := validateMethods(entry.Methods, fieldPrefix+".methods")
+	if err != nil {
+		return err
+	}
+	for method := range methods {
+		if _, enabled := trustDomain.methods[method]; !enabled {
+			return fmt.Errorf("%s.methods: method %q is not enabled by trust domain %q", fieldPrefix, method, entry.TrustDomainRef)
+		}
+	}
 	if err := validateResourceIndicators(entry.Resources, fieldPrefix+".resources"); err != nil {
 		return err
 	}

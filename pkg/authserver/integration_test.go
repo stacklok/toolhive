@@ -1168,7 +1168,7 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 			"the error must not leak the rejected actor claim value")
 	})
 
-	t.Run("may_act path skips the allowlist", func(t *testing.T) {
+	t.Run("may_act path requires issuer opt-in and skips the allowlist", func(t *testing.T) {
 		t.Parallel()
 
 		externalKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1184,9 +1184,10 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 				JWKSURL:           idpServer.URL + "/jwks",
 				InsecureAllowHTTP: true,
 				AllowPrivateIPs:   true,
-				// AllowedActors deliberately empty: may_act must be honored
-				// without any actor being allowlisted.
-				AllowedDelegateClients: []string{"*"},
+				// AllowedActors deliberately empty: the explicit issuer opt-in
+				// authorizes may_act without an actor allowlist.
+				AllowedDelegateClients: []string{agentClientID},
+				AllowMayAct:            true,
 			}}),
 		)
 
@@ -1221,6 +1222,8 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		act, ok := claims["act"].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, agentClientID, act["sub"])
+		assert.Equal(t, testIssuer, act["iss"],
+			"the outer act hop must carry ToolHive's own issuer alongside sub")
 
 		// may_act carries no ExternalActor (see ValidatedClaims.ExternalActor's
 		// doc comment), but the external issuer must still be recorded — this
@@ -1231,6 +1234,97 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		assert.Equal(t, idpServer.URL, nested["iss"])
 		_, hasSub := nested["sub"]
 		assert.False(t, hasSub, "no client-namespace actor claim exists to report on the may_act path")
+	})
+
+	t.Run("may_act-bearing token rejected when issuer has not opted in", func(t *testing.T) {
+		t.Parallel()
+
+		externalKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		idpServer, _ := startExternalIdPServer(t, externalKey)
+
+		m := startMockOIDC(t)
+		ts := setupTestServerWithMockOIDC(t, m,
+			withExtraClient(newAgentClient(t)),
+			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
+				IssuerURL:         idpServer.URL,
+				ExpectedAudience:  testAudience,
+				JWKSURL:           idpServer.URL + "/jwks",
+				InsecureAllowHTTP: true,
+				AllowPrivateIPs:   true,
+				// AllowMayAct deliberately omitted (defaults false), and no
+				// AllowedActors either: this issuer has no consent path
+				// configured at all, so a may_act claim must not silently
+				// fall back to being honored anyway.
+				AllowedDelegateClients: []string{agentClientID},
+			}}),
+		)
+
+		subjectToken := signExternalToken(t, externalKey, externalClaims(idpServer.URL), map[string]any{
+			"may_act": map[string]any{"sub": agentClientID, "iss": testIssuer},
+		})
+
+		resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			"client_id":          {agentClientID},
+			"client_secret":      {agentClientSecret},
+		})
+		defer resp.Body.Close()
+
+		body := parseTokenResponse(t, resp)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+			"a may_act claim from an issuer that has not set allow_may_act must be rejected, "+
+				"got %d (body: %v)", resp.StatusCode, body)
+		assert.Equal(t, "invalid_request", body["error"])
+
+		errDesc, _ := body["error_description"].(string)
+		assert.Contains(t, errDesc, "invalid or could not be verified",
+			"the handler's fixed hint must not be replaced by a more specific — and leakier — message")
+	})
+
+	t.Run("malformed may_act still rejected when the issuer has opted in", func(t *testing.T) {
+		t.Parallel()
+
+		externalKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		idpServer, _ := startExternalIdPServer(t, externalKey)
+
+		m := startMockOIDC(t)
+		ts := setupTestServerWithMockOIDC(t, m,
+			withExtraClient(newAgentClient(t)),
+			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       testAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{agentClientID},
+				AllowMayAct:            true,
+			}}),
+		)
+
+		// may_act is a string, not the required JSON object shape — opting
+		// in must not relax the shape check that runs after the gate.
+		subjectToken := signExternalToken(t, externalKey, externalClaims(idpServer.URL), map[string]any{
+			"may_act": "not-an-object",
+		})
+
+		resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			"client_id":          {agentClientID},
+			"client_secret":      {agentClientSecret},
+		})
+		defer resp.Body.Close()
+
+		body := parseTokenResponse(t, resp)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+			"a malformed may_act claim must be rejected even when the issuer has opted in, "+
+				"got %d (body: %v)", resp.StatusCode, body)
+		assert.Equal(t, "invalid_request", body["error"])
 	})
 
 	t.Run("allowed delegate clients binds the allowlisted actor to a specific ToolHive client", func(t *testing.T) {

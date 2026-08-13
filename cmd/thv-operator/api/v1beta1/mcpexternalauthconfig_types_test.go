@@ -711,17 +711,38 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 						Issuer:                              "https://auth.example.com",
 						AllowConfidentialClientRegistration: true,
 						ForceConfidentialRedirectURIs:       []string{"https://app.example.com/cb"},
-						UpstreamProviders: []UpstreamProviderConfig{
-							{
-								Name:       "github",
-								Type:       UpstreamProviderTypeOIDC,
-								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
-							},
-						},
+						UpstreamProviders: []UpstreamProviderConfig{{
+							Name:       "github",
+							Type:       UpstreamProviderTypeOIDC,
+							OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+						}},
 					},
 				},
 			},
 			expectErr: false,
+		},
+		{
+			name: "trusted issuer matching embedded auth issuer is invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{{
+							Name:       "github",
+							Type:       UpstreamProviderTypeOIDC,
+							OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+						}},
+						TrustedIssuers: []TrustedIssuerConfig{{
+							IssuerURL:              "https://auth.example.com",
+							ExpectedAudience:       "toolhive-authserver",
+							AllowedDelegateClients: []string{"delegate-client"},
+						}},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "must not equal the authorization server's own issuer",
 		},
 	}
 

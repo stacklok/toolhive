@@ -86,6 +86,7 @@ func Factory(
 			},
 			validator:                 validator,
 			selfValidator:             selfValidator,
+			issuer:                    config.GetAccessTokenIssuer(),
 			delegationLifespan:        delegationLifespan,
 			config:                    config.Config,
 			allowedAudiences:          config.AllowedAudiences,

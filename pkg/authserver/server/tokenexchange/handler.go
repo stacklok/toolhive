@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -30,7 +31,14 @@ var _ fosite.TokenEndpointHandler = (*Handler)(nil)
 // re-exchange a delegated token to grow the chain without limit, bloating the
 // issued token and the load it places on downstream resource servers that
 // parse it.
-const maxDelegationDepth = 10
+//
+// maxActClaimSize bounds the serialized normalized act data (iss/sub) after
+// chainToAct strips non-identity claims, preventing a shallow prior chain from
+// inflating every re-issued token.
+const (
+	maxDelegationDepth = 10
+	maxActClaimSize    = 8 * 1024
+)
 
 // anyDelegateClient is the TrustedIssuer.AllowedDelegateClients entry that
 // explicitly opts an issuer into "any ToolHive confidential client holding
@@ -59,6 +67,7 @@ type Handler struct {
 	*oauth2.HandleHelper
 	validator          SubjectTokenValidator // for subject tokens (multi-issuer)
 	selfValidator      SubjectTokenValidator // for actor tokens (self-issued only)
+	issuer             string
 	delegationLifespan time.Duration
 	config             tokenExchangeConfig
 	allowedAudiences   []string
@@ -196,7 +205,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		},
 	)
 
-	act, err := buildActClaim(validatedClaims, actorSub)
+	act, err := buildActClaim(validatedClaims, h.issuer, actorSub)
 	if err != nil {
 		return err
 	}
@@ -441,11 +450,11 @@ func delegatedSubject(validatedClaims *ValidatedClaims) string {
 // must not change regardless of how the subject token was obtained.
 //
 // Extracted from HandleTokenEndpointRequest rather than inlined: the external
-// provenance nesting and the prior-chain depth gate below add five branches
-// that have nothing to do with the surrounding request plumbing, and two of
-// them reject the request outright.
-func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string]any, error) {
-	act := map[string]any{"sub": actorID}
+// provenance nesting, the prior-chain depth gate, and the encoded-size gate
+// below add several branches that have nothing to do with the surrounding
+// request plumbing, and multiple of them reject the request outright.
+func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (map[string]any, error) {
+	act := map[string]any{"iss": issuer, "sub": actorID}
 	nestUnder := act
 	newLevels := 1
 
@@ -492,15 +501,9 @@ func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string
 		// delegation and must not read as malformed.
 		chain := coreaudit.ParseDelegationChain(priorAct, maxDelegationDepth)
 		if chain.Malformed {
-			// RFC 8693 Section 2.2.2 nominally calls for invalid_request on a bad
-			// subject_token, but also allows that "other error codes may also be
-			// used, as appropriate": invalid_grant keeps this consistent with the
-			// depth, consent, and expiry gates in this same handler, all of which
-			// reject a structurally unacceptable subject token that way.
-			//
 			// MalformedReason is a closed, value-free enum; it is surfaced to the
 			// client and MUST stay that way — never interpolate claim contents here.
-			return nil, errorsx.WithStack(fosite.ErrInvalidGrant.WithHintf(
+			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
 				"The subject token's delegation chain is malformed (%s).", chain.MalformedReason))
 		}
 		// len(Chain) is the prior chain's depth: the parser appends exactly one
@@ -509,24 +512,73 @@ func buildActClaim(validatedClaims *ValidatedClaims, actorID string) (map[string
 		// on top — one for the acting client, two when an external issuer is
 		// also nested — so the resulting chain never exceeds the cap.
 		if len(chain.Chain)+newLevels > maxDelegationDepth {
-			return nil, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The subject token's delegation chain is too deep."))
 		}
-		// Nest priorAct verbatim rather than re-serializing from chain: core keeps
-		// each hop's extra claims in an unexported map, so rebuilding would silently
-		// drop the history trail that Section 4.1 asks us to preserve. The cost is
-		// that unknown hop claims — and the non-identity claims Section 4.1 calls
-		// "not meaningful" inside act — pass through re-signed, which sits in
-		// tension with Section 6 data minimization. Accepted here; bounding the
-		// subtree is tracked separately.
+		// Rebuild the nested act from the parsed chain rather than nesting
+		// priorAct verbatim: the subject token's prior act claim may itself
+		// have originated from an untrusted external issuer (e.g. a
+		// re-exchange of a token whose own nested act content we never
+		// validated), and nesting it verbatim would re-sign that content
+		// under ToolHive's own key, presenting it as vouched-for. Rebuilding
+		// from chain.Chain keeps only iss/sub per hop — extraClaims in
+		// coreaudit are dropped by the parser into an in-memory-only map and
+		// never resurface here — so unknown or untrusted per-hop claims are
+		// normalized away while the audit trail of who-acted-for-whom
+		// (Section 4.1's stated purpose for act) is preserved.
 		//
 		// nestUnder is the innermost entry this exchange added: the acting
 		// client normally, or the external-issuer entry when one was nested
 		// above, so the prior chain hangs below the provenance rather than
 		// displacing it.
-		nestUnder["act"] = priorAct
+		normalizedAct, err := chainToAct(chain.Chain)
+		if err != nil {
+			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+				"The subject token's delegation chain contains an empty actor."))
+		}
+		nestUnder["act"] = normalizedAct
+	}
+	encodedAct, err := json.Marshal(act)
+	if err != nil {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The subject token's delegation chain cannot be serialized."))
+	}
+	if len(encodedAct) > maxActClaimSize {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The subject token's delegation chain is too large."))
 	}
 	return act, nil
+}
+
+// chainToAct rebuilds a nested RFC 8693 act structure from a parsed
+// delegation chain, keeping only each hop's iss/sub — never the hop's extra
+// claims, which coreaudit.ParseDelegationChain deliberately keeps out of the
+// returned struct's serializable fields. This is what strips arbitrary
+// content an untrusted prior issuer may have placed in a nested act before
+// it gets re-signed under ToolHive's own key. hops is outermost-first (see
+// coreaudit.DelegationChain's doc comment); the result nests them in that
+// same order. It rejects any hop without an issuer or subject. Returns nil for
+// an empty chain.
+func chainToAct(hops []coreaudit.DelegatedActor) (map[string]any, error) {
+	var nested map[string]any
+	for i := len(hops) - 1; i >= 0; i-- {
+		if hops[i].Issuer == "" && hops[i].Subject == "" {
+			return nil, fmt.Errorf("delegation hop %d has no issuer or subject", i)
+		}
+
+		hop := make(map[string]any, 3)
+		if hops[i].Issuer != "" {
+			hop["iss"] = hops[i].Issuer
+		}
+		if hops[i].Subject != "" {
+			hop["sub"] = hops[i].Subject
+		}
+		if nested != nil {
+			hop["act"] = nested
+		}
+		nested = hop
+	}
+	return nested, nil
 }
 
 // delegateClientAllowed reports whether actorID may use an issuer's

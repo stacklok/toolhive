@@ -77,6 +77,13 @@ func (r *MCPRemoteProxyReconciler) handleInvalidEmbeddedAuthServerConfig(
 		remoteProxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		remoteProxy.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidConfigErr)
 		remoteProxy.Status.ObservedGeneration = remoteProxy.Generation
+		meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: remoteProxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonNotReady,
+			Message:            remoteProxy.Status.Message,
+		})
 
 		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceAuthServerRef {
 			meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
@@ -239,6 +246,13 @@ func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(
 		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
 		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: proxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonNotReady,
+			Message:            proxy.Status.Message,
+		})
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
 			Status:  metav1.ConditionFalse,

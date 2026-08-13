@@ -5,12 +5,14 @@ package v1beta1
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 )
 
 // External auth configuration types
@@ -386,6 +388,99 @@ type DelegateClientConfig struct {
 	Audiences []string `json:"audiences"`
 }
 
+// TrustedIssuerConfig configures an external OIDC issuer whose tokens are
+// accepted as RFC 8693 subject tokens during token exchange. It mirrors
+// tokenexchange.TrustedIssuer (pkg/authserver/server/tokenexchange), the
+// runtime type the operator converts this into directly — no secret is
+// referenced by this type, so no SecretKeyRef indirection is needed, unlike
+// DelegateClientConfig.
+//
+// +kubebuilder:validation:XValidation:rule="!('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowMayAct) && self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
+// +kubebuilder:validation:XValidation:rule="self.actorClaim == ” || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowPrivateIPs) && self.allowPrivateIPs) || (has(self.jwksUrl) && self.jwksUrl != \"\")",message="allowPrivateIPs requires jwksUrl to be set explicitly"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
+type TrustedIssuerConfig struct {
+	// IssuerURL is the expected "iss" claim value (exact match).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	IssuerURL string `json:"issuerUrl"`
+
+	// ExpectedAudience is the expected "aud" claim value that must appear in
+	// the token's audience list. This should be a resource/API identifier
+	// (e.g. a URI), not a client ID.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	ExpectedAudience string `json:"expectedAudience"`
+
+	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If
+	// empty, it is resolved via OIDC discovery at
+	// {issuerUrl}/.well-known/openid-configuration.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	JWKSURL string `json:"jwksUrl,omitempty"`
+
+	// InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches
+	// for THIS issuer only. Development and testing only — never set in
+	// production.
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
+
+	// AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer
+	// to resolve to a private or loopback address. Use only when the issuer
+	// is hosted inside the same cluster and has no public endpoint. Requires
+	// jwksUrl to be set explicitly (enforced at reconcile time), since
+	// otherwise OIDC discovery — fetched from the external issuer itself —
+	// would choose the private dial target.
+	// +optional
+	AllowPrivateIPs bool `json:"allowPrivateIPs,omitempty"`
+
+	// ActorClaim names the claim identifying the client that requested the
+	// subject token from this external issuer (used by allowedActors below).
+	// Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"
+	// for Okta. The special value "client_id" reads the subject token's
+	// client_id claim instead.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	ActorClaim string `json:"actorClaim,omitempty"`
+
+	// AllowedActors is the allowlist of actorClaim values authorized to
+	// exchange a subject token from this issuer when it carries no
+	// "may_act" claim. Empty denies every token unless allowMayAct is true
+	// and the token carries a permitted may_act claim.
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=atomic
+	// +optional
+	AllowedActors []string `json:"allowedActors,omitempty"`
+
+	// AllowedDelegateClients restricts which ToolHive client IDs may
+	// exchange a subject token from this issuer. Required; set it to ["*"]
+	// to permit any confidential client holding the token-exchange grant. The
+	// wildcard must be the only entry; otherwise list specific client IDs to
+	// bind delegation to them.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=atomic
+	AllowedDelegateClients []string `json:"allowedDelegateClients"`
+
+	// AllowMayAct permits this external issuer's may_act claim to authorize
+	// delegation. Defaults to false; external issuers must be opted in
+	// explicitly because may_act bypasses allowedActors. Does not affect
+	// self-issued subject tokens. The wildcard is never permitted alongside
+	// specific allowedDelegateClients, regardless of this setting.
+	// +kubebuilder:default=false
+	// +optional
+	AllowMayAct bool `json:"allowMayAct,omitempty"`
+}
+
 // EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 // This enables running an authorization server that delegates authentication to upstream IDPs.
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
@@ -596,6 +691,16 @@ type EmbeddedAuthServerConfig struct {
 	// +listType=atomic
 	// +optional
 	DelegateClients []DelegateClientConfig `json:"delegateClients,omitempty"`
+
+	// TrustedIssuers configures external OIDC issuers whose tokens are
+	// accepted as RFC 8693 subject tokens during token exchange, in addition
+	// to self-issued subject tokens. Empty (the default) means only
+	// self-issued subject tokens are accepted. See
+	// docs/arch/17-token-exchange-delegation.md for the trust model.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	TrustedIssuers []TrustedIssuerConfig `json:"trustedIssuers,omitempty"`
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be
 	// registered as confidential clients regardless of the
@@ -1784,6 +1889,10 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return err
 	}
 
+	if err := tokenexchange.ValidateTrustedIssuers(buildTrustedIssuerConfigs(cfg.TrustedIssuers), cfg.Issuer); err != nil {
+		return fmt.Errorf("trustedIssuers: %w", err)
+	}
+
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {
 		if seen[provider.Name] {
@@ -1797,6 +1906,26 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	}
 
 	return nil
+}
+
+// buildTrustedIssuerConfigs converts CRD entries to the authoritative runtime
+// type without sharing caller-owned slices.
+func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.TrustedIssuer {
+	configs := make([]tokenexchange.TrustedIssuer, len(issuers))
+	for i, issuer := range issuers {
+		configs[i] = tokenexchange.TrustedIssuer{
+			IssuerURL:              issuer.IssuerURL,
+			ExpectedAudience:       issuer.ExpectedAudience,
+			JWKSURL:                issuer.JWKSURL,
+			InsecureAllowHTTP:      issuer.InsecureAllowHTTP,
+			AllowPrivateIPs:        issuer.AllowPrivateIPs,
+			ActorClaim:             issuer.ActorClaim,
+			AllowedActors:          slices.Clone(issuer.AllowedActors),
+			AllowedDelegateClients: slices.Clone(issuer.AllowedDelegateClients),
+			AllowMayAct:            issuer.AllowMayAct,
+		}
+	}
+	return configs
 }
 
 // validateUpstreamProvider validates a single upstream provider configuration.

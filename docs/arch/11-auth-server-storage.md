@@ -330,3 +330,17 @@ Both call sites use the `unwrapStorage(stor)` helper rather than asserting direc
 When the embedded authorization server is deployed in an environment that cannot reach `https://toolhive.dev/oauth/client-metadata.json` or any public CIMD metadata URL, set `authServer.cimd.enabled: false`. Clients will fall back to DCR (`/oauth/register`) which uses only the local storage backend and requires no outbound connectivity.
 
 **Implementation:** `pkg/authserver/storage/cimd_decorator.go`
+
+## SPIFFE Storage Decorator
+
+When `spiffeTrustDomains` and `inboundGrants` are configured, the embedded authorization server wraps its storage backend in a `SPIFFEStorageDecorator` — installed as the outermost decorator, after CIMD (`decorateStorageForSPIFFE` in `pkg/authserver/server_impl.go`). This decorator overlays a fixed set of statically configured OAuth clients ahead of the dynamic DCR/CIMD backend.
+
+### What it does
+
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient` and `RegisterClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` rejects any DCR or CIMD registration attempt that targets a client ID reserved by a static SPIFFE association.
+
+Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)) and are config-only: they are built once at startup and held in memory, never written to the wrapped storage backend (in-memory or Redis) and never eligible for dynamic registration or replacement.
+
+At startup, the decorator's constructor fails closed if a durable client already exists in the wrapped storage under a client_id reserved by a static association (`preflightDurableCollisions`) — the server refuses to start rather than let a static declaration silently shadow, or be shadowed by, an existing durable client.
+
+**Implementation:** `pkg/authserver/spiffe_storage_decorator.go`

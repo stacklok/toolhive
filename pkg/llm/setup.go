@@ -191,6 +191,9 @@ func Setup(
 // configured tools. An error is returned when targetTool is non-empty but not
 // found in the configured tool list.
 //
+// Reverting Claude Code also clears the persisted Bedrock compat settings, which
+// apply to no other client, so a later "thv llm setup" does not re-apply them.
+//
 // If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
 // are deleted after the config update succeeds.
 func Teardown(
@@ -241,6 +244,14 @@ func Teardown(
 	// nothing on disk has changed and the caller can retry.
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
 		c.ConfiguredTools = remaining
+		// Bedrock compat only ever applies to Claude Code, so tearing Claude Code
+		// down leaves it with no consumer. Clear it rather than letting it persist:
+		// otherwise a later "thv llm setup" — possibly against a gateway that no
+		// longer forwards to Bedrock — silently re-pins the Bedrock model IDs the
+		// user just removed, and only an explicit --bedrock-compat=false clears it.
+		if isTarget(toRevert, claudeCodeClient) {
+			c.Bedrock = BedrockConfig{}
+		}
 		if purgeTokens {
 			c.OIDC.CachedRefreshTokenRef = ""
 			c.OIDC.CachedTokenExpiry = time.Time{}

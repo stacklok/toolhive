@@ -43,6 +43,8 @@ type Config struct {
 // BedrockConfig holds settings for configuring Claude Code to reach an LLM
 // gateway that forwards to AWS Bedrock. It is persisted so that a later plain
 // "thv llm setup" re-applies these settings rather than silently clearing them.
+// Because it only ever applies to Claude Code, tearing Claude Code down clears
+// it (see Teardown) so it cannot outlive its only consumer.
 type BedrockConfig struct {
 	// Compat, when true, writes CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and the
 	// per-tier Bedrock model IDs into Claude Code's settings.json. Bedrock rejects

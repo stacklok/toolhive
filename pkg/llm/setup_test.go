@@ -355,6 +355,74 @@ func TestTeardown_PurgeTokens_ClearsConfigRefsAndDeletesSecrets(t *testing.T) {
 	assert.Equal(t, []string{"cursor"}, gm.reverted)
 }
 
+// TestTeardown_BedrockClearedWithClaudeCode verifies that the persisted Bedrock
+// settings are cleared exactly when Claude Code is reverted — they apply to no
+// other client, so leaving them would let a later "thv llm setup" silently
+// re-pin the Bedrock model IDs the user just tore down.
+func TestTeardown_BedrockClearedWithClaudeCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		configured  []ToolConfig
+		targetTool  string
+		wantCompat  bool
+		wantRemains []string
+	}{
+		{
+			name:       "reverting claude-code clears bedrock",
+			configured: []ToolConfig{{Tool: "claude-code", ConfigPath: "/tmp/claude.json"}},
+			targetTool: "claude-code",
+			wantCompat: false,
+		},
+		{
+			name: "reverting another tool keeps bedrock for claude-code",
+			configured: []ToolConfig{
+				{Tool: "claude-code", ConfigPath: "/tmp/claude.json"},
+				{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
+			},
+			targetTool:  "cursor",
+			wantCompat:  true,
+			wantRemains: []string{"claude-code"},
+		},
+		{
+			name: "reverting all tools clears bedrock",
+			configured: []ToolConfig{
+				{Tool: "claude-code", ConfigPath: "/tmp/claude.json"},
+				{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
+			},
+			targetTool: "",
+			wantCompat: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubConfigUpdater{cfg: Config{
+				ConfiguredTools: tt.configured,
+				Bedrock:         BedrockConfig{Compat: true, Enable1M: true},
+			}}
+
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr,
+				&stubGatewayManager{}, tt.targetTool, false, provider, nil)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantCompat, provider.cfg.Bedrock.Compat)
+			// Enable1M rides the same config and must not outlive Compat.
+			assert.Equal(t, tt.wantCompat, provider.cfg.Bedrock.Enable1M)
+
+			var remaining []string
+			for _, tc := range provider.cfg.ConfiguredTools {
+				remaining = append(remaining, tc.Tool)
+			}
+			assert.Equal(t, tt.wantRemains, remaining)
+		})
+	}
+}
+
 func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 	t.Parallel()
 

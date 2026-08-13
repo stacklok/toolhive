@@ -108,6 +108,14 @@ type ProvenanceInfo struct {
 	// RepositoryURI is the source repository from the certificate
 	// extensions, when present.
 	RepositoryURI string `json:"repository_uri,omitempty"`
+	// RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+	// certificate extension 1.3.6.1.4.1.57264.1.14. Empty means
+	// unconstrained, matching lock files written before the field existed.
+	RepositoryRef string `json:"repository_ref,omitempty"`
+	// RunnerEnvironment is the runner class the signing workflow executed in
+	// (e.g. "github-hosted"), from Fulcio certificate extension
+	// 1.3.6.1.4.1.57264.1.11. Empty means unconstrained.
+	RunnerEnvironment string `json:"runner_environment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `json:"sigstore_url,omitempty"`
 	// Provisional marks provenance with a documented verification gap

@@ -180,10 +180,12 @@ func validateProvenance(p *Provenance) error {
 		return errors.New("certIssuer is required")
 	}
 	fields := map[string]string{
-		"signerIdentity": p.SignerIdentity,
-		"certIssuer":     p.CertIssuer,
-		"repositoryUri":  p.RepositoryURI,
-		"sigstoreUrl":    p.SigstoreURL,
+		"signerIdentity":    p.SignerIdentity,
+		"certIssuer":        p.CertIssuer,
+		"repositoryUri":     p.RepositoryURI,
+		"repositoryRef":     p.RepositoryRef,
+		"runnerEnvironment": p.RunnerEnvironment,
+		"sigstoreUrl":       p.SigstoreURL,
 	}
 	for name, value := range fields {
 		if value == "" {

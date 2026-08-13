@@ -1876,10 +1876,22 @@ components:
             Provisional marks provenance with a documented verification gap
             (git signatures until transparency-log validation lands).
           type: boolean
+        repository_ref:
+          description: |-
+            RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+            certificate extension 1.3.6.1.4.1.57264.1.14. Empty means
+            unconstrained, matching lock files written before the field existed.
+          type: string
         repository_uri:
           description: |-
             RepositoryURI is the source repository from the certificate
             extensions, when present.
+          type: string
+        runner_environment:
+          description: |-
+            RunnerEnvironment is the runner class the signing workflow executed in
+            (e.g. "github-hosted"), from Fulcio certificate extension
+            1.3.6.1.4.1.57264.1.11. Empty means unconstrained.
           type: string
         signer_identity:
           description: |-

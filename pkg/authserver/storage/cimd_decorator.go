@@ -158,7 +158,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
 	}
-	if dropped := len(doc.GrantTypes) - len(grantTypes); dropped > 0 {
+	if len(grantTypes) < len(doc.GrantTypes) {
 		slog.Debug("CIMD: ignoring grant_types this server does not support",
 			"client_id", id, "declared", doc.GrantTypes, "effective", grantTypes)
 	}
@@ -167,7 +167,7 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		return nil, fmt.Errorf("%w: CIMD document at %s: %s",
 			fosite.ErrInvalidClient.WithHint(dcrErr.ErrorDescription), id, dcrErr.ErrorDescription)
 	}
-	if dropped := len(doc.ResponseTypes) - len(responseTypes); dropped > 0 {
+	if len(responseTypes) < len(doc.ResponseTypes) {
 		slog.Debug("CIMD: ignoring response_types this server does not support",
 			"client_id", id, "declared", doc.ResponseTypes, "effective", responseTypes)
 	}

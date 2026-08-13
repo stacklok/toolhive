@@ -487,8 +487,10 @@ func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
 // that registers and then fails every token request. nil/empty input gets the
 // same defaults as DCR.
 func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	// Clone so callers that store the result (e.g. in a cached fosite client)
+	// never alias the package-level default.
 	if len(grantTypes) == 0 {
-		return defaultGrantTypes, nil
+		return slices.Clone(defaultGrantTypes), nil
 	}
 	filtered := make([]string, 0, len(grantTypes))
 	for _, gt := range grantTypes {
@@ -513,8 +515,9 @@ func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 // since it is the only response type this server can serve. nil/empty input
 // gets the same defaults as DCR.
 func FilterPublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	// Clone for the same non-aliasing reason as FilterPublicGrantTypes.
 	if len(responseTypes) == 0 {
-		return defaultResponseTypes, nil
+		return slices.Clone(defaultResponseTypes), nil
 	}
 	filtered := make([]string, 0, len(responseTypes))
 	for _, rt := range responseTypes {

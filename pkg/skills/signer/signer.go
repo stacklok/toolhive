@@ -19,6 +19,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/sign"
 )
 
+//go:generate mockgen -destination=mocks/mock_signer.go -package=mocks -source=signer.go Signer
+
 // ErrKeyRequired indicates no signing key was provided. Keyless (OIDC)
 // signing is not implemented yet, so a cosign private key is the only
 // supported signing method.
@@ -26,9 +28,11 @@ var ErrKeyRequired = errors.New("signing key required: pass --key with a cosign 
 
 // Options configures OCI signing.
 type Options struct {
-	// Key is the path to a cosign PEM-encoded private key file. An
-	// encrypted key is decrypted with the COSIGN_PASSWORD environment
-	// variable, matching the cosign CLI.
+	// Key is the path to a cosign PEM-encoded private key file, including
+	// the format `cosign generate-key-pair` writes. An encrypted key is
+	// decrypted with the COSIGN_PASSWORD environment variable of the
+	// process doing the signing — for ToolHive that is the API server, not
+	// the CLI invoking it.
 	Key string
 }
 
@@ -92,7 +96,9 @@ func (d *Default) SignOCI(ctx context.Context, ref, digestStr string, opts Optio
 		return nil, errors.New("signing produced no message signature")
 	}
 
-	if err := attachCosignSignature(ctx, d.keychain, ref, digestStr, payload, msgSig.GetSignature()); err != nil {
+	if err := attachCosignSignature(
+		ctx, d.keychain, ref, digestStr, payload, msgSig.GetSignature(), keypair.GetPublicKey(),
+	); err != nil {
 		return nil, fmt.Errorf("attaching signature manifest: %w", err)
 	}
 

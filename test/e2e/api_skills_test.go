@@ -204,7 +204,9 @@ func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
 }
 
 func pushSkill(server *e2e.Server, reference string) *http.Response {
-	reqBody := pushSkillRequest{Reference: reference}
+	// E2E artifacts are pushed unsigned (no signing infrastructure in the
+	// suite); project-scoped installs of them pass allow_unsigned.
+	reqBody := pushSkillRequest{Reference: reference, NoSign: true}
 	jsonData, err := json.Marshal(reqBody)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 
@@ -219,6 +221,7 @@ func pushSkill(server *e2e.Server, reference string) *http.Response {
 
 type pushSkillRequest struct {
 	Reference string `json:"reference"`
+	NoSign    bool   `json:"no_sign,omitempty"`
 }
 
 // createUpstreamRegistryWithSkill creates a JSON file in the upstream registry
@@ -1089,10 +1092,6 @@ func buildAndPushSkill(server *e2e.Server, ociRegistry *httptest.Server, skillNa
 	return ociRef
 }
 
-// This RFC THV-0080 feature is gated behind TOOLHIVE_SKILLS_LOCK_ENABLED
-// while it lands across a stack of PRs (see skills.LockFileFeatureEnabled),
-// so this Describe block runs its own server with the gate turned on rather
-// than sharing the "Skills API" block's default-off server above.
 var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "api-registry", "skills", "skills-lock", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
@@ -1101,7 +1100,6 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 	BeforeEach(func() {
 		config = e2e.NewServerConfig()
-		config.ExtraEnv = []string{"TOOLHIVE_SKILLS_LOCK_ENABLED=true"}
 		apiServer = e2e.StartServer(config)
 	})
 

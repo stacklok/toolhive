@@ -27,15 +27,16 @@ starts. It is limited to the token-exchange grant and authenticates at
 
 `RunConfig.delegate_clients` is the portable runtime configuration surface. Each
 client must name a unique `client_id`, a secret **reference**, one or more scopes,
-and one or more audiences. The grant list must contain exactly
-`urn:ietf:params:oauth:grant-type:token-exchange`. Scopes must be a subset of
-`scopes_supported` (or the default supported OIDC scopes when that field is
-omitted), and audiences must be a subset of `allowed_audiences`. These required
-narrowing lists prevent a delegate client from inheriting every server scope or
-resource.
+and one or more audiences. The grant type is fixed internally to
+`urn:ietf:params:oauth:grant-type:token-exchange` and is not configurable.
+Scopes must be a subset of `scopes_supported` (or the default supported OIDC
+scopes when that field is omitted), and audiences must be a subset of
+`allowed_audiences`. These required narrowing lists prevent a delegate client
+from inheriting every server scope or resource.
 
 The following is a relevant `RunConfig` excerpt. `client_secret_env_var` may be
-replaced by `client_secret_file`; an inline secret is not supported.
+replaced by `client_secret_file`; an inline secret is not supported. Generate
+the secret with a CSPRNG, e.g. `openssl rand -base64 32`.
 
 ```yaml
 issuer: https://auth.example.com
@@ -44,7 +45,6 @@ allowed_audiences: [https://mcp.example.com]
 delegate_clients:
   - client_id: reporting-delegate
     client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
-    grant_types: [urn:ietf:params:oauth:grant-type:token-exchange]
     scopes: [openid]
     audiences: [https://mcp.example.com]
 trusted_issuers:
@@ -236,6 +236,84 @@ being made," with no requirement that the token be validated against the
 identity of the client presenting it as `subject_token`. Applying a
 client-authentication-based policy on top of that — as this exception does —
 is within the authorization server's discretion as the token-exchange STS.
+
+### Worked example
+
+This is the scenario the relaxation exists for (issue #5194): an interactive
+client obtains a self-issued token for a user, and a separate, unrelated
+delegate client later exchanges that same token to act as the user.
+
+`RunConfig` declares the delegate client (`chat-ui`, the client the user
+authenticated through, needs no entry here — only the delegate does):
+
+```yaml
+delegate_clients:
+  - client_id: coding-agent
+    client_secret_env_var: CODING_AGENT_CLIENT_SECRET
+    scopes: [openid, mcp:tools]
+    audiences: [https://mcp.example.com]
+```
+
+1. The user signs in through `chat-ui` and ToolHive mints a self-issued
+   access token whose `client_id` is `chat-ui` — not `coding-agent`:
+
+   ```json
+   {
+     "iss": "https://auth.example.com",
+     "sub": "3f9c2eab-1a4e-4b8f-9c11-3a0d2e6f9d21",
+     "client_id": "chat-ui",
+     "aud": "https://mcp.example.com",
+     "scope": "openid mcp:tools",
+     "exp": 1755100000
+   }
+   ```
+
+2. `coding-agent` — a client the user never signed in through — presents
+   that access token as `subject_token`, authenticating itself with its own
+   client credentials (`client_secret_basic`, i.e. an `Authorization: Basic`
+   header):
+
+   ```http
+   POST /oauth/token HTTP/1.1
+   Host: auth.example.com
+   Authorization: Basic Y29kaW5nLWFnZW50OjxzZWNyZXQ+
+   Content-Type: application/x-www-form-urlencoded
+
+   grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+   subject_token=<the access token from step 1>&
+   subject_token_type=urn:ietf:params:oauth:token-type:access_token&
+   audience=https://mcp.example.com&
+   scope=openid
+   ```
+
+   Because `coding-agent` is a configured delegate client, `checkDelegationConsent`
+   skips the `client_id` binding described in step 3 above — `chat-ui` on the
+   subject token is not compared against `coding-agent`, the authenticated
+   client — and the exchange proceeds.
+
+3. The delegated token names the same user as `sub`, and records
+   `coding-agent` — the client that performed the exchange, not `chat-ui` —
+   as the acting party in `act.sub`:
+
+   ```json
+   {
+     "iss": "https://auth.example.com",
+     "sub": "3f9c2eab-1a4e-4b8f-9c11-3a0d2e6f9d21",
+     "act": { "sub": "coding-agent" },
+     "aud": "https://mcp.example.com",
+     "scope": "openid",
+     "exp": 1755099400
+   }
+   ```
+
+   `scope` is narrowed from the requested `openid` to what both `coding-agent`
+   and the subject token already carried (`grantScopes` never grows it); had
+   the request asked for `mcp:tools` too, the same subset rule would have
+   granted it, since the subject token carried it. `aud` passes
+   `ensureAudienceSubsetOfSubject` because it's both in the subject token's
+   own `aud` and in `coding-agent`'s configured `audiences`. `exp` is capped
+   to `min(subject token's remaining lifetime, delegationLifespan)`, which
+   here yields an expiry earlier than the subject token's own.
 
 ## Accepted limitations
 

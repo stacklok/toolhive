@@ -466,9 +466,9 @@ func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing
 		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
 		AllowedAudiences: []string{"https://mcp.example.com"},
 		DelegateClients: []DelegateClient{{
-			ClientID: "delegate", ClientSecret: "delegate-secret",
-			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
-			Scopes:     []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+			ClientID:     "delegate",
+			ClientSecret: "delegate-secret-well-above-the-minimum-length",
+			Scopes:       []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
 		}},
 	}
 

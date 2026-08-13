@@ -2351,7 +2351,7 @@ func TestResolveDelegateClients(t *testing.T) {
 			name: "file takes precedence and is trimmed",
 			clients: []authserver.DelegateClientRunConfig{{
 				ClientID: "delegate", ClientSecretFile: secretFile, ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
-				GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Scopes: []string{"openid"}, Audiences: []string{"audience"},
+				Scopes: []string{"openid"}, Audiences: []string{"audience"},
 			}},
 			want: "file-secret",
 		},
@@ -2359,7 +2359,7 @@ func TestResolveDelegateClients(t *testing.T) {
 			name: "environment secret",
 			clients: []authserver.DelegateClientRunConfig{{
 				ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
-				GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Scopes: []string{"openid"}, Audiences: []string{"audience"},
+				Scopes: []string{"openid"}, Audiences: []string{"audience"},
 			}},
 			want: "env-secret",
 		},
@@ -2407,17 +2407,15 @@ func TestResolveDelegateClients(t *testing.T) {
 func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	clients := []authserver.DelegateClientRunConfig{{
 		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",
-		GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Scopes: []string{"openid"}, Audiences: []string{"audience"},
+		Scopes: []string{"openid"}, Audiences: []string{"audience"},
 	}}
 	t.Setenv("TEST_DELEGATE_CLONE_SECRET", "secret")
 
 	resolved, err := resolveDelegateClients(clients)
 	require.NoError(t, err)
-	clients[0].GrantTypes[0] = "changed"
 	clients[0].Scopes[0] = "changed"
 	clients[0].Audiences[0] = "changed"
 
-	assert.Equal(t, oauthproto.GrantTypeTokenExchange, resolved[0].GrantTypes[0])
 	assert.Equal(t, "openid", resolved[0].Scopes[0])
 	assert.Equal(t, "audience", resolved[0].Audiences[0])
 }

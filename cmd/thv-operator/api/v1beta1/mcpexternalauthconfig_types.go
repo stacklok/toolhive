@@ -402,6 +402,14 @@ type DelegateClientConfig struct {
 // non-loopback host. The runtime transport validation remains defense in depth
 // for direct Go callers and confidential DCR.
 //
+// This is stricter than the Go-level ValidateConfidentialClientTransport,
+// which still permits a loopback-HTTP issuer with delegate clients when
+// InsecureAllowConfidentialOverLoopbackHTTP is set — intentionally, since that
+// flag's loopback-is-safe rationale applies equally to delegate-client
+// secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
+// is stricter only because CEL cannot express the loopback exception, not
+// because delegate clients need one.
+//
 //nolint:lll // CEL validation rule exceeds line length limit
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.

@@ -1772,7 +1772,6 @@ func TestDelegateClientsConversionAndEnvVars(t *testing.T) {
 	require.Len(t, config.DelegateClients, 2)
 	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", config.DelegateClients[0].ClientSecretEnvVar)
 	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_1", config.DelegateClients[1].ClientSecretEnvVar)
-	assert.Equal(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, config.DelegateClients[0].GrantTypes)
 	assert.Equal(t, []string{"openid"}, config.DelegateClients[0].Scopes)
 	assert.Equal(t, []string{"https://resource.example.com"}, config.DelegateClients[0].Audiences)
 

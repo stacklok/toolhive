@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -233,7 +234,7 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 		client, err := registration.NewStaticDelegateClient(registration.Config{
 			ID:         delegateClient.ClientID,
 			Secret:     delegateClient.ClientSecret,
-			GrantTypes: delegateClient.GrantTypes,
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
 			Scopes:     delegateClient.Scopes,
 			Audience:   delegateClient.Audiences,
 		})
@@ -243,6 +244,10 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 		if err := stor.RegisterClient(ctx, client); err != nil {
 			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
 		}
+		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
+			"it may exchange any user's self-issued ToolHive token for a delegated token, "+
+			"with no per-subject binding to the client that originally obtained that token",
+			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
 	}
 	return nil
 }

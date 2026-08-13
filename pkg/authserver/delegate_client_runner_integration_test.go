@@ -29,7 +29,7 @@ import (
 
 const (
 	delegateClientID       = "configured-delegate-client"
-	delegateClientSecret   = "configured-delegate-secret"
+	delegateClientSecret   = "configured-delegate-secret-well-above-minimum-length"
 	delegateAudience       = "https://delegate.test.local"
 	ungrantedScope         = "email"
 	ungrantedAudience      = "https://other-resource.test.local"
@@ -204,7 +204,6 @@ func startConfiguredDelegateAuthServer(t *testing.T) (*httptest.Server, string, 
 	cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
 		ClientID:         delegateClientID,
 		ClientSecretFile: secretFile,
-		GrantTypes:       []string{tokenExchangeGrantType},
 		Scopes:           []string{"openid", "profile"},
 		Audiences:        []string{delegateAudience},
 	}}

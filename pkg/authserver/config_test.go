@@ -18,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -543,7 +542,6 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 	validClient := DelegateClientRunConfig{
 		ClientID:           "delegate",
 		ClientSecretEnvVar: "DELEGATE_CLIENT_SECRET",
-		GrantTypes:         []string{oauthproto.GrantTypeTokenExchange},
 		Scopes:             []string{"openid"},
 		Audiences:          []string{"https://mcp.example.com"},
 	}
@@ -553,15 +551,13 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", clients: []DelegateClientRunConfig{validClient}},
-		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", GrantTypes: validClient.GrantTypes, Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
+		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
 		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
-		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", GrantTypes: validClient.GrantTypes, Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_secret_file or client_secret_env_var is required"},
-		{name: "wrong grant", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{"authorization_code"}, Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "grant_types must be exactly"},
-		{name: "multiple grants", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{oauthproto.GrantTypeTokenExchange, "authorization_code"}, Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "grant_types must be exactly"},
-		{name: "missing scopes", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: validClient.GrantTypes, Audiences: validClient.Audiences}}, wantErr: "scopes is required"},
-		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: validClient.GrantTypes, Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
-		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: validClient.GrantTypes, Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
-		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: validClient.GrantTypes, Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_secret_file or client_secret_env_var is required"},
+		{name: "missing scopes", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Audiences: validClient.Audiences}}, wantErr: "scopes is required"},
+		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
+		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
+		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
 	}
 
 	for _, tt := range tests {
@@ -609,7 +605,12 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 	}
-	validClient := DelegateClient{ClientID: "delegate", ClientSecret: "secret", GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"}}
+	validClient := DelegateClient{
+		ClientID:     "delegate",
+		ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+		Scopes:       []string{"openid"},
+		Audiences:    []string{"https://mcp.example.com"},
+	}
 	tests := []struct {
 		name    string
 		clients []DelegateClient
@@ -617,7 +618,8 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid resolved client", clients: []DelegateClient{validClient}},
-		{name: "missing resolved secret", clients: []DelegateClient{{ClientID: "delegate", GrantTypes: validClient.GrantTypes, Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret is required"},
+		{name: "missing resolved secret", clients: []DelegateClient{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret is required"},
+		{name: "resolved secret too short", clients: []DelegateClient{{ClientID: "delegate", ClientSecret: "short-secret", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret must be at least"},
 		{name: "static client rejects insecure HTTP", clients: []DelegateClient{validClient}, issuer: "http://auth.example.com", wantErr: "confidential clients would send secrets over cleartext HTTP"},
 		{name: "static client rejects loopback HTTP without opt-in", clients: []DelegateClient{validClient}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
 	}
@@ -631,7 +633,11 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 				cfg.Issuer = tt.issuer
 				cfg.InsecureAllowHTTP = tt.issuer == "http://auth.example.com"
 			}
-			assertError(t, cfg.Validate(), tt.wantErr != "", tt.wantErr)
+			err := cfg.Validate()
+			assertError(t, err, tt.wantErr != "", tt.wantErr)
+			if err != nil && tt.name == "resolved secret too short" {
+				assert.NotContains(t, err.Error(), "short-secret")
+			}
 		})
 	}
 }

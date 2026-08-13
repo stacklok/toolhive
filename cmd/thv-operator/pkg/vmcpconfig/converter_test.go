@@ -1871,7 +1871,6 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	// Verify delegate clients carry only a reserved env-var name into the ConfigMap runtime config.
 	require.Len(t, runConfig.DelegateClients, 1)
 	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", runConfig.DelegateClients[0].ClientSecretEnvVar)
-	assert.Equal(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, runConfig.DelegateClients[0].GrantTypes)
 	assert.Equal(t, []string{"openid"}, runConfig.DelegateClients[0].Scopes)
 	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.DelegateClients[0].Audiences)
 

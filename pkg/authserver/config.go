@@ -186,6 +186,11 @@ type RunConfig struct {
 	// local development (the traffic never leaves the machine), but client
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
+	//
+	// Applies identically to delegate clients and DCR-registered clients; the
+	// Kubernetes CRD blocks this combination unconditionally only because CEL
+	// cannot express the loopback exception, not because delegate clients need
+	// a stricter policy — see EmbeddedAuthServerConfig's doc comment.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -207,7 +212,8 @@ type RunConfig struct {
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
 // client for authorization-server startup, so it can act as the client in an
 // RFC 8693 token-exchange request. The secret is always a reference (file or
-// environment variable), never an inline literal.
+// environment variable), never an inline literal. The grant type is fixed to
+// RFC 8693 token exchange internally and is not configurable.
 type DelegateClientRunConfig struct {
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID string `json:"client_id" yaml:"client_id"`
@@ -221,13 +227,6 @@ type DelegateClientRunConfig struct {
 	// required.
 	//nolint:lll // field tags require full JSON+YAML names
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
-
-	// GrantTypes must be exactly
-	// ["urn:ietf:params:oauth:grant-type:token-exchange"] — the only grant a
-	// declared client may hold today. No client_credentials handler exists
-	// in this server, and authorization_code requires a redirect flow a
-	// delegate client has no use for; narrower is easier to widen later.
-	GrantTypes []string `json:"grant_types" yaml:"grant_types"`
 
 	// Scopes are the OAuth scopes this client may request. Required, and
 	// must be a subset of RunConfig.ScopesSupported: a declared client must
@@ -310,10 +309,9 @@ func validateAllowedAudiences(audiences []string) error {
 }
 
 // validateDelegateClients validates the structural and narrowing invariants for
-// RunConfig.DelegateClients. Grant types are restricted to exactly the RFC 8693
-// token-exchange grant. Scopes and audiences are required and must be subsets
-// of the server-supported values so a declared client never defaults to every
-// supported scope or audience.
+// RunConfig.DelegateClients. Scopes and audiences are required and must be
+// subsets of the server-supported values so a declared client never defaults
+// to every supported scope or audience.
 func validateDelegateClients(
 	clients []DelegateClientRunConfig, scopesSupported, allowedAudiences []string,
 ) error {
@@ -336,11 +334,6 @@ func validateDelegateClients(
 			return fmt.Errorf(
 				"delegate_clients: client_id %q: client_secret_file or client_secret_env_var is required", client.ClientID)
 		}
-		if len(client.GrantTypes) != 1 || client.GrantTypes[0] != oauthproto.GrantTypeTokenExchange {
-			return fmt.Errorf(
-				"delegate_clients: client_id %q: grant_types must be exactly [%q]",
-				client.ClientID, oauthproto.GrantTypeTokenExchange)
-		}
 		if len(client.Scopes) == 0 {
 			return fmt.Errorf("delegate_clients: client_id %q: scopes is required", client.ClientID)
 		}
@@ -352,7 +345,7 @@ func validateDelegateClients(
 			return fmt.Errorf("delegate_clients: client_id %q: audiences is required", client.ClientID)
 		}
 		for _, audience := range client.Audiences {
-			if !contains(allowedAudiences, audience) {
+			if !slices.Contains(allowedAudiences, audience) {
 				return fmt.Errorf(
 					"delegate_clients: client_id %q: audience %q is not in allowed_audiences", client.ClientID, audience)
 			}
@@ -361,9 +354,21 @@ func validateDelegateClients(
 	return nil
 }
 
+// minDelegateClientSecretLength is the minimum accepted length for a resolved
+// delegate-client secret. Delegate-client secrets come from the operator (a
+// file or environment variable) rather than being minted by this server's own
+// DCR path, so — unlike SHA256Hasher's DCR-issued-secret assumption (see that
+// type's doc comment) — nothing else guarantees they carry meaningful
+// entropy. 32 matches the byte length GenerateClientSecret uses for DCR
+// secrets (32 bytes of crypto/rand, base64url-encoded), so this floor accepts
+// anything at that scale without requiring a specific encoding.
+const minDelegateClientSecretLength = 32
+
 // validateResolvedDelegateClients validates resolved runtime delegate clients.
-// The resolved secret must be nonempty because Config callers bypass secret
-// resolution and RunConfig.Validate.
+// The resolved secret must be nonempty and at least minDelegateClientSecretLength
+// characters, because Config callers bypass secret resolution and
+// RunConfig.Validate, and unlike DCR-minted secrets, a delegate-client secret's
+// entropy is never otherwise checked.
 func validateResolvedDelegateClients(
 	clients []DelegateClient, scopesSupported, allowedAudiences []string,
 ) error {
@@ -372,24 +377,19 @@ func validateResolvedDelegateClients(
 		if client.ClientSecret == "" {
 			return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
 		}
+		if len(client.ClientSecret) < minDelegateClientSecretLength {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q: resolved client secret must be at least %d characters",
+				client.ClientID, minDelegateClientSecretLength)
+		}
 		runClients[i] = DelegateClientRunConfig{
 			ClientID:           client.ClientID,
 			ClientSecretEnvVar: "resolved",
-			GrantTypes:         client.GrantTypes,
 			Scopes:             client.Scopes,
 			Audiences:          client.Audiences,
 		}
 	}
 	return validateDelegateClients(runClients, scopesSupported, allowedAudiences)
-}
-
-func contains(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
@@ -966,9 +966,6 @@ type DelegateClient struct {
 
 	// ClientSecret is the resolved (plaintext) client secret.
 	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
-
-	// GrantTypes must be exactly ["urn:ietf:params:oauth:grant-type:token-exchange"].
-	GrantTypes []string
 
 	// Scopes are the OAuth scopes this client may request.
 	Scopes []string

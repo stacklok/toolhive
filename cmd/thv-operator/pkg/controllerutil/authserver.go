@@ -18,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -234,7 +233,6 @@ func buildDelegateClientRunConfigs(
 		configs[i] = authserver.DelegateClientRunConfig{
 			ClientID:           delegateClient.ClientID,
 			ClientSecretEnvVar: delegateClientSecretEnvVarName(i),
-			GrantTypes:         []string{oauthproto.GrantTypeTokenExchange},
 			Scopes:             append([]string(nil), delegateClient.Scopes...),
 			Audiences:          append([]string(nil), delegateClient.Audiences...),
 		}

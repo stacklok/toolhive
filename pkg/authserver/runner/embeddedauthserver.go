@@ -741,7 +741,6 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 		resolved[i] = authserver.DelegateClient{
 			ClientID:     client.ClientID,
 			ClientSecret: secret,
-			GrantTypes:   slices.Clone(client.GrantTypes),
 			Scopes:       slices.Clone(client.Scopes),
 			Audiences:    slices.Clone(client.Audiences),
 		}

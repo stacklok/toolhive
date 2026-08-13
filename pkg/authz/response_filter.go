@@ -166,6 +166,12 @@ func (rfw *ResponseFilteringWriter) Flush() {
 }
 
 func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) error {
+	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm before
+	// parsing JSON, so strip it here too. Otherwise the JSON decoder and the
+	// result probe both reject a response that the client will accept, causing
+	// the unfiltered body to pass through.
+	rawResponse = bytes.TrimPrefix(rawResponse, []byte("\xEF\xBB\xBF"))
+
 	message, err := jsonrpc2.DecodeMessage(rawResponse)
 	response, ok := message.(*jsonrpc2.Response)
 	if err != nil || !ok {

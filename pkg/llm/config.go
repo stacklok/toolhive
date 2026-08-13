@@ -35,9 +35,7 @@ type Config struct {
 	// Desktop) write it verbatim as inferenceModels, and — when Bedrock compat is
 	// on — each entry is also mapped to a Claude Code tier (see BedrockConfig).
 	// Persisting it here (rather than passing a transient flag value) keeps both
-	// consumers consistent on a later plain "thv llm setup". Since only those two
-	// clients read it, it is registered in clientScopedSettings and cleared once
-	// neither remains configured.
+	// consumers consistent on a later plain "thv llm setup".
 	Models          []string     `yaml:"models,omitempty"            json:"models,omitempty"`
 	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
 }
@@ -45,9 +43,8 @@ type Config struct {
 // BedrockConfig holds settings for configuring Claude Code to reach an LLM
 // gateway that forwards to AWS Bedrock. It is persisted so that a later plain
 // "thv llm setup" re-applies these settings rather than silently clearing them.
-// Because it only ever applies to Claude Code, it is registered in
-// clientScopedSettings and cleared when Claude Code is torn down, so it cannot
-// outlive its only consumer.
+// That stickiness ends at teardown: reverting the last configured tool resets the
+// whole LLM config (see Teardown), so it cannot outlive the tools that used it.
 type BedrockConfig struct {
 	// Compat, when true, writes CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and the
 	// per-tier Bedrock model IDs into Claude Code's settings.json. Bedrock rejects

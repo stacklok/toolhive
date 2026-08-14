@@ -19,10 +19,10 @@ import (
 )
 
 // installFromOCI pulls a plugin artifact from a remote registry, extracts
-// metadata and layer data, then delegates to installWithExtraction. Mirror of
-// skillsvc.installFromOCI, substituting the plugin supply-chain check
-// (config.Name == OCI repo last segment) and hydrating Components/Dependencies
-// from the plugin OCI config.
+// metadata and layer data, then materializes and registers the plugin while
+// holding the per-plugin lock. Mirror of skillsvc.installFromOCI, substituting
+// the plugin supply-chain check (config.Name == OCI repo last segment) and
+// hydrating Components/Dependencies from the plugin OCI config.
 func (s *service) installFromOCI(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -110,7 +110,11 @@ func (s *service) installFromOCI(
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	return s.installWithExtraction(ctx, opts, scope)
+	result, err := s.installWithExtraction(ctx, opts, scope)
+	if err != nil {
+		return nil, err
+	}
+	return s.installAndRegister(ctx, opts, result, scope)
 }
 
 // requiresToDependencies maps a plugin's declared `requires` OCI references

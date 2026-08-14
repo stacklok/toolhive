@@ -3,7 +3,11 @@
 
 package plugins
 
-import "github.com/stacklok/toolhive/pkg/skills"
+import (
+	"context"
+
+	"github.com/stacklok/toolhive/pkg/skills"
+)
 
 // ListOptions configures the behavior of the List operation. Alias for
 // skills.ListOptions (identical shape: Scope, ClientApp, ProjectRoot, Group).
@@ -71,6 +75,10 @@ type InstallResult struct {
 	// output), computed at install time for recording in the lock file.
 	// Internal use only — NOT exposed via HTTP API.
 	ContentDigest string `json:"-"`
+	// RestoreFiles undoes this install's on-disk writes: dematerialize a
+	// fresh install, or restore the previous tree after a failed upgrade.
+	// Internal use only — NOT exposed via HTTP API.
+	RestoreFiles func(context.Context) `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation. Alias

@@ -5,6 +5,7 @@ package pluginsvc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,9 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -71,6 +74,7 @@ func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, s
 	svc := New(
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
+		WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
 	)
 	return svc, projectRoot
 }
@@ -200,6 +204,9 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
 	})
 	require.Error(t, err, "the DB record must be rolled back so a retry starts fresh")
+
+	_, err = os.Stat(filepath.Join(projectRoot, ".claude", "plugins", "my-plugin"))
+	assert.True(t, os.IsNotExist(err), "a failed fresh install must dematerialize on rollback")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService
@@ -209,13 +216,16 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	first := installTestPlugin(t, svc, projectRoot, validLockDigest())
 	before, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 	require.True(t, ok)
+	helloPath := filepath.Join(projectRoot, ".claude", "plugins", "my-plugin", "commands", "hello.md")
+	beforeHello, err := os.ReadFile(helloPath) //nolint:gosec // test fixture path
+	require.NoError(t, err)
 
 	require.NoError(t, os.Chmod(projectRoot, 0o555))
 	t.Cleanup(func() { _ = os.Chmod(projectRoot, 0o755) })
 
-	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
 		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
+		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
 		Digest:      validLockDigestAlt(),
 		Scope:       plugins.ScopeProject,
 		ProjectRoot: projectRoot,
@@ -233,6 +243,10 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	})
 	require.NoError(t, err, "the pre-existing DB record must survive")
 	assert.Equal(t, first.Plugin.Digest, info.InstalledPlugin.Digest)
+
+	afterHello, err := os.ReadFile(helloPath) //nolint:gosec // test fixture path
+	require.NoError(t, err, "the previous materialization must be restored")
+	assert.Equal(t, beforeHello, afterHello)
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService
@@ -296,4 +310,81 @@ func TestUninstall_DoesNotTouchSkillsKey(t *testing.T) {
 	assert.True(t, ok, "uninstalling a plugin must not drop skills: entries")
 	_, ok = lf.GetPlugin("my-plugin")
 	assert.False(t, ok)
+}
+
+type hookPluginStore struct {
+	storage.PluginStore
+	beforeDelete func() error
+}
+
+func (s *hookPluginStore) Delete(ctx context.Context, name string, scope plugins.Scope, projectRoot string) error {
+	if s.beforeDelete != nil {
+		if err := s.beforeDelete(); err != nil {
+			return err
+		}
+	}
+	return s.PluginStore.Delete(ctx, name, scope, projectRoot)
+}
+
+type failingDematerializeAdapter struct {
+	plugins.MaterializationAdapter
+	err error
+}
+
+func (a *failingDematerializeAdapter) Dematerialize(context.Context, plugins.DematerializeRequest) error {
+	return a.err
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUninstall_DematerializeFailureRestoresLockEntry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["claude-code"] = &failingDematerializeAdapter{
+		MaterializationAdapter: inner.materializers["claude-code"],
+		err:                    errors.New("permission denied"),
+	}
+
+	err := svc.Uninstall(t.Context(), plugins.UninstallOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.True(t, ok, "a failed dematerialize must restore the lock entry")
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err, "the DB record must survive so uninstall can be retried")
+	assert.NotNil(t, info.InstalledPlugin)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUninstall_StoreDeleteFailureRestoresLockEntry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.store = &hookPluginStore{
+		PluginStore:  inner.store,
+		beforeDelete: func() error { return errors.New("db locked") },
+	}
+
+	err := svc.Uninstall(t.Context(), plugins.UninstallOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "db locked")
+
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.True(t, ok, "a failed DB delete must restore the lock entry")
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err, "the plugin must remain installed")
+	assert.NotNil(t, info.InstalledPlugin)
 }

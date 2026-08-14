@@ -7,7 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -120,7 +123,12 @@ func (s *service) installExtractionSameDigestNewClients(
 		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
 		return nil, err
 	}
-	return &plugins.InstallResult{Plugin: pl}, nil
+	return &plugins.InstallResult{
+		Plugin: pl,
+		RestoreFiles: func(ctx context.Context) {
+			s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		},
+	}, nil
 }
 
 // installExtractionUpgradeDigest re-materializes the plugin for the union of
@@ -134,17 +142,23 @@ func (s *service) installExtractionUpgradeDigest(
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
 	allClients := mergeClientLists(existing.Clients, clientTypes)
-	materialized, err := s.materializeForClients(ctx, opts, scope, allClients)
-	if err != nil {
+	backups := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, allClients)
+	if _, err := s.materializeForClients(ctx, opts, scope, allClients); err != nil {
+		s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
 		return nil, err
 	}
 	pl := buildInstalledPlugin(opts, scope, allClients, nil)
 	pl.Managed = existing.Managed
 	if err := s.store.Update(ctx, pl); err != nil {
-		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
 		return nil, err
 	}
-	return &plugins.InstallResult{Plugin: pl}, nil
+	return &plugins.InstallResult{
+		Plugin: pl,
+		RestoreFiles: func(ctx context.Context) {
+			s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
+		},
+	}, nil
 }
 
 // installExtractionFresh materializes the plugin for all requested clients,
@@ -164,7 +178,12 @@ func (s *service) installExtractionFresh(
 		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
 		return nil, err
 	}
-	return &plugins.InstallResult{Plugin: pl}, nil
+	return &plugins.InstallResult{
+		Plugin: pl,
+		RestoreFiles: func(ctx context.Context) {
+			s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		},
+	}, nil
 }
 
 // materializeForClients calls Materialize for each requested client type,
@@ -199,6 +218,105 @@ func (s *service) materializeForClients(
 		materialized = append(materialized, ct)
 	}
 	return materialized, nil
+}
+
+// snapshotClientTrees copies each client's installed plugin tree into memory
+// so a later rollback can restore the previous materialization without
+// leaking temp directories. Missing directories are omitted (the client was
+// not yet installed).
+func (s *service) snapshotClientTrees(
+	name string, scope plugins.Scope, projectRoot string, clientTypes []string,
+) map[string]map[string][]byte {
+	backups := make(map[string]map[string][]byte, len(clientTypes))
+	for _, ct := range clientTypes {
+		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
+		if err != nil {
+			continue
+		}
+		files, ok := snapshotDir(dir)
+		if !ok {
+			continue
+		}
+		backups[ct] = files
+	}
+	if len(backups) == 0 {
+		return nil
+	}
+	return backups
+}
+
+// restoreClientTrees writes snapshotClientTrees backups back over the live
+// plugin directories. Clients without a backup are dematerialized (they were
+// newly added by the failed install).
+func (s *service) restoreClientTrees(
+	ctx context.Context,
+	name string,
+	scope plugins.Scope,
+	projectRoot string,
+	backups map[string]map[string][]byte,
+	allClients []string,
+) {
+	restored := make(map[string]struct{}, len(backups))
+	for ct, files := range backups {
+		restored[ct] = struct{}{}
+		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
+		if err != nil {
+			continue
+		}
+		restoreDir(dir, files)
+	}
+	var extra []string
+	for _, ct := range allClients {
+		if _, ok := restored[ct]; !ok {
+			extra = append(extra, ct)
+		}
+	}
+	s.dematerializeAll(ctx, extra, name, scope, projectRoot)
+}
+
+// snapshotDir reads every regular file under dir into a relative-path map.
+// Returns ok=false when dir does not exist.
+func snapshotDir(dir string) (map[string][]byte, bool) {
+	if _, err := os.Stat(dir); err != nil {
+		return nil, false
+	}
+	files := make(map[string][]byte)
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		data, readErr := os.ReadFile(path) //nolint:gosec // path is under a GetPluginPath-validated directory
+		if readErr != nil {
+			return readErr
+		}
+		files[rel] = data
+		return nil
+	})
+	return files, true
+}
+
+// restoreDir replaces dir with the files captured by snapshotDir.
+func restoreDir(dir string, files map[string][]byte) {
+	_ = os.RemoveAll(dir)
+	for rel, data := range files {
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			continue
+		}
+		_ = os.WriteFile(path, data, 0o600)
+	}
+}
+
+// pluginInstallPath resolves the on-disk plugin directory for a client.
+func (s *service) pluginInstallPath(clientType, name string, scope plugins.Scope, projectRoot string) (string, error) {
+	if s.clientManager == nil {
+		return "", errors.New("client manager is not configured")
+	}
+	return s.clientManager.GetPluginPath(client.ClientApp(clientType), name, scope, projectRoot)
 }
 
 // dematerializeAll best-effort reverts materializations performed in this call.

@@ -29,9 +29,14 @@ import (
 // (manifest + a command file). Used by install round-trip tests.
 func makePluginLayerData(t *testing.T, name string) []byte {
 	t.Helper()
+	return makePluginLayerDataWithBody(t, name, "# hello")
+}
+
+func makePluginLayerDataWithBody(t *testing.T, name, body string) []byte {
+	t.Helper()
 	files := []ociartifact.FileEntry{
 		{Path: ".claude-plugin/plugin.json", Content: []byte(fmt.Sprintf(`{"name":%q,"version":"1.0.0"}`, name)), Mode: 0644},
-		{Path: "commands/hello.md", Content: []byte("# hello"), Mode: 0644},
+		{Path: "commands/hello.md", Content: []byte(body), Mode: 0644},
 	}
 	data, err := ociartifact.CompressTar(files, ociartifact.DefaultTarOptions(), ociartifact.DefaultGzipOptions())
 	require.NoError(t, err)

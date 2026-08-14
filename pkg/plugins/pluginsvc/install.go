@@ -34,13 +34,10 @@ func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*pl
 	}
 
 	// Git references are dispatched first; the prefix is unambiguous and
-	// cannot collide with OCI references.
+	// cannot collide with OCI references. installFromGit holds the per-plugin
+	// lock across extraction, DB, group, lock-file, and rollback.
 	if gitresolver.IsGitReference(opts.Name) {
-		result, err := s.installFromGit(ctx, opts, scope)
-		if err != nil {
-			return nil, err
-		}
-		return s.installAndRegister(ctx, opts, result, scope)
+		return s.installFromGit(ctx, opts, scope)
 	}
 
 	// Splice opts.Version as the tag for tag-less OCI-like references.
@@ -58,13 +55,9 @@ func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*pl
 		)
 	}
 	if isOCI {
-		result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-		if ociErr == nil {
-			return s.installAndRegister(ctx, opts, result, scope)
-		}
-		// No registry-name fallback yet (Phase-3 later wave); surface the
-		// OCI pull error directly.
-		return nil, ociErr
+		// installFromOCI holds the per-plugin lock across extraction, DB,
+		// group, lock-file, and rollback.
+		return s.installFromOCI(ctx, opts, scope, ref)
 	}
 
 	// Plain plugin name.
@@ -230,11 +223,7 @@ func (s *service) installFromRegistryHit(
 			http.StatusUnprocessableEntity,
 		)
 	}
-	result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-	if ociErr != nil {
-		return nil, ociErr
-	}
-	return s.installAndRegister(ctx, opts, result, scope)
+	return s.installFromOCI(ctx, opts, scope, ref)
 }
 
 // selectOCIPluginPackage selects the first OCI package from a registry entry's
@@ -302,10 +291,11 @@ func (s *service) registerPluginInGroup(ctx context.Context, groupName string, p
 // and, for project-scope installs with the lock file feature enabled (see
 // plugins.LockFileFeatureEnabled), records it in the project's
 // toolhive.lock.yaml plugins: key. If group registration or the lock write
-// fails, the DB record and lock entry are rolled back to their pre-install
-// state: restored when this call updated a pre-existing record (a --force
-// reinstall must not be destroyed by a transient failure), deleted when this
-// call created them.
+// fails, the DB record, on-disk files, and lock entry are rolled back to
+// their pre-install state: restored when this call updated a pre-existing
+// record (a --force reinstall must not be destroyed by a transient failure),
+// deleted/dematerialized when this call created them. Callers must hold the
+// per-plugin lock for the duration of this call.
 func (s *service) installAndRegister(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -331,9 +321,6 @@ func (s *service) installAndRegister(
 	rollback := func() { s.rollbackInstall(ctx, opts, result, pluginName, scope, lockScoped, prevEntry) }
 
 	if err := s.registerPluginInGroup(ctx, opts.Group, pluginName); err != nil {
-		// Best-effort rollback. Files on disk are left in place; a fresh
-		// install will overwrite them (the adapters are idempotent under the
-		// same name/scope).
 		rollback()
 		return nil, fmt.Errorf("registering plugin in group: %w", err)
 	}
@@ -355,7 +342,8 @@ func (s *service) installAndRegister(
 
 // rollbackInstall undoes installAndRegister's side effects after a failure,
 // best-effort. The DB record is restored to its pre-install snapshot when
-// one exists (result.PreExisting) and deleted otherwise; the lock entry is
+// one exists (result.PreExisting) and deleted otherwise; on-disk files are
+// dematerialized (fresh install) or restored (upgrade); the lock entry is
 // likewise reinstated from prevEntry or removed.
 func (s *service) rollbackInstall(
 	ctx context.Context,
@@ -370,6 +358,10 @@ func (s *service) rollbackInstall(
 		_ = s.store.Update(ctx, *result.PreExisting)
 	} else {
 		_ = s.store.Delete(ctx, pluginName, scope, opts.ProjectRoot)
+	}
+
+	if result.RestoreFiles != nil {
+		result.RestoreFiles(ctx)
 	}
 
 	if !lockScoped {

@@ -217,6 +217,7 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	legacy, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
 	require.NoError(t, err)
 	legacy.Managed = false
+	legacy.Reference = "ghcr.io/org/my-plugin:v1"
 	require.NoError(t, syncSvc.store.Update(t.Context(), legacy))
 
 	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
@@ -280,6 +281,7 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 	legacy, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
 	require.NoError(t, err)
 	legacy.Managed = false
+	legacy.Reference = "ghcr.io/org/my-plugin:v1"
 	require.NoError(t, syncSvc.store.Update(t.Context(), legacy))
 
 	syncSvc.store = &hookPluginStore{
@@ -311,4 +313,67 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, check.NeverManaged)
 	assert.Empty(t, check.AlreadyCurrent, "a split adopt must not look up-to-date")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_AdoptRejectsUnrestorableLocalPin(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+	syncSvc := svc.(*service) //nolint:forcetypeassert
+	legacy, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	legacy.Reference = "my-plugin"
+	require.NoError(t, syncSvc.store.Update(t.Context(), legacy))
+
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Contains(t, result.Failed[0].Error, "not a restorable git or OCI pin")
+	assert.Equal(t, plugins.FailureReasonValidationRejected, result.Failed[0].Reason)
+
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.False(t, ok, "adoption of a bare local tag must not write a lock entry")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_RequestedClientIsNotAlreadyCurrent(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ //nolint:forcetypeassert
+		ProjectRoot: projectRoot, Check: true, Clients: []string{"codex"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
+	assert.Empty(t, result.AlreadyCurrent, "a plugin current in one client must not skip a requested extra client")
+}
+
+type unhealthyAdapter struct {
+	extractingAdapter
+}
+
+func (*unhealthyAdapter) Health(context.Context, plugins.DematerializeRequest) error {
+	return errors.New("marketplace entry missing")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_UnhealthyRegistrationIsNotAlreadyCurrent(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["claude-code"] = &unhealthyAdapter{
+		extractingAdapter: extractingAdapter{
+			base:      filepath.Join(projectRoot, ".claude", "plugins"),
+			installer: skills.NewInstaller(),
+		},
+	}
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
+	assert.Empty(t, result.AlreadyCurrent, "missing marketplace/settings registration is drift, not current")
 }

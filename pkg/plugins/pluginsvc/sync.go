@@ -95,7 +95,7 @@ func (s *service) syncLockedEntry(
 	dbOK bool,
 	result *plugins.SyncResult,
 ) {
-	if dbOK && s.entryMatchesInstalled(entry, pl) {
+	if dbOK && pl.Managed && s.entryMatchesInstalled(ctx, entry, pl, opts.Clients) {
 		result.AlreadyCurrent = append(result.AlreadyCurrent, entry.Name)
 		return
 	}
@@ -116,16 +116,30 @@ func (s *service) syncLockedEntry(
 	result.Installed = append(result.Installed, entry.Name)
 }
 
-// entryMatchesInstalled reports whether the installed plugin's pinned digest
-// still matches the lock entry and EVERY client directory's on-disk
-// contentDigest does too. Checking only one client's copy would leave
-// tampering with any other client's materialized files invisible to
-// --check — and which directory got checked would depend on install order.
-func (s *service) entryMatchesInstalled(entry lockfile.Entry, pl plugins.InstalledPlugin) bool {
+// entryMatchesInstalled reports whether the installed plugin is lock-managed,
+// its pinned digest still matches the lock entry, every requested client is
+// present, EVERY client directory's on-disk contentDigest matches, and each
+// adapter reports the plugin as healthy (marketplace/settings present).
+// Checking only one client's copy would leave tampering with any other
+// client's materialized files invisible to --check — and which directory got
+// checked would depend on install order. Shared registration files are
+// validated via adapter Health, not folded into contentDigest.
+func (s *service) entryMatchesInstalled(
+	ctx context.Context,
+	entry lockfile.Entry,
+	pl plugins.InstalledPlugin,
+	requestedClients []string,
+) bool {
+	if !pl.Managed {
+		return false
+	}
 	if pl.Digest != entry.Digest {
 		return false
 	}
 	if len(pl.Clients) == 0 {
+		return false
+	}
+	if len(requestedClients) > 0 && !clientsContainAll(pl.Clients, requestedClients) {
 		return false
 	}
 	for _, clientType := range pl.Clients {
@@ -135,6 +149,17 @@ func (s *service) entryMatchesInstalled(entry lockfile.Entry, pl plugins.Install
 		}
 		contentDigest, err := lockfile.ContentDigestFromDir(dir)
 		if err != nil || contentDigest != entry.ContentDigest {
+			return false
+		}
+		adapter, ok := s.materializers[clientType]
+		if !ok {
+			return false
+		}
+		if err := adapter.Health(ctx, plugins.DematerializeRequest{
+			Name:        pl.Metadata.Name,
+			Scope:       pl.Scope,
+			ProjectRoot: pl.ProjectRoot,
+		}); err != nil {
 			return false
 		}
 	}
@@ -205,6 +230,8 @@ func (s *service) syncUnlockedInstall(
 // used as Source: an adopted install predates (or never went through) lock
 // tracking, so the original user-typed request is not recoverable — the
 // concrete resolved reference is the closest available fact to pin against.
+// Adoption is rejected when that reference is not a restorable git:// or OCI
+// pin (a bare local-store tag cannot be re-fetched later).
 //
 // Trust state is left unset (no provenance, not unsigned). Plugin Sigstore
 // verification lands in a later PR; requiring --allow-unsigned here would
@@ -219,11 +246,19 @@ func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) e
 	if source == "" {
 		source = pl.Metadata.Name
 	}
+	resolved := lockableResolvedReference(pl.Reference)
+	if resolved == "" {
+		return httperr.WithCode(
+			fmt.Errorf("cannot adopt %q: reference %q is not a restorable git or OCI pin",
+				pl.Metadata.Name, pl.Reference),
+			http.StatusUnprocessableEntity,
+		)
+	}
 	if err := recordLockEntry(pl.ProjectRoot, lockEntryInput{
 		Name:              pl.Metadata.Name,
 		Version:           pl.Metadata.Version,
 		Source:            source,
-		ResolvedReference: lockableResolvedReference(pl.Reference),
+		ResolvedReference: resolved,
 		Digest:            pl.Digest,
 		ContentDigest:     contentDigest,
 	}); err != nil {
@@ -231,9 +266,12 @@ func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) e
 	}
 	pl.Managed = true
 	if err := s.store.Update(ctx, pl); err != nil {
-		_ = removeLockEntry(plugins.UninstallOptions{
+		remErr := removeLockEntry(plugins.UninstallOptions{
 			Name: pl.Metadata.Name, Scope: plugins.ScopeProject, ProjectRoot: pl.ProjectRoot,
 		})
+		if remErr != nil {
+			return fmt.Errorf("marking plugin as lock-managed: %w", errors.Join(err, remErr))
+		}
 		return fmt.Errorf("marking plugin as lock-managed: %w", err)
 	}
 	return nil

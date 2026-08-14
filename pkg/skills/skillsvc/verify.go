@@ -75,7 +75,7 @@ func (s *service) verifyOCIInstall(
 		return unsignedLockedDecision(opts, skillName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, refRelaxedExpectation(expected, opts))
+	result, verifyErr := s.artifactVerifier().VerifyOCI(ctx, ref, digest, expected)
 	if verifyErr != nil {
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
@@ -108,8 +108,7 @@ func (s *service) verifyGitInstall(
 		return unsignedLockedDecision(opts, skillName)
 	}
 
-	result, verifyErr := s.artifactVerifier().VerifyGit(
-		ctx, payload, []byte(signature), refRelaxedExpectation(expected, opts))
+	result, verifyErr := s.artifactVerifier().VerifyGit(ctx, payload, []byte(signature), expected)
 	if verifyErr != nil {
 		if isAllowedUnsigned(verifyErr, opts, expected) {
 			return &provenanceDecision{unsigned: true}, nil
@@ -198,35 +197,6 @@ func expectedLockTrust(projectRoot, skillName string) (*lockfile.Provenance, boo
 	return entry.Provenance, false, nil
 }
 
-// refRelaxedExpectation returns expected with the pinned repository ref
-// cleared when this install is an upgrade re-pin. A tag-based release
-// workflow signs every version on a new ref (refs/tags/v0.1.0 →
-// refs/tags/v0.2.0), so enforcing the recorded one would reject every
-// legitimate upgrade and train users into --allow-signer-change, which
-// disables the whole guard. The newly observed ref is recorded in the lock
-// entry in its place, visible in the diff next to the digest change.
-//
-// This relaxation is safe only because upgrade already validated the
-// specific transition before reaching here — guardSignerChange's
-// refTransitionAllowed rejects anything other than a git ref staying
-// identical or an OCI tag rotating to another tag, blocking the upgrade
-// outright (same as a genuine signer-identity change) rather than reaching
-// this relaxed re-verify at all. This function does not repeat that check;
-// it exists only to stop the exact-ref requirement from re-rejecting a
-// transition already vetted.
-//
-// Only the ref is relaxed, and only here: install and sync keep the exact
-// match, and a runner-class change is never an expected part of a release.
-func refRelaxedExpectation(expected *lockfile.Provenance, opts skills.InstallOptions) *lockfile.Provenance {
-	if expected == nil || !opts.AllowRefRepin || expected.RepositoryRef == "" {
-		return expected
-	}
-	// Copy: expected points at the caller's loaded lock entry.
-	relaxed := *expected
-	relaxed.RepositoryRef = ""
-	return &relaxed
-}
-
 // isAllowedUnsigned reports whether a verification failure is the unsigned
 // case AND the caller may proceed: either the explicit --allow-unsigned
 // exception, or a sync restore of an entry with no recorded trust state
@@ -271,6 +241,16 @@ func classifyInstallVerifyError(
 				skillName),
 			http.StatusForbidden,
 		)
+	// Checked before the broader ErrSignerMismatch case: pinnedFieldMismatch
+	// wraps both, so a ref/runner-only mismatch would otherwise be
+	// misreported as a signer-identity change below.
+	case errors.Is(verifyErr, verifier.ErrProvenanceFieldMismatch):
+		return httperr.WithCode(
+			fmt.Errorf("skill %q's certificate no longer matches its pinned provenance: %w"+
+				" (if this is an expected publisher-side change, upgrade with allow_signer_change)",
+				skillName, verifyErr),
+			http.StatusForbidden,
+		)
 	case errors.Is(verifyErr, verifier.ErrSignerMismatch):
 		return httperr.WithCode(
 			fmt.Errorf("signer identity mismatch for %q: %w"+
@@ -290,6 +270,10 @@ func classifyInstallVerifyError(
 // for sync/upgrade results. Returns "" when err is not a signature failure.
 func classifySignatureError(err error) skills.FailureReason {
 	switch {
+	// Checked before the broader ErrSignerMismatch case for the same reason
+	// as classifyInstallVerifyError above.
+	case errors.Is(err, verifier.ErrProvenanceFieldMismatch):
+		return skills.FailureReasonProvenanceFieldMismatch
 	case errors.Is(err, verifier.ErrSignerMismatch):
 		return skills.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):

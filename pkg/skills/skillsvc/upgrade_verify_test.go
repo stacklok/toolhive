@@ -69,13 +69,26 @@ func signerChangeFixture(
 	return svc, projectRoot
 }
 
-// TestUpgrade_RepinsRepositoryRef proves the release-workflow case: a new
-// version signed on a new ref upgrades and the lock entry re-records the new
-// ref, while every other pinned field — the runner class included — is still
-// enforced at install-time verification.
+// TestUpgrade_RefChangeRequiresAllowSignerChange covers the ref-pinning
+// guard's current shape: ANY ref change — including a plausible-looking
+// tag-to-tag release rotation — blocks the upgrade exactly like a genuine
+// signer-identity change, and the existing --allow-signer-change override
+// is what re-pins it.
+//
+// An earlier version of this guard let a recorded tag ref rotate to any
+// other tag ref automatically, on the theory that a release workflow signs
+// each version on its own tag. Panel review on stacklok/toolhive#6315 found
+// that this let a candidate signed from an attacker's OWN tag on the same
+// repository (e.g. "refs/tags/attacker-release") replace a pinned tag,
+// since nothing tied the candidate's tag to the specific version actually
+// being upgraded to — binding it correctly would need the resolved release
+// source's own tag, which the git resolver never surfaces (only the
+// resolved commit hash), so a fix scoped to OCI would have left git-sourced
+// skills with the identical hole. The automatic allowance was removed
+// rather than patched per-format.
 //
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestUpgrade_RepinsRepositoryRef(t *testing.T) {
+func TestUpgrade_RefChangeRequiresAllowSignerChange(t *testing.T) {
 	const (
 		installedRef = "refs/tags/v0.1.0"
 		releaseRef   = "refs/tags/v0.2.0"
@@ -83,9 +96,6 @@ func TestUpgrade_RepinsRepositoryRef(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
 	fx.register("repin-skill", gitSkill("repin-skill"))
 
-	// installExpected captures the provenance the upgrade's install-time
-	// verification enforces — the value refRelaxedExpectation produced.
-	var installExpected *lockfile.Provenance
 	calls := 0
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
@@ -99,7 +109,6 @@ func TestUpgrade_RepinsRepositoryRef(t *testing.T) {
 			if expected == nil {
 				return candidate, nil // the upgrade's plan-time signer probe
 			}
-			installExpected = expected
 			if expected.RepositoryRef != "" && expected.RepositoryRef != candidate.RepositoryRef {
 				return nil, verifier.ErrSignerMismatch
 			}
@@ -119,104 +128,70 @@ func TestUpgrade_RepinsRepositoryRef(t *testing.T) {
 	require.Equal(t, installedRef, entry.Provenance.RepositoryRef, "the install must pin the observed ref")
 
 	fx.register("repin-skill", gitSkillVersion("repin-skill"))
+
+	// Without the override, even a tag-shaped rotation is blocked.
 	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
 	require.NoError(t, err)
 	require.Len(t, result.Outcomes, 1)
-	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status,
-		"a release signed on a new ref must not need --allow-signer-change")
+	assert.Equal(t, skills.UpgradeStatusSignerChangeBlocked, result.Outcomes[0].Status,
+		"a ref change has no automatic allowance, even a plausible release-tag rotation")
 
-	require.NotNil(t, installExpected)
-	assert.Empty(t, installExpected.RepositoryRef,
-		"upgrade must relax the pinned ref rather than reject the new release ref")
-	assert.Equal(t, testRunnerEnvironment, installExpected.RunnerEnvironment,
-		"the runner class has no release-workflow carve-out and stays enforced")
-	assert.Equal(t, testSignerIdentity, installExpected.SignerIdentity)
+	entry, ok = readLockfile(t, projectRoot).Get("repin-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, installedRef, entry.Provenance.RepositoryRef, "a blocked upgrade must not touch the lock")
+
+	// With the explicit override, it proceeds and re-pins the new ref —
+	// the same mechanism a genuine signer-identity change already uses.
+	result, err = svc.(*service).Upgrade(t.Context(), //nolint:forcetypeassert
+		skills.UpgradeOptions{ProjectRoot: projectRoot, AllowSignerChange: true})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status)
 
 	entry, ok = readLockfile(t, projectRoot).Get("repin-skill")
 	require.True(t, ok)
 	require.NotNil(t, entry.Provenance)
 	assert.Equal(t, releaseRef, entry.Provenance.RepositoryRef,
-		"the upgrade must re-record the new ref, so the next install enforces it")
+		"the override must re-record the new ref, so the next install enforces it")
 }
 
-func TestRefRelaxedExpectation(t *testing.T) {
+func TestRepositoryRefChanged(t *testing.T) {
 	t.Parallel()
 
-	locked := &lockfile.Provenance{
-		SignerIdentity:    testSignerIdentity,
-		RepositoryRef:     "refs/tags/v0.1.0",
-		RunnerEnvironment: testRunnerEnvironment,
-	}
-
 	tests := []struct {
-		name    string
-		opts    skills.InstallOptions
-		relaxed bool
+		name     string
+		probe    string
+		recorded string
+		want     bool
 	}{
-		{name: "plain install enforces the pinned ref", opts: skills.InstallOptions{}},
-		{
-			name: "sync restore enforces the pinned ref",
-			opts: skills.InstallOptions{SyncRestore: true, LockResolvedReference: "https://github.com/org/repo"},
-		},
-		{name: "upgrade re-pin relaxes it", opts: skills.InstallOptions{AllowRefRepin: true}, relaxed: true},
+		{name: "same ref", probe: "refs/tags/v0.1.0", recorded: "refs/tags/v0.1.0"},
+		{name: "entry recorded none is unconstrained", probe: "refs/heads/attacker"},
+		{name: "tag rotation blocked", probe: "refs/tags/v0.2.0", recorded: "refs/tags/v0.1.0", want: true},
+		{name: "branch change blocked", probe: "refs/heads/attacker", recorded: "refs/heads/main", want: true},
+		{name: "candidate carrying none blocked", recorded: "refs/tags/v0.1.0", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := refRelaxedExpectation(locked, tc.opts)
-			require.NotNil(t, got)
-			if !tc.relaxed {
-				assert.Equal(t, locked, got)
-				return
-			}
-			assert.Empty(t, got.RepositoryRef)
-			assert.Equal(t, testRunnerEnvironment, got.RunnerEnvironment, "only the ref is relaxed")
-			assert.Equal(t, "refs/tags/v0.1.0", locked.RepositoryRef, "the caller's lock entry must not be mutated")
-		})
-	}
-
-	assert.Nil(t, refRelaxedExpectation(nil, skills.InstallOptions{AllowRefRepin: true}),
-		"trust on first use has nothing to relax")
-}
-
-func TestRefTransitionAllowed(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		recordedRef string
-		candidate   string
-		want        bool
-	}{
-		{name: "unpinned entry allows anything", recordedRef: "", candidate: "refs/heads/attacker", want: true},
-		{name: "tag rotates to another tag", recordedRef: "refs/tags/v0.1.0", candidate: "refs/tags/v0.2.0", want: true},
-		{name: "tag to a branch is blocked", recordedRef: "refs/tags/v0.1.0", candidate: "refs/heads/main", want: false},
-		{name: "tag to no ref at all is blocked", recordedRef: "refs/tags/v0.1.0", candidate: "", want: false},
-		{name: "identical branch stays allowed", recordedRef: "refs/heads/main", candidate: "refs/heads/main", want: true},
-		{
-			name: "branch to a different branch is blocked", recordedRef: "refs/heads/main",
-			candidate: "refs/heads/attacker", want: false,
-		},
-		{name: "branch to a tag is blocked", recordedRef: "refs/heads/main", candidate: "refs/tags/v0.1.0", want: false},
-		{name: "branch to no ref at all is blocked", recordedRef: "refs/heads/main", candidate: "", want: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.want, refTransitionAllowed(tc.recordedRef, tc.candidate))
+			assert.Equal(t, tc.want, repositoryRefChanged(
+				&verifier.Result{RepositoryRef: tc.probe},
+				&lockfile.Provenance{RepositoryRef: tc.recorded}))
 		})
 	}
 }
 
-// TestUpgrade_RefTransitionBlocked is the regression test for the guard the
-// P1 fix restores: guardSignerChange must reject a ref transition
-// refTransitionAllowed disallows, and — critically — the transition must
-// never reach applyUpgrade's refRelaxedExpectation at all, so the lock stays
-// untouched. Before the fix, every upgrade unconditionally cleared the
-// expected ref (AllowRefRepin: true) with no prior check, so a candidate
-// signed by the same identity/issuer/runner from a different branch would
-// pass and silently replace the locked ref — the exact substitution this
-// PR's ref pinning exists to catch.
+// TestUpgrade_RefTransitionBlocked is the regression test for the ref-pin
+// guard: guardSignerChange must reject ANY ref change without an explicit
+// --allow-signer-change, and critically, the transition must never reach
+// applyUpgrade's install call at all, so the lock stays untouched. Before
+// the original fix, every upgrade unconditionally cleared the expected ref
+// with no prior check, so a candidate signed by the same identity, issuer,
+// and runner from a different branch would pass and silently replace the
+// locked ref — the exact substitution this PR's ref pinning exists to
+// catch. See TestUpgrade_RefChangeRequiresAllowSignerChange for why even a
+// plausible tag-to-tag rotation is included, not just an obviously
+// suspicious branch change.
 //
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_RefTransitionBlocked(t *testing.T) {
@@ -233,6 +208,10 @@ func TestUpgrade_RefTransitionBlocked(t *testing.T) {
 		{
 			name: "candidate lost its ref extension", lockedRef: "refs/tags/v0.1.0", candidate: "",
 			description: "a certificate that stopped carrying a ref extension must not silently unpin one",
+		},
+		{
+			name: "plausible tag rotation", lockedRef: "refs/tags/v0.1.0", candidate: "refs/tags/v0.2.0",
+			description: "a tag-to-tag rotation has no automatic allowance either — see the test above for why",
 		},
 	}
 	for _, tc := range tests {

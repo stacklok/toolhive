@@ -1669,6 +1669,7 @@ const docTemplate = `{
                     "lock-write-failed",
                     "signature-invalid",
                     "signer-mismatch",
+                    "provenance-field-mismatch",
                     "unsigned-rejected",
                     "unknown"
                 ],
@@ -1680,6 +1681,7 @@ const docTemplate = `{
                     "FailureReasonLockWriteFailed",
                     "FailureReasonSignatureInvalid",
                     "FailureReasonSignerMismatch",
+                    "FailureReasonProvenanceFieldMismatch",
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]

@@ -166,8 +166,15 @@ func checkPinnedCertificateFields(observed observedCertificate, expected *lockfi
 // field that differs from the pinned one, naming the field so the operator
 // can tell a ref change from a runner-class change.
 func pinnedFieldMismatch(field, expected, observed string) error {
-	return fmt.Errorf("%w: locked to %s %s, but the artifact's certificate carries %s",
-		ErrSignerMismatch, field, strconv.Quote(expected), quotedOrNone(observed))
+	// Wraps both sentinels: ErrSignerMismatch so existing callers that only
+	// check for a signer-identity problem still catch this (the remediation
+	// is the same override either way), and ErrProvenanceFieldMismatch so a
+	// caller that wants to explain WHICH kind of mismatch this is — the
+	// signer's own identity, or just one of the fields its certificate
+	// additionally carries — can tell the two apart. See both sentinels'
+	// doc comments.
+	return fmt.Errorf("%w: %w: locked to %s %s, but the artifact's certificate carries %s",
+		ErrSignerMismatch, ErrProvenanceFieldMismatch, field, strconv.Quote(expected), quotedOrNone(observed))
 }
 
 // quotedOrNone renders an observed certificate field for an error message,

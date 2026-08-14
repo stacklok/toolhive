@@ -81,13 +81,6 @@ type InstallOptions struct {
 	// Internal use only — set by upgrade when its signer-change guard was
 	// explicitly overridden.
 	AllowSignerChange bool `json:"-"`
-	// AllowRefRepin lets install-time verification accept a certificate whose
-	// repository ref differs from the locked one, re-recording the observed
-	// ref. Internal use only — set by upgrade, where a tag-based release
-	// workflow signs every version on a new ref; install and sync keep the
-	// exact-ref requirement. Every other identity field, the runner class
-	// included, stays enforced.
-	AllowRefRepin bool `json:"-"`
 	// Unsigned records the trust decision that this install proceeded
 	// without a verified signature (via AllowUnsigned). Set internally by
 	// install-time verification; recorded as `unsigned: true` in the lock
@@ -297,6 +290,12 @@ const (
 	// FailureReasonSignerMismatch means the artifact verifies, but against
 	// an identity other than the one recorded in the lock file.
 	FailureReasonSignerMismatch FailureReason = "signer-mismatch"
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer identity and issuer, but its
+	// certificate's repository ref or runner environment differs from what
+	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
+	// remediation (--allow-signer-change) is nonetheless the same.
+	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
 	// FailureReasonUnsignedRejected means the artifact is unsigned and the
 	// operation did not permit unsigned installs.
 	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"

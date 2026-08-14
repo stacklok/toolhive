@@ -1780,6 +1780,7 @@ components:
       - lock-write-failed
       - signature-invalid
       - signer-mismatch
+      - provenance-field-mismatch
       - unsigned-rejected
       - unknown
       type: string
@@ -1790,6 +1791,7 @@ components:
       - FailureReasonLockWriteFailed
       - FailureReasonSignatureInvalid
       - FailureReasonSignerMismatch
+      - FailureReasonProvenanceFieldMismatch
       - FailureReasonUnsignedRejected
       - FailureReasonUnknown
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:

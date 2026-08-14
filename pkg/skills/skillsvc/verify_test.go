@@ -4,6 +4,7 @@
 package skillsvc
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -411,4 +412,34 @@ func TestClassifySignatureError(t *testing.T) {
 	assert.Equal(t, skills.FailureReasonUnsignedRejected, classifySignatureError(verifier.ErrUnsigned))
 	assert.Equal(t, skills.FailureReasonSignatureInvalid, classifySignatureError(verifier.ErrSignatureInvalid))
 	assert.Equal(t, skills.FailureReason(""), classifySignatureError(assert.AnError))
+
+	// A pinned ref/runner mismatch satisfies errors.Is against BOTH
+	// ErrSignerMismatch and ErrProvenanceFieldMismatch (see
+	// verifier.pinnedFieldMismatch) — the more specific reason must win, or
+	// every version bump on a ref-pinned skill would misreport as a
+	// publisher change rather than a provenance-field change.
+	fieldMismatch := fmt.Errorf("%w: %w: locked to repository ref, but the artifact carries a different one",
+		verifier.ErrSignerMismatch, verifier.ErrProvenanceFieldMismatch)
+	assert.Equal(t, skills.FailureReasonProvenanceFieldMismatch, classifySignatureError(fieldMismatch))
+}
+
+// TestClassifyInstallVerifyErrorDistinguishesProvenanceField covers the
+// install-time (403) classification alongside TestClassifySignatureError's
+// sync/upgrade coverage: a pinned ref/runner mismatch must not be reported
+// to the operator as a signer-identity change.
+func TestClassifyInstallVerifyErrorDistinguishesProvenanceField(t *testing.T) {
+	t.Parallel()
+
+	fieldMismatch := fmt.Errorf("%w: %w: locked to repository ref, but the artifact carries a different one",
+		verifier.ErrSignerMismatch, verifier.ErrProvenanceFieldMismatch)
+	err := classifyInstallVerifyError(fieldMismatch, "some-skill", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	assert.Contains(t, err.Error(), "no longer matches its pinned provenance",
+		"a provenance-field mismatch must lead with the field-specific wording, not the identity one")
+	assert.NotContains(t, err.Error(), "signer identity mismatch for",
+		"the identity-specific phrasing (distinct from ErrSignerMismatch's own wrapped message text) must not appear")
+
+	identityMismatch := classifyInstallVerifyError(
+		verifier.ErrSignerMismatch, "some-skill", &lockfile.Provenance{SignerIdentity: testSignerIdentity})
+	assert.Contains(t, identityMismatch.Error(), "signer identity mismatch for",
+		"a genuine signer-identity mismatch keeps its existing wording")
 }

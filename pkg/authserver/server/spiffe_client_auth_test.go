@@ -19,6 +19,13 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
+// stubResolver is a SPIFFEClientResolver that is never called by these tests;
+// it exists only to make "resolver configured" distinguishable from "resolver
+// nil" for the client-authentication strategy under test.
+func stubResolver(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+	panic("not called")
+}
+
 func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 	t.Parallel()
 
@@ -30,12 +37,14 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 		name            string
 		ctx             context.Context
 		form            url.Values
+		resolver        SPIFFEClientResolver
 		wantErr         string
 		wantDefaultCall bool
 	}{
 		{
-			name: "SPIFFE JWT assertion takes precedence over X.509 identity",
-			ctx:  spiffeauth.ContextWithSPIFFEID(context.Background(), spiffeID),
+			name:     "SPIFFE JWT assertion takes precedence over X.509 identity",
+			ctx:      spiffeauth.ContextWithSPIFFEID(context.Background(), spiffeID),
+			resolver: stubResolver,
 			form: url.Values{
 				"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
 				"client_assertion":      {"sensitive-assertion"},
@@ -43,16 +52,18 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 			wantErr: "SPIFFE JWT client authentication is not implemented",
 		},
 		{
-			name: "SPIFFE X.509 identity does not fall through",
-			ctx:  spiffeauth.ContextWithSPIFFEID(context.Background(), spiffeID),
+			name:     "SPIFFE X.509 identity does not fall through",
+			ctx:      spiffeauth.ContextWithSPIFFEID(context.Background(), spiffeID),
+			resolver: stubResolver,
 			form: url.Values{
 				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
 			},
 			wantErr: "SPIFFE X.509 client authentication is not implemented",
 		},
 		{
-			name: "RFC 7523 assertion delegates to default strategy",
-			ctx:  context.Background(),
+			name:     "RFC 7523 assertion delegates to default strategy",
+			ctx:      context.Background(),
+			resolver: stubResolver,
 			form: url.Values{
 				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
 			},
@@ -61,7 +72,17 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 		{
 			name:            "requests without SPIFFE credentials delegate to default strategy",
 			ctx:             context.Background(),
+			resolver:        stubResolver,
 			form:            url.Values{"client_id": {"client"}},
+			wantDefaultCall: true,
+		},
+		{
+			name: "nil resolver delegates to default strategy even with a SPIFFE identity",
+			ctx:  spiffeauth.ContextWithSPIFFEID(context.Background(), spiffeID),
+			form: url.Values{
+				"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
+			},
+			resolver:        nil,
 			wantDefaultCall: true,
 		},
 	}
@@ -74,7 +95,7 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 			strategy := newSPIFFEClientAuthenticationStrategy(func(_ context.Context, _ *http.Request, _ url.Values) (fosite.Client, error) {
 				defaultCalled = true
 				return defaultClient, defaultErr
-			})
+			}, tt.resolver)
 
 			req := httptest.NewRequest("POST", "/oauth/token", nil).WithContext(tt.ctx)
 			client, err := strategy(tt.ctx, req, tt.form)

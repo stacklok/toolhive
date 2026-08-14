@@ -25,6 +25,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
+	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -89,6 +91,21 @@ type AuthorizationServerConfig struct {
 	// only when this is true, mirroring how the grant itself is only
 	// registered with fosite when true (see buildProvider).
 	JWTBearerGrantEnabled bool
+	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
+	// configured OAuth client for the SPIFFE client-authentication strategy.
+	// Nil when no SPIFFE trust is configured; package server cannot import
+	// the concrete association registry and storage that back this resolver
+	// (authserver imports server), so the caller supplies it as a closure.
+	SPIFFEClientResolver SPIFFEClientResolver
+	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
+	// X.509-SVID client certificates. Not yet read by this package: carried
+	// here, copied through from AuthorizationServerParams, so the X.509 and
+	// JWT SPIFFE client-authentication arms land on a shared field instead of
+	// each independently extending this struct.
+	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
+	// JWT-SVID client assertions. See SPIFFEX509BundleSource.
+	SPIFFEJWTBundleSource jwtbundle.Source
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -144,6 +161,19 @@ type AuthorizationServerParams struct {
 	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
 	// field of the same name.
 	JWTBearerGrantEnabled bool
+	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
+	// configured OAuth client. Nil when no SPIFFE trust is configured.
+	// See the identically named field on AuthorizationServerConfig.
+	SPIFFEClientResolver SPIFFEClientResolver
+	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
+	// X.509-SVID client certificates. Not yet read by this package: threaded
+	// through here so the X.509 and JWT SPIFFE client-authentication arms
+	// land on a shared field instead of each independently extending this
+	// struct.
+	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
+	// JWT-SVID client assertions. See SPIFFEX509BundleSource.
+	SPIFFEJWTBundleSource jwtbundle.Source
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -310,6 +340,9 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,
+		SPIFFEClientResolver:                cfg.SPIFFEClientResolver,
+		SPIFFEX509BundleSource:              cfg.SPIFFEX509BundleSource,
+		SPIFFEJWTBundleSource:               cfg.SPIFFEJWTBundleSource,
 	}, nil
 }
 
@@ -326,7 +359,9 @@ func NewAuthorizationServer(
 	// The default strategy is a method on the provider, so install the SPIFFE
 	// dispatcher after the provider is constructed. Fosite reads this config field
 	// for every request.
-	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(provider.DefaultClientAuthenticationStrategy)
+	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
+		provider.DefaultClientAuthenticationStrategy, config.SPIFFEClientResolver,
+	)
 
 	for _, factory := range factories {
 		result, err := factory(config, storage, strategy)

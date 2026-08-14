@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -85,26 +86,28 @@ func withUpstreamFactory(factory upstreamProviderFactory) serverOption {
 // capability, applies the SPIFFE static-client overlay, and registers
 // configured delegate clients. cfg is a pointer because applyDefaults
 // mutates it in place; the caller's variable must see the resolved
-// defaults. Returns the (possibly decorated) storage and the DCR-capable
-// handle asserted from the original, undecorated storage.
+// defaults. Returns the (possibly decorated) storage, the DCR-capable
+// handle asserted from the original undecorated storage, and the SPIFFE
+// association registry backing the client-authentication resolver — nil
+// when no SPIFFE trust is configured.
 func prepareServerConfig(
 	ctx context.Context, cfg *Config, stor storage.Storage,
-) (storage.Storage, storage.DCRCredentialStore, error) {
+) (storage.Storage, storage.DCRCredentialStore, *SPIFFEAssociationRegistry, error) {
 	// Apply defaults to config
 	if err := cfg.applyDefaults(); err != nil {
-		return nil, nil, fmt.Errorf("failed to apply config defaults: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to apply config defaults: %w", err)
 	}
 
 	// Validate config
 	if err := cfg.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("invalid config: %w", err)
+		return nil, nil, nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
 
 	// Validate storage is provided
 	if stor == nil {
-		return nil, nil, fmt.Errorf("storage is required")
+		return nil, nil, nil, fmt.Errorf("storage is required")
 	}
 
 	// Storage no longer embeds DCRCredentialStore (the embed widened secret
@@ -118,19 +121,19 @@ func prepareServerConfig(
 	baseStore := unwrapStorage(stor)
 	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
-		return nil, nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
+		return nil, nil, nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
-	stor, err := decorateStorageForSPIFFE(ctx, *cfg, stor)
+	stor, spiffeRegistry, err := decorateStorageForSPIFFE(ctx, *cfg, stor)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return stor, dcrStore, nil
+	return stor, dcrStore, spiffeRegistry, nil
 }
 
 // newServer creates a new OAuth authorization server.
@@ -146,7 +149,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		opt(options)
 	}
 
-	stor, dcrStore, err := prepareServerConfig(ctx, &cfg, stor)
+	stor, dcrStore, spiffeRegistry, err := prepareServerConfig(ctx, &cfg, stor)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +181,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),
+		SPIFFEClientResolver:                newSPIFFEClientResolver(spiffeRegistry, stor),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -302,9 +306,38 @@ func newSPIFFEBundleRegistry(ctx context.Context, cfg Config) (*SPIFFEBundleRegi
 	return registry, nil
 }
 
+// newSPIFFEClientResolver returns the resolver the SPIFFE client-authentication
+// strategy uses to turn a verified SPIFFE identity into its configured OAuth
+// client. Both credential types resolve through this one function so that an
+// X.509-SVID and a JWT-SVID for the same association cannot reach different
+// authorization outcomes.
+//
+// It returns a nil resolver when no SPIFFE trust is configured. Returning a
+// non-nil func closing over a nil registry would make the strategy's
+// resolver != nil check pass when nothing is actually configured.
+func newSPIFFEClientResolver(
+	registry *SPIFFEAssociationRegistry, stor storage.Storage,
+) oauthserver.SPIFFEClientResolver {
+	if registry == nil {
+		return nil
+	}
+	return func(
+		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+	) (fosite.Client, error) {
+		if _, err := registry.Resolve(spiffeID, clientID, method); err != nil {
+			return nil, err
+		}
+		return stor.GetClient(ctx, clientID)
+	}
+}
+
 // decorateStorageForSPIFFE validates SPIFFE policy, resolves its immutable
-// association registry, and installs the static overlay outside CIMD.
-func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Storage) (storage.Storage, error) {
+// association registry, and installs the static overlay outside CIMD. The
+// returned registry is also wired onto the fosite client-authentication
+// strategy by the caller; it is nil when no SPIFFE trust is configured.
+func decorateStorageForSPIFFE(
+	ctx context.Context, cfg Config, stor storage.Storage,
+) (storage.Storage, *SPIFFEAssociationRegistry, error) {
 	trust := cfg.SPIFFETrust
 	if trust == nil {
 		var err error
@@ -312,26 +345,26 @@ func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Stor
 			cfg.SPIFFETrustDomains, cfg.InboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("build SPIFFE trust config: %w", err)
+			return nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
 		}
 	}
 
 	registry, err := NewSPIFFEAssociationRegistry(trust)
 	if err != nil {
-		return nil, fmt.Errorf("create SPIFFE association registry: %w", err)
+		return nil, nil, fmt.Errorf("create SPIFFE association registry: %w", err)
 	}
 
 	// Install dynamic CIMD lookup before the static SPIFFE overlay so configured
 	// clients always take precedence over remotely resolved HTTPS client IDs.
 	stor, err = decorateStorageForCIMD(cfg, stor)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stor, err = NewSPIFFEStorageDecorator(ctx, stor, registry)
 	if err != nil {
-		return nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
+		return nil, nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
 	}
-	return stor, nil
+	return stor, registry, nil
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,

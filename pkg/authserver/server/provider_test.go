@@ -733,6 +733,9 @@ func TestNewAuthorizationServer_InstallsSPIFFEClientAuthenticationStrategy(t *te
 		SigningKey:           rsaKey,
 	})
 	require.NoError(t, err)
+	// A configured resolver is required for the SPIFFE arms to engage at all;
+	// see TestSPIFFEClientAuthenticationStrategy for the nil-resolver case.
+	config.SPIFFEClientResolver = stubResolver
 
 	_, err = NewAuthorizationServer(config, &mockStorage{}, nil)
 	require.NoError(t, err)

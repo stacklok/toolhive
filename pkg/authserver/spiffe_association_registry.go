@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 // SPIFFEAssociationRegistry is the immutable runtime index of validated SPIFFE
@@ -82,13 +83,9 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 		)
 	}
 
-	return NormalizedSPIFFEPrincipal{
-		clientID:      association.ClientID(),
-		spiffeID:      canonicalID,
-		trustDomain:   parsedID.TrustDomain().String(),
-		authMethod:    method,
-		authorization: association.AuthorizationPolicy(),
-	}, nil
+	return spiffeauth.NewNormalizedSPIFFEPrincipal(
+		association.ClientID(), canonicalID, parsedID.TrustDomain().String(), method, association.AuthorizationPolicy(),
+	), nil
 }
 
 // staticClient returns the configured immutable OAuth client for clientID.

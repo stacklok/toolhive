@@ -13,15 +13,16 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
 	// SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.
-	SPIFFEAuthenticationMethodX509 SPIFFEAuthenticationMethod = "spiffe_x509"
+	SPIFFEAuthenticationMethodX509 = spiffeauth.SPIFFEAuthenticationMethodX509
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
-	SPIFFEAuthenticationMethodJWT SPIFFEAuthenticationMethod = "spiffe_jwt"
+	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
 	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
 	// this configuration surface.
@@ -31,7 +32,13 @@ const (
 // SPIFFEAuthenticationMethod identifies the credential type permitted for a
 // SPIFFE workload. Methods are explicit so introducing another credential type
 // cannot silently broaden a policy.
-type SPIFFEAuthenticationMethod string
+//
+// This is an alias for spiffeauth.SPIFFEAuthenticationMethod: package server
+// (which cannot import authserver, see spiffeauth.AssociationResolver) needs
+// the same type, so the definition lives in the shared leaf package
+// pkg/authserver/spiffe and is re-exported here to avoid churning the many
+// existing references to authserver.SPIFFEAuthenticationMethod.
+type SPIFFEAuthenticationMethod = spiffeauth.SPIFFEAuthenticationMethod
 
 // SPIFFEBundleSourceType identifies the selected trust-bundle source.
 type SPIFFEBundleSourceType string
@@ -131,64 +138,18 @@ type SPIFFETokenExchangeRunConfig struct {
 
 // SPIFFEAuthorizationPolicy is the immutable authorization policy selected by a
 // validated SPIFFE association. Resources and audiences remain separate.
-type SPIFFEAuthorizationPolicy struct {
-	grantTypes    []string
-	scopes        []string
-	resources     []string
-	audiences     []string
-	tokenExchange bool
-}
-
-// GrantTypes returns a copy of the permitted OAuth grant types.
-func (p SPIFFEAuthorizationPolicy) GrantTypes() []string { return slices.Clone(p.grantTypes) }
-
-// Scopes returns a copy of the permitted OAuth scopes.
-func (p SPIFFEAuthorizationPolicy) Scopes() []string { return slices.Clone(p.scopes) }
-
-// Resources returns a copy of the permitted RFC 8707 resource indicators.
-func (p SPIFFEAuthorizationPolicy) Resources() []string { return slices.Clone(p.resources) }
-
-// Audiences returns a copy of the permitted RFC 8693 audiences.
-func (p SPIFFEAuthorizationPolicy) Audiences() []string { return slices.Clone(p.audiences) }
-
-// TokenExchangeEnabled reports whether RFC 8693 token exchange is permitted.
-func (p SPIFFEAuthorizationPolicy) TokenExchangeEnabled() bool { return p.tokenExchange }
+//
+// Alias for spiffeauth.SPIFFEAuthorizationPolicy; see SPIFFEAuthenticationMethod
+// for why the definition lives in pkg/authserver/spiffe.
+type SPIFFEAuthorizationPolicy = spiffeauth.SPIFFEAuthorizationPolicy
 
 // NormalizedSPIFFEPrincipal is an immutable, validated identity selected from a
 // SPIFFE association. It represents policy only; it does not authenticate a
 // credential or enable an authentication method.
-type NormalizedSPIFFEPrincipal struct {
-	clientID      string
-	spiffeID      string
-	trustDomain   string
-	authMethod    SPIFFEAuthenticationMethod
-	authorization SPIFFEAuthorizationPolicy
-}
-
-// ClientID returns the configured OAuth client ID.
-func (p NormalizedSPIFFEPrincipal) ClientID() string { return p.clientID }
-
-// SPIFFEID returns the canonical concrete SPIFFE ID.
-func (p NormalizedSPIFFEPrincipal) SPIFFEID() string { return p.spiffeID }
-
-// TrustDomain returns the canonical SPIFFE trust domain.
-func (p NormalizedSPIFFEPrincipal) TrustDomain() string { return p.trustDomain }
-
-// AuthenticationMethod returns the selected credential-method discriminator.
-func (p NormalizedSPIFFEPrincipal) AuthenticationMethod() SPIFFEAuthenticationMethod {
-	return p.authMethod
-}
-
-// AuthorizationPolicy returns a defensive copy of the selected policy.
-func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes:    slices.Clone(p.authorization.grantTypes),
-		scopes:        slices.Clone(p.authorization.scopes),
-		resources:     slices.Clone(p.authorization.resources),
-		audiences:     slices.Clone(p.authorization.audiences),
-		tokenExchange: p.authorization.tokenExchange,
-	}
-}
+//
+// Alias for spiffeauth.NormalizedSPIFFEPrincipal; see SPIFFEAuthenticationMethod
+// for why the definition lives in pkg/authserver/spiffe.
+type NormalizedSPIFFEPrincipal = spiffeauth.NormalizedSPIFFEPrincipal
 
 // NormalizeSPIFFEPrincipal parses a concrete SPIFFE ID with go-spiffe. It
 // rejects wildcard patterns; use MatchSPIFFEPrincipalPattern for policy
@@ -259,13 +220,10 @@ func NewSPIFFETrustConfig(
 			principal:      principal,
 			clientID:       association.ClientID,
 			methods:        slices.Clone(association.Methods),
-			authorization: SPIFFEAuthorizationPolicy{
-				grantTypes:    slices.Clone(association.GrantTypes),
-				scopes:        slices.Clone(association.Scopes),
-				resources:     slices.Clone(association.Resources),
-				audiences:     slices.Clone(association.Audiences),
-				tokenExchange: association.TokenExchange != nil && association.TokenExchange.Enabled,
-			},
+			authorization: spiffeauth.NewSPIFFEAuthorizationPolicy(
+				association.GrantTypes, association.Scopes, association.Resources, association.Audiences,
+				association.TokenExchange != nil && association.TokenExchange.Enabled,
+			),
 		})
 	}
 	return config, nil
@@ -385,13 +343,11 @@ func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod {
 
 // AuthorizationPolicy returns a defensive copy of the association policy.
 func (c SPIFFEClientAuthConfig) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes:    slices.Clone(c.authorization.grantTypes),
-		scopes:        slices.Clone(c.authorization.scopes),
-		resources:     slices.Clone(c.authorization.resources),
-		audiences:     slices.Clone(c.authorization.audiences),
-		tokenExchange: c.authorization.tokenExchange,
-	}
+	return spiffeauth.NewSPIFFEAuthorizationPolicy(
+		c.authorization.GrantTypes(), c.authorization.Scopes(),
+		c.authorization.Resources(), c.authorization.Audiences(),
+		c.authorization.TokenExchangeEnabled(),
+	)
 }
 
 func (c SPIFFEClientAuthConfig) clone() SPIFFEClientAuthConfig {

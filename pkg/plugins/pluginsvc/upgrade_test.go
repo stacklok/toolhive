@@ -20,6 +20,7 @@ import (
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	ocimocks "github.com/stacklok/toolhive-core/oci/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 func addPluginRepoCommit(t *testing.T, repoDir, content string) {
@@ -261,6 +262,12 @@ func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
 	require.NoError(t, err)
 	lookup.n = 0
 
+	prevRef := "ghcr.io/org/my-plugin@" + validLockDigest()
+	existing, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	existing.ResolvedReference = prevRef
+	require.NoError(t, lockfile.UpsertPluginEntry(mustOpenRoot(t, projectRoot), existing))
+
 	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
 	require.NoError(t, ociStore.Tag(t.Context(), d2, "my-plugin"))
 
@@ -273,6 +280,14 @@ func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
 	after, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 	require.True(t, ok)
 	assert.Equal(t, d2.String(), after.Digest)
+	assert.Equal(t, prevRef, after.ResolvedReference, "a local-tag apply must keep the previous restorable pin")
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info.InstalledPlugin)
+	assert.Equal(t, "my-plugin", info.InstalledPlugin.Reference)
 
 	manifest, err := os.ReadFile(filepath.Join(pluginOnDiskPath(projectRoot, "my-plugin"), ".claude-plugin", "plugin.json")) //nolint:gosec
 	require.NoError(t, err)
@@ -313,6 +328,14 @@ func TestUpgrade_AppliesDifferentlyNamedLocalTagWithoutRegistry(t *testing.T) {
 	after, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 	require.True(t, ok)
 	assert.Equal(t, d2.String(), after.Digest)
+	assert.Empty(t, after.ResolvedReference, "a bare local tag must not be written as resolvedReference")
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info.InstalledPlugin)
+	assert.Equal(t, "my-plugin-dev", info.InstalledPlugin.Reference)
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService

@@ -158,9 +158,19 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 // implicit WriteHeader(200), sending headers to the wire. If the stale
 // Content-Length is still present at that point, it's too late to remove it in
 // FlushAndFilter().
+//
+// Commit the recorded status before the first flush. Without this, the implicit
+// 200 would also rewrite a non-2xx backend status (e.g. 500) to 200 on the
+// wire, defeating the non-2xx passthrough precondition in FlushAndFilter(): a
+// fetch-based MCP client gates list delivery on response.ok, so an unfiltered
+// list body would be delivered under a fabricated 200. Committing here keeps
+// the wire status identical to the recorded backend status; SSE (statusCode
+// 200) is unaffected and later WriteHeader calls in FlushAndFilter become
+// no-ops instead of corrupting the status.
 func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
 		rfw.ResponseWriter.Header().Del("Content-Length")
+		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
 	}
 }

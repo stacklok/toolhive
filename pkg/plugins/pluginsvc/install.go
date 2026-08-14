@@ -276,10 +276,11 @@ func splitQualifiedName(s string) (namespace, name string) {
 
 // registerPluginInGroup adds the plugin to the requested group when a group
 // manager is configured. When groupName is empty it defaults to the "default"
-// group, matching workload behavior.
-func (s *service) registerPluginInGroup(ctx context.Context, groupName string, pluginName string) error {
+// group, matching workload behavior. The bool reports whether this call
+// inserted the name, so rollback can remove it only then.
+func (s *service) registerPluginInGroup(ctx context.Context, groupName string, pluginName string) (bool, error) {
 	if s.groupManager == nil {
-		return nil
+		return false, nil
 	}
 	if groupName == "" {
 		groupName = groups.DefaultGroup
@@ -287,15 +288,23 @@ func (s *service) registerPluginInGroup(ctx context.Context, groupName string, p
 	return groups.AddPluginToGroup(ctx, s.groupManager, groupName, pluginName)
 }
 
+func resolvedGroupName(groupName string) string {
+	if groupName == "" {
+		return groups.DefaultGroup
+	}
+	return groupName
+}
+
 // installAndRegister registers the just-installed plugin in the target group
 // and, for project-scope installs with the lock file feature enabled (see
 // plugins.LockFileFeatureEnabled), records it in the project's
 // toolhive.lock.yaml plugins: key. If group registration or the lock write
-// fails, the DB record, on-disk files, and lock entry are rolled back to
-// their pre-install state: restored when this call updated a pre-existing
-// record (a --force reinstall must not be destroyed by a transient failure),
-// deleted/dematerialized when this call created them. Callers must hold the
-// per-plugin lock for the duration of this call.
+// fails, the DB record, on-disk files, group membership (only when this call
+// added it), and lock entry are rolled back to their pre-install state:
+// restored when this call updated a pre-existing record (a --force reinstall
+// must not be destroyed by a transient failure), deleted/dematerialized when
+// this call created them. Callers must hold the per-plugin lock for the
+// duration of this call.
 func (s *service) installAndRegister(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -318,12 +327,17 @@ func (s *service) installAndRegister(
 		}
 	}
 
-	rollback := func() { s.rollbackInstall(ctx, opts, result, pluginName, scope, lockScoped, prevEntry) }
+	var addedToGroup bool
+	rollback := func() {
+		s.rollbackInstall(ctx, opts, result, pluginName, scope, lockScoped, prevEntry, addedToGroup, resolvedGroupName(opts.Group))
+	}
 
-	if err := s.registerPluginInGroup(ctx, opts.Group, pluginName); err != nil {
+	added, err := s.registerPluginInGroup(ctx, opts.Group, pluginName)
+	if err != nil {
 		rollback()
 		return nil, fmt.Errorf("registering plugin in group: %w", err)
 	}
+	addedToGroup = added
 
 	if lockScoped {
 		updated, err := s.recordLockState(ctx, opts, result.Plugin, result.ContentDigest)
@@ -343,8 +357,9 @@ func (s *service) installAndRegister(
 // rollbackInstall undoes installAndRegister's side effects after a failure,
 // best-effort. The DB record is restored to its pre-install snapshot when
 // one exists (result.PreExisting) and deleted otherwise; on-disk files are
-// dematerialized (fresh install) or restored (upgrade); the lock entry is
-// likewise reinstated from prevEntry or removed.
+// dematerialized (fresh install) or restored (upgrade); group membership is
+// removed only when this call added it; the lock entry is likewise
+// reinstated from prevEntry or removed.
 func (s *service) rollbackInstall(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -353,6 +368,8 @@ func (s *service) rollbackInstall(
 	scope plugins.Scope,
 	lockScoped bool,
 	prevEntry *lockfile.Entry,
+	addedToGroup bool,
+	groupName string,
 ) {
 	if result.PreExisting != nil {
 		_ = s.store.Update(ctx, *result.PreExisting)
@@ -362,6 +379,10 @@ func (s *service) rollbackInstall(
 
 	if result.RestoreFiles != nil {
 		result.RestoreFiles(ctx)
+	}
+
+	if addedToGroup && s.groupManager != nil {
+		_ = groups.RemovePluginFromGroup(ctx, s.groupManager, groupName, pluginName)
 	}
 
 	if !lockScoped {

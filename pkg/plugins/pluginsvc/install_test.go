@@ -553,6 +553,9 @@ func TestInstallAddsPluginToGroup(t *testing.T) {
 			gm := groupmocks.NewMockManager(ctrl)
 			adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
 			adapter.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil).AnyTimes()
+			if tt.wantErr != "" {
+				adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+			}
 
 			tt.setupStoreMock(store)
 			tt.setupGroupMock(gm)

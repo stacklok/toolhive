@@ -142,21 +142,28 @@ func (s *service) installExtractionUpgradeDigest(
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
 	allClients := mergeClientLists(existing.Clients, clientTypes)
-	backups := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, allClients)
+	backups, snapErr := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, allClients)
+	if snapErr != nil {
+		return nil, fmt.Errorf("snapshotting installed plugin trees: %w", snapErr)
+	}
 	if _, err := s.materializeForClients(ctx, opts, scope, allClients); err != nil {
-		s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
+		if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients); restoreErr != nil {
+			return nil, errors.Join(err, restoreErr)
+		}
 		return nil, err
 	}
 	pl := buildInstalledPlugin(opts, scope, allClients, nil)
 	pl.Managed = existing.Managed
 	if err := s.store.Update(ctx, pl); err != nil {
-		s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
+		if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients); restoreErr != nil {
+			return nil, errors.Join(err, restoreErr)
+		}
 		return nil, err
 	}
 	return &plugins.InstallResult{
 		Plugin: pl,
 		RestoreFiles: func(ctx context.Context) {
-			s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
+			_ = s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
 		},
 	}, nil
 }
@@ -220,50 +227,89 @@ func (s *service) materializeForClients(
 	return materialized, nil
 }
 
+// fileSnapshot is one regular file captured by snapshotDir: contents plus a
+// sanitized permission mode so executable hooks stay executable on restore.
+type fileSnapshot struct {
+	data []byte
+	mode fs.FileMode
+}
+
+// snapshotFileModeMask strips setuid/setgid/sticky and caps at 0755, matching
+// skills.PluginFilePermissionMask so restored hooks keep +x without restoring
+// unsafe bits.
+const snapshotFileModeMask fs.FileMode = 0o755
+
+func sanitizeFileMode(mode fs.FileMode) fs.FileMode {
+	return mode.Perm() & snapshotFileModeMask
+}
+
 // snapshotClientTrees copies each client's installed plugin tree into memory
 // so a later rollback can restore the previous materialization without
 // leaking temp directories. Missing directories are omitted (the client was
-// not yet installed).
+// not yet installed). A walk/read error on an existing tree is returned so
+// the caller can abort before mutating.
 func (s *service) snapshotClientTrees(
 	name string, scope plugins.Scope, projectRoot string, clientTypes []string,
-) map[string]map[string][]byte {
-	backups := make(map[string]map[string][]byte, len(clientTypes))
+) (map[string]map[string]fileSnapshot, error) {
+	backups := make(map[string]map[string]fileSnapshot, len(clientTypes))
+	var errs []error
 	for _, ct := range clientTypes {
 		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
 		if err != nil {
 			continue
 		}
-		files, ok := snapshotDir(dir)
-		if !ok {
+		files, err := snapshotDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("snapshotting %s copy of %q: %w", ct, name, err))
 			continue
 		}
 		backups[ct] = files
 	}
-	if len(backups) == 0 {
-		return nil
+	if len(errs) > 0 {
+		return backups, errors.Join(errs...)
 	}
-	return backups
+	if len(backups) == 0 {
+		return nil, nil
+	}
+	return backups, nil
 }
 
 // restoreClientTrees writes snapshotClientTrees backups back over the live
-// plugin directories. Clients without a backup are dematerialized (they were
-// newly added by the failed install).
+// plugin directories and re-registers each restored client so marketplace
+// and settings entries match the restored tree. Clients without a backup are
+// dematerialized (they were newly added by the failed install).
 func (s *service) restoreClientTrees(
 	ctx context.Context,
 	name string,
 	scope plugins.Scope,
 	projectRoot string,
-	backups map[string]map[string][]byte,
+	backups map[string]map[string]fileSnapshot,
 	allClients []string,
-) {
+) error {
+	var errs []error
 	restored := make(map[string]struct{}, len(backups))
 	for ct, files := range backups {
 		restored[ct] = struct{}{}
 		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("resolving %s install path: %w", ct, err))
 			continue
 		}
-		restoreDir(dir, files)
+		if err := restoreDir(dir, files); err != nil {
+			errs = append(errs, fmt.Errorf("restoring %s plugin tree: %w", ct, err))
+		}
+		if adapter, ok := s.materializers[ct]; ok {
+			if err := adapter.EnsureRegistered(ctx, plugins.DematerializeRequest{
+				Name:        name,
+				Scope:       scope,
+				ProjectRoot: projectRoot,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("restoring %s registration: %w", ct, err))
+			}
+		}
 	}
 	var extra []string
 	for _, ct := range allClients {
@@ -272,18 +318,30 @@ func (s *service) restoreClientTrees(
 		}
 	}
 	s.dematerializeAll(ctx, extra, name, scope, projectRoot)
+	return errors.Join(errs...)
 }
 
-// snapshotDir reads every regular file under dir into a relative-path map.
-// Returns ok=false when dir does not exist.
-func snapshotDir(dir string) (map[string][]byte, bool) {
+// snapshotDir reads every regular file under dir into a relative-path map,
+// preserving sanitized permission bits. Returns os.ErrNotExist when dir does
+// not exist.
+func snapshotDir(dir string) (map[string]fileSnapshot, error) {
 	if _, err := os.Stat(dir); err != nil {
-		return nil, false
+		return nil, err
 	}
-	files := make(map[string][]byte)
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	files := make(map[string]fileSnapshot)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if !info.Mode().IsRegular() {
+			return nil
 		}
 		rel, relErr := filepath.Rel(dir, path)
 		if relErr != nil {
@@ -293,22 +351,33 @@ func snapshotDir(dir string) (map[string][]byte, bool) {
 		if readErr != nil {
 			return readErr
 		}
-		files[rel] = data
+		files[rel] = fileSnapshot{data: data, mode: sanitizeFileMode(info.Mode())}
 		return nil
 	})
-	return files, true
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
-// restoreDir replaces dir with the files captured by snapshotDir.
-func restoreDir(dir string, files map[string][]byte) {
-	_ = os.RemoveAll(dir)
-	for rel, data := range files {
+// restoreDir replaces dir with the files captured by snapshotDir, writing
+// each file with its sanitized mode.
+func restoreDir(dir string, files map[string]fileSnapshot) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	var errs []error
+	for rel, snap := range files {
 		path := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		_ = os.WriteFile(path, data, 0o600)
+		if err := os.WriteFile(path, snap.data, snap.mode); err != nil { //nolint:gosec // mode is masked to 0755
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // pluginInstallPath resolves the on-disk plugin directory for a client.

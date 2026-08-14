@@ -103,6 +103,11 @@ type MaterializationAdapter interface {
 	// config mutations the adapter itself made. Must be idempotent: a missing
 	// install is not an error.
 	Dematerialize(ctx context.Context, req DematerializeRequest) error
+	// EnsureRegistered restores this plugin's marketplace/settings entries
+	// without re-extracting files. Used after restoring a plugin-tree snapshot
+	// so a failed upgrade does not leave the client unable to discover the
+	// plugin. Must be idempotent.
+	EnsureRegistered(ctx context.Context, req DematerializeRequest) error
 	// SupportedComponents returns the component types this adapter loads.
 	SupportedComponents() []ComponentType
 	// ScopeSupport reports whether a project-scoped install degrades for this

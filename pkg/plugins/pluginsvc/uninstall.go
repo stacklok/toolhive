@@ -20,9 +20,10 @@ import (
 // Dematerialization is best-effort for unmanaged installs: errors are collected
 // via errors.Join so a single client failure does not abort cleanup of the
 // others, and the DB record is still deleted. For lock-managed project-scope
-// installs the lock entry is removed first; a later dematerialize or DB-delete
-// failure restores the pin and aborts so the plugin is not left
-// installed-but-untracked.
+// installs the lock entry is removed first after snapshotting every client
+// tree; a later dematerialize or DB-delete failure restores the pin, the
+// plugin trees, and adapter registration so the plugin is not left
+// installed-but-untracked or half-removed across clients.
 func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) error {
 	if err := plugins.ValidatePluginName(opts.Name); err != nil {
 		return httperr.WithCode(err, http.StatusBadRequest)
@@ -52,15 +53,25 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		return err
 	}
 
+	backups, snapErr := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, existing.Clients)
+	if snapErr != nil && restoreLock != nil {
+		restoreLock()
+		return fmt.Errorf("snapshotting plugin trees before uninstall: %w", snapErr)
+	}
+
 	cleanupErrs := s.dematerializeClients(ctx, existing, scope, opts.ProjectRoot)
 	if len(cleanupErrs) > 0 && restoreLock != nil {
 		restoreLock()
+		if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients); restoreErr != nil {
+			cleanupErrs = append(cleanupErrs, restoreErr)
+		}
 		return errors.Join(cleanupErrs...)
 	}
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
 		if restoreLock != nil {
 			restoreLock()
+			_ = s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients)
 		}
 		return err
 	}

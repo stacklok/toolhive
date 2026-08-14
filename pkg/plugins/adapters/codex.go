@@ -103,11 +103,8 @@ func (a *CodexAdapter) Materialize(_ context.Context, req plugins.MaterializeReq
 		return nil, fmt.Errorf("extracting plugin: %w", err)
 	}
 
-	// Register the plugin in the shared marketplace.json at the marketplace root
-	// so Codex can discover it.
-	root := a.codexMarketplaceRoot(req.Scope, req.ProjectRoot)
-	if err := upsertCodexMarketplace(codexMarketplaceFile(root), req.Name); err != nil {
-		return nil, fmt.Errorf("writing codex marketplace: %w", err)
+	if err := a.registerPlugin(req.Name, req.Scope, req.ProjectRoot); err != nil {
+		return nil, err
 	}
 
 	return &plugins.MaterializeResult{
@@ -144,6 +141,21 @@ func (a *CodexAdapter) Dematerialize(_ context.Context, req plugins.Dematerializ
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// EnsureRegistered restores the marketplace.json entry for this plugin
+// without re-extracting files.
+func (a *CodexAdapter) EnsureRegistered(_ context.Context, req plugins.DematerializeRequest) error {
+	return a.registerPlugin(req.Name, req.Scope, req.ProjectRoot)
+}
+
+// registerPlugin upserts the shared Codex marketplace.json entry.
+func (a *CodexAdapter) registerPlugin(name string, scope plugins.Scope, projectRoot string) error {
+	root := a.codexMarketplaceRoot(scope, projectRoot)
+	if err := upsertCodexMarketplace(codexMarketplaceFile(root), name); err != nil {
+		return fmt.Errorf("writing codex marketplace: %w", err)
 	}
 	return nil
 }

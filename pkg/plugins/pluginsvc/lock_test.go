@@ -6,6 +6,7 @@ package pluginsvc
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,10 +14,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/groups"
+	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/plugins/adapters"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -43,6 +48,10 @@ func (a *extractingAdapter) Materialize(_ context.Context, req plugins.Materiali
 
 func (a *extractingAdapter) Dematerialize(_ context.Context, req plugins.DematerializeRequest) error {
 	return a.installer.Remove(filepath.Join(a.base, req.Name))
+}
+
+func (*extractingAdapter) EnsureRegistered(context.Context, plugins.DematerializeRequest) error {
+	return nil
 }
 
 func (*extractingAdapter) SupportedComponents() []plugins.ComponentType {
@@ -387,4 +396,209 @@ func TestUninstall_StoreDeleteFailureRestoresLockEntry(t *testing.T) {
 	})
 	require.NoError(t, err, "the plugin must remain installed")
 	assert.NotNil(t, info.InstalledPlugin)
+}
+
+func TestSnapshotRestore_PreservesExecutableMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	hook := filepath.Join(dir, "hooks", "preinstall.sh")
+	require.NoError(t, os.MkdirAll(filepath.Dir(hook), 0o750))
+	require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\necho hi\n"), 0o600))
+	require.NoError(t, os.Chmod(hook, 0o755))
+	md := filepath.Join(dir, "commands", "hello.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(md), 0o750))
+	require.NoError(t, os.WriteFile(md, []byte("# hello"), 0o644))
+
+	files, err := snapshotDir(dir)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o755), files[filepath.Join("hooks", "preinstall.sh")].mode)
+	assert.Equal(t, fs.FileMode(0o644), files[filepath.Join("commands", "hello.md")].mode)
+
+	dest := t.TempDir()
+	require.NoError(t, restoreDir(dest, files))
+
+	info, err := os.Stat(filepath.Join(dest, "hooks", "preinstall.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o755), info.Mode().Perm())
+	mdInfo, err := os.Stat(filepath.Join(dest, "commands", "hello.md"))
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o644), mdInfo.Mode().Perm())
+}
+
+type failingMaterializeAdapter struct {
+	err error
+}
+
+func (a *failingMaterializeAdapter) Materialize(context.Context, plugins.MaterializeRequest) (*plugins.MaterializeResult, error) {
+	return nil, a.err
+}
+
+func (*failingMaterializeAdapter) Dematerialize(context.Context, plugins.DematerializeRequest) error {
+	return nil
+}
+
+func (*failingMaterializeAdapter) EnsureRegistered(context.Context, plugins.DematerializeRequest) error {
+	return nil
+}
+
+func (*failingMaterializeAdapter) SupportedComponents() []plugins.ComponentType {
+	return nil
+}
+
+func (*failingMaterializeAdapter) ScopeSupport() plugins.ScopeSupport {
+	return plugins.ScopeSupport{}
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ctrl := gomock.NewController(t)
+	gm := groupmocks.NewMockManager(ctrl)
+
+	var members []string
+	gm.EXPECT().Get(gomock.Any(), groups.DefaultGroup).DoAndReturn(
+		func(context.Context, string) (*groups.Group, error) {
+			cp := make([]string, len(members))
+			copy(cp, members)
+			return &groups.Group{Name: groups.DefaultGroup, Plugins: cp}, nil
+		},
+	).AnyTimes()
+	gm.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, g *groups.Group) error {
+			members = append([]string(nil), g.Plugins...)
+			return nil
+		},
+	).Times(2)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.groupManager = gm
+
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Empty(t, members, "a failed fresh install must not leave the plugin in the group")
+}
+
+//nolint:paralleltest // uses t.Setenv
+func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
+	t.Setenv(plugins.LockFileEnvVar, "true")
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := sqlite.Open(t.Context(), dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	projectRoot := makeProjectRoot(t)
+	cm := client.NewTestClientManagerWithHome(t.TempDir())
+	svc := New(
+		WithStore(sqlite.NewPluginStore(db)),
+		WithMaterializers(map[string]plugins.MaterializationAdapter{
+			"claude-code": adapters.NewClaudeCodeAdapter(cm),
+			"codex":       &failingMaterializeAdapter{err: errors.New("disk full")},
+		}),
+		WithClientManager(cm),
+	)
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	settingsPath := filepath.Join(projectRoot, ".claude", "settings.json")
+	before, err := os.ReadFile(settingsPath) //nolint:gosec // test fixture
+	require.NoError(t, err)
+	assert.Contains(t, string(before), "my-plugin@toolhive")
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		Digest:      validLockDigestAlt(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"codex"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk full")
+
+	after, err := os.ReadFile(settingsPath) //nolint:gosec // test fixture
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "my-plugin@toolhive",
+		"a failed upgrade must restore Claude Code settings registration")
+
+	hello, err := os.ReadFile(filepath.Join(projectRoot, ".claude", "plugins", "my-plugin", "commands", "hello.md")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Equal(t, "# hello", string(hello), "the previous plugin tree must be restored")
+}
+
+//nolint:paralleltest // uses t.Setenv
+func TestUninstall_PartialDematerializeRestoresAllClients(t *testing.T) {
+	t.Setenv(plugins.LockFileEnvVar, "true")
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := sqlite.Open(t.Context(), dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	projectRoot := makeProjectRoot(t)
+	claude := &extractingAdapter{
+		base:      filepath.Join(projectRoot, ".claude", "plugins"),
+		installer: skills.NewInstaller(),
+	}
+	codex := &extractingAdapter{
+		base:      filepath.Join(projectRoot, ".agents", "plugins", "toolhive"),
+		installer: skills.NewInstaller(),
+	}
+	svc := New(
+		WithStore(sqlite.NewPluginStore(db)),
+		WithMaterializers(map[string]plugins.MaterializationAdapter{
+			"claude-code": claude,
+			"codex":       codex,
+		}),
+		WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+	)
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code", "codex"},
+	})
+	require.NoError(t, err)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["codex"] = &failingDematerializeAdapter{
+		MaterializationAdapter: codex,
+		err:                    errors.New("permission denied"),
+	}
+
+	err = svc.Uninstall(t.Context(), plugins.UninstallOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err)
+
+	_, err = os.Stat(filepath.Join(projectRoot, ".claude", "plugins", "my-plugin", "commands", "hello.md"))
+	require.NoError(t, err, "the successfully dematerialized client must be restored")
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info.InstalledPlugin)
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.True(t, ok, "the lock entry must be restored")
 }

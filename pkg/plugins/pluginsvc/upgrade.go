@@ -131,7 +131,7 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 
 	if newRef != entry.ResolvedReference {
 		outcome.NewResolvedReference = newRef
-		if repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
+		if entry.ResolvedReference != "" && repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
 			outcome.Status = plugins.UpgradeStatusRefChangeBlocked
 			return upgradePlan{entry: entry, outcome: outcome}
 		}
@@ -139,10 +139,16 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 
 	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: newRef, Digest: newDigest})
 	if err != nil {
-		outcome.Status = plugins.UpgradeStatusFailed
-		outcome.Reason = plugins.FailureReasonUnknown
-		outcome.Error = fmt.Errorf("pinning resolved reference: %w", err).Error()
-		return upgradePlan{entry: entry, outcome: outcome}
+		// A local-store tag (a plain plugin name) is not an OCI reference, so
+		// it cannot be digest-pinned. Install will re-resolve the name against
+		// the local store, matching how the original install got here.
+		if _, isOCI, parseErr := parseOCIReference(newRef); parseErr != nil || isOCI {
+			outcome.Status = plugins.UpgradeStatusFailed
+			outcome.Reason = plugins.FailureReasonUnknown
+			outcome.Error = fmt.Errorf("pinning resolved reference: %w", err).Error()
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
+		pinnedRef = newRef
 	}
 
 	outcome.Status = plugins.UpgradeStatusUpgraded
@@ -181,10 +187,10 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 
 // resolveLatestState re-resolves source (a lock entry's original Source
 // value) to its current resolvedReference and digest, using the same
-// dispatch order as Install (git, direct OCI, registry name), but stopping
-// short of extraction or any DB/lock write. For OCI sources this still
-// pulls the artifact into the local store — matching the RFC's "preview is
-// not side-effect-free" note.
+// dispatch order as Install (git, direct OCI, plain name via local store
+// then registry), but stopping short of extraction or any DB/lock write.
+// For OCI sources this still pulls the artifact into the local store —
+// matching the RFC's "preview is not side-effect-free" note.
 func (s *service) resolveLatestState(ctx context.Context, source string) (resolvedRef, digestStr string, err error) {
 	if gitresolver.IsGitReference(source) {
 		return s.resolveGitLatest(ctx, source)
@@ -201,6 +207,24 @@ func (s *service) resolveLatestState(ctx context.Context, source string) (resolv
 		return s.resolveOCILatest(ctx, ref)
 	}
 
+	return s.resolvePlainNameLatest(ctx, source)
+}
+
+// resolvePlainNameLatest mirrors installByName: local OCI store first, then
+// the registry lookup. A lock entry whose Source is a bare plugin name is
+// otherwise stuck talking only to the registry, so a local rebuild would
+// never be picked up by upgrade.
+func (s *service) resolvePlainNameLatest(ctx context.Context, source string) (string, string, error) {
+	if s.ociStore != nil {
+		opts := plugins.InstallOptions{Name: source}
+		resolved, err := s.resolveFromLocalStore(ctx, &opts)
+		if err != nil {
+			return "", "", err
+		}
+		if resolved {
+			return opts.Reference, opts.Digest, nil
+		}
+	}
 	return s.resolveRegistryNameLatest(ctx, source)
 }
 

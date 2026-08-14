@@ -45,7 +45,8 @@ Requires TOOLHIVE_PLUGINS_LOCK_ENABLED=true.`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&aiPluginUpgradeFormat),
 	),
-	RunE: aiPluginUpgradeCmdFunc,
+	ValidArgsFunction: completePluginLockNames,
+	RunE:              aiPluginUpgradeCmdFunc,
 }
 
 func init() {

@@ -4,6 +4,7 @@
 package pluginsvc
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,8 +14,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	ocimocks "github.com/stacklok/toolhive-core/oci/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
@@ -190,4 +194,86 @@ func TestUpgrade_DisabledGateReturnsForbidden(t *testing.T) {
 	_, err := svc.(*service).Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
 	require.Error(t, err)
 	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
+}
+
+type countingLookup struct {
+	hits []PluginSearchHit
+	n    int
+}
+
+func (c *countingLookup) SearchPlugins(context.Context, string) ([]PluginSearchHit, error) {
+	c.n++
+	return c.hits, nil
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUpgrade_PlainNameResolvesLocalStoreWithoutRegistry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	lookup := &countingLookup{}
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+	inner.pluginLookup = lookup
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	lookup.n = 0
+
+	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+	require.NoError(t, ociStore.Tag(t.Context(), d2, "my-plugin"))
+
+	result, err := inner.Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot, Preview: true})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, result.Outcomes[0].Status)
+	assert.Equal(t, d2.String(), result.Outcomes[0].NewDigest)
+	assert.Equal(t, 0, lookup.n, "a local-store hit must not fall through to registry lookup")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUpgrade_PlainNameFallsBackToRegistryWhenLocalMisses(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	newer := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+
+	lookup := &countingLookup{hits: []PluginSearchHit{{
+		Name:     "my-plugin",
+		Packages: []PluginPackage{{Reference: "ghcr.io/org/my-plugin:v2", Type: "oci"}},
+	}}}
+	ctrl := gomock.NewController(t)
+	reg := ocimocks.NewMockRegistryClient(ctrl)
+	reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-plugin:v2").Return(newer, nil)
+	inner.pluginLookup = lookup
+	inner.registry = reg
+
+	result, err := inner.Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot, Preview: true})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, result.Outcomes[0].Status)
+	assert.Equal(t, 1, lookup.n, "a local-store miss must fall through to registry lookup")
+	assert.Equal(t, newer.String(), result.Outcomes[0].NewDigest)
 }

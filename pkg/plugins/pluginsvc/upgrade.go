@@ -99,12 +99,22 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 // upgradePlan is entry's resolved outcome before any install happens: either
 // a terminal status (not-upgradable, up-to-date, ref-change-blocked, or a
 // resolution failure) that needs no further action, or the pinned reference
-// to install when the upgrade is applied.
+// (and optional local layer bytes) to install when the upgrade is applied.
 type upgradePlan struct {
 	entry       lockfile.Entry
 	outcome     plugins.UpgradeOutcome
 	pinnedRef   string // set only when the upgrade needs installing
 	resolvedRef string // the resolved reference to record as ResolvedReference
+	layerData   []byte // set when the new content was resolved from the local OCI store
+}
+
+// resolvedLatest is the current state of a lock entry's Source, before any
+// install. layerData is set only for local-store hits so apply can install
+// those bytes without reinterpreting a bare tag as Docker Hub.
+type resolvedLatest struct {
+	ref       string
+	digest    string
+	layerData []byte
 }
 
 func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, entry lockfile.Entry) upgradePlan {
@@ -115,44 +125,50 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	newRef, newDigest, err := s.resolveLatestState(ctx, entry.Source)
+	latest, err := s.resolveLatestState(ctx, entry.Source)
 	if err != nil {
 		outcome.Status = plugins.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)
 		outcome.Error = err.Error()
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
-	outcome.NewDigest = newDigest
+	outcome.NewDigest = latest.digest
 
-	if newDigest == entry.Digest {
+	if latest.digest == entry.Digest {
 		outcome.Status = plugins.UpgradeStatusUpToDate
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	if newRef != entry.ResolvedReference {
-		outcome.NewResolvedReference = newRef
-		if entry.ResolvedReference != "" && repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
+	if len(latest.layerData) > 0 {
+		// Local-store hit: carry the exact artifact. buildPinnedReference
+		// would parse a bare tag as index.docker.io/library/<tag>@digest.
+		outcome.Status = plugins.UpgradeStatusUpgraded
+		return upgradePlan{
+			entry:     entry,
+			outcome:   outcome,
+			pinnedRef: entry.Name,
+			layerData: latest.layerData,
+		}
+	}
+
+	if latest.ref != entry.ResolvedReference {
+		outcome.NewResolvedReference = latest.ref
+		if entry.ResolvedReference != "" && repositoryMoved(entry.ResolvedReference, latest.ref) && !opts.AllowRefChange {
 			outcome.Status = plugins.UpgradeStatusRefChangeBlocked
 			return upgradePlan{entry: entry, outcome: outcome}
 		}
 	}
 
-	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: newRef, Digest: newDigest})
+	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: latest.ref, Digest: latest.digest})
 	if err != nil {
-		// A local-store tag (a plain plugin name) is not an OCI reference, so
-		// it cannot be digest-pinned. Install will re-resolve the name against
-		// the local store, matching how the original install got here.
-		if _, isOCI, parseErr := parseOCIReference(newRef); parseErr != nil || isOCI {
-			outcome.Status = plugins.UpgradeStatusFailed
-			outcome.Reason = plugins.FailureReasonUnknown
-			outcome.Error = fmt.Errorf("pinning resolved reference: %w", err).Error()
-			return upgradePlan{entry: entry, outcome: outcome}
-		}
-		pinnedRef = newRef
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = plugins.FailureReasonUnknown
+		outcome.Error = fmt.Errorf("pinning resolved reference: %w", err).Error()
+		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
 	outcome.Status = plugins.UpgradeStatusUpgraded
-	return upgradePlan{entry: entry, outcome: outcome, pinnedRef: pinnedRef, resolvedRef: newRef}
+	return upgradePlan{entry: entry, outcome: outcome, pinnedRef: pinnedRef, resolvedRef: latest.ref}
 }
 
 func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions, plan upgradePlan) plugins.UpgradeOutcome {
@@ -169,11 +185,13 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 
 	if _, err := s.Install(ctx, plugins.InstallOptions{
 		Name:                  plan.pinnedRef,
+		LayerData:             plan.layerData,
+		Digest:                plan.outcome.NewDigest,
 		Scope:                 plugins.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
 		Clients:               clients,
 		LockSource:            plan.entry.Source,
-		LockResolvedReference: plan.resolvedRef,
+		LockResolvedReference: lockableResolvedReference(plan.resolvedRef),
 	}); err != nil {
 		outcome := plan.outcome
 		outcome.Status = plugins.UpgradeStatusFailed
@@ -186,25 +204,28 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 }
 
 // resolveLatestState re-resolves source (a lock entry's original Source
-// value) to its current resolvedReference and digest, using the same
-// dispatch order as Install (git, direct OCI, plain name via local store
-// then registry), but stopping short of extraction or any DB/lock write.
-// For OCI sources this still pulls the artifact into the local store —
-// matching the RFC's "preview is not side-effect-free" note.
-func (s *service) resolveLatestState(ctx context.Context, source string) (resolvedRef, digestStr string, err error) {
+// value) to its current resolvedReference, digest, and (for local-store
+// hits) layer bytes, using the same dispatch order as Install (git, direct
+// OCI, plain name via local store then registry), but stopping short of
+// extraction or any DB/lock write. For OCI sources this still pulls the
+// artifact into the local store — matching the RFC's "preview is not
+// side-effect-free" note.
+func (s *service) resolveLatestState(ctx context.Context, source string) (resolvedLatest, error) {
 	if gitresolver.IsGitReference(source) {
-		return s.resolveGitLatest(ctx, source)
+		ref, digest, err := s.resolveGitLatest(ctx, source)
+		return resolvedLatest{ref: ref, digest: digest}, err
 	}
 
 	ref, isOCI, parseErr := parseOCIReference(source)
 	if parseErr != nil {
-		return "", "", httperr.WithCode(
+		return resolvedLatest{}, httperr.WithCode(
 			fmt.Errorf("invalid OCI reference %q: %w", source, parseErr),
 			http.StatusBadRequest,
 		)
 	}
 	if isOCI {
-		return s.resolveOCILatest(ctx, ref)
+		resolvedRef, digest, err := s.resolveOCILatest(ctx, ref)
+		return resolvedLatest{ref: resolvedRef, digest: digest}, err
 	}
 
 	return s.resolvePlainNameLatest(ctx, source)
@@ -213,19 +234,21 @@ func (s *service) resolveLatestState(ctx context.Context, source string) (resolv
 // resolvePlainNameLatest mirrors installByName: local OCI store first, then
 // the registry lookup. A lock entry whose Source is a bare plugin name is
 // otherwise stuck talking only to the registry, so a local rebuild would
-// never be picked up by upgrade.
-func (s *service) resolvePlainNameLatest(ctx context.Context, source string) (string, string, error) {
+// never be picked up by upgrade. A local hit returns the extracted layer so
+// apply installs that artifact instead of a Docker Hub implicit reference.
+func (s *service) resolvePlainNameLatest(ctx context.Context, source string) (resolvedLatest, error) {
 	if s.ociStore != nil {
 		opts := plugins.InstallOptions{Name: source}
 		resolved, err := s.resolveFromLocalStore(ctx, &opts)
 		if err != nil {
-			return "", "", err
+			return resolvedLatest{}, err
 		}
 		if resolved {
-			return opts.Reference, opts.Digest, nil
+			return resolvedLatest{ref: opts.Reference, digest: opts.Digest, layerData: opts.LayerData}, nil
 		}
 	}
-	return s.resolveRegistryNameLatest(ctx, source)
+	ref, digest, err := s.resolveRegistryNameLatest(ctx, source)
+	return resolvedLatest{ref: ref, digest: digest}, err
 }
 
 func (s *service) resolveGitLatest(ctx context.Context, gitURL string) (string, string, error) {

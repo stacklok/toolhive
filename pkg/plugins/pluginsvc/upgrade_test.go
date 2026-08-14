@@ -240,6 +240,82 @@ func TestUpgrade_PlainNameResolvesLocalStoreWithoutRegistry(t *testing.T) {
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	lookup := &countingLookup{}
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+	inner.pluginLookup = lookup
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	lookup.n = 0
+
+	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+	require.NoError(t, ociStore.Tag(t.Context(), d2, "my-plugin"))
+
+	result, err := inner.Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, result.Outcomes[0].Status)
+	assert.Equal(t, 0, lookup.n, "apply must not fall through to the registry")
+
+	after, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	assert.Equal(t, d2.String(), after.Digest)
+
+	manifest, err := os.ReadFile(filepath.Join(pluginOnDiskPath(projectRoot, "my-plugin"), ".claude-plugin", "plugin.json")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(manifest), "2.0.0")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUpgrade_AppliesDifferentlyNamedLocalTagWithoutRegistry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	lookup := &countingLookup{}
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+	inner.pluginLookup = lookup
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	lookup.n = 0
+
+	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+	require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d2, "my-plugin-dev"))
+
+	result, err := inner.Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, result.Outcomes[0].Status)
+	assert.Equal(t, 0, lookup.n, "a differently named local-build tag must not fall through to the registry")
+
+	after, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	assert.Equal(t, d2.String(), after.Digest)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
 func TestUpgrade_PlainNameFallsBackToRegistryWhenLocalMisses(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)
 	ociStore, err := ociplugins.NewStore(tempDir(t))

@@ -86,6 +86,10 @@ type HTTPTransport struct {
 	// underlying proxy. Zero uses the proxy's default.
 	sessionTTL time.Duration
 
+	// readTimeout overrides http.Server.ReadTimeout on the underlying transparent
+	// proxy. Zero uses the proxy's default.
+	readTimeout time.Duration
+
 	// Transparent proxy
 	proxy types.Proxy
 
@@ -439,6 +443,9 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	}
 	if t.sessionTTL > 0 {
 		opts = append(opts, transparent.WithSessionTTL(t.sessionTTL))
+	}
+	if t.readTimeout > 0 {
+		opts = append(opts, transparent.WithReadTimeout(t.readTimeout))
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))

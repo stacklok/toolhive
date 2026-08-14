@@ -524,7 +524,7 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	// consumer lands -- see validateConfigSPIFFENotYetEnforced. This test's
 	// actual subject, the storage-decoration order, lives entirely below
 	// that policy gate.
-	decorated, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
+	decorated, _, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
 	require.NoError(t, err)
 
 	spiffeStorage, ok := decorated.(*storage.SPIFFEStorageDecorator)
@@ -535,6 +535,86 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	client, err := decorated.GetClient(context.Background(), "spiffe-client")
 	require.NoError(t, err)
 	assert.Equal(t, "spiffe-client", client.GetID())
+}
+
+func TestNewSPIFFEClientResolver(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
+		testSPIFFEAssociation("client", "openid"),
+	})
+	client, err := registration.NewSPIFFEClient(
+		"client", []string{"openid"}, []string{"https://audience.example.com"}, nil,
+	)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		registry   *SPIFFEAssociationRegistry
+		spiffeID   string
+		clientID   string
+		setupStore func(*storagemocks.MockStorage)
+		wantNil    bool
+		wantClient bool
+		wantErr    error
+	}{
+		{
+			name: "nil registry returns nil resolver", registry: nil,
+			wantNil: true,
+		},
+		{
+			name: "resolved association loads client", registry: registry,
+			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
+			setupStore: func(store *storagemocks.MockStorage) {
+				store.EXPECT().GetClient(gomock.Any(), "client").Return(client, nil)
+			},
+			wantClient: true,
+		},
+		{
+			name: "association rejection skips storage", registry: registry,
+			spiffeID: "spiffe://example.org/ns/other/agent", clientID: "client",
+		},
+		{
+			name: "storage error is propagated", registry: registry,
+			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
+			setupStore: func(store *storagemocks.MockStorage) {
+				store.EXPECT().GetClient(gomock.Any(), "client").Return(nil, assert.AnError)
+			},
+			wantErr: assert.AnError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := storagemocks.NewMockStorage(gomock.NewController(t))
+			if tt.setupStore != nil {
+				tt.setupStore(store)
+			}
+			resolver := newSPIFFEClientResolver(tt.registry, store)
+			if tt.wantNil {
+				assert.Nil(t, resolver)
+				return
+			}
+
+			got, err := resolver(
+				context.Background(), tt.spiffeID, tt.clientID, SPIFFEAuthenticationMethodX509,
+			)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, got)
+				return
+			}
+			if tt.wantClient {
+				require.NoError(t, err)
+				assert.Same(t, client, got)
+				return
+			}
+			require.Error(t, err)
+			assert.Nil(t, got)
+		})
+	}
 }
 
 func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {

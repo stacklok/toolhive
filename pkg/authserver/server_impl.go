@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -172,7 +173,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
-	stor, err := decorateStorageForSPIFFE(ctx, cfg, stor)
+	stor, spiffeRegistry, err := decorateStorageForSPIFFE(ctx, cfg, stor)
 	if err != nil {
 		return nil, err
 	}
@@ -191,27 +192,28 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                              cfg.Issuer,
-		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
-		HMACSecrets:                         cfg.HMACSecrets,
-		SigningKeyID:                        signingKey.KeyID,
-		SigningKeyAlgorithm:                 signingKey.Algorithm,
-		SigningKey:                          signingKey.Key,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
-		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		Issuer:                                    cfg.Issuer,
+		AccessTokenLifespan:                       cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                      cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                          cfg.AuthCodeLifespan,
+		HMACSecrets:                               cfg.HMACSecrets,
+		SigningKeyID:                              signingKey.KeyID,
+		SigningKeyAlgorithm:                       signingKey.Algorithm,
+		SigningKey:                                signingKey.Key,
+		ScopesSupported:                           cfg.ScopesSupported,
+		BaselineClientScopes:                      cfg.BaselineClientScopes,
+		AllowedAudiences:                          cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                               cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -315,28 +317,62 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 // decorateStorageForSPIFFE resolves the immutable association registry from the
 // validated SPIFFE trust model and installs the static overlay outside CIMD.
 // A nil cfg.SPIFFETrust means no SPIFFE associations are configured, which
-// yields a nil registry and leaves the storage chain unchanged.
-func decorateStorageForSPIFFE(ctx context.Context, cfg Config, stor storage.Storage) (storage.Storage, error) {
+// yields a nil registry and leaves the storage chain unchanged. The returned
+// registry is also wired onto the fosite client-authentication strategy by the
+// caller (see newSPIFFEClientResolver); it is nil when no SPIFFE trust is
+// configured.
+func decorateStorageForSPIFFE(
+	ctx context.Context, cfg Config, stor storage.Storage,
+) (storage.Storage, *SPIFFEAssociationRegistry, error) {
 	registry, err := NewSPIFFEAssociationRegistry(cfg.SPIFFETrust)
 	if err != nil {
-		return nil, fmt.Errorf("create SPIFFE association registry: %w", err)
+		return nil, nil, fmt.Errorf("create SPIFFE association registry: %w", err)
 	}
 
 	// Install dynamic CIMD lookup before the static SPIFFE overlay so configured
 	// clients always take precedence over remotely resolved HTTPS client IDs.
 	stor, err = decorateStorageForCIMD(cfg, stor)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	clients, err := registry.staticClients()
 	if err != nil {
-		return nil, fmt.Errorf("build SPIFFE static clients: %w", err)
+		return nil, nil, fmt.Errorf("build SPIFFE static clients: %w", err)
 	}
 	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
 	if err != nil {
-		return nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
+		return nil, nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
 	}
-	return stor, nil
+	return stor, registry, nil
+}
+
+// newSPIFFEClientResolver returns the resolver the SPIFFE client-authentication
+// strategy uses to turn a verified SPIFFE identity into its configured OAuth
+// client. Both credential types resolve through this one function so that an
+// X.509-SVID and a JWT-SVID for the same association cannot reach different
+// authorization outcomes.
+//
+// It returns a nil resolver when no SPIFFE trust is configured. Returning a
+// non-nil func closing over a nil registry would make the strategy's
+// resolver != nil check pass when nothing is actually configured.
+//
+// Method uses the shared leaf-package type because package server cannot
+// import authserver (authserver imports server). Package authserver aliases
+// that type, so both sides share one set of method values.
+func newSPIFFEClientResolver(
+	registry *SPIFFEAssociationRegistry, stor storage.Storage,
+) oauthserver.SPIFFEClientResolver {
+	if registry == nil {
+		return nil
+	}
+	return func(
+		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+	) (fosite.Client, error) {
+		if _, err := registry.Resolve(spiffeID, clientID, method); err != nil {
+			return nil, err
+		}
+		return stor.GetClient(ctx, clientID)
+	}
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is

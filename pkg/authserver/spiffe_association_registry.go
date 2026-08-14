@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ory/fosite"
 
@@ -46,6 +47,106 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 		registry.byClientID[association.ClientID()] = association.clone()
 	}
 	return registry, nil
+}
+
+// NormalizedSPIFFEPrincipal is an immutable, validated identity selected from a
+// SPIFFE association. It represents policy only; it does not authenticate a
+// credential or enable an authentication method.
+type NormalizedSPIFFEPrincipal struct {
+	clientID      string
+	spiffeID      string
+	trustDomain   string
+	authMethod    SPIFFEAuthenticationMethod
+	authorization SPIFFEAuthorizationPolicy
+}
+
+// ClientID returns the configured OAuth client ID.
+func (p NormalizedSPIFFEPrincipal) ClientID() string { return p.clientID }
+
+// SPIFFEID returns the canonical concrete SPIFFE ID.
+func (p NormalizedSPIFFEPrincipal) SPIFFEID() string { return p.spiffeID }
+
+// TrustDomain returns the canonical SPIFFE trust domain.
+func (p NormalizedSPIFFEPrincipal) TrustDomain() string { return p.trustDomain }
+
+// AuthenticationMethod returns the selected credential-method discriminator.
+func (p NormalizedSPIFFEPrincipal) AuthenticationMethod() SPIFFEAuthenticationMethod {
+	return p.authMethod
+}
+
+// AuthorizationPolicy returns a defensive copy of the selected policy.
+func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
+	return SPIFFEAuthorizationPolicy{
+		grantTypes: slices.Clone(p.authorization.grantTypes),
+		scopes:     slices.Clone(p.authorization.scopes),
+		resources:  slices.Clone(p.authorization.resources),
+		audiences:  slices.Clone(p.authorization.audiences),
+	}
+}
+
+// Resolve selects a configured association for a canonical concrete SPIFFE ID,
+// requested OAuth client ID, and explicitly selected authentication method.
+// It fails closed for unknown IDs, mismatched client ownership, and disabled
+// methods. This method does not validate a credential.
+func (r *SPIFFEAssociationRegistry) Resolve(
+	spiffeID, clientID string, method SPIFFEAuthenticationMethod,
+) (NormalizedSPIFFEPrincipal, error) {
+	if r == nil {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE associations are configured")
+	}
+	canonicalID, err := normalizeSPIFFEPrincipal(spiffeID, false)
+	if err != nil {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("invalid SPIFFE ID: %w", err)
+	}
+	parsedID, err := parseSPIFFEID(canonicalID)
+	if err != nil {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("invalid SPIFFE ID: %w", err)
+	}
+	association, ok := r.associationForSPIFFEID(canonicalID)
+	if !ok {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE association for ID %q", canonicalID)
+	}
+	clientAssociation, ok := r.byClientID[clientID]
+	if !ok {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE association for client ID %q", clientID)
+	}
+	if clientAssociation.ClientID() != association.ClientID() {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("SPIFFE ID is not associated with client ID %q", clientID)
+	}
+	if !containsSPIFFEAuthenticationMethod(association.Methods(), method) {
+		return NormalizedSPIFFEPrincipal{}, fmt.Errorf(
+			"SPIFFE authentication method %q is not enabled for client ID %q", method, clientID,
+		)
+	}
+
+	return NormalizedSPIFFEPrincipal{
+		clientID:      association.ClientID(),
+		spiffeID:      canonicalID,
+		trustDomain:   parsedID.TrustDomain().String(),
+		authMethod:    method,
+		authorization: association.AuthorizationPolicy(),
+	}, nil
+}
+
+func (r *SPIFFEAssociationRegistry) associationForSPIFFEID(spiffeID string) (SPIFFEClientAuthConfig, bool) {
+	if association, ok := r.byPattern[spiffeID]; ok {
+		return association.clone(), true
+	}
+	for pattern, association := range r.byPattern {
+		if strings.HasSuffix(pattern, "/*") && matchSPIFFEPrincipalPattern(pattern, spiffeID) {
+			return association.clone(), true
+		}
+	}
+	return SPIFFEClientAuthConfig{}, false
+}
+
+func containsSPIFFEAuthenticationMethod(methods []SPIFFEAuthenticationMethod, wanted SPIFFEAuthenticationMethod) bool {
+	for _, method := range methods {
+		if method == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // spiffeStaticClient embeds the concrete *registration.SPIFFEClient (not the

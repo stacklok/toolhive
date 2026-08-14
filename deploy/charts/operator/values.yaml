@@ -63,15 +63,15 @@ operator:
     existingSecretKey: ""
 
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.42.1
+  image: ghcr.io/stacklok/toolhive/operator:v0.43.0
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.42.1
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.43.0
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.42.1
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.43.0
 
   # -- Air-gap image-discovery aid. toolhiveRunnerImage, vmcpImage, and
   # registryAPI.image are never rendered as chart `image:` keys — the operator

@@ -4918,7 +4918,7 @@
                         "type": "object"
                     },
                     "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served at /metrics on a dedicated diagnostics port rather than on the\nmain transport port, so the endpoint is not exposed alongside application traffic.\nSee PrometheusPort and pkg/diagnostics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served at /metrics on a dedicated diagnostics port rather than on the\nmain transport port, so the endpoint can be restricted by port and is not routed\nalongside application traffic. The endpoint is unauthenticated either way.\nSee PrometheusPort and pkg/diagnostics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "endpoint": {
@@ -4949,7 +4949,7 @@
                         "type": "boolean"
                     },
                     "prometheusPort": {
-                        "description": "PrometheusPort is the port the Prometheus /metrics endpoint is served on when\nEnablePrometheusMetricsPath is true. It is deliberately not the main transport port:\nGo's ServeMux resolves an explicit \"/metrics\" ahead of the \"/\" catch-all that carries\nthe middleware chain, so sharing the transport port leaves /metrics unauthenticated\neven when OIDC is configured.\n\nZero selects the default diagnostics port (9464, the OpenTelemetry specification's\nPrometheus exporter default). If that port is taken the listener falls back to an\navailable one and logs the resolved address. Do not route this port publicly.\n+optional",
+                        "description": "PrometheusPort is the port the Prometheus /metrics endpoint is served on when\nEnablePrometheusMetricsPath is true. It is deliberately not the main transport port,\nso that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,\nnot on HTTP path, so a shared port makes \"allow MCP traffic, deny metrics scraping\"\nimpossible to express. The endpoint itself is unauthenticated, so restricting who can\nreach this port is how it is protected.\n\nZero selects the default diagnostics port (9464, the OpenTelemetry specification's\nPrometheus exporter default). If that port is taken the listener falls back to an\navailable one and logs the resolved address. Do not route this port publicly.\n+optional",
                         "type": "integer"
                     },
                     "samplingRate": {

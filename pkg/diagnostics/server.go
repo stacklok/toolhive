@@ -4,14 +4,28 @@
 // Package diagnostics serves operational endpoints on a listener that is
 // separate from the application listener.
 //
-// Diagnostics endpoints must not share the application listener. Go's ServeMux
-// resolves the most specific registered pattern first, so an explicitly
-// registered "/metrics" always beats the "/" catch-all that carries the proxy
-// middleware chain (auth, body limit, rate limiting, audit). Registering
-// /metrics on the application mux therefore leaves it unauthenticated even on a
-// fully OIDC-configured deployment. Binding it to its own port, which
-// deployments are not expected to route publicly, keeps it reachable for
-// in-cluster scrapers without exposing it to the internet.
+// The reason to separate is enforceability, not middleware coverage. Be precise
+// about what this does and does not buy, because the distinction is easy to
+// overstate:
+//
+//   - It does NOT authenticate, rate limit, or audit the endpoints. This
+//     listener carries no middleware at all (see the warning below). An endpoint
+//     served here is exactly as unauthenticated as it was on the application
+//     mux.
+//   - It DOES make the endpoints governable by port. Kubernetes NetworkPolicy is
+//     L3/L4: it selects pods, ports, and protocols, and cannot filter on HTTP
+//     path. While /metrics shares the application port, no policy can permit MCP
+//     traffic while denying metrics scraping. On its own port, it can. Route-level
+//     controls (Gateway API, Ingress path rules) govern only what reaches the
+//     gateway, so they address north-south exposure but leave pod-to-pod traffic
+//     untouched.
+//   - It DOES keep the endpoints off the port deployments route publicly, so the
+//     safe outcome does not depend on every operator getting route rules right.
+//
+// Serving them on the application mux is what made the port-level control
+// impossible: Go's ServeMux resolves the most specific registered pattern first,
+// so an explicitly registered "/metrics" always beats the "/" catch-all that
+// carries the middleware chain.
 //
 // This mirrors the ToolHive operator, which already binds its own metrics
 // endpoint to a separate address (--metrics-bind-address), and the wider

@@ -20,11 +20,11 @@ const diagnosticsStopTimeout = 10 * time.Second
 // startDiagnosticsServer starts the diagnostics listener when the telemetry
 // middleware enabled the Prometheus metrics path, and is a no-op otherwise.
 //
-// The metrics endpoint is deliberately kept off the application listener. Go's
-// ServeMux resolves an explicitly registered "/metrics" ahead of the "/"
-// catch-all that carries the middleware chain, so sharing the listener leaves
-// the endpoint unauthenticated even on a fully OIDC-configured deployment.
-// See pkg/diagnostics for the full rationale.
+// The metrics endpoint is deliberately kept off the application listener so it
+// can be governed by port: NetworkPolicy cannot filter on HTTP path, so a shared
+// port makes "allow MCP, deny scraping" unexpressible. This does not make the
+// endpoint authenticated — the diagnostics listener carries no middleware. See
+// pkg/diagnostics for the full rationale and its limits.
 func (r *Runner) startDiagnosticsServer() error {
 	if r.prometheusHandler == nil {
 		return nil
@@ -32,8 +32,11 @@ func (r *Runner) startDiagnosticsServer() error {
 
 	// Bind to the same host as the proxy so a deployment that reaches the
 	// workload can reach its metrics, but on a separate port that deployments
-	// are not expected to route publicly. Mirror the builder's host default so
-	// a config assembled without WithHost does not bind to every interface.
+	// are not expected to route publicly. Note this means the operator's
+	// 0.0.0.0 default applies here too: the endpoint stays reachable from other
+	// pods, so restricting it is a NetworkPolicy job, which is what the separate
+	// port makes possible. Mirror the builder's host default so a config
+	// assembled without WithHost does not bind to every interface.
 	host := r.Config.Host
 	if host == "" {
 		host = transport.LocalhostIPv4

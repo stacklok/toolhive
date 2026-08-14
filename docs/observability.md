@@ -188,15 +188,29 @@ For VirtualMCPServer telemetry, see the
 When `enablePrometheusMetricsPath` is on, `/metrics` is served on a **dedicated
 diagnostics listener**, not on the transport port that serves MCP traffic.
 
-This is deliberate. Go's `ServeMux` resolves the most specific registered pattern
-first, so an explicitly registered `/metrics` always outranks the `/` catch-all
-that carries the proxy middleware chain. Serving metrics on the transport port
-therefore leaves the endpoint outside authentication, rate limiting, body limits,
-and audit — even on a fully OIDC-configured deployment. A dedicated port keeps the
-endpoint scrapeable without putting it on the listener you expose to clients. The
-ToolHive operator already binds its own metrics endpoint this way
-(`--metrics-bind-address`), as do etcd (`--listen-metrics-urls`) and
+This is deliberate, and it is worth being precise about what it does and does not
+give you.
+
+**The endpoint is unauthenticated either way.** The diagnostics listener carries no
+middleware — no authentication, rate limiting, body limits, or audit. Moving
+`/metrics` off the transport port does not add any of those.
+
+**What it gives you is control by port.** Kubernetes `NetworkPolicy` matches on
+pods, ports, and protocols — it cannot filter on HTTP path. So while `/metrics`
+shares the transport port, there is no way to express "allow MCP traffic, deny
+metrics scraping": any policy that permits your MCP clients also permits scraping.
+On its own port, that becomes expressible. Route-level controls (Gateway API,
+Ingress path rules) can hide the path from external traffic, but they only govern
+what passes through the gateway and leave pod-to-pod traffic untouched.
+
+It also means the safe outcome does not depend on every deployment getting its
+route rules right. The ToolHive operator already binds its own metrics endpoint
+this way (`--metrics-bind-address`), as do etcd (`--listen-metrics-urls`) and
 controller-runtime.
+
+(Serving `/metrics` on the transport mux is also what put it outside the middleware
+chain: Go's `ServeMux` resolves the most specific registered pattern first, so an
+explicit `/metrics` always outranks the `/` catch-all that carries the chain.)
 
 Port selection:
 
@@ -207,8 +221,36 @@ Port selection:
   one machine, for example) an available port is chosen instead. The resolved
   address is logged at startup.
 
-Do not route the diagnostics port publicly: leave it out of any Service or Ingress
-that faces the internet, and restrict it with a `NetworkPolicy`.
+#### Restricting access to the diagnostics port
+
+Leave the diagnostics port out of any Service or Ingress that faces the internet,
+and restrict which pods may reach it. Since the endpoint is unauthenticated, this
+policy is what protects it:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcpserver-diagnostics
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcpserver
+      app.kubernetes.io/instance: my-mcp-server
+  policyTypes: [Ingress]
+  ingress:
+    # Only the monitoring namespace may scrape the diagnostics port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9464
+```
+
+This is the rule that cannot be written while `/metrics` shares the transport port,
+because it would also have to permit MCP traffic.
 
 `/health` deliberately stays on the transport port so Kubernetes liveness and
 readiness probes keep working. It exposes no version or build information.

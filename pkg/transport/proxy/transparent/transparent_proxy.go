@@ -1322,9 +1322,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// otherwise return 404 (prevents /metrics from being proxied to the backend).
 	//
 	// The runner no longer supplies a handler here: metrics are served on a
-	// separate diagnostics listener (see pkg/diagnostics), because an explicit
-	// "/metrics" on this mux outranks the "/" catch-all below and would bypass
-	// the middleware chain.
+	// separate diagnostics listener (see pkg/diagnostics) so access can be
+	// restricted by port, which NetworkPolicy can express and a shared port
+	// cannot. Registering "/metrics" on this mux would also outrank the "/"
+	// catch-all below and so sit outside the middleware chain.
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 		slog.Debug("prometheus metrics endpoint enabled at /metrics")

@@ -241,6 +241,16 @@ func classifyInstallVerifyError(
 				skillName),
 			http.StatusForbidden,
 		)
+	// Checked before the broader ErrSignerMismatch case: pinnedFieldMismatch
+	// wraps both, so a ref/runner-only mismatch would otherwise be
+	// misreported as a signer-identity change below.
+	case errors.Is(verifyErr, verifier.ErrProvenanceFieldMismatch):
+		return httperr.WithCode(
+			fmt.Errorf("skill %q's certificate no longer matches its pinned provenance: %w"+
+				" (if this is an expected publisher-side change, upgrade with allow_signer_change)",
+				skillName, verifyErr),
+			http.StatusForbidden,
+		)
 	case errors.Is(verifyErr, verifier.ErrSignerMismatch):
 		return httperr.WithCode(
 			fmt.Errorf("signer identity mismatch for %q: %w"+
@@ -260,6 +270,10 @@ func classifyInstallVerifyError(
 // for sync/upgrade results. Returns "" when err is not a signature failure.
 func classifySignatureError(err error) skills.FailureReason {
 	switch {
+	// Checked before the broader ErrSignerMismatch case for the same reason
+	// as classifyInstallVerifyError above.
+	case errors.Is(err, verifier.ErrProvenanceFieldMismatch):
+		return skills.FailureReasonProvenanceFieldMismatch
 	case errors.Is(err, verifier.ErrSignerMismatch):
 		return skills.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):
@@ -311,10 +325,12 @@ func provenanceInfoFromResult(r *verifier.Result) *skills.ProvenanceInfo {
 		return nil
 	}
 	return &skills.ProvenanceInfo{
-		SignerIdentity: r.SignerIdentity,
-		CertIssuer:     r.CertIssuer,
-		RepositoryURI:  r.RepositoryURI,
-		SigstoreURL:    r.SigstoreURL,
-		Provisional:    r.Provisional,
+		SignerIdentity:    r.SignerIdentity,
+		CertIssuer:        r.CertIssuer,
+		RepositoryURI:     r.RepositoryURI,
+		RepositoryRef:     r.RepositoryRef,
+		RunnerEnvironment: r.RunnerEnvironment,
+		SigstoreURL:       r.SigstoreURL,
+		Provisional:       r.Provisional,
 	}
 }

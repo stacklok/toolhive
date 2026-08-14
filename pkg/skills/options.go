@@ -290,6 +290,12 @@ const (
 	// FailureReasonSignerMismatch means the artifact verifies, but against
 	// an identity other than the one recorded in the lock file.
 	FailureReasonSignerMismatch FailureReason = "signer-mismatch"
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer identity and issuer, but its
+	// certificate's repository ref or runner environment differs from what
+	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
+	// remediation (--allow-signer-change) is nonetheless the same.
+	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
 	// FailureReasonUnsignedRejected means the artifact is unsigned and the
 	// operation did not permit unsigned installs.
 	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"

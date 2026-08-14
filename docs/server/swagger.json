@@ -1703,6 +1703,7 @@
                     "lock-write-failed",
                     "signature-invalid",
                     "signer-mismatch",
+                    "provenance-field-mismatch",
                     "unsigned-rejected",
                     "unknown"
                 ],
@@ -1714,6 +1715,7 @@
                     "FailureReasonLockWriteFailed",
                     "FailureReasonSignatureInvalid",
                     "FailureReasonSignerMismatch",
+                    "FailureReasonProvenanceFieldMismatch",
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]

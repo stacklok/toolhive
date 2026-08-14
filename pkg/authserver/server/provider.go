@@ -323,6 +323,10 @@ func NewAuthorizationServer(
 ) (fosite.OAuth2Provider, error) {
 	fositeConfig := config.Config
 	provider := fosite.NewOAuth2Provider(storage, fositeConfig)
+	// The default strategy is a method on the provider, so install the SPIFFE
+	// dispatcher after the provider is constructed. Fosite reads this config field
+	// for every request.
+	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(provider.DefaultClientAuthenticationStrategy)
 
 	for _, factory := range factories {
 		result, err := factory(config, storage, strategy)

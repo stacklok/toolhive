@@ -17,8 +17,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1866,7 +1868,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 	}
 }
 
-func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testing.T) {
+func TestEmbeddedAuthServer_SPIFFEAssociationAuthenticationMethodsAreEquivalent(t *testing.T) {
 	t.Parallel()
 
 	newConfig := func(scope string, includeAssociation bool) authserver.RunConfig {
@@ -1972,6 +1974,160 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 	registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 	require.NoError(t, err)
 	require.Nil(t, registry)
+}
+
+// sessionRecordingStorage observes token-session writes without adding a test
+// hook to production storage. It embeds the real memory backend so every
+// unoverridden storage operation retains its production behavior.
+type sessionRecordingStorage struct {
+	*storage.MemoryStorage
+	authorizeCodeSessions atomic.Int32
+	accessTokenSessions   atomic.Int32
+	refreshTokenSessions  atomic.Int32
+}
+
+// dcrStorageDecorator combines a client lookup decorator with the base DCR store.
+type dcrStorageDecorator struct {
+	storage.Storage
+	storage.DCRCredentialStore
+}
+
+func (s *sessionRecordingStorage) CreateAuthorizeCodeSession(ctx context.Context, code string, request fosite.Requester) error {
+	s.authorizeCodeSessions.Add(1)
+	return s.MemoryStorage.CreateAuthorizeCodeSession(ctx, code, request)
+}
+
+func (s *sessionRecordingStorage) CreateAccessTokenSession(
+	ctx context.Context,
+	signature string,
+	request fosite.Requester,
+) error {
+	s.accessTokenSessions.Add(1)
+	return s.MemoryStorage.CreateAccessTokenSession(ctx, signature, request)
+}
+
+func (s *sessionRecordingStorage) CreateRefreshTokenSession(
+	ctx context.Context,
+	signature string,
+	accessSignature string,
+	request fosite.Requester,
+) error {
+	s.refreshTokenSessions.Add(1)
+	return s.MemoryStorage.CreateRefreshTokenSession(ctx, signature, accessSignature, request)
+}
+
+func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testing.T) {
+	t.Parallel()
+
+	trustDomains := []authserver.SPIFFETrustDomainRunConfig{{
+		Name:        "production",
+		TrustDomain: "example.org",
+		Methods: []authserver.SPIFFEAuthenticationMethod{
+			authserver.SPIFFEAuthenticationMethodX509,
+			authserver.SPIFFEAuthenticationMethodJWT,
+		},
+		BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+			Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+			WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+		},
+	}}
+	inboundGrants := &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
+		TrustDomainRef: "production",
+		Principal:      "spiffe://example.org/ns/default/agent",
+		ClientID:       "spiffe-client",
+		Methods: []authserver.SPIFFEAuthenticationMethod{
+			authserver.SPIFFEAuthenticationMethodX509,
+			authserver.SPIFFEAuthenticationMethodJWT,
+		},
+		GrantTypes:    []string{authserver.SPIFFEGrantTypeTokenExchange},
+		Scopes:        []string{"openid"},
+		Resources:     []string{"https://mcp.example.com"},
+		Audiences:     []string{"https://mcp.example.com"},
+		TokenExchange: &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
+	}}}
+
+	cfg := authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://auth.example.com",
+		ScopesSupported:  []string{"openid"},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "static-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "upstream-client",
+				RedirectURI:           "https://auth.example.com/oauth/callback",
+			},
+		}},
+	}
+
+	ctx := context.Background()
+	trust, err := authserver.NewSPIFFETrustConfig(
+		trustDomains, inboundGrants, cfg.ScopesSupported, cfg.AllowedAudiences,
+	)
+	require.NoError(t, err)
+	registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
+	require.NoError(t, err)
+
+	stor := &sessionRecordingStorage{MemoryStorage: storage.NewMemoryStorage()}
+	decoratedStorage, err := authserver.NewSPIFFEStorageDecorator(ctx, stor, registry)
+	require.NoError(t, err)
+	staticClient, err := decoratedStorage.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err)
+	assert.Equal(t, "spiffe-client", staticClient.GetID())
+
+	serverStorage := &dcrStorageDecorator{
+		Storage:            decoratedStorage,
+		DCRCredentialStore: stor,
+	}
+	embedded, err := NewEmbeddedAuthServerWithStorage(ctx, &cfg, serverStorage)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, embedded.Close()) })
+
+	httpServer := httptest.NewServer(embedded.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for _, spoofedHeader := range []bool{false, true} {
+		spoofedHeader := spoofedHeader
+		t.Run(fmt.Sprintf("spoofed SPIFFE header: %t", spoofedHeader), func(t *testing.T) {
+			t.Parallel()
+
+			form := url.Values{
+				"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
+				"subject_token":      {"unvalidated-subject-token"},
+				"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+				"client_id":          {"spiffe-client"},
+				"scope":              {"openid"},
+				"resource":           {"https://mcp.example.com"},
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/oauth/token", strings.NewReader(form.Encode()))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if spoofedHeader {
+				req.Header.Set("X-SPIFFE-ID", "spiffe://example.org/ns/default/agent")
+			}
+
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			})
+
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			assert.Equal(t, "invalid_client", body["error"])
+			assert.NotContains(t, body, "access_token")
+			assert.NotContains(t, body, "refresh_token")
+			assert.NotContains(t, body, "id_token")
+			assert.Zero(t, stor.authorizeCodeSessions.Load())
+			assert.Zero(t, stor.accessTokenSessions.Load())
+			assert.Zero(t, stor.refreshTokenSessions.Load())
+		})
+	}
 }
 
 // buildUpstreamConfigs: on first call it registers with the mock AS and

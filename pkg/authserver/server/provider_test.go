@@ -18,6 +18,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 func TestNewAuthorizationServerConfig(t *testing.T) {
@@ -711,4 +714,36 @@ func TestNewAuthorizationServer(t *testing.T) {
 		require.Contains(t, err.Error(), "string")
 		require.Nil(t, provider)
 	})
+}
+
+func TestNewAuthorizationServer_InstallsSPIFFEClientAuthenticationStrategy(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	config, err := NewAuthorizationServerConfig(&AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+	})
+	require.NoError(t, err)
+
+	_, err = NewAuthorizationServer(config, &mockStorage{}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, config.ClientAuthenticationStrategy)
+
+	request := httptest.NewRequest("POST", "/oauth/token", nil)
+	_, err = config.ClientAuthenticationStrategy(request.Context(), request, url.Values{
+		"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
+	})
+	require.Error(t, err)
+	var rfcErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &rfcErr)
+	assert.Equal(t, "SPIFFE JWT client authentication is not implemented", rfcErr.HintField)
 }

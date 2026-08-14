@@ -77,8 +77,10 @@ type InstallResult struct {
 	ContentDigest string `json:"-"`
 	// RestoreFiles undoes this install's on-disk writes: dematerialize a
 	// fresh install, or restore the previous tree after a failed upgrade.
-	// Internal use only — NOT exposed via HTTP API.
-	RestoreFiles func(context.Context) `json:"-"`
+	// Callers must join a non-nil error into the failure they are
+	// compensating; discarding it can hide a partial restore. Internal use
+	// only — NOT exposed via HTTP API.
+	RestoreFiles func(context.Context) error `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation. Alias

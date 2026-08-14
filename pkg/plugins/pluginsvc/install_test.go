@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociartifact "github.com/stacklok/toolhive-core/oci/artifact"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -172,7 +173,8 @@ func TestInstallWithExtraction(t *testing.T) {
 				return nil
 			})
 
-		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		svc := newTestService(WithStore(store), WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
 		result, err := svc.Install(t.Context(), plugins.InstallOptions{
 			Name:      "my-plugin",
 			LayerData: layerData,
@@ -419,10 +421,11 @@ func TestInstallWithExtraction(t *testing.T) {
 				return nil
 			})
 
-		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{
-			"claude-code": adapterA,
-			"codex":       adapterB,
-		}))
+		svc := newTestService(WithStore(store), WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{
+				"claude-code": adapterA,
+				"codex":       adapterB,
+			}))
 		result, err := svc.Install(t.Context(), plugins.InstallOptions{
 			Name:      "my-plugin",
 			LayerData: layerData,
@@ -431,6 +434,31 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{"claude-code", "codex"}, result.Plugin.Clients)
+	})
+
+	t.Run("upgrade without client manager aborts before mutation", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
+
+		existing := plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Digest:   "sha256:old",
+			Clients:  []string{"claude-code"},
+		}
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
+
+		svc := newTestService(WithStore(store),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		_, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name:      "my-plugin",
+			LayerData: layerData,
+			Digest:    "sha256:new",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resolving")
+		assert.Contains(t, err.Error(), "install path")
 	})
 }
 

@@ -61,17 +61,16 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 
 	cleanupErrs := s.dematerializeClients(ctx, existing, scope, opts.ProjectRoot)
 	if len(cleanupErrs) > 0 && restoreLock != nil {
-		restoreLock()
-		if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients); restoreErr != nil {
-			cleanupErrs = append(cleanupErrs, restoreErr)
-		}
-		return errors.Join(cleanupErrs...)
+		return errors.Join(append(cleanupErrs, s.compensateManagedUninstall(
+			ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
+		))...)
 	}
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
 		if restoreLock != nil {
-			restoreLock()
-			_ = s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients)
+			return errors.Join(err, s.compensateManagedUninstall(
+				ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
+			))
 		}
 		return err
 	}
@@ -83,6 +82,21 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 	}
 
 	return errors.Join(cleanupErrs...)
+}
+
+// compensateManagedUninstall restores the lock pin and every snapshotted
+// client tree after a failed managed uninstall step.
+func (s *service) compensateManagedUninstall(
+	ctx context.Context,
+	restoreLock func(),
+	name string,
+	scope plugins.Scope,
+	projectRoot string,
+	backups map[string]map[string]fileSnapshot,
+	clients []string,
+) error {
+	restoreLock()
+	return s.restoreClientTrees(ctx, name, scope, projectRoot, backups, clients)
 }
 
 // removeManagedLockEntry removes the plugins: lock entry for a lock-managed

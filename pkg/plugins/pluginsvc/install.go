@@ -5,6 +5,7 @@ package pluginsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -328,23 +329,24 @@ func (s *service) installAndRegister(
 	}
 
 	var addedToGroup bool
-	rollback := func() {
-		s.rollbackInstall(ctx, opts, result, pluginName, scope, lockScoped, prevEntry, addedToGroup, resolvedGroupName(opts.Group))
+	rollback := func() error {
+		return s.rollbackInstall(
+			ctx, opts, result, pluginName, scope, lockScoped, prevEntry,
+			addedToGroup, resolvedGroupName(opts.Group),
+		)
 	}
 
 	added, err := s.registerPluginInGroup(ctx, opts.Group, pluginName)
 	if err != nil {
-		rollback()
-		return nil, fmt.Errorf("registering plugin in group: %w", err)
+		return nil, errors.Join(fmt.Errorf("registering plugin in group: %w", err), rollback())
 	}
 	addedToGroup = added
 
 	if lockScoped {
 		updated, err := s.recordLockState(ctx, opts, result.Plugin, result.ContentDigest)
 		if err != nil {
-			rollback()
 			return nil, httperr.WithCode(
-				fmt.Errorf("recording plugin in project lock file: %w", err),
+				errors.Join(fmt.Errorf("recording plugin in project lock file: %w", err), rollback()),
 				http.StatusInternalServerError,
 			)
 		}
@@ -354,12 +356,10 @@ func (s *service) installAndRegister(
 	return result, nil
 }
 
-// rollbackInstall undoes installAndRegister's side effects after a failure,
-// best-effort. The DB record is restored to its pre-install snapshot when
-// one exists (result.PreExisting) and deleted otherwise; on-disk files are
-// dematerialized (fresh install) or restored (upgrade); group membership is
-// removed only when this call added it; the lock entry is likewise
-// reinstated from prevEntry or removed.
+// rollbackInstall undoes installAndRegister's side effects after a failure.
+// Every compensation error is returned so the caller can join it with the
+// original failure; discarding it can hide a partial restore after a
+// destructive rewrite.
 func (s *service) rollbackInstall(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -370,31 +370,45 @@ func (s *service) rollbackInstall(
 	prevEntry *lockfile.Entry,
 	addedToGroup bool,
 	groupName string,
-) {
+) error {
+	var errs []error
 	if result.PreExisting != nil {
-		_ = s.store.Update(ctx, *result.PreExisting)
-	} else {
-		_ = s.store.Delete(ctx, pluginName, scope, opts.ProjectRoot)
+		if err := s.store.Update(ctx, *result.PreExisting); err != nil {
+			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
+		}
+	} else if err := s.store.Delete(ctx, pluginName, scope, opts.ProjectRoot); err != nil {
+		errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
 	}
 
 	if result.RestoreFiles != nil {
-		result.RestoreFiles(ctx)
+		if err := result.RestoreFiles(ctx); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if addedToGroup && s.groupManager != nil {
-		_ = groups.RemovePluginFromGroup(ctx, s.groupManager, groupName, pluginName)
+		if err := groups.RemovePluginFromGroup(ctx, s.groupManager, groupName, pluginName); err != nil {
+			errs = append(errs, fmt.Errorf("removing plugin from group: %w", err))
+		}
 	}
 
 	if !lockScoped {
-		return
+		return errors.Join(errs...)
 	}
 	if prevEntry != nil {
-		if root, err := lockfile.OpenRoot(opts.ProjectRoot); err == nil {
-			_ = lockfile.UpsertPluginEntry(root, *prevEntry)
+		root, err := lockfile.OpenRoot(opts.ProjectRoot)
+		if err != nil {
+			return errors.Join(append(errs, fmt.Errorf("reopening lock file: %w", err))...)
 		}
-		return
+		if err := lockfile.UpsertPluginEntry(root, *prevEntry); err != nil {
+			errs = append(errs, fmt.Errorf("restoring lock entry: %w", err))
+		}
+		return errors.Join(errs...)
 	}
-	_ = removeLockEntry(plugins.UninstallOptions{
+	if err := removeLockEntry(plugins.UninstallOptions{
 		Name: pluginName, Scope: scope, ProjectRoot: opts.ProjectRoot,
-	})
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("removing rolled-back lock entry: %w", err))
+	}
+	return errors.Join(errs...)
 }

@@ -120,13 +120,15 @@ func (s *service) installExtractionSameDigestNewClients(
 	pl := buildInstalledPlugin(opts, scope, clientTypes, existing.Clients)
 	pl.Managed = existing.Managed
 	if err := s.store.Update(ctx, pl); err != nil {
-		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		if dmErr := s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot); dmErr != nil {
+			return nil, errors.Join(err, dmErr)
+		}
 		return nil, err
 	}
 	return &plugins.InstallResult{
 		Plugin: pl,
-		RestoreFiles: func(ctx context.Context) {
-			s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		RestoreFiles: func(ctx context.Context) error {
+			return s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
 		},
 	}, nil
 }
@@ -162,8 +164,8 @@ func (s *service) installExtractionUpgradeDigest(
 	}
 	return &plugins.InstallResult{
 		Plugin: pl,
-		RestoreFiles: func(ctx context.Context) {
-			_ = s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
+		RestoreFiles: func(ctx context.Context) error {
+			return s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients)
 		},
 	}, nil
 }
@@ -182,13 +184,15 @@ func (s *service) installExtractionFresh(
 	}
 	pl := buildInstalledPlugin(opts, scope, clientTypes, nil)
 	if err := s.store.Create(ctx, pl); err != nil {
-		s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		if dmErr := s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot); dmErr != nil {
+			return nil, errors.Join(err, dmErr)
+		}
 		return nil, err
 	}
 	return &plugins.InstallResult{
 		Plugin: pl,
-		RestoreFiles: func(ctx context.Context) {
-			s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+		RestoreFiles: func(ctx context.Context) error {
+			return s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
 		},
 	}, nil
 }
@@ -206,11 +210,11 @@ func (s *service) materializeForClients(
 	for _, ct := range clientTypes {
 		adapter, ok := s.materializers[ct]
 		if !ok {
-			s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
-			return nil, httperr.WithCode(
+			err := httperr.WithCode(
 				fmt.Errorf("no materializer configured for client %q", ct),
 				http.StatusInternalServerError,
 			)
+			return nil, errors.Join(err, s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot))
 		}
 		if _, err := adapter.Materialize(ctx, plugins.MaterializeRequest{
 			Name:        opts.Name,
@@ -219,8 +223,8 @@ func (s *service) materializeForClients(
 			ProjectRoot: opts.ProjectRoot,
 			Components:  opts.Components,
 		}); err != nil {
-			s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
-			return nil, fmt.Errorf("materializing plugin for client %q: %w", ct, err)
+			wrapped := fmt.Errorf("materializing plugin for client %q: %w", ct, err)
+			return nil, errors.Join(wrapped, s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot))
 		}
 		materialized = append(materialized, ct)
 	}
@@ -256,7 +260,7 @@ func (s *service) snapshotClientTrees(
 	for _, ct := range clientTypes {
 		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("resolving %s install path of %q: %w", ct, name, err)
 		}
 		files, err := snapshotDir(dir)
 		if err != nil {
@@ -317,7 +321,9 @@ func (s *service) restoreClientTrees(
 			extra = append(extra, ct)
 		}
 	}
-	s.dematerializeAll(ctx, extra, name, scope, projectRoot)
+	if err := s.dematerializeAll(ctx, extra, name, scope, projectRoot); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -388,25 +394,28 @@ func (s *service) pluginInstallPath(clientType, name string, scope plugins.Scope
 	return s.clientManager.GetPluginPath(client.ClientApp(clientType), name, scope, projectRoot)
 }
 
-// dematerializeAll best-effort reverts materializations performed in this call.
-// Errors are joined so a partial rollback still surfaces; the original install
-// error is returned to the caller separately.
+// dematerializeAll reverts materializations performed in this call.
+// Errors are joined so a partial rollback still surfaces.
 func (s *service) dematerializeAll(
 	ctx context.Context,
 	clientTypes []string,
 	name string,
 	scope plugins.Scope,
 	projectRoot string,
-) {
+) error {
+	var errs []error
 	for _, ct := range clientTypes {
 		if adapter, ok := s.materializers[ct]; ok {
-			_ = adapter.Dematerialize(ctx, plugins.DematerializeRequest{
+			if err := adapter.Dematerialize(ctx, plugins.DematerializeRequest{
 				Name:        name,
 				Scope:       scope,
 				ProjectRoot: projectRoot,
-			})
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("dematerializing plugin for client %q: %w", ct, err))
+			}
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // resolveAndValidateClients returns the deduplicated client list to target for

@@ -252,6 +252,64 @@ spec:
 This is the rule that cannot be written while `/metrics` shares the transport port,
 because it would also have to permit MCP traffic.
 
+#### Scope external routes to the paths you need
+
+A `NetworkPolicy` governs which pods may connect. It says nothing about which paths
+your gateway publishes. Those are separate controls and you want both.
+
+The operator creates a plain `Service` — it does not create an `Ingress` or an
+`HTTPRoute`, so the external route is yours to define. Route only the paths clients
+actually need rather than sending `/` at the workload. A blanket `/` publishes
+everything on the transport port, including endpoints meant to stay internal, and it
+publishes anything added to that mux in future releases without you revisiting the
+rule.
+
+What lives on the transport port:
+
+| Path | Publish externally? |
+|------|---------------------|
+| `/mcp` | Yes, for `streamable-http` — this is the MCP endpoint |
+| `/sse` and `/messages` | Yes, for `sse` — the stream and the POST channel |
+| `/.well-known/oauth-protected-resource` | Yes, if clients perform OAuth discovery (RFC 9728) |
+| `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/oauth/` | Only when the embedded authorization server is enabled |
+| `/health` | No — it exists for Kubernetes probes, which reach it in-cluster |
+| `/metrics` | Not served here at all; it returns 404 on this listener |
+
+For a transparent proxy fronting a remote MCP server, the MCP path is whatever the
+backend exposes, since that proxy forwards `/` to the backend.
+
+An `HTTPRoute` publishing only the streamable-http endpoint and OAuth discovery:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-mcp-server
+spec:
+  parentRefs:
+    - name: my-gateway
+  hostnames:
+    - my-mcp-server.example.com
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp
+        - path:
+            type: PathPrefix
+            value: /.well-known/oauth-protected-resource
+      backendRefs:
+        - name: my-mcp-server
+          port: 8080
+```
+
+The equivalent with an `Ingress` is a `path` entry per route with
+`pathType: Exact` or `Prefix`; avoid a single `path: /` with `pathType: Prefix`.
+
+Never add the diagnostics port to a `Service` or route that faces the internet. It is
+not on the transport port, so a path-scoped route excludes it automatically — but
+adding it back by hand undoes that.
+
 `/health` deliberately stays on the transport port so Kubernetes liveness and
 readiness probes keep working. It exposes no version or build information.
 

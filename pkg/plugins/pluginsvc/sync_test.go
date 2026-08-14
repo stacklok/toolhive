@@ -5,6 +5,7 @@ package pluginsvc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -267,4 +268,47 @@ func TestSync_DisabledGateReturnsForbidden(t *testing.T) {
 	_, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
 	require.Error(t, err)
 	assert.Equal(t, 403, httperr.Code(err))
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+	syncSvc := svc.(*service) //nolint:forcetypeassert
+	legacy, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	require.NoError(t, syncSvc.store.Update(t.Context(), legacy))
+
+	syncSvc.store = &hookPluginStore{
+		PluginStore: syncSvc.store,
+		beforeUpdate: func(_ int, p plugins.InstalledPlugin) error {
+			if p.Managed {
+				return errors.New("db locked")
+			}
+			return nil
+		},
+	}
+
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, "my-plugin", result.Failed[0].Name)
+
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.False(t, ok, "a failed adopt must not leave a lock entry without Managed=true")
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info.InstalledPlugin)
+	assert.False(t, info.InstalledPlugin.Managed)
+
+	check, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, check.NeverManaged)
+	assert.Empty(t, check.AlreadyCurrent, "a split adopt must not look up-to-date")
 }

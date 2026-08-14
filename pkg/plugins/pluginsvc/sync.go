@@ -10,7 +10,6 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
@@ -232,6 +231,9 @@ func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) e
 	}
 	pl.Managed = true
 	if err := s.store.Update(ctx, pl); err != nil {
+		_ = removeLockEntry(plugins.UninstallOptions{
+			Name: pl.Metadata.Name, Scope: plugins.ScopeProject, ProjectRoot: pl.ProjectRoot,
+		})
 		return fmt.Errorf("marking plugin as lock-managed: %w", err)
 	}
 	return nil
@@ -259,13 +261,6 @@ func (s *service) computeInstalledContentDigest(pl plugins.InstalledPlugin) (str
 		last = digest
 	}
 	return last, nil
-}
-
-func (s *service) pluginInstallPath(clientType, name string, scope plugins.Scope, projectRoot string) (string, error) {
-	if s.clientManager == nil {
-		return "", errors.New("client manager is not configured")
-	}
-	return s.clientManager.GetPluginPath(client.ClientApp(clientType), name, scope, projectRoot)
 }
 
 // lockableResolvedReference returns ref when it is a valid git:// or OCI

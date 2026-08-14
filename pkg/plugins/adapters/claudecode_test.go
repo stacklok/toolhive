@@ -620,3 +620,54 @@ func TestClaudeCodeAdapter_HealthDetectsMissingRegistration(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marketplace.json")
 }
+
+func TestClaudeCodeAdapter_HealthRequiresFullRegistration(t *testing.T) {
+	t.Parallel()
+	tempHome := resolvedTempDir(t)
+	cm := newTestClientManager(t, tempHome)
+	a := NewClaudeCodeAdapter(cm)
+
+	layer := makePluginLayer(t, []ociskills.FileEntry{
+		{Path: "commands/greet.md", Content: []byte("# greet"), Mode: 0644},
+	})
+	_, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
+		Name:      "my-plugin",
+		LayerData: layer,
+		Scope:     plugins.ScopeUser,
+	})
+	require.NoError(t, err)
+
+	req := plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}
+	require.NoError(t, a.Health(context.Background(), req))
+
+	marketplaceRoot := filepath.Join(tempHome, ".claude", "plugins")
+	mpPath := claudeMarketplaceFilePath(marketplaceRoot)
+	mp, err := readClaudeMarketplace(mpPath)
+	require.NoError(t, err)
+	require.NotEmpty(t, mp.Plugins)
+	mp.Plugins[0].Source = "./other-plugin"
+	require.NoError(t, writeClaudeMarketplace(mpPath, mp))
+	err = a.Health(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marketplace source")
+
+	mp.Plugins[0].Source = "./my-plugin"
+	require.NoError(t, writeClaudeMarketplace(mpPath, mp))
+	require.NoError(t, a.Health(context.Background(), req))
+
+	settingsPath := a.settingsPath(plugins.ScopeUser, "")
+	content, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	root, err := parseSettings(content, settingsPath)
+	require.NoError(t, err)
+	delete(root, "extraKnownMarketplaces")
+	require.NoError(t, writeSettings(root, settingsPath))
+	err = a.Health(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extraKnownMarketplaces.toolhive")
+
+	require.NoError(t, enablePluginInSettings(settingsPath, "my-plugin", marketplaceRoot+"/wrong"))
+	err = a.Health(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extraKnownMarketplaces.toolhive path")
+}

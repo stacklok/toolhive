@@ -316,6 +316,49 @@ func TestSync_AdoptUpdateFailureRemovesLockEntry(t *testing.T) {
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	prev := lockfile.Entry{
+		Name:              "my-plugin",
+		Source:            "ghcr.io/org/other:v0",
+		ResolvedReference: "ghcr.io/org/other@" + validLockDigestAlt(),
+		Digest:            validLockDigestAlt(),
+		ContentDigest:     "sha256:" + "1111111111111111111111111111111111111111111111111111111111111111",
+		Explicit:          true,
+	}
+	require.NoError(t, lockfile.UpsertPluginEntry(mustOpenRoot(t, projectRoot), prev))
+
+	syncSvc := svc.(*service) //nolint:forcetypeassert
+	legacy, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	legacy.Reference = "ghcr.io/org/my-plugin:v1"
+	require.NoError(t, syncSvc.store.Update(t.Context(), legacy))
+
+	syncSvc.store = &hookPluginStore{
+		PluginStore: syncSvc.store,
+		beforeUpdate: func(p plugins.InstalledPlugin) error {
+			if p.Managed {
+				return errors.New("db locked")
+			}
+			return nil
+		},
+	}
+
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+
+	got, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok, "a failed adopt must restore the pre-existing lock pin")
+	assert.Equal(t, prev.Source, got.Source)
+	assert.Equal(t, prev.Digest, got.Digest)
+	assert.Equal(t, prev.ResolvedReference, got.ResolvedReference)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
 func TestSync_AdoptRejectsUnrestorableLocalPin(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())

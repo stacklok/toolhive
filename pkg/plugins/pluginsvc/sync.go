@@ -238,6 +238,18 @@ func (s *service) syncUnlockedInstall(
 // make every adopt fail until then. Lock validation permits an entry with
 // neither provenance nor unsigned.
 func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) error {
+	unlock := s.locks.lock(pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
+	defer unlock()
+
+	current, err := s.store.Get(ctx, pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
+	if err != nil {
+		return fmt.Errorf("re-reading plugin before adopt: %w", err)
+	}
+	if current.Managed {
+		return nil
+	}
+	pl = current
+
 	contentDigest, err := s.computeInstalledContentDigest(pl)
 	if err != nil {
 		return fmt.Errorf("computing content digest: %w", err)
@@ -254,6 +266,20 @@ func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) e
 			http.StatusUnprocessableEntity,
 		)
 	}
+
+	root, err := lockfile.OpenRoot(pl.ProjectRoot)
+	if err != nil {
+		return fmt.Errorf("opening lock file root: %w", err)
+	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		return fmt.Errorf("loading lock file: %w", err)
+	}
+	var prevEntry *lockfile.Entry
+	if e, ok := lf.GetPlugin(pl.Metadata.Name); ok {
+		prevEntry = &e
+	}
+
 	if err := recordLockEntry(pl.ProjectRoot, lockEntryInput{
 		Name:              pl.Metadata.Name,
 		Version:           pl.Metadata.Version,
@@ -266,15 +292,27 @@ func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) e
 	}
 	pl.Managed = true
 	if err := s.store.Update(ctx, pl); err != nil {
-		remErr := removeLockEntry(plugins.UninstallOptions{
-			Name: pl.Metadata.Name, Scope: plugins.ScopeProject, ProjectRoot: pl.ProjectRoot,
-		})
-		if remErr != nil {
-			return fmt.Errorf("marking plugin as lock-managed: %w", errors.Join(err, remErr))
+		if restoreErr := restoreAdoptedLockEntry(pl, prevEntry); restoreErr != nil {
+			return fmt.Errorf("marking plugin as lock-managed: %w", errors.Join(err, restoreErr))
 		}
 		return fmt.Errorf("marking plugin as lock-managed: %w", err)
 	}
 	return nil
+}
+
+// restoreAdoptedLockEntry undoes adoptPlugin's lock write: reinstates the
+// entry observed before adoption, or removes the name if none existed.
+func restoreAdoptedLockEntry(pl plugins.InstalledPlugin, prevEntry *lockfile.Entry) error {
+	if prevEntry != nil {
+		root, err := lockfile.OpenRoot(pl.ProjectRoot)
+		if err != nil {
+			return err
+		}
+		return lockfile.UpsertPluginEntry(root, *prevEntry)
+	}
+	return removeLockEntry(plugins.UninstallOptions{
+		Name: pl.Metadata.Name, Scope: plugins.ScopeProject, ProjectRoot: pl.ProjectRoot,
+	})
 }
 
 // computeInstalledContentDigest hashes every client directory the plugin is

@@ -1008,24 +1008,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		},
 	},
 	{
-		// Xcode does not support MCP; it is an LLM-gateway-only entry.
-		// Cast LLMClientApp → ClientApp for internal config storage; the type
-		// distinction matters only for swag enum generation (see LLMClientApp).
-		ClientType:     ClientApp(Xcode),
-		Description:    "GitHub Copilot for Xcode",
-		LLMGatewayOnly: true,
-		LLMGatewayMode: llmgateway.ModeProxy,
-		// Full path is macOS-specific; on Linux/Windows this directory will not
-		// exist, so DetectedLLMGatewayClients() naturally returns false there.
-		LLMSettingsFile:    "editorSettings.json",
-		LLMSettingsRelPath: []string{"Library", "Application Support", "GitHub Copilot for Xcode"},
-		LLMGatewayKeys: []LLMGatewayKeySpec{
-			{JSONPointer: "/openAIBaseURL", ValueField: "ProxyBaseURL"},
-			{JSONPointer: "/apiKey", ValueField: "PlaceholderAPIKey"},
-		},
-	},
-	{
-		ClientType:           ClientApp(Qoder),
+		ClientType:           Qoder,
 		Description:          "Qoder IDE",
 		SettingsFile:         "mcp.json",
 		MCPServersPathPrefix: "/mcpServers",
@@ -1048,8 +1031,25 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
 		SupportsSkills:    true,
-		SkillsGlobalPath:  []string{".agents", skillsDirName},
+		SkillsGlobalPath:  []string{".qoder", skillsDirName},
 		SkillsProjectPath: []string{".qoder", skillsDirName},
+	},
+	{
+		// Xcode does not support MCP; it is an LLM-gateway-only entry.
+		// Cast LLMClientApp → ClientApp for internal config storage; the type
+		// distinction matters only for swag enum generation (see LLMClientApp).
+		ClientType:     ClientApp(Xcode),
+		Description:    "GitHub Copilot for Xcode",
+		LLMGatewayOnly: true,
+		LLMGatewayMode: llmgateway.ModeProxy,
+		// Full path is macOS-specific; on Linux/Windows this directory will not
+		// exist, so DetectedLLMGatewayClients() naturally returns false there.
+		LLMSettingsFile:    "editorSettings.json",
+		LLMSettingsRelPath: []string{"Library", "Application Support", "GitHub Copilot for Xcode"},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/openAIBaseURL", ValueField: "ProxyBaseURL"},
+			{JSONPointer: "/apiKey", ValueField: "PlaceholderAPIKey"},
+		},
 	},
 	{
 		// Claude Desktop routes LLM traffic through the gateway via its

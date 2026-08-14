@@ -106,7 +106,8 @@ type ClientAppStatus struct {
 
 // IsClientInstalled reports whether the given client appears to be installed on
 // the current system. Detection is based on the presence of the client's
-// configuration directory (or settings file when no relative path is defined).
+// configuration directory (or settings file when neither a relative path nor a
+// platform prefix is defined).
 func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
 	if cfg == nil || cfg.LLMGatewayOnly {

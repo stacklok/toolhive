@@ -164,6 +164,79 @@ spec:
                     required:
                     - enabled
                     type: object
+                  delegateClients:
+                    description: |-
+                      DelegateClients configures pre-provisioned confidential clients for RFC 8693
+                      token exchange. Each secret is referenced from a Kubernetes Secret; no
+                      plaintext secret, redirect URI, or grant selection is accepted here. The
+                      operator always supplies the token-exchange grant when it converts this
+                      configuration to the runtime contract.
+
+                      This is independent of allowConfidentialClientRegistration: it neither
+                      enables nor requires unauthenticated confidential dynamic client
+                      registration.
+                    items:
+                      description: |-
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                        Secret and is never represented inline.
+                      properties:
+                        audiences:
+                          description: Audiences is the narrowed set of RFC 8707 resources
+                            this client may request.
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        clientId:
+                          description: ClientID is the OAuth client_id presented at
+                            the token endpoint.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        clientSecretRef:
+                          description: ClientSecretRef references the Kubernetes Secret
+                            key containing the client secret.
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        scopes:
+                          description: Scopes is the narrowed set of OAuth scopes
+                            this client may request.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - audiences
+                      - clientId
+                      - clientSecretRef
+                      - scopes
+                      type: object
+                      x-kubernetes-validations:
+                      - message: clientSecretRef.name and clientSecretRef.key are
+                          required and must be non-empty
+                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -594,6 +667,14 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -745,6 +826,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -1070,6 +1158,10 @@ spec:
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: delegateClients require an https:// issuer; delegate client
+                    secrets must not be sent over plaintext HTTP
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
@@ -3794,6 +3886,79 @@ spec:
                     required:
                     - enabled
                     type: object
+                  delegateClients:
+                    description: |-
+                      DelegateClients configures pre-provisioned confidential clients for RFC 8693
+                      token exchange. Each secret is referenced from a Kubernetes Secret; no
+                      plaintext secret, redirect URI, or grant selection is accepted here. The
+                      operator always supplies the token-exchange grant when it converts this
+                      configuration to the runtime contract.
+
+                      This is independent of allowConfidentialClientRegistration: it neither
+                      enables nor requires unauthenticated confidential dynamic client
+                      registration.
+                    items:
+                      description: |-
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
+                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+                        Secret and is never represented inline.
+                      properties:
+                        audiences:
+                          description: Audiences is the narrowed set of RFC 8707 resources
+                            this client may request.
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        clientId:
+                          description: ClientID is the OAuth client_id presented at
+                            the token endpoint.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        clientSecretRef:
+                          description: ClientSecretRef references the Kubernetes Secret
+                            key containing the client secret.
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        scopes:
+                          description: Scopes is the narrowed set of OAuth scopes
+                            this client may request.
+                          items:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - audiences
+                      - clientId
+                      - clientSecretRef
+                      - scopes
+                      type: object
+                      x-kubernetes-validations:
+                      - message: clientSecretRef.name and clientSecretRef.key are
+                          required and must be non-empty
+                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -4224,6 +4389,14 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            allowPrivateIPs:
+                              description: |-
+                                AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+                                private IP ranges (RFC-1918, link-local). Use only when the upstream is
+                                hosted inside the same cluster and has no public endpoint. HTTP-scheme
+                                restrictions are unchanged — HTTPS is still required for non-localhost
+                                hosts unless InsecureAllowHTTP is set. Defaults to false.
+                              type: boolean
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -4375,6 +4548,13 @@ spec:
                               required:
                               - subjectPath
                               type: object
+                            insecureAllowHTTP:
+                              description: |-
+                                InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+                                for this upstream. Only for in-cluster development environments (e.g. an
+                                OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+                                available. Never set this in production.
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -4700,6 +4880,10 @@ spec:
                     over an unauthenticated endpoint
                   rule: '!(has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration
                     && has(self.insecureAllowHTTP) && self.insecureAllowHTTP)'
+                - message: delegateClients require an https:// issuer; delegate client
+                    secrets must not be sent over plaintext HTTP
+                  rule: '!has(self.delegateClients) || size(self.delegateClients)
+                    == 0 || !self.issuer.startsWith(''http://'')'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)

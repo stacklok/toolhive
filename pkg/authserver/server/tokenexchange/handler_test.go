@@ -880,6 +880,79 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 	}
 }
 
+// TestTokenExchangeHandler_DelegateClientDepthCap exercises the self-issued
+// delegate-client relaxation end to end: a token originally issued to
+// delegate D1 is re-exchanged by a different configured delegate D2. The
+// consent check (TestCheckDelegationConsent) accepts this on its own, but
+// the resulting delegation chain remains subject to buildActClaim's
+// maxDelegationDepth gate exactly as it would for any other re-exchange.
+func TestTokenExchangeHandler_DelegateClientDepthCap(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	const d1ClientID = "delegate-d1"
+
+	newHandler := func(t *testing.T) *Handler {
+		t.Helper()
+		h := newTestHandler(t, tj, 15*time.Minute)
+		h.configuredDelegateClients = []string{testAgentClientID}
+		return h
+	}
+
+	// tokenFromD1 builds a self-issued subject token whose client_id is D1
+	// (not the acting client, testAgentClientID/"D2"), carrying a prior act
+	// chain of the given depth.
+	tokenFromD1 := func(t *testing.T, depth int) string {
+		t.Helper()
+		extra := validExtraClaims()
+		extra["client_id"] = d1ClientID
+		if depth > 0 {
+			extra["act"] = nestedActChain(depth)
+		}
+		return tj.signToken(t, validClaims(), extra)
+	}
+
+	t.Run("re-exchange under max depth is accepted and nested", func(t *testing.T) {
+		t.Parallel()
+		h := newHandler(t)
+		form := url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {tokenFromD1(t, maxDelegationDepth-1)},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		}
+		req := newAccessRequest(t, defaultClient(), form)
+
+		err := h.HandleTokenEndpointRequest(context.Background(), req)
+		require.NoError(t, err)
+
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		actMap, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		assert.Equal(t, testAgentClientID, actMap["sub"], "the acting delegate D2, not D1, is the outermost actor")
+		assert.Equal(t, nestedActChain(maxDelegationDepth-1), actMap["act"],
+			"D1's prior act chain must be nested unchanged under D2's new act claim")
+	})
+
+	t.Run("re-exchange at max depth is rejected", func(t *testing.T) {
+		t.Parallel()
+		h := newHandler(t)
+		form := url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {tokenFromD1(t, maxDelegationDepth)},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		}
+		req := newAccessRequest(t, defaultClient(), form)
+
+		err := h.HandleTokenEndpointRequest(context.Background(), req)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant))
+		var rfcErr *fosite.RFC6749Error
+		require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
+		assert.Contains(t, rfcErr.Reason(), "too deep")
+	})
+}
+
 func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 	t.Parallel()
 
@@ -965,10 +1038,11 @@ func TestCheckDelegationConsent(t *testing.T) {
 	const actorID = testAgentClientID
 
 	tests := []struct {
-		name        string
-		claims      *ValidatedClaims
-		wantErr     bool
-		errContains string
+		name               string
+		claims             *ValidatedClaims
+		configuredDelegate bool // defaults to false, reproducing pre-delegate-exception behavior
+		wantErr            bool
+		errContains        string
 	}{
 		{
 			name:   "may_act matching actorID accepted",
@@ -1092,12 +1166,66 @@ func TestCheckDelegationConsent(t *testing.T) {
 			wantErr:     true,
 			errContains: "no verifiable client binding",
 		},
+		{
+			// The core new behavior: a configured delegate client presenting a
+			// self-issued token issued to a different client_id is accepted,
+			// where a non-delegate client (the case above) would be rejected.
+			name:               "configured delegate, self-issued token issued to a different client accepted",
+			claims:             &ValidatedClaims{ClientID: "different-client"},
+			configuredDelegate: true,
+		},
+		{
+			// Regression guard, not an e2e-reachable scenario: in production no
+			// non-delegate client can actually reach this code path at all,
+			// since DCR/CIMD-registered clients can never hold the
+			// token-exchange grant (only statically-configured delegate
+			// clients do). This pins that a hand-built client without
+			// configuredDelegate set still gets the pre-existing rejection.
+			name:        "non-delegate client, self-issued token issued to a different client still rejected",
+			claims:      &ValidatedClaims{ClientID: "different-client"},
+			wantErr:     true,
+			errContains: "different client",
+		},
+		{
+			// may_act is checked first and is unaffected by the delegate
+			// exception: a self-issued may_act naming a different client than
+			// the configured delegate is still rejected for that delegate.
+			name:               "configured delegate, self-issued may_act naming a different client still rejected",
+			claims:             &ValidatedClaims{MayAct: &MayActClaim{Sub: "different-agent"}},
+			configuredDelegate: true,
+			wantErr:            true,
+			errContains:        "does not authorize",
+		},
+		{
+			// The "no verifiable client binding" case is untouched by the
+			// delegate exception: a configured delegate still cannot exchange
+			// a self-issued token that carries no client_id at all.
+			name:               "configured delegate, self-issued token with no client_id still rejected",
+			claims:             &ValidatedClaims{},
+			configuredDelegate: true,
+			wantErr:            true,
+			errContains:        "no verifiable client binding",
+		},
+		{
+			// Proves the ExternalIssuer=="" guard actually gates the
+			// relaxation, not just that it's logically supposed to: a
+			// configured delegate presenting an EXTERNALLY-issued token with a
+			// mismatched client_id is still rejected by case 3 as before.
+			name: "configured delegate, externally-issued token with mismatched client_id still rejected",
+			claims: &ValidatedClaims{
+				ClientID:       "different-client",
+				ExternalIssuer: "https://idp.example.com",
+			},
+			configuredDelegate: true,
+			wantErr:            true,
+			errContains:        "different client",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := checkDelegationConsent(tt.claims, actorID)
+			err := checkDelegationConsent(tt.claims, actorID, tt.configuredDelegate)
 			if tt.wantErr {
 				require.Error(t, err)
 				var rfcErr *fosite.RFC6749Error

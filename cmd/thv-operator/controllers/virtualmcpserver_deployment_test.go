@@ -86,6 +86,44 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	assert.Equal(t, resource.MustParse("512Mi"), container.Resources.Limits[corev1.ResourceMemory])
 }
 
+func TestDeploymentForVirtualMCPServer_WithDelegateClientSecrets(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
+	vmcp.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{
+			{
+				ClientID:        "client-id",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://resource.example.com"},
+			},
+		},
+	}
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           testutil.NewScheme(t),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, nil)
+	require.NotNil(t, deployment)
+
+	for _, envVar := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if envVar.Name != "TOOLHIVE_DELEGATE_CLIENT_SECRET_0" {
+			continue
+		}
+		assert.Empty(t, envVar.Value)
+		require.NotNil(t, envVar.ValueFrom)
+		require.NotNil(t, envVar.ValueFrom.SecretKeyRef)
+		assert.Equal(t, "delegate-secret", envVar.ValueFrom.SecretKeyRef.Name)
+		assert.Equal(t, "credential", envVar.ValueFrom.SecretKeyRef.Key)
+		return
+	}
+	t.Fatal("delegate client secret environment variable was not generated")
+}
+
 // TestDeploymentForVirtualMCPServer_WithRedisPassword tests that the deployment pod
 // spec includes THV_SESSION_REDIS_PASSWORD when spec.sessionStorage has a passwordRef.
 func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {

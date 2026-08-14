@@ -140,6 +140,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "OIDC with oauth2_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOIDC, OIDCConfig: validOIDCUpstream, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oauth2_config must not be set"},
 		{name: "OAuth2 with oidc_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream, OIDCConfig: validOIDCUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oidc_config must not be set"},
 
+		{name: "OAuth2 HTTP endpoints require an upstream or global insecure allow flag", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: &upstream.OAuth2Config{CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"}, AuthorizationEndpoint: "http://idp.default.svc.cluster.local/authorize", TokenEndpoint: "http://idp.default.svc.cluster.local/token", InsecureAllowHTTP: true}}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{name: "OIDC HTTP issuer requires an upstream or global insecure allow flag", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOIDC, OIDCConfig: &upstream.OIDCConfig{CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"}, Issuer: "http://idp.default.svc.cluster.local", InsecureAllowHTTP: true}}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
 		// BaselineClientScopes subset gate (mirrors RunConfig.Validate but on the
 		// runtime Config — catches direct constructors that bypass YAML loading).
 		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
@@ -533,9 +536,115 @@ func TestRunConfigValidate(t *testing.T) {
 	}
 }
 
+func TestDelegateClientRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	validClient := DelegateClientRunConfig{
+		ClientID:           "delegate",
+		ClientSecretEnvVar: "DELEGATE_CLIENT_SECRET",
+		Scopes:             []string{"openid"},
+		Audiences:          []string{"https://mcp.example.com"},
+	}
+	tests := []struct {
+		name    string
+		clients []DelegateClientRunConfig
+		wantErr string
+	}{
+		{name: "valid", clients: []DelegateClientRunConfig{validClient}},
+		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
+		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
+		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_secret_file or client_secret_env_var is required"},
+		{name: "missing scopes", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Audiences: validClient.Audiences}}, wantErr: "scopes is required"},
+		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
+		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
+		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{
+				Issuer:           "https://auth.example.com",
+				ScopesSupported:  []string{"openid"},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients:  tt.clients,
+			}
+			assertError(t, cfg.Validate(), tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+func TestRunConfigValidateAllowedAudiences(t *testing.T) {
+	t.Parallel()
+
+	cfg := RunConfig{
+		Issuer:           "https://auth.example.com",
+		AllowedAudiences: []string{"ftp://mcp.example.com"},
+	}
+
+	require.ErrorContains(t, cfg.Validate(), "allowed_audiences contains invalid audience")
+}
+
+func TestConfigValidateDelegateClients(t *testing.T) {
+	t.Parallel()
+
+	base := func() Config {
+		return Config{
+			Issuer:      "https://auth.example.com",
+			KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			Upstreams: []UpstreamConfig{{
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "upstream", RedirectURI: "https://auth.example.com/callback"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+			ScopesSupported:  []string{"openid"},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+	validClient := DelegateClient{
+		ClientID:     "delegate",
+		ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+		Scopes:       []string{"openid"},
+		Audiences:    []string{"https://mcp.example.com"},
+	}
+	tests := []struct {
+		name    string
+		clients []DelegateClient
+		issuer  string
+		wantErr string
+	}{
+		{name: "valid resolved client", clients: []DelegateClient{validClient}},
+		{name: "missing resolved secret", clients: []DelegateClient{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret is required"},
+		{name: "resolved secret too short", clients: []DelegateClient{{ClientID: "delegate", ClientSecret: "short-secret", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret must be at least"},
+		{name: "static client rejects insecure HTTP", clients: []DelegateClient{validClient}, issuer: "http://auth.example.com", wantErr: "confidential clients would send secrets over cleartext HTTP"},
+		{name: "static client rejects loopback HTTP without opt-in", clients: []DelegateClient{validClient}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			cfg.DelegateClients = tt.clients
+			if tt.issuer != "" {
+				cfg.Issuer = tt.issuer
+				cfg.InsecureAllowHTTP = tt.issuer == "http://auth.example.com"
+			}
+			err := cfg.Validate()
+			assertError(t, err, tt.wantErr != "", tt.wantErr)
+			if err != nil && tt.name == "resolved secret too short" {
+				assert.NotContains(t, err.Error(), "short-secret")
+			}
+		})
+	}
+}
+
 // TestValidateConfidentialClientTransport pins the shared predicate that both
 // RunConfig.Validate and Config.Validate call, and that the operator's
-// validateEmbeddedAuthServer reuses: confidential-client DCR is rejected when
+// validateEmbeddedAuthServer reuses: confidential clients are rejected when
 // combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
 // loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
 func TestValidateConfidentialClientTransport(t *testing.T) {
@@ -587,7 +696,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "allow_confidential_client_registration")
+				assert.Contains(t, err.Error(), "confidential clients")
 				assert.Contains(t, err.Error(), tt.errContains)
 			} else {
 				require.NoError(t, err)

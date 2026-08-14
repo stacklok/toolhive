@@ -16,9 +16,11 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -120,6 +122,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
+	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
+		return nil, err
+	}
+
 	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
@@ -144,6 +150,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                         cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
@@ -222,6 +229,29 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	}, nil
 }
 
+func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
+	for _, delegateClient := range delegateClients {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:         delegateClient.ClientID,
+			Secret:     delegateClient.ClientSecret,
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Scopes:     delegateClient.Scopes,
+			Audience:   delegateClient.Audiences,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
+		}
+		if err := stor.RegisterClient(ctx, client); err != nil {
+			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
+		}
+		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
+			"it may exchange any user's self-issued ToolHive token for a delegated token, "+
+			"with no per-subject binding to the client that originally obtained that token",
+			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
+	}
+	return nil
+}
+
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is enabled,
 // so GetClient calls for HTTPS client_id values are intercepted at the fosite
 // level (not just the handler level). Returns stor unchanged when CIMD is disabled.
@@ -253,7 +283,11 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (fosite.OAuth2Provider, error) {
-	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan, cfg.TrustedIssuers)
+	delegateClientIDs := make([]string, len(cfg.DelegateClients))
+	for i, c := range cfg.DelegateClients {
+		delegateClientIDs[i] = c.ClientID
+	}
+	tokenExchangeFactory, err := tokenexchange.Factory(cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 	}

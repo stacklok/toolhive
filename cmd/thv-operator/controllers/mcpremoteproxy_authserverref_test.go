@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 	"time"
 
@@ -12,10 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
@@ -184,4 +188,62 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPRemoteProxyReconciler_handleInvalidEmbeddedAuthServerConfigExternalAuthConfigRef(t *testing.T) {
+	t.Parallel()
+
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth"),
+	)
+	reconciler, _ := newTestMCPRemoteProxyReconciler(t, proxy)
+
+	require.NoError(t, reconciler.handleInvalidEmbeddedAuthServerConfig(t.Context(), proxy,
+		&ctrlutil.InvalidEmbeddedAuthServerConfigError{
+			Err:    stderrors.New("invalid delegate client"),
+			Source: ctrlutil.EmbeddedAuthServerConfigSourceExternalAuthConfigRef,
+		},
+	))
+
+	validated := meta.FindStatusCondition(proxy.Status.Conditions,
+		mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+	require.NotNil(t, validated)
+	assert.Equal(t, metav1.ConditionFalse, validated.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
+}
+
+func TestMCPRemoteProxyReconciler_InvalidExternalAuthConfigSteadyState(t *testing.T) {
+	t.Parallel()
+
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate"}},
+			},
+		},
+	}
+	reconciler, fakeClient := newTestMCPRemoteProxyReconciler(t, proxy, authConfig)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: proxy.Name, Namespace: proxy.Namespace}}
+
+	result, err := reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	actual := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
+	initial := actual.DeepCopy()
+
+	result, err = reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
+	assert.Equal(t, initial.Status, actual.Status)
 }

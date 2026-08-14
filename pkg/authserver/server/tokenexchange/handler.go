@@ -61,6 +61,9 @@ type Handler struct {
 	delegationLifespan time.Duration
 	config             tokenExchangeConfig
 	allowedAudiences   []string
+	// configuredDelegateClients holds the operator-configured delegate-client
+	// IDs (Config.DelegateClients, ID-only).
+	configuredDelegateClients []string
 }
 
 // tokenExchangeConfig defines the configuration interface needed by the handler.
@@ -139,7 +142,8 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"The subject token is invalid or could not be verified."))
 	}
 
-	if err := checkDelegationConsent(validatedClaims, actorID); err != nil {
+	configuredDelegate := slices.Contains(h.configuredDelegateClients, actorID)
+	if err := checkDelegationConsent(validatedClaims, actorID, configuredDelegate); err != nil {
 		return err
 	}
 
@@ -184,6 +188,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		"actor", actorID,
 		"issuer", validatedClaims.Issuer,
 		"subject_token_client", validatedClaims.ExternalActor,
+		"subject_token_client_id", validatedClaims.ClientID,
 		"lifetime", lifetime.String(),
 	)
 
@@ -487,10 +492,32 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 //     client. This prevents a stolen subject token from being exchanged by a
 //     different client.
 //
+//     Exception: a configured delegate client (Handler.configuredDelegateClients,
+//     Config.DelegateClients ID-only) is exempt from this binding when the
+//     subject token is self-issued (ExternalIssuer == ""). Such a client may
+//     present ANY self-issued subject token regardless of which client it was
+//     originally issued to. This is deliberately scoped to the self-issued
+//     path only — see selfIssuedDelegate below — because delegate clients are
+//     operator-declared at server startup, not obtained through self-service
+//     registration (DCR), matching the blanket-trust model already accepted
+//     for the AllowedDelegateClients wildcard (anyDelegateClient) above.
+//     The remaining bounds still apply: grantScopes/grantAndBoundAudiences
+//     narrow the result to what both the client and the subject token are
+//     authorized for, and the delegated token's lifetime is capped as usual.
+//
 // If none of the three consent sources apply, the subject token carries no
 // verifiable binding to any client at all — this fails closed (CWE-863)
 // rather than allowing an unbound token through.
-func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string) error {
+func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, configuredDelegate bool) error {
+	// selfIssuedDelegate is true only when a configured delegate client is
+	// presenting a self-issued token (ExternalIssuer == "" rules out the
+	// external-issuer path explicitly, rather than relying on ExternalActor
+	// always being set there — see multi_issuer_validator.go). Without this,
+	// a future change to that file's actor-resolution logic could let a
+	// delegate client bypass AllowedDelegateClients (the #5989 protection)
+	// on the external path.
+	selfIssuedDelegate := configuredDelegate && validatedClaims.ExternalIssuer == ""
+
 	switch {
 	case validatedClaims.MayAct != nil:
 		if validatedClaims.MayAct.Sub != actorID {
@@ -516,7 +543,7 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string) er
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
-	case validatedClaims.ClientID != "" && validatedClaims.ClientID != actorID:
+	case validatedClaims.ClientID != "" && validatedClaims.ClientID != actorID && !selfIssuedDelegate:
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token was issued to a different client."))
 	case validatedClaims.ClientID == "":

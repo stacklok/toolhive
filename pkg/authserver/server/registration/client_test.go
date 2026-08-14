@@ -21,6 +21,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestNewLoopbackClient(t *testing.T) {
@@ -481,4 +483,131 @@ func TestNewClient_EmptySlicesUseDefaults(t *testing.T) {
 	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
 	assert.ElementsMatch(t, defaultResponseTypes, client.GetResponseTypes())
 	assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
+}
+
+func TestNewStaticDelegateClient(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewStaticDelegateClient(Config{
+		ID:         "delegate",
+		Secret:     "test-secret",
+		GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+		Scopes:     []string{"openid"},
+		Audience:   []string{"https://mcp.example"},
+	})
+	require.NoError(t, err)
+
+	assert.IsType(t, &fosite.DefaultClient{}, client)
+	assert.False(t, client.IsPublic())
+	assert.False(t, DCRIssued(client))
+	assert.Empty(t, client.GetRedirectURIs())
+	// Asserts on the underlying field, not GetResponseTypes(): fosite.DefaultClient's
+	// getter falls back to Arguments{"code"} whenever ResponseTypes is unset (per the
+	// OIDC dynamic registration default), regardless of client type, so the getter
+	// is never empty for this or any other client that doesn't set it explicitly.
+	assert.Empty(t, client.ResponseTypes)
+	// Use ElementsMatch since fosite returns fosite.Arguments type.
+	assert.ElementsMatch(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, client.GetGrantTypes())
+	assert.ElementsMatch(t, []string{"openid"}, client.GetScopes())
+	assert.ElementsMatch(t, []string{"https://mcp.example"}, client.GetAudience())
+	assert.NoError(t, SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("test-secret")))
+	assert.Error(t, SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("wrong-secret")))
+}
+
+func TestNewStaticDelegateClient_Validation(t *testing.T) {
+	t.Parallel()
+
+	validGrantTypes := []string{oauthproto.GrantTypeTokenExchange}
+	validScopes := []string{"openid"}
+	validAudience := []string{"https://mcp.example"}
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr string
+	}{
+		{
+			name: "missing ID",
+			config: Config{
+				Secret:     "test-secret",
+				GrantTypes: validGrantTypes,
+				Scopes:     validScopes,
+				Audience:   validAudience,
+			},
+			wantErr: "delegate client requires an ID",
+		},
+		{
+			name: "missing secret",
+			config: Config{
+				ID:         "delegate",
+				GrantTypes: validGrantTypes,
+				Scopes:     validScopes,
+				Audience:   validAudience,
+			},
+			wantErr: "confidential client requires a secret",
+		},
+		{
+			name: "missing grant types",
+			config: Config{
+				ID:       "delegate",
+				Secret:   "test-secret",
+				Scopes:   validScopes,
+				Audience: validAudience,
+			},
+			wantErr: "delegate client grant types must be exactly",
+		},
+		{
+			name: "non-token-exchange grant type",
+			config: Config{
+				ID:         "delegate",
+				Secret:     "test-secret",
+				GrantTypes: []string{"authorization_code"},
+				Scopes:     validScopes,
+				Audience:   validAudience,
+			},
+			wantErr: "delegate client grant types must be exactly",
+		},
+		{
+			name: "multiple grant types",
+			config: Config{
+				ID:         "delegate",
+				Secret:     "test-secret",
+				GrantTypes: []string{oauthproto.GrantTypeTokenExchange, "authorization_code"},
+				Scopes:     validScopes,
+				Audience:   validAudience,
+			},
+			wantErr: "delegate client grant types must be exactly",
+		},
+		{
+			name: "missing scopes",
+			config: Config{
+				ID:         "delegate",
+				Secret:     "test-secret",
+				GrantTypes: validGrantTypes,
+				Audience:   validAudience,
+			},
+			wantErr: "delegate client requires at least one scope",
+		},
+		{
+			name: "missing audience",
+			config: Config{
+				ID:         "delegate",
+				Secret:     "test-secret",
+				GrantTypes: validGrantTypes,
+				Scopes:     validScopes,
+			},
+			wantErr: "delegate client requires at least one audience",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := NewStaticDelegateClient(tt.config)
+			assert.Nil(t, client)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.NotContains(t, err.Error(), "test-secret")
+		})
+	}
 }

@@ -599,6 +599,28 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 			assert.Equal(t, time.Duration(0), mr.TTL(key), "pre-provisioned public client must not acquire a TTL")
 		})
 	})
+
+	t.Run("static client replaces DCR client without TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			dcrClient := newDCRClient(t, "delegate", oauthproto.TokenEndpointAuthMethodClientSecretBasic, "old-secret")
+			require.NoError(t, s.RegisterClient(ctx, dcrClient))
+			key := redisKey(s.keyPrefix, KeyTypeClient, "delegate")
+			require.Positive(t, mr.TTL(key))
+
+			staticClient, err := registration.NewStaticDelegateClient(registration.Config{
+				ID: "delegate", Secret: "new-secret", GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+				Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, s.RegisterClient(ctx, staticClient))
+
+			retrieved, err := s.GetClient(ctx, "delegate")
+			require.NoError(t, err)
+			assert.False(t, registration.DCRIssued(retrieved))
+			assert.Equal(t, time.Duration(0), mr.TTL(key))
+			assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+		})
+	})
 }
 
 // TestRedisStorage_RenewClientTTL pins the RenewClientTTL contract: it refreshes

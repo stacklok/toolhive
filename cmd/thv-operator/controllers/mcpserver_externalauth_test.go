@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -617,6 +618,54 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 	assert.Nil(t,
 		meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated),
 		"stale mirror must be cleared when the referenced source is NotFound")
+}
+
+// TestMCPServerReconciler_ExternalAuthConfigRefInvalidEmbeddedConfigSteadyState
+// guards against mirrorInvalidOnMCPServer's clear branch clobbering the
+// ExternalAuthConfigValidated condition that handleInvalidEmbeddedAuthServerConfig
+// owns for a different reason (delegate clients configured without OIDC).
+// Reconciling twice with no intervening change must not touch Status at all,
+// including LastTransitionTime — see the parallel MCPRemoteProxy regression
+// guard for the MCPRemoteProxy analogue of this bug.
+func TestMCPServerReconciler_ExternalAuthConfigRefInvalidEmbeddedConfigSteadyState(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate"}},
+			},
+		},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(server, authConfig).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	result, err := reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
+	initial := actual.DeepCopy()
+
+	result, err = reconciler.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, actual))
+	assert.Equal(t, initial.Status, actual.Status)
 }
 
 // TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed

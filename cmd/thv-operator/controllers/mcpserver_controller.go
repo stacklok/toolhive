@@ -170,6 +170,40 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
+// handleInvalidEmbeddedAuthServerConfig records an invalid embedded auth server
+// configuration as terminal. Failures to persist status remain retryable.
+func (r *MCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError,
+) error {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
+		server.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		server.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidConfigErr)
+		server.Status.ObservedGeneration = server.Generation
+		setReadyCondition(server, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, server.Status.Message)
+
+		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceAuthServerRef {
+			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: server.Generation,
+				Reason:             mcpv1beta1.ConditionReasonAuthServerRefInvalidConfig,
+				Message:            invalidConfigErr.Error(),
+			})
+		}
+		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceExternalAuthConfigRef {
+			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: server.Generation,
+				Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+				Message:            invalidConfigErr.Error(),
+			})
+		}
+	})
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
@@ -361,6 +395,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
+		var invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError
+		if stderrors.As(err, &invalidConfigErr) {
+			if statusErr := r.handleInvalidEmbeddedAuthServerConfig(ctx, mcpServer, invalidConfigErr); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid embedded auth server configuration")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
@@ -2305,14 +2348,7 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	// AuthServerRef valid
-	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonAuthServerRefValid,
-		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
-		ObservedGeneration: m.Generation,
-	})
+	setMCPServerAuthServerRefValidCondition(m, authConfig.Name, authConfig.Status.ConfigHash)
 
 	// Check if the config hash has changed
 	if m.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {
@@ -2329,6 +2365,27 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 	}
 
 	return nil
+}
+
+// setMCPServerAuthServerRefValidCondition preserves a terminal RunConfig validation failure
+// until its referenced configuration or this resource generation changes.
+func setMCPServerAuthServerRefValidCondition(m *mcpv1beta1.MCPServer, configName, configHash string) {
+	previousCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	if previousCondition != nil &&
+		previousCondition.Status == metav1.ConditionFalse &&
+		previousCondition.Reason == mcpv1beta1.ConditionReasonAuthServerRefInvalidConfig &&
+		previousCondition.ObservedGeneration == m.Generation &&
+		m.Status.AuthServerConfigHash == configHash {
+		return
+	}
+
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonAuthServerRefValid,
+		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", configName),
+		ObservedGeneration: m.Generation,
+	})
 }
 
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.

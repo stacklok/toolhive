@@ -2331,3 +2331,91 @@ func TestResolveCIMDConfig(t *testing.T) {
 		assert.Equal(t, 10*time.Minute, ttl)
 	})
 }
+
+//nolint:tparallel // t.Setenv mutates the process-wide environment.
+func TestResolveDelegateClients(t *testing.T) {
+	secretFile := filepath.Join(t.TempDir(), "delegate-secret")
+	emptySecretFile := filepath.Join(t.TempDir(), "empty-delegate-secret")
+	require.NoError(t, os.WriteFile(secretFile, []byte("  file-secret\n"), 0600))
+	require.NoError(t, os.WriteFile(emptySecretFile, nil, 0600))
+	t.Setenv("TEST_DELEGATE_SECRET", "env-secret")
+	t.Setenv("TEST_EMPTY_DELEGATE_SECRET", "")
+
+	tests := []struct {
+		name    string
+		clients []authserver.DelegateClientRunConfig
+		want    string
+		wantErr string
+	}{
+		{
+			name: "file takes precedence and is trimmed",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretFile: secretFile, ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
+				Scopes: []string{"openid"}, Audiences: []string{"audience"},
+			}},
+			want: "file-secret",
+		},
+		{
+			name: "environment secret",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
+				Scopes: []string{"openid"}, Audiences: []string{"audience"},
+			}},
+			want: "env-secret",
+		},
+		{
+			name:    "empty file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate", ClientSecretFile: emptySecretFile}},
+			wantErr: "resolved client secret is empty",
+		},
+		{
+			name:    "unreadable file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate", ClientSecretFile: filepath.Join(t.TempDir(), "missing")}},
+			wantErr: "failed to read secret file",
+		},
+		{
+			name:    "missing references are rejected",
+			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate"}},
+			wantErr: "resolved client secret is empty",
+		},
+		{
+			name:    "empty environment is rejected",
+			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "TEST_EMPTY_DELEGATE_SECRET"}},
+			wantErr: "is not set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := resolveDelegateClients(tt.clients)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.NotContains(t, err.Error(), "file-secret")
+				assert.NotContains(t, err.Error(), "env-secret")
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, tt.want, got[0].ClientSecret)
+		})
+	}
+}
+
+func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
+	clients := []authserver.DelegateClientRunConfig{{
+		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",
+		Scopes: []string{"openid"}, Audiences: []string{"audience"},
+	}}
+	t.Setenv("TEST_DELEGATE_CLONE_SECRET", "secret")
+
+	resolved, err := resolveDelegateClients(clients)
+	require.NoError(t, err)
+	clients[0].Scopes[0] = "changed"
+	clients[0].Audiences[0] = "changed"
+
+	assert.Equal(t, "openid", resolved[0].Scopes[0])
+	assert.Equal(t, "audience", resolved[0].Audiences[0])
+}

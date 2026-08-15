@@ -29,9 +29,6 @@ var _ skills.SkillLockService = (*service)(nil)
 // pinned to an immutable reference (an OCI digest or a full git commit hash)
 // are reported not-upgradable: there is nothing newer to resolve to.
 func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
-	if !skills.LockFileFeatureEnabled() {
-		return nil, errExperimentalLockFeature
-	}
 
 	_, projectRoot, err := normalizeProjectRoot(skills.ScopeProject, opts.ProjectRoot)
 	if err != nil {
@@ -139,13 +136,17 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	if newRef != entry.ResolvedReference && !opts.AllowRefChange {
-		outcome.Status = skills.UpgradeStatusRefChangeBlocked
-		outcome.NewResolvedReference = newRef
-		return upgradePlan{entry: entry, outcome: outcome}
-	}
 	if newRef != entry.ResolvedReference {
 		outcome.NewResolvedReference = newRef
+		// Only a move to a different repository is a supply-chain event. A
+		// tag moving within the same repository is how a catalog-sourced
+		// skill advances at all, and blocking it would force automation to
+		// pass --allow-ref-change on every routine upgrade — which would
+		// also disable the repository check this guard exists for.
+		if repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
+			outcome.Status = skills.UpgradeStatusRefChangeBlocked
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
 	}
 
 	// Signer-change guard: when the entry records a signer identity, the
@@ -174,8 +175,23 @@ func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, e
 
 // guardSignerChange probes the candidate artifact's signer identity and
 // fills outcome when the upgrade must not proceed: the candidate is signed
-// by a different identity (or unsigned) versus the recorded provenance, or
-// its signature cannot be verified at all. Returns true when blocked.
+// by a different identity (or unsigned) versus the recorded provenance, its
+// signature cannot be verified at all, or its certificate's repository ref
+// or runner class differs from what is recorded. Returns true when blocked.
+//
+// The repository ref has NO automatic allowance for a tag-shaped rotation.
+// An earlier version of this guard let a recorded tag ref rotate to any
+// other tag ref, reasoning that a release workflow signs each version on
+// its own tag — but that also let a candidate signed from an attacker's OWN
+// tag (e.g. "refs/tags/attacker-release") on the SAME repository replace a
+// pinned tag, since nothing tied the candidate's tag to the specific
+// version actually being upgraded to. Binding it correctly would need the
+// resolved release source's own tag, which the git resolver does not
+// surface at all (only the resolved commit hash) — so an OCI-only partial
+// fix would leave git-sourced skills with the identical hole. Every ref
+// change — tag or branch, git or OCI — therefore blocks here exactly like a
+// genuine signer-identity change, and needs the same explicit
+// --allow-signer-change override. See stacklok/toolhive#6315 review.
 func (s *service) guardSignerChange(
 	ctx context.Context,
 	entry lockfile.Entry,
@@ -196,12 +212,31 @@ func (s *service) guardSignerChange(
 		outcome.Error = probeErr.Error()
 		return true
 	case probe.SignerIdentity != entry.Provenance.SignerIdentity ||
-		probe.CertIssuer != entry.Provenance.CertIssuer:
+		probe.CertIssuer != entry.Provenance.CertIssuer ||
+		runnerEnvironmentChanged(probe, entry.Provenance) ||
+		repositoryRefChanged(probe, entry.Provenance):
 		outcome.Status = skills.UpgradeStatusSignerChangeBlocked
 		outcome.NewSignerIdentity = probe.SignerIdentity
 		return true
 	}
 	return false
+}
+
+// runnerEnvironmentChanged reports whether the candidate's runner class
+// differs from the one recorded. An entry that recorded none is
+// unconstrained — lock entries written before the field existed have it
+// empty, as do certificates that carry no such extension.
+func runnerEnvironmentChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RunnerEnvironment != "" && probe.RunnerEnvironment != recorded.RunnerEnvironment
+}
+
+// repositoryRefChanged reports whether the candidate's certificate ref
+// differs from the one recorded, with the same absent-means-unconstrained
+// rule as runnerEnvironmentChanged. Unlike the runner class, no ref value
+// is treated as an automatically allowed rotation — see guardSignerChange's
+// doc comment for why.
+func repositoryRefChanged(probe *verifier.Result, recorded *lockfile.Provenance) bool {
+	return recorded.RepositoryRef != "" && probe.RepositoryRef != recorded.RepositoryRef
 }
 
 // probeCandidateSigner verifies the candidate artifact chain-of-trust-only

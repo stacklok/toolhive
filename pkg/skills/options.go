@@ -102,14 +102,25 @@ type InstallOptions struct {
 type ProvenanceInfo struct {
 	// SignerIdentity is the certificate subject identity (workflow path for
 	// GitHub Actions certificates, SAN verbatim otherwise).
-	SignerIdentity string `json:"-"`
+	SignerIdentity string `json:"signer_identity"`
 	// CertIssuer is the OIDC issuer that authenticated the signer.
-	CertIssuer string `json:"-"`
+	CertIssuer string `json:"cert_issuer"`
 	// RepositoryURI is the source repository from the certificate
 	// extensions, when present.
-	RepositoryURI string `json:"-"`
+	RepositoryURI string `json:"repository_uri,omitempty"`
+	// RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+	// certificate extension 1.3.6.1.4.1.57264.1.14. Empty means
+	// unconstrained, matching lock files written before the field existed.
+	RepositoryRef string `json:"repository_ref,omitempty"`
+	// RunnerEnvironment is the runner class the signing workflow executed in
+	// (e.g. "github-hosted"), from Fulcio certificate extension
+	// 1.3.6.1.4.1.57264.1.11. Empty means unconstrained.
+	RunnerEnvironment string `json:"runner_environment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
-	SigstoreURL string `json:"-"`
+	SigstoreURL string `json:"sigstore_url,omitempty"`
+	// Provisional marks provenance with a documented verification gap
+	// (git signatures until transparency-log validation lands).
+	Provisional bool `json:"provisional,omitempty"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -121,6 +132,12 @@ type InstallResult struct {
 	// previous state instead of destructively deleting a record this call
 	// did not create. Internal use only — NOT exposed via HTTP API.
 	PreExisting *InstalledSkill `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -155,6 +172,12 @@ type SkillInfo struct {
 	Metadata SkillMetadata `json:"metadata"`
 	// InstalledSkill contains the full installation record.
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
+	// Provenance is the signer identity the project's lock file records
+	// for this skill, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this skill.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation.
@@ -215,6 +238,13 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+	// Key is the path to a cosign PEM private key used to sign the pushed
+	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Empty with
+	// NoSign false is an error: unsigned pushes must be explicit.
+	Key string `json:"key,omitempty"`
+	// NoSign pushes without signing. Consumers installing the artifact
+	// project-scoped will need an explicit unsigned exception.
+	NoSign bool `json:"no_sign,omitempty"`
 }
 
 // SyncOptions configures the behavior of the Sync operation.
@@ -260,6 +290,12 @@ const (
 	// FailureReasonSignerMismatch means the artifact verifies, but against
 	// an identity other than the one recorded in the lock file.
 	FailureReasonSignerMismatch FailureReason = "signer-mismatch"
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer identity and issuer, but its
+	// certificate's repository ref or runner environment differs from what
+	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
+	// remediation (--allow-signer-change) is nonetheless the same.
+	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
 	// FailureReasonUnsignedRejected means the artifact is unsigned and the
 	// operation did not permit unsigned installs.
 	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"
@@ -314,7 +350,9 @@ type UpgradeOptions struct {
 	Preview bool `json:"preview,omitempty"`
 	// FailOnChanges exits with an error when any mutable source would upgrade.
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
-	// AllowRefChange permits resolvedReference changes during upgrade.
+	// AllowRefChange permits an upgrade whose candidate lives in a different
+	// repository. Tag moves within the same repository are always allowed —
+	// they are how a mutable source advances.
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
 	// AllowSignerChange permits upgrading to an artifact signed by a
 	// different identity than the one recorded in the lock file; the new

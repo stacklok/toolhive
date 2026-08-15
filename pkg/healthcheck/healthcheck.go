@@ -11,8 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // HealthStatus represents the overall health status
@@ -39,14 +37,19 @@ type MCPStatus struct {
 	LastChecked time.Time `json:"last_checked"`
 }
 
-// HealthResponse represents the standardized health check response
+// HealthResponse represents the standardized health check response.
+//
+// This endpoint is unauthenticated (it must stay reachable for Kubernetes
+// liveness and readiness probes), so it deliberately exposes no build
+// fingerprint — version, commit, build date, Go version, or platform. This
+// matches the minimal shape already used by the vMCP server and the v1 API,
+// which redact the same information to avoid disclosure on an unauthenticated
+// path.
 type HealthResponse struct {
 	// Status is the overall health status
 	Status HealthStatus `json:"status"`
 	// Timestamp is when the health check was performed
 	Timestamp time.Time `json:"timestamp"`
-	// Version contains ToolHive version information
-	Version versions.VersionInfo `json:"version"`
 	// Transport indicates the type of transport used by the MCP server (stdio, sse)
 	Transport string `json:"transport"`
 	// MCP contains MCP server status information
@@ -82,7 +85,6 @@ func (hc *HealthChecker) CheckHealth(ctx context.Context) *HealthResponse {
 	response := &HealthResponse{
 		Status:    StatusHealthy,
 		Timestamp: time.Now(),
-		Version:   versions.GetVersionInfo(),
 		Transport: hc.transport,
 	}
 

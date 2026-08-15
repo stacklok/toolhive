@@ -41,10 +41,15 @@ func init() {
 func aiPluginUninstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newAIPluginClient(cmd.Context())
 
-	err := c.Uninstall(cmd.Context(), plugins.UninstallOptions{
+	projectRoot, err := absProjectRoot(aiPluginUninstallProjectRoot)
+	if err != nil {
+		return err
+	}
+
+	err = c.Uninstall(cmd.Context(), plugins.UninstallOptions{
 		Name:        args[0],
 		Scope:       plugins.Scope(aiPluginUninstallScope),
-		ProjectRoot: aiPluginUninstallProjectRoot,
+		ProjectRoot: projectRoot,
 	})
 	if err != nil {
 		return formatAIPluginError("uninstall plugin", err)

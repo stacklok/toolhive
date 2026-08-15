@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/mock/gomock"
@@ -2460,4 +2463,179 @@ func TestRecordSSEConnection_DualEmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTruncateLabelValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, got string)
+	}{
+		{
+			name:  "empty string is unchanged",
+			input: "",
+			check: func(t *testing.T, got string) {
+				t.Helper()
+				assert.Equal(t, "", got)
+			},
+		},
+		{
+			name:  "value within the cap is unchanged",
+			input: "tools/call",
+			check: func(t *testing.T, got string) {
+				t.Helper()
+				assert.Equal(t, "tools/call", got)
+			},
+		},
+		{
+			name:  "value exactly at the cap is unchanged",
+			input: strings.Repeat("a", maxLabelValueBytes),
+			check: func(t *testing.T, got string) {
+				t.Helper()
+				assert.Equal(t, strings.Repeat("a", maxLabelValueBytes), got)
+			},
+		},
+		{
+			name:  "value over the cap is truncated within the cap and marked",
+			input: strings.Repeat("a", 8*1024*1024),
+			check: func(t *testing.T, got string) {
+				t.Helper()
+				assert.LessOrEqual(t, len(got), maxLabelValueBytes,
+					"truncated value (including marker) must not exceed the cap")
+				assert.True(t, strings.HasSuffix(got, labelTruncationMarker),
+					"truncated value must carry the truncation marker")
+			},
+		},
+		{
+			name: "multi-byte value clamps on a rune boundary",
+			// Each '世' is 3 bytes; a run well over the cap forces truncation
+			// mid-rune unless we clamp to a boundary.
+			input: strings.Repeat("世", maxLabelValueBytes),
+			check: func(t *testing.T, got string) {
+				t.Helper()
+				assert.LessOrEqual(t, len(got), maxLabelValueBytes)
+				assert.True(t, utf8.ValidString(got),
+					"truncation must not split a multi-byte rune")
+				assert.True(t, strings.HasSuffix(got, labelTruncationMarker))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.check(t, truncateLabelValue(tt.input))
+		})
+	}
+}
+
+// TestHTTPMiddleware_TruncatesMetricLabelsKeepsSpanFull is the finding B
+// regression guard: a client-controlled label value (here a tool name) that
+// exceeds the cap must be truncated on every metric it reaches, while the span
+// retains the full value. Cumulative metric readers keep each distinct
+// attribute set resident for the process lifetime, so an unbounded label value
+// is a memory-exhaustion vector; spans are sampled and ephemeral, and the OTEL
+// MCP semconv wants the real value.
+func TestHTTPMiddleware_TruncatesMetricLabelsKeepsSpanFull(t *testing.T) {
+	t.Parallel()
+
+	hugeToolName := strings.Repeat("a", 8*1024*1024)
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(recorder),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(context.Background())) })
+
+	middleware := NewHTTPMiddleware(
+		Config{ServiceName: "test-service", ServiceVersion: "1.0.0"},
+		tracerProvider,
+		meterProvider,
+		"github",
+		"streamable-http",
+	)
+
+	wrapped := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	mcpRequest := &mcpparser.ParsedMCPRequest{
+		Method:     "tools/call",
+		ID:         "1",
+		ResourceID: hugeToolName,
+		IsRequest:  true,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest))
+	wrapped.ServeHTTP(httptest.NewRecorder(), req)
+
+	// Every metric label carrying the tool name must be bounded.
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	checked := map[string]bool{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, attrs := range dataPointAttributes(m) {
+				for _, key := range []string{"mcp_resource_id", "tool", "gen_ai.tool.name"} {
+					if v, ok := attrs[key]; ok {
+						s, _ := v.(string)
+						assert.LessOrEqual(t, len(s), maxLabelValueBytes,
+							"metric %q label %q must be truncated", m.Name, key)
+						assert.True(t, strings.HasSuffix(s, labelTruncationMarker),
+							"metric %q label %q must carry the truncation marker", m.Name, key)
+						checked[key] = true
+					}
+				}
+			}
+		}
+	}
+	assert.Contains(t, checked, "gen_ai.tool.name", "operation duration tool label should have been asserted")
+	assert.Contains(t, checked, "tool", "tool call counter label should have been asserted")
+	assert.Contains(t, checked, "mcp_resource_id", "request metric mcp_resource_id label should have been asserted")
+
+	// The span keeps the full, untruncated value.
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	spanAttrs := make(map[string]any, len(spans[0].Attributes()))
+	for _, attr := range spans[0].Attributes() {
+		spanAttrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	assert.Equal(t, hugeToolName, spanAttrs["gen_ai.tool.name"],
+		"span must retain the full tool name")
+}
+
+// dataPointAttributes flattens the attribute sets of every data point on a
+// metric into string-keyed maps, regardless of the underlying aggregation.
+func dataPointAttributes(m metricdata.Metrics) []map[string]any {
+	var out []map[string]any
+	collect := func(set attribute.Set) {
+		attrs := make(map[string]any, set.Len())
+		for _, kv := range set.ToSlice() {
+			attrs[string(kv.Key)] = kv.Value.AsInterface()
+		}
+		out = append(out, attrs)
+	}
+	switch data := m.Data.(type) {
+	case metricdata.Sum[int64]:
+		for _, dp := range data.DataPoints {
+			collect(dp.Attributes)
+		}
+	case metricdata.Sum[float64]:
+		for _, dp := range data.DataPoints {
+			collect(dp.Attributes)
+		}
+	case metricdata.Histogram[float64]:
+		for _, dp := range data.DataPoints {
+			collect(dp.Attributes)
+		}
+	}
+	return out
 }

@@ -350,7 +350,61 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		return err
 	}
 
+	// Mirrors the CRD's enum for the CLI path, which has no API-server admission
+	// to reject a bad value. "" is accepted and means allow, so configs written
+	// before this setting existed stay valid.
+	switch agg.DefaultToolVisibility {
+	case "", DefaultToolVisibilityAllow, DefaultToolVisibilityDeny:
+	default:
+		return fmt.Errorf("defaultToolVisibility must be one of: allow, deny")
+	}
+
+	if err := validateDenyVisibilityPriorityOrder(agg); err != nil {
+		return err
+	}
+
 	return v.validateToolConfigurations(agg.Tools)
+}
+
+// validateDenyVisibilityPriorityOrder rejects a priorityOrder entry that has no
+// corresponding Tools entry when DefaultToolVisibility is deny.
+//
+// Conflict resolution runs BEFORE the advertising filter, and priorityOrder is
+// independent of Tools. So an unlisted backend can win a name conflict — dropping
+// the listed backend's version of that tool at resolution — and then be withheld
+// by deny, leaving the tool advertised by nobody. That is strictly worse than
+// allow, where the winner at least stays visible.
+//
+// Rejecting the combination up front is cheaper than reordering the pipeline,
+// which would mean resolving conflicts twice: once over the visible candidates
+// and once over the complete set that composite tools route against.
+//
+// validateAggregation guarantees ConflictResolutionConfig is non-nil before
+// calling this, so it is safe to dereference below.
+func validateDenyVisibilityPriorityOrder(agg *AggregationConfig) error {
+	if agg.DefaultToolVisibility != DefaultToolVisibilityDeny ||
+		agg.ConflictResolution != vmcp.ConflictStrategyPriority {
+		return nil
+	}
+
+	listed := make(map[string]struct{}, len(agg.Tools))
+	for _, wl := range agg.Tools {
+		if wl != nil {
+			listed[wl.Workload] = struct{}{}
+		}
+	}
+
+	for _, workload := range agg.ConflictResolutionConfig.PriorityOrder {
+		if _, ok := listed[workload]; !ok {
+			return fmt.Errorf(
+				"defaultToolVisibility deny with priority strategy: priorityOrder entry %q has no tools entry; "+
+					"it could win a name conflict and then be withheld, hiding the tool entirely. "+
+					"Add a tools entry for %q or remove it from priorityOrder",
+				workload, workload)
+		}
+	}
+
+	return nil
 }
 
 // validateConflictStrategy validates strategy-specific configuration
@@ -537,6 +591,16 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 	return nil
 }
 
+// The standalone header-forward middleware deliberately allows Authorization
+// (an operator may legitimately forward it), but for vMCP passthrough the
+// documented contract is stricter: Authorization and Cookie are rejected at
+// startup because forwarding caller-supplied credentials verbatim to every
+// backend is a credential-leak footgun, not a pass-through use case.
+var vmcpRestrictedHeaders = map[string]bool{
+	"Authorization": true,
+	"Cookie":        true,
+}
+
 func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 	for i, name := range cfg.PassthroughHeaders {
 		if name == "" {
@@ -545,7 +609,7 @@ func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 
 		canonical := http.CanonicalHeaderKey(name)
 
-		if middleware.RestrictedHeaders[canonical] {
+		if middleware.RestrictedHeaders[canonical] || vmcpRestrictedHeaders[canonical] {
 			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
 		}
 

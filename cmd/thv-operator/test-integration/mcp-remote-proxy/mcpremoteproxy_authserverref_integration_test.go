@@ -288,7 +288,8 @@ func newMCPOIDCConfig(name, namespace string) *mcpv1beta1.MCPOIDCConfig {
 		Spec: mcpv1beta1.MCPOIDCConfigSpec{
 			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
-				Issuer: "http://localhost:9090",
+				Issuer:            "http://localhost:9090",
+				InsecureAllowHTTP: true,
 			},
 		},
 	}

@@ -44,10 +44,27 @@ var _ storage.PluginStore = (*PluginStore)(nil)
 // text we can unmarshal; the columns are stored via jsonb().
 const pluginColumns = `ip_.id, e.name, ip_.scope, ip_.project_root, ip_.reference, ip_.tag,
 			ip_.digest, ip_.version, ip_.description, ip_.author, ip_.license, json(ip_.keywords),
-			json(ip_.client_apps), json(ip_.components), ip_.signature, ip_.status, ip_.installed_at`
+			json(ip_.client_apps), json(ip_.components), ip_.signature, ip_.status, ip_.installed_at,
+			ip_.managed`
+
+// errPluginManagedRequiresProjectScope is returned by Create/Update when a
+// user-scoped plugin has Managed set. Managed pins a plugin in a project's
+// lock file, which only exists for project-scoped installs.
+var errPluginManagedRequiresProjectScope = errors.New("managed plugin must be project-scoped")
+
+func requirePluginManagedProjectScope(plugin plugins.InstalledPlugin) error {
+	if plugin.Managed && plugin.Scope != plugins.ScopeProject {
+		return errPluginManagedRequiresProjectScope
+	}
+	return nil
+}
 
 // Create stores a new installed plugin.
 func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin) error {
+	if err := requirePluginManagedProjectScope(plugin); err != nil {
+		return err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -80,25 +97,17 @@ func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin
 		return fmt.Errorf("looking up entry: %w", err)
 	}
 
-	keywordsJSON, err := encodeJSONB(plugin.Metadata.Keywords)
+	keywordsJSON, clientsJSON, componentsJSON, err := encodePluginJSONFields(plugin)
 	if err != nil {
-		return fmt.Errorf("encoding keywords: %w", err)
-	}
-	clientsJSON, err := encodeJSONB(plugin.Clients)
-	if err != nil {
-		return fmt.Errorf("encoding clients: %w", err)
-	}
-	componentsJSON, err := encodeComponentInventory(plugin.Components)
-	if err != nil {
-		return fmt.Errorf("encoding components: %w", err)
+		return err
 	}
 
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO installed_plugins (
 			entry_id, scope, project_root, reference, tag, digest,
 			version, description, author, license, keywords, client_apps, components,
-			signature, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), jsonb(?), ?, ?)`,
+			signature, status, managed
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), jsonb(?), ?, ?, ?)`,
 		entryID,
 		string(plugin.Scope),
 		plugin.ProjectRoot,
@@ -114,6 +123,7 @@ func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin
 		componentsJSON,
 		nullableSignature(plugin.Signature),
 		string(plugin.Status),
+		boolToInt(plugin.Managed),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -241,6 +251,10 @@ func (s *PluginStore) List(ctx context.Context, filter storage.ListFilter) ([]pl
 
 // Update modifies an existing installed plugin.
 func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin) error {
+	if err := requirePluginManagedProjectScope(plugin); err != nil {
+		return err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -274,24 +288,16 @@ func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin
 		return fmt.Errorf("updating entry timestamp: %w", err)
 	}
 
-	keywordsJSON, err := encodeJSONB(plugin.Metadata.Keywords)
+	keywordsJSON, clientsJSON, componentsJSON, err := encodePluginJSONFields(plugin)
 	if err != nil {
-		return fmt.Errorf("encoding keywords: %w", err)
-	}
-	clientsJSON, err := encodeJSONB(plugin.Clients)
-	if err != nil {
-		return fmt.Errorf("encoding clients: %w", err)
-	}
-	componentsJSON, err := encodeComponentInventory(plugin.Components)
-	if err != nil {
-		return fmt.Errorf("encoding components: %w", err)
+		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE installed_plugins SET
 			reference = ?, tag = ?, digest = ?, version = ?, description = ?,
 			author = ?, license = ?, keywords = jsonb(?), client_apps = jsonb(?),
-			components = jsonb(?), signature = ?, status = ?
+			components = jsonb(?), signature = ?, status = ?, managed = ?
 		WHERE id = ?`,
 		plugin.Reference,
 		plugin.Tag,
@@ -305,6 +311,7 @@ func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin
 		componentsJSON,
 		nullableSignature(plugin.Signature),
 		string(plugin.Status),
+		boolToInt(plugin.Managed),
 		installedPluginID,
 	); err != nil {
 		return fmt.Errorf("updating installed plugin: %w", err)
@@ -379,9 +386,9 @@ func (s *PluginStore) Delete(ctx context.Context, name string, scope plugins.Sco
 }
 
 // scanPluginFields scans a plugin row into an InstalledPlugin and its DB id.
-// The column list must match pluginColumns (17 fields: id, name, scope,
+// The column list must match pluginColumns (18 fields: id, name, scope,
 // project_root, reference, tag, digest, version, description, author, license,
-// keywords, client_apps, components, signature, status, installed_at).
+// keywords, client_apps, components, signature, status, installed_at, managed).
 func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 	var (
 		installedPluginID int64
@@ -401,12 +408,14 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 		signature         sql.NullString
 		status            string
 		installedAtStr    string
+		managed           int
 	)
 
 	err := sc.Scan(
 		&installedPluginID, &name, &scope, &projectRoot, &reference, &tag,
 		&digest, &version, &description, &author, &license, &keywordsBlob,
 		&clientsBlob, &componentsBlob, &signature, &status, &installedAtStr,
+		&managed,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -449,6 +458,7 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 		InstalledAt: installedAt,
 		Clients:     clients,
 		Components:  components,
+		Managed:     managed != 0,
 	}
 	// signature is nullable — set Signature only when Valid.
 	if signature.Valid {
@@ -499,6 +509,23 @@ func insertPluginDependencies(ctx context.Context, tx *sql.Tx, installedPluginID
 		}
 	}
 	return nil
+}
+
+// encodePluginJSONFields marshals the JSONB columns shared by Create and Update.
+func encodePluginJSONFields(plugin plugins.InstalledPlugin) (keywordsJSON, clientsJSON, componentsJSON string, err error) {
+	keywordsJSON, err = encodeJSONB(plugin.Metadata.Keywords)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encoding keywords: %w", err)
+	}
+	clientsJSON, err = encodeJSONB(plugin.Clients)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encoding clients: %w", err)
+	}
+	componentsJSON, err = encodeComponentInventory(plugin.Components)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encoding components: %w", err)
+	}
+	return keywordsJSON, clientsJSON, componentsJSON, nil
 }
 
 // encodeComponentInventory marshals a ComponentInventory (map[string]int) for

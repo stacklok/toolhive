@@ -69,9 +69,51 @@ const (
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	UpstreamDCRInitialAccessTokenEnvVarPrefix = "TOOLHIVE_UPSTREAM_DCR_INITIAL_ACCESS_TOKEN"
 
+	// DelegateClientSecretEnvVarPrefix is the prefix for static delegate-client
+	// secret environment variables. The suffix is the zero-based list position,
+	// not the client ID, so arbitrary client IDs cannot influence pod env names.
+	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+	DelegateClientSecretEnvVarPrefix = "TOOLHIVE_DELEGATE_CLIENT_SECRET"
+
 	// DefaultSentinelPort is the default Redis Sentinel port
 	DefaultSentinelPort = 26379
 )
+
+// EmbeddedAuthServerConfigSource identifies the reference that supplied an
+// embedded auth server configuration.
+type EmbeddedAuthServerConfigSource string
+
+const (
+	// EmbeddedAuthServerConfigSourceExternalAuthConfigRef identifies externalAuthConfigRef.
+	EmbeddedAuthServerConfigSourceExternalAuthConfigRef EmbeddedAuthServerConfigSource = "externalAuthConfigRef"
+	// EmbeddedAuthServerConfigSourceAuthServerRef identifies authServerRef.
+	EmbeddedAuthServerConfigSourceAuthServerRef EmbeddedAuthServerConfigSource = "authServerRef"
+)
+
+// InvalidEmbeddedAuthServerConfigError identifies an embedded auth server
+// configuration that must be corrected before reconciliation can continue.
+// It deliberately excludes errors retrieving referenced Kubernetes resources,
+// which remain retryable transient errors.
+type InvalidEmbeddedAuthServerConfigError struct {
+	Err    error
+	Source EmbeddedAuthServerConfigSource
+}
+
+func (e *InvalidEmbeddedAuthServerConfigError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *InvalidEmbeddedAuthServerConfigError) Unwrap() error {
+	return e.Err
+}
+
+func invalidEmbeddedAuthServerConfig(err error) error {
+	return invalidEmbeddedAuthServerConfigFrom("", err)
+}
+
+func invalidEmbeddedAuthServerConfigFrom(source EmbeddedAuthServerConfigSource, err error) error {
+	return &InvalidEmbeddedAuthServerConfigError{Err: err, Source: source}
+}
 
 // upstreamSecretBinding binds an upstream provider to the env var names for
 // the secrets it owns (client secret and, optionally, the DCR initial access
@@ -170,6 +212,32 @@ func envVarFromSecretRef(name string, ref *mcpv1beta1.SecretKeyRef) corev1.EnvVa
 			},
 		},
 	}
+}
+
+func delegateClientSecretEnvVarName(index int) string {
+	return fmt.Sprintf("%s_%d", DelegateClientSecretEnvVarPrefix, index)
+}
+
+// buildDelegateClientRunConfigs converts Secret references to their reserved
+// pod env-var names. The Secret values remain Kubernetes-managed and are never
+// materialized in the generated runtime configuration.
+func buildDelegateClientRunConfigs(
+	clients []mcpv1beta1.DelegateClientConfig,
+) ([]authserver.DelegateClientRunConfig, error) {
+	configs := make([]authserver.DelegateClientRunConfig, len(clients))
+	for i, delegateClient := range clients {
+		secretRef := delegateClient.ClientSecretRef
+		if secretRef == nil || secretRef.Name == "" || secretRef.Key == "" {
+			return nil, fmt.Errorf("delegateClients[%d].clientSecretRef.name and clientSecretRef.key are required", i)
+		}
+		configs[i] = authserver.DelegateClientRunConfig{
+			ClientID:           delegateClient.ClientID,
+			ClientSecretEnvVar: delegateClientSecretEnvVarName(i),
+			Scopes:             append([]string(nil), delegateClient.Scopes...),
+			Audiences:          append([]string(nil), delegateClient.Audiences...),
+		}
+	}
+	return configs, nil
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for
@@ -367,6 +435,16 @@ func GenerateAuthServerEnvVars(
 		envVars = append(envVars, buildUpstreamSecretEnvVars(&b)...)
 	}
 
+	// Generate env vars for static delegate client secrets. Their names are
+	// indexed by list position to avoid deriving a reserved env-var name from
+	// arbitrary client ID text.
+	for i, delegateClient := range authConfig.DelegateClients {
+		if delegateClient.ClientSecretRef != nil {
+			envVars = append(envVars, envVarFromSecretRef(
+				delegateClientSecretEnvVarName(i), delegateClient.ClientSecretRef))
+		}
+	}
+
 	// Generate env vars for Redis ACL credentials if configured
 	if authConfig.Storage != nil &&
 		authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeRedis &&
@@ -448,11 +526,14 @@ func AddEmbeddedAuthServerConfigOptions(
 
 	authServerConfig := externalAuthConfig.Spec.EmbeddedAuthServer
 	if authServerConfig == nil {
-		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
+		return invalidEmbeddedAuthServerConfigFrom(
+			EmbeddedAuthServerConfigSourceExternalAuthConfigRef,
+			fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer"),
+		)
 	}
 
 	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
-		return err
+		return invalidEmbeddedAuthServerConfigFrom(EmbeddedAuthServerConfigSourceExternalAuthConfigRef, err)
 	}
 
 	// Build the embedded auth server config for runner
@@ -462,7 +543,10 @@ func AddEmbeddedAuthServerConfigOptions(
 		oidcConfig.ResourceURL,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to build embedded auth server config: %w", err)
+		return invalidEmbeddedAuthServerConfigFrom(
+			EmbeddedAuthServerConfigSourceExternalAuthConfigRef,
+			fmt.Errorf("failed to build embedded auth server config: %w", err),
+		)
 	}
 
 	// Add the configuration option
@@ -523,14 +607,28 @@ func BuildAuthServerRunConfig(
 	allowedAudiences []string,
 	scopesSupported []string,
 	resourceURL string,
-) (*authserver.RunConfig, error) {
-	config := &authserver.RunConfig{
+) (config *authserver.RunConfig, err error) {
+	defer func() {
+		if err != nil {
+			err = invalidEmbeddedAuthServerConfig(err)
+		}
+	}()
+
+	config = &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
 		Issuer:                       authConfig.Issuer,
 		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
+	}
+
+	if len(authConfig.DelegateClients) > 0 {
+		delegateClients, err := buildDelegateClientRunConfigs(authConfig.DelegateClients)
+		if err != nil {
+			return nil, err
+		}
+		config.DelegateClients = delegateClients
 	}
 
 	// Build signing key configuration
@@ -589,6 +687,15 @@ func BuildAuthServerRunConfig(
 	// This replaces any auto-inference and moves control to the deployer.
 	config.InsecureAllowHTTP = authConfig.InsecureAllowHTTP
 
+	// Wire through the confidential-client DCR flag (default off).
+	config.AllowConfidentialClientRegistration = authConfig.AllowConfidentialClientRegistration
+
+	// Wire through the force-confidential-redirect-uris override list.
+	config.ForceConfidentialRedirectURIs = authConfig.ForceConfidentialRedirectURIs
+
+	// Wire through the confidential-over-loopback-http opt-in (default off).
+	config.InsecureAllowConfidentialOverLoopbackHTTP = authConfig.InsecureAllowConfidentialOverLoopbackHTTP
+
 	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
 	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {
@@ -599,7 +706,30 @@ func BuildAuthServerRunConfig(
 		}
 	}
 
+	if err := validateDelegateClients(config); err != nil {
+		return nil, err
+	}
+
 	return config, nil
+}
+
+func validateDelegateClients(config *authserver.RunConfig) error {
+	if len(config.DelegateClients) == 0 {
+		return nil
+	}
+
+	delegateValidationConfig := &authserver.RunConfig{
+		Issuer:            config.Issuer,
+		AllowedAudiences:  config.AllowedAudiences,
+		ScopesSupported:   config.ScopesSupported,
+		InsecureAllowHTTP: config.InsecureAllowHTTP,
+		InsecureAllowConfidentialOverLoopbackHTTP: config.InsecureAllowConfidentialOverLoopbackHTTP,
+		DelegateClients: config.DelegateClients,
+	}
+	if err := delegateValidationConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid embedded auth server delegate clients: %w", err)
+	}
+	return nil
 }
 
 // buildStorageRunConfig converts CRD AuthServerStorageConfig to storage.RunConfig.
@@ -863,6 +993,8 @@ func buildOAuth2UpstreamRunConfig(
 	if cfg.DCRConfig != nil {
 		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
 	}
+	runConfig.InsecureAllowHTTP = cfg.InsecureAllowHTTP
+	runConfig.AllowPrivateIPs = cfg.AllowPrivateIPs
 	return runConfig, nil
 }
 
@@ -981,11 +1113,14 @@ func AddAuthServerRefOptions(
 
 	authServerConfig := externalAuthConfig.Spec.EmbeddedAuthServer
 	if authServerConfig == nil {
-		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
+		return invalidEmbeddedAuthServerConfigFrom(
+			EmbeddedAuthServerConfigSourceAuthServerRef,
+			fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer"),
+		)
 	}
 
 	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
-		return err
+		return invalidEmbeddedAuthServerConfigFrom(EmbeddedAuthServerConfigSourceAuthServerRef, err)
 	}
 
 	// Build the embedded auth server config for runner
@@ -995,7 +1130,10 @@ func AddAuthServerRefOptions(
 		oidcConfig.ResourceURL,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to build embedded auth server config: %w", err)
+		return invalidEmbeddedAuthServerConfigFrom(
+			EmbeddedAuthServerConfigSourceAuthServerRef,
+			fmt.Errorf("failed to build embedded auth server config: %w", err),
+		)
 	}
 
 	// Add the configuration option

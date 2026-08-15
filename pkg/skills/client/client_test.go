@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -303,6 +304,25 @@ func TestInfo(t *testing.T) {
 					Scope:       skills.ScopeUser,
 					Status:      skills.InstallStatusInstalled,
 					InstalledAt: now,
+				},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
+			// `thv skill info` reports trust state from this response alone, so
+			// a provenance field the server records but the wire shape drops is
+			// invisible to the user.
+			name:     "provenance reaches the info renderer",
+			opts:     skills.InfoOptions{Name: "signed-skill"},
+			wantPath: skillsBasePath + "/signed-skill",
+			response: skills.SkillInfo{
+				Metadata: skills.SkillMetadata{Name: "signed-skill", Version: "1.0.0"},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity:    "/.github/workflows/release.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryURI:     "https://github.com/org/signed-skill",
+					RepositoryRef:     "refs/tags/v1.0.0",
+					RunnerEnvironment: "github-hosted",
 				},
 			},
 			statusCode: http.StatusOK,
@@ -656,6 +676,7 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
 		assert.Equal(t, defaultBaseURL, c.baseURL)
@@ -666,6 +687,7 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("http://localhost:9999")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, failDiscovery(t))
 		assert.Equal(t, "http://localhost:9999", c.baseURL)
@@ -676,6 +698,7 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		discover := func(context.Context) (string, []Option) {
 			return "http://127.0.0.1:54321", nil
@@ -689,6 +712,7 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery, WithTimeout(5*time.Second))
 		assert.Equal(t, 5*time.Second, c.httpClient.Timeout)
@@ -787,4 +811,241 @@ func TestSyncCarriesAllowUnsigned(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}
+
+func TestTimeoutFromEnv(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+		ok    bool
+	}{
+		{name: "unset falls back to the default", value: "", want: 0, ok: false},
+		{name: "a duration is honored", value: "45s", want: 45 * time.Second, ok: true},
+		{name: "minutes parse", value: "5m", want: 5 * time.Minute, ok: true},
+		{name: "surrounding whitespace is tolerated", value: "  90s ", want: 90 * time.Second, ok: true},
+		{name: "a bare number is not a duration", value: "60", want: 0, ok: false},
+		{name: "garbage degrades to the default", value: "soon", want: 0, ok: false},
+		{name: "zero would disable the timeout, so it is ignored", value: "0s", want: 0, ok: false},
+		{name: "negative is ignored", value: "-5s", want: 0, ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			mockEnv := envmocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv(envAPITimeout).Return(tc.value)
+
+			got, ok := timeoutFromEnv(mockEnv)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestNewDefaultClientTimeoutPrecedence(t *testing.T) {
+	t.Parallel()
+
+	noDiscovery := func(context.Context) (string, []Option) { return "", nil }
+
+	t.Run("defaults when the env is unset", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("")
+
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
+		assert.Equal(t, defaultTimeout, c.httpClient.Timeout)
+	})
+
+	t.Run("env overrides the default", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("2m")
+
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
+		assert.Equal(t, 2*time.Minute, c.httpClient.Timeout)
+	})
+
+	t.Run("an explicit option outranks the env", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("2m")
+
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery, WithTimeout(7*time.Second))
+		assert.Equal(t, 7*time.Second, c.httpClient.Timeout)
+	})
+
+	t.Run("env overrides the timeout discovery installs", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("3m")
+
+		discover := func(context.Context) (string, []Option) {
+			return "http://127.0.0.1:54321", []Option{WithHTTPClient(&http.Client{Timeout: defaultTimeout})}
+		}
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, discover)
+		assert.Equal(t, 3*time.Minute, c.httpClient.Timeout,
+			"WithHTTPClient from discovery must not shadow an operator-set timeout")
+	})
+}
+
+// TestTimeoutIsReportedAsTimeoutNotUnreachable pins the distinction the CLI
+// hint depends on: a healthy-but-slow server must not be reported as absent.
+func TestTimeoutIsReportedAsTimeoutNotUnreachable(t *testing.T) {
+	t.Parallel()
+
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-blocked:
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, WithTimeout(50*time.Millisecond))
+	_, err := c.List(t.Context(), skills.ListOptions{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRequestTimeout)
+	assert.NotErrorIs(t, err, ErrServerUnreachable,
+		"the server answered the connection; only the response was slow")
+}
+
+func TestUnreachableServerIsStillUnreachable(t *testing.T) {
+	t.Parallel()
+
+	// Bind and immediately release a port so nothing is listening on it.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+
+	c := NewClient("http://"+addr, WithTimeout(2*time.Second))
+	_, err = c.List(t.Context(), skills.ListOptions{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrServerUnreachable)
+	assert.NotErrorIs(t, err, ErrRequestTimeout)
+}
+
+// TestCallerCancellationIsNeitherSentinel keeps a user pressing Ctrl-C from
+// being reported as a server problem.
+func TestCallerCancellationIsNeitherSentinel(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	c := NewClient(srv.URL, WithTimeout(30*time.Second))
+	_, err := c.List(ctx, skills.ListOptions{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, ErrRequestTimeout)
+	assert.NotErrorIs(t, err, ErrServerUnreachable)
+}
+
+// TestInstallCarriesTrustStateBackToCaller pins the full wire round-trip for
+// the fields the CLI uses to report trust. The CLI is a pure HTTP client, so a
+// field the server sets but the response DTO omits is invisible in production
+// even though a direct unit test of the printer would still pass — every
+// install would silently render as untracked.
+func TestInstallCarriesTrustStateBackToCaller(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response installResponse
+	}{
+		{
+			name: "signed install reports the pinned identity",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "signed-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/build-skills.yml",
+					CertIssuer:     "https://token.actions.githubusercontent.com",
+					RepositoryURI:  "https://github.com/stacklok/dockyard",
+				},
+			},
+		},
+		{
+			name: "certificate ref and runner environment survive the round trip",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "pinned-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity:    "/.github/workflows/build-skills.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryURI:     "https://github.com/stacklok/dockyard",
+					RepositoryRef:     "refs/heads/main",
+					RunnerEnvironment: "github-hosted",
+				},
+			},
+		},
+		{
+			name: "provisional provenance survives the round trip",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "git-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity: "someone@example.com",
+					CertIssuer:     "https://accounts.google.com",
+					Provisional:    true,
+				},
+			},
+		},
+		{
+			name: "explicit unsigned exception is reported as such",
+			response: installResponse{
+				Skill:    skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "unsigned-skill"}},
+				Unsigned: true,
+			},
+		},
+		{
+			name: "an install with neither reports neither",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "plain-skill"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				require.NoError(t, json.NewEncoder(w).Encode(tt.response))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv).Install(t.Context(), skills.InstallOptions{Name: "x"})
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.response.Provenance, got.Provenance,
+				"provenance must survive the HTTP boundary — the CLI has no other source for it")
+			assert.Equal(t, tt.response.Unsigned, got.Unsigned)
+		})
+	}
 }

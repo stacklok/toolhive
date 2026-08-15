@@ -58,9 +58,9 @@
 // For creating OAuth clients:
 //
 //	client, err := registration.New(registration.Config{
-//	    ID:           "my-client",
-//	    RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
-//	    Public:       true,
+//	    ID:                      "my-client",
+//	    RedirectURIs:            []string{"http://127.0.0.1:8080/callback"},
+//	    TokenEndpointAuthMethod: "none",
 //	})
 //
 // # Token Flow

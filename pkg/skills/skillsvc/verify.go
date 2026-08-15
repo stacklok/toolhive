@@ -26,11 +26,10 @@ func (s *service) artifactVerifier() verifier.Verifier {
 }
 
 // shouldVerifyInstall reports whether install-time signature verification
-// applies: project-scope installs with the lock file feature enabled. The
-// lock file is where trust decisions are recorded, so verification is
-// scoped to it.
+// applies: project-scope installs. The lock file is where trust decisions
+// are recorded, so verification is scoped to it.
 func shouldVerifyInstall(opts skills.InstallOptions, scope skills.Scope) bool {
-	return scope == skills.ScopeProject && opts.ProjectRoot != "" && skills.LockFileFeatureEnabled()
+	return scope == skills.ScopeProject && opts.ProjectRoot != ""
 }
 
 // provenanceDecision is the outcome of install-time verification: either a
@@ -242,6 +241,16 @@ func classifyInstallVerifyError(
 				skillName),
 			http.StatusForbidden,
 		)
+	// Checked before the broader ErrSignerMismatch case: pinnedFieldMismatch
+	// wraps both, so a ref/runner-only mismatch would otherwise be
+	// misreported as a signer-identity change below.
+	case errors.Is(verifyErr, verifier.ErrProvenanceFieldMismatch):
+		return httperr.WithCode(
+			fmt.Errorf("skill %q's certificate no longer matches its pinned provenance: %w"+
+				" (if this is an expected publisher-side change, upgrade with allow_signer_change)",
+				skillName, verifyErr),
+			http.StatusForbidden,
+		)
 	case errors.Is(verifyErr, verifier.ErrSignerMismatch):
 		return httperr.WithCode(
 			fmt.Errorf("signer identity mismatch for %q: %w"+
@@ -261,6 +270,10 @@ func classifyInstallVerifyError(
 // for sync/upgrade results. Returns "" when err is not a signature failure.
 func classifySignatureError(err error) skills.FailureReason {
 	switch {
+	// Checked before the broader ErrSignerMismatch case for the same reason
+	// as classifyInstallVerifyError above.
+	case errors.Is(err, verifier.ErrProvenanceFieldMismatch):
+		return skills.FailureReasonProvenanceFieldMismatch
 	case errors.Is(err, verifier.ErrSignerMismatch):
 		return skills.FailureReasonSignerMismatch
 	case errors.Is(err, verifier.ErrUnsigned):
@@ -272,6 +285,22 @@ func classifySignatureError(err error) skills.FailureReason {
 	}
 }
 
+// provenanceInfoFromLock converts a lock provenance block to the API shape.
+func provenanceInfoFromLock(p *lockfile.Provenance) *skills.ProvenanceInfo {
+	if p == nil {
+		return nil
+	}
+	return &skills.ProvenanceInfo{
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
+	}
+}
+
 // provenanceInfoToLock converts the internal provenance shape to the lock
 // file's.
 func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
@@ -279,10 +308,13 @@ func provenanceInfoToLock(p *skills.ProvenanceInfo) *lockfile.Provenance {
 		return nil
 	}
 	return &lockfile.Provenance{
-		SignerIdentity: p.SignerIdentity,
-		CertIssuer:     p.CertIssuer,
-		RepositoryURI:  p.RepositoryURI,
-		SigstoreURL:    p.SigstoreURL,
+		SignerIdentity:    p.SignerIdentity,
+		CertIssuer:        p.CertIssuer,
+		RepositoryURI:     p.RepositoryURI,
+		RepositoryRef:     p.RepositoryRef,
+		RunnerEnvironment: p.RunnerEnvironment,
+		SigstoreURL:       p.SigstoreURL,
+		Provisional:       p.Provisional,
 	}
 }
 
@@ -293,9 +325,12 @@ func provenanceInfoFromResult(r *verifier.Result) *skills.ProvenanceInfo {
 		return nil
 	}
 	return &skills.ProvenanceInfo{
-		SignerIdentity: r.SignerIdentity,
-		CertIssuer:     r.CertIssuer,
-		RepositoryURI:  r.RepositoryURI,
-		SigstoreURL:    r.SigstoreURL,
+		SignerIdentity:    r.SignerIdentity,
+		CertIssuer:        r.CertIssuer,
+		RepositoryURI:     r.RepositoryURI,
+		RepositoryRef:     r.RepositoryRef,
+		RunnerEnvironment: r.RunnerEnvironment,
+		SigstoreURL:       r.SigstoreURL,
+		Provisional:       r.Provisional,
 	}
 }

@@ -6,7 +6,9 @@ package authserver
 import (
 	"context"
 	"crypto/rand"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -192,6 +195,170 @@ func TestNewServer_Success(t *testing.T) {
 	}
 }
 
+// capturingSlogHandler records log records for assertions. slog's default
+// handler is process-global, so tests using it must not run in parallel with
+// other slog-capturing tests.
+type capturingSlogHandler struct {
+	sink *capturingSlogSink
+	// attrs carries the slog.With(...) attributes in effect for this handler,
+	// flattened into every rendered record by recordsContaining. Without this,
+	// a secret leaked via slog.With("client_secret", s).Info(...) — the most
+	// likely way one escapes during a refactor — would be invisible to the
+	// leak-detection tests.
+	attrs []slog.Attr
+}
+
+// capturingSlogSink is the shared record store behind a capturingSlogHandler
+// and every handler derived from it via WithAttrs.
+type capturingSlogSink struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func newCapturingSlogHandler() *capturingSlogHandler {
+	return &capturingSlogHandler{sink: &capturingSlogSink{}}
+}
+
+func (*capturingSlogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *capturingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	// Flatten the With(...) attributes into the record so recordsContaining
+	// sees them alongside per-call attrs.
+	r.AddAttrs(h.attrs...)
+	h.sink.records = append(h.sink.records, r)
+	return nil
+}
+
+func (h *capturingSlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &capturingSlogHandler{sink: h.sink, attrs: append(h.attrs, attrs...)}
+}
+func (h *capturingSlogHandler) WithGroup(_ string) slog.Handler { return h }
+
+func (h *capturingSlogHandler) messages(level slog.Level, containing string) []string {
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	var out []string
+	for _, r := range h.sink.records {
+		if r.Level == level && strings.Contains(r.Message, containing) {
+			out = append(out, r.Message)
+		}
+	}
+	return out
+}
+
+// recordsContaining returns every captured record — message plus all
+// attribute values, at any level — that contains needle. Used by leak-detection
+// tests that must prove a secret appears in ZERO log records, not just in
+// zero messages.
+func (h *capturingSlogHandler) recordsContaining(needle string) []string {
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	var out []string
+	for _, r := range h.sink.records {
+		var b strings.Builder
+		b.WriteString(r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			b.WriteString(" ")
+			b.WriteString(a.Value.String())
+			return true
+		})
+		if strings.Contains(b.String(), needle) {
+			out = append(out, b.String())
+		}
+	}
+	return out
+}
+
+// TestNewServer_AllowConfidentialClientRegistration_Logs pins the startup logging
+// contract: enabling the flag logs an Info naming the consequence when
+// startup succeeds. Combining it with insecure_allow_http is rejected by
+// Config.Validate (see ValidateConfidentialClientTransport) before this log
+// line is ever reached, so that combination is covered by
+// TestConfig_Validate_RejectsConfidentialClientOverInsecureHTTP instead.
+//
+//nolint:paralleltest // swaps the process-global slog default handler
+func TestNewServer_AllowConfidentialClientRegistration_Logs(t *testing.T) {
+	// Not parallel: swaps the process-global slog default handler.
+
+	newCfg := func(allowConfidential bool) Config {
+		return Config{
+			Issuer:                              "https://example.com",
+			KeyProvider:                         keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:                         &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:                           []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences:                    []string{"https://mcp.example.com"},
+			AllowConfidentialClientRegistration: allowConfidential,
+		}
+	}
+
+	tests := []struct {
+		name              string
+		allowConfidential bool
+		wantInfo          bool
+	}{
+		{"flag off: no logs", false, false},
+		{"flag on: Info naming the consequence", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := newCapturingSlogHandler()
+			prev := slog.Default()
+			slog.SetDefault(slog.New(capture))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+			mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+				return mockUpstream, nil
+			}
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+
+			srv, err := newServer(context.Background(), newCfg(tt.allowConfidential), stor, withUpstreamFactory(mockFactory))
+			require.NoError(t, err, "startup must succeed for every flag combination")
+			require.NotNil(t, srv)
+
+			// Filter to the flag's own log lines: other components (key
+			// generation, baseline scopes) also log at Info during startup.
+			infos := capture.messages(slog.LevelInfo, "client secrets")
+
+			if tt.wantInfo {
+				require.Len(t, infos, 1)
+				assert.Contains(t, infos[0], "unauthenticated dynamic registration")
+			} else {
+				assert.Empty(t, infos)
+			}
+		})
+	}
+}
+
+// TestConfig_Validate_RejectsConfidentialClientOverInsecureHTTP pins the
+// rejection of allow_confidential_client_registration combined with insecure_allow_http:
+// issuing client secrets over cleartext HTTP on an unauthenticated
+// registration endpoint must fail loudly at config validation, not just log
+// a warning.
+func TestConfig_Validate_RejectsConfidentialClientOverInsecureHTTP(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Issuer:                              "http://example.com",
+		KeyProvider:                         keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:                         &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:                           []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences:                    []string{"https://mcp.example.com"},
+		AllowConfidentialClientRegistration: true,
+		InsecureAllowHTTP:                   true,
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allow_confidential_client_registration")
+	assert.Contains(t, err.Error(), "insecure_allow_http")
+}
+
 func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 	t.Parallel()
 
@@ -284,4 +451,46 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	if refresher != nil {
 		t.Fatalf("expected a true nil interface, got non-nil %T", refresher)
 	}
+}
+
+func TestNewServer_RegistersDelegateClientsBeforeUpstreamConstruction(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		DelegateClients: []DelegateClient{{
+			ClientID:     "delegate",
+			ClientSecret: "delegate-secret-well-above-the-minimum-length",
+			Scopes:       []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		}},
+	}
+
+	factory := func(ctx context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		client, err := stor.GetClient(ctx, "delegate")
+		require.NoError(t, err)
+		assert.False(t, registration.DCRIssued(client))
+		assert.False(t, client.IsPublic())
+		return nil, assert.AnError
+	}
+
+	_, err := newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	require.ErrorIs(t, err, assert.AnError)
+
+	// Startup registration is an upsert. Replacing a same-ID DCR client makes
+	// it permanent and unmarked rather than retaining DCR eviction semantics.
+	dcrClient, err := registration.NewConfidentialPlain(registration.Config{ID: "delegate", Secret: "old-secret"})
+	require.NoError(t, err)
+	require.NoError(t, stor.RegisterClient(ctx, dcrClient))
+	_, err = newServer(ctx, cfg, stor, withUpstreamFactory(factory))
+	require.ErrorIs(t, err, assert.AnError)
+	client, err := stor.GetClient(ctx, "delegate")
+	require.NoError(t, err)
+	assert.False(t, registration.DCRIssued(client))
 }

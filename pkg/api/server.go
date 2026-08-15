@@ -409,6 +409,13 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		b.debugMode,
 	))
 
+	// Skills router does the same: install, sync, and upgrade pull OCI
+	// artifacts, so a flat 60s cap would sever them mid-transfer.
+	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager))
+
+	// Plugins router likewise: install, build, and push move OCI artifacts.
+	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager))
+
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{
 		"/health":               v1.HealthcheckRouter(b.containerRuntime, b.nonce),
@@ -418,8 +425,6 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
-		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
-		"/api/v1beta/plugins":   v1.PluginsRouter(b.pluginManager),
 		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {

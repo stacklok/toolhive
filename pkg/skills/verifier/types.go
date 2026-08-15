@@ -4,6 +4,11 @@
 package verifier
 
 import (
+	"fmt"
+	"strconv"
+
+	"github.com/sigstore/sigstore-go/pkg/verify"
+
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
@@ -26,6 +31,15 @@ type Result struct {
 	CertIssuer string
 	// RepositoryURI is the source repository from the certificate, if any.
 	RepositoryURI string
+	// RepositoryRef is the git ref the signing workflow ran on, from the
+	// certificate's Fulcio extensions. Empty when the certificate carries no
+	// such extension (signers outside CI, or gitsign from a personal OIDC
+	// identity).
+	RepositoryRef string
+	// RunnerEnvironment is the runner class the signing workflow executed in
+	// (e.g. "github-hosted"), from the certificate's Fulcio extensions.
+	// Empty when the certificate carries no such extension.
+	RunnerEnvironment string
 	// SigstoreURL is the transparency log instance used for verification.
 	SigstoreURL string
 	// Provisional marks a verification with a documented assurance gap
@@ -43,11 +57,13 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 		return nil
 	}
 	return &lockfile.Provenance{
-		SignerIdentity: r.SignerIdentity,
-		CertIssuer:     r.CertIssuer,
-		RepositoryURI:  r.RepositoryURI,
-		SigstoreURL:    r.SigstoreURL,
-		Provisional:    r.Provisional,
+		SignerIdentity:    r.SignerIdentity,
+		CertIssuer:        r.CertIssuer,
+		RepositoryURI:     r.RepositoryURI,
+		RepositoryRef:     r.RepositoryRef,
+		RunnerEnvironment: r.RunnerEnvironment,
+		SigstoreURL:       r.SigstoreURL,
+		Provisional:       r.Provisional,
 	}
 }
 
@@ -55,6 +71,11 @@ func (r *Result) ToLockProvenance() *lockfile.Provenance {
 // that gets bound into the Sigstore verification policy. A nil provenance
 // (trust on first use) yields nil, which core treats as chain-of-trust-only
 // verification.
+//
+// The recorded RepositoryRef and RunnerEnvironment are deliberately absent:
+// core's Identity cannot express them (and its SAN policy matches any ref),
+// so they are enforced against the certificate after the policy has passed —
+// see checkPinnedCertificateFields.
 func expectedIdentity(p *lockfile.Provenance) *coreverifier.Identity {
 	if p == nil {
 		return nil
@@ -77,14 +98,90 @@ func resultFromKey(raw []byte) *Result {
 	}
 }
 
-// resultFromCore builds a Result from a core verification outcome.
-func resultFromCore(identity coreverifier.Identity, raw []byte) *Result {
+// resultFromCore builds a Result from an observed certificate identity.
+func resultFromCore(observed observedCertificate, raw []byte) *Result {
 	return &Result{
-		Signed:         true,
-		SignerIdentity: identity.SignerIdentity,
-		CertIssuer:     identity.CertIssuer,
-		RepositoryURI:  identity.SourceRepositoryURI,
-		SigstoreURL:    sigstorePublicGoodRekorURL,
-		Bundle:         raw,
+		Signed:            true,
+		SignerIdentity:    observed.SignerIdentity,
+		CertIssuer:        observed.CertIssuer,
+		RepositoryURI:     observed.SourceRepositoryURI,
+		RepositoryRef:     observed.RepositoryRef,
+		RunnerEnvironment: observed.RunnerEnvironment,
+		SigstoreURL:       sigstorePublicGoodRekorURL,
+		Bundle:            raw,
 	}
+}
+
+// observedCertificate is the signer identity a verification observed: core's
+// normalized Identity plus the Fulcio extensions core's Identity does not
+// carry — the git ref the signing workflow ran on and the runner class it
+// executed in.
+type observedCertificate struct {
+	coreverifier.Identity
+	RepositoryRef     string
+	RunnerEnvironment string
+}
+
+// observedFromResult extracts the observed certificate identity from a
+// successful verification result.
+func observedFromResult(vr *verify.VerificationResult) (observedCertificate, error) {
+	identity, err := coreverifier.IdentityFromResult(vr)
+	if err != nil {
+		return observedCertificate{}, err
+	}
+	// IdentityFromResult already rejected a result without a certificate
+	// summary, so the Fulcio extensions are reachable here.
+	cert := vr.Signature.Certificate
+	return observedCertificate{
+		Identity:          identity,
+		RepositoryRef:     cert.SourceRepositoryRef,
+		RunnerEnvironment: cert.RunnerEnvironment,
+	}, nil
+}
+
+// checkPinnedCertificateFields enforces the certificate fields the lock file
+// pins that no Sigstore policy can express: the git ref the signing workflow
+// ran on and the runner class it executed in. Without this, provenance
+// recorded for "this workflow in this repository" is satisfied by the same
+// workflow run from any branch or on a self-hosted runner.
+//
+// An empty expected field is unconstrained, not a wildcard mismatch: every
+// lock entry written before these fields were recorded has them empty, and
+// certificates from signers outside GitHub Actions carry no such extensions
+// at all. Both must keep verifying.
+func checkPinnedCertificateFields(observed observedCertificate, expected *lockfile.Provenance) error {
+	if expected == nil {
+		return nil
+	}
+	if expected.RepositoryRef != "" && observed.RepositoryRef != expected.RepositoryRef {
+		return pinnedFieldMismatch("repository ref", expected.RepositoryRef, observed.RepositoryRef)
+	}
+	if expected.RunnerEnvironment != "" && observed.RunnerEnvironment != expected.RunnerEnvironment {
+		return pinnedFieldMismatch("runner environment", expected.RunnerEnvironment, observed.RunnerEnvironment)
+	}
+	return nil
+}
+
+// pinnedFieldMismatch builds the ErrSignerMismatch error for a certificate
+// field that differs from the pinned one, naming the field so the operator
+// can tell a ref change from a runner-class change.
+func pinnedFieldMismatch(field, expected, observed string) error {
+	// Wraps both sentinels: ErrSignerMismatch so existing callers that only
+	// check for a signer-identity problem still catch this (the remediation
+	// is the same override either way), and ErrProvenanceFieldMismatch so a
+	// caller that wants to explain WHICH kind of mismatch this is — the
+	// signer's own identity, or just one of the fields its certificate
+	// additionally carries — can tell the two apart. See both sentinels'
+	// doc comments.
+	return fmt.Errorf("%w: %w: locked to %s %s, but the artifact's certificate carries %s",
+		ErrSignerMismatch, ErrProvenanceFieldMismatch, field, strconv.Quote(expected), quotedOrNone(observed))
+}
+
+// quotedOrNone renders an observed certificate field for an error message,
+// distinguishing a differing value from an absent extension.
+func quotedOrNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return strconv.Quote(value)
 }

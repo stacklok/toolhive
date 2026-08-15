@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,7 +31,25 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// dcrClient builds a DCR-issued public client (carrying registration.DCRIssued's
+// marker) for tests that exercise eviction/renewal gating, which requires the
+// real marker rather than a bare mockClient.
+func dcrClient(t *testing.T, id string) fosite.Client {
+	t.Helper()
+	client, err := registration.New(registration.Config{
+		ID:                      id,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+		RedirectURIs:            []string{"https://app.example/cb"},
+	})
+	require.NoError(t, err)
+	require.True(t, registration.DCRIssued(client), "precondition: dcrClient must carry the DCRIssued marker")
+	return client
+}
 
 // --- Mock Types ---
 
@@ -221,16 +240,230 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 	})
 }
 
-func TestMemoryStorage_RenewClientTTL_NoOp(t *testing.T) {
+func TestMemoryStorage_StaticClientReplacesDCRClient(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		// In-memory clients have no TTL, so renewal is a documented no-op: it must
-		// not error and must leave the client retrievable.
-		client := &mockClient{id: "public-client", public: true}
-		require.NoError(t, s.RegisterClient(ctx, client))
-		require.NoError(t, s.RenewClientTTL(ctx, client))
-		retrieved, err := s.GetClient(ctx, "public-client")
+		dcrClient := dcrClient(t, "delegate")
+		require.True(t, registration.DCRIssued(dcrClient))
+		require.NoError(t, s.RegisterClient(ctx, dcrClient))
+
+		staticClient, err := registration.NewStaticDelegateClient(registration.Config{
+			ID: "delegate", Secret: "new-secret", GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
+		})
 		require.NoError(t, err)
-		assert.Equal(t, "public-client", retrieved.GetID())
+		require.NoError(t, s.RegisterClient(ctx, staticClient))
+
+		retrieved, err := s.GetClient(ctx, "delegate")
+		require.NoError(t, err)
+		assert.False(t, registration.DCRIssued(retrieved))
+		assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
+	})
+}
+
+// TestMemoryStorage_RegisterClient_Bounded pins the anti-DoS cap: the client
+// map is bounded by maxClients with oldest-first eviction among DCR-issued
+// clients only, a re-registered client refreshes its eviction position, and
+// the survivors still authenticate.
+func TestMemoryStorage_RegisterClient_Bounded(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	// MinClientAge(0) isolates this test to the maxClients/DCR-issued gate;
+	// the age-floor grace window has its own tests below.
+	s := NewMemoryStorage(WithMaxClients(3), WithMinClientAge(0))
+	defer s.Close()
+
+	// Register at capacity: client-1 is the oldest.
+	for _, id := range []string{"client-1", "client-2", "client-3"} {
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, id)))
+	}
+
+	// Re-register client-1: it is no longer the oldest, so the next overflow
+	// evicts client-2 instead.
+	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-1")))
+
+	// Overflow: client-2 (now oldest) is evicted; everyone else survives.
+	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-4")))
+
+	_, err := s.GetClient(ctx, "client-2")
+	requireNotFoundError(t, err)
+
+	for _, id := range []string{"client-1", "client-3", "client-4"} {
+		client, err := s.GetClient(ctx, id)
+		require.NoError(t, err, "surviving client %q must still authenticate", id)
+		assert.Equal(t, id, client.GetID())
+	}
+
+	// Capacity is retained under continued registration pressure: the next
+	// registration always evicts the oldest aged DCR-issued client.
+	for i := range 10 {
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "overflow-"+strconv.Itoa(i))))
+	}
+	s.mu.RLock()
+	size := len(s.clients)
+	s.mu.RUnlock()
+	assert.LessOrEqual(t, size, 3, "client map must never exceed maxClients")
+}
+
+// TestMemoryStorage_RegisterClient_MinAgeGraceWindow pins the eviction floor:
+// a DCR-issued client younger than minClientAge is never picked as an
+// eviction victim. Without this floor, a legitimately registered but
+// not-yet-used client (RenewClientTTL only fires on a successful token
+// exchange) sits at the front of the queue and can be evicted on demand by
+// an attacker filling the map to capacity — the rate limiter bounds the
+// speed of this but not the outcome.
+func TestMemoryStorage_RegisterClient_MinAgeGraceWindow(t *testing.T) {
+	t.Parallel()
+
+	const floor = 20 * time.Millisecond
+
+	t.Run("young client is not evicted at capacity", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		// A large floor, not the small one the "old client is evicted" case
+		// needs: this subtest asserts an eviction does NOT happen, so pinning
+		// it to a 20ms wall-clock window would fail on any CI stall (GC pause,
+		// scheduler) between the two RegisterClient calls. An hour cannot be
+		// crossed accidentally.
+		s := NewMemoryStorage(WithMaxClients(1), WithMinClientAge(time.Hour))
+		defer s.Close()
+
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "young")))
+		// Overflow immediately: "young" is well within the floor, so no
+		// DCR-issued client can be safely evicted and the insertion is rejected.
+		err := s.RegisterClient(ctx, dcrClient(t, "new-arrival"))
+		require.ErrorIs(t, err, ErrClientCapacity)
+
+		_, err = s.GetClient(ctx, "young")
+		require.NoError(t, err, "client younger than the floor must survive")
+		_, err = s.GetClient(ctx, "new-arrival")
+		requireNotFoundError(t, err)
+	})
+
+	t.Run("old client is evicted", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage(WithMaxClients(1), WithMinClientAge(floor))
+		defer s.Close()
+
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "old")))
+		time.Sleep(floor * 2)
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "new-arrival")))
+
+		_, err := s.GetClient(ctx, "old")
+		requireNotFoundError(t, err)
+		_, err = s.GetClient(ctx, "new-arrival")
+		require.NoError(t, err)
+	})
+
+	t.Run("all candidates young reject new registrations", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage(WithMaxClients(2), WithMinClientAge(time.Hour))
+		defer s.Close()
+
+		for _, id := range []string{"a", "b"} {
+			require.NoError(t, s.RegisterClient(ctx, dcrClient(t, id)))
+		}
+		for _, id := range []string{"c", "d"} {
+			require.ErrorIs(t, s.RegisterClient(ctx, dcrClient(t, id)), ErrClientCapacity)
+		}
+
+		s.mu.RLock()
+		size := len(s.clients)
+		s.mu.RUnlock()
+		assert.Equal(t, 2, size, "the client map must not exceed maxClients")
+	})
+}
+
+// TestMemoryStorage_RegisterClient_NeverEvictsNonDCRIssued pins the eviction
+// gate: a pre-provisioned client (no registration.DCRIssued marker) must
+// never be evicted, even when it is the oldest entry at capacity. Redis gates
+// its TTL on the identical predicate; the two backends must agree on which
+// clients are evictable.
+func TestMemoryStorage_RegisterClient_NeverEvictsNonDCRIssued(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	s := NewMemoryStorage(WithMaxClients(2), WithMinClientAge(0))
+	defer s.Close()
+
+	// permanent-client is pre-provisioned (no DCRIssued marker) and registered
+	// first, so it would be the oldest under naive FIFO eviction.
+	require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "permanent-client"}))
+	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-1")))
+
+	// Overflow at cap=2: the only evictable (DCR-issued) entry is dcr-1, even
+	// though permanent-client is older.
+	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-2")))
+
+	_, err := s.GetClient(ctx, "permanent-client")
+	require.NoError(t, err, "pre-provisioned client must never be evicted")
+	_, err = s.GetClient(ctx, "dcr-1")
+	requireNotFoundError(t, err)
+	_, err = s.GetClient(ctx, "dcr-2")
+	require.NoError(t, err)
+
+	// dcr-2 is evicted to preserve the cap; permanent-client remains.
+	require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "permanent-client-2"}))
+	_, err = s.GetClient(ctx, "permanent-client")
+	require.NoError(t, err)
+	_, err = s.GetClient(ctx, "dcr-2")
+	requireNotFoundError(t, err)
+	_, err = s.GetClient(ctx, "permanent-client-2")
+	require.NoError(t, err)
+}
+
+// TestMemoryStorage_RenewClientTTL pins the new use-based retention contract:
+// RenewClientTTL moves a DCR-issued client to the back of the eviction
+// queue, protecting it from the next overflow eviction, while a
+// non-DCR-issued client is left untouched (it was never evictable anyway).
+func TestMemoryStorage_RenewClientTTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("proven use protects a DCR-issued client from eviction", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		s := NewMemoryStorage(WithMaxClients(2), WithMinClientAge(0))
+		defer s.Close()
+
+		clientA := dcrClient(t, "client-a")
+		require.NoError(t, s.RegisterClient(ctx, clientA))
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-b")))
+
+		// client-a is oldest; renew it so it is no longer the eviction target.
+		require.NoError(t, s.RenewClientTTL(ctx, clientA))
+
+		// Overflow: client-b (now oldest) is evicted instead of client-a.
+		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "client-c")))
+
+		_, err := s.GetClient(ctx, "client-a")
+		require.NoError(t, err, "renewed client must survive eviction")
+		_, err = s.GetClient(ctx, "client-b")
+		requireNotFoundError(t, err)
+	})
+
+	t.Run("non-DCR-issued client is a no-op", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			client := &mockClient{id: "public-client", public: true}
+			require.NoError(t, s.RegisterClient(ctx, client))
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+			retrieved, err := s.GetClient(ctx, "public-client")
+			require.NoError(t, err)
+			assert.Equal(t, "public-client", retrieved.GetID())
+		})
+	})
+
+	t.Run("absent client is a no-op", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.RenewClientTTL(ctx, dcrClient(t, "never-registered")))
+		})
+	})
+
+	t.Run("nil client is a no-op", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.RenewClientTTL(ctx, nil))
+		})
 	})
 }
 

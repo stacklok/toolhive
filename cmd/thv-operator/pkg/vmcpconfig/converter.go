@@ -47,6 +47,21 @@ type Converter struct {
 	k8sClient    client.Client
 }
 
+// DelegateClientConfigValidationError marks an invalid delegate-client
+// configuration after its effective scopes and audiences have been derived.
+// Controllers can surface it as a terminal spec error rather than retrying.
+type DelegateClientConfigValidationError struct {
+	Err error
+}
+
+func (e *DelegateClientConfigValidationError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *DelegateClientConfigValidationError) Unwrap() error {
+	return e.Err
+}
+
 // NewConverter creates a new Converter instance.
 // oidcResolver is required and used to resolve OIDC configuration from various sources
 // (kubernetes, configMap, inline). Use a mock resolver in tests.
@@ -159,6 +174,9 @@ func (c *Converter) Convert(
 	if vmcp.Spec.AuthServerConfig != nil {
 		rc, err := c.convertAuthServerConfig(vmcp, config)
 		if err != nil {
+			if len(vmcp.Spec.AuthServerConfig.DelegateClients) > 0 {
+				return nil, nil, &DelegateClientConfigValidationError{Err: err}
+			}
 			return nil, nil, fmt.Errorf("failed to convert auth server config: %w", err)
 		}
 		authServerRC = rc
@@ -727,11 +745,20 @@ func (c *Converter) convertAggregation(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.AggregationConfig, error) {
-	// Start with a deep copy of the source config
+	// Field-by-field copy, NOT a deep copy: scalars are copied by value, slices
+	// (ConflictResolutionConfig.PriorityOrder, WorkloadToolConfig.Filter) are shared
+	// with the source, and only Overrides is deep-copied. Two consequences:
+	//   - Treat the source's slices as read-only; mutating them here would mutate the
+	//     CR's in-memory spec.
+	//   - Every new AggregationConfig field must be added HERE explicitly. A field
+	//     omitted from this literal is accepted by the CRD and then silently dropped
+	//     before the vMCP process ever sees it — which for a visibility setting means
+	//     failing OPEN on config users rely on to withhold tools.
 	srcAgg := vmcp.Spec.Config.Aggregation
 	agg := &vmcpconfig.AggregationConfig{
-		ConflictResolution: srcAgg.ConflictResolution,
-		ExcludeAllTools:    srcAgg.ExcludeAllTools,
+		ConflictResolution:    srcAgg.ConflictResolution,
+		ExcludeAllTools:       srcAgg.ExcludeAllTools,
+		DefaultToolVisibility: srcAgg.DefaultToolVisibility,
 	}
 
 	// Apply defaults for conflict resolution

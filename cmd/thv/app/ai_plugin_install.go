@@ -49,12 +49,17 @@ func init() {
 func aiPluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newAIPluginClient(cmd.Context())
 
-	_, err := c.Install(cmd.Context(), plugins.InstallOptions{
+	projectRoot, err := absProjectRoot(aiPluginInstallProjectRoot)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.Install(cmd.Context(), plugins.InstallOptions{
 		Name:        args[0],
 		Scope:       plugins.Scope(aiPluginInstallScope),
 		Clients:     parseSkillInstallClients(aiPluginInstallClientsRaw),
 		Force:       aiPluginInstallForce,
-		ProjectRoot: aiPluginInstallProjectRoot,
+		ProjectRoot: projectRoot,
 		Group:       aiPluginInstallGroup,
 	})
 	if err != nil {

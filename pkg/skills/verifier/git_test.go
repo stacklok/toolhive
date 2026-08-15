@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"math/big"
 	"testing"
@@ -22,11 +23,38 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
-// fulcioIssuerOID is the Fulcio extension carrying the OIDC issuer
-// (1.3.6.1.4.1.57264.1.1, the raw-string form gitsign certificates use).
-var fulcioIssuerOID = []int{1, 3, 6, 1, 4, 1, 57264, 1, 1}
+// Fulcio extension OIDs the tests populate: the OIDC issuer
+// (1.3.6.1.4.1.57264.1.1, the raw-string form gitsign certificates use), the
+// runner environment, and the source repository ref.
+var (
+	fulcioIssuerOID            = []int{1, 3, 6, 1, 4, 1, 57264, 1, 1}
+	fulcioRunnerEnvironmentOID = []int{1, 3, 6, 1, 4, 1, 57264, 1, 11}
+	fulcioRepositoryRefOID     = []int{1, 3, 6, 1, 4, 1, 57264, 1, 14}
+)
 
-const testGitIssuer = "https://accounts.example.com"
+const (
+	testGitIssuer = "https://accounts.example.com"
+	testGitRef    = "refs/tags/v0.1.0"
+	testGitRunner = "github-hosted"
+	// testCIWorkloadSAN stands in for a CI workload identity, as opposed to
+	// the interactive "dev@example.com" signer the other tests use.
+	testCIWorkloadSAN = "ci@example.com"
+)
+
+// ciWorkloadExtensions builds the ref and runner-environment extensions a
+// Fulcio certificate issued to a CI workload identity carries, DER-encoded
+// the way sigstore-go parses them.
+func ciWorkloadExtensions(t *testing.T, ref, runner string) []pkix.Extension {
+	t.Helper()
+	refDER, err := asn1.Marshal(ref)
+	require.NoError(t, err)
+	runnerDER, err := asn1.Marshal(runner)
+	require.NoError(t, err)
+	return []pkix.Extension{
+		{Id: fulcioRepositoryRefOID, Value: refDER},
+		{Id: fulcioRunnerEnvironmentOID, Value: runnerDER},
+	}
+}
 
 // testCA is a synthetic Fulcio-style CA for signing test certificates.
 type testCA struct {
@@ -55,8 +83,11 @@ func newTestCA(t *testing.T) *testCA {
 }
 
 // issueSigningCert issues a short-lived Fulcio-style code-signing
-// certificate with the given email SAN and OIDC issuer extension.
-func (ca *testCA) issueSigningCert(t *testing.T, email string) (*x509.Certificate, *ecdsa.PrivateKey) {
+// certificate with the given email SAN and OIDC issuer extension, plus any
+// extra extensions (see ciWorkloadExtensions).
+func (ca *testCA) issueSigningCert(
+	t *testing.T, email string, extra ...pkix.Extension,
+) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
@@ -64,13 +95,11 @@ func (ca *testCA) issueSigningCert(t *testing.T, email string) (*x509.Certificat
 		SerialNumber:   big.NewInt(2),
 		EmailAddresses: []string{email},
 		// Fulcio certificates live for minutes.
-		NotBefore:   time.Now().Add(-time.Minute),
-		NotAfter:    time.Now().Add(9 * time.Minute),
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
-		ExtraExtensions: []pkix.Extension{
-			{Id: fulcioIssuerOID, Value: []byte(testGitIssuer)},
-		},
+		NotBefore:       time.Now().Add(-time.Minute),
+		NotAfter:        time.Now().Add(9 * time.Minute),
+		KeyUsage:        x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
+		ExtraExtensions: append([]pkix.Extension{{Id: fulcioIssuerOID, Value: []byte(testGitIssuer)}}, extra...),
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, key.Public(), ca.key)
 	require.NoError(t, err)
@@ -137,10 +166,10 @@ func TestVerifyGitSignatureRoundTrip(t *testing.T) {
 
 	// The identity extracted from the certificate carries the SAN and the
 	// Fulcio issuer extension.
-	identity, err := gitIdentityFromCertificate(got)
+	observed, err := gitIdentityFromCertificate(got)
 	require.NoError(t, err)
-	assert.Equal(t, "dev@example.com", identity.SignerIdentity)
-	assert.Equal(t, testGitIssuer, identity.CertIssuer)
+	assert.Equal(t, "dev@example.com", observed.SignerIdentity)
+	assert.Equal(t, testGitIssuer, observed.CertIssuer)
 }
 
 func TestVerifyGitSignatureRejects(t *testing.T) {
@@ -261,15 +290,67 @@ func TestVerifyGitEnforcesExpectedIdentity(t *testing.T) {
 	// which a synthetic CA cannot chain to).
 	got, err := verifyGitSignature(t.Context(), payload, sig, ca.pool(), x509.NewCertPool())
 	require.NoError(t, err)
-	identity, err := gitIdentityFromCertificate(got)
+	observed, err := gitIdentityFromCertificate(got)
 	require.NoError(t, err)
 
-	assert.True(t, gitIdentityMatches(identity, &lockfile.Provenance{
+	assert.True(t, gitIdentityMatches(observed.Identity, &lockfile.Provenance{
 		SignerIdentity: "dev@example.com",
 		CertIssuer:     testGitIssuer,
 	}))
-	assert.False(t, gitIdentityMatches(identity, &lockfile.Provenance{
+	assert.False(t, gitIdentityMatches(observed.Identity, &lockfile.Provenance{
 		SignerIdentity: "attacker@example.com",
 		CertIssuer:     testGitIssuer,
 	}))
+}
+
+// TestGitCertificateRefAndRunner covers the git path's end of ref/runner
+// enforcement: the Fulcio extensions are read off the signing certificate,
+// flow into the recorded provenance, and are enforced against a pinned
+// entry — while a certificate that carries neither (gitsign from a personal
+// OIDC identity) records them empty and stays unconstrained.
+func TestGitCertificateRefAndRunner(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t)
+	payload := []byte(testCommitPayload)
+
+	t.Run("CI certificate records and enforces both fields", func(t *testing.T) {
+		t.Parallel()
+		cert, key := ca.issueSigningCert(t, testCIWorkloadSAN, ciWorkloadExtensions(t, testGitRef, testGitRunner)...)
+		verified, err := verifyGitSignature(
+			t.Context(), payload, signCommitPayload(t, payload, cert, key), ca.pool(), x509.NewCertPool())
+		require.NoError(t, err)
+
+		observed, err := gitIdentityFromCertificate(verified)
+		require.NoError(t, err)
+		assert.Equal(t, testGitRef, observed.RepositoryRef)
+		assert.Equal(t, testGitRunner, observed.RunnerEnvironment)
+
+		provenance := resultFromCore(observed, nil).ToLockProvenance()
+		require.NotNil(t, provenance)
+		assert.Equal(t, testGitRef, provenance.RepositoryRef,
+			"the observed ref must reach the lock file, or nothing can be enforced later")
+		assert.Equal(t, testGitRunner, provenance.RunnerEnvironment)
+
+		require.NoError(t, checkPinnedCertificateFields(observed, provenance))
+		require.ErrorIs(t,
+			checkPinnedCertificateFields(observed, &lockfile.Provenance{RepositoryRef: "refs/heads/attacker"}),
+			ErrSignerMismatch)
+	})
+
+	t.Run("non-CI certificate carries neither field", func(t *testing.T) {
+		t.Parallel()
+		cert, key := ca.issueSigningCert(t, "dev@example.com")
+		verified, err := verifyGitSignature(
+			t.Context(), payload, signCommitPayload(t, payload, cert, key), ca.pool(), x509.NewCertPool())
+		require.NoError(t, err)
+
+		observed, err := gitIdentityFromCertificate(verified)
+		require.NoError(t, err)
+		assert.Empty(t, observed.RepositoryRef)
+		assert.Empty(t, observed.RunnerEnvironment)
+		require.NoError(t, checkPinnedCertificateFields(observed, &lockfile.Provenance{
+			SignerIdentity: "dev@example.com",
+			CertIssuer:     testGitIssuer,
+		}), "an entry pinning neither field must keep verifying")
+	})
 }

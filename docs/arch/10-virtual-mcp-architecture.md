@@ -223,6 +223,19 @@ scan silently dropped an item whenever a duplicate landed on a page boundary
 
 Beyond conflict resolution, vMCP can filter which tools are exposed through allow/deny lists, renaming, and description overrides.
 
+By default a backend with no per-workload entry has all of its tools advertised, so
+adding a workload to the group exposes it. `aggregation.defaultToolVisibility: deny`
+inverts that, advertising only backends named in `aggregation.tools` — useful when the
+exposed tool set should be enumerated deliberately rather than inherited from group
+membership. A listed backend is opted in by its entry; its own `excludeAll`/`filter`
+then decide which of its tools are advertised.
+
+All of these settings — `excludeAllTools`, `defaultToolVisibility`, per-workload
+`excludeAll`, and `filter` — control **advertising only**. Every backend tool stays in
+the routing table so composite tools can call hidden ones, and none of them affect
+resources or prompts. Per-identity authorization is Cedar's job (see [Authorization
+Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate)).
+
 **Implementation**: `pkg/vmcp/aggregator/`
 
 ## Composite Tools
@@ -252,7 +265,9 @@ Steps can be of three types:
 - **elicitation**: Request user input via MCP elicitation protocol
 - **forEach**: Iterate over a collection from a previous step, executing an inner tool step per item with bounded parallelism
 
-**Implementation**: `pkg/vmcp/composer/`
+**Tool annotations**: Composite tools advertise MCP tool annotations computed at advertise time via a derive-then-merge ordering. First, a safety floor is derived from the annotations of the step tools (including `forEach` inner steps): `readOnlyHint` is the AND across steps, `destructiveHint` and `openWorldHint` are the OR across steps (unknown steps taint conservatively), and `idempotentHint` is never derived. Then any explicit `annotations` declared on the composite tool definition are merged over the floor, with explicitly set fields winning. An explicit hint may be more conservative than the floor, but if it would make the tool look safer than its steps allow (e.g. `readOnlyHint: true` when a step is not read-only), the composite tool is dropped from `tools/list` with a warning rather than advertised misleadingly.
+
+**Implementation**: `pkg/vmcp/composer/` (execution), `pkg/vmcp/internal/compositetools/` (advertised tool conversion and annotation derivation)
 
 ## Backend MCP Revision Classification
 

@@ -69,6 +69,10 @@ type WorkflowDefinition struct {
 	// If nil, the workflow returns the last step's output (backward compatible).
 	Output *config.OutputConfig
 
+	// Annotations declares MCP tool annotations for the composite tool.
+	// If nil, annotations are derived from the step tools at advertise time.
+	Annotations *config.ToolAnnotationsOverride
+
 	// Metadata stores additional workflow information.
 	Metadata map[string]string
 }

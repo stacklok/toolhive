@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -737,6 +738,26 @@ func TestStart(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestListenAddrLoopback(t *testing.T) {
+	t.Parallel()
+	config := &Config{
+		ClientID: "test-client",
+		AuthURL:  "https://example.com/auth",
+		TokenURL: "https://example.com/token",
+	}
+
+	flow, err := NewFlow(config)
+	require.NoError(t, err)
+
+	host, port, err := net.SplitHostPort(flow.listenAddr())
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("%d", flow.port), port, "listen address should use the flow's callback port")
+
+	ip := net.ParseIP(host)
+	require.NotNil(t, ip, "listen host should be an IP address, got %q", host)
+	assert.True(t, ip.IsLoopback(), "callback listener must bind to a loopback address, got %q", host)
 }
 
 func TestWriteSuccessPage(t *testing.T) {

@@ -820,9 +820,17 @@ func TestRoundTripDoesNotReplayInitializeOnDialError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", clientSessionID)
 
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
+	// A dedicated client, not http.DefaultClient: the shared transport pools
+	// keep-alive connections across the package's parallel tests, and reusing
+	// one whose proxy has since been closed surfaces here as a transport error.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
+	// Either outcome is legitimate for a dial failure -- the reverse proxy may
+	// synthesize a 502, or the connection may fail outright. Neither is what
+	// this test is about; the assertions below are.
+	if err == nil {
+		_ = resp.Body.Close()
+	}
 
 	assert.Zero(t, targetHits.Load(),
 		"the proxy must not send its own initialize to the target service for an initialize dial error")

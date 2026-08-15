@@ -5,6 +5,8 @@ package controllerutil
 
 import (
 	"context"
+	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -636,6 +638,37 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 	}
 }
 
+func TestGenerateAuthServerConfigByName_DelegateClientSecretEnvVar(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	externalAuthCfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "embedded-auth-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "client ID / does not affect env name",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://resource.example.com"},
+				}},
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(externalAuthCfg).Build()
+
+	_, _, envVars, err := GenerateAuthServerConfigByName(t.Context(), fakeClient, "default", "embedded-auth-config")
+	require.NoError(t, err)
+	require.Len(t, envVars, 1)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", envVars[0].Name)
+	assert.Empty(t, envVars[0].Value)
+	require.NotNil(t, envVars[0].ValueFrom)
+	require.NotNil(t, envVars[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "delegate-secret", envVars[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "credential", envVars[0].ValueFrom.SecretKeyRef.Key)
+}
+
 func TestGenerateAuthServerConfigByName(t *testing.T) {
 	t.Parallel()
 
@@ -972,6 +1005,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				require.NotNil(t, upstream.OAuth2Config)
 				assert.Equal(t, "https://github.com/login/oauth/authorize",
 					upstream.OAuth2Config.AuthorizationEndpoint)
+
 				require.NotNil(t, upstream.OAuth2Config.UserInfo)
 				assert.Equal(t, "https://api.github.com/user",
 					upstream.OAuth2Config.UserInfo.EndpointURL)
@@ -1644,6 +1678,39 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"InsecureAllowHTTP false must propagate from CRD field to RunConfig")
 			},
 		},
+		{
+			name: "allowConfidentialClientRegistration true is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:                              "https://authserver.example.com",
+				AllowConfidentialClientRegistration: true,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.AllowConfidentialClientRegistration,
+					"AllowConfidentialClientRegistration must propagate from CRD field to RunConfig")
+			},
+		},
+		{
+			name: "allowConfidentialClientRegistration defaults to false",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.AllowConfidentialClientRegistration,
+					"AllowConfidentialClientRegistration must default to false when the CRD field is unset")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1655,6 +1722,115 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			tt.checkFunc(t, config)
+		})
+	}
+}
+
+func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
+	t.Parallel()
+
+	runConfig, err := buildOAuth2UpstreamRunConfig(&mcpv1beta1.OAuth2UpstreamConfig{
+		AuthorizationEndpoint: "http://dex.default.svc.cluster.local/auth",
+		TokenEndpoint:         "http://dex.default.svc.cluster.local/token",
+		ClientID:              "client-id",
+		InsecureAllowHTTP:     true,
+		AllowPrivateIPs:       true,
+	}, "", "", "")
+	require.NoError(t, err)
+	assert.True(t, runConfig.InsecureAllowHTTP)
+	assert.True(t, runConfig.AllowPrivateIPs)
+}
+
+func TestDelegateClientsConversionAndEnvVars(t *testing.T) {
+	t.Parallel()
+
+	const secretValue = "delegate-secret-must-not-appear"
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{
+			{
+				ClientID:        "client ID with arbitrary / characters",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-one", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://resource.example.com"},
+			},
+			{
+				ClientID:        "another-client",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-two", Key: "secret"},
+				Scopes:          []string{"profile"},
+				Audiences:       []string{"https://resource.example.com"},
+			},
+		},
+	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", authConfig,
+		[]string{"https://resource.example.com"},
+		[]string{"openid", "profile"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	require.Len(t, config.DelegateClients, 2)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", config.DelegateClients[0].ClientSecretEnvVar)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_1", config.DelegateClients[1].ClientSecretEnvVar)
+	assert.Equal(t, []string{"openid"}, config.DelegateClients[0].Scopes)
+	assert.Equal(t, []string{"https://resource.example.com"}, config.DelegateClients[0].Audiences)
+
+	envVars := GenerateAuthServerEnvVars(authConfig)
+	require.Len(t, envVars, 2)
+	for i, envVar := range envVars {
+		assert.Equal(t, fmt.Sprintf("TOOLHIVE_DELEGATE_CLIENT_SECRET_%d", i), envVar.Name)
+		assert.Empty(t, envVar.Value)
+		require.NotNil(t, envVar.ValueFrom)
+		require.NotNil(t, envVar.ValueFrom.SecretKeyRef)
+		assert.Equal(t, authConfig.DelegateClients[i].ClientSecretRef.Name, envVar.ValueFrom.SecretKeyRef.Name)
+		assert.Equal(t, authConfig.DelegateClients[i].ClientSecretRef.Key, envVar.ValueFrom.SecretKeyRef.Key)
+	}
+
+	runtimeConfig, err := json.Marshal(config)
+	require.NoError(t, err)
+	assert.NotContains(t, string(runtimeConfig), secretValue)
+	assert.NotContains(t, string(runtimeConfig), "delegate-one")
+	assert.NotContains(t, string(runtimeConfig), "credential")
+}
+
+func TestBuildAuthServerRunConfig_NoDelegateClientsPreservesEmptyConfig(t *testing.T) {
+	t.Parallel()
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
+		[]string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	assert.Nil(t, config.DelegateClients)
+	assert.Nil(t, GenerateAuthServerEnvVars(&mcpv1beta1.EmbeddedAuthServerConfig{}))
+}
+
+func TestBuildAuthServerRunConfig_DelegateClientEffectivePermissions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		scopes    []string
+		audiences []string
+		wantError string
+	}{
+		{name: "scope outside effective permissions", scopes: []string{"email"}, audiences: []string{"https://resource.example.com"}, wantError: "scope"},
+		{name: "audience outside effective permissions", scopes: []string{"openid"}, audiences: []string{"https://other.example.com"}, wantError: "not in allowed_audiences"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "delegate",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+					Scopes:          tt.scopes,
+					Audiences:       tt.audiences,
+				}},
+			}, []string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com")
+			assert.Nil(t, config)
+			require.ErrorContains(t, err, tt.wantError)
 		})
 	}
 }
@@ -2873,4 +3049,17 @@ func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildAuthServerRunConfigInvalidDelegateClientIsTyped(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{{ClientID: "delegate"}},
+	}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delegateClients[0].clientSecretRef.name and clientSecretRef.key are required")
+	var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
+	assert.True(t, stderrors.As(err, &invalidConfigErr))
 }

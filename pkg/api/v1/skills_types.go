@@ -45,6 +45,12 @@ type installSkillRequest struct {
 type installSkillResponse struct {
 	// The installed skill
 	Skill skills.InstalledSkill `json:"skill"`
+	// The signer identity trust-on-first-use pinned for this install, when
+	// the artifact was verified. Omitted for unsigned or non-lock-managed
+	// installs.
+	Provenance *skills.ProvenanceInfo `json:"provenance,omitempty"`
+	// Whether the install was recorded as an explicit unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // validateSkillRequest represents the request to validate a skill.
@@ -71,6 +77,11 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
+	// Key is the path to a cosign private key used to sign the pushed
+	// artifact
+	Key string `json:"key,omitempty"`
+	// NoSign pushes without signing
+	NoSign bool `json:"no_sign,omitempty"`
 }
 
 // syncSkillsRequest represents the request to sync a project's skills.

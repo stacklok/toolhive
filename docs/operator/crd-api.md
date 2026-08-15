@@ -262,8 +262,8 @@ _Appears in:_
 AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 
 Tool Visibility vs Routing:
-  - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-    advertised to MCP clients (visible in tools/list responses).
+  - ExcludeAllTools, DefaultToolVisibility, per-workload ExcludeAll, and Filter control
+    which tools are advertised to MCP clients (visible in tools/list responses).
   - ALL backend tools remain available in the internal routing table, allowing
     composite tools to call hidden backend tools.
   - This enables curated experiences where raw backend tools are hidden from
@@ -280,6 +280,7 @@ _Appears in:_
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
 | `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
+| `defaultToolVisibility` _[vmcp.config.DefaultToolVisibility](#vmcpconfigdefaulttoolvisibility)_ | DefaultToolVisibility controls whether a backend with NO entry in Tools has its<br />tools advertised to MCP clients.<br />  - allow (default): every tool from an unlisted backend is advertised, so<br />    adding a workload to the group exposes it without further configuration.<br />  - deny: an unlisted backend contributes no tools, so only backends named in<br />    Tools are advertised. Use this when the set of exposed tools must be<br />    enumerated deliberately rather than inherited from group membership.<br />A backend that DOES have a Tools entry is unaffected by this setting: the<br />entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like<br />every other visibility setting here, this controls advertising only — hidden<br />tools remain in the routing table for composite tools (see the type doc).<br />This gates TOOLS only. An unlisted backend's resources, resource templates,<br />and prompts are still advertised under deny; mergeResources/mergePrompts have<br />no equivalent check. |  | Enum: [allow deny] <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.AuthzConfig
@@ -365,6 +366,7 @@ _Appears in:_
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
+| `annotations` _[vmcp.config.ToolAnnotationsOverride](#vmcpconfigtoolannotationsoverride)_ | Annotations declares MCP tool annotations for the composite tool.<br />Annotation derivation runs at ADVERTISE TIME (when tools/list is served<br />and the backend tools are aggregated), not at CRD admission — thv vmcp<br />validate does NOT check annotation contradictions. The derived floor is<br />fail-closed: when the workflow has one or more tool steps the floor is<br />always non-nil, and any step whose annotations are nil/unknown taints the<br />floor conservatively (readOnly=false, destructive=true, openWorld=true).<br />A workflow with no tool steps (e.g. only elicitation) has no floor.<br />When nil, annotations are derived from the annotations of the backend tools<br />referenced by the workflow's steps (e.g. readOnlyHint is true only when every<br />step tool is read-only). When set, the values are an explicit author<br />declaration merged over the derived floor — subject to a safety-floor<br />guardrail that drops the composite tool (with a warning naming the offending<br />step tools) if an explicit hint would make the tool look safer than its<br />steps allow. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.CompositeToolRef
@@ -436,6 +438,25 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" tool strategy<br />and for backend-prefixed prompt names (the default for every prompt;<br />under the "priority" strategy, backends listed in priorityOrder keep<br />their own prompt names).<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ | Optional: \{\} <br /> |
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy.<br />Listed workloads also keep their own prompt names (unlisted workloads'<br />prompts stay backend-prefixed). |  | Optional: \{\} <br /> |
+
+
+#### vmcp.config.DefaultToolVisibility
+
+_Underlying type:_ _string_
+
+DefaultToolVisibility names the advertising default applied to backends with no
+per-workload Tools entry. The zero value is "" (unset), which behaves as
+DefaultToolVisibilityAllow so existing configs keep today's behavior.
+
+
+
+_Appears in:_
+- [vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)
+
+| Field | Description |
+| --- | --- |
+| `allow` | DefaultToolVisibilityAllow advertises every tool from a backend with no Tools<br />entry. This is the default and matches pre-DefaultToolVisibility behavior.<br /> |
+| `deny` | DefaultToolVisibilityDeny advertises no tools from a backend with no Tools entry.<br /> |
 
 
 
@@ -760,7 +781,9 @@ All fields use pointers so nil means "don't override" while zero values
 
 
 _Appears in:_
+- [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
 - [vmcp.config.ToolOverride](#vmcpconfigtooloverride)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)
 
 
 
@@ -1863,6 +1886,27 @@ _Appears in:_
 | `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts.<br />Stored inline on the CR. The JWT is signed but not encrypted, so its<br />contents are visible to anyone with get/list/watch on this resource and<br />appear in etcd backups in plaintext. Treat the value as non-confidential<br />(signed attestation, not a secret). Operators that rotate software<br />statements like bearer credentials should keep them at the authorization<br />server side and rely on the registration endpoint's initial access<br />token (see InitialAccessTokenRef) instead of placing them on the CR.<br />Bounded to 16384 characters as a defensive size cap (etcd object<br />budget, regex evaluation cost). Real-world signed statements with<br />embedded x5c certificate chains, JWKS keys, or OIDC-Federation<br />trust-framework metadata routinely exceed 4 KB. |  | MaxLength: 16384 <br />Optional: \{\} <br /> |
 
 
+#### api.v1beta1.DelegateClientConfig
+
+
+
+DelegateClientConfig configures a pre-provisioned confidential OAuth client
+for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
+Secret and is never represented inline.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `clientId` _string_ | ClientID is the OAuth client_id presented at the token endpoint. |  | MaxLength: 256 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references the Kubernetes Secret key containing the client secret. |  | Required: \{\} <br /> |
+| `scopes` _string array_ | Scopes is the narrowed set of OAuth scopes this client may request. |  | MaxItems: 10 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+| `audiences` _string array_ | Audiences is the narrowed set of RFC 8707 resources this client may request. |  | MaxItems: 10 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+
+
 #### api.v1beta1.DiscoveredBackend
 
 
@@ -1903,6 +1947,23 @@ _Appears in:_
 
 EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
 This enables running an authorization server that delegates authentication to upstream IDPs.
+This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
+VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rule below is
+enforced at admission for both CRDs.
+
+Delegate clients categorically require HTTPS at admission. CEL has no URL
+parser, so this deliberately conservative check rejects every plaintext HTTP
+issuer rather than attempting a loopback exception that could admit a
+non-loopback host. The runtime transport validation remains defense in depth
+for direct Go callers and confidential DCR.
+
+This is stricter than the Go-level ValidateConfidentialClientTransport,
+which still permits a loopback-HTTP issuer with delegate clients when
+InsecureAllowConfidentialOverLoopbackHTTP is set — intentionally, since that
+flag's loopback-is-safe rationale applies equally to delegate-client
+secrets. Do not tighten the Go-level check to match this CEL rule; the CRD
+is stricter only because CEL cannot express the loopback exception, not
+because delegate clients need one.
 
 
 
@@ -1921,8 +1982,12 @@ _Appears in:_
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 | `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange or AWS STS,<br />which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
-| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition. | false | Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside allowConfidentialClientRegistration, which<br />would issue client secrets in cleartext over an unauthenticated registration<br />endpoint (see the XValidation rule on EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code.<br />When cimd.enabled is true, every dynamically resolved CIMD client will<br />also gain the ability to request these scopes, including third-party<br />clients resolved from arbitrary HTTPS URLs. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
+| `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
+| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to<br />allowConfidentialClientRegistration when issuer is a plain-HTTP loopback<br />URL (e.g. "http://localhost:8080"). Without this flag, that combination<br />is rejected at reconcile time: a loopback http:// issuer is normally<br />fine for local development since the traffic never leaves the machine,<br />but combined with confidential registration it means /oauth/register —<br />which is unauthenticated — mints client secrets over cleartext. Forcing<br />TLS onto every loopback deployment instead would just push operators<br />toward insecureAllowHTTP, which is worse: that also disables the<br />non-loopback host check. Has no effect when<br />allowConfidentialClientRegistration is false or issuer is https. | false | Optional: \{\} <br /> |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `forceConfidentialRedirectUris` _string array_ | ForceConfidentialRedirectURIs lists redirect URIs that must be<br />registered as confidential clients regardless of the<br />token_endpoint_auth_method the DCR request declares. A registration<br />whose redirectUris contains an EXACT match for one of these entries is<br />issued a real client_secret and reported back as<br />token_endpoint_auth_method "client_secret_post", even if the request<br />said "none" or omitted the field.<br />Intended for MCP clients that declare themselves public<br />(token_endpoint_auth_method: "none") per RFC 7591 but then refuse to<br />proceed because the response carries no client_secret — a<br />self-contradictory request. RFC 7591 §3.2.1 permits the server to<br />substitute client metadata, so this takes such a client at its word<br />that it wants a secret. Remove an entry once the client is fixed to<br />handle "none" registrations correctly.<br />Exact matching is deliberate: an attacker who registers with someone<br />else's callback URI is issued a secret for a client whose<br />authorization codes are delivered to that someone else's redirect<br />endpoint, not to the attacker, so this is not a way to obtain a usable<br />credential for another client.<br />Requires allowConfidentialClientRegistration to be true. Every entry<br />must be an https non-loopback URI — a loopback client is a public<br />client by construction (OAuth 2.1 §2.1) and must not be issued a<br />secret; this is enforced at reconcile time since CEL cannot express<br />the loopback-hostname check. |  | MaxItems: 10 <br />items:Pattern: `^https://[^\s?#]+$` <br />Optional: \{\} <br /> |
 | `cimd` _[api.v1beta1.EmbeddedAuthServerCIMDConfig](#apiv1beta1embeddedauthservercimdconfig)_ | CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled. |  | Optional: \{\} <br /> |
 
 
@@ -2304,7 +2369,7 @@ _Appears in:_
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests |  | Optional: \{\} <br /> |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.<br />Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.<br />Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
-| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.KubernetesServiceAccountOIDCConfig
@@ -3568,6 +3633,8 @@ _Appears in:_
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
 | `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs<br />for this upstream. Only for in-cluster development environments (e.g. an<br />OAuth2 provider served over HTTP in a kind cluster) where TLS is not<br />available. Never set this in production. |  | Optional: \{\} <br /> |
+| `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits the upstream provider's HTTP client to connect to<br />private IP ranges (RFC-1918, link-local). Use only when the upstream is<br />hosted inside the same cluster and has no public endpoint. HTTP-scheme<br />restrictions are unchanged — HTTPS is still required for non-localhost<br />hosts unless InsecureAllowHTTP is set. Defaults to false. |  | Optional: \{\} <br /> |
 | `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
 
 
@@ -4005,6 +4072,7 @@ SecretKeyRef is a reference to a key within a Secret
 _Appears in:_
 - [api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)
 - [api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)
+- [api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig)
 - [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 - [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
 - [api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret)
@@ -4441,6 +4509,7 @@ _Appears in:_
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
+| `annotations` _[vmcp.config.ToolAnnotationsOverride](#vmcpconfigtoolannotationsoverride)_ | Annotations declares MCP tool annotations for the composite tool.<br />Annotation derivation runs at ADVERTISE TIME (when tools/list is served<br />and the backend tools are aggregated), not at CRD admission — thv vmcp<br />validate does NOT check annotation contradictions. The derived floor is<br />fail-closed: when the workflow has one or more tool steps the floor is<br />always non-nil, and any step whose annotations are nil/unknown taints the<br />floor conservatively (readOnly=false, destructive=true, openWorld=true).<br />A workflow with no tool steps (e.g. only elicitation) has no floor.<br />When nil, annotations are derived from the annotations of the backend tools<br />referenced by the workflow's steps (e.g. readOnlyHint is true only when every<br />step tool is read-only). When set, the values are an explicit author<br />declaration merged over the derived floor — subject to a safety-floor<br />guardrail that drops the composite tool (with a warning naming the offending<br />step tools) if an explicit hint would make the tool look safer than its<br />steps allow. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.VirtualMCPCompositeToolDefinitionStatus

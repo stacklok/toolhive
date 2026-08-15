@@ -4,6 +4,7 @@
 package v1beta1
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -574,6 +575,154 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			},
 			expectErr: false, // validateEmbeddedAuthServer returns nil if config is nil
 		},
+		{
+			name: "confidential clients combined with insecure HTTP - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://auth.example.com",
+						InsecureAllowHTTP:                   true,
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer and opt-in - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						InsecureAllowConfidentialOverLoopbackHTTP: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "confidential clients with https issuer unaffected by loopback opt-in default",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "forceConfidentialRedirectUris without allowConfidentialClientRegistration - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                        "https://auth.example.com",
+						ForceConfidentialRedirectURIs: []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "requires allow_confidential_client_registration",
+		},
+		{
+			name: "forceConfidentialRedirectUris with loopback entry - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://localhost/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "must not be a loopback redirect URI",
+		},
+		{
+			name: "forceConfidentialRedirectUris with valid https entry and flag on - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1037,6 +1186,144 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDelegateClientConfig_JSON(t *testing.T) {
+	t.Parallel()
+
+	config := EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		DelegateClients: []DelegateClientConfig{{
+			ClientID:        "delegate-client",
+			ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+			Scopes:          []string{"openid"},
+			Audiences:       []string{"https://api.example.com"},
+		}},
+	}
+
+	encoded, err := json.Marshal(config)
+	require.NoError(t, err)
+
+	var serialized map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &serialized))
+	require.Contains(t, serialized, "delegateClients")
+	require.JSONEq(t, `[
+		{
+			"clientId": "delegate-client",
+			"clientSecretRef": {"name": "delegate-secret", "key": "client-secret"},
+			"scopes": ["openid"],
+			"audiences": ["https://api.example.com"]
+		}
+	]`, string(serialized["delegateClients"]))
+	assert.NotContains(t, string(encoded), `"clientSecret":`)
+	assert.NotContains(t, string(encoded), `"redirectUris":`)
+	assert.NotContains(t, string(encoded), `"grantTypes":`)
+
+	deepCopy := config.DeepCopy()
+	require.NotNil(t, deepCopy)
+	deepCopy.DelegateClients[0].ClientSecretRef.Name = "changed-secret"
+	deepCopy.DelegateClients[0].Scopes[0] = "profile"
+	deepCopy.DelegateClients[0].Audiences[0] = "https://changed.example.com"
+	assert.Equal(t, "delegate-secret", config.DelegateClients[0].ClientSecretRef.Name)
+	assert.Equal(t, "openid", config.DelegateClients[0].Scopes[0])
+	assert.Equal(t, "https://api.example.com", config.DelegateClients[0].Audiences[0])
+
+	var existing EmbeddedAuthServerConfig
+	err = json.Unmarshal([]byte(`{"issuer":"https://auth.example.com","upstreamProviders":[]}`), &existing)
+	require.NoError(t, err)
+	assert.Nil(t, existing.DelegateClients)
+	assert.False(t, existing.AllowConfidentialClientRegistration)
+}
+
+func TestEmbeddedAuthServerConfig_ValidateConfidentialClientTransport(t *testing.T) {
+	t.Parallel()
+
+	delegateClients := []DelegateClientConfig{{
+		ClientID:        "delegate-client",
+		ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+		Scopes:          []string{"openid"},
+		Audiences:       []string{"https://api.example.com"},
+	}}
+	tests := []struct {
+		name      string
+		config    EmbeddedAuthServerConfig
+		expectErr bool
+	}{
+		{
+			name: "delegate clients remain independent of confidential DCR",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "https://auth.example.com",
+				DelegateClients: delegateClients,
+			},
+		},
+		{
+			name: "delegate clients reject insecure HTTP",
+			config: EmbeddedAuthServerConfig{
+				Issuer:            "http://auth.example.com",
+				InsecureAllowHTTP: true,
+				DelegateClients:   delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients reject HTTP loopback without explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "http://localhost:8080",
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients allow HTTP loopback with explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://localhost:8080",
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+				DelegateClients: delegateClients,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.config.ValidateConfidentialClientTransport()
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestMCPExternalAuthConfig_DelegateClientsRejectUnsafeHTTP(t *testing.T) {
+	t.Parallel()
+
+	config := &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer:            "http://auth.example.com",
+				InsecureAllowHTTP: true,
+				DelegateClients: []DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://api.example.com"},
+				}},
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+			},
+		},
+	}
+
+	err := config.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insecure_allow_http")
 }
 
 func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {

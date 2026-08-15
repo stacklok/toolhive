@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
@@ -83,6 +84,21 @@ type FactoryConfig struct {
 	// decorator branch the false case used to select is now unreachable — its
 	// deletion is tracked in #6103.
 	AdvertiseFromCore bool
+
+	// BackendHealth gates which backends a NEW session attempts to connect to.
+	// Restored sessions are never filtered (see Manager.listAllBackends).
+	//
+	// Optional: nil disables health gating and every backend is attempted, which
+	// is both the pre-#5861 behaviour and the correct fallback when health
+	// monitoring is switched off. See health.ShouldOpenSession for which statuses
+	// are skipped.
+	//
+	// Because nil is indistinguishable from "monitoring disabled", an embedder that
+	// calls Serve with a hand-built FactoryConfig and omits this field gets no
+	// health gating and no warning. server.New always populates it from the core's
+	// monitor, so in-tree compositions are covered; direct-Serve callers that want
+	// the #5861 fix must pass it explicitly.
+	BackendHealth health.StatusProvider
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry

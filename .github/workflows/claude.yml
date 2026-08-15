@@ -13,27 +13,36 @@ on:
 jobs:
   claude:
     name: Claude Code Action
-    # Security: Only allow invocation by trusted contributors.
-    # Blocks NONE (anonymous), FIRST_TIMER, and FIRST_TIME_CONTRIBUTOR to
-    # prevent prompt-injection attacks from untrusted GitHub users.
+    # Security: only allow invocation by trusted contributors.
+    #
+    # This is an allow-list rather than a deny-list. Denying NONE, FIRST_TIMER
+    # and FIRST_TIME_CONTRIBUTOR still admitted CONTRIBUTOR — which anyone
+    # earns permanently by getting a single pull request merged — and
+    # MANNEQUIN. This job holds contents: write and ANTHROPIC_API_KEY and
+    # allows Bash(git *), so the bar needs to be write access to the
+    # repository, not a history of contributing to it.
+    #
+    # Same pattern as the /retest gate in retest.yaml.
     # See: https://docs.github.com/en/graphql/reference/enums#commentauthorassociation
-    if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
-       github.event.comment.author_association != 'NONE' &&
-       github.event.comment.author_association != 'FIRST_TIMER' &&
-       github.event.comment.author_association != 'FIRST_TIME_CONTRIBUTOR') ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
-       github.event.comment.author_association != 'NONE' &&
-       github.event.comment.author_association != 'FIRST_TIMER' &&
-       github.event.comment.author_association != 'FIRST_TIME_CONTRIBUTOR') ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
-       github.event.review.author_association != 'NONE' &&
-       github.event.review.author_association != 'FIRST_TIMER' &&
-       github.event.review.author_association != 'FIRST_TIME_CONTRIBUTOR') ||
-      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude') &&
-       github.event.issue.author_association != 'NONE' &&
-       github.event.issue.author_association != 'FIRST_TIMER' &&
-       github.event.issue.author_association != 'FIRST_TIME_CONTRIBUTOR')
+    if: >-
+      ${{
+        (github.event_name == 'issue_comment'
+          && contains(github.event.comment.body, '@claude')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                      github.event.comment.author_association))
+        || (github.event_name == 'pull_request_review_comment'
+          && contains(github.event.comment.body, '@claude')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                      github.event.comment.author_association))
+        || (github.event_name == 'pull_request_review'
+          && contains(github.event.review.body, '@claude')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                      github.event.review.author_association))
+        || (github.event_name == 'issues'
+          && contains(github.event.issue.body, '@claude')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                      github.event.issue.author_association))
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Least-privilege permissions for the AI agent workflow.
@@ -45,8 +54,13 @@ jobs:
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      # Unlike every other checkout in this repository, this one keeps its
+      # credentials on purpose. The job holds contents: write precisely so
+      # Claude can push commits to a pull request, and that push uses the
+      # credential actions/checkout leaves in .git/config. Setting
+      # persist-credentials: false here would break the action.
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6   # zizmor: ignore[artipacked]
         with:
           fetch-depth: 1
 
@@ -59,7 +73,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Security: Restrict tools to prevent arbitrary code execution.

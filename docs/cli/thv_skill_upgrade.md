@@ -11,21 +11,19 @@ mdx:
 
 ## thv skill upgrade
 
-Upgrade project skills to newer pinned content (experimental)
+Upgrade project skills to newer pinned content
 
 ### Synopsis
 
 Re-resolve a project's lock entries and install newer content where available.
 
-Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
-server while the lock file feature rolls out.
-
 Skills pinned to an immutable reference (an OCI digest or a full git commit
 hash) are reported not-upgradable — there is nothing newer to resolve to.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
-and --allow-ref-change to permit the resolved reference itself changing
-(e.g. a registry entry repointed at a different repository).
+and --allow-ref-change to permit the artifact moving to a different
+repository (a version bump within the same repository is not a change
+this guard blocks).
 --fail-on-changes evaluates the same plan and never installs: it is a CI
 freshness gate.
 
@@ -40,7 +38,7 @@ thv skill upgrade [skill-name...] [flags]
 ### Options
 
 ```
-      --allow-ref-change      Permit the resolved reference itself to change during upgrade
+      --allow-ref-change      Permit the artifact to move to a different repository during upgrade
       --allow-signer-change   Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --fail-on-changes       Report what would change without installing anything; a CI freshness gate

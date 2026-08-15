@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
@@ -56,12 +57,33 @@ func (h *httpBackendClient) BindForwarders(
 // per-request io.modelcontextprotocol/logLevel _meta key, which modernCallTool
 // overlays onto the request it mints (see TestModernCallTool_LogLevelGating).
 func (h *httpBackendClient) enableBackendLogging(
-	ctx context.Context, c *client.Client, caps *mcp.ServerCapabilities, backendID string,
+	ctx context.Context, c *client.Client, caps *mcp.ServerCapabilities,
+	negotiatedVersion, backendID string,
 ) {
 	if h.forwarders.Load() == nil {
 		return
 	}
 	if caps == nil || caps.Logging == nil {
+		return
+	}
+	// The 2026-07-28 revision REMOVED logging/setLevel; the per-request
+	// io.modelcontextprotocol/logLevel _meta key replaces it (see
+	// mcpparser.MetaKeyLogLevel, which the Modern path already mints).
+	//
+	// A dual-era backend can negotiate 2026-07-28 over this Legacy handshake,
+	// and the session then MUST carry that version on every request. go-sdk
+	// still sends setLevel as a Legacy-shaped call, so the request arrives with
+	// a Modern protocol header and no Modern _meta -- a shape ToolHive's
+	// classifier rejects with -32020, deliberately and by a pinned contract
+	// (see TestIntegration_Modern_RealBackend_LoggingContract). go-sdk treats
+	// that rejection as fatal, closing the session and failing the tool call
+	// this logging was only meant to decorate.
+	//
+	// Calling an RPC the negotiated revision removed is the actual defect, so
+	// skip it. Backends that negotiate a Legacy version are unaffected.
+	if negotiatedVersion == mcpparser.MCPVersionModern {
+		slog.DebugContext(ctx, "skipping logging/setLevel: removed in the negotiated revision",
+			"backend", backendID, "negotiated", negotiatedVersion)
 		return
 	}
 	if err := c.SetLoggingLevel(ctx, mcp.LoggingLevelDebug); err != nil {

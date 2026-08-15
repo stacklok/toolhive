@@ -30,6 +30,45 @@ func isImmutableSource(entry lockfile.Entry) bool {
 	return isDigest
 }
 
+// repositoryMoved reports whether two resolved references point at different
+// repositories, as opposed to differing only by tag. A tag move within one
+// repository is the normal way a mutable source advances; a repository move
+// means the artifact now comes from somewhere else, which is the case the
+// ref-change guard exists to catch.
+//
+// Both the registry and the repository path are compared, so ghcr.io ->
+// another registry, or a different org or path on the same registry, all
+// count as a move.
+func repositoryMoved(oldRef, newRef string) bool {
+	if oldRef == newRef {
+		return false
+	}
+	oldRepo, ok := referenceRepository(oldRef)
+	if !ok {
+		return true
+	}
+	newRepo, ok := referenceRepository(newRef)
+	if !ok {
+		return true
+	}
+	return oldRepo != newRepo
+}
+
+// referenceRepository returns the registry and repository portion of an OCI
+// reference, dropping any tag or digest. It reports false for git references
+// and for anything it cannot parse, so callers fall back to treating the
+// reference as moved rather than silently equating two unlike sources.
+func referenceRepository(ref string) (string, bool) {
+	if gitresolver.IsGitReference(ref) {
+		return "", false
+	}
+	parsed, err := nameref.ParseReference(ref)
+	if err != nil {
+		return "", false
+	}
+	return parsed.Context().String(), true
+}
+
 // isFullCommitHash accepts both hex cases: the sibling git resolver does
 // too, and classifying an uppercase-pinned source as mutable would
 // needlessly re-clone it on every upgrade despite the pin being immutable.

@@ -39,13 +39,21 @@ func completeAIPluginNames(cmd *cobra.Command, args []string, _ string) ([]strin
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
-// formatAIPluginError wraps an error with contextual information. If the
-// underlying cause is ErrServerUnreachable it appends a helpful hint.
+// formatAIPluginError wraps an error with contextual information, appending a
+// hint that matches the actual failure — a timed-out request and an absent
+// server need different advice.
 func formatAIPluginError(action string, err error) error {
-	if errors.Is(err, pluginclient.ErrServerUnreachable) {
+	switch {
+	case errors.Is(err, pluginclient.ErrRequestTimeout):
+		return fmt.Errorf(
+			"failed to %s: %w\nHint: the server is running and was still working; "+
+				"raise the limit with TOOLHIVE_API_TIMEOUT (e.g. TOOLHIVE_API_TIMEOUT=30m)",
+			action, err)
+	case errors.Is(err, pluginclient.ErrServerUnreachable):
 		return fmt.Errorf("failed to %s: %w\nHint: ensure 'thv serve' is running", action, err)
+	default:
+		return fmt.Errorf("failed to %s: %w", action, err)
 	}
-	return fmt.Errorf("failed to %s: %w", action, err)
 }
 
 // validateAIPluginScope returns a PreRunE that validates the --scope flag.

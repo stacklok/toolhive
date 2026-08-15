@@ -18,7 +18,7 @@ import (
 )
 
 // Uninstall removes an installed skill and cleans up files for all clients.
-// For a project-scope, lock-managed skill (see skills.LockFileFeatureEnabled),
+// For a project-scope, lock-managed skill,
 // it also removes the skill's lock entry and cascades to any dependency that
 // loses its last requiring parent as a result.
 func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) error {
@@ -64,7 +64,7 @@ func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions
 	visited[opts.Name] = struct{}{}
 
 	var cascadeCandidates []string
-	if scope == skills.ScopeProject && existing.Managed && skills.LockFileFeatureEnabled() {
+	if scope == skills.ScopeProject && existing.Managed {
 		cascadeCandidates, err = removeLockEntry(opts)
 		if err != nil {
 			return fmt.Errorf("updating project lock file: %w", err)

@@ -921,6 +921,8 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.issuerPolicies) || self.inboundGrants.tokenExchange.issuerPolicies.all(policy, self.inboundGrants.tokenExchange.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="tokenExchange issuerPolicies must not contain duplicate issuerRef values"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.name) && issuer.name == policy.issuerRef))",message="every jwtBearer issuerRef must reference a named trusted issuer"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy, self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef == policy.issuerRef).size() == 1)",message="jwtBearer issuerPolicies must not contain duplicate issuerRef values"
+// +kubebuilder:validation:XValidation:rule="!has(self.listenerTLS) || (has(self.listenerTLS.certificateSecretRef) && has(self.listenerTLS.privateKeySecretRef))",message="listenerTLS certificateSecretRef and privateKeySecretRef must be configured together"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || !self.inboundGrants.spiffeClientAuth.exists(association, association.methods.exists(method, method == 'spiffe_x509')) || has(self.listenerTLS)",message="listenerTLS is required when SPIFFE X.509 client authentication is configured"
 //
 // The shared Go-level ValidateConfidentialClientTransport validator remains the
 // source of truth for confidential-client transport and loopback policy,
@@ -987,6 +989,11 @@ type EmbeddedAuthServerConfig struct {
 	// InboundGrants configures canonical inbound OAuth grant families.
 	// +optional
 	InboundGrants *InboundGrantsConfig `json:"inboundGrants,omitempty"`
+
+	// ListenerTLS configures TLS for the proxy listener that serves the embedded
+	// authorization server. It is required for SPIFFE X.509 client authentication.
+	// +optional
+	ListenerTLS *ListenerTLSConfig `json:"listenerTLS,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// When configured, the embedded auth server delegates interactive authentication
@@ -2143,6 +2150,18 @@ type RedisACLUserConfig struct {
 	PasswordSecretRef *SecretKeyRef `json:"passwordSecretRef"`
 }
 
+// ListenerTLSConfig configures the embedded auth server listener's certificate.
+// Both secret references must be set together.
+type ListenerTLSConfig struct {
+	// CertificateSecretRef references the PEM-encoded TLS certificate.
+	// +optional
+	CertificateSecretRef *SecretKeyRef `json:"certificateSecretRef,omitempty"`
+
+	// PrivateKeySecretRef references the PEM-encoded TLS private key.
+	// +optional
+	PrivateKeySecretRef *SecretKeyRef `json:"privateKeySecretRef,omitempty"`
+}
+
 // SecretKeyRef is a reference to a key within a Secret
 type SecretKeyRef struct {
 	// Name is the name of the secret
@@ -2644,6 +2663,27 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	for i := range cfg.TrustedIssuers {
 		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
 			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
+	return validateListenerTLS(cfg)
+}
+
+// validateListenerTLS is admission-time-safe: it depends only on this
+// object's own spec. Both rules below are also enforced by the type-level
+// XValidation rules above; this is defense-in-depth, same reasoning as
+// ValidateConfidentialClientTransport.
+func validateListenerTLS(cfg *EmbeddedAuthServerConfig) error {
+	if cfg.ListenerTLS != nil && (cfg.ListenerTLS.CertificateSecretRef == nil || cfg.ListenerTLS.PrivateKeySecretRef == nil) {
+		return fmt.Errorf("listenerTLS certificateSecretRef and privateKeySecretRef must be configured together")
+	}
+	if cfg.InboundGrants == nil {
+		return nil
+	}
+	for _, association := range cfg.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 && cfg.ListenerTLS == nil {
+				return fmt.Errorf("listenerTLS is required when SPIFFE X.509 client authentication is configured")
+			}
 		}
 	}
 	return nil

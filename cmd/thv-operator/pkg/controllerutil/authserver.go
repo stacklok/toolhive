@@ -75,6 +75,18 @@ const (
 	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected CA bundle changes.
 	AuthServerCABundleChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
 
+	// AuthServerTLSVolumeName is the projected volume name for listener TLS credentials.
+	AuthServerTLSVolumeName = "authserver-listener-tls"
+
+	// AuthServerTLSMountPath is the directory where the projected listener TLS credentials are mounted.
+	AuthServerTLSMountPath = "/etc/toolhive/authserver/tls"
+
+	// AuthServerTLSCertFileName is the listener TLS certificate filename.
+	AuthServerTLSCertFileName = "tls.crt"
+
+	// AuthServerTLSKeyFileName is the listener TLS private key filename.
+	AuthServerTLSKeyFileName = "tls.key"
+
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
 	// upstream name uppercased with hyphens replaced by underscores (e.g.,
@@ -396,6 +408,31 @@ func EmbeddedAuthServerConfigName(
 	return ""
 }
 
+// EmbeddedAuthServerListenerTLSEnabled reports whether the embedded auth server
+// selected by the winning reference has listener TLS configured.
+func EmbeddedAuthServerListenerTLSEnabled(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	extAuthRef *mcpv1beta1.ExternalAuthConfigRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
+) (bool, error) {
+	configName := EmbeddedAuthServerConfigName(extAuthRef, authServerRef)
+	if configName == "" {
+		return false, nil
+	}
+
+	config, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
+	if err != nil {
+		return false, err
+	}
+	if config.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || config.Spec.EmbeddedAuthServer == nil {
+		return false, nil
+	}
+
+	return config.Spec.EmbeddedAuthServer.ListenerTLS != nil, nil
+}
+
 // GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type
 // is embeddedAuthServer, returns the corresponding volumes, volume mounts, and env vars.
 // Returns empty slices (no error) if the config type is not embeddedAuthServer, because
@@ -502,7 +539,9 @@ func EmbeddedAuthServerCABundleChecksumForConfig(
 }
 
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
-// signing keys, HMAC secrets, Redis CA certificates, and CA bundles.
+// listener TLS credentials, signing keys, HMAC secrets, Redis CA certificates,
+// and CA bundles. Listener TLS credentials use a projected directory mount so
+// Kubernetes can rotate the certificate and private key in place.
 // Returns an error when a CA bundle reference is malformed.
 // The volumes are configured with 0400 permissions for security.
 //
@@ -519,6 +558,38 @@ func GenerateAuthServerVolumes(
 
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
+
+	if authConfig.ListenerTLS != nil &&
+		authConfig.ListenerTLS.CertificateSecretRef != nil &&
+		authConfig.ListenerTLS.PrivateKeySecretRef != nil {
+		certificateRef := authConfig.ListenerTLS.CertificateSecretRef
+		privateKeyRef := authConfig.ListenerTLS.PrivateKeySecretRef
+		volumes = append(volumes, corev1.Volume{
+			Name: AuthServerTLSVolumeName,
+			VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{
+					{Secret: &corev1.SecretProjection{
+						LocalObjectReference: corev1.LocalObjectReference{Name: certificateRef.Name},
+						Items: []corev1.KeyToPath{{
+							Key: certificateRef.Key, Path: AuthServerTLSCertFileName,
+						}},
+					}},
+					{Secret: &corev1.SecretProjection{
+						LocalObjectReference: corev1.LocalObjectReference{Name: privateKeyRef.Name},
+						Items: []corev1.KeyToPath{{
+							Key: privateKeyRef.Key, Path: AuthServerTLSKeyFileName,
+						}},
+					}},
+				},
+				DefaultMode: k8sptr.To(int32(0400)),
+			}},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      AuthServerTLSVolumeName,
+			MountPath: AuthServerTLSMountPath,
+			ReadOnly:  true,
+		})
+	}
 
 	// Generate volumes for signing keys
 	for idx, keyRef := range authConfig.SigningKeySecretRefs {
@@ -711,6 +782,16 @@ func caBundleFilePath(mountBase string, index int) string {
 	return fmt.Sprintf("%s/%d/%s", mountBase, index, AuthServerUpstreamCABundleFileName)
 }
 
+// HasAuthServerListenerTLS reports whether volume mounts include the projected listener TLS directory.
+func HasAuthServerListenerTLS(volumeMounts []corev1.VolumeMount) bool {
+	for _, volumeMount := range volumeMounts {
+		if volumeMount.Name == AuthServerTLSVolumeName {
+			return true
+		}
+	}
+	return false
+}
+
 // GenerateAuthServerEnvVars creates environment variables for embedded auth server.
 // Generates TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> env vars for each upstream
 // provider that has a client secret reference configured, where PROVIDER is the
@@ -851,6 +932,9 @@ func AddEmbeddedAuthServerConfigOptions(
 
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
+	if tlsConfig := listenerTLSConfig(authServerConfig); tlsConfig != nil {
+		*options = append(*options, runner.WithTLSConfig(tlsConfig))
+	}
 
 	return nil
 }
@@ -952,6 +1036,34 @@ func buildJWTBearerSubjectBindings(
 	return converted
 }
 
+func validateListenerTLSConfig(authConfig *mcpv1beta1.EmbeddedAuthServerConfig) error {
+	if authConfig.ListenerTLS != nil &&
+		(authConfig.ListenerTLS.CertificateSecretRef == nil || authConfig.ListenerTLS.PrivateKeySecretRef == nil) {
+		return fmt.Errorf("listenerTLS certificateSecretRef and privateKeySecretRef must be configured together")
+	}
+	if authConfig.InboundGrants == nil {
+		return nil
+	}
+	for _, association := range authConfig.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == mcpv1beta1.SPIFFEAuthenticationMethodX509 && authConfig.ListenerTLS == nil {
+				return fmt.Errorf("listenerTLS is required when SPIFFE X.509 client authentication is configured")
+			}
+		}
+	}
+	return nil
+}
+
+func listenerTLSConfig(authConfig *mcpv1beta1.EmbeddedAuthServerConfig) *runner.TLSConfig {
+	if authConfig.ListenerTLS == nil {
+		return nil
+	}
+	return &runner.TLSConfig{
+		CertFile: fmt.Sprintf("%s/%s", AuthServerTLSMountPath, AuthServerTLSCertFileName),
+		KeyFile:  fmt.Sprintf("%s/%s", AuthServerTLSMountPath, AuthServerTLSKeyFileName),
+	}
+}
+
 // BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
@@ -975,6 +1087,9 @@ func BuildAuthServerRunConfig(
 		}
 	}()
 
+	if err := validateListenerTLSConfig(authConfig); err != nil {
+		return nil, err
+	}
 	if err := authConfig.ValidateInboundGrants(); err != nil {
 		return nil, err
 	}
@@ -1565,6 +1680,9 @@ func AddAuthServerRefOptions(
 
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
+	if tlsConfig := listenerTLSConfig(authServerConfig); tlsConfig != nil {
+		*options = append(*options, runner.WithTLSConfig(tlsConfig))
+	}
 
 	return nil
 }

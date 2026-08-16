@@ -6,6 +6,7 @@ package streamable
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +65,7 @@ type HTTPProxy struct {
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
+	tlsConfig         *tls.Config
 
 	// Message channel for sending JSON-RPC to the container (from HTTP -> runner)
 	messageCh chan jsonrpc2.Message
@@ -177,6 +179,15 @@ func WithReadTimeout(d time.Duration) Option {
 			return
 		}
 		p.readTimeout = d
+	}
+}
+
+// WithTLSConfig configures the TLS listener without changing the caller's configuration.
+func WithTLSConfig(config *tls.Config) Option {
+	return func(p *HTTPProxy) {
+		if config != nil {
+			p.tlsConfig = config.Clone()
+		}
 	}
 }
 
@@ -301,6 +312,7 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
+		TLSConfig:         p.tlsConfig,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       p.readTimeout,
 	}
@@ -314,11 +326,18 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go p.reapRoutingState()
 
 	go func() {
+		scheme, serve := func() (string, func() error) {
+			if p.tlsConfig != nil {
+				return "https", func() error { return p.server.ListenAndServeTLS("", "") }
+			}
+			return "http", p.server.ListenAndServe
+		}()
+
 		slog.Debug("streamable HTTP proxy started", "port", p.port)
 		//nolint:gosec // G706: logging configured host and port
 		slog.Debug("streamable HTTP endpoint",
-			"url", fmt.Sprintf("http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint))
-		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			"url", fmt.Sprintf("%s://%s:%d%s", scheme, p.host, p.port, StreamableHTTPEndpoint))
+		if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("streamable HTTP server error", "error", err)
 		}
 	}()

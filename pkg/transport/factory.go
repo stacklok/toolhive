@@ -57,6 +57,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.Host, config.ProxyPort, config.Deployer, config.Debug, config.TrustProxyHeaders,
 			config.PrometheusHandler, config.Middlewares...,
 		)
+		stdio.tlsConfig = config.TLSConfig
 		stdio.SetProxyMode(config.ProxyMode)
 		stdio.SetStrictProtocolValidation(config.StrictProtocolValidation)
 		if config.SessionStorage != nil {
@@ -87,6 +88,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.tlsConfig = config.TLSConfig
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
 		httpTransport.readTimeout = config.ReadTimeout
@@ -107,6 +109,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.tlsConfig = config.TLSConfig
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
 		httpTransport.readTimeout = config.ReadTimeout

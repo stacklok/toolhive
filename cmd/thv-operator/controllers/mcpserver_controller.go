@@ -564,22 +564,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Update the MCPServer status with the service URL including transport-specific path
-	if mcpServer.Status.URL == "" {
-		host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
-		mcpServer.Status.URL = transport.GenerateMCPServerURL(
-			mcpServer.Spec.Transport,
-			mcpServer.Spec.ProxyMode,
-			host,
-			int(mcpServer.GetProxyPort()),
-			mcpServer.Name,
-			"", // empty remoteUrl for MCPServer (not remote proxy)
-		)
-		err = r.Status().Update(ctx, mcpServer)
-		if err != nil {
-			ctxLogger.Error(err, "Failed to update MCPServer status")
-			return ctrl.Result{}, err
-		}
+	// Reconcile the service URL, including its scheme, from the selected auth server configuration.
+	if err := r.ensureServiceURL(ctx, mcpServer, serviceName); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Check if the deployment spec changed
@@ -649,6 +636,41 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// ensureServiceURL reconciles the service URL in status from the selected auth server configuration.
+func (r *MCPServerReconciler) ensureServiceURL(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	serviceName string,
+) error {
+	listenerTLSEnabled, err := ctrlutil.EmbeddedAuthServerListenerTLSEnabled(
+		ctx,
+		r.Client,
+		mcpServer.Namespace,
+		mcpServer.Spec.ExternalAuthConfigRef,
+		mcpServer.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to determine MCPServer service URL scheme: %w", err)
+	}
+
+	host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
+	desiredURL := transport.GenerateMCPServerURL(
+		mcpServer.Spec.Transport,
+		mcpServer.Spec.ProxyMode,
+		host,
+		int(mcpServer.GetProxyPort()),
+		mcpServer.Name,
+		"", // empty remoteUrl for MCPServer (not remote proxy)
+		listenerTLSEnabled,
+	)
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
+		server.Status.URL = desiredURL
+	}); err != nil {
+		return fmt.Errorf("failed to update MCPServer status URL: %w", err)
+	}
+	return nil
 }
 
 func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
@@ -1441,6 +1463,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 		env = append(env, authServerEnvVars...)
 	}
+	probeScheme := func() corev1.URIScheme {
+		if ctrlutil.HasAuthServerListenerTLS(volumeMounts) {
+			return corev1.URISchemeHTTPS
+		}
+		return corev1.URISchemeHTTP
+	}()
 
 	// Prepare container resources
 	resources := corev1.ResourceRequirements{}
@@ -1570,8 +1598,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							PeriodSeconds:    5,
@@ -1581,8 +1610,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							InitialDelaySeconds: 30,
@@ -1593,8 +1623,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							InitialDelaySeconds: 5,

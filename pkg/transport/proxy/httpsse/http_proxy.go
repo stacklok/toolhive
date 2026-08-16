@@ -7,6 +7,7 @@ package httpsse
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -76,6 +77,7 @@ type HTTPSSEProxy struct {
 	port              int
 	middlewares       []types.NamedMiddleware
 	trustProxyHeaders bool
+	tlsConfig         *tls.Config
 
 	// HTTP server
 	server     *http.Server
@@ -179,6 +181,15 @@ func WithReadTimeout(d time.Duration) Option {
 			return
 		}
 		p.readTimeout = d
+	}
+}
+
+// WithTLSConfig configures the TLS listener without changing the caller's configuration.
+func WithTLSConfig(config *tls.Config) Option {
+	return func(p *HTTPSSEProxy) {
+		if config != nil {
+			p.tlsConfig = config.Clone()
+		}
 	}
 }
 
@@ -325,6 +336,12 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 
 	// Update the server address with the actual address
 	actualAddr := listener.Addr().String()
+	listener, scheme := func(listener net.Listener) (net.Listener, string) {
+		if p.tlsConfig != nil {
+			return tls.NewListener(listener, p.tlsConfig), "https"
+		}
+		return listener, "http"
+	}(listener)
 
 	// Create the server
 	p.server = &http.Server{
@@ -345,10 +362,10 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		slog.Debug("http proxy started", "port", actualPort)
 		//nolint:gosec // G706: logging configured SSE and JSON-RPC endpoint addresses
 		slog.Debug("sse endpoint",
-			"url", fmt.Sprintf("http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint))
+			"url", fmt.Sprintf("%s://%s%s", scheme, actualAddr, ssecommon.HTTPSSEEndpoint))
 		//nolint:gosec // G706: logging configured JSON-RPC endpoint address
 		slog.Debug("json-RPC endpoint",
-			"url", fmt.Sprintf("http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint))
+			"url", fmt.Sprintf("%s://%s%s", scheme, actualAddr, ssecommon.HTTPMessagesEndpoint))
 
 		if err := p.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server error", "error", err)

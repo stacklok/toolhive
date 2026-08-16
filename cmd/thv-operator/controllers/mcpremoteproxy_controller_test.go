@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -734,8 +735,11 @@ func TestServiceNameGeneration(t *testing.T) {
 			serviceName := createProxyServiceName(tt.proxyName)
 			assert.Equal(t, tt.expected, serviceName)
 
-			serviceURL := createProxyServiceURL(tt.proxyName, "default", 8080)
+			serviceURL := createProxyServiceURL(tt.proxyName, "default", 8080, false)
 			assert.Equal(t, tt.expectedURL, serviceURL)
+
+			secureServiceURL := createProxyServiceURL(tt.proxyName, "default", 8080, true)
+			assert.Equal(t, "https"+strings.TrimPrefix(tt.expectedURL, "http"), secureServiceURL)
 		})
 	}
 }

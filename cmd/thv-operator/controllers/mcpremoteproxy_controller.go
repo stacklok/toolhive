@@ -616,12 +616,29 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 	return ctrl.Result{}, nil
 }
 
-// ensureServiceURL ensures the service URL is set in the status
+// ensureServiceURL reconciles the service URL in status from the selected auth server configuration.
 func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
-	if proxy.Status.URL == "" {
-		// Note: createProxyServiceURL uses the remote-prefixed service name
-		proxy.Status.URL = createProxyServiceURL(proxy.Name, proxy.Namespace, int32(proxy.GetProxyPort()))
-		return r.Status().Update(ctx, proxy)
+	listenerTLSEnabled, err := ctrlutil.EmbeddedAuthServerListenerTLSEnabled(
+		ctx,
+		r.Client,
+		proxy.Namespace,
+		proxy.Spec.ExternalAuthConfigRef,
+		proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to determine MCPRemoteProxy service URL scheme: %w", err)
+	}
+
+	desiredURL := createProxyServiceURL(
+		proxy.Name,
+		proxy.Namespace,
+		int32(proxy.GetProxyPort()),
+		listenerTLSEnabled,
+	)
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, func(remoteProxy *mcpv1beta1.MCPRemoteProxy) {
+		remoteProxy.Status.URL = desiredURL
+	}); err != nil {
+		return fmt.Errorf("failed to update MCPRemoteProxy status URL: %w", err)
 	}
 	return nil
 }
@@ -1719,9 +1736,13 @@ func createProxyServiceName(proxyName string) string {
 }
 
 // createProxyServiceURL generates the full cluster-local service URL for a remote proxy
-func createProxyServiceURL(proxyName, namespace string, port int32) string {
+func createProxyServiceURL(proxyName, namespace string, port int32, listenerTLSEnabled bool) string {
+	scheme := "http"
+	if listenerTLSEnabled {
+		scheme = "https"
+	}
 	serviceName := createProxyServiceName(proxyName)
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+	return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", scheme, serviceName, namespace, port)
 }
 
 // deploymentNeedsUpdate checks if the deployment needs to be updated based on spec changes.

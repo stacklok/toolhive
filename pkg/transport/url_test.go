@@ -22,6 +22,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 		port          int
 		containerName string
 		targetURI     string
+		useTLS        bool
 		expected      string
 	}{
 		{
@@ -74,6 +75,14 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			containerName: "test-container",
 			targetURI:     "",
 			expected:      "http://localhost:12345/" + streamable.HTTPStreamableHTTPEndpoint,
+		},
+		{
+			name:          "Streamable HTTP transport with TLS",
+			transportType: types.TransportTypeStreamableHTTP.String(),
+			host:          "localhost",
+			port:          12345,
+			useTLS:        true,
+			expected:      "https://localhost:12345/" + streamable.HTTPStreamableHTTPEndpoint,
 		},
 		{
 			name:          "Unsupported transport type",
@@ -206,7 +215,15 @@ func TestGenerateMCPServerURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			url := GenerateMCPServerURL(tt.transportType, tt.proxyMode, tt.host, tt.port, tt.containerName, tt.targetURI)
+			url := GenerateMCPServerURL(
+				tt.transportType,
+				tt.proxyMode,
+				tt.host,
+				tt.port,
+				tt.containerName,
+				tt.targetURI,
+				tt.useTLS,
+			)
 			if url != tt.expected {
 				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)
 			}

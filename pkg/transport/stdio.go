@@ -9,6 +9,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,7 @@ type StdioTransport struct {
 	sessionStorage    session.Storage
 	sessionTTL        time.Duration
 	readTimeout       time.Duration
+	tlsConfig         *tls.Config
 	authInfoHandler   http.Handler
 	prefixHandlers    map[string]http.Handler
 
@@ -284,6 +286,9 @@ func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
 	if t.sessionStorage != nil {
 		opts = append(opts, streamable.WithSessionStorage(t.sessionStorage))
 	}
+	if t.tlsConfig != nil {
+		opts = append(opts, streamable.WithTLSConfig(t.tlsConfig))
+	}
 	return append(opts,
 		streamable.WithAuthInfoHandler(t.authInfoHandler),
 		streamable.WithPrefixHandlers(t.prefixHandlers),
@@ -303,6 +308,9 @@ func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, httpsse.WithSessionStorage(t.sessionStorage))
+	}
+	if t.tlsConfig != nil {
+		opts = append(opts, httpsse.WithTLSConfig(t.tlsConfig))
 	}
 	return append(opts,
 		httpsse.WithAuthInfoHandler(t.authInfoHandler),

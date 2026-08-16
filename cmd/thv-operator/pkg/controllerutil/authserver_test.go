@@ -31,6 +31,90 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
+func TestEmbeddedAuthServerListenerTLSEnabled(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(name string, authType mcpv1beta1.ExternalAuthType, listenerTLS bool) *mcpv1beta1.MCPExternalAuthConfig {
+		config := &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: authType},
+		}
+		if authType == mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
+			config.Spec.EmbeddedAuthServer = &mcpv1beta1.EmbeddedAuthServerConfig{}
+			if listenerTLS {
+				config.Spec.EmbeddedAuthServer.ListenerTLS = &mcpv1beta1.ListenerTLSConfig{}
+			}
+		}
+		return config
+	}
+
+	tests := []struct {
+		name          string
+		extAuthRef    *mcpv1beta1.ExternalAuthConfigRef
+		authServerRef *mcpv1beta1.AuthServerRef
+		objects       []client.Object
+		fetchError    bool
+		want          bool
+	}{
+		{name: "no references"},
+		{
+			name:       "external embedded config without listener TLS",
+			extAuthRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "auth"},
+			objects:    []client.Object{newConfig("auth", mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer, false)},
+		},
+		{
+			name:       "external embedded config with listener TLS",
+			extAuthRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "auth"},
+			objects:    []client.Object{newConfig("auth", mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer, true)},
+			want:       true,
+		},
+		{
+			name:       "non-embedded external config",
+			extAuthRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "auth"},
+			objects:    []client.Object{newConfig("auth", mcpv1beta1.ExternalAuthTypeHeaderInjection, false)},
+		},
+		{
+			name:          "auth server reference takes precedence",
+			extAuthRef:    &mcpv1beta1.ExternalAuthConfigRef{Name: "external"},
+			authServerRef: &mcpv1beta1.AuthServerRef{Name: "auth-server"},
+			objects: []client.Object{
+				newConfig("external", mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer, true),
+				newConfig("auth-server", mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer, false),
+			},
+		},
+		{
+			name:          "selected config fetch error",
+			authServerRef: &mcpv1beta1.AuthServerRef{Name: "auth"},
+			fetchError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(tt.objects...)
+			if tt.fetchError {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+						return stderrors.New("selected config unavailable")
+					},
+				})
+			}
+
+			got, err := EmbeddedAuthServerListenerTLSEnabled(
+				t.Context(), builder.Build(), "default", tt.extAuthRef, tt.authServerRef)
+			if tt.fetchError {
+				require.ErrorContains(t, err, "selected config unavailable")
+				assert.False(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestEmbeddedAuthServerCABundleChecksumForConfig(t *testing.T) {
 	t.Parallel()
 
@@ -3644,6 +3728,10 @@ func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testin
 	t.Parallel()
 
 	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+		ListenerTLS: &mcpv1beta1.ListenerTLSConfig{
+			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+		},
 		SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 			Name: "example", TrustDomain: "example.org",
 			Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
@@ -3685,6 +3773,10 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 
 	authConfig := func(resource string) *mcpv1beta1.EmbeddedAuthServerConfig {
 		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			ListenerTLS: &mcpv1beta1.ListenerTLSConfig{
+				CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+				PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+			},
 			SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 				Name: "example", TrustDomain: "example.org",
 				Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},

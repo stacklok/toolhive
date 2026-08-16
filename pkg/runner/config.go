@@ -41,6 +41,13 @@ import (
 // TODO: Set to "v1.0.0" when we clean up the middleware configuration.
 const CurrentSchemaVersion = "v0.1.0"
 
+// TLSConfig configures TLS for the proxy listener.
+// When set, the listener serves HTTPS using the configured certificate and key.
+type TLSConfig struct {
+	CertFile string `json:"cert_file" yaml:"cert_file"`
+	KeyFile  string `json:"key_file" yaml:"key_file"`
+}
+
 // RunConfig contains all the configuration needed to run an MCP server
 // It is serializable to JSON and YAML
 // NOTE: This format is importable and exportable, and as a result should be
@@ -301,6 +308,9 @@ type RunConfig struct {
 	// When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
 	// This is the serializable RunConfig; secrets are referenced by file paths or env var names.
 	EmbeddedAuthServerConfig *authserver.RunConfig `json:"embedded_auth_server_config,omitempty" yaml:"embedded_auth_server_config,omitempty"` //nolint:lll
+
+	// TLSConfig configures TLS for the proxy listener.
+	TLSConfig *TLSConfig `json:"tls_config,omitempty" yaml:"tls_config,omitempty"`
 
 	// ScalingConfig contains configuration for horizontal scaling of the proxy runner.
 	// Only applicable when running in Kubernetes with the ToolHive operator.

@@ -58,6 +58,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 		env = append(env, authServerEnvVars...)
 	}
+	probeScheme := "http"
+	if ctrlutil.HasAuthServerListenerTLS(volumeMounts) {
+		probeScheme = "https"
+	}
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
@@ -94,9 +98,9 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
 						Ports:           r.buildContainerPorts(proxy),
-						StartupProbe:    ctrlutil.BuildHealthProbe("/health", "http", 0, 5, 3, 18),
-						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
-						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
+						StartupProbe:    ctrlutil.BuildHealthProbe("/health", probeScheme, 0, 5, 3, 18),
+						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", probeScheme, 30, 10, 5, 3),
+						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", probeScheme, 15, 5, 3, 3),
 						SecurityContext: containerSecurityContext,
 					}},
 					Volumes:         volumes,

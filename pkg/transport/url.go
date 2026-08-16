@@ -18,8 +18,20 @@ import (
 // If remoteURL is provided, the remote server's path will be used as the path of the proxy.
 // For SSE/STDIO transports, a "#<containerName>" fragment is appended.
 // For StreamableHTTP, no fragment is appended.
-func GenerateMCPServerURL(transportType string, proxyMode string, host string, port int, containerName, remoteURL string) string {
-	base := fmt.Sprintf("http://%s:%d", host, port)
+// When useTLS is true, the generated URL uses HTTPS; omitted or false uses HTTP.
+func GenerateMCPServerURL(
+	transportType string,
+	proxyMode string,
+	host string,
+	port int,
+	containerName, remoteURL string,
+	useTLS ...bool,
+) string {
+	scheme := "http"
+	if len(useTLS) > 0 && useTLS[0] {
+		scheme = "https"
+	}
+	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 
 	var isSSE, isStreamable bool
 

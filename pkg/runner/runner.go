@@ -7,8 +7,11 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,8 +25,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -215,6 +220,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if hasSPIFFEX509ClientAuth(r.Config.EmbeddedAuthServerConfig) && r.Config.TLSConfig == nil {
+		return fmt.Errorf("TLS configuration is required for SPIFFE X.509 client authentication")
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:                     r.Config.Transport,
@@ -228,6 +237,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
+	}
+	if r.Config.TLSConfig != nil {
+		tlsConfig, err := buildTLSConfig(r.Config.TLSConfig, hasSPIFFEX509ClientAuth(r.Config.EmbeddedAuthServerConfig))
+		if err != nil {
+			return fmt.Errorf("build TLS config: %w", err)
+		}
+		transportConfig.TLSConfig = tlsConfig
 	}
 
 	// Set proxy mode for stdio transport
@@ -336,6 +352,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
+		defer func() {
+			if err := r.closeEmbeddedAuthServer(); err != nil {
+				slog.Warn("failed to close embedded auth server", "error", err)
+			}
+		}()
 		slog.Debug("embedded authorization server initialized")
 
 		// Create the upstream token service eagerly now that the auth server exists.
@@ -351,7 +372,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		transportConfig.PrefixHandlers = r.embeddedAuthServer.Routes()
+		routes := r.embeddedAuthServer.Routes()
+		routes["/oauth/"] = spiffeauth.Middleware(routes["/oauth/"])
+		transportConfig.PrefixHandlers = routes
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -601,7 +624,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		"localhost",
 		r.Config.Port,
 		r.Config.ContainerName,
-		r.Config.RemoteURL)
+		r.Config.RemoteURL,
+		r.Config.TLSConfig != nil,
+	)
 
 	// Only wait for initialization on non-STDIO transports
 	// STDIO servers communicate directly via stdin/stdout and calling initialize multiple times
@@ -612,7 +637,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		// When OIDC auth is configured, the local proxy rejects the unauthenticated
 		// probe with 401/403, which still indicates the server is ready.
 		authExpected := r.Config.OIDCConfig != nil
-		if err := waitForInitializeSuccess(ctx, serverURL, transportType, authExpected, 5*time.Minute); err != nil {
+		if err := waitForInitializeSuccess(
+			ctx,
+			serverURL,
+			transportType,
+			authExpected,
+			5*time.Minute,
+			r.Config.TLSConfig,
+		); err != nil {
 			slog.Warn("initialize not successful, but continuing", "error", err)
 			// Continue anyway to maintain backward compatibility, but log a warning
 		}
@@ -978,6 +1010,17 @@ func (r *Runner) persistClientCredentials(
 	return nil
 }
 
+// closeEmbeddedAuthServer releases the runner's ownership of the embedded auth server before closing it.
+// Clearing the field makes cleanup idempotent across Run's deferred cleanup and normal shutdown.
+func (r *Runner) closeEmbeddedAuthServer() error {
+	if r.embeddedAuthServer == nil {
+		return nil
+	}
+	server := r.embeddedAuthServer
+	r.embeddedAuthServer = nil
+	return server.Close()
+}
+
 // Cleanup performs cleanup operations for the runner, including shutting down all middleware.
 func (r *Runner) Cleanup(ctx context.Context) error {
 	// For simplicity, return the last error we encounter during cleanup.
@@ -992,12 +1035,10 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 	}
 
 	// Close embedded auth server
-	if r.embeddedAuthServer != nil {
-		if err := r.embeddedAuthServer.Close(); err != nil {
-			slog.Warn("Failed to close embedded auth server", "error", err)
-			if lastErr == nil {
-				lastErr = err
-			}
+	if err := r.closeEmbeddedAuthServer(); err != nil {
+		slog.Warn("Failed to close embedded auth server", "error", err)
+		if lastErr == nil {
+			lastErr = err
 		}
 	}
 
@@ -1043,6 +1084,58 @@ func isReadyStatus(statusCode int, authExpected bool) bool {
 	return authExpected && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden)
 }
 
+func newReadinessHTTPClient(tlsConfigs ...*TLSConfig) (*http.Client, error) {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if len(tlsConfigs) == 0 || tlsConfigs[0] == nil {
+		return httpClient, nil
+	}
+	tlsConfig := tlsConfigs[0]
+	certificatePEM, err := os.ReadFile(tlsConfig.CertFile)
+	if err != nil {
+		return nil, fmt.Errorf("read readiness TLS certificate: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certificatePEM) {
+		return nil, fmt.Errorf("parse readiness TLS certificate")
+	}
+
+	httpClient.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    roots,
+			ServerName: "localhost",
+		},
+	}
+	return httpClient, nil
+}
+
+func readinessProbeDetails(serverURL, transportType string) (endpoint, method, payload string, ok bool) {
+	switch transportType {
+	case "streamable-http", "streamable":
+		return serverURL, http.MethodPost, fmt.Sprintf(
+			`{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",`+
+				`"params":{"protocolVersion":%q,"capabilities":{},`+
+				`"clientInfo":{"name":"toolhive","version":"1.0"}}}`,
+			probeProtocolVersion,
+		), true
+	case "sse":
+		return strings.Split(serverURL, "#")[0], http.MethodGet, "", true
+	default:
+		return "", "", "", false
+	}
+}
+
+func readinessResponseStatus(resp *http.Response, authExpected bool) (bool, string) {
+	ready := isReadyStatus(resp.StatusCode, authExpected)
+	if !ready {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
+	if err := resp.Body.Close(); err != nil {
+		slog.Debug("failed to close readiness response body", "error", err)
+	}
+	return ready, fmt.Sprintf("HTTP %d", resp.StatusCode)
+}
+
 // waitForInitializeSuccess repeatedly checks if the MCP server is ready to accept requests.
 // This prevents timing issues where clients try to connect before the server is fully ready.
 // It makes repeated attempts with exponential backoff up to a maximum timeout.
@@ -1062,38 +1155,10 @@ func waitForInitializeSuccess(
 	serverURL, transportType string,
 	authExpected bool,
 	maxWaitTime time.Duration,
+	tlsConfigs ...*TLSConfig,
 ) error {
-	// Determine the endpoint and method to use based on transport type
-	var endpoint string
-	var method string
-	var payload string
-
-	switch transportType {
-	case "streamable-http", "streamable":
-		// For streamable-http, send initialize request to /mcp endpoint
-		// Format: http://localhost:port/mcp
-		endpoint = serverURL
-		method = "POST"
-		payload = fmt.Sprintf(
-			`{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",`+
-				`"params":{"protocolVersion":%q,"capabilities":{},`+
-				`"clientInfo":{"name":"toolhive","version":"1.0"}}}`,
-			probeProtocolVersion,
-		)
-	case "sse":
-		// For SSE, just check if the SSE endpoint is available
-		// We can't easily call initialize without establishing a full SSE connection,
-		// so we just verify the endpoint responds.
-		// Format: http://localhost:port/sse#container-name -> http://localhost:port/sse
-		endpoint = serverURL
-		// Remove fragment if present (everything after #)
-		if idx := strings.Index(endpoint, "#"); idx != -1 {
-			endpoint = endpoint[:idx]
-		}
-		method = "GET"
-		payload = ""
-	default:
-		// For other transports, no HTTP check is needed
+	endpoint, method, payload, shouldProbe := readinessProbeDetails(serverURL, transportType)
+	if !shouldProbe {
 		slog.Debug("Skipping readiness check for transport type", "transport", transportType)
 		return nil
 	}
@@ -1115,9 +1180,10 @@ func waitForInitializeSuccess(
 
 	slog.Info("Waiting for MCP server to be ready", "endpoint", endpoint, "timeout", maxWaitTime)
 
-	// Create HTTP client with a reasonable timeout for requests
-	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
+	// Create an HTTP client that verifies the configured local serving certificate.
+	httpClient, err := newReadinessHTTPClient(tlsConfigs...)
+	if err != nil {
+		return err
 	}
 
 	for {
@@ -1147,10 +1213,8 @@ func waitForInitializeSuccess(
 
 			resp, err := httpClient.Do(req) // #nosec G704 -- endpoint is the local MCP server readiness URL
 			if err == nil {
-				//nolint:errcheck // Ignoring close error on response body in error path
-				defer resp.Body.Close()
-
-				if isReadyStatus(resp.StatusCode, authExpected) {
+				ready, status := readinessResponseStatus(resp, authExpected)
+				if ready {
 					elapsed := time.Since(startTime)
 					slog.Debug("MCP server is ready", //nolint:gosec // G706: status code and attempt are integers
 						"elapsed", elapsed, "attempt", attempt, "status_code", resp.StatusCode)
@@ -1159,7 +1223,7 @@ func waitForInitializeSuccess(
 
 				slog.Debug("Server returned status", //nolint:gosec // G706: status code and attempt are integers
 					"status_code", resp.StatusCode, "attempt", attempt)
-				lastObserved = fmt.Sprintf("HTTP %d", resp.StatusCode)
+				lastObserved = status
 			} else {
 				slog.Debug("Failed to reach endpoint", "attempt", attempt, "error", err)
 				lastObserved = fmt.Sprintf("unreachable: %v", err)
@@ -1193,4 +1257,43 @@ func waitForInitializeSuccess(
 			delay = maxDelay
 		}
 	}
+}
+
+func hasSPIFFEX509ClientAuth(runConfig *authserver.RunConfig) bool {
+	if runConfig == nil || runConfig.InboundGrants == nil {
+		return false
+	}
+	for _, association := range runConfig.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == authserver.SPIFFEAuthenticationMethodX509 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildTLSConfig(cfg *TLSConfig, requestClientCertificate bool) (*tls.Config, error) {
+	if cfg == nil || cfg.CertFile == "" || cfg.KeyFile == "" {
+		return nil, fmt.Errorf("TLS cert_file and key_file are required")
+	}
+	if _, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile); err != nil {
+		return nil, fmt.Errorf("load TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			certificate, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+			if err != nil {
+				return nil, err
+			}
+			return &certificate, nil
+		},
+		ClientAuth: func() tls.ClientAuthType {
+			if requestClientCertificate {
+				return tls.RequestClientCert
+			}
+			return tls.NoClientCert
+		}(),
+	}, nil
 }

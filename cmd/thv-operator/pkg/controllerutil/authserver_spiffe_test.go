@@ -42,6 +42,10 @@ func TestBuildAuthServerRunConfigConvertsSPIFFETrust(t *testing.T) {
 				},
 			},
 		},
+		ListenerTLS: &mcpv1beta1.ListenerTLSConfig{
+			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "cert"},
+			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "key"},
+		},
 		InboundGrants: &mcpv1beta1.InboundGrantsConfig{SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientAuthConfig{
 			{
 				TrustDomainRef: "production",
@@ -99,6 +103,10 @@ func TestBuildAuthServerRunConfigRejectsUnknownTrustDomainRef(t *testing.T) {
 					Endpoint: &mcpv1beta1.SPIFFEBundleEndpointSourceConfig{URL: "https://bundles.example.org/"},
 				},
 			},
+		},
+		ListenerTLS: &mcpv1beta1.ListenerTLSConfig{
+			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "cert"},
+			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "key"},
 		},
 		InboundGrants: &mcpv1beta1.InboundGrantsConfig{SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientAuthConfig{
 			{

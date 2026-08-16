@@ -1356,6 +1356,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 		env = append(env, authServerEnvVars...)
 	}
+	probeScheme := func() corev1.URIScheme {
+		if ctrlutil.HasAuthServerListenerTLS(volumeMounts) {
+			return corev1.URISchemeHTTPS
+		}
+		return corev1.URISchemeHTTP
+	}()
 
 	// Prepare container resources
 	resources := corev1.ResourceRequirements{}
@@ -1472,8 +1478,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							PeriodSeconds:    5,
@@ -1483,8 +1490,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							InitialDelaySeconds: 30,
@@ -1495,8 +1503,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							InitialDelaySeconds: 5,

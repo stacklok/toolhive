@@ -737,6 +737,8 @@ type SPIFFETokenExchangeConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || size(self.delegateClients) == 0 || !self.issuer.startsWith('http://')",message="delegateClients require an https:// issuer; delegate client secrets must not be sent over plaintext HTTP"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
 // +kubebuilder:validation:XValidation:rule="has(self.spiffeTrustDomains) == has(self.inboundGrants)",message="spiffeTrustDomains and inboundGrants must be configured together"
+// +kubebuilder:validation:XValidation:rule="!has(self.listenerTLS) || (has(self.listenerTLS.certificateSecretRef) && has(self.listenerTLS.privateKeySecretRef))",message="listenerTLS certificateSecretRef and privateKeySecretRef must be configured together"
+// +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !self.inboundGrants.spiffeClientAuth.exists(association, association.methods.exists(method, method == 'spiffe_x509')) || has(self.listenerTLS)",message="listenerTLS is required when SPIFFE X.509 client authentication is configured"
 //
 // Delegate clients categorically require HTTPS at admission. CEL has no URL
 // parser, so this deliberately conservative check rejects every plaintext HTTP
@@ -807,6 +809,11 @@ type EmbeddedAuthServerConfig struct {
 	// InboundGrants configures grants accepted from inbound clients.
 	// +optional
 	InboundGrants *InboundGrantsConfig `json:"inboundGrants,omitempty"`
+
+	// ListenerTLS configures TLS for the proxy listener that serves the embedded
+	// authorization server. It is required for SPIFFE X.509 client authentication.
+	// +optional
+	ListenerTLS *ListenerTLSConfig `json:"listenerTLS,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// The embedded auth server delegates authentication to these providers.
@@ -1698,6 +1705,18 @@ type RedisACLUserConfig struct {
 	PasswordSecretRef *SecretKeyRef `json:"passwordSecretRef"`
 }
 
+// ListenerTLSConfig configures the embedded auth server listener's certificate.
+// Both secret references must be set together.
+type ListenerTLSConfig struct {
+	// CertificateSecretRef references the PEM-encoded TLS certificate.
+	// +optional
+	CertificateSecretRef *SecretKeyRef `json:"certificateSecretRef,omitempty"`
+
+	// PrivateKeySecretRef references the PEM-encoded TLS private key.
+	// +optional
+	PrivateKeySecretRef *SecretKeyRef `json:"privateKeySecretRef,omitempty"`
+}
+
 // SecretKeyRef is a reference to a key within a Secret
 type SecretKeyRef struct {
 	// Name is the name of the secret
@@ -2171,6 +2190,9 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 }
 
 func validateSPIFFEConfig(cfg *EmbeddedAuthServerConfig) error {
+	if err := validateListenerTLS(cfg); err != nil {
+		return err
+	}
 	if err := validateSPIFFEConfigPresence(cfg); err != nil {
 		return err
 	}
@@ -2181,6 +2203,23 @@ func validateSPIFFEConfig(cfg *EmbeddedAuthServerConfig) error {
 		return err
 	}
 	return validateSPIFFEClientAuth(cfg.InboundGrants.SPIFFEClientAuth)
+}
+
+func validateListenerTLS(cfg *EmbeddedAuthServerConfig) error {
+	if cfg.ListenerTLS != nil && (cfg.ListenerTLS.CertificateSecretRef == nil || cfg.ListenerTLS.PrivateKeySecretRef == nil) {
+		return fmt.Errorf("listenerTLS certificateSecretRef and privateKeySecretRef must be configured together")
+	}
+	if cfg.InboundGrants == nil {
+		return nil
+	}
+	for _, association := range cfg.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 && cfg.ListenerTLS == nil {
+				return fmt.Errorf("listenerTLS is required when SPIFFE X.509 client authentication is configured")
+			}
+		}
+	}
+	return nil
 }
 
 func validateSPIFFEConfigPresence(cfg *EmbeddedAuthServerConfig) error {

@@ -59,8 +59,9 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 			resolver: stubResolver,
 			form: url.Values{
 				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+				"client_id":             {"client"},
 			},
-			wantErr: "SPIFFE X.509 client authentication is not implemented",
+			wantErr: "SPIFFE X.509 client authentication failed",
 		},
 		{
 			name:     "RFC 7523 assertion delegates to default strategy",
@@ -97,7 +98,7 @@ func TestSPIFFEClientAuthenticationStrategy(t *testing.T) {
 			strategy := newSPIFFEClientAuthenticationStrategy(func(_ context.Context, _ *http.Request, _ url.Values) (fosite.Client, error) {
 				defaultCalled = true
 				return defaultClient, defaultErr
-			}, testIssuer, nil, tt.resolver)
+			}, testIssuer, nil, nil, tt.resolver)
 
 			req := httptest.NewRequest("POST", "/oauth/token", nil).WithContext(tt.ctx)
 			client, err := strategy(tt.ctx, req, tt.form)
@@ -195,7 +196,7 @@ func TestSPIFFEJWTClientAuthentication(t *testing.T) {
 					t.Fatal("default strategy called")
 					return nil, nil
 				},
-				testIssuer, tt.source,
+				testIssuer, tt.source, nil,
 				func(_ context.Context, gotSPIFFEID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
 					called = true
 					assert.Equal(t, id.String(), gotSPIFFEID)
@@ -260,7 +261,7 @@ func TestSPIFFEJWTClientAuthenticationAlgorithmsAndPrecedence(t *testing.T) {
 			strategy := newSPIFFEClientAuthenticationStrategy(func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
 				defaultCalled = true
 				return nil, nil
-			}, testIssuer, source, func(_ context.Context, gotSPIFFEID, _ string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			}, testIssuer, source, nil, func(_ context.Context, gotSPIFFEID, _ string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
 				assert.Equal(t, id.String(), gotSPIFFEID)
 				assert.Equal(t, spiffeauth.SPIFFEAuthenticationMethodJWT, method)
 				return &fosite.DefaultClient{ID: "client"}, nil
@@ -306,7 +307,7 @@ func TestSPIFFEJWTDispatchFallsThroughForNonSPIFFEFirstValue(t *testing.T) {
 			strategy := newSPIFFEClientAuthenticationStrategy(func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
 				called = true
 				return nil, errors.New("default")
-			}, testIssuer, nil, stubResolver)
+			}, testIssuer, nil, nil, stubResolver)
 			_, err := strategy(tt.ctx, httptest.NewRequest(http.MethodPost, "/", nil), tt.form)
 			assert.True(t, called)
 			assert.EqualError(t, err, "default")
@@ -320,7 +321,7 @@ func TestSPIFFEX509ClientAuthenticationDoesNotFallThrough(t *testing.T) {
 	strategy := newSPIFFEClientAuthenticationStrategy(func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
 		t.Fatal("default strategy called")
 		return nil, nil
-	}, testIssuer, nil, stubResolver)
+	}, testIssuer, nil, nil, stubResolver)
 	ctx := spiffeauth.ContextWithSPIFFEID(context.Background(), spiffeid.RequireFromString("spiffe://example.org/workload"))
 	_, err := strategy(ctx, httptest.NewRequest(http.MethodPost, "/", nil), url.Values{"client_id": {"client"}})
 	require.ErrorIs(t, err, fosite.ErrInvalidClient)

@@ -15,6 +15,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -197,6 +198,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),
 		SPIFFEClientResolver:                newSPIFFEClientResolver(spiffeRegistry, stor),
 		SPIFFEJWTBundleSource:               spiffeJWTBundleSource(bundleRegistry),
+		SPIFFEX509BundleSource:              spiffeX509BundleSource(bundleRegistry),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -337,6 +339,15 @@ func closeSPIFFEBundleRegistryOnFailure(registry *SPIFFEBundleRegistry, keepOpen
 // wrapping a nil pointer, which the strategy's jwtBundleSource == nil guard
 // would then fail to catch.
 func spiffeJWTBundleSource(registry *SPIFFEBundleRegistry) jwtbundle.Source {
+	if registry == nil {
+		return nil
+	}
+	return registry
+}
+
+// spiffeX509BundleSource is the X.509 mirror of spiffeJWTBundleSource: same
+// nil-before-boxing reasoning, same reason it exists.
+func spiffeX509BundleSource(registry *SPIFFEBundleRegistry) x509bundle.Source {
 	if registry == nil {
 		return nil
 	}

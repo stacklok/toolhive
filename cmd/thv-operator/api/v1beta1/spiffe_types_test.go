@@ -127,6 +127,12 @@ func TestSPIFFEPrincipalSchemaPattern(t *testing.T) {
 
 func validSPIFFEEmbeddedAuthServerConfig() *EmbeddedAuthServerConfig {
 	return &EmbeddedAuthServerConfig{
+		// The base fixture uses SPIFFE X.509 client authentication, which
+		// requires a listener TLS certificate to terminate mTLS.
+		ListenerTLS: &ListenerTLSConfig{
+			CertificateSecretRef: &SecretKeyRef{Name: "authserver-tls", Key: "tls.crt"},
+			PrivateKeySecretRef:  &SecretKeyRef{Name: "authserver-tls", Key: "tls.key"},
+		},
 		SPIFFETrustDomains: []SPIFFETrustDomainConfig{
 			{
 				Name:        "production",

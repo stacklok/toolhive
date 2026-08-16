@@ -361,7 +361,7 @@ func NewAuthorizationServer(
 	// for every request.
 	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
 		provider.DefaultClientAuthenticationStrategy, config.GetAccessTokenIssuer(),
-		config.SPIFFEJWTBundleSource, config.SPIFFEClientResolver,
+		config.SPIFFEJWTBundleSource, config.SPIFFEX509BundleSource, config.SPIFFEClientResolver,
 	)
 
 	for _, factory := range factories {

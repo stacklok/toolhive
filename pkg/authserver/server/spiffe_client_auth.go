@@ -5,15 +5,24 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/ory/fosite"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
+)
+
+var (
+	errClientCertificateRequired = errors.New("client certificate is required")
+	errInvalidX509SVIDLeaf       = errors.New("invalid X.509-SVID leaf")
 )
 
 // SPIFFEClientResolver resolves a verified SPIFFE identity to its configured
@@ -33,6 +42,7 @@ func newSPIFFEClientAuthenticationStrategy(
 	defaultStrategy fosite.ClientAuthenticationStrategy,
 	issuer string,
 	jwtBundleSource jwtbundle.Source,
+	x509BundleSource x509bundle.Source,
 	resolver SPIFFEClientResolver,
 ) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
@@ -45,11 +55,97 @@ func newSPIFFEClientAuthenticationStrategy(
 		if form.Get("client_assertion_type") == spiffeauth.SPIFFEJWTAssertionType {
 			return authenticateSPIFFEJWTClient(ctx, r, form, issuer, jwtBundleSource, resolver)
 		}
-		if _, ok := spiffeauth.SPIFFEIDFromContext(ctx); ok {
-			return nil, fosite.ErrInvalidClient.WithHint("SPIFFE X.509 client authentication is not implemented")
+		if claimedID, ok := spiffeauth.SPIFFEIDFromContext(ctx); ok {
+			return authenticateSPIFFEX509Client(ctx, r, form, claimedID, x509BundleSource, resolver)
 		}
 		return defaultStrategy(ctx, r, form)
 	}
+}
+
+// authenticateSPIFFEX509Client re-verifies the client certificate presented on
+// the mutually authenticated connection against the configured trust-domain
+// bundle and resolves the result to its configured OAuth client. claimedID is
+// the identity the connection-level middleware already extracted from the
+// leaf certificate; it is compared against the freshly re-verified identity
+// so a claim that outlives its certificate's chain of trust cannot be reused.
+// It fails closed on any malformed request field, missing or invalid
+// certificate, or resolver rejection, and never logs the certificate.
+func authenticateSPIFFEX509Client(
+	ctx context.Context,
+	r *http.Request,
+	form url.Values,
+	claimedID spiffeid.ID,
+	source x509bundle.Source,
+	resolver SPIFFEClientResolver,
+) (fosite.Client, error) {
+	clientID, ok := exactNonEmptyFormValue(form, "client_id")
+	if !ok {
+		return nil, fosite.ErrInvalidRequest
+	}
+	if rejectedSPIFFEX509Request(r, form) {
+		return nil, fosite.ErrInvalidClient
+	}
+	verifiedID, err := verifySPIFFEX509(r, source)
+	if err != nil || verifiedID != claimedID {
+		return nil, fosite.ErrInvalidClient.WithHint("SPIFFE X.509 client authentication failed")
+	}
+	client, err := resolver(ctx, verifiedID.String(), clientID, spiffeauth.SPIFFEAuthenticationMethodX509)
+	if err != nil || client == nil || client.GetID() != clientID {
+		return nil, fosite.ErrInvalidClient.WithHint("SPIFFE X.509 client authentication failed")
+	}
+	return client, nil
+}
+
+// rejectedSPIFFEX509Request reports whether a request mixes the ambient mTLS
+// identity with another client credential (HTTP Basic or a client secret form
+// field). SPIFFE X.509 authentication must be the sole credential in the
+// request, for the same reason as its JWT sibling: allowing a second
+// credential to also be present would let an attacker probe which the server
+// accepts.
+func rejectedSPIFFEX509Request(r *http.Request, form url.Values) bool {
+	return hasBasicAuthorization(r) || form.Has("client_secret")
+}
+
+// verifySPIFFEX509 re-derives and verifies the SPIFFE ID from the request's
+// verified TLS peer certificate. It checks the certificate shape explicitly
+// rather than trusting the connection alone: the leaf must not be a CA, must
+// carry the digital-signature key usage (and neither certificate- nor
+// CRL-signing usage), and its chain must validate against the trust domain's
+// configured bundle for client authentication. A missing or malformed
+// certificate is always rejected; there is no fallback to public or
+// secret-based client authentication.
+func verifySPIFFEX509(r *http.Request, source x509bundle.Source) (spiffeid.ID, error) {
+	if source == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return spiffeid.ID{}, errClientCertificateRequired
+	}
+	leaf := r.TLS.PeerCertificates[0]
+	id, err := spiffeauth.SPIFFEIDFromCertificate(leaf)
+	if err != nil {
+		return spiffeid.ID{}, err
+	}
+	if leaf.IsCA || leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 ||
+		leaf.KeyUsage&(x509.KeyUsageCertSign|x509.KeyUsageCRLSign) != 0 {
+		return spiffeid.ID{}, errInvalidX509SVIDLeaf
+	}
+	bundle, err := source.GetX509BundleForTrustDomain(id.TrustDomain())
+	if err != nil {
+		return spiffeid.ID{}, err
+	}
+	roots := x509.NewCertPool()
+	for _, authority := range bundle.X509Authorities() {
+		roots.AddCert(authority)
+	}
+	intermediates := x509.NewCertPool()
+	for _, certificate := range r.TLS.PeerCertificates[1:] {
+		intermediates.AddCert(certificate)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: intermediates,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return spiffeid.ID{}, err
+	}
+	return id, nil
 }
 
 // authenticateSPIFFEJWTClient validates a SPIFFE JWT-SVID client assertion and

@@ -14,6 +14,7 @@ import (
 	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -154,6 +155,19 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		return nil, err
 	}
 
+	// Constructed here (rather than just before the return, as before JWT
+	// support) because the JWT client-authentication arm needs it as a
+	// jwtbundle.Source while building oauthParams below. Moving Start()
+	// earlier opens a failure window between here and the return, so any
+	// later failure must close it explicitly instead of relying on nothing
+	// else remaining to fail.
+	bundleRegistry, err := newSPIFFEBundleRegistry(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	closeBundleRegistry := true
+	defer closeSPIFFEBundleRegistryOnFailure(bundleRegistry, &closeBundleRegistry)
+
 	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
@@ -182,6 +196,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
 		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),
 		SPIFFEClientResolver:                newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEJWTBundleSource:               spiffeJWTBundleSource(bundleRegistry),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -243,11 +258,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"issuer", cfg.Issuer,
 	)
 
-	bundleRegistry, err := newSPIFFEBundleRegistry(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
+	closeBundleRegistry = false
 	return &server{
 		handler:           router,
 		storage:           stor,
@@ -304,6 +315,32 @@ func newSPIFFEBundleRegistry(ctx context.Context, cfg Config) (*SPIFFEBundleRegi
 		return nil, fmt.Errorf("start SPIFFE bundle registry: %w", err)
 	}
 	return registry, nil
+}
+
+// closeSPIFFEBundleRegistryOnFailure closes registry if keepOpen is still true
+// when the deferred call runs, i.e. newServer returned before reaching the
+// point where it disarms the cleanup. Startup failures are already being
+// reported via the returned error, so a close failure here is logged rather
+// than joined into it.
+func closeSPIFFEBundleRegistryOnFailure(registry *SPIFFEBundleRegistry, keepOpen *bool) {
+	if *keepOpen {
+		if err := registry.Close(); err != nil {
+			slog.Warn("failed to close SPIFFE bundle registry after initialization failure", "error", err)
+		}
+	}
+}
+
+// spiffeJWTBundleSource adapts registry to the oauthserver package's
+// jwtbundle.Source field. registry is a concrete *SPIFFEBundleRegistry, so the
+// nil check runs before boxing it into the interface: assigning a nil
+// registry through the interface directly would produce a non-nil interface
+// wrapping a nil pointer, which the strategy's jwtBundleSource == nil guard
+// would then fail to catch.
+func spiffeJWTBundleSource(registry *SPIFFEBundleRegistry) jwtbundle.Source {
+	if registry == nil {
+		return nil
+	}
+	return registry
 }
 
 // newSPIFFEClientResolver returns the resolver the SPIFFE client-authentication

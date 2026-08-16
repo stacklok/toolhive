@@ -741,12 +741,14 @@ func TestNewAuthorizationServer_InstallsSPIFFEClientAuthenticationStrategy(t *te
 	require.NoError(t, err)
 	require.NotNil(t, config.ClientAuthenticationStrategy)
 
+	// A request with the SPIFFE JWT assertion type but no assertion or
+	// client_id reaches the JWT arm and is rejected there for malformed
+	// fields, confirming NewAuthorizationServer wires the issuer and JWT
+	// bundle source through to newSPIFFEClientAuthenticationStrategy rather
+	// than leaving the JWT arm unreachable.
 	request := httptest.NewRequest("POST", "/oauth/token", nil)
 	_, err = config.ClientAuthenticationStrategy(request.Context(), request, url.Values{
 		"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
 	})
-	require.Error(t, err)
-	var rfcErr *fosite.RFC6749Error
-	require.ErrorAs(t, err, &rfcErr)
-	assert.Equal(t, "SPIFFE JWT client authentication is not implemented", rfcErr.HintField)
+	require.ErrorIs(t, err, fosite.ErrInvalidRequest)
 }

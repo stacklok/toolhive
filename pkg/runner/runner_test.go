@@ -5,10 +5,12 @@ package runner
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -291,6 +293,29 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		ctx := context.Background()
 		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 5*time.Second)
 		assert.NoError(t, err)
+	})
+
+	t.Run("Streamable HTTP TLS success with configured certificate root", func(t *testing.T) {
+		t.Parallel()
+
+		config := writeTestTLSMaterial(t)
+		certificate, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+		require.NoError(t, err)
+
+		server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}))
+		server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}
+		server.StartTLS()
+		t.Cleanup(server.Close)
+
+		endpoint := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
+		err = waitForInitializeSuccess(context.Background(), endpoint, "streamable-http", false, 5*time.Second, config)
+		require.NoError(t, err)
 	})
 
 	t.Run("Streamable success (alias)", func(t *testing.T) {
@@ -896,6 +921,23 @@ func TestRunner_RejectsNegativeMaxRequestBodySize(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "max_request_body_size must be non-negative")
+}
+
+func TestRunner_ClosesEmbeddedAuthServerAfterLaterFailure(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
+
+	runConfig := NewRunConfig()
+	runConfig.EmbeddedAuthServerConfig = createMinimalAuthServerConfig()
+	runConfig.MiddlewareConfigs = []types.MiddlewareConfig{{Type: "unsupported"}}
+	runner := NewRunner(runConfig, mockStatusManager)
+
+	err := runner.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported middleware type")
+	assert.Nil(t, runner.embeddedAuthServer)
 }
 
 func TestRunner_GetUpstreamTokenReader(t *testing.T) {

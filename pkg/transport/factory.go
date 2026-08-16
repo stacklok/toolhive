@@ -53,6 +53,9 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 
 	switch config.Type {
 	case types.TransportTypeStdio:
+		if config.TLSConfig != nil {
+			return nil, fmt.Errorf("TLS is not supported on stdio transport")
+		}
 		stdio := NewStdioTransport(
 			config.Host, config.ProxyPort, config.Deployer, config.Debug, config.TrustProxyHeaders,
 			config.PrometheusHandler, config.Middlewares...,
@@ -87,6 +90,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.tlsConfig = config.TLSConfig
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
 		httpTransport.readTimeout = config.ReadTimeout
@@ -107,6 +111,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
+		httpTransport.tlsConfig = config.TLSConfig
 		httpTransport.sessionStorage = config.SessionStorage
 		httpTransport.sessionTTL = config.SessionTTL
 		httpTransport.readTimeout = config.ReadTimeout

@@ -9,6 +9,7 @@ package types
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -278,6 +279,9 @@ type Config struct {
 	//	  "/.well-known/oauth-authorization-server": authServerHandler,
 	//	}
 	PrefixHandlers map[string]http.Handler
+
+	// TLSConfig configures TLS for the proxy listener. When non-nil, HTTP transports serve HTTPS.
+	TLSConfig *tls.Config
 
 	// SessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.

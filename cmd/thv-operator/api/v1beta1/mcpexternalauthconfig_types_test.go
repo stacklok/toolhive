@@ -952,6 +952,10 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 					Type: ExternalAuthTypeEmbeddedAuthServer,
 					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 						Issuer: "https://auth.example.com",
+						ListenerTLS: &ListenerTLSConfig{
+							CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+							PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+						},
 						UpstreamProviders: []UpstreamProviderConfig{{
 							Name:       "github",
 							Type:       UpstreamProviderTypeOIDC,
@@ -1257,6 +1261,10 @@ func mustEmbeddedAuthServerConfigWithBundleEndpoint(url string) *MCPExternalAuth
 			Type: ExternalAuthTypeEmbeddedAuthServer,
 			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
+				ListenerTLS: &ListenerTLSConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
 				UpstreamProviders: []UpstreamProviderConfig{{
 					Name:       "github",
 					Type:       UpstreamProviderTypeOIDC,
@@ -1287,6 +1295,10 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 			Type: ExternalAuthTypeEmbeddedAuthServer,
 			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
+				ListenerTLS: &ListenerTLSConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
 				UpstreamProviders: []UpstreamProviderConfig{{
 					Name:       "github",
 					Type:       UpstreamProviderTypeOIDC,
@@ -1329,6 +1341,10 @@ func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthC
 			Type: ExternalAuthTypeEmbeddedAuthServer,
 			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
+				ListenerTLS: &ListenerTLSConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
 				UpstreamProviders: []UpstreamProviderConfig{{
 					Name:       "github",
 					Type:       UpstreamProviderTypeOIDC,

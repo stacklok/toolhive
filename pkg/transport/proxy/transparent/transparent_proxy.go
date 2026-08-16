@@ -8,6 +8,7 @@ package transparent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -152,6 +153,7 @@ type TransparentProxy struct {
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
+	tlsConfig       *tls.Config
 }
 
 const (
@@ -336,6 +338,15 @@ func WithReadTimeout(d time.Duration) Option {
 			return
 		}
 		p.readTimeout = d
+	}
+}
+
+// WithTLSConfig configures the TLS listener without changing the caller's configuration.
+func WithTLSConfig(config *tls.Config) Option {
+	return func(proxy *TransparentProxy) {
+		if config != nil {
+			proxy.tlsConfig = config.Clone()
+		}
 	}
 }
 
@@ -1373,6 +1384,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
+	}
+	if p.tlsConfig != nil {
+		ln = tls.NewListener(ln, p.tlsConfig)
 	}
 	p.listener = ln
 

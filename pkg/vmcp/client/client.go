@@ -1242,7 +1242,17 @@ func (h *httpBackendClient) modernEnumerate(
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
 		resources, err = modernListAll[mcp.Resource](ctx, hc, endpoint, "resources/list", "resources")
-		if err != nil {
+		switch {
+		case errors.Is(err, errModernTransient):
+			// A transient failure here (errModernTransient: HTTP 408/429/5xx, a
+			// mid-stream read failure, or a transport/network error) — after the
+			// mandatory tools/list has already succeeded — degrades this optional
+			// list instead of failing the whole enumeration; distinct from
+			// -32601, which means the backend does not implement the method at all.
+			slog.Warn("resources/list transiently unavailable; degrading to empty resources list",
+				"backend", target.WorkloadName, "error", err)
+			resources = nil
+		case err != nil:
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 		}
 
@@ -1253,6 +1263,15 @@ func (h *httpBackendClient) modernEnumerate(
 		switch {
 		case errors.Is(err, mcp.ErrMethodNotFound):
 			templates = nil
+		case errors.Is(err, errModernTransient):
+			// A transient failure here (errModernTransient: HTTP 408/429/5xx, a
+			// mid-stream read failure, or a transport/network error) — after the
+			// mandatory tools/list has already succeeded — degrades this optional
+			// list instead of failing the whole enumeration; distinct from
+			// -32601, which means the backend does not implement the method at all.
+			slog.Warn("resources/templates/list transiently unavailable; degrading to empty template list",
+				"backend", target.WorkloadName, "error", err)
+			templates = nil
 		case err != nil:
 			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
 		}
@@ -1261,7 +1280,17 @@ func (h *httpBackendClient) modernEnumerate(
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
 		prompts, err = modernListAll[mcp.Prompt](ctx, hc, endpoint, "prompts/list", "prompts")
-		if err != nil {
+		switch {
+		case errors.Is(err, errModernTransient):
+			// A transient failure here (errModernTransient: HTTP 408/429/5xx, a
+			// mid-stream read failure, or a transport/network error) — after the
+			// mandatory tools/list has already succeeded — degrades this optional
+			// list instead of failing the whole enumeration; distinct from
+			// -32601, which means the backend does not implement the method at all.
+			slog.Warn("prompts/list transiently unavailable; degrading to empty prompts list",
+				"backend", target.WorkloadName, "error", err)
+			prompts = nil
+		case err != nil:
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 		}
 	}

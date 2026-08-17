@@ -278,6 +278,76 @@ func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
 	}
 }
 
+// TestQuoteForPOSIXShell pins the escaping shape for the characters that matter.
+func TestQuoteForPOSIXShell(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain path", "/usr/local/bin/thv", `'/usr/local/bin/thv'`},
+		{"space", "/App Support/thv", `'/App Support/thv'`},
+		{"single quote", "/it's/thv", `'/it'\''s/thv'`},
+		{"double quote", `/say "hi"/thv`, `'/say "hi"/thv'`},
+		{"dollar and backtick", "/$HOME/`id`/thv", "'/$HOME/`id`/thv'"},
+		{"semicolon", "/a;rm -rf/thv", `'/a;rm -rf/thv'`},
+		{"newline", "/a\nb/thv", "'/a\nb/thv'"},
+		{"empty", "", `''`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, quoteForPOSIXShell(tc.in))
+		})
+	}
+}
+
+// TestQuoteForPOSIXShell_SurvivesRealShell is the evidence behind the claim that
+// single-quoting is a total transform, which is what lets the token-helper
+// writers drop metacharacter validation entirely. Each string is round-tripped
+// through /bin/sh and must come back byte-identical.
+func TestQuoteForPOSIXShell_SurvivesRealShell(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting; /bin/sh unavailable")
+	}
+
+	inputs := []string{
+		"/usr/local/bin/thv",
+		"/App Support/thv",
+		"/it's/thv",
+		`/say "hi"/thv`,
+		"/$HOME/`id`/thv",
+		"/a;rm -rf/thv",
+		"/a&&b/thv",
+		"/a|b/thv",
+		"/a#b/thv",
+		"/a$(id)b/thv",
+		"/a\nb/thv",
+		"/a\\b/thv",
+	}
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			t.Parallel()
+			// printf %s re-emits the argument verbatim, so any shell
+			// interpretation of the quoted form shows up as a mismatch.
+			script := "printf %s " + quoteForPOSIXShell(in)
+			out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput() // #nosec G204 -- test-controlled input
+			require.NoError(t, err, "sh failed: %s", out)
+			assert.Equal(t, in, string(out), "quoted string must survive /bin/sh verbatim")
+		})
+	}
+
+	// Control: the same hostile strings unquoted do NOT survive, proving the
+	// test would catch a broken escaper rather than passing trivially.
+	out, err := exec.Command("/bin/sh", "-c", "printf %s /a$(id)b").CombinedOutput()
+	require.NoError(t, err, "sh failed: %s", out)
+	assert.NotEqual(t, "/a$(id)b", string(out))
+	assert.True(t, strings.HasPrefix(string(out), "/a"))
+}
+
 // TestWriteCredentialHelperShim_RequiresPath proves the writer fails closed
 // when no absolute thv path is available (os.Executable() failed upstream)
 // rather than emitting a shim that cannot locate thv.

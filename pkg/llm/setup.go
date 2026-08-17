@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -521,7 +520,7 @@ func configureDetectedTools(
 			GatewayURL:         gatewayURL,
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperShellCommandFor(runtime.GOOS, tokenHelperPath),
+			TokenHelperCommand: tokenHelperShellCommand,
 			TokenHelperPath:    tokenHelperPath,
 			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
@@ -635,39 +634,24 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
-// bareTokenHelperShellCommand names thv without a path, resolved via PATH by
-// whatever shell runs the token helper. Used only on Windows — see
-// tokenHelperShellCommandFor.
-const bareTokenHelperShellCommand = "thv llm token" //nolint:gosec // G101: a command line, not a credential
-
-// tokenHelperShellCommandFor returns the shell command written into direct-mode
-// tools' config as their token helper — e.g. Claude Code's apiKeyHelper, which
-// is run through a shell (execa with shell:true; see
-// anthropics/claude-code#42593). selfPath is the absolute thv path from
-// os.Executable().
+// tokenHelperShellCommand is the shell command written into direct-mode tools'
+// config as their token helper — e.g. Claude Code's apiKeyHelper, which is run
+// through a shell (execa with shell:true; see anthropics/claude-code#42593).
 //
-// On POSIX the absolute path is single-quoted (llmgateway.QuoteForPOSIXShell).
-// A bare "thv" is not viable there because GUI-launched clients do not inherit
-// the user's shell PATH: macOS GUI apps get launchd's environment, which does
-// not include thv's install directory (~/.toolhive/bin), so the helper never
-// runs at all. Claude Desktop is affected unconditionally (it is only ever
-// GUI-launched) and Claude Code whenever it is started from the Dock or
-// Spotlight. The same PATH dependency is also a token-theft vector: any
-// writable directory earlier on PATH can shadow thv and return an
-// attacker-chosen token. An absolute path is immune to both by construction.
-// pkg/client applies the same reasoning to plutil (see codex_desktop.go).
+// It deliberately names "thv" bare rather than interpolating os.Executable().
+// A bare command has nothing to escape, so it is correct in both /bin/sh and
+// cmd.exe without a platform branch, and it re-resolves on every invocation —
+// so upgrading, reinstalling, or relocating thv keeps working without re-running
+// "thv llm setup".
 //
-// On Windows the command stays bare. cmd.exe has no quoting scheme that
-// survives a path containing backslashes the way single quotes do on POSIX, and
-// a bare command is what ships today, so this branch is deliberately left
-// unchanged rather than altered on untested behavior. Dock-equivalent launches
-// there still require thv on the GUI PATH.
-func tokenHelperShellCommandFor(goos, selfPath string) string {
-	if goos == "windows" || selfPath == "" {
-		return bareTokenHelperShellCommand
-	}
-	return llmgateway.QuoteForPOSIXShell(selfPath) + " llm token"
-}
+// The trade-off is that it resolves via PATH at invocation time. A tool launched
+// without the user's shell PATH (e.g. from the macOS Dock, which inherits
+// launchd's environment) will not find thv, and a binary earlier on PATH can
+// shadow it. Both are accepted here: direct-mode tools are terminal-oriented.
+// Claude Desktop cannot accept them — it is only ever GUI-launched — so its
+// credential-helper shim uses the absolute TokenHelperPath instead (see
+// writeCredentialHelperShim in pkg/client).
+const tokenHelperShellCommand = "thv llm token" //nolint:gosec // G101: a command line, not a credential
 
 // buildTokenHelperArgv returns the argv-form of the token helper, for config
 // formats that invoke an executable directly (no shell) — e.g. Codex's

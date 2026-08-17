@@ -586,9 +586,8 @@ func TestDoTokenRequest_ContextCancellation(t *testing.T) {
 
 // trackingBody wraps an io.Reader and records whether the body was read
 // and closed, plus the total number of bytes Read was allowed to consume.
-// DoTokenRequest reads through a LimitReader capped at maxResponseBodySize
-// and then closes without draining; bytesRead lets tests assert the cap
-// is honored even when the underlying body is much larger.
+// DoTokenRequest initially reads through a LimitReader capped at
+// maxResponseBodySize, then drains at most one additional cap before closing.
 type trackingBody struct {
 	reader    io.Reader
 	readHit   atomic.Bool
@@ -631,9 +630,7 @@ func (t *trackingTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
 }
 
 // TestDoTokenRequest_ClosesBody verifies that both the success and error
-// paths close the response body. The body is intentionally NOT drained past
-// the LimitReader cap (see TestDoTokenRequest_DoesNotDrainOversizedBody for
-// the regression test on that property).
+// paths bounded-drain and close the response body.
 func TestDoTokenRequest_ClosesBody(t *testing.T) {
 	t.Parallel()
 
@@ -694,29 +691,19 @@ func TestDoTokenRequest_ClosesBody(t *testing.T) {
 	}
 }
 
-// TestDoTokenRequest_DoesNotDrainOversizedBody pins the behavior that the
-// response body is closed without an unbounded drain. A malicious or
-// misbehaving IdP could return an arbitrarily large body; the earlier
-// io.Copy(io.Discard, resp.Body) drain in the defer would read all of it,
-// defeating the maxResponseBodySize cap and (with a caller-supplied
-// no-timeout client) blocking the goroutine indefinitely.
-//
-// This test wires a response body ten times larger than the cap and asserts
-// the number of bytes read from the underlying body stays within one Read
-// buffer of maxResponseBodySize — i.e., only the LimitReader's quota is
-// consumed, not the full body.
-func TestDoTokenRequest_DoesNotDrainOversizedBody(t *testing.T) {
+// TestDoTokenRequest_BoundedDrainAfterRFC6749Error verifies that a non-2xx
+// RFC 6749 error response is drained before closing, while consumption remains
+// bounded. The initial read and the drain each consume at most
+// maxResponseBodySize, preventing oversized or never-ending IdP responses from
+// causing unbounded reads.
+func TestDoTokenRequest_BoundedDrainAfterRFC6749Error(t *testing.T) {
 	t.Parallel()
 
-	// 10 MiB body — well over the 1 MiB cap.
-	oversized := make([]byte, 10*maxResponseBodySize)
-	for i := range oversized {
-		oversized[i] = 'A'
-	}
-
+	const errorBody = `{"error":"invalid_grant"}`
+	body := []byte(errorBody + strings.Repeat(" ", 3*maxResponseBodySize-len(errorBody)))
 	tr := &trackingTransport{
-		status:     http.StatusOK,
-		bodyBytes:  oversized,
+		status:     http.StatusBadRequest,
+		bodyBytes:  body,
 		contentTyp: "application/json",
 	}
 	client := &http.Client{Transport: tr}
@@ -724,22 +711,20 @@ func TestDoTokenRequest_DoesNotDrainOversizedBody(t *testing.T) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example/token", strings.NewReader(""))
 	require.NoError(t, err)
 
-	// Expected: ParseTokenResponse fails to unmarshal 'AAAA…' as JSON on a
-	// 2xx status, returning a wrapped parse error. The key property under
-	// test is bytesRead, not the error surface.
-	_, _ = DoTokenRequest(client, req)
+	tokenResp, err := DoTokenRequest(client, req)
+	assert.Nil(t, tokenResp)
+	var retrieveErr *oauth2.RetrieveError
+	require.True(t, errors.As(err, &retrieveErr))
+	assert.Equal(t, "invalid_grant", retrieveErr.ErrorCode)
 
 	require.NotNil(t, tr.lastBody)
 	assert.True(t, tr.lastBody.closed.Load(), "body must be closed")
 
-	// io.LimitReader stops exactly at N bytes; the underlying Read is not
-	// called again after the limit is hit. Allow a small slop (one typical
-	// Read buffer, 32 KiB) for implementations that may over-fill on the
-	// final Read.
-	const slop = 32 << 10
 	bytesRead := tr.lastBody.bytesRead.Load()
-	assert.LessOrEqual(t, bytesRead, int64(maxResponseBodySize)+int64(slop),
-		"DoTokenRequest must not drain the response body past the LimitReader cap")
+	assert.Equal(t, int64(2*maxResponseBodySize), bytesRead,
+		"DoTokenRequest must drain one bounded chunk after reading the response")
+	assert.Less(t, bytesRead, int64(len(body)),
+		"DoTokenRequest must not drain the entire oversized response body")
 }
 
 // TestDoTokenRequest_ClientDoError surfaces transport-level errors via %w.

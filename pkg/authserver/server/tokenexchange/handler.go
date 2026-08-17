@@ -57,13 +57,21 @@ const anyDelegateClient = "*"
 // token effort.
 type Handler struct {
 	*oauth2.HandleHelper
-	validator          SubjectTokenValidator
+	validator          SubjectTokenValidator // for subject tokens (multi-issuer)
+	selfValidator      SubjectTokenValidator // for actor tokens (self-issued only)
 	delegationLifespan time.Duration
 	config             tokenExchangeConfig
 	allowedAudiences   []string
 	// configuredDelegateClients holds the operator-configured delegate-client
 	// IDs (Config.DelegateClients, ID-only).
 	configuredDelegateClients []string
+}
+
+// formParams holds the validated RFC 8693 form parameters extracted from a
+// token exchange request.
+type formParams struct {
+	subjectToken string
+	actorToken   string // empty if not provided
 }
 
 // tokenExchangeConfig defines the configuration interface needed by the handler.
@@ -116,14 +124,25 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// already authenticated by fosite's client authentication strategy before
 	// this handler runs.
 	actorID := client.GetID()
+	form := requester.GetRequestForm()
 
-	subjectToken, err := validateExchangeParams(requester.GetRequestForm())
+	// Validate required RFC 8693 form parameters.
+	params, err := validateFormParams(form)
 	if err != nil {
 		return err
 	}
 
-	// Validate the subject token against the server's own JWKS.
-	validatedClaims, err := h.validator.Validate(ctx, subjectToken)
+	// Validate requested_token_type per RFC 8693 Section 2.1: if the client
+	// requests a token type the server does not support, the request must fail.
+	requestedTokenType := form.Get("requested_token_type")
+	if requestedTokenType != "" && requestedTokenType != oauthproto.TokenTypeAccessToken {
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+			"The 'requested_token_type' value %q is not supported. This server only issues %q.",
+			requestedTokenType, oauthproto.TokenTypeAccessToken))
+	}
+
+	// Validate the subject token against the configured token validator.
+	validatedClaims, err := h.validator.Validate(ctx, params.subjectToken)
 	if err != nil {
 		slog.Debug("Subject token validation failed",
 			"error", err,
@@ -142,8 +161,14 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"The subject token is invalid or could not be verified."))
 	}
 
-	configuredDelegate := slices.Contains(h.configuredDelegateClients, actorID)
-	if err := checkDelegationConsent(validatedClaims, actorID, configuredDelegate); err != nil {
+	// Resolve actor identity: explicit actor_token or authenticated client.
+	actorSub, err := h.resolveActorIdentity(ctx, params, client)
+	if err != nil {
+		return err
+	}
+
+	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
+	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
 		return err
 	}
 
@@ -155,18 +180,23 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	// Build the delegated session with the user's identity and the agent's act claim.
+	// Build the delegated session with the user's identity and the
+	// authenticated client's identity. The third argument becomes the
+	// issued token's RFC 9068 client_id, so it must identify the client the
+	// token was actually issued to (client.GetID()) — not actorSub, which
+	// may name a distinct actor asserted via actor_token and belongs only
+	// in the act claim below.
 	delegatedSession := session.New(
 		delegatedSubject(validatedClaims),
 		"", // No IDP session link for delegated tokens.
-		actorID,
+		client.GetID(),
 		session.UserClaims{
 			Name:  validatedClaims.Name,
 			Email: validatedClaims.Email,
 		},
 	)
 
-	act, err := buildActClaim(validatedClaims, actorID)
+	act, err := buildActClaim(validatedClaims, actorSub)
 	if err != nil {
 		return err
 	}
@@ -185,7 +215,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	slog.Debug("Token exchange request validated",
 		"subject", validatedClaims.Subject,
-		"actor", actorID,
+		"actor", actorSub,
 		"issuer", validatedClaims.Issuer,
 		"subject_token_client", validatedClaims.ExternalActor,
 		"subject_token_client_id", validatedClaims.ClientID,
@@ -241,6 +271,119 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
+// resolveActorIdentity determines the acting party identity: either the
+// authenticated OAuth client ID, or — when actor_token is present — the
+// distinct actor identity it asserts.
+//
+// actor_token lets the authenticated client name a more specific actor than
+// its own client_id (e.g. a particular agent instance or delegate persona)
+// the same way a normal issued token records its client identity: via a
+// "client_id" claim. The actor_token's own "client_id" claim MUST match the
+// authenticated client ID — this is the client-ID binding check, proving the
+// token was minted for this client — while its "sub" claim is the actor
+// identity that is returned here and flows into the delegated token's act.sub
+// the same place a normal client's identity would go. "sub" is deliberately
+// not compared to client.GetID(): requiring equality there would make
+// actor_token unable to ever assert an identity different from
+// the OAuth client, collapsing it to a no-op self-check. Note that this does
+// not by itself grant the asserted actor any extra privilege: the resulting
+// actor identity still has to satisfy checkDelegationConsent (may_act,
+// ExternalActor, client_id binding, or the configured-delegate exemption)
+// like any other actor identity would.
+func (h *Handler) resolveActorIdentity(
+	ctx context.Context, params *formParams, client fosite.Client,
+) (string, error) {
+	if params.actorToken != "" {
+		// Validate actor_token against the AS's own JWKS (must be self-issued).
+		actorClaims, err := h.selfValidator.Validate(ctx, params.actorToken)
+		if err != nil {
+			slog.Debug("Actor token validation failed", "error", fmt.Errorf("actor token: %w", err))
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+				"The actor token is invalid or could not be verified."))
+		}
+		// Client-ID binding: actor_token's client_id claim MUST match the
+		// authenticated client ID. This prevents replay attacks where a leaked
+		// actor token is presented by a different client. The client ID is
+		// always verified by fosite's client authentication before reaching here.
+		// RFC 8693 §2.2.2 requires invalid_request when an actor token is
+		// unacceptable based on policy.
+		if actorClaims.ClientID != client.GetID() {
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+				"The actor token's client_id claim does not match the authenticated client identity."))
+		}
+		return actorClaims.Subject, nil
+	}
+
+	// No actor_token: the authenticated client is the acting party.
+	return client.GetID(), nil
+}
+
+// validateFormParams validates the required RFC 8693 form parameters and returns
+// the parsed parameters on success.
+func validateFormParams(form url.Values) (*formParams, error) {
+	subjectToken := form.Get("subject_token")
+	if subjectToken == "" {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'subject_token' parameter is required for token exchange."))
+	}
+
+	subjectTokenType := form.Get("subject_token_type")
+	if subjectTokenType == "" {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'subject_token_type' parameter is required for token exchange."))
+	}
+
+	// id_token is intentionally excluded here, the same as for actor_token
+	// tokens below: an ID token's claim conventions differ from an access
+	// token's (e.g. "aud" names the relying-party client, not a resource) and
+	// this validator applies neither a distinct validation profile nor an
+	// id_token-specific claim mapping — accepting the type would let a client
+	// declare "id_token" while the token is validated exactly like an access
+	// token, silently ignoring the declared type's semantics.
+	switch subjectTokenType {
+	case oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT:
+		// Valid subject token types.
+	default:
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
+			subjectTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT))
+	}
+
+	actorToken := form.Get("actor_token")
+	actorTokenType := form.Get("actor_token_type")
+
+	// actor_token_type without actor_token is invalid.
+	if actorTokenType != "" && actorToken == "" {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token_type' parameter requires 'actor_token' to be present."))
+	}
+
+	// actor_token requires actor_token_type.
+	if actorToken != "" && actorTokenType == "" {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token_type' parameter is required when 'actor_token' is present."))
+	}
+
+	// Validate actor_token_type if present.
+	// Note: id_token is intentionally excluded for actor tokens. An actor presents
+	// a bearer credential (access_token/jwt), not an identity assertion (id_token).
+	if actorTokenType != "" {
+		switch actorTokenType {
+		case oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT:
+			// Valid actor token types.
+		default:
+			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+				"The 'actor_token_type' value %q is not supported. Use %q or %q.",
+				actorTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT))
+		}
+	}
+
+	return &formParams{
+		subjectToken: subjectToken,
+		actorToken:   actorToken,
+	}, nil
+}
+
 // computeLifetime returns the minimum of the subject token's remaining lifetime
 // and the configured delegation lifespan. Returns an error if the subject token
 // has already expired.
@@ -254,47 +397,6 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 		return remaining, nil
 	}
 	return h.delegationLifespan, nil
-}
-
-// validateExchangeParams validates the required RFC 8693 form parameters and
-// returns the subject token on success.
-func validateExchangeParams(form url.Values) (string, error) {
-	subjectToken := form.Get("subject_token")
-	if subjectToken == "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'subject_token' parameter is required for token exchange."))
-	}
-
-	subjectTokenType := form.Get("subject_token_type")
-	if subjectTokenType == "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'subject_token_type' parameter is required for token exchange."))
-	}
-
-	if subjectTokenType != oauthproto.TokenTypeAccessToken && subjectTokenType != oauthproto.TokenTypeJWT {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
-			subjectTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT))
-	}
-
-	// Reject actor_token parameters for now — the acting party identity is
-	// derived from the authenticated OAuth client. A later commit adds
-	// actor_token support for asserting a distinct actor.
-	if form.Get("actor_token") != "" || form.Get("actor_token_type") != "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'actor_token' and 'actor_token_type' parameters are not yet supported."))
-	}
-
-	// Validate requested_token_type per RFC 8693 Section 2.1: if the client
-	// requests a token type the server does not support, the request must fail.
-	requestedTokenType := form.Get("requested_token_type")
-	if requestedTokenType != "" && requestedTokenType != oauthproto.TokenTypeAccessToken {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'requested_token_type' value %q is not supported. This server only issues %q.",
-			requestedTokenType, oauthproto.TokenTypeAccessToken))
-	}
-
-	return subjectToken, nil
 }
 
 // delegatedSubject returns the "sub" to embed in the delegated token.
@@ -508,7 +610,7 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 // If none of the three consent sources apply, the subject token carries no
 // verifiable binding to any client at all — this fails closed (CWE-863)
 // rather than allowing an unbound token through.
-func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, configuredDelegate bool) error {
+func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub string, configuredDelegate bool) error {
 	// selfIssuedDelegate is true only when a configured delegate client is
 	// presenting a self-issued token (ExternalIssuer == "" rules out the
 	// external-issuer path explicitly, rather than relying on ExternalActor
@@ -520,11 +622,18 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, co
 
 	switch {
 	case validatedClaims.MayAct != nil:
-		if validatedClaims.MayAct.Sub != actorID {
+		// may_act.sub is compared against actorSub, not clientID: this is
+		// the one binding that is meant to key off the asserted actor —
+		// may_act's whole purpose is authorizing a specific actor, which
+		// actor_token lets the authenticated client name distinctly from
+		// itself.
+		if validatedClaims.MayAct.Sub != actorSub {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
 		}
-		if validatedClaims.ExternalIssuer != "" && !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
+		// AllowedDelegateClients binds to the authenticated ToolHive client
+		// (clientID), not the asserted actor — see the doc comment above.
+		if validatedClaims.ExternalIssuer != "" && !delegateClientAllowed(validatedClaims.AllowedDelegateClients, clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
@@ -534,16 +643,20 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, co
 		// AllowedActors. That claim lives in the external issuer's client
 		// namespace, not ToolHive's, so — even when ClientID is also populated
 		// (ActorClaim: "client_id") — it must never be compared against
-		// actorID. This case must be checked before the client_id cases below,
-		// not merged with them.
+		// clientID or actorSub. This case must be checked before the
+		// client_id cases below, not merged with them.
 		//
-		// AllowedDelegateClients binds this allowlisted actor to a specific set
-		// of ToolHive clients — see delegateClientAllowed.
-		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
+		// AllowedDelegateClients binds this allowlisted external actor to a
+		// specific set of ToolHive clients — see delegateClientAllowed. This
+		// must be the authenticated client (clientID), not the asserted
+		// actor (actorSub): the allowlist is "this external actor's tokens
+		// may be exchanged by this ToolHive client", independent of whatever
+		// actor identity that client asserts via actor_token.
+		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
-	case validatedClaims.ClientID != "" && validatedClaims.ClientID != actorID && !selfIssuedDelegate:
+	case validatedClaims.ClientID != "" && validatedClaims.ClientID != clientID && !selfIssuedDelegate:
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token was issued to a different client."))
 	case validatedClaims.ClientID == "":

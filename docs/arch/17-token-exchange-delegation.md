@@ -200,6 +200,43 @@ whether to grant the exchange, in this order:
 4. **No binding.** If none of the above apply, the token carries no
    verifiable client binding and the exchange is rejected.
 
+## `actor_token` and `id_token`
+
+RFC 8693 also defines an optional `actor_token`/`actor_token_type` pair,
+which `resolveActorIdentity` (`handler.go`) supports for self-issued actor
+tokens only — an `actor_token` validated against any other issuer is
+rejected. Two claims on the `actor_token` matter, and they play different
+roles:
+
+- **`client_id`** is the authenticated-client binding: it must equal the
+  authenticated OAuth client ID (the client fosite already authenticated for
+  this request). This is the same role a `client_id` claim plays on a normal
+  issued token — it says which client the token was minted for.
+- **`sub`** is the actor identity that flows into the delegated token's
+  `act.sub`, in the same slot the authenticated client ID would otherwise
+  occupy. It is not required to equal the client ID: this is what lets a
+  single OAuth client present a more specific actor identity (e.g. a
+  particular agent instance or delegate persona) than its own `client_id`.
+
+Presenting a distinct `sub` this way does not itself grant any extra
+privilege — the resulting actor identity still has to clear
+`checkDelegationConsent` above like any other actor identity would (via
+`may_act`, `ExternalActor`, the `client_id` binding, or the configured-
+delegate exemption).
+
+`actor_token_type` only accepts `access_token` or `jwt`; `id_token` is
+rejected outright. Similarly, `subject_token_type` accepts `access_token` or
+`jwt`, but not `id_token`: this embedded authorization-server endpoint does
+not implement the XAA/ID-JAG profile and applies exactly one validation profile
+to a subject or actor token (the self-issued/access-token one — see
+`rejectIDTokenClaims`'s doc comment in `validator.go`), so accepting a
+declared `subject_token_type`/`actor_token_type` of `id_token` without a
+distinct validation profile behind it would silently ignore the semantic
+differences between an ID token and an access token (e.g. an ID token's
+`aud` names the relying-party client, not a resource). Rather than validate
+an ID token as if it were an access token, the server declines the type
+until a real ID-token validation profile is implemented.
+
 ### Delegate clients and self-issued token exchange
 
 A configured delegate client can convert *any* self-issued ToolHive access

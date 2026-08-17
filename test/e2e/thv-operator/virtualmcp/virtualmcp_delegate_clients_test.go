@@ -50,6 +50,7 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		dexCleanup                                           func()
 		issuer                                               string
 		signingPublicKey                                     *rsa.PublicKey
+		signingPrivateKey                                    *rsa.PrivateKey
 	)
 
 	ginkgo.BeforeAll(func() {
@@ -73,6 +74,7 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		signingPublicKey = &privateKey.PublicKey
+		signingPrivateKey = privateKey
 		gomega.Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: signingKeySecretName, Namespace: defaultNamespace},
 			Data: map[string][]byte{"private-key": pem.EncodeToMemory(&pem.Block{
@@ -215,6 +217,53 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		defer response.Body.Close()
 		gomega.Expect(response.StatusCode).To(gomega.Equal(http.StatusUnauthorized))
 	})
+
+	ginkgo.It("resolves actor identity from a self-issued actor_token against the real pod", func() {
+		port, cleanup, err := startRateLimitServicePortForward("vmcp-"+vmcpName, 4483)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		defer cleanup()
+		localURL := fmt.Sprintf("http://localhost:%d", port)
+
+		subjectToken, err := getEmbeddedASToken(
+			localURL,
+			dexInfo.LocalURL,
+			fmt.Sprintf("%s.%s.svc.cluster.local:5556", dexName, defaultNamespace),
+			vmcpHost,
+			issuer,
+		)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		ginkgo.By("exchanging with an actor_token whose sub matches the delegate client")
+		actorToken := signSelfIssuedActorToken(signingPrivateKey, issuer, clientID, clientID)
+		exchanged := exchangeDelegateTokenWithActor(localURL, subjectToken, actorToken, issuer, clientSecret)
+		claims := verifiedJWTClaims(exchanged, signingPublicKey)
+		act, ok := claims["act"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(act["sub"]).To(gomega.Equal(clientID))
+
+		ginkgo.By("rejecting an actor_token whose client_id claim does not match the authenticated delegate client")
+		mismatchedActorToken := signSelfIssuedActorToken(signingPrivateKey, issuer, "someone-elses-client", "someone-else")
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
+			"actor_token":        {mismatchedActorToken},
+			"actor_token_type":   {"urn:ietf:params:oauth:token-type:jwt"},
+			"audience":           {issuer},
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, localURL+"/oauth/token", strings.NewReader(form.Encode()))
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(clientID, clientSecret)
+		response, err := http.DefaultClient.Do(req)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		defer func() {
+			// Drain the expected error response so the HTTP transport can reuse the connection.
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}()
+		gomega.Expect(response.StatusCode).To(gomega.Equal(http.StatusBadRequest))
+	})
 })
 
 func exchangeDelegateToken(endpoint, subjectToken, audience, secret string) string {
@@ -237,6 +286,67 @@ func exchangeDelegateToken(endpoint, subjectToken, audience, secret string) stri
 	gomega.Expect(json.NewDecoder(response.Body).Decode(&token)).To(gomega.Succeed())
 	gomega.Expect(token.AccessToken).NotTo(gomega.BeEmpty())
 	return token.AccessToken
+}
+
+// exchangeDelegateTokenWithActor is exchangeDelegateToken extended with an
+// RFC 8693 actor_token/actor_token_type pair.
+func exchangeDelegateTokenWithActor(endpoint, subjectToken, actorToken, audience, secret string) string {
+	form := url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"subject_token":      {subjectToken},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
+		"actor_token":        {actorToken},
+		"actor_token_type":   {"urn:ietf:params:oauth:token-type:jwt"},
+		"audience":           {audience},
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint+"/oauth/token", strings.NewReader(form.Encode()))
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("e2e-delegate-client", secret)
+	response, err := http.DefaultClient.Do(req)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(response.Body)
+		gomega.Expect(readErr).NotTo(gomega.HaveOccurred())
+		gomega.Expect(response.StatusCode).To(gomega.Equal(http.StatusOK), string(body))
+	}
+	var token struct {
+		AccessToken string `json:"access_token"`
+	}
+	gomega.Expect(json.NewDecoder(response.Body).Decode(&token)).To(gomega.Succeed())
+	gomega.Expect(token.AccessToken).NotTo(gomega.BeEmpty())
+	return token.AccessToken
+}
+
+// signSelfIssuedActorToken mints a self-issued RFC 8693 actor_token signed
+// with the embedded auth server's own signing key, so it validates against
+// the server's own JWKS — resolveActorIdentity
+// (pkg/authserver/server/tokenexchange/handler.go) only accepts a
+// self-issued actor_token, never an externally-issued one.
+//
+// tokenClientID is the "client_id" claim, which resolveActorIdentity binds
+// against the authenticated OAuth client ID; sub is the asserted actor
+// identity, which may legitimately differ from tokenClientID.
+func signSelfIssuedActorToken(privateKey *rsa.PrivateKey, issuer, tokenClientID, sub string) string {
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+	now := time.Now()
+	token, err := jwt.Signed(signer).Claims(jwt.Claims{
+		Issuer:   issuer,
+		Subject:  sub,
+		Audience: jwt.Audience{issuer},
+		Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
+		IssuedAt: jwt.NewNumericDate(now),
+	}).Claims(map[string]any{
+		"client_id": tokenClientID,
+	}).Serialize()
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	return token
 }
 
 func verifiedJWTClaims(token string, signingKey *rsa.PublicKey) map[string]any {

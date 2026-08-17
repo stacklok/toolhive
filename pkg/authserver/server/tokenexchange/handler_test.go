@@ -38,6 +38,7 @@ func newTestHandler(t *testing.T, tj *testJWKS, delegationLifespan time.Duration
 		// PopulateTokenEndpointResponse, so IssueAccessToken is never called.
 		HandleHelper:       nil,
 		validator:          validator,
+		selfValidator:      validator,
 		delegationLifespan: delegationLifespan,
 		allowedAudiences:   []string{testIssuer},
 		config: &mockConfig{
@@ -102,6 +103,34 @@ func nestedActChain(depth int) map[string]any {
 		chain = map[string]any{"sub": fmt.Sprintf("agent-%d", i), "act": chain}
 	}
 	return chain
+}
+
+// signActorToken creates a self-issued JWT suitable for use as an actor_token.
+// The sub claim is set to the given subject (the asserted actor identity),
+// and the "client_id" claim is set to testAgentClientID (the authenticated
+// client the token is bound to).
+func signActorToken(t *testing.T, tj *testJWKS, subject string) string {
+	t.Helper()
+	return signActorTokenForClient(t, tj, subject, testAgentClientID)
+}
+
+// signActorTokenForClient is signActorToken with an explicit "client_id"
+// claim, for exercising the binding check against a client other than
+// testAgentClientID.
+func signActorTokenForClient(t *testing.T, tj *testJWKS, subject, clientID string) string {
+	t.Helper()
+
+	now := time.Now()
+	claims := jwt.Claims{
+		Subject:  subject,
+		Issuer:   testIssuer,
+		Audience: jwt.Audience{testIssuer},
+		Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
+		IssuedAt: jwt.NewNumericDate(now),
+	}
+	return tj.signToken(t, claims, map[string]any{
+		"client_id": clientID,
+	})
 }
 
 func TestTokenExchangeHandler_CanHandleTokenEndpointRequest(t *testing.T) {
@@ -256,6 +285,209 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			wantErr:      true,
 			wantFositeIs: fosite.ErrInvalidGrant,
 			hintContains: "different client",
+		},
+		{
+			name:     "valid exchange with actor_token",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, testAgentClientID))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+
+				// Verify subject is the user from the subject token.
+				assert.Equal(t, "user-123", sess.JWTClaims.Subject)
+
+				// Verify the act claim uses the actor token's sub.
+				actClaim, exists := sess.JWTClaims.Extra["act"]
+				require.True(t, exists, "act claim must be present")
+				actMap, ok := actClaim.(map[string]interface{})
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, testAgentClientID, actMap["sub"])
+			},
+		},
+		{
+			name:     "actor_token asserts a distinct actor identity",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				// The subject token's client_id claim matches the
+				// authenticated client (testAgentClientID) — the normal
+				// binding case, unaffected by actor_token. actor_token
+				// separately asserts a distinct actor ("other-agent"); that
+				// identity flows into act.sub only, never into client-binding
+				// checks or the issued token's own client_id (see the
+				// "cannot bypass" test below for the case that used to be
+				// confused with this one).
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, "other-agent"))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+
+				actClaim, exists := sess.JWTClaims.Extra["act"]
+				require.True(t, exists, "act claim must be present")
+				actMap, ok := actClaim.(map[string]interface{})
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, "other-agent", actMap["sub"])
+
+				// The issued token's client_id (RFC 9068) must identify the
+				// authenticated client, not the asserted actor.
+				assert.Equal(t, testAgentClientID, sess.JWTClaims.Extra["client_id"])
+			},
+		},
+		{
+			// Regression guard for the exact bug the actor_token/client_id
+			// binding split fixes: previously, checkDelegationConsent's
+			// client_id fallback compared the subject token's client_id
+			// against the *asserted actor* (actorSub), not the authenticated
+			// client. That let a client authenticated as testAgentClientID
+			// exchange a subject token issued to ANY other client, simply by
+			// presenting an actor_token whose sub happened to equal that
+			// subject token's client_id — a complete bypass of "the subject
+			// token was issued to a different client". All four identities
+			// here are distinct on purpose: authenticated client
+			// (testAgentClientID), actor_token's client_id claim
+			// (testAgentClientID, so the actor_token binding itself passes),
+			// actor_token's sub ("other-agent"), and the subject token's own
+			// client_id claim ("other-agent", chosen to equal the actor sub —
+			// exactly the value that used to unlock the bypass).
+			name:     "actor_token cannot bypass subject-token client_id binding",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["client_id"] = "other-agent"
+				subjectToken := tj.signToken(t, validClaims(), extra)
+				f := url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {subjectToken},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+				f.Set("actor_token", signActorToken(t, tj, "other-agent"))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "different client",
+		},
+		{
+			name:     "actor_token client_id mismatch with authenticated client",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				// The actor_token's client_id claim names a different client
+				// than the one authenticating this request, so the binding
+				// check must reject it regardless of the asserted actor sub.
+				f.Set("actor_token", signActorTokenForClient(t, tj, "some-actor", "a-different-client"))
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "does not match the authenticated client identity",
+		},
+		{
+			name:     "invalid actor_token returns invalid_request",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", "not-a-valid-jwt")
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "actor token is invalid",
+		},
+		{
+			name:   "actor_token without actor_token_type",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, testAgentClientID))
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "actor_token_type",
+		},
+		{
+			name:   "actor_token_type without actor_token",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "actor_token_type",
+		},
+		{
+			name:   "id_token actor_token_type rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, testAgentClientID))
+				f.Set("actor_token_type", oauthproto.TokenTypeIDToken)
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "access_token",
+		},
+		{
+			name:   "id_token subject_token_type rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				token := tj.signToken(t, validClaims(), validExtraClaims())
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeIDToken},
+				}
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "subject_token_type",
 		},
 		{
 			name:   "invalid subject_token — bad JWT",
@@ -1038,8 +1270,14 @@ func TestCheckDelegationConsent(t *testing.T) {
 	const actorID = testAgentClientID
 
 	tests := []struct {
-		name               string
-		claims             *ValidatedClaims
+		name   string
+		claims *ValidatedClaims
+		// clientID/actorSub default to actorID when unset, reproducing the
+		// pre-split behavior for every case that doesn't care about the
+		// distinction. Set both explicitly, to different values, for cases
+		// that test the clientID/actorSub split itself.
+		clientID           string
+		actorSub           string
 		configuredDelegate bool // defaults to false, reproducing pre-delegate-exception behavior
 		wantErr            bool
 		errContains        string
@@ -1220,12 +1458,60 @@ func TestCheckDelegationConsent(t *testing.T) {
 			wantErr:            true,
 			errContains:        "different client",
 		},
+		{
+			// The clientID/actorSub split: may_act.sub binds to the asserted
+			// actor (actorSub), not the authenticated client (clientID) —
+			// this is may_act's whole purpose, letting a client authenticate
+			// as itself while acting as a distinct actor.
+			name:     "may_act matching actorSub, differing from clientID, accepted",
+			claims:   &ValidatedClaims{MayAct: &MayActClaim{Sub: "distinct-actor"}},
+			clientID: "the-authenticated-client",
+			actorSub: "distinct-actor",
+		},
+		{
+			// The clientID/actorSub split, external-issuer path:
+			// AllowedDelegateClients binds to the authenticated client
+			// (clientID), not the asserted actor — an actor identity that
+			// happens to collide with an allowlisted client must not grant
+			// access on its own.
+			name: "ExternalActor set, actorSub in AllowedDelegateClients but clientID is not rejected",
+			claims: &ValidatedClaims{
+				ExternalActor:          "ext-agent",
+				AllowedDelegateClients: []string{"distinct-actor"},
+			},
+			clientID:    "the-authenticated-client",
+			actorSub:    "distinct-actor",
+			wantErr:     true,
+			errContains: "not authorized to exchange subject tokens",
+		},
+		{
+			// The clientID/actorSub split, client_id-binding fallback: the
+			// subject token's client_id must match the authenticated client
+			// (clientID), not the asserted actor (actorSub) — this is the
+			// exact bypass TestTokenExchangeHandler_HandleTokenEndpointRequest's
+			// "actor_token cannot bypass subject-token client_id binding"
+			// covers end-to-end; this pins the same invariant at the
+			// checkDelegationConsent unit level.
+			name:        "client_id matching actorSub but not clientID rejected",
+			claims:      &ValidatedClaims{ClientID: "distinct-actor"},
+			clientID:    "the-authenticated-client",
+			actorSub:    "distinct-actor",
+			wantErr:     true,
+			errContains: "different client",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := checkDelegationConsent(tt.claims, actorID, tt.configuredDelegate)
+			clientID, actorSub := tt.clientID, tt.actorSub
+			if clientID == "" {
+				clientID = actorID
+			}
+			if actorSub == "" {
+				actorSub = actorID
+			}
+			err := checkDelegationConsent(tt.claims, clientID, actorSub, tt.configuredDelegate)
 			if tt.wantErr {
 				require.Error(t, err)
 				var rfcErr *fosite.RFC6749Error

@@ -85,6 +85,7 @@ func Factory(
 				Config:              config.Config,
 			},
 			validator:                 validator,
+			selfValidator:             selfValidator,
 			delegationLifespan:        delegationLifespan,
 			config:                    config.Config,
 			allowedAudiences:          config.AllowedAudiences,

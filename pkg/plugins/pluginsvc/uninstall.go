@@ -51,9 +51,18 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		}
 		return err
 	}
+	return s.uninstallExisting(ctx, opts, scope, existing)
+}
 
-	managed := scope == plugins.ScopeProject && existing.Managed
-	if managed {
+// uninstallExisting performs uninstall for a looked-up store record under the
+// per-plugin lock.
+func (s *service) uninstallExisting(
+	ctx context.Context,
+	opts plugins.UninstallOptions,
+	scope plugins.Scope,
+	existing plugins.InstalledPlugin,
+) error {
+	if scope == plugins.ScopeProject && existing.Managed {
 		if err := s.requireMaterializers(existing.Clients); err != nil {
 			return err
 		}
@@ -83,19 +92,11 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		))...)
 	}
 
-	// Remove group membership before deleting the DB row so a failed group
-	// cleanup remains retryable (Uninstall is a no-op once the record is gone).
-	if s.groupManager != nil {
-		if groupErr := groups.RemovePluginFromAllGroups(ctx, s.groupManager, opts.Name); groupErr != nil {
-			groupErr = fmt.Errorf("removing plugin from groups: %w", groupErr)
-			if restoreLock != nil {
-				return errors.Join(groupErr, s.compensateManagedUninstall(
-					ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
-				))
-			}
-			cleanupErrs = append(cleanupErrs, groupErr)
-			return errors.Join(cleanupErrs...)
+	if err := s.removePluginGroups(ctx, opts.Name, restoreLock, scope, opts.ProjectRoot, backups, existing.Clients); err != nil {
+		if restoreLock != nil {
+			return err
 		}
+		return errors.Join(append(cleanupErrs, err)...)
 	}
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
@@ -106,8 +107,34 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		}
 		return err
 	}
-
 	return errors.Join(cleanupErrs...)
+}
+
+// removePluginGroups removes the plugin from all groups before DB delete so a
+// failed cleanup remains retryable. Managed failures compensate lock/files.
+func (s *service) removePluginGroups(
+	ctx context.Context,
+	name string,
+	restoreLock func() error,
+	scope plugins.Scope,
+	projectRoot string,
+	backups map[string]map[string]fileSnapshot,
+	clients []string,
+) error {
+	if s.groupManager == nil {
+		return nil
+	}
+	groupErr := groups.RemovePluginFromAllGroups(ctx, s.groupManager, name)
+	if groupErr == nil {
+		return nil
+	}
+	groupErr = fmt.Errorf("removing plugin from groups: %w", groupErr)
+	if restoreLock != nil {
+		return errors.Join(groupErr, s.compensateManagedUninstall(
+			ctx, restoreLock, name, scope, projectRoot, backups, clients,
+		))
+	}
+	return groupErr
 }
 
 // requireMaterializers fails closed when a managed uninstall would delete the

@@ -13,6 +13,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 // SPIFFEAssociationRegistry is the immutable runtime index of validated SPIFFE
@@ -63,37 +64,10 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 // NormalizedSPIFFEPrincipal is an immutable, validated identity selected from a
 // SPIFFE association. It represents policy only; it does not authenticate a
 // credential or enable an authentication method.
-type NormalizedSPIFFEPrincipal struct {
-	clientID      string
-	spiffeID      string
-	trustDomain   string
-	authMethod    SPIFFEAuthenticationMethod
-	authorization SPIFFEAuthorizationPolicy
-}
-
-// ClientID returns the configured OAuth client ID.
-func (p NormalizedSPIFFEPrincipal) ClientID() string { return p.clientID }
-
-// SPIFFEID returns the canonical concrete SPIFFE ID.
-func (p NormalizedSPIFFEPrincipal) SPIFFEID() string { return p.spiffeID }
-
-// TrustDomain returns the canonical SPIFFE trust domain.
-func (p NormalizedSPIFFEPrincipal) TrustDomain() string { return p.trustDomain }
-
-// AuthenticationMethod returns the selected credential-method discriminator.
-func (p NormalizedSPIFFEPrincipal) AuthenticationMethod() SPIFFEAuthenticationMethod {
-	return p.authMethod
-}
-
-// AuthorizationPolicy returns a defensive copy of the selected policy.
-func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes: slices.Clone(p.authorization.grantTypes),
-		scopes:     slices.Clone(p.authorization.scopes),
-		resources:  slices.Clone(p.authorization.resources),
-		audiences:  slices.Clone(p.authorization.audiences),
-	}
-}
+//
+// Alias for spiffeauth.NormalizedSPIFFEPrincipal; see SPIFFEAuthenticationMethod
+// for why the definition lives in pkg/authserver/spiffe.
+type NormalizedSPIFFEPrincipal = spiffeauth.NormalizedSPIFFEPrincipal
 
 // Resolve selects a configured association for a canonical concrete SPIFFE ID,
 // requested OAuth client ID, and explicitly selected authentication method.
@@ -129,13 +103,54 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 		)
 	}
 
-	return NormalizedSPIFFEPrincipal{
-		clientID:      association.ClientID(),
-		spiffeID:      canonicalID,
-		trustDomain:   parsedID.TrustDomain().String(),
-		authMethod:    method,
-		authorization: association.AuthorizationPolicy(),
-	}, nil
+	return spiffeauth.NewNormalizedSPIFFEPrincipal(
+		association.ClientID(), canonicalID, parsedID.TrustDomain().String(),
+		spiffeauth.SPIFFEAuthenticationMethod(method), association.AuthorizationPolicy(),
+	), nil
+}
+
+// staticClient returns the configured immutable OAuth client for clientID.
+func (r *SPIFFEAssociationRegistry) staticClient(clientID string) (*registration.SPIFFEClient, bool, error) {
+	if r == nil {
+		return nil, false, nil
+	}
+	association, ok := r.byClientID[clientID]
+	if !ok {
+		return nil, false, nil
+	}
+	policy := association.AuthorizationPolicy()
+	client, err := registration.NewSPIFFEClient(
+		association.ClientID(), policy.GrantTypes(), policy.Scopes(), policy.Audiences(), policy.Resources(),
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("SPIFFE client %q: %w", clientID, err)
+	}
+	return client, true, nil
+}
+
+func (r *SPIFFEAssociationRegistry) permitsGrant(grant string) bool {
+	if r == nil {
+		return false
+	}
+	for _, association := range r.byClientID {
+		for _, permittedGrant := range association.AuthorizationPolicy().GrantTypes() {
+			if permittedGrant == grant {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *SPIFFEAssociationRegistry) clientIDs() []string {
+	if r == nil {
+		return nil
+	}
+	clientIDs := make([]string, 0, len(r.byClientID))
+	for clientID := range r.byClientID {
+		clientIDs = append(clientIDs, clientID)
+	}
+	return clientIDs
 }
 
 func (r *SPIFFEAssociationRegistry) associationForSPIFFEID(spiffeID string) (SPIFFEClientAuthConfig, bool) {
@@ -180,7 +195,7 @@ func (r *SPIFFEAssociationRegistry) staticClients() (map[string]fosite.Client, e
 	for clientID, association := range r.byClientID {
 		policy := association.AuthorizationPolicy()
 		client, err := registration.NewSPIFFEClient(
-			association.ClientID(), policy.Scopes(), policy.Audiences(), policy.Resources(),
+			association.ClientID(), policy.GrantTypes(), policy.Scopes(), policy.Audiences(), policy.Resources(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("SPIFFE client %q: %w", clientID, err)

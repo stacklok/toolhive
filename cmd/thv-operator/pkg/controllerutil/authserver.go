@@ -365,10 +365,7 @@ func buildSPIFFEBundleSourceRunConfig(source mcpv1beta1.SPIFFEBundleSourceConfig
 }
 
 // buildSPIFFEClientAuthRunConfigs converts CRD SPIFFEClientConfig entries to
-// authserver.SPIFFEClientAuthRunConfig. GrantTypes is not a CRD field: the
-// runtime only accepts exactly the RFC 8693 token-exchange grant for a
-// SPIFFE client (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so
-// it is always supplied here rather than configured.
+// authserver.SPIFFEClientAuthRunConfig.
 func buildSPIFFEClientAuthRunConfigs(
 	clients []mcpv1beta1.SPIFFEClientConfig,
 ) []authserver.SPIFFEClientAuthRunConfig {
@@ -378,6 +375,10 @@ func buildSPIFFEClientAuthRunConfigs(
 		for j, method := range spiffeClient.Methods {
 			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
 		}
+		var tokenExchange *authserver.SPIFFETokenExchangeRunConfig
+		if spiffeClient.TokenExchange != nil {
+			tokenExchange = &authserver.SPIFFETokenExchangeRunConfig{Enabled: spiffeClient.TokenExchange.Enabled}
+		}
 		configs[i] = authserver.SPIFFEClientAuthRunConfig{
 			TrustDomainRef:   spiffeClient.TrustDomainRef,
 			PrincipalPattern: spiffeClient.PrincipalPattern,
@@ -386,7 +387,8 @@ func buildSPIFFEClientAuthRunConfigs(
 			Resources:        append([]string(nil), spiffeClient.Resources...),
 			Audiences:        append([]string(nil), spiffeClient.Audiences...),
 			Scopes:           append([]string(nil), spiffeClient.Scopes...),
-			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			GrantTypes:       append([]string(nil), spiffeClient.GrantTypes...),
+			TokenExchange:    tokenExchange,
 		}
 	}
 	return configs

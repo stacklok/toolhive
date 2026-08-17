@@ -2013,6 +2013,7 @@ func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 				Scopes:           []string{"openid"},
 				Audiences:        []string{"https://mcp.example.com"},
 				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+				TokenExchange:    &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 			}},
 		},
 		TrustedIssuers: []tokenexchange.TrustedIssuer{{
@@ -2077,6 +2078,7 @@ func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
 				Scopes:           []string{"openid"},
 				Audiences:        []string{"https://mcp.example.com"},
 				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+				TokenExchange:    &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 			}},
 		},
 	}
@@ -2122,6 +2124,7 @@ func TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR(t *testing.
 				Scopes:           []string{"openid"},
 				Audiences:        []string{"https://mcp.example.com"},
 				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+				TokenExchange:    &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 			}},
 		},
 		Upstreams: []authserver.UpstreamRunConfig{{
@@ -2184,6 +2187,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 				Scopes:           []string{scope},
 				Audiences:        []string{"https://mcp.example.com"},
 				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+				TokenExchange:    &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 			}},
 		}
 		return cfg
@@ -2324,10 +2328,11 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 			authserver.SPIFFEAuthenticationMethodX509,
 			authserver.SPIFFEAuthenticationMethodJWT,
 		},
-		GrantTypes: []string{authserver.SPIFFEGrantTypeTokenExchange},
-		Scopes:     []string{"openid"},
-		Resources:  []string{"https://mcp.example.com"},
-		Audiences:  []string{"https://mcp.example.com"},
+		GrantTypes:    []string{authserver.SPIFFEGrantTypeTokenExchange},
+		TokenExchange: &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
+		Scopes:        []string{"openid"},
+		Resources:     []string{"https://mcp.example.com"},
+		Audiences:     []string{"https://mcp.example.com"},
 	}}}
 
 	cfg := authserver.RunConfig{
@@ -2363,7 +2368,8 @@ func TestEmbeddedAuthServer_SPIFFEAssociationDoesNotAuthenticateClient(t *testin
 	// SPIFFE-looking header from live bundle loading, which requires a local
 	// Workload API for this configuration.
 	spiffeClient, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, []string{"https://mcp.example.com"},
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+		[]string{"openid"}, []string{"https://mcp.example.com"}, []string{"https://mcp.example.com"},
 	)
 	require.NoError(t, err)
 	stor := &sessionRecordingStorage{MemoryStorage: storage.NewMemoryStorage()}
@@ -3194,6 +3200,7 @@ func TestNewEmbeddedAuthServer_CanonicalInboundGrants(t *testing.T) {
 				Scopes:           []string{"openid"},
 				Audiences:        []string{"https://mcp.example.com"},
 				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+				TokenExchange:    &authserver.SPIFFETokenExchangeRunConfig{Enabled: true},
 			}},
 		}
 

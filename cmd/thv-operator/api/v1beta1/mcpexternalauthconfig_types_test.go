@@ -980,9 +980,13 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 								// admission-time pre-check fabricated a nil
 								// allowlist/default-scopes set instead of
 								// deferring to reconcile time.
-								Resources: []string{"https://backend.example.com"},
-								Audiences: []string{"https://mcp.example.com"},
-								Scopes:    []string{"custom:scope"},
+								Resources:  []string{"https://backend.example.com"},
+								Audiences:  []string{"https://mcp.example.com"},
+								Scopes:     []string{"custom:scope"},
+								GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+								TokenExchange: &SPIFFETokenExchangeConfig{
+									Enabled: true,
+								},
 							}},
 						},
 					},
@@ -1318,11 +1322,19 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 							TrustDomainRef: "example", PrincipalPattern: first, ClientID: "spiffe-client-1",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 							Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+							TokenExchange: &SPIFFETokenExchangeConfig{
+								Enabled: true,
+							},
 						},
 						{
 							TrustDomainRef: "example", PrincipalPattern: second, ClientID: "spiffe-client-2",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 							Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+							TokenExchange: &SPIFFETokenExchangeConfig{
+								Enabled: true,
+							},
 						},
 					},
 				},
@@ -1364,7 +1376,11 @@ func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthC
 						ClientID:  "spiffe-client",
 						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 						Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
-						Resources: []string{resource},
+						Resources:  []string{resource},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+						TokenExchange: &SPIFFETokenExchangeConfig{
+							Enabled: true,
+						},
 					}},
 				},
 			},
@@ -2247,4 +2263,109 @@ func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {
 			assert.Equal(t, tc.want, tc.cfg.SyntheticIdentityUpstreams())
 		})
 	}
+}
+
+func TestValidateSPIFFEClientAuthGrants(t *testing.T) {
+	t.Parallel()
+
+	baseAssociation := func() SPIFFEClientConfig {
+		return SPIFFEClientConfig{
+			TrustDomainRef:   "example",
+			PrincipalPattern: "spiffe://example.org/ns/default/agent",
+			ClientID:         "spiffe-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Audiences:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(SPIFFEClientConfig) SPIFFEClientConfig
+		wantErr string
+	}{
+		{
+			name: "client_credentials only is valid",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"client_credentials"}
+				return a
+			},
+		},
+		{
+			name: "token-exchange with tokenExchange enabled is valid",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+				a.TokenExchange = &SPIFFETokenExchangeConfig{Enabled: true}
+				return a
+			},
+		},
+		{
+			name: "both grants with tokenExchange enabled is valid",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"}
+				a.TokenExchange = &SPIFFETokenExchangeConfig{Enabled: true}
+				return a
+			},
+		},
+		{
+			name: "empty grantTypes is rejected",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = nil
+				return a
+			},
+			wantErr: "grantTypes is required",
+		},
+		{
+			name: "duplicate grant is rejected",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"client_credentials", "client_credentials"}
+				return a
+			},
+			wantErr: "duplicate grant",
+		},
+		{
+			name: "unsupported grant is rejected",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"authorization_code"}
+				return a
+			},
+			wantErr: "unsupported grant",
+		},
+		{
+			name: "token-exchange grant without tokenExchange is rejected",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+				return a
+			},
+			wantErr: "tokenExchange must be enabled",
+		},
+		{
+			name: "tokenExchange without the token-exchange grant is rejected",
+			mutate: func(a SPIFFEClientConfig) SPIFFEClientConfig {
+				a.GrantTypes = []string{"client_credentials"}
+				a.TokenExchange = &SPIFFETokenExchangeConfig{Enabled: true}
+				return a
+			},
+			wantErr: "tokenExchange requires token-exchange grant",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			association := tt.mutate(baseAssociation())
+			inboundGrants := &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{association}}
+			err := validateSPIFFEClientAuthGrants(inboundGrants)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("nil inboundGrants is valid", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, validateSPIFFEClientAuthGrants(nil))
+	})
 }

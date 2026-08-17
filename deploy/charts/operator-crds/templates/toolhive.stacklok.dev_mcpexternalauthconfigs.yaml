@@ -551,11 +551,6 @@ spec:
                             Configuration is not authentication: configured SPIFFE clients remain
                             non-public OAuth clients without a secret until live SPIFFE credential
                             validation is implemented (see SPIFFETrustDomainConfig's doc comment).
-
-                            GrantTypes is deliberately not exposed here: the runtime only accepts
-                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
-                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-                            always supplies it instead of letting it be configured.
                           properties:
                             audiences:
                               description: Audiences are RFC 8693 token audiences
@@ -575,6 +570,18 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              description: GrantTypes contains the OAuth grants permitted
+                                for this association.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -631,6 +638,18 @@ spec:
                               minItems: 1
                               type: array
                               x-kubernetes-list-type: set
+                            tokenExchange:
+                              description: TokenExchange enables token exchange when
+                                the token-exchange grant is selected.
+                              properties:
+                                enabled:
+                                  type: boolean
+                              required:
+                              - enabled
+                              type: object
+                              x-kubernetes-validations:
+                              - message: tokenExchange must be enabled
+                                rule: self.enabled == true
                             trustDomainRef:
                               description: TrustDomainRef references spiffeTrustDomains[].name.
                               maxLength: 253
@@ -639,6 +658,7 @@ spec:
                           required:
                           - audiences
                           - clientId
+                          - grantTypes
                           - methods
                           - principalPattern
                           - scopes
@@ -649,6 +669,10 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: tokenExchange must be configured if and only
+                              if token-exchange is granted
+                            rule: self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange')
+                              == has(self.tokenExchange)
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic
@@ -3417,11 +3441,6 @@ spec:
                             Configuration is not authentication: configured SPIFFE clients remain
                             non-public OAuth clients without a secret until live SPIFFE credential
                             validation is implemented (see SPIFFETrustDomainConfig's doc comment).
-
-                            GrantTypes is deliberately not exposed here: the runtime only accepts
-                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
-                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-                            always supplies it instead of letting it be configured.
                           properties:
                             audiences:
                               description: Audiences are RFC 8693 token audiences
@@ -3441,6 +3460,18 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              description: GrantTypes contains the OAuth grants permitted
+                                for this association.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -3497,6 +3528,18 @@ spec:
                               minItems: 1
                               type: array
                               x-kubernetes-list-type: set
+                            tokenExchange:
+                              description: TokenExchange enables token exchange when
+                                the token-exchange grant is selected.
+                              properties:
+                                enabled:
+                                  type: boolean
+                              required:
+                              - enabled
+                              type: object
+                              x-kubernetes-validations:
+                              - message: tokenExchange must be enabled
+                                rule: self.enabled == true
                             trustDomainRef:
                               description: TrustDomainRef references spiffeTrustDomains[].name.
                               maxLength: 253
@@ -3505,6 +3548,7 @@ spec:
                           required:
                           - audiences
                           - clientId
+                          - grantTypes
                           - methods
                           - principalPattern
                           - scopes
@@ -3515,6 +3559,10 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: tokenExchange must be configured if and only
+                              if token-exchange is granted
+                            rule: self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange')
+                              == has(self.tokenExchange)
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic

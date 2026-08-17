@@ -4318,11 +4318,6 @@ Configuration is not authentication: configured SPIFFE clients remain
 non-public OAuth clients without a secret until live SPIFFE credential
 validation is implemented (see SPIFFETrustDomainConfig's doc comment).
 
-GrantTypes is deliberately not exposed here: the runtime only accepts
-exactly the RFC 8693 token-exchange grant for a SPIFFE client
-(validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-always supplies it instead of letting it be configured.
-
 
 
 _Appears in:_
@@ -4337,6 +4332,24 @@ _Appears in:_
 | `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Distinct from Audiences: a<br />resource permission does not imply the same value is also a permitted<br />token audience, or vice versa. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
 | `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
 | `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+| `grantTypes` _string array_ | GrantTypes contains the OAuth grants permitted for this association. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [client_credentials urn:ietf:params:oauth:grant-type:token-exchange] <br /> |
+| `tokenExchange` _[api.v1beta1.SPIFFETokenExchangeConfig](#apiv1beta1spiffetokenexchangeconfig)_ | TokenExchange enables token exchange when the token-exchange grant is selected. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFETokenExchangeConfig
+
+
+
+SPIFFETokenExchangeConfig enables token exchange for a SPIFFE association.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEClientConfig](#apiv1beta1spiffeclientconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ |  |  |  |
 
 
 #### api.v1beta1.SPIFFETrustDomainConfig

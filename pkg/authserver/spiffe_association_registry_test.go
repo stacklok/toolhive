@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
@@ -360,7 +361,7 @@ func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAut
 		principal:      principal,
 		clientID:       clientID,
 		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-		authorization:  SPIFFEAuthorizationPolicy{scopes: []string{"openid"}},
+		authorization:  spiffeauth.NewSPIFFEAuthorizationPolicy(nil, []string{"openid"}, nil, nil, false),
 	}
 }
 
@@ -392,5 +393,6 @@ func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 		Scopes:           []string{scope},
 		Audiences:        []string{"https://audience.example.com"},
 		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		TokenExchange:    &SPIFFETokenExchangeRunConfig{Enabled: true},
 	}
 }

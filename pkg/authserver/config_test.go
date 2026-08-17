@@ -104,6 +104,7 @@ func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
 			Audiences:        []string{"https://mcp.example.com"},
 			Scopes:           []string{"openid"},
 			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+			TokenExchange:    &SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}},
 		[]string{"openid"}, []string{"https://mcp.example.com"},
 	)
@@ -710,6 +711,7 @@ func TestRunConfigValidate(t *testing.T) {
 					Audiences:        []string{"https://mcp.example.org/resource"},
 					Scopes:           []string{"openid"},
 					GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+					TokenExchange:    &SPIFFETokenExchangeRunConfig{Enabled: true},
 				}}},
 			},
 		},

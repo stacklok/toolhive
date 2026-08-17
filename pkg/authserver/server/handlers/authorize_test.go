@@ -90,6 +90,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 				t.Helper()
 				client, err := registration.NewSPIFFEClient(
 					"spiffe-client",
+					[]string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 					[]string{"openid"},
 					[]string{"https://mcp.example.com"},
 					nil,

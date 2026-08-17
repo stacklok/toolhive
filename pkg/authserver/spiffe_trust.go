@@ -25,8 +25,9 @@ const (
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
 	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
-	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
-	// this configuration surface.
+	// SPIFFEGrantTypeClientCredentials is the SPIFFE client credentials grant.
+	SPIFFEGrantTypeClientCredentials = oauthproto.GrantTypeClientCredentials
+	// SPIFFEGrantTypeTokenExchange is the SPIFFE token exchange grant.
 	SPIFFEGrantTypeTokenExchange = oauthproto.GrantTypeTokenExchange
 
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
@@ -158,28 +159,25 @@ type SPIFFEClientAuthRunConfig struct {
 	// GrantTypes are the OAuth grant types this association may use. Client
 	// authentication does not by itself confer any grant.
 	GrantTypes []string `json:"grant_types" yaml:"grant_types"`
+
+	// TokenExchange enables the RFC 8693 token-exchange grant for this
+	// association. Its presence must agree with GrantTypes; it does not
+	// perform an exchange.
+	TokenExchange *SPIFFETokenExchangeRunConfig `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+}
+
+// SPIFFETokenExchangeRunConfig enables token exchange for a single SPIFFE
+// client-auth association.
+type SPIFFETokenExchangeRunConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
 }
 
 // SPIFFEAuthorizationPolicy is the immutable authorization policy selected by a
 // validated SPIFFE association.
-type SPIFFEAuthorizationPolicy struct {
-	grantTypes []string
-	scopes     []string
-	resources  []string
-	audiences  []string
-}
-
-// GrantTypes returns a copy of the permitted OAuth grant types.
-func (p SPIFFEAuthorizationPolicy) GrantTypes() []string { return slices.Clone(p.grantTypes) }
-
-// Scopes returns a copy of the permitted OAuth scopes.
-func (p SPIFFEAuthorizationPolicy) Scopes() []string { return slices.Clone(p.scopes) }
-
-// Resources returns a copy of the permitted RFC 8707 resource indicators.
-func (p SPIFFEAuthorizationPolicy) Resources() []string { return slices.Clone(p.resources) }
-
-// Audiences returns a copy of the permitted RFC 8693 token audiences.
-func (p SPIFFEAuthorizationPolicy) Audiences() []string { return slices.Clone(p.audiences) }
+//
+// Alias for spiffeauth.SPIFFEAuthorizationPolicy; see SPIFFEAuthenticationMethod
+// for why the definition lives in pkg/authserver/spiffe.
+type SPIFFEAuthorizationPolicy = spiffeauth.SPIFFEAuthorizationPolicy
 
 // matchSPIFFEPrincipalPattern reports whether principal matches pattern. A
 // terminal /* matches descendants only at a path-segment boundary: /agent/*
@@ -238,12 +236,10 @@ func NewSPIFFETrustConfig(
 			principal:      principal,
 			clientID:       association.ClientID,
 			methods:        slices.Clone(association.Methods),
-			authorization: SPIFFEAuthorizationPolicy{
-				grantTypes: slices.Clone(association.GrantTypes),
-				scopes:     slices.Clone(association.Scopes),
-				resources:  slices.Clone(association.Resources),
-				audiences:  slices.Clone(association.Audiences),
-			},
+			authorization: spiffeauth.NewSPIFFEAuthorizationPolicy(
+				association.GrantTypes, association.Scopes, association.Resources, association.Audiences,
+				association.TokenExchange != nil && association.TokenExchange.Enabled,
+			),
 		})
 	}
 	return config, nil
@@ -367,12 +363,11 @@ func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod {
 
 // AuthorizationPolicy returns a defensive copy of the association policy.
 func (c SPIFFEClientAuthConfig) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes: slices.Clone(c.authorization.grantTypes),
-		scopes:     slices.Clone(c.authorization.scopes),
-		resources:  slices.Clone(c.authorization.resources),
-		audiences:  slices.Clone(c.authorization.audiences),
-	}
+	return spiffeauth.NewSPIFFEAuthorizationPolicy(
+		c.authorization.GrantTypes(), c.authorization.Scopes(),
+		c.authorization.Resources(), c.authorization.Audiences(),
+		c.authorization.TokenExchangeEnabled(),
+	)
 }
 
 func (c SPIFFEClientAuthConfig) clone() SPIFFEClientAuthConfig {
@@ -650,7 +645,7 @@ func validateSPIFFEClientAssociationPermissions(
 	if err := registration.ValidateScopeSubset(entry.Scopes, effectiveScopes, fieldPrefix+".scopes"); err != nil {
 		return err
 	}
-	return validateSPIFFEGrants(entry.GrantTypes, index)
+	return validateSPIFFEGrants(entry.GrantTypes, entry.TokenExchange, index)
 }
 
 func parseTrustDomain(trustDomain string) (spiffeid.TrustDomain, error) {
@@ -771,12 +766,35 @@ func validateDistinctNonEmpty(values []string, field string) error {
 	return nil
 }
 
-func validateSPIFFEGrants(grants []string, index int) error {
-	if len(grants) != 1 || grants[0] != SPIFFEGrantTypeTokenExchange {
-		return fmt.Errorf(
-			"inbound_grants.spiffe_client_auth[%d].grant_types must be exactly [%q]",
-			index, SPIFFEGrantTypeTokenExchange,
-		)
+func validateSPIFFEGrants(grants []string, exchange *SPIFFETokenExchangeRunConfig, index int) error {
+	field := fmt.Sprintf("inbound_grants.spiffe_client_auth[%d].grant_types", index)
+	if len(grants) == 0 {
+		return fmt.Errorf("%s is required", field)
+	}
+
+	hasTokenExchange := false
+	seen := make(map[string]struct{}, len(grants))
+	for _, grant := range grants {
+		if grant == "" {
+			return fmt.Errorf("%s must not contain an empty value", field)
+		}
+		if _, exists := seen[grant]; exists {
+			return fmt.Errorf("%s: duplicate grant %q", field, grant)
+		}
+		seen[grant] = struct{}{}
+		switch grant {
+		case SPIFFEGrantTypeClientCredentials:
+		case SPIFFEGrantTypeTokenExchange:
+			hasTokenExchange = true
+		default:
+			return fmt.Errorf("%s: unknown grant %q", field, grant)
+		}
+	}
+	if hasTokenExchange && (exchange == nil || !exchange.Enabled) {
+		return fmt.Errorf("inbound_grants.spiffe_client_auth[%d]: token_exchange must be enabled for token-exchange grant", index)
+	}
+	if !hasTokenExchange && exchange != nil {
+		return fmt.Errorf("inbound_grants.spiffe_client_auth[%d]: token_exchange requires token-exchange grant", index)
 	}
 	return nil
 }

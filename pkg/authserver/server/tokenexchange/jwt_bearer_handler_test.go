@@ -458,7 +458,8 @@ func TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain(t *testing
 	require.NoError(t, err)
 
 	spiffeClient, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, nil)
+		"spiffe-client", []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+		[]string{"openid"}, []string{"https://mcp.example.com"}, nil)
 	require.NoError(t, err)
 	chain, err := storage.NewSPIFFEStorageDecorator(
 		ctx, cimdDecorated, map[string]fosite.Client{spiffeClient.GetID(): spiffeClient})

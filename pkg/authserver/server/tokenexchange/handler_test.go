@@ -2472,6 +2472,7 @@ func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudie
 	const registeredAudience = "https://other.example.com"
 	client, err := registration.NewSPIFFEClient(
 		"spiffe-client",
+		[]string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 		[]string{"openid"},
 		[]string{registeredAudience},
 		[]string{registeredResource},

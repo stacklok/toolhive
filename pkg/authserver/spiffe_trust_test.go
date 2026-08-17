@@ -99,6 +99,7 @@ func TestValidateSPIFFETrust(t *testing.T) {
 			Audiences:        []string{"https://mcp.example.org/resource"},
 			Scopes:           []string{"openid"},
 			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+			TokenExchange:    &SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}}
 		return domains, grants
 	}
@@ -126,6 +127,7 @@ func TestValidateSPIFFETrust(t *testing.T) {
 				TrustDomainRef: "production", PrincipalPattern: "spiffe://example.org/ns/other/agent", ClientID: "agent-client",
 				Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}, Audiences: []string{"https://mcp.example.org/other"},
 				Scopes: []string{"openid"}, GrantTypes: []string{SPIFFEGrantTypeTokenExchange},
+				TokenExchange: &SPIFFETokenExchangeRunConfig{Enabled: true},
 			})
 		}, wantErr: "duplicate client_id"},
 		{name: "exact parent does not overlap descendant wildcard", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
@@ -134,6 +136,7 @@ func TestValidateSPIFFETrust(t *testing.T) {
 				TrustDomainRef: "production", PrincipalPattern: "spiffe://example.org/ns/default/*", ClientID: "other-client",
 				Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}, Audiences: []string{"https://mcp.example.org/other"},
 				Scopes: []string{"openid"}, GrantTypes: []string{SPIFFEGrantTypeTokenExchange},
+				TokenExchange: &SPIFFETokenExchangeRunConfig{Enabled: true},
 			})
 		}},
 		{name: "nested wildcards overlap", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
@@ -141,6 +144,7 @@ func TestValidateSPIFFETrust(t *testing.T) {
 				TrustDomainRef: "production", PrincipalPattern: "spiffe://example.org/ns/default/sa/*", ClientID: "other-client",
 				Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}, Audiences: []string{"https://mcp.example.org/other"},
 				Scopes: []string{"openid"}, GrantTypes: []string{SPIFFEGrantTypeTokenExchange},
+				TokenExchange: &SPIFFETokenExchangeRunConfig{Enabled: true},
 			})
 		}, wantErr: "overlaps"},
 		{name: "audiences are required", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
@@ -182,12 +186,12 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "method not enabled by trust domain", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 		}, wantErr: "not enabled by trust domain"},
-		{name: "grant_types must be exactly token exchange", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+		{name: "grant_types rejects an unsupported grant", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].GrantTypes = []string{"authorization_code"}
-		}, wantErr: "grant_types must be exactly"},
+		}, wantErr: "unknown grant"},
 		{name: "grant_types is required", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].GrantTypes = nil
-		}, wantErr: "grant_types must be exactly"},
+		}, wantErr: "is required"},
 		{name: "bundle_source type is required", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{}
 		}, wantErr: "unknown source type"},
@@ -244,6 +248,38 @@ func TestValidateSPIFFETrust(t *testing.T) {
 	}
 }
 
+func TestValidateSPIFFEGrantsMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		grants   []string
+		exchange *SPIFFETokenExchangeRunConfig
+		wantErr  string
+	}{
+		{name: "client credentials only", grants: []string{SPIFFEGrantTypeClientCredentials}},
+		{name: "token exchange only", grants: []string{SPIFFEGrantTypeTokenExchange}, exchange: &SPIFFETokenExchangeRunConfig{Enabled: true}},
+		{name: "both grants", grants: []string{SPIFFEGrantTypeClientCredentials, SPIFFEGrantTypeTokenExchange}, exchange: &SPIFFETokenExchangeRunConfig{Enabled: true}},
+		{name: "empty", wantErr: "is required"},
+		{name: "duplicate", grants: []string{SPIFFEGrantTypeClientCredentials, SPIFFEGrantTypeClientCredentials}, wantErr: "duplicate"},
+		{name: "unknown", grants: []string{"authorization_code"}, wantErr: "unknown grant"},
+		{name: "exchange missing", grants: []string{SPIFFEGrantTypeTokenExchange}, wantErr: "must be enabled"},
+		{name: "exchange disabled", grants: []string{SPIFFEGrantTypeTokenExchange}, exchange: &SPIFFETokenExchangeRunConfig{}, wantErr: "must be enabled"},
+		{name: "exchange without grant", grants: []string{SPIFFEGrantTypeClientCredentials}, exchange: &SPIFFETokenExchangeRunConfig{Enabled: true}, wantErr: "requires token-exchange"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSPIFFEGrants(tt.grants, tt.exchange, 0)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateSPIFFETrustRejectsDuplicateCanonicalTrustDomains(t *testing.T) {
 	t.Parallel()
 
@@ -280,6 +316,7 @@ func TestNewSPIFFETrustConfigDefensivelyCopiesAudiences(t *testing.T) {
 			TrustDomainRef: "production", PrincipalPattern: "spiffe://example.org/ns/default/agent", ClientID: "agent-client",
 			Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}, Audiences: audiences, Resources: resources,
 			Scopes: []string{"openid"}, GrantTypes: []string{SPIFFEGrantTypeTokenExchange},
+			TokenExchange: &SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}},
 		[]string{"openid"}, []string{"https://mcp.example.org/resource", "https://mcp.example.org/api"},
 	)
@@ -315,6 +352,7 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 			TrustDomainRef: "production", PrincipalPattern: "spiffe://example.org/ns/default/agent", ClientID: "agent-client",
 			Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}, Audiences: []string{"https://mcp.example.org/resource"},
 			Scopes: []string{"openid"}, GrantTypes: []string{SPIFFEGrantTypeTokenExchange},
+			TokenExchange: &SPIFFETokenExchangeRunConfig{Enabled: true},
 		}}},
 		[]string{"openid"}, []string{"https://mcp.example.org/resource"},
 	)

@@ -708,12 +708,8 @@ type SPIFFETrustDomainConfig struct {
 // non-public OAuth clients without a secret until live SPIFFE credential
 // validation is implemented (see SPIFFETrustDomainConfig's doc comment).
 //
-// GrantTypes is deliberately not exposed here: the runtime only accepts
-// exactly the RFC 8693 token-exchange grant for a SPIFFE client
-// (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-// always supplies it instead of letting it be configured.
-//
 // +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
+// +kubebuilder:validation:XValidation:rule="self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange') == has(self.tokenExchange)",message="tokenExchange must be configured if and only if token-exchange is granted"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type SPIFFEClientConfig struct {
@@ -782,6 +778,23 @@ type SPIFFEClientConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	Scopes []string `json:"scopes"`
+
+	// GrantTypes contains the OAuth grants permitted for this association.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum={"client_credentials","urn:ietf:params:oauth:grant-type:token-exchange"}
+	// +listType=set
+	GrantTypes []string `json:"grantTypes"`
+
+	// TokenExchange enables token exchange when the token-exchange grant is selected.
+	// +optional
+	TokenExchange *SPIFFETokenExchangeConfig `json:"tokenExchange,omitempty"`
+}
+
+// SPIFFETokenExchangeConfig enables token exchange for a SPIFFE association.
+// +kubebuilder:validation:XValidation:rule="self.enabled == true",message="tokenExchange must be enabled"
+type SPIFFETokenExchangeConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 // InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
@@ -2639,12 +2652,15 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// validateDelegateClientsAndTrustedIssuers revalidates the full SPIFFE
 	// trust config (via RunConfig.Validate) once those derived values exist.
 	//
-	// The two checks below are admission-time-safe: they depend only on this
+	// The checks below are admission-time-safe: they depend only on this
 	// object's own spec, so they run here instead of waiting for reconcile.
 	if err := validateSPIFFEBundleEndpoints(cfg.SPIFFETrustDomains); err != nil {
 		return err
 	}
 	if err := validateSPIFFEPrincipalPatternOverlap(cfg.InboundGrants); err != nil {
+		return err
+	}
+	if err := validateSPIFFEClientAuthGrants(cfg.InboundGrants); err != nil {
 		return err
 	}
 	if err := authserver.ValidateForceConfidentialRedirectURIs(
@@ -2766,6 +2782,53 @@ func hasJWTBearerTrustedIssuer(issuers []TrustedIssuerConfig) bool {
 	return slices.ContainsFunc(issuers, func(issuer TrustedIssuerConfig) bool {
 		return issuer.JWTBearerGrant != nil
 	})
+}
+
+// validateSPIFFEClientAuthGrants validates each SPIFFE client-auth entry's
+// grantTypes for internal duplicates and unsupported values, and that
+// tokenExchange is configured if and only if the token-exchange grant is
+// selected. The CEL rule on SPIFFEClientConfig enforces the same
+// tokenExchange-iff-token-exchange-grant invariant; this is defense-in-depth
+// for the duplicate/unsupported-value half CEL cannot express as cleanly.
+func validateSPIFFEClientAuthGrants(inboundGrants *InboundGrantsConfig) error {
+	if inboundGrants == nil {
+		return nil
+	}
+	for i, association := range inboundGrants.SPIFFEClientAuth {
+		prefix := fmt.Sprintf("inboundGrants.spiffeClientAuth[%d]", i)
+		if err := validateSPIFFEAssociationGrants(association, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSPIFFEAssociationGrants(association SPIFFEClientConfig, prefix string) error {
+	hasTokenExchange := false
+	seenGrants := make(map[string]struct{}, len(association.GrantTypes))
+	for _, grant := range association.GrantTypes {
+		if _, exists := seenGrants[grant]; exists {
+			return fmt.Errorf("%s.grantTypes: duplicate grant %q", prefix, grant)
+		}
+		seenGrants[grant] = struct{}{}
+		switch grant {
+		case "client_credentials":
+		case "urn:ietf:params:oauth:grant-type:token-exchange":
+			hasTokenExchange = true
+		default:
+			return fmt.Errorf("%s.grantTypes: unsupported grant %q", prefix, grant)
+		}
+	}
+	if len(seenGrants) == 0 {
+		return fmt.Errorf("%s.grantTypes is required", prefix)
+	}
+	if hasTokenExchange && (association.TokenExchange == nil || !association.TokenExchange.Enabled) {
+		return fmt.Errorf("%s: tokenExchange must be enabled for token-exchange grant", prefix)
+	}
+	if !hasTokenExchange && association.TokenExchange != nil {
+		return fmt.Errorf("%s: tokenExchange requires token-exchange grant", prefix)
+	}
+	return nil
 }
 
 // buildTrustedIssuerConfigs converts CRD entries to the authoritative runtime

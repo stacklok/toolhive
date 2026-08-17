@@ -333,13 +333,8 @@ func (s *service) syncUnlockedInstall(
 // verification lands in a later PR; requiring --allow-unsigned here would
 // make every adopt fail until then. Lock validation permits an entry with
 // neither provenance nor unsigned.
-func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) error {
-	_, unlock := s.lockPlugin(ctx, pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
-	defer unlock()
-	return s.adoptLocked(ctx, pl)
-}
-
-// adoptLocked performs adoptPlugin assuming the per-plugin lock is already held.
+// adoptLocked writes a lock entry for an unmanaged install assuming the
+// per-plugin lock is already held.
 func (s *service) adoptLocked(ctx context.Context, pl plugins.InstalledPlugin) error {
 	current, err := s.store.Get(ctx, pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
 	if err != nil {

@@ -29,11 +29,20 @@ const ociPullTimeout = 5 * time.Minute
 const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
 
 // installFromOCI pulls a skill artifact from a remote registry, extracts
-// metadata and layer data, then delegates to the standard extraction flow.
+// metadata and layer data, then completes extraction and bookkeeping while
+// the caller-held lock remains held.
+//
+// When alreadyLocked is false (user-scope), the per-skill lock is acquired
+// after the canonical name is known and held through installAndRegister.
+// When alreadyLocked is true (project transaction), no per-skill lock is
+// taken — the project tx is the serialization boundary.
 func (s *service) installFromOCI(
 	ctx context.Context,
 	opts *skills.InstallOptions,
 	scope skills.Scope,
+	originalName string,
+	deps *depState,
+	alreadyLocked bool,
 	ref nameref.Reference,
 ) (*skills.InstallResult, error) {
 	if s.registry == nil || s.ociStore == nil {
@@ -110,14 +119,30 @@ func (s *service) installFromOCI(
 	}
 	// Note: version is optional; if both are empty, install without a version.
 
-	ctx, unlock := s.lockSkill(ctx, opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	if err := validateExpectedCanonicalName(*opts); err != nil {
+		return nil, err
+	}
+
+	if deps != nil {
+		if deps.alreadyDone(opts.Name) {
+			return s.mergeRequiredByOnly(ctx, *opts, opts.Name, scope)
+		}
+		if err := deps.enter(opts.Name); err != nil {
+			return nil, err
+		}
+		defer deps.leave(opts.Name)
+	}
+
+	if !alreadyLocked {
+		unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+		defer unlock()
+	}
 
 	// Verify the artifact signature before anything is extracted or
 	// recorded; the decision (verified identity or explicit unsigned
 	// exception) travels on opts into the DB record and lock entry. This
-	// runs under the per-skill lock so concurrent first installs cannot
-	// both read an absent lock entry and race their TOFU anchors.
+	// runs under the held lock so concurrent first installs cannot both
+	// read an absent lock entry and race their TOFU anchors.
 	if shouldVerifyInstall(*opts, scope) {
 		decision, verifyErr := s.verifyOCIInstall(ctx, *opts, skillConfig.Name, ociRef, opts.Digest)
 		if verifyErr != nil {
@@ -126,7 +151,11 @@ func (s *service) installFromOCI(
 		applyDecisionToOpts(opts, decision)
 	}
 
-	return s.installWithExtraction(ctx, *opts, scope)
+	result, err := s.installWithExtraction(ctx, *opts, scope)
+	if err != nil {
+		return nil, err
+	}
+	return s.installAndRegister(ctx, *opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope, deps)
 }
 
 // resolveFromLocalStore attempts to resolve a skill name against the local

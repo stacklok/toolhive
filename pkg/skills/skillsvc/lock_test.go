@@ -289,21 +289,21 @@ func TestMaterializeDependencies_RejectsTreeExceedingMaxDependencies(t *testing.
 	require.NoError(t, os.MkdirAll(skillDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), gitSkill("root-skill", depRef), 0o644))
 
-	// Pre-fill Visited to the cap, as if this were deep in an already-large
+	// Pre-fill completed to the cap, as if this were deep in an already-large
 	// dependency tree; the next never-seen dependency must trip the limit
 	// rather than silently keep expanding.
-	visited := make(map[string]struct{}, skills.MaxDependencies)
+	deps := newDepState()
 	for i := range skills.MaxDependencies {
-		visited[fmt.Sprintf("seen-%d", i)] = struct{}{}
+		deps.completed[fmt.Sprintf("seen-%d", i)] = struct{}{}
 	}
 
-	err := svcImpl.materializeDependencies(t.Context(), skills.InstallOptions{Visited: visited}, "root-skill", sk)
+	err := svcImpl.materializeDependencies(t.Context(), skills.InstallOptions{}, sk, deps)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestInstallProjectScope_DependencyCycleTerminates(t *testing.T) {
+func TestInstallProjectScope_DependencyCycleRejected(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
 	refA, _ := gitRef("skill-a")
 	refB, _ := gitRef("skill-b")
@@ -320,24 +320,11 @@ func TestInstallProjectScope_DependencyCycleTerminates(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		require.NoError(t, err)
+		require.Error(t, err, "canonical dependency cycles must be rejected, not soft-skipped")
+		assert.Contains(t, err.Error(), "dependency cycle")
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout: dependency cycle did not terminate")
 	}
-
-	lf := readLockfile(t, projectRoot)
-	a, ok := lf.Get("skill-a")
-	require.True(t, ok)
-	assert.True(t, a.Explicit)
-	// The cycle check must trip on skill-b's requires entry for refA — the
-	// same git:// reference skill-a was installed with, not skill-a's
-	// resolved bare name — so skill-a is never re-materialized as its own
-	// dependency. Without that, skill-a would gain itself a spurious
-	// RequiredBy via skill-b.
-	assert.Empty(t, a.RequiredBy, "skill-a must not become required-by skill-b through the a<->b cycle")
-	b, ok := lf.Get("skill-b")
-	require.True(t, ok)
-	assert.Equal(t, []string{"skill-a"}, b.RequiredBy)
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel

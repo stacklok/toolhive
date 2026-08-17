@@ -36,6 +36,9 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 	}
 	opts.ProjectRoot = projectRoot
 
+	unlock := s.projectTx.lock(projectRoot)
+	defer unlock()
+
 	root, err := lockfile.OpenRoot(projectRoot)
 	if err != nil {
 		return nil, err
@@ -80,19 +83,16 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 	return targets, nil
 }
 
-// upgradeOne reloads the named lock entry under the per-skill lock, then
-// plans and applies against that fresh snapshot. Planning every entry first
-// and applying later would let a concurrent uninstall be resurrected, or a
-// newer install be overwritten by this older plan.
+// upgradeOne reloads the named lock entry under the held project
+// transaction, then plans and applies against that fresh snapshot. Planning
+// every entry first and applying later would let a concurrent uninstall be
+// resurrected, or a newer install be overwritten by this older plan.
 //
 // FailOnChanges is a CI freshness gate: it reports the planned outcome and
 // never applies. Exit-code mapping happens in the CLI from these outcomes.
 func (s *service) upgradeOne(
 	ctx context.Context, opts skills.UpgradeOptions, name string,
 ) skills.UpgradeOutcome {
-	ctx, unlock := s.lockSkill(ctx, name, skills.ScopeProject, opts.ProjectRoot)
-	defer unlock()
-
 	root, err := lockfile.OpenRoot(opts.ProjectRoot)
 	if err != nil {
 		return skills.UpgradeOutcome{
@@ -291,6 +291,7 @@ func (s *service) probeCandidateSigner(ctx context.Context, newRef, newDigest st
 
 // applyUpgrade installs plan's pinned content when the plan calls for it.
 // Preview mode reports the plan's outcome without installing anything.
+// Assumes the project transaction is already held.
 func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, plan upgradePlan) skills.UpgradeOutcome {
 	if plan.pinnedRef == "" || opts.Preview {
 		return plan.outcome
@@ -303,7 +304,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		}
 	}
 
-	if _, err := s.Install(ctx, skills.InstallOptions{
+	if _, err := s.installLocked(ctx, skills.InstallOptions{
 		Name:                  plan.pinnedRef,
 		Scope:                 skills.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
@@ -311,7 +312,8 @@ func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, 
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: plan.resolvedRef,
 		AllowSignerChange:     opts.AllowSignerChange,
-	}); err != nil {
+		ExpectedCanonicalName: plan.entry.Name,
+	}, plan.pinnedRef, skills.ScopeProject, newDepState()); err != nil {
 		outcome := plan.outcome
 		outcome.Status = skills.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)

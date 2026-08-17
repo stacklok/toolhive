@@ -32,6 +32,9 @@ func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Sy
 	}
 	opts.ProjectRoot = projectRoot
 
+	unlock := s.projectTx.lock(projectRoot)
+	defer unlock()
+
 	root, err := lockfile.OpenRoot(projectRoot)
 	if err != nil {
 		return nil, err
@@ -67,16 +70,13 @@ func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Sy
 	return result, nil
 }
 
-// syncOne re-reads the lock entry and DB row under the per-skill lock, then
-// reconciles that fresh state. The initial Sync snapshot is only used to
-// discover names; mutation from a stale view would resurrect an uninstall or
-// prune a concurrent install.
+// syncOne re-reads the lock entry and DB row under the held project
+// transaction, then reconciles that fresh state. The initial Sync snapshot
+// is only used to discover names; mutation from a stale view would
+// resurrect an uninstall or prune a concurrent install.
 func (s *service) syncOne(
 	ctx context.Context, opts skills.SyncOptions, name string, result *skills.SyncResult,
 ) {
-	ctx, unlock := s.lockSkill(ctx, name, skills.ScopeProject, opts.ProjectRoot)
-	defer unlock()
-
 	root, err := lockfile.OpenRoot(opts.ProjectRoot)
 	if err != nil {
 		result.Failed = append(result.Failed, skills.SyncFailure{
@@ -198,6 +198,7 @@ func entryMatchesInstalled(
 // reinstallPinned reinstalls entry at its pinned reference, preserving its
 // recorded Source (never re-resolving). Empty opts.Clients keeps Install's
 // all-detected default so a newly detected client is materialized.
+// Assumes the project transaction is already held.
 func (s *service) reinstallPinned(
 	ctx context.Context, opts skills.SyncOptions, entry lockfile.Entry,
 ) error {
@@ -205,7 +206,7 @@ func (s *service) reinstallPinned(
 	if err != nil {
 		return fmt.Errorf("pinning %q: %w", entry.Name, err)
 	}
-	_, err = s.Install(ctx, skills.InstallOptions{
+	_, err = s.installLocked(ctx, skills.InstallOptions{
 		Name:                  pinnedRef,
 		Scope:                 skills.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
@@ -214,7 +215,8 @@ func (s *service) reinstallPinned(
 		LockSource:            entry.Source,
 		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
 		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
-	})
+		ExpectedCanonicalName: entry.Name,
+	}, pinnedRef, skills.ScopeProject, newDepState())
 	return err
 }
 
@@ -238,9 +240,9 @@ func (s *service) syncUnlockedInstall(
 
 	result.RemovedFromLock = append(result.RemovedFromLock, sk.Metadata.Name)
 	if opts.Prune && !opts.Check {
-		if err := s.Uninstall(ctx, skills.UninstallOptions{
+		if err := s.uninstallLocked(ctx, skills.UninstallOptions{
 			Name: sk.Metadata.Name, Scope: skills.ScopeProject, ProjectRoot: opts.ProjectRoot,
-		}); err != nil {
+		}, skills.ScopeProject); err != nil {
 			result.Failed = append(result.Failed, skills.SyncFailure{
 				Name: sk.Metadata.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 			})
@@ -280,6 +282,10 @@ func (s *service) verifyStoredSignature(entry lockfile.Entry, sk skills.Installe
 // Trust state is back-filled from the stored Sigstore bundle when one
 // exists; otherwise adoption is the same trust decision as an unsigned
 // install and requires the explicit AllowUnsigned exception.
+//
+// Assumes the project transaction is already held. If marking the skill
+// managed fails after the lock entry is written, the pre-adopt lock entry
+// is restored (or the newly created entry is removed).
 func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk skills.InstalledSkill) error {
 	contentDigest, err := computeContentDigest(s.pathResolver, sk)
 	if err != nil {
@@ -304,6 +310,17 @@ func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk sk
 		}
 		unsigned = true
 	}
+
+	var prevEntry *lockfile.Entry
+	if root, rootErr := lockfile.OpenRoot(sk.ProjectRoot); rootErr == nil {
+		if lf, loadErr := lockfile.Load(root); loadErr == nil {
+			if e, ok := lf.Get(sk.Metadata.Name); ok {
+				prev := e
+				prevEntry = &prev
+			}
+		}
+	}
+
 	if err := recordLockEntry(sk.ProjectRoot, lockEntryInput{
 		Name:              sk.Metadata.Name,
 		Version:           sk.Metadata.Version,
@@ -318,9 +335,31 @@ func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk sk
 	}
 	sk.Managed = true
 	if err := s.store.Update(ctx, sk); err != nil {
+		if restoreErr := restoreAdoptedLockEntry(sk.ProjectRoot, sk.Metadata.Name, prevEntry); restoreErr != nil {
+			return errors.Join(
+				fmt.Errorf("marking skill as lock-managed: %w", err),
+				fmt.Errorf("restoring lock entry after failed adopt: %w", restoreErr),
+			)
+		}
 		return fmt.Errorf("marking skill as lock-managed: %w", err)
 	}
 	return nil
+}
+
+// restoreAdoptedLockEntry undoes adoptSkill's lock write: reinstates the
+// entry observed before adoption, or removes the name if none existed.
+func restoreAdoptedLockEntry(projectRoot, name string, prevEntry *lockfile.Entry) error {
+	if prevEntry != nil {
+		root, err := lockfile.OpenRoot(projectRoot)
+		if err != nil {
+			return err
+		}
+		return lockfile.UpsertEntry(root, *prevEntry)
+	}
+	_, err := removeLockEntry(skills.UninstallOptions{
+		Name: name, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	return err
 }
 
 // classifySyncFailure maps an error from the install/uninstall path to an

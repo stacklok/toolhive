@@ -85,7 +85,7 @@ func TestAddSkillToGroups(t *testing.T) {
 			mgr := groupmocks.NewMockManager(ctrl)
 			tt.setupMock(mgr)
 
-			err := AddSkillToGroup(context.Background(), mgr, tt.groupName, tt.skillName)
+			_, err := AddSkillToGroup(context.Background(), mgr, tt.groupName, tt.skillName)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

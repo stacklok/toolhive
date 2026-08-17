@@ -77,7 +77,7 @@ func validateEntryGraph(entries []Entry) error {
 
 // findRequiredByCycle detects a cycle in the requiredBy graph and returns
 // one such cycle path, or nil. Normal installs can never produce a cycle
-// (the install-time Visited set breaks them), but a hand-edited or badly
+// (the install-time depState active stack rejects them), but a hand-edited or badly
 // merge-resolved lock file can — and a ring of mutually-required,
 // non-explicit entries would then be impossible to ever cascade-remove, so
 // it is rejected at validation instead of persisting silently.

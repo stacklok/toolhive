@@ -5,9 +5,11 @@
 package skillsvc
 
 import (
-	"context"
+	"fmt"
+	"net/http"
 	"sync"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -84,6 +86,9 @@ func WithGitResolver(gr gitresolver.Resolver) Option {
 }
 
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
+// Used for user-scope operations. Project-scope mutations serialize on
+// projectTx instead, to avoid nested per-skill ABBA deadlocks.
+//
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
 type skillLock struct {
@@ -109,38 +114,85 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 	return m.Unlock
 }
 
-type heldSkillLockKey struct{}
-
-type heldSkillLock struct {
-	name        string
-	scope       skills.Scope
-	projectRoot string
+// projectTx serializes all project-scoped skill mutations for a given
+// canonical ProjectRoot. Different projects remain concurrent; Install,
+// Uninstall, Sync, and Upgrade for the same project share one transaction
+// that spans extraction through bookkeeping, dependency materialization,
+// cascades, and compensation.
+type projectTx struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex // key = canonical projectRoot
 }
 
-// lockSkill acquires the per-skill mutex unless ctx already holds it for
-// this key, so Sync/Upgrade can serialize read+mutate and then call
-// Install/Uninstall without deadlocking on a non-reentrant mutex.
-func (s *service) lockSkill(
-	ctx context.Context,
-	name string,
-	scope skills.Scope,
-	projectRoot string,
-) (context.Context, func()) {
-	if held, ok := ctx.Value(heldSkillLockKey{}).(heldSkillLock); ok {
-		if held.name == name && held.scope == scope && held.projectRoot == projectRoot {
-			return ctx, func() {}
-		}
+// lock acquires the project transaction mutex and returns a release function.
+func (p *projectTx) lock(projectRoot string) func() {
+	p.mu.Lock()
+	m, ok := p.locks[projectRoot]
+	if !ok {
+		m = &sync.Mutex{}
+		p.locks[projectRoot] = m
 	}
-	unlock := s.locks.lock(name, scope, projectRoot)
-	ctx = context.WithValue(ctx, heldSkillLockKey{}, heldSkillLock{
-		name: name, scope: scope, projectRoot: projectRoot,
-	})
-	return ctx, unlock
+	p.mu.Unlock()
+
+	m.Lock()
+	return m.Unlock
+}
+
+// depState tracks dependency traversal under a held project transaction.
+// Cycle detection and diamond merging key on canonical skill names after
+// source resolution — not on alias/reference strings — so alias cycles are
+// rejected deterministically and shared deps still merge RequiredBy.
+type depState struct {
+	active    map[string]struct{} // currently installing (call stack)
+	completed map[string]struct{} // finished in this traversal
+}
+
+func newDepState() *depState {
+	return &depState{
+		active:    make(map[string]struct{}),
+		completed: make(map[string]struct{}),
+	}
+}
+
+// enter marks canonical as actively installing. Returns an error when the
+// name is already on the active stack (an alias/reference cycle).
+func (d *depState) enter(canonical string) error {
+	if d == nil {
+		return nil
+	}
+	if _, inFlight := d.active[canonical]; inFlight {
+		return httperr.WithCode(
+			fmt.Errorf("dependency cycle detected involving skill %q", canonical),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	d.active[canonical] = struct{}{}
+	return nil
+}
+
+// leave removes canonical from the active stack and records it completed.
+func (d *depState) leave(canonical string) {
+	if d == nil {
+		return
+	}
+	delete(d.active, canonical)
+	d.completed[canonical] = struct{}{}
+}
+
+// alreadyDone reports whether canonical was fully installed earlier in this
+// traversal (diamond / shared dependency).
+func (d *depState) alreadyDone(canonical string) bool {
+	if d == nil {
+		return false
+	}
+	_, ok := d.completed[canonical]
+	return ok
 }
 
 // service is the default implementation of skills.SkillService.
 type service struct {
 	locks        skillLock
+	projectTx    projectTx
 	store        storage.SkillStore
 	groupManager groups.Manager
 	pathResolver skills.PathResolver
@@ -174,8 +226,9 @@ func WithVerifier(v verifier.Verifier) Option {
 // New creates a new SkillService backed by the given store.
 func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 	s := &service{
-		store: store,
-		locks: skillLock{locks: make(map[string]*sync.Mutex)},
+		store:     store,
+		locks:     skillLock{locks: make(map[string]*sync.Mutex)},
+		projectTx: projectTx{locks: make(map[string]*sync.Mutex)},
 	}
 	for _, o := range opts {
 		o(s)

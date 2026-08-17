@@ -218,6 +218,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
+	supportsSPIFFEX509ClientAuthentication := spiffeRegistry.permitsMethod(SPIFFEAuthenticationMethodX509)
+	supportsSPIFFEJWTClientAuthentication := spiffeRegistry.permitsMethod(SPIFFEAuthenticationMethodJWT)
+	supportsSPIFFEClientCredentialsGrant := spiffeRegistry.permitsGrant(SPIFFEGrantTypeClientCredentials)
+
 	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
@@ -256,6 +260,9 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
 		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		SupportsSPIFFEX509ClientAuthentication:    supportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:     supportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:      supportsSPIFFEClientCredentialsGrant,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
@@ -306,7 +313,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, spiffeRegistry)
+	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
 	}
@@ -482,10 +489,11 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler, the RFC 7523 JWT-bearer handler, and the SPIFFE
 // client-credentials handler as extension grants alongside the standard
-// grants -- each registered only when its trust configuration enables it
-// (token exchange can be disabled via canonical inbound grants configuration;
-// JWT-bearer is enabled per JWTBearerGrantEnabled; client credentials per
-// spiffeRegistry.permitsGrant).
+// grants -- each registered only when the startup-resolved capability stored
+// on authServerConfig enables it (token exchange can be disabled via
+// canonical inbound grants configuration; JWT-bearer is enabled per
+// JWTBearerGrantEnabled; client credentials per
+// authServerConfig.SupportsSPIFFEClientCredentialsGrant).
 //
 // It returns the shared MultiIssuerTokenValidator (nil when no TrustedIssuers
 // are configured, or when neither enabled grant would use it) so newServer
@@ -494,7 +502,6 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 // the caller never receives it.
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
-	spiffeRegistry *SPIFFEAssociationRegistry,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateClientIDs := make([]string, len(cfg.DelegateClients))
 	for i, c := range cfg.DelegateClients {
@@ -558,7 +565,7 @@ func buildProvider(
 		}
 		factories = append(factories, deviceFlowFactory)
 	}
-	if spiffeRegistry.permitsGrant(SPIFFEGrantTypeClientCredentials) {
+	if authServerConfig.SupportsSPIFFEClientCredentialsGrant {
 		factories = append(factories, clientcredentials.Factory())
 	}
 	provider, err := createProvider(authServerConfig, stor, factories...)

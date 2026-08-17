@@ -141,8 +141,10 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 // list for discovery, derived from config. "none" is always first — the public-client
 // default. When confidential DCR is enabled or static delegate clients are configured,
 // the two client_secret_* methods are appended. Static clients need these methods even
-// though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
-// "none"-first is a readability convention, not a security control.
+// though DCR itself remains public-only. private_key_jwt, then SPIFFE X.509 and JWT
+// methods follow when the corresponding capabilities are enabled or startup-resolved.
+// RFC 8414 defines no ordering semantics, so this ordering is a readability
+// convention, not a security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
 	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
@@ -153,6 +155,12 @@ func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	}
 	if h.config.AllowPrivateKeyJWTRegistration {
 		methods = append(methods, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT)
+	}
+	if h.config.SupportsSPIFFEX509ClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEX509)
+	}
+	if h.config.SupportsSPIFFEJWTClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT)
 	}
 	return methods
 }
@@ -169,7 +177,7 @@ func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
 
 // grantTypesSupported returns only grant families registered with fosite.
 func (h *Handler) grantTypesSupported() []string {
-	grantTypes := make([]string, 0, 4)
+	grantTypes := make([]string, 0, 5)
 	if h.config.TokenExchangeEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeTokenExchange)
 	}
@@ -184,6 +192,9 @@ func (h *Handler) grantTypesSupported() []string {
 	}
 	if h.config.DeviceFlowEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeDeviceCode)
+	}
+	if h.config.SupportsSPIFFEClientCredentialsGrant {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeClientCredentials)
 	}
 	return grantTypes
 }

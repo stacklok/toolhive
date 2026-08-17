@@ -143,9 +143,9 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
     - Not yet deployable: rejected at startup pending real SVID verification
     - Configuration-only SPIFFE trust, association, and static-client model
-    - JWT-SVID client-authentication dispatch and validation logic implemented but not yet wired to a trust bundle source
+    - JWT-SVID and X.509-SVID client-authentication dispatch, validation logic, and `client_credentials`/discovery integration implemented but not yet wired to a trust bundle source
     - Fail-closed policy validation and durable, restart-safe static-client reservation
-    - X.509-SVID validation, trust-bundle loading, and SPIFFE grant/discovery integration remain pending
+    - Trust-bundle loading and deployment wiring (SPIRE / Workload API) remain pending
 
 ### Existing Documentation
 

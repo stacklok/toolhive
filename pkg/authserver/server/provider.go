@@ -114,6 +114,15 @@ type AuthorizationServerConfig struct {
 	// InsecureAllowConfidentialOverLoopbackHTTP explicitly permits confidential
 	// clients with a loopback HTTP issuer.
 	InsecureAllowConfidentialOverLoopbackHTTP bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports X.509-SVID client authentication.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports JWT-SVID client authentication.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether the validated SPIFFE
+	// association snapshot supports the client_credentials grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -214,6 +223,15 @@ type AuthorizationServerParams struct {
 	// InsecureAllowConfidentialOverLoopbackHTTP explicitly permits confidential
 	// clients with a loopback HTTP issuer.
 	InsecureAllowConfidentialOverLoopbackHTTP bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports X.509-SVID client authentication.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports JWT-SVID client authentication.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether the validated SPIFFE
+	// association snapshot supports the client_credentials grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -502,6 +520,9 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		SupportsSPIFFEX509ClientAuthentication:    cfg.SupportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:     cfg.SupportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:      cfg.SupportsSPIFFEClientCredentialsGrant,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     cfg.JWTBearerGrantEnabled,

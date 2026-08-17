@@ -269,6 +269,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		adapterA.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
 		adapterB.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("disk full"))
 		adapterA.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
+		adapterB.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
 
 		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{
 			"claude-code": adapterA,

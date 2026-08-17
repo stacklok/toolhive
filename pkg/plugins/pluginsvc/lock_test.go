@@ -534,6 +534,13 @@ func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T
 	gm.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, g *groups.Group) error {
 			members = append([]string(nil), g.Plugins...)
+			if len(g.Plugins) > 0 {
+				// After group registration (and the prior-lock snapshot), make
+				// the lock path unwritable so recordLockState fails.
+				lockPath := filepath.Join(projectRoot, lockfile.FileName)
+				_ = os.Remove(lockPath)
+				require.NoError(t, os.MkdirAll(lockPath, 0o755))
+			}
 			return nil
 		},
 	).Times(2)
@@ -541,7 +548,6 @@ func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T
 	inner := svc.(*service) //nolint:forcetypeassert
 	inner.groupManager = gm
 
-	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
 		Name:        "my-plugin",
 		LayerData:   makePluginLayerData(t, "my-plugin"),
@@ -668,4 +674,90 @@ func TestUninstall_PartialDematerializeRestoresAllClients(t *testing.T) {
 	require.NotNil(t, info.InstalledPlugin)
 	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 	assert.True(t, ok, "the lock entry must be restored")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallFresh_LockWriteFailureRestoresPreexistingTree(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	cm := client.NewTestClientManagerWithHome(t.TempDir())
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.clientManager = cm
+
+	pluginDir, err := cm.GetPluginPath(client.ClaudeCode, "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(pluginDir, "commands"), 0o750))
+	prior := []byte("# prior unmanaged")
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "commands", "hello.md"), prior, 0o644))
+
+	// Make lock writes fail after extraction/DB create.
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+		Force:       true,
+	})
+	require.Error(t, err)
+
+	got, readErr := os.ReadFile(filepath.Join(pluginDir, "commands", "hello.md")) //nolint:gosec
+	require.NoError(t, readErr)
+	assert.Equal(t, string(prior), string(got),
+		"a failed Force install must restore the pre-existing unmanaged tree")
+
+	_, infoErr := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.ErrorIs(t, infoErr, storage.ErrNotFound)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallAndRegister_LockSnapshotFailureRollsBackDB(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+
+	// A lock path that is a directory makes Load fail after extraction.
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
+
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading lock file")
+
+	info, infoErr := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.ErrorIs(t, infoErr, storage.ErrNotFound)
+	assert.Nil(t, info)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUninstall_ManagedMissingMaterializerAborts(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	delete(inner.materializers, "claude-code")
+
+	err := svc.Uninstall(t.Context(), plugins.UninstallOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no materializer configured")
+
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.True(t, ok, "the lock pin must remain when uninstall is refused")
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info.InstalledPlugin)
 }

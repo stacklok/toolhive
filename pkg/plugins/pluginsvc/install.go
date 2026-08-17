@@ -317,22 +317,37 @@ func (s *service) installAndRegister(
 
 	// Snapshot the prior plugins: lock entry before anything below can write
 	// one, so rollback can reinstate it rather than blindly deleting it.
+	// OpenRoot/Load failures are fatal: treating them as "no previous pin"
+	// would delete a pre-existing entry on compensation. Extraction has
+	// already mutated DB/files, so compensate those even when the lock
+	// snapshot itself fails.
 	var prevEntry *lockfile.Entry
 	if lockScoped {
-		if root, rootErr := lockfile.OpenRoot(opts.ProjectRoot); rootErr == nil {
-			if lf, loadErr := lockfile.Load(root); loadErr == nil {
-				if e, ok := lf.GetPlugin(pluginName); ok {
-					prevEntry = &e
-				}
-			}
+		root, rootErr := lockfile.OpenRoot(opts.ProjectRoot)
+		if rootErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("opening lock file root: %w", rootErr),
+				s.rollbackInstall(ctx, opts, result, pluginName, scope, false, nil, false, ""),
+			)
+		}
+		lf, loadErr := lockfile.Load(root)
+		if loadErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("loading lock file: %w", loadErr),
+				s.rollbackInstall(ctx, opts, result, pluginName, scope, false, nil, false, ""),
+			)
+		}
+		if e, ok := lf.GetPlugin(pluginName); ok {
+			prevEntry = &e
 		}
 	}
 
 	var addedToGroup bool
+	groupName := resolvedGroupName(opts.Group)
 	rollback := func() error {
 		return s.rollbackInstall(
 			ctx, opts, result, pluginName, scope, lockScoped, prevEntry,
-			addedToGroup, resolvedGroupName(opts.Group),
+			addedToGroup, groupName,
 		)
 	}
 

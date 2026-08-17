@@ -96,9 +96,10 @@ func TestUninstall(t *testing.T) {
 		assert.Contains(t, err.Error(), "db locked")
 	})
 
-	// RemovePluginFromAllGroups fails: the error is joined into the final
-	// result (store.Delete already succeeded).
-	t.Run("group removal failure joins into result", func(t *testing.T) {
+	// RemovePluginFromAllGroups fails before the DB delete so the record
+	// remains and uninstall can be retried; dematerialize may already have
+	// run (best-effort) and its errors are joined when present.
+	t.Run("group removal failure aborts before store delete", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		store := storemocks.NewMockPluginStore(ctrl)
@@ -111,8 +112,7 @@ func TestUninstall(t *testing.T) {
 		}
 		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
 		adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil)
-		store.EXPECT().Delete(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
-		// RemovePluginFromAllGroups calls List then Update for each matching group.
+		// Delete must not run — the DB row is what makes retry possible.
 		gm.EXPECT().List(gomock.Any()).Return(nil, errors.New("etcd unavailable"))
 
 		svc := newTestService(WithStore(store), WithGroupManager(gm),
@@ -123,8 +123,9 @@ func TestUninstall(t *testing.T) {
 		assert.Contains(t, err.Error(), "etcd unavailable")
 	})
 
-	// A missing materializer for a stored client type is skipped (not an error);
-	// the remaining clients dematerialize and the record is deleted.
+	// A missing materializer for a stored client type is skipped (not an error)
+	// on unmanaged uninstall; the remaining clients dematerialize and the
+	// record is deleted.
 	t.Run("missing materializer for stored client is skipped", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -200,5 +201,57 @@ func TestUninstall(t *testing.T) {
 			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
 		err := svc.Uninstall(t.Context(), plugins.UninstallOptions{Name: "my-plugin"})
 		require.NoError(t, err)
+	})
+
+	// Unmanaged uninstall must not require a ClientManager just to take an
+	// unused tree snapshot (regression: client manager is not configured).
+	t.Run("unmanaged uninstall without client manager dematerializes and deletes", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
+
+		existing := plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Clients:  []string{"claude-code"},
+		}
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
+		adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil)
+		store.EXPECT().Delete(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
+
+		svc := newTestService(WithStore(store),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		err := svc.Uninstall(t.Context(), plugins.UninstallOptions{Name: "my-plugin"})
+		require.NoError(t, err)
+	})
+
+	// Managed uninstall refuses to delete the pin/DB when a recorded client
+	// has no materializer, so executable trees are not left orphaned.
+	t.Run("managed uninstall refuses missing materializer", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+
+		projectRoot := makeProjectRoot(t)
+		existing := plugins.InstalledPlugin{
+			Metadata:    plugins.PluginMetadata{Name: "my-plugin"},
+			Clients:     []string{"claude-code", "ghost-client"},
+			Managed:     true,
+			Scope:       plugins.ScopeProject,
+			ProjectRoot: projectRoot,
+		}
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeProject, projectRoot).
+			Return(existing, nil)
+
+		svc := newTestService(WithStore(store),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{
+				"claude-code": plugmocks.NewMockMaterializationAdapter(ctrl),
+			}))
+		err := svc.Uninstall(t.Context(), plugins.UninstallOptions{
+			Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no materializer configured for client \"ghost-client\"")
+		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
 	})
 }

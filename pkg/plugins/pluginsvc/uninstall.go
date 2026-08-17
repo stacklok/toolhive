@@ -21,9 +21,13 @@ import (
 // via errors.Join so a single client failure does not abort cleanup of the
 // others, and the DB record is still deleted. For lock-managed project-scope
 // installs the lock entry is removed first after snapshotting every client
-// tree; a later dematerialize or DB-delete failure restores the pin, the
-// plugin trees, and adapter registration so the plugin is not left
-// installed-but-untracked or half-removed across clients.
+// tree; a later dematerialize, group-cleanup, or DB-delete failure restores
+// the pin, the plugin trees, and adapter registration so the plugin is not
+// left installed-but-untracked or half-removed across clients.
+//
+// Tree snapshots run only when managed rollback is available: unmanaged and
+// user-scope uninstalls must not require a ClientManager just to take unused
+// backups.
 func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) error {
 	if err := plugins.ValidatePluginName(opts.Name); err != nil {
 		return httperr.WithCode(err, http.StatusBadRequest)
@@ -48,18 +52,28 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		return err
 	}
 
+	managed := scope == plugins.ScopeProject && existing.Managed
+	if managed {
+		if err := s.requireMaterializers(existing.Clients); err != nil {
+			return err
+		}
+	}
+
 	restoreLock, err := removeManagedLockEntry(opts, existing, scope)
 	if err != nil {
 		return err
 	}
 
-	backups, snapErr := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, existing.Clients)
-	if snapErr != nil {
-		err := fmt.Errorf("snapshotting plugin trees before uninstall: %w", snapErr)
-		if restoreLock != nil {
-			return errors.Join(err, restoreLock())
+	var backups map[string]map[string]fileSnapshot
+	if restoreLock != nil {
+		var snapErr error
+		backups, snapErr = s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, existing.Clients)
+		if snapErr != nil {
+			return errors.Join(
+				fmt.Errorf("snapshotting plugin trees before uninstall: %w", snapErr),
+				restoreLock(),
+			)
 		}
-		return err
 	}
 
 	cleanupErrs := s.dematerializeClients(ctx, existing, scope, opts.ProjectRoot)
@@ -67,6 +81,21 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		return errors.Join(append(cleanupErrs, s.compensateManagedUninstall(
 			ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
 		))...)
+	}
+
+	// Remove group membership before deleting the DB row so a failed group
+	// cleanup remains retryable (Uninstall is a no-op once the record is gone).
+	if s.groupManager != nil {
+		if groupErr := groups.RemovePluginFromAllGroups(ctx, s.groupManager, opts.Name); groupErr != nil {
+			groupErr = fmt.Errorf("removing plugin from groups: %w", groupErr)
+			if restoreLock != nil {
+				return errors.Join(groupErr, s.compensateManagedUninstall(
+					ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
+				))
+			}
+			cleanupErrs = append(cleanupErrs, groupErr)
+			return errors.Join(cleanupErrs...)
+		}
 	}
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
@@ -78,13 +107,23 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		return err
 	}
 
-	if s.groupManager != nil {
-		if groupErr := groups.RemovePluginFromAllGroups(ctx, s.groupManager, opts.Name); groupErr != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("removing plugin from groups: %w", groupErr))
+	return errors.Join(cleanupErrs...)
+}
+
+// requireMaterializers fails closed when a managed uninstall would delete the
+// lock/DB while leaving an executable tree behind because no adapter can
+// dematerialize a recorded client. Unmanaged uninstall keeps the historical
+// skip-missing-adapter behavior.
+func (s *service) requireMaterializers(clients []string) error {
+	for _, clientType := range clients {
+		if _, ok := s.materializers[clientType]; !ok {
+			return httperr.WithCode(
+				fmt.Errorf("no materializer configured for client %q; refusing managed uninstall", clientType),
+				http.StatusInternalServerError,
+			)
 		}
 	}
-
-	return errors.Join(cleanupErrs...)
+	return nil
 }
 
 // compensateManagedUninstall restores the lock pin and every snapshotted
@@ -144,7 +183,7 @@ func removeManagedLockEntry(
 }
 
 // dematerializeClients best-effort removes on-disk copies for each client the
-// plugin was installed into. Missing adapters are skipped.
+// plugin was installed into. Missing adapters are skipped (unmanaged path).
 func (s *service) dematerializeClients(
 	ctx context.Context,
 	existing plugins.InstalledPlugin,

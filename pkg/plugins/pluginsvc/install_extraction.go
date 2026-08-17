@@ -102,6 +102,9 @@ func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plu
 
 // installExtractionSameDigestNewClients materializes the plugin for clients
 // not already present at the same digest, then updates the DB record.
+// When a ClientManager is available, pre-existing unmanaged trees on those
+// clients are snapshotted so rollback can restore them; without one,
+// compensation falls back to dematerialize-only (embedded/test services).
 func (s *service) installExtractionSameDigestNewClients(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -113,29 +116,13 @@ func (s *service) installExtractionSameDigestNewClients(
 	if len(toWrite) == 0 {
 		return &plugins.InstallResult{Plugin: existing}, nil
 	}
-	materialized, err := s.materializeForClients(ctx, opts, scope, toWrite)
-	if err != nil {
-		return nil, err
-	}
-	pl := buildInstalledPlugin(opts, scope, clientTypes, existing.Clients)
-	pl.Managed = existing.Managed
-	if err := s.store.Update(ctx, pl); err != nil {
-		if dmErr := s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot); dmErr != nil {
-			return nil, errors.Join(err, dmErr)
-		}
-		return nil, err
-	}
-	return &plugins.InstallResult{
-		Plugin: pl,
-		RestoreFiles: func(ctx context.Context) error {
-			return s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
-		},
-	}, nil
+	return s.materializeAndPersist(ctx, opts, scope, toWrite, clientTypes, existing.Clients, existing.Managed, false)
 }
 
 // installExtractionUpgradeDigest re-materializes the plugin for the union of
 // requested and existing clients (upgrades write to every client), then updates
-// the DB record.
+// the DB record. Existing trees are always snapshotted first so a failed
+// upgrade can restore prior content and registration.
 func (s *service) installExtractionUpgradeDigest(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -148,7 +135,7 @@ func (s *service) installExtractionUpgradeDigest(
 	if snapErr != nil {
 		return nil, fmt.Errorf("snapshotting installed plugin trees: %w", snapErr)
 	}
-	if _, err := s.materializeForClients(ctx, opts, scope, allClients); err != nil {
+	if _, err := s.materializeForClients(ctx, opts, scope, allClients, false); err != nil {
 		if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, allClients); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
 		}
@@ -171,42 +158,90 @@ func (s *service) installExtractionUpgradeDigest(
 }
 
 // installExtractionFresh materializes the plugin for all requested clients,
-// then creates the DB record.
+// then creates the DB record. When a ClientManager is available, pre-existing
+// unmanaged trees are snapshotted so Force overwrite can be rolled back.
 func (s *service) installExtractionFresh(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	materialized, err := s.materializeForClients(ctx, opts, scope, clientTypes)
+	return s.materializeAndPersist(ctx, opts, scope, clientTypes, clientTypes, nil, false, true)
+}
+
+// materializeAndPersist materializes targetClients and creates or updates the
+// DB row. When a ClientManager is configured it snapshots those targets first
+// and uses restoreClientTrees for compensation; otherwise it dematerializes
+// only what this call wrote.
+func (s *service) materializeAndPersist(
+	ctx context.Context,
+	opts plugins.InstallOptions,
+	scope plugins.Scope,
+	targetClients []string,
+	resultClients []string,
+	existingClients []string,
+	managed bool,
+	create bool,
+) (*plugins.InstallResult, error) {
+	useSnapshot := s.clientManager != nil
+	var backups map[string]map[string]fileSnapshot
+	if useSnapshot {
+		var snapErr error
+		backups, snapErr = s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, targetClients)
+		if snapErr != nil {
+			return nil, fmt.Errorf("snapshotting plugin trees before install: %w", snapErr)
+		}
+	}
+
+	materialized, err := s.materializeForClients(ctx, opts, scope, targetClients, !useSnapshot)
 	if err != nil {
+		if useSnapshot {
+			if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, targetClients); restoreErr != nil {
+				return nil, errors.Join(err, restoreErr)
+			}
+		}
 		return nil, err
 	}
-	pl := buildInstalledPlugin(opts, scope, clientTypes, nil)
-	if err := s.store.Create(ctx, pl); err != nil {
-		if dmErr := s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot); dmErr != nil {
+
+	pl := buildInstalledPlugin(opts, scope, resultClients, existingClients)
+	pl.Managed = managed
+	if create {
+		err = s.store.Create(ctx, pl)
+	} else {
+		err = s.store.Update(ctx, pl)
+	}
+	if err != nil {
+		if useSnapshot {
+			if restoreErr := s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, targetClients); restoreErr != nil {
+				return nil, errors.Join(err, restoreErr)
+			}
+		} else if dmErr := s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot); dmErr != nil {
 			return nil, errors.Join(err, dmErr)
 		}
 		return nil, err
 	}
-	return &plugins.InstallResult{
-		Plugin: pl,
-		RestoreFiles: func(ctx context.Context) error {
-			return s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
-		},
-	}, nil
+
+	restore := func(ctx context.Context) error {
+		if useSnapshot {
+			return s.restoreClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, backups, targetClients)
+		}
+		return s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot)
+	}
+	return &plugins.InstallResult{Plugin: pl, RestoreFiles: restore}, nil
 }
 
-// materializeForClients calls Materialize for each requested client type,
-// rolling back (Dematerialize) any already-materialized client on failure,
-// including the client whose Materialize returned an error (extraction can
-// succeed before marketplace/settings registration fails).
+// materializeForClients calls Materialize for each requested client type.
+// When compensate is true, a failure dematerializes every client that was
+// written (including the failing client, whose Materialize can extract before
+// marketplace/settings registration fails). When compensate is false, the
+// caller is responsible for restoreClientTrees / dematerializeAll.
 // Returns the list of client types that were successfully materialized.
 func (s *service) materializeForClients(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	clientTypes []string,
+	compensate bool,
 ) ([]string, error) {
 	var materialized []string
 	for _, ct := range clientTypes {
@@ -216,7 +251,10 @@ func (s *service) materializeForClients(
 				fmt.Errorf("no materializer configured for client %q", ct),
 				http.StatusInternalServerError,
 			)
-			return nil, errors.Join(err, s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot))
+			if compensate {
+				return nil, errors.Join(err, s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot))
+			}
+			return nil, err
 		}
 		if _, err := adapter.Materialize(ctx, plugins.MaterializeRequest{
 			Name:        opts.Name,
@@ -225,11 +263,14 @@ func (s *service) materializeForClients(
 			ProjectRoot: opts.ProjectRoot,
 			Components:  opts.Components,
 		}); err != nil {
+			wrapped := fmt.Errorf("materializing plugin for client %q: %w", ct, err)
+			if !compensate {
+				return nil, wrapped
+			}
 			// Materialize can extract the tree and then fail during
 			// marketplace/settings registration. Compensate the failing
 			// client too, not only the ones already appended.
 			failed := append(append([]string{}, materialized...), ct)
-			wrapped := fmt.Errorf("materializing plugin for client %q: %w", ct, err)
 			return nil, errors.Join(wrapped, s.dematerializeAll(ctx, failed, opts.Name, scope, opts.ProjectRoot))
 		}
 		materialized = append(materialized, ct)
@@ -257,7 +298,8 @@ func sanitizeFileMode(mode fs.FileMode) fs.FileMode {
 // so a later rollback can restore the previous materialization without
 // leaking temp directories. Missing directories are omitted (the client was
 // not yet installed). A walk/read error on an existing tree is returned so
-// the caller can abort before mutating.
+// the caller can abort before mutating. Path-resolution failures (including
+// a missing ClientManager) abort rather than being treated as "not installed."
 func (s *service) snapshotClientTrees(
 	name string, scope plugins.Scope, projectRoot string, clientTypes []string,
 ) (map[string]map[string]fileSnapshot, error) {

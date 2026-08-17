@@ -1700,6 +1700,8 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 						AuthorizationEndpoint: server.URL + "/authorize",
 						TokenEndpoint:         server.URL + "/token",
 						Scopes:                []string{"openid", "profile"},
+						// The mock IdP is a loopback listener, and a registration endpoint read
+						// out of its metadata is dialed under the strict server-supplied policy.
 						DCRConfig: &authserver.DCRUpstreamConfig{
 							DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
 						},
@@ -1763,6 +1765,8 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 						AuthorizationEndpoint: server.URL + "/authorize",
 						TokenEndpoint:         server.URL + "/token",
 						Scopes:                []string{"openid", "profile"},
+						// The mock IdP is a loopback listener, and a registration endpoint read
+						// out of its metadata is dialed under the strict server-supplied policy.
 						DCRConfig: &authserver.DCRUpstreamConfig{
 							DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
 						},
@@ -1831,6 +1835,8 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 					AuthorizationEndpoint: server.URL + "/authorize",
 					TokenEndpoint:         server.URL + "/token",
 					Scopes:                []string{"openid", "profile"},
+					// The mock IdP is a loopback listener, and a registration endpoint read
+					// out of its metadata is dialed under the strict server-supplied policy.
 					DCRConfig: &authserver.DCRUpstreamConfig{
 						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
 					},
@@ -2009,6 +2015,8 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 					AuthorizationEndpoint: server.URL + "/authorize",
 					TokenEndpoint:         server.URL + "/token",
 					Scopes:                []string{"openid", "profile"},
+					// The mock IdP is a loopback listener, and a registration endpoint read
+					// out of its metadata is dialed under the strict server-supplied policy.
 					DCRConfig: &authserver.DCRUpstreamConfig{
 						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
 					},

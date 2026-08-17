@@ -257,7 +257,11 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		req.SetBasicAuth(clientID, clientSecret)
 		response, err := http.DefaultClient.Do(req)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		defer response.Body.Close()
+		defer func() {
+			// Drain the expected error response so the HTTP transport can reuse the connection.
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}()
 		gomega.Expect(response.StatusCode).To(gomega.Equal(http.StatusBadRequest))
 	})
 })

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
@@ -99,9 +100,9 @@ func TestUpgrade_PreviewDoesNotInstall(t *testing.T) {
 // expanding a skill to every detected client. Install without an explicit
 // InstallOptions.Clients falls back to whatever the caller passed (here,
 // a single client); Upgrade must default to that skill's already-installed
-// Clients when opts.Clients is empty, matching Sync's reinstallPinned — not
-// fall through to Install's own "no clients means every detected client"
-// default.
+// Clients when opts.Clients is empty — not fall through to Install's
+// "no clients means every detected client" default. Sync is the opposite:
+// a default sync expands to newly detected clients.
 //
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_PreservesExistingClients(t *testing.T) {
@@ -243,4 +244,27 @@ func TestUpgrade_FailOnChangesWithoutPreviewDoesNotMutateAnyEntry(t *testing.T) 
 	stableAfter, ok := after.Get("stable-skill")
 	require.True(t, ok)
 	assert.Equal(t, stableBefore.Digest, stableAfter.Digest)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_DoesNotResurrectRemovedLockEntry(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, lockfile.RemoveEntry(mustOpenRoot(t, projectRoot), "my-skill"))
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	outcome := inner.upgradeOne(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}, "my-skill")
+	assert.Equal(t, skills.UpgradeStatusFailed, outcome.Status)
+	assert.Contains(t, outcome.Error, "no longer in the lock file")
+
+	_, ok := readLockfile(t, projectRoot).Get("my-skill")
+	assert.False(t, ok, "upgrade must not rewrite a lock entry that was removed")
 }

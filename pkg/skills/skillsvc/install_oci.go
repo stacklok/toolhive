@@ -110,7 +110,7 @@ func (s *service) installFromOCI(
 	}
 	// Note: version is optional; if both are empty, install without a version.
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	ctx, unlock := s.lockSkill(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
 	// Verify the artifact signature before anything is extracted or

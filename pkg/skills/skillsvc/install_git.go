@@ -75,7 +75,7 @@ func (s *service) installFromGit(
 		opts.Version = resolved.SkillConfig.Version
 	}
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	ctx, unlock := s.lockSkill(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
 	// Verify the commit signature before anything is written or recorded.

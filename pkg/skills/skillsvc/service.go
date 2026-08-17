@@ -5,6 +5,7 @@
 package skillsvc
 
 import (
+	"context"
 	"sync"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
@@ -106,6 +107,35 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 
 	m.Lock()
 	return m.Unlock
+}
+
+type heldSkillLockKey struct{}
+
+type heldSkillLock struct {
+	name        string
+	scope       skills.Scope
+	projectRoot string
+}
+
+// lockSkill acquires the per-skill mutex unless ctx already holds it for
+// this key, so Sync/Upgrade can serialize read+mutate and then call
+// Install/Uninstall without deadlocking on a non-reentrant mutex.
+func (s *service) lockSkill(
+	ctx context.Context,
+	name string,
+	scope skills.Scope,
+	projectRoot string,
+) (context.Context, func()) {
+	if held, ok := ctx.Value(heldSkillLockKey{}).(heldSkillLock); ok {
+		if held.name == name && held.scope == scope && held.projectRoot == projectRoot {
+			return ctx, func() {}
+		}
+	}
+	unlock := s.locks.lock(name, scope, projectRoot)
+	ctx = context.WithValue(ctx, heldSkillLockKey{}, heldSkillLock{
+		name: name, scope: scope, projectRoot: projectRoot,
+	})
+	return ctx, unlock
 }
 
 // service is the default implementation of skills.SkillService.

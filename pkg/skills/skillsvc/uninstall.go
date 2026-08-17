@@ -48,7 +48,7 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 // opposite, safe inconsistency — an installed-but-unlocked skill that sync
 // reports as removed-from-lock and prune can clean up.
 func (s *service) uninstallOne(ctx context.Context, opts skills.UninstallOptions, scope skills.Scope) error {
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	ctx, unlock := s.lockSkill(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
 	// Look up the existing record to find which clients have files.

@@ -57,7 +57,8 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver, extra ...Option
 	// skill-supporting client detected on the host. Deliberately returns
 	// more than one client so tests can distinguish "preserved the skill's
 	// existing (narrower) client list" from "fell through to every detected
-	// client" (see TestUpgrade_PreservesExistingClients).
+	// client" (see TestUpgrade_PreservesExistingClients and
+	// TestSync_DefaultExpandsToNewlyDetectedClients).
 	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
 
 	// Default verifier: everything verifies as signed by a fixed test

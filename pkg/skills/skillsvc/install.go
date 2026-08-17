@@ -91,13 +91,8 @@ func (s *service) installByName(
 	originalName string,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	locked := true
-	defer func() {
-		if locked {
-			unlock()
-		}
-	}()
+	ctx, unlock := s.lockSkill(ctx, opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
 
 	// Without layer data, check the local OCI store for a matching tag,
 	// then the registry/index, before returning an error.
@@ -112,13 +107,6 @@ func (s *service) installByName(
 			}
 		}
 		if !resolved {
-			// Release lock before registry lookup -- installFromOCI
-			// acquires its own lock on the artifact's skill name, which
-			// could be the same key, causing deadlock since sync.Mutex
-			// is not re-entrant.
-			unlock()
-			locked = false
-
 			return s.installFromRegistryLookup(ctx, opts, originalName, scope)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction

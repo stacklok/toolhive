@@ -4,6 +4,7 @@
 package skillsvc
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
+	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -27,7 +29,7 @@ func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
 
 	ref, _ := gitRef("my-skill")
 	_, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
 	})
 	require.NoError(t, err)
 
@@ -412,4 +414,78 @@ func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"multi-skill"}, result.Drifted,
 		"tampering with a non-first client's copy must be reported as drift")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_DefaultExpandsToNewlyDetectedClients(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	syncer := svc.(*service) //nolint:forcetypeassert
+	result, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-skill"}, result.Drifted)
+	assert.Empty(t, result.AlreadyCurrent, "default sync must not treat a missing detected client as current")
+
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-skill"}, result.Installed)
+
+	info, err := svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"claude-code", "cursor"}, info.InstalledSkill.Clients)
+}
+
+type staleListStore struct {
+	storage.SkillStore
+	listed []skills.InstalledSkill
+}
+
+func (s *staleListStore) List(context.Context, storage.ListFilter) ([]skills.InstalledSkill, error) {
+	out := make([]skills.InstalledSkill, len(s.listed))
+	copy(out, s.listed)
+	return out, nil
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_StaleListDoesNotResurrectUninstalledSkill(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	stale, err := inner.store.List(t.Context(), storage.ListFilter{
+		Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, stale)
+
+	require.NoError(t, svc.Uninstall(t.Context(), skills.UninstallOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	}))
+
+	inner.store = &staleListStore{SkillStore: inner.store, listed: stale}
+
+	result, err := inner.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Empty(t, result.Installed)
+	assert.Empty(t, result.NeverManaged)
+
+	_, err = svc.Info(t.Context(), skills.InfoOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "a stale List snapshot must not resurrect an uninstalled skill")
 }

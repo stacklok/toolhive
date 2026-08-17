@@ -7,8 +7,25 @@ package llmgateway
 
 import (
 	"net/url"
+	"strings"
 	"time"
 )
+
+// QuoteForPOSIXShell wraps s in single quotes so a POSIX shell reads every byte
+// of it literally, escaping any embedded single quote as the four-character
+// sequence quote-backslash-quote-quote (close the quoted run, emit a
+// backslash-escaped quote, reopen). Used to splice an absolute thv
+// path into the token-helper command strings that direct-mode clients and the
+// Claude Desktop credential-helper shim re-execute through /bin/sh.
+//
+// Single-quoting is a total transform: inside a single-quoted run no character
+// is special to the shell — not $, backtick, backslash, or even a newline — so
+// there is no input this fails on and callers need no metacharacter validation.
+// It is POSIX-only: cmd.exe has no equivalent quoting, which is why the Windows
+// token-helper command names thv bare instead (see pkg/llm).
+func QuoteForPOSIXShell(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // ClaudeCodeHelperTTL is written to settings.json as
 // CLAUDE_CODE_API_KEY_HELPER_TTL_MS: how often Claude Code re-invokes the

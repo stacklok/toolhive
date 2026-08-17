@@ -161,33 +161,16 @@ func (pl *pluginLock) lock(name string, scope plugins.Scope, projectRoot string)
 	return m.Unlock
 }
 
-type heldPluginLockKey struct{}
-
-type heldPluginLock struct {
-	name        string
-	scope       plugins.Scope
-	projectRoot string
-}
-
-// lockPlugin acquires the per-plugin mutex unless ctx already holds it for
-// this key, so Sync/Upgrade can serialize read+mutate and then call
-// Install/Uninstall without deadlocking on a non-reentrant mutex.
+// lockPlugin acquires the per-plugin mutex. Callers that already hold the lock
+// (Sync/Upgrade) must use the *AlreadyLocked / *Locked helpers instead of
+// re-entering through public Install/Uninstall/adoptPlugin.
 func (s *service) lockPlugin(
 	ctx context.Context,
 	name string,
 	scope plugins.Scope,
 	projectRoot string,
 ) (context.Context, func()) {
-	if held, ok := ctx.Value(heldPluginLockKey{}).(heldPluginLock); ok {
-		if held.name == name && held.scope == scope && held.projectRoot == projectRoot {
-			return ctx, func() {}
-		}
-	}
-	unlock := s.locks.lock(name, scope, projectRoot)
-	ctx = context.WithValue(ctx, heldPluginLockKey{}, heldPluginLock{
-		name: name, scope: scope, projectRoot: projectRoot,
-	})
-	return ctx, unlock
+	return ctx, s.locks.lock(name, scope, projectRoot)
 }
 
 // service is the default implementation of plugins.PluginService. It implements

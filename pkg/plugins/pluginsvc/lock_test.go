@@ -88,10 +88,13 @@ func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, s
 		base:      filepath.Join(projectRoot, ".claude", "plugins"),
 		installer: skills.NewInstaller(),
 	}
+	home := t.TempDir()
+	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
 	svc := New(
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
-		WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+		WithClientManager(client.NewTestClientManagerWithHome(home)),
 	)
 	return svc, projectRoot
 }

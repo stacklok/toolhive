@@ -65,10 +65,13 @@ func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService,
 		base:      filepath.Join(projectRoot, ".claude", "plugins"),
 		installer: skills.NewInstaller(),
 	}
+	home := t.TempDir()
+	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
 	svc := New(
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
-		WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+		WithClientManager(client.NewTestClientManagerWithHome(home)),
 		WithGitClient(&redirectGitClient{dir: repoDir, inner: git.NewDefaultGitClient()}),
 	)
 	return svc, projectRoot
@@ -387,12 +390,21 @@ func TestSync_RequestedClientIsNotAlreadyCurrent(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 
-	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ //nolint:forcetypeassert
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["codex"] = &extractingAdapter{
+		base:      filepath.Join(projectRoot, ".agents", "plugins", "toolhive"),
+		installer: skills.NewInstaller(),
+	}
+	// Codex is supported but not installed (no ~/.codex). Explicit --clients
+	// must still be allowed and must not report AlreadyCurrent.
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{
 		ProjectRoot: projectRoot, Check: true, Clients: []string{"codex"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
 	assert.Empty(t, result.AlreadyCurrent, "a plugin current in one client must not skip a requested extra client")
+	assert.Empty(t, result.Failed)
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService
@@ -405,11 +417,82 @@ func TestSync_DefaultExpandsToNewlyDetectedClients(t *testing.T) {
 		base:      filepath.Join(projectRoot, ".agents", "plugins", "toolhive"),
 		installer: skills.NewInstaller(),
 	}
+	require.NoError(t, os.MkdirAll(filepath.Join(inner.clientManager.HomeDir(), ".codex"), 0o755))
 
 	result, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
 	assert.Empty(t, result.AlreadyCurrent, "default sync must not treat a missing detected client as current")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_DefaultIgnoresSupportedButAbsentClients(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["codex"] = &extractingAdapter{
+		base:      filepath.Join(projectRoot, ".agents", "plugins", "toolhive"),
+		installer: skills.NewInstaller(),
+	}
+	// No ~/.codex — Codex supports plugins but is not installed, so default
+	// sync must not require it.
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, result.AlreadyCurrent)
+	assert.Empty(t, result.Drifted)
+}
+
+//nolint:paralleltest // uses t.Setenv via newGitLockTestService
+func TestSync_CanonicalNameMismatchFailsBeforeMutate(t *testing.T) {
+	repoDir := createPluginTestRepo(t, "")
+	svc, projectRoot := newGitLockTestService(t, repoDir)
+
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name: gitPluginRef, Scope: plugins.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	before := readLockfile(t, projectRoot)
+	entry, ok := before.GetPlugin("my-plugin")
+	require.True(t, ok)
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+
+	mismatched := entry
+	mismatched.Name = "other-plugin"
+	require.NoError(t, lockfile.UpsertPluginEntry(mustOpenRoot(t, projectRoot), mismatched))
+
+	syncSvc := svc.(*service) //nolint:forcetypeassert
+	beforeDB, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	beforeDigest := beforeDB.Digest
+	path := filepath.Join(pluginOnDiskPath(projectRoot, "my-plugin"), "commands", "hello.md")
+	beforeBytes, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+
+	result, err := syncSvc.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, "other-plugin", result.Failed[0].Name)
+	assert.Equal(t, plugins.FailureReasonValidationRejected, result.Failed[0].Reason)
+	assert.Contains(t, result.Failed[0].Error, "does not match lock entry name")
+
+	after, ok := readLockfile(t, projectRoot).GetPlugin("other-plugin")
+	require.True(t, ok)
+	assert.Equal(t, mismatched.Digest, after.Digest)
+	assert.Equal(t, mismatched.ContentDigest, after.ContentDigest)
+
+	_, err = syncSvc.store.Get(t.Context(), "other-plugin", plugins.ScopeProject, projectRoot)
+	require.Error(t, err, "canonical mismatch must not create a DB row under the lock name")
+
+	still, err := syncSvc.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	assert.Equal(t, beforeDigest, still.Digest)
+
+	afterBytes, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	assert.Equal(t, beforeBytes, afterBytes, "on-disk tree must be unchanged after rejected sync")
 }
 
 type staleListStore struct {

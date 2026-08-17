@@ -127,6 +127,11 @@ func (s *service) installExtractionSameDigestNewClients(
 // configured; without one (embedded/test services, WithClientManager is
 // optional) compensation degrades to dematerialize-only, matching the fresh
 // and same-digest paths.
+//
+// SyncRestore is different: sync must materialize exactly the requested target
+// clients (the sync client set), not re-merge historical Clients from the DB —
+// otherwise an old client that is no longer detected/requested would stay in
+// the persisted list forever.
 func (s *service) installExtractionUpgradeDigest(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -134,7 +139,10 @@ func (s *service) installExtractionUpgradeDigest(
 	existing plugins.InstalledPlugin,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	allClients := mergeClientLists(existing.Clients, clientTypes)
+	allClients := clientTypes
+	if !opts.SyncRestore {
+		allClients = mergeClientLists(existing.Clients, clientTypes)
+	}
 	return s.materializeAndPersist(ctx, opts, scope, allClients, allClients, nil, existing.Managed, false)
 }
 
@@ -512,9 +520,9 @@ func (s *service) dematerializeAll(
 
 // resolveAndValidateClients returns the deduplicated client list to target for
 // this install. Empty opts.Clients (or the sentinel value "all") expands to
-// every client present in s.materializers (additionally filtered by
-// cm.SupportsPlugins when a client manager is configured). Explicit client
-// names are validated to be present in s.materializers.
+// every client from availableMaterializerClients (materializer present, and
+// when a client manager is set: SupportsPlugins + IsClientInstalled). Explicit
+// client names are validated to be present in s.materializers.
 //
 // Unlike skillsvc.resolveAndValidateClients, this does NOT resolve filesystem
 // paths — the MaterializationAdapter owns path resolution, so the caller
@@ -575,13 +583,18 @@ func (s *service) resolveAndValidateClients(
 }
 
 // availableMaterializerClients returns the sorted list of client types that
-// have a configured materializer and (when a client manager is set) are
-// considered plugin-supporting by it.
+// have a configured materializer. When a client manager is set, only clients
+// that both support plugins and appear installed on the system are included.
+// When the client manager is nil, every materializer key is returned (tests
+// and embedded services without detection).
 func (s *service) availableMaterializerClients() []string {
 	var out []string
 	for ct := range s.materializers {
-		if s.clientManager != nil && !s.clientManager.SupportsPlugins(client.ClientApp(ct)) {
-			continue
+		if s.clientManager != nil {
+			app := client.ClientApp(ct)
+			if !s.clientManager.SupportsPlugins(app) || !s.clientManager.IsClientInstalled(app) {
+				continue
+			}
 		}
 		out = append(out, ct)
 	}

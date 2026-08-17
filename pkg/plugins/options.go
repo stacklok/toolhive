@@ -67,6 +67,10 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// ExpectedCanonicalName, when set, requires the resolved plugin/manifest name
+	// to equal this value before any install mutation. Used by Sync/Upgrade so a
+	// lock entry cannot be repaired under a different canonical identity.
+	ExpectedCanonicalName string `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.

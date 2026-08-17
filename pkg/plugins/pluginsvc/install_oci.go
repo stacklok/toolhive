@@ -29,6 +29,7 @@ func (s *service) installFromOCI(
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	ref nameref.Reference,
+	alreadyLocked bool,
 ) (*plugins.InstallResult, error) {
 	if s.registry == nil || s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -108,8 +109,15 @@ func (s *service) installFromOCI(
 		opts.Version = pluginConfig.Version
 	}
 
-	ctx, unlock := s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	if err := validateExpectedCanonicalName(opts); err != nil {
+		return nil, err
+	}
+
+	if !alreadyLocked {
+		var unlock func()
+		ctx, unlock = s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
+		defer unlock()
+	}
 
 	result, err := s.installWithExtraction(ctx, opts, scope)
 	if err != nil {

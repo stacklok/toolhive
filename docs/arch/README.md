@@ -142,8 +142,8 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-    - Static SPIFFE trust, association, and client configuration with operational JWT-SVID client authentication
-    - X.509-SVID validation, replay protection, and SPIFFE grant/discovery integration remain pending
+    - Static SPIFFE trust, association, client configuration, and operational JWT-SVID/X.509-SVID client authentication
+    - SPIFFE grant and discovery integration; X.509 deployments must request TLS client certificates and wrap OAuth routes with `spiffeauth.Middleware`
     - Fail-closed policy validation, bundle loading, and restart reconstruction
 
 ### Existing Documentation

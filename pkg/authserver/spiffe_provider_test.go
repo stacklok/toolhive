@@ -24,13 +24,12 @@ func TestBuildProviderRegistersSPIFFEClientCredentialsOnlyWhenPermitted(t *testi
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		registry    *SPIFFEAssociationRegistry
-		wantHandler bool
+		name                           string
+		supportsClientCredentialsGrant bool
+		wantHandler                    bool
 	}{
-		{name: "no SPIFFE registry", registry: nil},
-		{name: "token exchange only association", registry: providerRegistry(t, []string{SPIFFEGrantTypeTokenExchange})},
-		{name: "client credentials association", registry: providerRegistry(t, []string{SPIFFEGrantTypeClientCredentials}), wantHandler: true},
+		{name: "client credentials capability disabled"},
+		{name: "client credentials capability enabled", supportsClientCredentialsGrant: true, wantHandler: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -39,11 +38,11 @@ func TestBuildProviderRegistersSPIFFEClientCredentialsOnlyWhenPermitted(t *testi
 			store := storage.NewMemoryStorage()
 			t.Cleanup(func() { _ = store.Close() })
 			authServerConfig := providerAuthorizationServerConfig(t)
+			authServerConfig.SupportsSPIFFEClientCredentialsGrant = tt.supportsClientCredentialsGrant
 			_, err := buildProvider(
 				Config{DelegationTokenLifespan: 15 * time.Minute},
 				authServerConfig,
 				store,
-				tt.registry,
 			)
 			require.NoError(t, err)
 			// Read the handlers from the config, not the provider: fosite
@@ -54,17 +53,6 @@ func TestBuildProviderRegistersSPIFFEClientCredentialsOnlyWhenPermitted(t *testi
 			assert.Equal(t, tt.wantHandler, containsSPIFFEClientCredentialsHandler(handlers))
 		})
 	}
-}
-
-func providerRegistry(t *testing.T, grants []string) *SPIFFEAssociationRegistry {
-	t.Helper()
-
-	association := testSPIFFEAssociation("client", "openid")
-	association.GrantTypes = grants
-	if len(grants) == 1 && grants[0] == SPIFFEGrantTypeClientCredentials {
-		association.TokenExchange = nil
-	}
-	return newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{association})
 }
 
 func providerAuthorizationServerConfig(t *testing.T) *oauthserver.AuthorizationServerConfig {

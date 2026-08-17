@@ -44,6 +44,14 @@ Startup fails closed if persistent storage already contains a configured static 
 
 On every startup, the server reconstructs this static authority from serialized configuration. A restart with the same configuration produces the same associations; a changed or removed association takes effect after restart. Dynamic clients remain subject to their storage backend's persistence, but no stale static client is restored from storage.
 
+## Discovery capabilities and X.509 transport boundary
+
+After the SPIFFE bundle registry has started successfully, the authorization server takes one immutable snapshot of the association registry's enabled X.509-SVID method, JWT-SVID method, and `client_credentials` grant. The same stored `client_credentials` capability controls both registration of the client-credentials provider and discovery metadata. Discovery handlers do not read the association registry. Bundle rotation changes verification authorities but does not change this capability snapshot or discovery metadata; association capability changes take effect on restart.
+
+Both OAuth and OpenID Connect discovery advertise `client_credentials` after the existing grant types when the snapshot permits it, as server-wide capabilities under RFC 8414 §2. They advertise the exact Section 4 values from `draft-ietf-oauth-spiffe-client-auth-02`: `spiffe_x509` for X.509-SVID client authentication and `spiffe_jwt` for JWT-SVID client authentication. These values follow any existing token endpoint authentication methods in X.509-then-JWT order.
+
+The proxy runner wraps its `/oauth/` routes with `spiffeauth.Middleware`, which extracts the claimed SPIFFE ID only from a TLS peer certificate. The listener TLS configuration is a separate deployment boundary and must request client certificates for X.509-SVID authentication to reach the OAuth strategy. The strategy re-verifies the certificate against the configured SPIFFE bundle; the middleware does not validate the certificate chain. External callers embedding `authserver.New` must provide the same TLS and OAuth-route middleware wiring.
+
 ## JWT-SVID client authentication
 
 JWT-SVID client authentication is operational for configured associations. The immutable dispatcher selects the SPIFFE JWT arm only when the first `client_assertion_type` form value is the SPIFFE JWT type. If its first value is non-SPIFFE, dispatch falls through to Fosite's default strategy even when a later duplicate value is the SPIFFE JWT type. Only after the SPIFFE JWT arm is selected does it enforce the malformed-field and mixed-credential rules below.
@@ -66,9 +74,8 @@ The configured OAuth client ID may differ from the SPIFFE ID under ToolHive's ex
 
 Configuration and loaded bundles are not authentication by themselves. A client ID, a declared association, a request header, an unverified SPIFFE-looking URI, a client-supplied trust domain, or a loaded bundle is never workload identity. SPIFFE credential validation establishes identity only after the credential validates against configured trust material and the association registry authorizes the resulting SPIFFE ID and configured client ID. A successful authentication binds that exact resolved principal to the static OAuth client; storage lookup alone is never authenticated provenance.
 
-Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles. SPIFFE JWT-SVID and X.509-SVID client authentication, including association-constrained `client_credentials`, are implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), [#6202](https://github.com/stacklok/toolhive/issues/6202), and [#6204](https://github.com/stacklok/toolhive/issues/6204). The following remain separate and pending:
+Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles. SPIFFE JWT-SVID and X.509-SVID client authentication, including association-constrained `client_credentials` and discovery metadata integration for SPIFFE methods, are implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), [#6202](https://github.com/stacklok/toolhive/issues/6202), and [#6204](https://github.com/stacklok/toolhive/issues/6204). The following remains separate and pending:
 
-- discovery metadata integration for SPIFFE methods; and
 - deploy SPIRE or mount Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
 
 For [#6205](https://github.com/stacklok/toolhive/issues/6205), `workloadapi.X509Source` implements both `x509svid.Source` and `x509bundle.Source`, so one Workload API connection can also provide the authorization server's own certificate when deployment wiring is added. The v1alpha1 `ClientCASecretRef` plus `subPath` shape cannot support a rotating bundle and must not be reused for this purpose.

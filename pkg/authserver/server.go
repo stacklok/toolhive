@@ -69,6 +69,12 @@ type Server interface {
 // The storage parameter is required and determines where OAuth state is persisted.
 // Use storage.NewMemoryStorage() for single-instance deployments or provide
 // a distributed storage backend for production deployments.
+//
+// External embeddings that enable X.509-SVID client authentication must serve the
+// OAuth routes over TLS configured to request client certificates and wrap those
+// routes with spiffeauth.Middleware. The middleware extracts the claimed SPIFFE ID;
+// the authorization server re-verifies the certificate against its configured SPIFFE
+// trust bundle during client authentication.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
 	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)
 	return newServer(ctx, cfg, stor)

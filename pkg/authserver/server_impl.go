@@ -170,6 +170,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	closeBundleRegistry := true
 	defer closeSPIFFEBundleRegistryOnFailure(bundleRegistry, &closeBundleRegistry)
 
+	supportsSPIFFEX509ClientAuthentication := spiffeRegistry.permitsMethod(SPIFFEAuthenticationMethodX509)
+	supportsSPIFFEJWTClientAuthentication := spiffeRegistry.permitsMethod(SPIFFEAuthenticationMethodJWT)
+	supportsSPIFFEClientCredentialsGrant := spiffeRegistry.permitsGrant(SPIFFEGrantTypeClientCredentials)
+
 	slog.Debug("creating OAuth2 configuration")
 
 	// Get signing key from KeyProvider
@@ -180,26 +184,29 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                              cfg.Issuer,
-		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
-		HMACSecrets:                         cfg.HMACSecrets,
-		SigningKeyID:                        signingKey.KeyID,
-		SigningKeyAlgorithm:                 signingKey.Algorithm,
-		SigningKey:                          signingKey.Key,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
-		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
-		JWTBearerGrantEnabled:               jwtBearerGrantEnabled(cfg.TrustedIssuers),
-		SPIFFEClientResolver:                newSPIFFEClientResolver(spiffeRegistry, stor),
-		SPIFFEJWTBundleSource:               spiffeJWTBundleSource(bundleRegistry),
-		SPIFFEX509BundleSource:              spiffeX509BundleSource(bundleRegistry),
+		Issuer:                                 cfg.Issuer,
+		AccessTokenLifespan:                    cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                   cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                       cfg.AuthCodeLifespan,
+		HMACSecrets:                            cfg.HMACSecrets,
+		SigningKeyID:                           signingKey.KeyID,
+		SigningKeyAlgorithm:                    signingKey.Algorithm,
+		SigningKey:                             signingKey.Key,
+		ScopesSupported:                        cfg.ScopesSupported,
+		BaselineClientScopes:                   cfg.BaselineClientScopes,
+		AllowedAudiences:                       cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL:           cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                            cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:    cfg.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:               len(cfg.DelegateClients) > 0,
+		JWTBearerGrantEnabled:                  jwtBearerGrantEnabled(cfg.TrustedIssuers),
+		SupportsSPIFFEX509ClientAuthentication: supportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:  supportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:   supportsSPIFFEClientCredentialsGrant,
+		ForceConfidentialRedirectURIs:          cfg.ForceConfidentialRedirectURIs,
+		SPIFFEClientResolver:                   newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEJWTBundleSource:                  spiffeJWTBundleSource(bundleRegistry),
+		SPIFFEX509BundleSource:                 spiffeX509BundleSource(bundleRegistry),
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -236,7 +243,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider, err := buildProvider(cfg, authServerConfig, stor, spiffeRegistry)
+	fositeProvider, err := buildProvider(cfg, authServerConfig, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
 	}
@@ -466,14 +473,13 @@ func jwtBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 
 // buildProvider assembles the fosite OAuth2 provider: the standard grants,
 // RFC 8693 token exchange, and the RFC 7523 JWT-bearer and SPIFFE
-// client-credentials handlers, each registered only when its trust
-// configuration enables it, preserving the provider composition for
-// deployments without them.
+// client-credentials handlers, each registered only when the
+// startup-resolved capability stored on authServerConfig enables it,
+// preserving the provider composition for deployments without them.
 func buildProvider(
 	cfg Config,
 	authServerConfig *oauthserver.AuthorizationServerConfig,
 	stor storage.Storage,
-	spiffeRegistry *SPIFFEAssociationRegistry,
 ) (fosite.OAuth2Provider, error) {
 	delegateClientIDs := make([]string, len(cfg.DelegateClients))
 	for i, c := range cfg.DelegateClients {
@@ -511,7 +517,7 @@ func buildProvider(
 		}
 		factories = append(factories, jwtBearerFactory)
 	}
-	if spiffeRegistry.permitsGrant(SPIFFEGrantTypeClientCredentials) {
+	if authServerConfig.SupportsSPIFFEClientCredentialsGrant {
 		factories = append(factories, clientcredentials.Factory())
 	}
 	return createProvider(authServerConfig, stor, factories...)

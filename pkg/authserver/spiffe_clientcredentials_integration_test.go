@@ -60,6 +60,7 @@ func TestIntegration_SPIFFEClientCredentialsAuthenticationArms(t *testing.T) {
 	t.Parallel()
 
 	fixture := newSPIFFEClientCredentialsFixture(t)
+	assertSPIFFEClientCredentialsDiscovery(t, fixture.client, fixture.server.URL)
 	forms := []struct {
 		name string
 		form func(*testing.T) url.Values
@@ -73,6 +74,7 @@ func TestIntegration_SPIFFEClientCredentialsAuthenticationArms(t *testing.T) {
 		{
 			name: "JWT SVID assertion",
 			form: func(t *testing.T) url.Values {
+				t.Helper()
 				form := spiffeClientCredentialsForm()
 				form.Set("client_assertion_type", spiffeauth.SPIFFEJWTAssertionType)
 				form.Set("client_assertion", signedSPIFFEJWTAssertion(t, fixture.jwtKey))
@@ -81,9 +83,10 @@ func TestIntegration_SPIFFEClientCredentialsAuthenticationArms(t *testing.T) {
 		},
 	}
 
-	var expectedAuthorizationClaims map[string]any
 	for _, tt := range forms {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			response := postSPIFFEClientCredentials(t, fixture.client, fixture.server.URL, tt.form(t))
 			defer response.Body.Close()
 
@@ -98,18 +101,6 @@ func TestIntegration_SPIFFEClientCredentialsAuthenticationArms(t *testing.T) {
 			assert.Equal(t, []any{"openid", "profile"}, claims["scp"])
 			assert.Equal(t, []any{spiffeClientCredentialsResource}, claims["aud"])
 			assertTokenLifetime(t, claims, spiffeClientCredentialsLifetime)
-
-			authorizationClaims := map[string]any{
-				"sub":       claims["sub"],
-				"client_id": claims["client_id"],
-				"scp":       claims["scp"],
-				"aud":       claims["aud"],
-			}
-			if expectedAuthorizationClaims == nil {
-				expectedAuthorizationClaims = authorizationClaims
-			} else {
-				assert.Equal(t, expectedAuthorizationClaims, authorizationClaims)
-			}
 		})
 	}
 }
@@ -132,6 +123,36 @@ func TestIntegration_SPIFFEClientCredentialsRejectsInvalidJWTAssertion(t *testin
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
 	assert.Equal(t, http.StatusUnauthorized, response.StatusCode)
 	assert.Equal(t, "invalid_client", body["error"])
+}
+
+func assertSPIFFEClientCredentialsDiscovery(t *testing.T, client *http.Client, serverURL string) {
+	t.Helper()
+
+	wantMethods := []string{
+		oauthproto.TokenEndpointAuthMethodNone,
+		oauthproto.TokenEndpointAuthMethodSPIFFEX509,
+		oauthproto.TokenEndpointAuthMethodSPIFFEJWT,
+	}
+	wantGrants := []string{
+		oauthproto.GrantTypeAuthorizationCode,
+		oauthproto.GrantTypeRefreshToken,
+		oauthproto.GrantTypeTokenExchange,
+		oauthproto.GrantTypeClientCredentials,
+	}
+	for _, path := range []string{oauthproto.WellKnownOAuthServerPath, oauthproto.WellKnownOIDCPath} {
+		response, err := client.Get(serverURL + path)
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Equal(t, http.StatusOK, response.StatusCode)
+
+		var metadata struct {
+			TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
+			GrantTypesSupported               []string `json:"grant_types_supported"`
+		}
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&metadata))
+		assert.Equal(t, wantMethods, metadata.TokenEndpointAuthMethodsSupported, path)
+		assert.Equal(t, wantGrants, metadata.GrantTypesSupported, path)
+	}
 }
 
 func newSPIFFEClientCredentialsFixture(t *testing.T) *spiffeClientCredentialsFixture {

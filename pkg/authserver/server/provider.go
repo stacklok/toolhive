@@ -80,6 +80,15 @@ type AuthorizationServerConfig struct {
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
 	HasStaticDelegateClients bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports X.509-SVID client authentication.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports JWT-SVID client authentication.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether the validated SPIFFE
+	// association snapshot supports the client_credentials grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -152,6 +161,15 @@ type AuthorizationServerParams struct {
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
 	HasStaticDelegateClients bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports X.509-SVID client authentication.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether the validated SPIFFE
+	// association snapshot supports JWT-SVID client authentication.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether the validated SPIFFE
+	// association snapshot supports the client_credentials grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// ForceConfidentialRedirectURIs lists redirect URIs that the DCR handler
 	// always registers as confidential clients, overriding a requested "none"
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
@@ -328,21 +346,24 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:                              fositeConfig,
-		SigningKey:                          &jwk,
-		SigningJWKS:                         &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
-		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
-		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,
-		SPIFFEClientResolver:                cfg.SPIFFEClientResolver,
-		SPIFFEX509BundleSource:              cfg.SPIFFEX509BundleSource,
-		SPIFFEJWTBundleSource:               cfg.SPIFFEJWTBundleSource,
+		Config:                                 fositeConfig,
+		SigningKey:                             &jwk,
+		SigningJWKS:                            &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		AllowedAudiences:                       cfg.AllowedAudiences,
+		ScopesSupported:                        cfg.ScopesSupported,
+		BaselineClientScopes:                   cfg.BaselineClientScopes,
+		AuthorizationEndpointBaseURL:           cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                            cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:    cfg.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:               cfg.HasStaticDelegateClients,
+		JWTBearerGrantEnabled:                  cfg.JWTBearerGrantEnabled,
+		SupportsSPIFFEX509ClientAuthentication: cfg.SupportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:  cfg.SupportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:   cfg.SupportsSPIFFEClientCredentialsGrant,
+		ForceConfidentialRedirectURIs:          cfg.ForceConfidentialRedirectURIs,
+		SPIFFEClientResolver:                   cfg.SPIFFEClientResolver,
+		SPIFFEX509BundleSource:                 cfg.SPIFFEX509BundleSource,
+		SPIFFEJWTBundleSource:                  cfg.SPIFFEJWTBundleSource,
 	}, nil
 }
 

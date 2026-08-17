@@ -37,11 +37,14 @@ import (
 
 // testSetupOptions allows customizing the test handler setup.
 type testSetupOptions struct {
-	AuthorizationEndpointBaseURL        string
-	CIMDEnabled                         bool
-	AllowConfidentialClientRegistration bool
-	HasStaticDelegateClients            bool
-	JWTBearerGrantEnabled               bool
+	AuthorizationEndpointBaseURL           string
+	CIMDEnabled                            bool
+	AllowConfidentialClientRegistration    bool
+	HasStaticDelegateClients               bool
+	JWTBearerGrantEnabled                  bool
+	SupportsSPIFFEX509ClientAuthentication bool
+	SupportsSPIFFEJWTClientAuthentication  bool
+	SupportsSPIFFEClientCredentialsGrant   bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -68,19 +71,22 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:                              "https://auth.example.com",
-		AuthorizationEndpointBaseURL:        opts.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         opts.CIMDEnabled,
-		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
-		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
-		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
-		AccessTokenLifespan:                 time.Hour,
-		RefreshTokenLifespan:                time.Hour * 24,
-		AuthCodeLifespan:                    time.Minute * 10,
-		HMACSecrets:                         servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                        "test-key-1",
-		SigningKeyAlgorithm:                 "RS256",
-		SigningKey:                          rsaKey,
+		Issuer:                                 "https://auth.example.com",
+		AuthorizationEndpointBaseURL:           opts.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                            opts.CIMDEnabled,
+		AllowConfidentialClientRegistration:    opts.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:               opts.HasStaticDelegateClients,
+		JWTBearerGrantEnabled:                  opts.JWTBearerGrantEnabled,
+		SupportsSPIFFEX509ClientAuthentication: opts.SupportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:  opts.SupportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:   opts.SupportsSPIFFEClientCredentialsGrant,
+		AccessTokenLifespan:                    time.Hour,
+		RefreshTokenLifespan:                   time.Hour * 24,
+		AuthCodeLifespan:                       time.Minute * 10,
+		HMACSecrets:                            servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                           "test-key-1",
+		SigningKeyAlgorithm:                    "RS256",
+		SigningKey:                             rsaKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -263,58 +269,180 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, discovery.TokenEndpointAuthMethodsSupported)
 }
 
-// TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
-// advertise the client authentication methods needed for configured confidential
-// clients. "none" must stay at index 0 (readability convention; RFC 8414 defines
-// no ordering).
-func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
+func TestDiscoveryHandlers_NoSPIFFE_MetadataBytes(t *testing.T) {
 	t.Parallel()
 
-	wantOff := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	wantOn := []string{
+	const (
+		oauthMetadataGolden = `{"issuer":"https://auth.example.com","authorization_endpoint":"https://auth.example.com/oauth/authorize","token_endpoint":"https://auth.example.com/oauth/token","jwks_uri":"https://auth.example.com/.well-known/jwks.json","registration_endpoint":"https://auth.example.com/oauth/register","response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:token-exchange"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"]}`
+		oidcMetadataGolden  = `{"issuer":"https://auth.example.com","authorization_endpoint":"https://auth.example.com/oauth/authorize","token_endpoint":"https://auth.example.com/oauth/token","jwks_uri":"https://auth.example.com/.well-known/jwks.json","registration_endpoint":"https://auth.example.com/oauth/register","response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:token-exchange"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}`
+	)
+
+	handler := testSetup(t)
+	for _, tc := range []struct {
+		name    string
+		path    string
+		handler func(http.ResponseWriter, *http.Request)
+		golden  string
+	}{
+		{
+			name:    "OAuth authorization server metadata",
+			path:    "/.well-known/oauth-authorization-server",
+			handler: handler.OAuthDiscoveryHandler,
+			golden:  oauthMetadataGolden,
+		},
+		{
+			name:    "OIDC discovery metadata",
+			path:    "/.well-known/openid-configuration",
+			handler: handler.OIDCDiscoveryHandler,
+			golden:  oidcMetadataGolden,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			tc.handler(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, []byte(tc.golden), rec.Body.Bytes())
+		})
+	}
+}
+
+// TestDiscoveryHandlers_SPIFFECapabilities verifies both discovery endpoints
+// advertise the exact configured SPIFFE client authentication and grant capabilities.
+func TestDiscoveryHandlers_SPIFFECapabilities(t *testing.T) {
+	t.Parallel()
+
+	defaultGrants := []string{
+		sharedobauth.GrantTypeAuthorizationCode,
+		sharedobauth.GrantTypeRefreshToken,
+		sharedobauth.GrantTypeTokenExchange,
+	}
+	defaultMethods := []string{sharedobauth.TokenEndpointAuthMethodNone}
+	bothSPIFFEMethods := []string{
 		sharedobauth.TokenEndpointAuthMethodNone,
-		sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
-		sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+		sharedobauth.TokenEndpointAuthMethodSPIFFEX509,
+		sharedobauth.TokenEndpointAuthMethodSPIFFEJWT,
 	}
 
 	tests := []struct {
-		name              string
-		allowConfidential bool
-		hasStaticClient   bool
-		wantMethods       []string
+		name    string
+		opts    testSetupOptions
+		methods []string
+		grants  []string
 	}{
-		{"public only advertises only none", false, false, wantOff},
-		{"confidential DCR advertises client_secret methods", true, false, wantOn},
-		{"static delegate client advertises client_secret methods", false, true, wantOn},
+		{name: "defaults", methods: defaultMethods, grants: defaultGrants},
+		{
+			name:    "X509 only",
+			opts:    testSetupOptions{SupportsSPIFFEX509ClientAuthentication: true},
+			methods: append(defaultMethods, sharedobauth.TokenEndpointAuthMethodSPIFFEX509),
+			grants:  defaultGrants,
+		},
+		{
+			name:    "JWT only",
+			opts:    testSetupOptions{SupportsSPIFFEJWTClientAuthentication: true},
+			methods: append(defaultMethods, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT),
+			grants:  defaultGrants,
+		},
+		{
+			name: "both methods and client credentials",
+			opts: testSetupOptions{
+				SupportsSPIFFEX509ClientAuthentication: true,
+				SupportsSPIFFEJWTClientAuthentication:  true,
+				SupportsSPIFFEClientCredentialsGrant:   true,
+			},
+			methods: bothSPIFFEMethods,
+			grants:  append(defaultGrants, sharedobauth.GrantTypeClientCredentials),
+		},
+		{
+			name: "confidential DCR and both SPIFFE methods",
+			opts: testSetupOptions{
+				AllowConfidentialClientRegistration:    true,
+				SupportsSPIFFEX509ClientAuthentication: true,
+				SupportsSPIFFEJWTClientAuthentication:  true,
+			},
+			methods: []string{
+				sharedobauth.TokenEndpointAuthMethodNone,
+				sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
+				sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+				sharedobauth.TokenEndpointAuthMethodSPIFFEX509,
+				sharedobauth.TokenEndpointAuthMethodSPIFFEJWT,
+			},
+			grants: defaultGrants,
+		},
+		{
+			name: "static delegate client and both SPIFFE methods",
+			opts: testSetupOptions{
+				HasStaticDelegateClients:               true,
+				SupportsSPIFFEX509ClientAuthentication: true,
+				SupportsSPIFFEJWTClientAuthentication:  true,
+			},
+			methods: []string{
+				sharedobauth.TokenEndpointAuthMethodNone,
+				sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
+				sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+				sharedobauth.TokenEndpointAuthMethodSPIFFEX509,
+				sharedobauth.TokenEndpointAuthMethodSPIFFEJWT,
+			},
+			grants: defaultGrants,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			handler := testSetupWithOptions(t, testSetupOptions{
-				AllowConfidentialClientRegistration: tc.allowConfidential,
-				HasStaticDelegateClients:            tc.hasStaticClient,
-			})
+			handler := testSetupWithOptions(t, tc.opts)
 
-			// OAuth AS metadata endpoint.
-			rec := httptest.NewRecorder()
-			handler.OAuthDiscoveryHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
-			require.Equal(t, http.StatusOK, rec.Code)
-			var metadata sharedobauth.AuthorizationServerMetadata
-			require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
-			assert.Equal(t, tc.wantMethods, metadata.TokenEndpointAuthMethodsSupported,
-				"oauth-authorization-server must advertise configured client authentication methods")
-			assert.Equal(t, sharedobauth.TokenEndpointAuthMethodNone, metadata.TokenEndpointAuthMethodsSupported[0],
-				"none must remain at index 0")
-
-			// OIDC discovery endpoint (shares buildOAuthMetadata).
-			rec2 := httptest.NewRecorder()
-			handler.OIDCDiscoveryHandler(rec2, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
-			require.Equal(t, http.StatusOK, rec2.Code)
-			var discovery sharedobauth.OIDCDiscoveryDocument
-			require.NoError(t, json.NewDecoder(rec2.Body).Decode(&discovery))
-			assert.Equal(t, tc.wantMethods, discovery.TokenEndpointAuthMethodsSupported,
-				"openid-configuration must advertise configured client authentication methods")
+			for _, endpoint := range []struct {
+				name    string
+				handler func(http.ResponseWriter, *http.Request)
+				decode  func(*testing.T, *httptest.ResponseRecorder) ([]string, []string)
+			}{
+				{
+					name:    "OAuth authorization server metadata",
+					handler: handler.OAuthDiscoveryHandler,
+					decode: func(t *testing.T, rec *httptest.ResponseRecorder) ([]string, []string) {
+						t.Helper()
+						var metadata sharedobauth.AuthorizationServerMetadata
+						require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
+						return metadata.TokenEndpointAuthMethodsSupported, metadata.GrantTypesSupported
+					},
+				},
+				{
+					name:    "OIDC discovery metadata",
+					handler: handler.OIDCDiscoveryHandler,
+					decode: func(t *testing.T, rec *httptest.ResponseRecorder) ([]string, []string) {
+						t.Helper()
+						var metadata sharedobauth.OIDCDiscoveryDocument
+						require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
+						return metadata.TokenEndpointAuthMethodsSupported, metadata.GrantTypesSupported
+					},
+				},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					t.Parallel()
+					rec := httptest.NewRecorder()
+					endpoint.handler(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+					require.Equal(t, http.StatusOK, rec.Code)
+					methods, grants := endpoint.decode(t, rec)
+					assert.Equal(t, tc.methods, methods)
+					assert.Equal(t, tc.grants, grants)
+					assertNoDuplicateStrings(t, methods)
+					assertNoDuplicateStrings(t, grants)
+				})
+			}
 		})
+	}
+}
+
+func assertNoDuplicateStrings(t *testing.T, values []string) {
+	t.Helper()
+
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		_, found := seen[value]
+		assert.Falsef(t, found, "duplicate value %q", value)
+		seen[value] = struct{}{}
 	}
 }
 

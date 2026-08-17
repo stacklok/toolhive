@@ -39,7 +39,9 @@ const (
 	ResponseTypeCode = "code"
 )
 
-// Token endpoint authentication methods as defined by RFC 7591.
+// Token endpoint authentication methods as defined by RFC 7591 and draft-ietf-oauth-spiffe-client-auth-02.
+//
+//nolint:gosec // G101: SPIFFE authentication-method identifiers are protocol constants, not credentials.
 const (
 	// TokenEndpointAuthMethodNone indicates no client authentication (public clients).
 	// Typically used with PKCE for native/mobile applications.
@@ -52,6 +54,14 @@ const (
 	// TokenEndpointAuthMethodClientSecretPost sends the client credentials in the
 	// request body at the token endpoint (RFC 6749 Section 2.3.1).
 	TokenEndpointAuthMethodClientSecretPost = "client_secret_post"
+
+	// TokenEndpointAuthMethodSPIFFEX509 is the "spiffe_x509" token endpoint
+	// authentication method defined by Section 4 of draft-ietf-oauth-spiffe-client-auth-02.
+	TokenEndpointAuthMethodSPIFFEX509 = "spiffe_x509"
+
+	// TokenEndpointAuthMethodSPIFFEJWT is the "spiffe_jwt" token endpoint
+	// authentication method defined by Section 4 of draft-ietf-oauth-spiffe-client-auth-02.
+	TokenEndpointAuthMethodSPIFFEJWT = "spiffe_jwt"
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.

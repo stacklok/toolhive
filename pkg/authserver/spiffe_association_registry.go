@@ -126,6 +126,18 @@ func (r *SPIFFEAssociationRegistry) permitsGrant(grant string) bool {
 	return false
 }
 
+func (r *SPIFFEAssociationRegistry) permitsMethod(method SPIFFEAuthenticationMethod) bool {
+	if r == nil {
+		return false
+	}
+	for _, association := range r.byClientID {
+		if containsSPIFFEAuthenticationMethod(association.Methods(), method) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *SPIFFEAssociationRegistry) clientIDs() []string {
 	if r == nil {
 		return nil

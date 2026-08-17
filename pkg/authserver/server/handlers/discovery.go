@@ -121,12 +121,26 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 	}
 }
 
+func (h *Handler) grantTypesSupported() []string {
+	grantTypes := []string{
+		string(fosite.GrantTypeAuthorizationCode),
+		string(fosite.GrantTypeRefreshToken),
+		sharedobauth.GrantTypeTokenExchange,
+	}
+	if h.config.SupportsSPIFFEClientCredentialsGrant {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeClientCredentials)
+	}
+	return grantTypes
+}
+
 // tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
 // list for discovery, derived from config. "none" is always first — the public-client
 // default. When confidential DCR is enabled or static delegate clients are configured,
 // the two client_secret_* methods are appended. Static clients need these methods even
-// though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
-// "none"-first is a readability convention, not a security control.
+// though DCR itself remains public-only. SPIFFE X.509 and JWT methods then follow in
+// that order when the startup-resolved association capabilities support them. RFC 8414
+// defines no ordering semantics, so this ordering is a readability convention, not a
+// security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
 	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
@@ -134,6 +148,12 @@ func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 		)
+	}
+	if h.config.SupportsSPIFFEX509ClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEX509)
+	}
+	if h.config.SupportsSPIFFEJWTClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT)
 	}
 	return methods
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -392,6 +393,63 @@ func TestSync_RequestedClientIsNotAlreadyCurrent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
 	assert.Empty(t, result.AlreadyCurrent, "a plugin current in one client must not skip a requested extra client")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_DefaultExpandsToNewlyDetectedClients(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["codex"] = &extractingAdapter{
+		base:      filepath.Join(projectRoot, ".agents", "plugins", "toolhive"),
+		installer: skills.NewInstaller(),
+	}
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
+	assert.Empty(t, result.AlreadyCurrent, "default sync must not treat a missing detected client as current")
+}
+
+type staleListStore struct {
+	storage.PluginStore
+	listed []plugins.InstalledPlugin
+}
+
+func (s *staleListStore) List(context.Context, storage.ListFilter) ([]plugins.InstalledPlugin, error) {
+	out := make([]plugins.InstalledPlugin, len(s.listed))
+	copy(out, s.listed)
+	return out, nil
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_StaleListDoesNotResurrectUninstalledPlugin(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	stale, err := inner.store.List(t.Context(), storage.ListFilter{
+		Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, stale)
+
+	require.NoError(t, svc.Uninstall(t.Context(), plugins.UninstallOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	}))
+
+	inner.store = &staleListStore{PluginStore: inner.store, listed: stale}
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Empty(t, result.Installed)
+	assert.Empty(t, result.NeverManaged)
+
+	_, err = svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "a stale List snapshot must not resurrect an uninstalled plugin")
 }
 
 type unhealthyAdapter struct {

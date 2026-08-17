@@ -91,7 +91,7 @@ func (s *service) installFromGit(
 		opts.Version = manifest.Version
 	}
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	ctx, unlock := s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
 	result, err := s.installWithExtraction(ctx, opts, scope)

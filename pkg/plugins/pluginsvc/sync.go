@@ -55,21 +55,23 @@ func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.
 	if err != nil {
 		return nil, fmt.Errorf("listing installed plugins: %w", err)
 	}
-	installedByName := make(map[string]plugins.InstalledPlugin, len(installed))
+
+	names := make([]string, 0, len(lf.Plugins)+len(installed))
+	seen := make(map[string]struct{}, len(lf.Plugins)+len(installed))
+	for _, entry := range lf.Plugins {
+		names = append(names, entry.Name)
+		seen[entry.Name] = struct{}{}
+	}
 	for _, pl := range installed {
-		installedByName[pl.Metadata.Name] = pl
+		if _, ok := seen[pl.Metadata.Name]; ok {
+			continue
+		}
+		names = append(names, pl.Metadata.Name)
 	}
 
 	result := &plugins.SyncResult{}
-	for _, entry := range lf.Plugins {
-		pl, dbOK := installedByName[entry.Name]
-		s.syncLockedEntry(ctx, opts, entry, pl, dbOK, result)
-	}
-	for _, pl := range installed {
-		if _, ok := lf.GetPlugin(pl.Metadata.Name); ok {
-			continue // handled by the loop above
-		}
-		s.syncUnlockedInstall(ctx, opts, pl, result)
+	for _, name := range names {
+		s.syncOne(ctx, opts, name, result)
 	}
 
 	return result, nil
@@ -80,6 +82,51 @@ func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.
 // without exposing a half-built upgrade path.
 func (*service) Upgrade(_ context.Context, _ plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
 	return nil, httperr.WithCode(errors.New("plugin upgrade is not implemented"), http.StatusNotImplemented)
+}
+
+// syncOne re-reads the lock entry and DB row under the per-plugin lock, then
+// reconciles that fresh state. The initial Sync snapshot is only used to
+// discover names; mutation from a stale view would resurrect an uninstall or
+// prune a concurrent install.
+func (s *service) syncOne(
+	ctx context.Context, opts plugins.SyncOptions, name string, result *plugins.SyncResult,
+) {
+	ctx, unlock := s.lockPlugin(ctx, name, plugins.ScopeProject, opts.ProjectRoot)
+	defer unlock()
+
+	root, err := lockfile.OpenRoot(opts.ProjectRoot)
+	if err != nil {
+		result.Failed = append(result.Failed, plugins.SyncFailure{
+			Name: name, Reason: classifySyncFailure(err), Error: err.Error(),
+		})
+		return
+	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		result.Failed = append(result.Failed, plugins.SyncFailure{
+			Name: name, Reason: classifySyncFailure(err), Error: err.Error(),
+		})
+		return
+	}
+	entry, hasEntry := lf.GetPlugin(name)
+
+	pl, err := s.store.Get(ctx, name, plugins.ScopeProject, opts.ProjectRoot)
+	dbOK := err == nil
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		result.Failed = append(result.Failed, plugins.SyncFailure{
+			Name: name, Reason: classifySyncFailure(err), Error: err.Error(),
+		})
+		return
+	}
+
+	if hasEntry {
+		s.syncLockedEntry(ctx, opts, entry, pl, dbOK, result)
+		return
+	}
+	if !dbOK {
+		return
+	}
+	s.syncUnlockedInstall(ctx, opts, pl, result)
 }
 
 // syncLockedEntry reconciles one lock file entry against installed state,
@@ -107,7 +154,7 @@ func (s *service) syncLockedEntry(
 	if opts.Check {
 		return
 	}
-	if err := s.reinstallPinned(ctx, opts, entry, pl, dbOK); err != nil {
+	if err := s.reinstallPinned(ctx, opts, entry); err != nil {
 		result.Failed = append(result.Failed, plugins.SyncFailure{
 			Name: entry.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 		})
@@ -117,12 +164,11 @@ func (s *service) syncLockedEntry(
 }
 
 // entryMatchesInstalled reports whether the installed plugin is lock-managed,
-// its pinned digest still matches the lock entry, every requested client is
-// present, EVERY client directory's on-disk contentDigest matches, and each
-// adapter reports the plugin as healthy (marketplace/settings present).
-// Checking only one client's copy would leave tampering with any other
-// client's materialized files invisible to --check — and which directory got
-// checked would depend on install order. Shared registration files are
+// its pinned digest still matches the lock entry, every expected client is
+// present, every checked client directory's on-disk contentDigest matches,
+// and each adapter reports the plugin as healthy. With no --clients override,
+// expected clients are every detected plugin-supporting client so a newly
+// installed client is not treated as current. Shared registration files are
 // validated via adapter Health, not folded into contentDigest.
 func (s *service) entryMatchesInstalled(
 	ctx context.Context,
@@ -139,10 +185,14 @@ func (s *service) entryMatchesInstalled(
 	if len(pl.Clients) == 0 {
 		return false
 	}
-	if len(requestedClients) > 0 && !clientsContainAll(pl.Clients, requestedClients) {
+	expected := requestedClients
+	if len(expected) == 0 {
+		expected = s.availableMaterializerClients()
+	}
+	if len(expected) == 0 || !clientsContainAll(pl.Clients, expected) {
 		return false
 	}
-	for _, clientType := range pl.Clients {
+	for _, clientType := range mergeClientLists(pl.Clients, expected) {
 		dir, err := s.pluginInstallPath(clientType, pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
 		if err != nil {
 			return false
@@ -167,24 +217,20 @@ func (s *service) entryMatchesInstalled(
 }
 
 // reinstallPinned reinstalls entry at its pinned reference, preserving its
-// recorded Source (never re-resolving) and the clients it was previously
-// installed for unless the caller overrides them.
+// recorded Source (never re-resolving). Empty opts.Clients keeps Install's
+// all-detected default so a newly detected client is materialized.
 func (s *service) reinstallPinned(
-	ctx context.Context, opts plugins.SyncOptions, entry lockfile.Entry, existing plugins.InstalledPlugin, dbOK bool,
+	ctx context.Context, opts plugins.SyncOptions, entry lockfile.Entry,
 ) error {
 	pinnedRef, err := buildPinnedReference(entry)
 	if err != nil {
 		return fmt.Errorf("pinning %q: %w", entry.Name, err)
 	}
-	clients := opts.Clients
-	if len(clients) == 0 && dbOK {
-		clients = existing.Clients
-	}
 	_, err = s.Install(ctx, plugins.InstallOptions{
 		Name:                  pinnedRef,
 		Scope:                 plugins.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
-		Clients:               clients,
+		Clients:               opts.Clients,
 		Force:                 true, // sync restores exactly the pinned content over any drifted files
 		LockSource:            entry.Source,
 		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
@@ -238,7 +284,7 @@ func (s *service) syncUnlockedInstall(
 // make every adopt fail until then. Lock validation permits an entry with
 // neither provenance nor unsigned.
 func (s *service) adoptPlugin(ctx context.Context, pl plugins.InstalledPlugin) error {
-	unlock := s.locks.lock(pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
+	ctx, unlock := s.lockPlugin(ctx, pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)
 	defer unlock()
 
 	current, err := s.store.Get(ctx, pl.Metadata.Name, plugins.ScopeProject, pl.ProjectRoot)

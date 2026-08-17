@@ -41,7 +41,7 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 	scope = defaultScope(scope)
 	opts.ProjectRoot = projectRoot
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	ctx, unlock := s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
 	existing, err := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)

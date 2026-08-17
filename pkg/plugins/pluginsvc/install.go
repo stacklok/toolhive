@@ -81,13 +81,8 @@ func (s *service) installByName(
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 ) (*plugins.InstallResult, error) {
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	locked := true
-	defer func() {
-		if locked {
-			unlock()
-		}
-	}()
+	ctx, unlock := s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
 
 	if len(opts.LayerData) == 0 {
 		resolved := false
@@ -99,11 +94,6 @@ func (s *service) installByName(
 			}
 		}
 		if !resolved {
-			// Release the lock before registry lookup — installFromOCI
-			// acquires its own lock on the plugin name, which could be the
-			// same key, causing deadlock since sync.Mutex is not re-entrant.
-			unlock()
-			locked = false
 			return s.installFromRegistryLookup(ctx, opts, scope)
 		}
 	}

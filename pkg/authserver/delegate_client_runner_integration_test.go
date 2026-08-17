@@ -179,29 +179,32 @@ func TestConfiguredDelegateClientTokenExchange_WithActorToken(t *testing.T) {
 	const originalClientID = "original-non-delegate-client"
 
 	tests := []struct {
-		name            string
-		subjectClientID string // client_id claim baked into the subject token
-		actorTokenSub   string // sub claim of the actor_token
-		wantStatus      int
-		wantError       string
+		name             string
+		subjectClientID  string // client_id claim baked into the subject token
+		actorTokenClient string // client_id claim of the actor_token (binding check)
+		actorTokenSub    string // sub claim of the actor_token (asserted actor identity)
+		wantStatus       int
+		wantError        string
 	}{
 		{
-			// resolveActorIdentity's sub-mismatch branch deliberately returns
-			// invalid_grant, not invalid_request — a distinct "wrong party"
-			// error class, the same convention checkDelegationConsent uses
-			// for its own client_id-mismatch case elsewhere in this file.
+			// resolveActorIdentity's client_id-mismatch branch deliberately
+			// returns invalid_grant, not invalid_request — a distinct "wrong
+			// party" error class, the same convention checkDelegationConsent
+			// uses for its own client_id-mismatch case elsewhere in this file.
 			// invalid_request is reserved for a malformed/unverifiable token.
-			name:            "mismatched actor_token rejected before delegation consent is reached",
-			subjectClientID: originalClientID,
-			actorTokenSub:   "someone-else",
-			wantStatus:      http.StatusBadRequest,
-			wantError:       "invalid_grant",
+			name:             "mismatched actor_token rejected before delegation consent is reached",
+			subjectClientID:  originalClientID,
+			actorTokenClient: "someone-elses-client",
+			actorTokenSub:    "someone-else",
+			wantStatus:       http.StatusBadRequest,
+			wantError:        "invalid_grant",
 		},
 		{
-			name:            "matching actor_token still succeeds via the delegate-client relaxation",
-			subjectClientID: originalClientID,
-			actorTokenSub:   delegateClientID,
-			wantStatus:      http.StatusOK,
+			name:             "matching actor_token still succeeds via the delegate-client relaxation",
+			subjectClientID:  originalClientID,
+			actorTokenClient: delegateClientID,
+			actorTokenSub:    delegateClientID,
+			wantStatus:       http.StatusOK,
 		},
 		{
 			// Delegate status must not change behavior when the relaxation isn't
@@ -209,10 +212,11 @@ func TestConfiguredDelegateClientTokenExchange_WithActorToken(t *testing.T) {
 			// authenticated client, so this succeeds on ordinary client_id
 			// binding, and verifyDelegatedToken's act.sub assertion below proves
 			// it produces the identical act shape either way.
-			name:            "actor_token present but relaxation unneeded still succeeds",
-			subjectClientID: delegateClientID,
-			actorTokenSub:   delegateClientID,
-			wantStatus:      http.StatusOK,
+			name:             "actor_token present but relaxation unneeded still succeeds",
+			subjectClientID:  delegateClientID,
+			actorTokenClient: delegateClientID,
+			actorTokenSub:    delegateClientID,
+			wantStatus:       http.StatusOK,
 		},
 	}
 
@@ -222,7 +226,7 @@ func TestConfiguredDelegateClientTokenExchange_WithActorToken(t *testing.T) {
 
 			server, issuer, embedded := startConfiguredDelegateAuthServer(t)
 			subjectToken := signedSubjectTokenForClient(t, embedded, issuer, tt.subjectClientID)
-			actorToken := signedActorToken(t, embedded, issuer, tt.actorTokenSub)
+			actorToken := signedActorToken(t, embedded, issuer, tt.actorTokenClient, tt.actorTokenSub)
 
 			values := url.Values{
 				"grant_type":         {tokenExchangeGrantType},
@@ -376,13 +380,16 @@ func signedSubjectTokenForClient(
 }
 
 // signedActorToken mints a self-issued RFC 8693 actor_token with the given
-// "sub" claim. resolveActorIdentity requires this to equal the authenticated
-// client's ID or the exchange is rejected before delegation consent is ever
-// consulted — see TestConfiguredDelegateClientTokenExchange_WithActorToken.
+// "client_id" and "sub" claims. resolveActorIdentity requires "client_id" to
+// equal the authenticated client's ID (the binding/proof-of-possession
+// check) or the exchange is rejected before delegation consent is ever
+// consulted; "sub" is the asserted actor identity, which flows into the
+// delegated token's act.sub and may legitimately differ from "client_id" —
+// see TestConfiguredDelegateClientTokenExchange_WithActorToken.
 func signedActorToken(
 	t *testing.T,
 	embedded *authserverrunner.EmbeddedAuthServer,
-	issuer, sub string,
+	issuer, tokenClientID, sub string,
 ) string {
 	t.Helper()
 
@@ -401,6 +408,8 @@ func signedActorToken(
 		Audience: jwt.Audience{delegateAudience},
 		Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
 		IssuedAt: jwt.NewNumericDate(now),
+	}).Claims(map[string]any{
+		"client_id": tokenClientID,
 	}).Serialize()
 	require.NoError(t, err)
 	return token

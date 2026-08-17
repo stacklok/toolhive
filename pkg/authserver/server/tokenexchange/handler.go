@@ -266,18 +266,25 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
-// resolveActorIdentity determines the acting party identity: always the
-// authenticated OAuth client ID.
+// resolveActorIdentity determines the acting party identity: either the
+// authenticated OAuth client ID, or — when actor_token is present — the
+// distinct actor identity it asserts.
 //
-// This is actor-token *confirmation* (proof-of-possession hardening), not
-// RFC 8693's general actor-delegation use case. When actor_token is present,
-// it is validated against the AS's own JWKS and its "sub" is required to
-// equal client.GetID() — so the resulting identity is identical whether or
-// not actor_token was supplied at all. Presenting actor_token only proves the
-// caller additionally holds a self-issued JWT for its own client_id; it never
-// lets a distinct actor identity flow into the act claim. Do not repurpose
-// this equality check to record a different actor identity without
-// revisiting the callers that assume act.sub == the authenticated client ID.
+// actor_token lets the authenticated client name a more specific actor than
+// its own client_id (e.g. a particular agent instance or delegate persona)
+// the same way a normal issued token records its client identity: via a
+// "client_id" claim. The actor_token's own "client_id" claim MUST match the
+// authenticated client ID — this is the binding/proof-of-possession check,
+// proving the token was minted for this very client — while its "sub" claim
+// is the actor identity that is returned here and flows into the delegated
+// token's act.sub the same place a normal client's identity would go. "sub"
+// is deliberately not compared to client.GetID(): requiring equality there
+// would make actor_token unable to ever assert an identity different from
+// the OAuth client, collapsing it to a no-op self-check. Note that this does
+// not by itself grant the asserted actor any extra privilege: the resulting
+// actor identity still has to satisfy checkDelegationConsent (may_act,
+// ExternalActor, client_id binding, or the configured-delegate exemption)
+// like any other actor identity would.
 func (h *Handler) resolveActorIdentity(
 	ctx context.Context, params *formParams, client fosite.Client,
 ) (string, error) {
@@ -289,13 +296,13 @@ func (h *Handler) resolveActorIdentity(
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token is invalid or could not be verified."))
 		}
-		// Binding check: actor_token.sub MUST match the authenticated client ID.
-		// This prevents replay attacks where a leaked actor token is presented
-		// by a different client. The client ID is always verified by fosite's
-		// client authentication before reaching here.
-		if actorClaims.Subject != client.GetID() {
+		// Binding check: actor_token's client_id claim MUST match the
+		// authenticated client ID. This prevents replay attacks where a leaked
+		// actor token is presented by a different client. The client ID is
+		// always verified by fosite's client authentication before reaching here.
+		if actorClaims.ClientID != client.GetID() {
 			return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
-				"The actor token subject does not match the authenticated client identity."))
+				"The actor token's client_id claim does not match the authenticated client identity."))
 		}
 		return actorClaims.Subject, nil
 	}

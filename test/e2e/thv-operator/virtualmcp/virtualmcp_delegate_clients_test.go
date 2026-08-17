@@ -234,17 +234,15 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		ginkgo.By("exchanging with an actor_token whose sub matches the delegate client")
-		actorToken := signSelfIssuedActorToken(signingPrivateKey, issuer, clientID)
+		actorToken := signSelfIssuedActorToken(signingPrivateKey, issuer, clientID, clientID)
 		exchanged := exchangeDelegateTokenWithActor(localURL, subjectToken, actorToken, issuer, clientSecret)
 		claims := verifiedJWTClaims(exchanged, signingPublicKey)
 		act, ok := claims["act"].(map[string]any)
 		gomega.Expect(ok).To(gomega.BeTrue())
-		// actor_token only proves possession; it must not change the recorded
-		// actor identity, which stays the authenticated delegate client.
 		gomega.Expect(act["sub"]).To(gomega.Equal(clientID))
 
-		ginkgo.By("rejecting an actor_token whose sub does not match the authenticated delegate client")
-		mismatchedActorToken := signSelfIssuedActorToken(signingPrivateKey, issuer, "someone-else")
+		ginkgo.By("rejecting an actor_token whose client_id claim does not match the authenticated delegate client")
+		mismatchedActorToken := signSelfIssuedActorToken(signingPrivateKey, issuer, "someone-elses-client", "someone-else")
 		form := url.Values{
 			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
 			"subject_token":      {subjectToken},
@@ -322,7 +320,11 @@ func exchangeDelegateTokenWithActor(endpoint, subjectToken, actorToken, audience
 // the server's own JWKS — resolveActorIdentity
 // (pkg/authserver/server/tokenexchange/handler.go) only accepts a
 // self-issued actor_token, never an externally-issued one.
-func signSelfIssuedActorToken(privateKey *rsa.PrivateKey, issuer, sub string) string {
+//
+// tokenClientID is the "client_id" claim, which resolveActorIdentity binds
+// against the authenticated OAuth client ID; sub is the asserted actor
+// identity, which may legitimately differ from tokenClientID.
+func signSelfIssuedActorToken(privateKey *rsa.PrivateKey, issuer, tokenClientID, sub string) string {
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
 		(&jose.SignerOptions{}).WithType("JWT"),
@@ -336,6 +338,8 @@ func signSelfIssuedActorToken(privateKey *rsa.PrivateKey, issuer, sub string) st
 		Audience: jwt.Audience{issuer},
 		Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
 		IssuedAt: jwt.NewNumericDate(now),
+	}).Claims(map[string]any{
+		"client_id": tokenClientID,
 	}).Serialize()
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	return token

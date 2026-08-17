@@ -84,10 +84,30 @@ func isFullCommitHash(ref string) bool {
 	return true
 }
 
+// isLocalStorePin reports whether entry pins a local OCI-store artifact by
+// digest: a plain plugin Source, no restorable ResolvedReference, and an OCI
+// digest. Sync restores these by loading the exact digest from the local
+// store rather than reinterpreting Source as a Docker Hub reference.
+func isLocalStorePin(entry lockfile.Entry) bool {
+	if entry.ResolvedReference != "" || entry.Digest == "" {
+		return false
+	}
+	if gitresolver.IsGitReference(entry.Source) {
+		return false
+	}
+	_, isOCI, err := parseOCIReference(entry.Source)
+	if err != nil || isOCI {
+		return false
+	}
+	return true
+}
+
 // buildPinnedReference returns the exact reference sync must install: entry's
 // resolvedReference re-pointed at its pinned digest, never re-resolved from
 // source. This is what makes sync a restore operation rather than an upgrade
 // — installing this reference always yields entry's exact pinned content.
+// Local-store pins (empty ResolvedReference) are handled by
+// reinstallLocalStorePin instead of this helper.
 func buildPinnedReference(entry lockfile.Entry) (string, error) {
 	if gitresolver.IsGitReference(entry.ResolvedReference) {
 		return pinGitReference(entry)

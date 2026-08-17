@@ -174,8 +174,10 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 	if len(latest.layerData) > 0 {
 		// Local-store hit: carry the exact artifact. buildPinnedReference
 		// would parse a bare tag as index.docker.io/library/<tag>@digest.
-		// resolvedRef is the local tag for the DB; the lock cannot store a
-		// bare tag, so apply keeps the previous resolvedReference if any.
+		// resolvedRef is the local tag for the DB; the lock leaves
+		// resolvedReference empty so sync can restore by digest from the
+		// local store (never retain an unrelated remote pin beside the new
+		// local digest).
 		outcome.Status = plugins.UpgradeStatusUpgraded
 		return upgradePlan{
 			entry:       entry,
@@ -218,12 +220,15 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 		}
 	}
 
+	// Local-store upgrades deliberately leave resolvedReference empty so
+	// sync can restore by digest. Do not fall back to a previous remote pin
+	// that no longer describes the installed artifact.
 	lockResolved := lockableResolvedReference(plan.resolvedRef)
-	if lockResolved == "" {
+	if lockResolved == "" && len(plan.layerData) == 0 {
 		lockResolved = plan.entry.ResolvedReference
 	}
 
-	if _, err := s.Install(ctx, plugins.InstallOptions{
+	if _, err := s.installAlreadyLocked(ctx, plugins.InstallOptions{
 		Name:                  plan.pinnedRef,
 		Reference:             plan.resolvedRef,
 		LayerData:             plan.layerData,
@@ -233,6 +238,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 		Clients:               clients,
 		LockSource:            plan.entry.Source,
 		LockResolvedReference: lockResolved,
+		ExpectedCanonicalName: plan.entry.Name,
 	}); err != nil {
 		outcome := plan.outcome
 		outcome.Status = plugins.UpgradeStatusFailed

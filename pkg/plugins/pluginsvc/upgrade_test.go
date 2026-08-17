@@ -280,7 +280,9 @@ func TestUpgrade_AppliesSameNameLocalTagWithoutRegistry(t *testing.T) {
 	after, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 	require.True(t, ok)
 	assert.Equal(t, d2.String(), after.Digest)
-	assert.Equal(t, prevRef, after.ResolvedReference, "a local-tag apply must keep the previous restorable pin")
+	assert.Empty(t, after.ResolvedReference,
+		"a local-store upgrade must clear any prior remote resolvedReference so sync can restore by digest")
+	assert.Equal(t, "my-plugin", after.Source)
 
 	info, err := svc.Info(t.Context(), plugins.InfoOptions{
 		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,

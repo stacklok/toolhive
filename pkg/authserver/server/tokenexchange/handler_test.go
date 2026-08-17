@@ -436,7 +436,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			hintContains: "access_token",
 		},
 		{
-			name:   "id_token subject_token_type accepted",
+			name:   "id_token subject_token_type rejected",
 			ctx:    func(_ *testing.T) context.Context { return context.Background() },
 			client: defaultClient,
 			form: func(t *testing.T) url.Values {
@@ -448,14 +448,10 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 					"subject_token_type": {oauthproto.TokenTypeIDToken},
 				}
 			},
-			lifespan: 15 * time.Minute,
-			check: func(t *testing.T, req *fosite.AccessRequest) {
-				t.Helper()
-
-				sess, ok := req.GetSession().(*session.Session)
-				require.True(t, ok, "session should be *session.Session")
-				assert.Equal(t, "user-123", sess.JWTClaims.Subject)
-			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "subject_token_type",
 		},
 		{
 			name:   "invalid subject_token — bad JWT",

@@ -326,13 +326,20 @@ func validateFormParams(form url.Values) (*formParams, error) {
 			"The 'subject_token_type' parameter is required for token exchange."))
 	}
 
+	// id_token is intentionally excluded here, the same as for actor_token
+	// tokens below: an ID token's claim conventions differ from an access
+	// token's (e.g. "aud" names the relying-party client, not a resource) and
+	// this validator applies neither a distinct validation profile nor an
+	// id_token-specific claim mapping — accepting the type would let a client
+	// declare "id_token" while the token is validated exactly like an access
+	// token, silently ignoring the declared type's semantics.
 	switch subjectTokenType {
-	case oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT, oauthproto.TokenTypeIDToken:
+	case oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT:
 		// Valid subject token types.
 	default:
 		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'subject_token_type' value %q is not supported. Use %q, %q, or %q.",
-			subjectTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT, oauthproto.TokenTypeIDToken))
+			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
+			subjectTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT))
 	}
 
 	actorToken := form.Get("actor_token")

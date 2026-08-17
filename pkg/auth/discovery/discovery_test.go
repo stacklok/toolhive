@@ -1391,69 +1391,62 @@ func startIssuerServer(t *testing.T, tokenEndpoint func(issuerURL string) string
 	return server.URL
 }
 
-// dialTokenEndpoint exercises cfg through the same client oauth.NewFlow builds
-// from it, so the assertion is about whether the endpoint was reached rather
-// than about the value of a trust flag.
-func dialTokenEndpoint(t *testing.T, cfg *oauth.Config) error {
-	t.Helper()
-
-	client, err := oauth.NewTokenHTTPClient(cfg.TokenURL, cfg.TokenEndpointTrusted)
-	require.NoError(t, err)
-	resp, err := client.Post(cfg.TokenURL, "application/x-www-form-urlencoded",
-		strings.NewReader("grant_type=refresh_token"))
-	if err != nil {
-		return err
-	}
-	require.NoError(t, resp.Body.Close())
-	return nil
-}
-
 // TestCreateOAuthConfig_DiscoveredTokenEndpoint is the regression test for
 // GHSA-3768-rwj3-38p2. An operator-configured issuer that names its own
-// authority in its metadata stays trusted; one that names a different authority
-// must not lend that authority the operator's trust, even on the same host at a
-// different port (CWE-918).
+// authority in its metadata keeps the operator's trust; one that names a
+// different authority must not lend that authority the trust, even on the same
+// host at a different port (CWE-918).
+//
+// The trust flag is this function's output, so that is what is asserted here.
+// What the flag then does to a dial — permitted for a trusted endpoint, refused
+// at the private-IP guard for an untrusted one — belongs to the package that
+// builds the client, and is covered by
+// oauth.TestHandleCallback_BlocksUntrustedLoopbackTokenEndpoint driving the real
+// oauth.NewFlow. Splitting it this way keeps each package asserting its own
+// behaviour instead of reimplementing the other's client.
 func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
 	t.Parallel()
 
-	t.Run("issuer naming its own authority is still trusted", func(t *testing.T) {
-		t.Parallel()
+	tests := []struct {
+		name string
+		// foreignTokenEndpoint advertises the token endpoint on a second
+		// listener, i.e. an authority the operator never named.
+		foreignTokenEndpoint bool
+		wantTrusted          bool
+	}{
+		{name: "issuer naming its own authority keeps the trust", wantTrusted: true},
+		{name: "issuer naming a foreign authority loses the trust", foreignTokenEndpoint: true},
+	}
 
-		var hits atomic.Int32
-		issuerURL := startIssuerServer(t, func(issuer string) string { return issuer + "/token" }, &hits)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		cfg, err := createOAuthConfig(context.Background(), issuerURL, &OAuthFlowConfig{
-			ClientID:             "test-client",
-			IssuerTrusted:        true,
-			TokenEndpointTrusted: true,
+			var hits atomic.Int32
+			tokenEndpoint := func(issuer string) string { return issuer + "/token" }
+			wantTokenURL := ""
+			if tt.foreignTokenEndpoint {
+				foreignURL := startIssuerServer(t, func(issuer string) string { return issuer + "/token" }, &hits)
+				tokenEndpoint = func(string) string { return foreignURL + "/token" }
+				wantTokenURL = foreignURL + "/token"
+			}
+
+			issuerURL := startIssuerServer(t, tokenEndpoint, &hits)
+			if wantTokenURL == "" {
+				wantTokenURL = issuerURL + "/token"
+			}
+
+			cfg, err := createOAuthConfig(context.Background(), issuerURL, &OAuthFlowConfig{
+				ClientID:             "test-client",
+				IssuerTrusted:        true,
+				TokenEndpointTrusted: true,
+			})
+			require.NoError(t, err)
+
+			// The endpoint is taken from the document either way; only the trust
+			// attached to it differs.
+			require.Equal(t, wantTokenURL, cfg.TokenURL)
+			assert.Equal(t, tt.wantTrusted, cfg.TokenEndpointTrusted)
 		})
-		require.NoError(t, err)
-		require.Equal(t, issuerURL+"/token", cfg.TokenURL)
-
-		require.NoError(t, dialTokenEndpoint(t, cfg))
-		assert.Equal(t, int32(1), hits.Load(), "the issuer's own token endpoint must be reachable")
-	})
-
-	t.Run("issuer naming a foreign authority loses the trust", func(t *testing.T) {
-		t.Parallel()
-
-		var foreignHits atomic.Int32
-		foreignURL := startIssuerServer(t, func(issuer string) string { return issuer + "/token" }, &foreignHits)
-
-		var ownHits atomic.Int32
-		issuerURL := startIssuerServer(t, func(string) string { return foreignURL + "/token" }, &ownHits)
-
-		cfg, err := createOAuthConfig(context.Background(), issuerURL, &OAuthFlowConfig{
-			ClientID:             "test-client",
-			IssuerTrusted:        true,
-			TokenEndpointTrusted: true,
-		})
-		require.NoError(t, err)
-		require.Equal(t, foreignURL+"/token", cfg.TokenURL)
-
-		err = dialTokenEndpoint(t, cfg)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), networking.ErrPrivateIpAddress)
-		assert.Zero(t, foreignHits.Load(), "a metadata-named foreign authority must not be dialed")
-	})
+	}
 }

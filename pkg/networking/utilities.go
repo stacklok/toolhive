@@ -18,7 +18,7 @@ import (
 // AuthorityMatchesAny reports whether endpointURL's authority (host and port)
 // equals the authority of any of operatorURLs. Comparison is case-insensitive
 // and normalizes the implicit scheme default port, so "https://idp.example.com"
-// and "idp.example.com:443" match. Empty and unparseable entries never match.
+// and "idp.example.com:443" match. Empty and malformed entries never match.
 //
 // This is the trust test for endpoints read out of an authorization-server
 // metadata document: an AS naming its own authority is still covered by the

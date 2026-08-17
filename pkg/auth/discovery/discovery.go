@@ -779,6 +779,9 @@ func resolveDCRCredentials(
 		// calls would always be guarded and a legitimately private upstream
 		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
 		AllowPrivateIPs: config.AllowPrivateIPs,
+		// An operator-configured issuer is not server-supplied input; only a
+		// realm or resource-metadata URL named by the remote MCP server is.
+		ServerSuppliedEndpoints: !config.IssuerTrusted,
 	}
 
 	// Fetch AS metadata using the multi-URL fallback so non-root issuers
@@ -792,13 +795,21 @@ func resolveDCRCredentials(
 		// on some discovery branches (see discoverIssuerAndScopes in
 		// pkg/auth/remote/handler.go), so a nil client here would reopen the
 		// discovery-indirection and DNS-rebinding vectors this PR closes
-		// elsewhere. See networking.NewHostScopedClientBuilder for the guard
-		// policy and pkg/auth/dcr's newGuardedDCRClient for the same pattern.
+		// elsewhere. Which builder applies depends on who named the issuer: an
+		// operator-configured one gets the host-scoped policy, a server-supplied
+		// one the strict policy where localhost and
+		// INSECURE_DISABLE_URL_VALIDATION cannot widen the private-IP gate.
 		metaHost, parseErr := url.Parse(discoveredDoc.Issuer)
 		if parseErr != nil {
 			return nil, fmt.Errorf("dynamic client registration failed: parse issuer for http client: %w", parseErr)
 		}
-		metaClient, clientErr := networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false).
+		metaBuilder := func() *networking.HttpClientBuilder {
+			if config.IssuerTrusted {
+				return networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false)
+			}
+			return networking.NewServerSuppliedHostClientBuilder(metaHost.Host, config.AllowPrivateIPs, false)
+		}()
+		metaClient, clientErr := metaBuilder.
 			WithDisableKeepAlives(true).
 			Build()
 		if clientErr != nil {

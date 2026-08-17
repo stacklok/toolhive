@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Token servers in this file are httptest loopback listeners standing in for an
+// operator-configured IdP (dex, Keycloak in Docker), so cases that expect the
+// exchange to succeed set Config.TokenEndpointTrusted. An untrusted loopback
+// token endpoint is refused at the private-IP dial guard, which is the point of
+// TestHandleCallback_BlocksUntrustedLoopbackTokenEndpoint.
 package oauth
 
 import (
@@ -1114,10 +1119,9 @@ func TestTokenRefreshAfterContextCancellation(t *testing.T) {
 	defer tokenServer.Close()
 
 	config := &Config{
-		ClientID: "test-client",
-		AuthURL:  "https://example.com/auth",
-		TokenURL: tokenServer.URL,
-		// The token server is a loopback stand-in for an operator-configured IdP.
+		ClientID:             "test-client",
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
 		TokenEndpointTrusted: true,
 	}
 
@@ -1177,10 +1181,9 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		defer server.Close()
 
 		config := &Config{
-			ClientID: "test-client",
-			AuthURL:  "https://example.com/auth",
-			TokenURL: server.URL,
-			// The token server is a loopback stand-in for an operator-configured IdP.
+			ClientID:             "test-client",
+			AuthURL:              "https://example.com/auth",
+			TokenURL:             server.URL,
 			TokenEndpointTrusted: true,
 			Resource:             "https://api.example.com", // Resource parameter provided
 		}
@@ -1236,10 +1239,9 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		defer server.Close()
 
 		config := &Config{
-			ClientID: "test-client",
-			AuthURL:  "https://example.com/auth",
-			TokenURL: server.URL,
-			// The token server is a loopback stand-in for an operator-configured IdP.
+			ClientID:             "test-client",
+			AuthURL:              "https://example.com/auth",
+			TokenURL:             server.URL,
 			TokenEndpointTrusted: true,
 			Resource:             "", // No resource parameter
 		}
@@ -1302,10 +1304,9 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 				defer server.Close()
 
 				config := &Config{
-					ClientID: "test-client",
-					AuthURL:  "https://example.com/auth",
-					TokenURL: server.URL,
-					// The token server is a loopback stand-in for an operator-configured IdP.
+					ClientID:             "test-client",
+					AuthURL:              "https://example.com/auth",
+					TokenURL:             server.URL,
 					TokenEndpointTrusted: true,
 					Resource:             tc.resource,
 				}
@@ -1341,10 +1342,9 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		t.Parallel()
 
 		config := &Config{
-			ClientID: "test-client",
-			AuthURL:  "https://example.com/auth",
-			TokenURL: "https://example.com/token",
-			// The token server is a loopback stand-in for an operator-configured IdP.
+			ClientID:             "test-client",
+			AuthURL:              "https://example.com/auth",
+			TokenURL:             "https://example.com/token",
 			TokenEndpointTrusted: true,
 			Resource:             "https://api.example.com",
 		}
@@ -1439,11 +1439,10 @@ func TestAuthStyleInParams_StrictPublicClientServer(t *testing.T) {
 	defer tokenServer.Close()
 
 	config := &Config{
-		ClientID:     "test-public-client",
-		ClientSecret: "", // Public client — no secret
-		AuthURL:      "https://example.com/auth",
-		TokenURL:     tokenServer.URL,
-		// The token server is a loopback stand-in for an operator-configured IdP.
+		ClientID:             "test-public-client",
+		ClientSecret:         "", // Public client — no secret
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
 		TokenEndpointTrusted: true,
 		UsePKCE:              true,
 	}

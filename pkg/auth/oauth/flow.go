@@ -189,7 +189,7 @@ func NewFlow(config *Config) (*Flow, error) {
 // at a private, loopback, or link-local address, because the operator named its
 // authority. An untrusted endpoint is refused those addresses (CWE-918) and
 // gets a plain-HTTP exception only for localhost. Both clients disable
-// keep-alives so the dial-time guard re-runs per request, and follow only
+// connection reuse so the dial-time guard re-runs per request, and follow only
 // same-host redirects.
 func NewTokenHTTPClient(tokenURL string, trusted bool) (*http.Client, error) {
 	endpoint, err := url.Parse(tokenURL)

@@ -53,7 +53,9 @@ func TestBuildRemoteAuthFlowConfig_Trust(t *testing.T) {
 
 			assert.Equal(t, tt.wantIssuerTrusted, cfg.IssuerTrusted)
 			assert.Equal(t, tt.wantTokenEndpointTrusted, cfg.TokenEndpointTrusted)
-			assert.False(t, cfg.AllowPrivateIPs, "a public target must not widen the discovery guard")
+			// Every case here uses a public target, so the discovery guard stays
+			// on regardless of the trust flags above.
+			assert.False(t, cfg.AllowPrivateIPs)
 		})
 	}
 }

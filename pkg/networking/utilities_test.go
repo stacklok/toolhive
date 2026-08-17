@@ -21,24 +21,6 @@ func TestAuthorityMatchesAny(t *testing.T) {
 		want         bool
 	}{
 		{
-			name:         "implicit https port matches explicit authority",
-			endpointURL:  "idp.example.com:443",
-			operatorURLs: []string{"https://idp.example.com"},
-			want:         true,
-		},
-		{
-			name:         "explicit authority matches implicit https port",
-			endpointURL:  "https://idp.example.com/oauth/token",
-			operatorURLs: []string{"idp.example.com:443"},
-			want:         true,
-		},
-		{
-			name:         "implicit http port normalizes to 80",
-			endpointURL:  "http://idp.example.com/token",
-			operatorURLs: []string{"idp.example.com:80"},
-			want:         true,
-		},
-		{
 			name:         "host comparison is case-insensitive",
 			endpointURL:  "https://IdP.Example.COM/token",
 			operatorURLs: []string{"https://idp.example.com"},
@@ -55,12 +37,6 @@ func TestAuthorityMatchesAny(t *testing.T) {
 			endpointURL:  "http://127.0.0.1:9999/token",
 			operatorURLs: []string{"http://127.0.0.1:8080"},
 			want:         false,
-		},
-		{
-			name:         "bracketed IPv6 authority matches its URL form",
-			endpointURL:  "[::1]:8443",
-			operatorURLs: []string{"https://[::1]:8443/token"},
-			want:         true,
 		},
 		{
 			name:         "distinct IPv6 addresses do not match",

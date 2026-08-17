@@ -60,18 +60,9 @@ func (s *service) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*pl
 		return nil, err
 	}
 
-	plans := make([]upgradePlan, len(targets))
-	for i, entry := range targets {
-		plans[i] = s.planUpgrade(ctx, opts, entry)
-	}
-
-	result := &plugins.UpgradeResult{Outcomes: make([]plugins.UpgradeOutcome, 0, len(plans))}
-	for _, p := range plans {
-		if opts.FailOnChanges {
-			result.Outcomes = append(result.Outcomes, p.outcome)
-			continue
-		}
-		result.Outcomes = append(result.Outcomes, s.applyUpgrade(ctx, opts, p))
+	result := &plugins.UpgradeResult{Outcomes: make([]plugins.UpgradeOutcome, 0, len(targets))}
+	for _, target := range targets {
+		result.Outcomes = append(result.Outcomes, s.upgradeOne(ctx, opts, target.Name))
 	}
 	return result, nil
 }
@@ -94,6 +85,47 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 		targets = append(targets, entry)
 	}
 	return targets, nil
+}
+
+// upgradeOne reloads the named lock entry under the per-plugin lock, then
+// plans and applies against that fresh snapshot. Planning every entry first
+// and applying later would let a concurrent uninstall be resurrected, or a
+// newer install be overwritten by this older plan.
+func (s *service) upgradeOne(
+	ctx context.Context, opts plugins.UpgradeOptions, name string,
+) plugins.UpgradeOutcome {
+	ctx, unlock := s.lockPlugin(ctx, name, plugins.ScopeProject, opts.ProjectRoot)
+	defer unlock()
+
+	root, err := lockfile.OpenRoot(opts.ProjectRoot)
+	if err != nil {
+		return plugins.UpgradeOutcome{
+			Name: name, Status: plugins.UpgradeStatusFailed,
+			Reason: classifySyncFailure(err), Error: err.Error(),
+		}
+	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		return plugins.UpgradeOutcome{
+			Name: name, Status: plugins.UpgradeStatusFailed,
+			Reason: classifySyncFailure(err), Error: err.Error(),
+		}
+	}
+	entry, ok := lf.GetPlugin(name)
+	if !ok {
+		return plugins.UpgradeOutcome{
+			Name:   name,
+			Status: plugins.UpgradeStatusFailed,
+			Reason: plugins.FailureReasonUnknown,
+			Error:  fmt.Sprintf("plugin %q is no longer in the lock file", name),
+		}
+	}
+
+	plan := s.planUpgrade(ctx, opts, entry)
+	if opts.FailOnChanges {
+		return plan.outcome
+	}
+	return s.applyUpgrade(ctx, opts, plan)
 }
 
 // upgradePlan is entry's resolved outcome before any install happens: either

@@ -376,3 +376,19 @@ func TestUpgrade_PlainNameFallsBackToRegistryWhenLocalMisses(t *testing.T) {
 	assert.Equal(t, 1, lookup.n, "a local-store miss must fall through to registry lookup")
 	assert.Equal(t, newer.String(), result.Outcomes[0].NewDigest)
 }
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUpgrade_DoesNotResurrectRemovedLockEntry(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	outcome := inner.upgradeOne(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot}, "my-plugin")
+	assert.Equal(t, plugins.UpgradeStatusFailed, outcome.Status)
+	assert.Contains(t, outcome.Error, "no longer in the lock file")
+
+	_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	assert.False(t, ok, "upgrade must not rewrite a lock entry that was removed")
+}

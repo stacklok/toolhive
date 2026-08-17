@@ -36,6 +36,8 @@ const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
 // after the canonical name is known and held through installAndRegister.
 // When alreadyLocked is true (project transaction), no per-skill lock is
 // taken — the project tx is the serialization boundary.
+//
+//nolint:gocyclo // resolve/hydrate/lock/persist form one transactional path
 func (s *service) installFromOCI(
 	ctx context.Context,
 	opts *skills.InstallOptions,

@@ -26,6 +26,8 @@ import (
 // after the canonical name is known and held through installAndRegister.
 // When alreadyLocked is true (project transaction), no per-skill lock is
 // taken — the project tx is the serialization boundary.
+//
+//nolint:gocyclo // resolve/hydrate/lock/persist form one transactional path
 func (s *service) installFromGit(
 	ctx context.Context,
 	opts *skills.InstallOptions,
@@ -238,6 +240,8 @@ func (s *service) applyGitInstallFresh(
 // after any write, previously written directories in this call are removed.
 // When overwriting existing content (upgrade or force), trees are
 // snapshotted first so installAndRegister rollback can restore them.
+//
+//nolint:gocyclo // resolve/hydrate/lock/persist form one transactional path
 func (s *service) gitWriteMultiAndPersist(
 	ctx context.Context,
 	opts skills.InstallOptions,

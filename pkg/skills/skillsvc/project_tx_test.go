@@ -38,7 +38,7 @@ func TestInstallGit_HoldsProjectTxThroughRegister(t *testing.T) {
 	ref, url := gitRef("locked-skill")
 	content := gitSkill("locked-skill")
 	gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, gitRef *gitresolver.GitReference) (*gitresolver.ResolveResult, error) {
+		func(_ context.Context, _ *gitresolver.GitReference) (*gitresolver.ResolveResult, error) {
 			resolveStarted.Done()
 			allowFinish.Wait()
 			return &gitresolver.ResolveResult{
@@ -142,9 +142,6 @@ func TestSyncVsUninstall_SerializedOnProjectTx(t *testing.T) {
 
 	uninstallDone := make(chan error, 1)
 	go func() {
-		if inSync.Load() {
-			// Still true at attempt start — uninstall must block, not overlap work.
-		}
 		err := svc.Uninstall(t.Context(), skills.UninstallOptions{
 			Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
 		})

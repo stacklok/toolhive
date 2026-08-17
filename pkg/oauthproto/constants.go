@@ -23,6 +23,9 @@ const (
 
 // Grant types as defined by RFC 6749.
 const (
+	// GrantTypeClientCredentials is the client credentials grant (RFC 6749 Section 4.4).
+	GrantTypeClientCredentials = "client_credentials"
+
 	// GrantTypeAuthorizationCode is the authorization code grant type (RFC 6749 Section 4.1).
 	GrantTypeAuthorizationCode = "authorization_code"
 

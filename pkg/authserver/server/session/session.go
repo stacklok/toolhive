@@ -68,6 +68,13 @@ const NameClaimKey = "name"
 // Per OIDC Core Section 5.1.
 const EmailClaimKey = "email"
 
+// ScopeClaimKey is the JWT claim key for the scopes granted to the token.
+// RFC 9068 Section 2.2.3 spells it "scope", carrying a space-delimited string
+// rather than an array. Callers set it from the GRANTED scopes, never the
+// requested ones: a resource server that cannot see the granted scopes has to
+// assume the request was honoured in full.
+const ScopeClaimKey = "scope"
+
 // Session extends fosite's JWT session with an IDP session reference.
 // This allows the authorization server to link issued tokens to
 // upstream IDP tokens stored separately.

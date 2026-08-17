@@ -317,9 +317,8 @@ spec:
                         items:
                           description: |-
                             SPIFFEClientAuthConfig associates a SPIFFE principal pattern with an explicit OAuth client.
-                            Configuration is not authentication: configured SPIFFE clients remain non-public OAuth clients
-                            without a secret, and token requests cannot authenticate through this association until live
-                            SPIFFE credential validation is implemented.
+                            Configuration is not authentication: configured SPIFFE clients are non-public OAuth clients
+                            without a secret, and token requests require a validated SPIFFE credential.
                           properties:
                             audiences:
                               description: Audiences are token audiences and are not
@@ -340,12 +339,13 @@ spec:
                                 for this association.
                               items:
                                 enum:
+                                - client_credentials
                                 - urn:ietf:params:oauth:grant-type:token-exchange
                                 type: string
-                              maxItems: 1
+                              maxItems: 2
                               minItems: 1
                               type: array
-                              x-kubernetes-list-type: atomic
+                              x-kubernetes-list-type: set
                             methods:
                               items:
                                 description: SPIFFEAuthenticationMethod identifies
@@ -381,8 +381,8 @@ spec:
                               type: array
                               x-kubernetes-list-type: set
                             tokenExchange:
-                              description: TokenExchange enables token exchange for
-                                this association.
+                              description: TokenExchange enables token exchange when
+                                the token-exchange grant is selected.
                               properties:
                                 enabled:
                                   type: boolean
@@ -403,9 +403,13 @@ spec:
                           - principal
                           - resources
                           - scopes
-                          - tokenExchange
                           - trustDomainRef
                           type: object
+                          x-kubernetes-validations:
+                          - message: tokenExchange must be configured if and only
+                              if token-exchange is granted
+                            rule: self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange')
+                              == has(self.tokenExchange)
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic
@@ -4541,9 +4545,8 @@ spec:
                         items:
                           description: |-
                             SPIFFEClientAuthConfig associates a SPIFFE principal pattern with an explicit OAuth client.
-                            Configuration is not authentication: configured SPIFFE clients remain non-public OAuth clients
-                            without a secret, and token requests cannot authenticate through this association until live
-                            SPIFFE credential validation is implemented.
+                            Configuration is not authentication: configured SPIFFE clients are non-public OAuth clients
+                            without a secret, and token requests require a validated SPIFFE credential.
                           properties:
                             audiences:
                               description: Audiences are token audiences and are not
@@ -4564,12 +4567,13 @@ spec:
                                 for this association.
                               items:
                                 enum:
+                                - client_credentials
                                 - urn:ietf:params:oauth:grant-type:token-exchange
                                 type: string
-                              maxItems: 1
+                              maxItems: 2
                               minItems: 1
                               type: array
-                              x-kubernetes-list-type: atomic
+                              x-kubernetes-list-type: set
                             methods:
                               items:
                                 description: SPIFFEAuthenticationMethod identifies
@@ -4605,8 +4609,8 @@ spec:
                               type: array
                               x-kubernetes-list-type: set
                             tokenExchange:
-                              description: TokenExchange enables token exchange for
-                                this association.
+                              description: TokenExchange enables token exchange when
+                                the token-exchange grant is selected.
                               properties:
                                 enabled:
                                   type: boolean
@@ -4627,9 +4631,13 @@ spec:
                           - principal
                           - resources
                           - scopes
-                          - tokenExchange
                           - trustDomainRef
                           type: object
+                          x-kubernetes-validations:
+                          - message: tokenExchange must be configured if and only
+                              if token-exchange is granted
+                            rule: self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange')
+                              == has(self.tokenExchange)
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic

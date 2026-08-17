@@ -2315,8 +2315,8 @@ _Appears in:_
 
 
 InboundGrantsConfig configures grants accepted by the embedded authorization server.
-Configuration is not authentication: no live X.509-SVID or JWT-SVID validation exists yet, so
-a configured association does not by itself let any workload authenticate.
+Declared associations authorize only workloads that present a validated SPIFFE credential;
+configuration alone is never authentication.
 
 
 
@@ -4219,9 +4219,8 @@ _Appears in:_
 
 
 SPIFFEClientAuthConfig associates a SPIFFE principal pattern with an explicit OAuth client.
-Configuration is not authentication: configured SPIFFE clients remain non-public OAuth clients
-without a secret, and token requests cannot authenticate through this association until live
-SPIFFE credential validation is implemented.
+Configuration is not authentication: configured SPIFFE clients are non-public OAuth clients
+without a secret, and token requests require a validated SPIFFE credential.
 
 
 
@@ -4237,8 +4236,8 @@ _Appears in:_
 | `resources` _string array_ | Resources are RFC 8707 resource indicators and remain distinct from Audiences. |  | MinItems: 1 <br />items:MinLength: 1 <br /> |
 | `audiences` _string array_ | Audiences are token audiences and are not inferred from Resources. |  | MinItems: 1 <br />items:MinLength: 1 <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes granted to this association. |  | MinItems: 1 <br />items:MinLength: 1 <br /> |
-| `grantTypes` _string array_ | GrantTypes contains the OAuth grants permitted for this association. |  | MaxItems: 1 <br />MinItems: 1 <br />items:Enum: [urn:ietf:params:oauth:grant-type:token-exchange] <br /> |
-| `tokenExchange` _[api.v1beta1.SPIFFETokenExchangeConfig](#apiv1beta1spiffetokenexchangeconfig)_ | TokenExchange enables token exchange for this association. |  |  |
+| `grantTypes` _string array_ | GrantTypes contains the OAuth grants permitted for this association. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [client_credentials urn:ietf:params:oauth:grant-type:token-exchange] <br /> |
+| `tokenExchange` _[api.v1beta1.SPIFFETokenExchangeConfig](#apiv1beta1spiffetokenexchangeconfig)_ | TokenExchange enables token exchange when the token-exchange grant is selected. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFETokenExchangeConfig

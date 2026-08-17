@@ -662,8 +662,8 @@ type SPIFFEBundleEndpointSourceConfig struct {
 type SPIFFEWorkloadAPIBundleSourceConfig struct{}
 
 // InboundGrantsConfig configures grants accepted by the embedded authorization server.
-// Configuration is not authentication: no live X.509-SVID or JWT-SVID validation exists yet, so
-// a configured association does not by itself let any workload authenticate.
+// Declared associations authorize only workloads that present a validated SPIFFE credential;
+// configuration alone is never authentication.
 type InboundGrantsConfig struct {
 	// SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth clients.
 	// +kubebuilder:validation:MinItems=1
@@ -672,9 +672,10 @@ type InboundGrantsConfig struct {
 }
 
 // SPIFFEClientAuthConfig associates a SPIFFE principal pattern with an explicit OAuth client.
-// Configuration is not authentication: configured SPIFFE clients remain non-public OAuth clients
-// without a secret, and token requests cannot authenticate through this association until live
-// SPIFFE credential validation is implemented.
+//nolint:lll // Kubebuilder requires each CEL rule to be a single comment line.
+// +kubebuilder:validation:XValidation:rule="self.grantTypes.exists(grant, grant == 'urn:ietf:params:oauth:grant-type:token-exchange') == has(self.tokenExchange)",message="tokenExchange must be configured if and only if token-exchange is granted"
+// Configuration is not authentication: configured SPIFFE clients are non-public OAuth clients
+// without a secret, and token requests require a validated SPIFFE credential.
 type SPIFFEClientAuthConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	TrustDomainRef string `json:"trustDomainRef"`
@@ -712,13 +713,14 @@ type SPIFFEClientAuthConfig struct {
 
 	// GrantTypes contains the OAuth grants permitted for this association.
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=1
-	// +kubebuilder:validation:items:Enum={"urn:ietf:params:oauth:grant-type:token-exchange"}
-	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum={"client_credentials","urn:ietf:params:oauth:grant-type:token-exchange"}
+	// +listType=set
 	GrantTypes []string `json:"grantTypes"`
 
-	// TokenExchange enables token exchange for this association.
-	TokenExchange *SPIFFETokenExchangeConfig `json:"tokenExchange"`
+	// TokenExchange enables token exchange when the token-exchange grant is selected.
+	// +optional
+	TokenExchange *SPIFFETokenExchangeConfig `json:"tokenExchange,omitempty"`
 }
 
 // SPIFFETokenExchangeConfig enables token exchange for a SPIFFE association.
@@ -2310,11 +2312,40 @@ func validateSPIFFEClientAuth(clientAuth []SPIFFEClientAuthConfig) error {
 		if err := validateSPIFFEMethods(association.Methods, prefix+".methods"); err != nil {
 			return err
 		}
-		if len(association.Resources) == 0 || len(association.Audiences) == 0 || len(association.Scopes) == 0 ||
-			len(association.GrantTypes) != 1 || association.GrantTypes[0] != "urn:ietf:params:oauth:grant-type:token-exchange" ||
-			association.TokenExchange == nil || !association.TokenExchange.Enabled {
-			return fmt.Errorf("%s: resources, audiences, scopes, one grantType, and tokenExchange are required", prefix)
+		if len(association.Resources) == 0 || len(association.Audiences) == 0 || len(association.Scopes) == 0 {
+			return fmt.Errorf("%s: resources, audiences, and scopes are required", prefix)
 		}
+		if err := validateSPIFFEAssociationGrants(association, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSPIFFEAssociationGrants(association SPIFFEClientAuthConfig, prefix string) error {
+	hasTokenExchange := false
+	seenGrants := make(map[string]struct{}, len(association.GrantTypes))
+	for _, grant := range association.GrantTypes {
+		if _, exists := seenGrants[grant]; exists {
+			return fmt.Errorf("%s.grantTypes: duplicate grant %q", prefix, grant)
+		}
+		seenGrants[grant] = struct{}{}
+		switch grant {
+		case "client_credentials":
+		case "urn:ietf:params:oauth:grant-type:token-exchange":
+			hasTokenExchange = true
+		default:
+			return fmt.Errorf("%s.grantTypes: unsupported grant %q", prefix, grant)
+		}
+	}
+	if len(seenGrants) == 0 {
+		return fmt.Errorf("%s.grantTypes is required", prefix)
+	}
+	if hasTokenExchange && (association.TokenExchange == nil || !association.TokenExchange.Enabled) {
+		return fmt.Errorf("%s: tokenExchange must be enabled for token-exchange grant", prefix)
+	}
+	if !hasTokenExchange && association.TokenExchange != nil {
+		return fmt.Errorf("%s: tokenExchange requires token-exchange grant", prefix)
 	}
 	return nil
 }

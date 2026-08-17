@@ -194,6 +194,38 @@ func TestValidateSPIFFETrust(t *testing.T) {
 	}
 }
 
+func TestValidateSPIFFEGrantsMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		grants   []string
+		exchange *SPIFFETokenExchangeRunConfig
+		wantErr  string
+	}{
+		{name: "client credentials only", grants: []string{SPIFFEGrantTypeClientCredentials}},
+		{name: "token exchange only", grants: []string{SPIFFEGrantTypeTokenExchange}, exchange: &SPIFFETokenExchangeRunConfig{Enabled: true}},
+		{name: "both grants", grants: []string{SPIFFEGrantTypeClientCredentials, SPIFFEGrantTypeTokenExchange}, exchange: &SPIFFETokenExchangeRunConfig{Enabled: true}},
+		{name: "empty", wantErr: "is required"},
+		{name: "duplicate", grants: []string{SPIFFEGrantTypeClientCredentials, SPIFFEGrantTypeClientCredentials}, wantErr: "duplicate"},
+		{name: "unknown", grants: []string{"authorization_code"}, wantErr: "unknown grant"},
+		{name: "exchange missing", grants: []string{SPIFFEGrantTypeTokenExchange}, wantErr: "must be enabled"},
+		{name: "exchange disabled", grants: []string{SPIFFEGrantTypeTokenExchange}, exchange: &SPIFFETokenExchangeRunConfig{}, wantErr: "must be enabled"},
+		{name: "exchange without grant", grants: []string{SPIFFEGrantTypeClientCredentials}, exchange: &SPIFFETokenExchangeRunConfig{Enabled: true}, wantErr: "requires token-exchange"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSPIFFEGrants(tt.grants, tt.exchange, 0)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateSPIFFETrustDomainsRejectsDuplicateParsedTrustDomain(t *testing.T) {
 	t.Parallel()
 

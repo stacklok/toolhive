@@ -24,8 +24,9 @@ const (
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
 	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
-	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
-	// this configuration surface.
+	// SPIFFEGrantTypeClientCredentials is the SPIFFE client credentials grant.
+	SPIFFEGrantTypeClientCredentials = oauthproto.GrantTypeClientCredentials
+	// SPIFFEGrantTypeTokenExchange is the SPIFFE token exchange grant.
 	SPIFFEGrantTypeTokenExchange = oauthproto.GrantTypeTokenExchange
 )
 
@@ -669,11 +670,34 @@ func validateDistinctNonEmpty(values []string, field string) error {
 }
 
 func validateSPIFFEGrants(grants []string, exchange *SPIFFETokenExchangeRunConfig, index int) error {
-	if len(grants) != 1 || grants[0] != SPIFFEGrantTypeTokenExchange {
-		return fmt.Errorf("inbound_grants.spiffe_client_auth[%d].grant_types must be exactly [%q]", index, SPIFFEGrantTypeTokenExchange)
+	field := fmt.Sprintf("inbound_grants.spiffe_client_auth[%d].grant_types", index)
+	if len(grants) == 0 {
+		return fmt.Errorf("%s is required", field)
 	}
-	if exchange == nil || !exchange.Enabled {
+
+	hasTokenExchange := false
+	seen := make(map[string]struct{}, len(grants))
+	for _, grant := range grants {
+		if grant == "" {
+			return fmt.Errorf("%s must not contain an empty value", field)
+		}
+		if _, exists := seen[grant]; exists {
+			return fmt.Errorf("%s: duplicate grant %q", field, grant)
+		}
+		seen[grant] = struct{}{}
+		switch grant {
+		case SPIFFEGrantTypeClientCredentials:
+		case SPIFFEGrantTypeTokenExchange:
+			hasTokenExchange = true
+		default:
+			return fmt.Errorf("%s: unknown grant %q", field, grant)
+		}
+	}
+	if hasTokenExchange && (exchange == nil || !exchange.Enabled) {
 		return fmt.Errorf("inbound_grants.spiffe_client_auth[%d]: token_exchange must be enabled for token-exchange grant", index)
+	}
+	if !hasTokenExchange && exchange != nil {
+		return fmt.Errorf("inbound_grants.spiffe_client_auth[%d]: token_exchange requires token-exchange grant", index)
 	}
 	return nil
 }

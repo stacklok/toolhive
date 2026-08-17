@@ -112,6 +112,20 @@ func (r *SPIFFEAssociationRegistry) staticClient(clientID string) (*registration
 	return client, true, nil
 }
 
+func (r *SPIFFEAssociationRegistry) permitsGrant(grant string) bool {
+	if r == nil {
+		return false
+	}
+	for _, association := range r.byClientID {
+		for _, permittedGrant := range association.AuthorizationPolicy().GrantTypes() {
+			if permittedGrant == grant {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (r *SPIFFEAssociationRegistry) clientIDs() []string {
 	if r == nil {
 		return nil

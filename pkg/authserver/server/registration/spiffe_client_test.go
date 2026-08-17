@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 func TestNewSPIFFEClient(t *testing.T) {
@@ -54,6 +56,44 @@ func TestNewSPIFFEClient_RequiresID(t *testing.T) {
 
 	_, err := NewSPIFFEClient("", nil, nil, nil, nil, false)
 	require.Error(t, err)
+}
+
+func TestAuthenticatedSPIFFEClient(t *testing.T) {
+	t.Parallel()
+
+	static, err := NewSPIFFEClient("client", []string{"client_credentials"}, []string{"openid"}, []string{"https://resource.example.com"}, nil, false)
+	require.NoError(t, err)
+	valid := spiffeauth.NewNormalizedSPIFFEPrincipal("client", "spiffe://example.org/workload/concrete", "example.org", spiffeauth.SPIFFEAuthenticationMethodJWT, spiffeauth.NewSPIFFEAuthorizationPolicy([]string{"client_credentials"}, []string{"openid"}, []string{"https://resource.example.com"}, nil, false))
+
+	tests := []struct {
+		name      string
+		client    *SPIFFEClient
+		principal spiffeauth.NormalizedSPIFFEPrincipal
+		wantErr   string
+	}{
+		{name: "valid immutable carrier", client: static, principal: valid},
+		{name: "nil client", principal: valid, wantErr: "SPIFFE client is required"},
+		{name: "missing principal identity", client: static, principal: spiffeauth.NewNormalizedSPIFFEPrincipal("", "", "", spiffeauth.SPIFFEAuthenticationMethodJWT, spiffeauth.SPIFFEAuthorizationPolicy{}), wantErr: "principal identity"},
+		{name: "invalid method", client: static, principal: spiffeauth.NewNormalizedSPIFFEPrincipal("client", "spiffe://example.org/workload/concrete", "example.org", "unknown", spiffeauth.SPIFFEAuthorizationPolicy{}), wantErr: "invalid authentication method"},
+		{name: "client ID mismatch", client: static, principal: spiffeauth.NewNormalizedSPIFFEPrincipal("other", "spiffe://example.org/workload/concrete", "example.org", spiffeauth.SPIFFEAuthenticationMethodJWT, spiffeauth.SPIFFEAuthorizationPolicy{}), wantErr: "does not match"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := NewAuthenticatedSPIFFEClient(tt.client, tt.principal)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, valid, got.Principal())
+			assert.Equal(t, static.GetID(), got.GetID())
+			assert.Equal(t, static.GetGrantTypes(), got.GetGrantTypes())
+			assert.Equal(t, static.GetScopes(), got.GetScopes())
+			assert.Equal(t, static.GetAudience(), got.GetAudience())
+			assert.False(t, got.IsPublic())
+		})
+	}
 }
 
 func TestSPIFFEClient_GetAudience(t *testing.T) {

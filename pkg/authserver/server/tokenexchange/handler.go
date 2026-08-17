@@ -167,8 +167,8 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	configuredDelegate := slices.Contains(h.configuredDelegateClients, actorSub)
-	if err := checkDelegationConsent(validatedClaims, actorSub, configuredDelegate); err != nil {
+	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
+	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
 		return err
 	}
 
@@ -180,11 +180,16 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	// Build the delegated session with the user's identity and the agent's act claim.
+	// Build the delegated session with the user's identity and the
+	// authenticated client's identity. The third argument becomes the
+	// issued token's RFC 9068 client_id, so it must identify the client the
+	// token was actually issued to (client.GetID()) — not actorSub, which
+	// may name a distinct actor asserted via actor_token and belongs only
+	// in the act claim below.
 	delegatedSession := session.New(
 		delegatedSubject(validatedClaims),
 		"", // No IDP session link for delegated tokens.
-		actorSub,
+		client.GetID(),
 		session.UserClaims{
 			Name:  validatedClaims.Name,
 			Email: validatedClaims.Email,
@@ -605,7 +610,7 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 // If none of the three consent sources apply, the subject token carries no
 // verifiable binding to any client at all — this fails closed (CWE-863)
 // rather than allowing an unbound token through.
-func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, configuredDelegate bool) error {
+func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub string, configuredDelegate bool) error {
 	// selfIssuedDelegate is true only when a configured delegate client is
 	// presenting a self-issued token (ExternalIssuer == "" rules out the
 	// external-issuer path explicitly, rather than relying on ExternalActor
@@ -617,11 +622,18 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, co
 
 	switch {
 	case validatedClaims.MayAct != nil:
-		if validatedClaims.MayAct.Sub != actorID {
+		// may_act.sub is compared against actorSub, not clientID: this is
+		// the one binding that is meant to key off the asserted actor —
+		// may_act's whole purpose is authorizing a specific actor, which
+		// actor_token lets the authenticated client name distinctly from
+		// itself.
+		if validatedClaims.MayAct.Sub != actorSub {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
 		}
-		if validatedClaims.ExternalIssuer != "" && !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
+		// AllowedDelegateClients binds to the authenticated ToolHive client
+		// (clientID), not the asserted actor — see the doc comment above.
+		if validatedClaims.ExternalIssuer != "" && !delegateClientAllowed(validatedClaims.AllowedDelegateClients, clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
@@ -631,16 +643,20 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, actorID string, co
 		// AllowedActors. That claim lives in the external issuer's client
 		// namespace, not ToolHive's, so — even when ClientID is also populated
 		// (ActorClaim: "client_id") — it must never be compared against
-		// actorID. This case must be checked before the client_id cases below,
-		// not merged with them.
+		// clientID or actorSub. This case must be checked before the
+		// client_id cases below, not merged with them.
 		//
-		// AllowedDelegateClients binds this allowlisted actor to a specific set
-		// of ToolHive clients — see delegateClientAllowed.
-		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, actorID) {
+		// AllowedDelegateClients binds this allowlisted external actor to a
+		// specific set of ToolHive clients — see delegateClientAllowed. This
+		// must be the authenticated client (clientID), not the asserted
+		// actor (actorSub): the allowlist is "this external actor's tokens
+		// may be exchanged by this ToolHive client", independent of whatever
+		// actor identity that client asserts via actor_token.
+		if !delegateClientAllowed(validatedClaims.AllowedDelegateClients, clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"This client is not authorized to exchange subject tokens from the external actor's issuer."))
 		}
-	case validatedClaims.ClientID != "" && validatedClaims.ClientID != actorID && !selfIssuedDelegate:
+	case validatedClaims.ClientID != "" && validatedClaims.ClientID != clientID && !selfIssuedDelegate:
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token was issued to a different client."))
 	case validatedClaims.ClientID == "":

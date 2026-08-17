@@ -198,7 +198,9 @@ func (s *service) installExtractionFresh(
 }
 
 // materializeForClients calls Materialize for each requested client type,
-// rolling back (Dematerialize) any already-materialized client on failure.
+// rolling back (Dematerialize) any already-materialized client on failure,
+// including the client whose Materialize returned an error (extraction can
+// succeed before marketplace/settings registration fails).
 // Returns the list of client types that were successfully materialized.
 func (s *service) materializeForClients(
 	ctx context.Context,
@@ -223,8 +225,12 @@ func (s *service) materializeForClients(
 			ProjectRoot: opts.ProjectRoot,
 			Components:  opts.Components,
 		}); err != nil {
+			// Materialize can extract the tree and then fail during
+			// marketplace/settings registration. Compensate the failing
+			// client too, not only the ones already appended.
+			failed := append(append([]string{}, materialized...), ct)
 			wrapped := fmt.Errorf("materializing plugin for client %q: %w", ct, err)
-			return nil, errors.Join(wrapped, s.dematerializeAll(ctx, materialized, opts.Name, scope, opts.ProjectRoot))
+			return nil, errors.Join(wrapped, s.dematerializeAll(ctx, failed, opts.Name, scope, opts.ProjectRoot))
 		}
 		materialized = append(materialized, ct)
 	}

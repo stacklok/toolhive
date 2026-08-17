@@ -337,10 +337,14 @@ func (s *hookPluginStore) Delete(ctx context.Context, name string, scope plugins
 
 type failingDematerializeAdapter struct {
 	plugins.MaterializationAdapter
-	err error
+	err   error
+	after func()
 }
 
-func (a *failingDematerializeAdapter) Dematerialize(context.Context, plugins.DematerializeRequest) error {
+func (a *failingDematerializeAdapter) Dematerialize(_ context.Context, _ plugins.DematerializeRequest) error {
+	if a.after != nil {
+		a.after()
+	}
 	return a.err
 }
 
@@ -398,6 +402,30 @@ func TestUninstall_StoreDeleteFailureRestoresLockEntry(t *testing.T) {
 	assert.NotNil(t, info.InstalledPlugin)
 }
 
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestUninstall_LockRestoreErrorIsJoined(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.materializers["claude-code"] = &failingDematerializeAdapter{
+		MaterializationAdapter: inner.materializers["claude-code"],
+		err:                    errors.New("permission denied"),
+		after: func() {
+			lockPath := filepath.Join(projectRoot, lockfile.FileName)
+			require.NoError(t, os.Remove(lockPath))
+			require.NoError(t, os.Mkdir(lockPath, 0o755))
+		},
+	}
+
+	err := svc.Uninstall(t.Context(), plugins.UninstallOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Contains(t, err.Error(), "restoring lock entry")
+}
+
 func TestSnapshotRestore_PreservesExecutableMode(t *testing.T) {
 	t.Parallel()
 
@@ -448,6 +476,45 @@ func (*failingMaterializeAdapter) SupportedComponents() []plugins.ComponentType 
 
 func (*failingMaterializeAdapter) ScopeSupport() plugins.ScopeSupport {
 	return plugins.ScopeSupport{}
+}
+
+// extractThenFailAdapter extracts the plugin tree then fails, matching Claude
+// Code's Materialize: ExtractPlugin succeeds, marketplace/settings write fails.
+type extractThenFailAdapter struct {
+	extractingAdapter
+	err error
+}
+
+func (a *extractThenFailAdapter) Materialize(ctx context.Context, req plugins.MaterializeRequest) (*plugins.MaterializeResult, error) {
+	if _, err := a.extractingAdapter.Materialize(ctx, req); err != nil {
+		return nil, err
+	}
+	return nil, a.err
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstall_MaterializeFailureAfterExtractRemovesTree(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	inner := svc.(*service) //nolint:forcetypeassert
+	base := filepath.Join(projectRoot, ".claude", "plugins")
+	inner.materializers["claude-code"] = &extractThenFailAdapter{
+		extractingAdapter: extractingAdapter{base: base, installer: skills.NewInstaller()},
+		err:               errors.New("marketplace write failed"),
+	}
+
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marketplace write failed")
+
+	_, statErr := os.Stat(filepath.Join(base, "my-plugin"))
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the extracted tree must be dematerialized")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService

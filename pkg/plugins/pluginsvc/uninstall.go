@@ -54,9 +54,12 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 	}
 
 	backups, snapErr := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, existing.Clients)
-	if snapErr != nil && restoreLock != nil {
-		restoreLock()
-		return fmt.Errorf("snapshotting plugin trees before uninstall: %w", snapErr)
+	if snapErr != nil {
+		err := fmt.Errorf("snapshotting plugin trees before uninstall: %w", snapErr)
+		if restoreLock != nil {
+			return errors.Join(err, restoreLock())
+		}
+		return err
 	}
 
 	cleanupErrs := s.dematerializeClients(ctx, existing, scope, opts.ProjectRoot)
@@ -88,15 +91,17 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 // client tree after a failed managed uninstall step.
 func (s *service) compensateManagedUninstall(
 	ctx context.Context,
-	restoreLock func(),
+	restoreLock func() error,
 	name string,
 	scope plugins.Scope,
 	projectRoot string,
 	backups map[string]map[string]fileSnapshot,
 	clients []string,
 ) error {
-	restoreLock()
-	return s.restoreClientTrees(ctx, name, scope, projectRoot, backups, clients)
+	return errors.Join(
+		restoreLock(),
+		s.restoreClientTrees(ctx, name, scope, projectRoot, backups, clients),
+	)
 }
 
 // removeManagedLockEntry removes the plugins: lock entry for a lock-managed
@@ -106,29 +111,35 @@ func removeManagedLockEntry(
 	opts plugins.UninstallOptions,
 	existing plugins.InstalledPlugin,
 	scope plugins.Scope,
-) (restore func(), err error) {
+) (restore func() error, err error) {
 	if scope != plugins.ScopeProject || !existing.Managed {
 		return nil, nil
 	}
 
-	var prevLock *lockfile.Entry
-	if root, rootErr := lockfile.OpenRoot(opts.ProjectRoot); rootErr == nil {
-		if lf, loadErr := lockfile.Load(root); loadErr == nil {
-			if e, ok := lf.GetPlugin(opts.Name); ok {
-				prevLock = &e
-			}
-		}
+	root, err := lockfile.OpenRoot(opts.ProjectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock file root: %w", err)
 	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		return nil, fmt.Errorf("loading lock file: %w", err)
+	}
+	prev, hasPrev := lf.GetPlugin(opts.Name)
 	if lockErr := removeLockEntry(opts); lockErr != nil {
 		return nil, fmt.Errorf("updating project lock file: %w", lockErr)
 	}
-	if prevLock == nil {
-		return func() {}, nil
+	if !hasPrev {
+		return func() error { return nil }, nil
 	}
-	return func() {
-		if root, rootErr := lockfile.OpenRoot(opts.ProjectRoot); rootErr == nil {
-			_ = lockfile.UpsertPluginEntry(root, *prevLock)
+	return func() error {
+		root, err := lockfile.OpenRoot(opts.ProjectRoot)
+		if err != nil {
+			return fmt.Errorf("restoring lock entry: %w", err)
 		}
+		if err := lockfile.UpsertPluginEntry(root, prev); err != nil {
+			return fmt.Errorf("restoring lock entry: %w", err)
+		}
+		return nil
 	}, nil
 }
 

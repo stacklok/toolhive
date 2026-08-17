@@ -530,6 +530,19 @@ type OAuthFlowConfig struct {
 	// fetches. Defaults to false (guarded).
 	AllowPrivateIPs bool
 
+	// TokenEndpointTrusted reports that the token endpoint's authority was
+	// supplied by the operator — configured directly, or named by the
+	// operator-configured issuer's own metadata document. It permits
+	// private/loopback dialing of the token endpoint; the zero value is the
+	// guarded posture. Never set it for an endpoint whose authority a remote
+	// MCP server chose.
+	TokenEndpointTrusted bool
+
+	// IssuerTrusted reports that the issuer URL came from operator
+	// configuration rather than from the remote MCP server's WWW-Authenticate
+	// realm / resource metadata.
+	IssuerTrusted bool
+
 	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
 	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
 	SecretExpiry            time.Time // zero means the secret never expires
@@ -684,6 +697,13 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 		config.AuthorizeURL = resolution.AuthorizationEndpoint
 	}
 	if resolution.TokenEndpoint != "" {
+		// A registration response — or the metadata document behind it — can name
+		// a token endpoint on any authority. Trust survives only while the new
+		// authority is one the operator already named (CWE-918); this can clear
+		// the flag but never set it.
+		if !networking.AuthorityMatchesAny(resolution.TokenEndpoint, config.TokenURL, issuer) {
+			config.TokenEndpointTrusted = false
+		}
 		config.TokenURL = resolution.TokenEndpoint
 	}
 
@@ -881,7 +901,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		slog.Debug("Using OAuth endpoints",
 			"authorize_url", config.AuthorizeURL, "token_url", config.TokenURL)
 
-		return oauth.CreateOAuthConfigManual(
+		cfg, err := oauth.CreateOAuthConfigManual(
 			config.ClientID,
 			config.ClientSecret,
 			config.AuthorizeURL,
@@ -893,6 +913,12 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.OAuthParams,
 			config.ScopeParamName,
 		)
+		if err != nil {
+			return nil, err
+		}
+		// The token URL here is the operator's own, so the flag carries over as-is.
+		cfg.TokenEndpointTrusted = config.TokenEndpointTrusted
+		return cfg, nil
 	}
 
 	// Fall back to OIDC discovery
@@ -911,6 +937,11 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		return nil, err
 	}
 	cfg.ScopeParamName = config.ScopeParamName
+	// cfg.TokenURL came out of the issuer's discovery document. The issuer naming
+	// its own authority stays within the operator's decision to configure it;
+	// naming any other authority does not (CWE-918).
+	cfg.TokenEndpointTrusted = config.TokenEndpointTrusted &&
+		networking.AuthorityMatchesAny(cfg.TokenURL, config.TokenURL, issuer)
 	return cfg, nil
 }
 

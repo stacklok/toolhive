@@ -181,18 +181,19 @@ func (h *Handler) buildOAuthFlowConfig(
 	allowPrivateIPs bool,
 ) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
-		ClientID:        h.config.ClientID,
-		ClientSecret:    h.config.ClientSecret,
-		AuthorizeURL:    h.config.AuthorizeURL,
-		TokenURL:        h.config.TokenURL,
-		Scopes:          scopes,
-		CallbackPort:    h.config.CallbackPort,
-		Timeout:         h.config.Timeout,
-		SkipBrowser:     h.config.SkipBrowser,
-		Resource:        h.config.Resource,
-		OAuthParams:     h.config.OAuthParams,
-		ScopeParamName:  h.config.ScopeParamName,
-		AllowPrivateIPs: allowPrivateIPs,
+		ClientID:             h.config.ClientID,
+		ClientSecret:         h.config.ClientSecret,
+		AuthorizeURL:         h.config.AuthorizeURL,
+		TokenURL:             h.config.TokenURL,
+		Scopes:               scopes,
+		CallbackPort:         h.config.CallbackPort,
+		Timeout:              h.config.Timeout,
+		SkipBrowser:          h.config.SkipBrowser,
+		Resource:             h.config.Resource,
+		OAuthParams:          h.config.OAuthParams,
+		ScopeParamName:       h.config.ScopeParamName,
+		AllowPrivateIPs:      allowPrivateIPs,
+		IssuerTrusted:        h.config.Issuer != "",
 	}
 
 	// If we have discovered endpoints from the authorization server metadata,
@@ -207,7 +208,25 @@ func (h *Handler) buildOAuthFlowConfig(
 			"registration", authServerInfo.RegistrationEndpoint)
 	}
 
+	// Derived after the override above so the flag describes the URL that will
+	// actually be dialed, not the one the operator may have been overridden out of.
+	flowConfig.TokenEndpointTrusted = h.tokenEndpointTrusted(flowConfig.TokenURL)
+
 	return flowConfig
+}
+
+// tokenEndpointTrusted reports whether tokenURL's authority was supplied by the
+// operator — either configured directly, or named by the operator-configured
+// issuer's own metadata document.
+//
+// An empty tokenURL means no endpoint has been resolved yet: OIDC discovery will
+// fill it in from the issuer, and createOAuthConfig re-checks the discovered
+// authority against that issuer before the trust survives.
+func (h *Handler) tokenEndpointTrusted(tokenURL string) bool {
+	if tokenURL == "" {
+		return h.config.Issuer != ""
+	}
+	return networking.AuthorityMatchesAny(tokenURL, h.config.TokenURL, h.config.Issuer)
 }
 
 // wrapWithPersistence wraps the OAuth result with token persistence
@@ -368,12 +387,16 @@ func (h *Handler) tryRestoreFromCachedTokens(
 
 	// Create token source from cached refresh token.
 	// Passes resource for RFC 8707 compliance when configured.
-	baseSource := CreateTokenSourceFromCached(
+	baseSource, err := CreateTokenSourceFromCached(
 		oauth2Config,
 		refreshToken,
 		h.config.CachedTokenExpiry,
 		h.config.Resource,
+		h.tokenEndpointTrusted(oauth2Config.Endpoint.TokenURL),
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Try to get a token to verify the cached tokens are valid
 	// This will trigger a refresh since we don't have an access token

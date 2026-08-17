@@ -6,11 +6,13 @@ package discovery
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1361,4 +1363,97 @@ func TestBuildOAuthFlowResult_CopiesDCRRenewalMetadata(t *testing.T) {
 	assert.Equal(t, config.RegistrationClientURI, result.RegistrationClientURI)
 	assert.Equal(t, config.TokenEndpointAuthMethod, result.TokenEndpointAuthMethod)
 	assert.Equal(t, config.RegisteredCallbackPort, result.RegisteredCallbackPort)
+}
+
+// startIssuerServer starts an httptest listener that serves an OIDC discovery
+// document plus a /token endpoint, counting the token-endpoint requests it
+// receives. tokenEndpoint receives the listener's own base URL so a caller can
+// advertise either this listener or a different one.
+func startIssuerServer(t *testing.T, tokenEndpoint func(issuerURL string) string, tokenHits *atomic.Int32) string {
+	t.Helper()
+
+	var issuerURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+			issuerURL, issuerURL+"/authorize", tokenEndpoint(issuerURL), issuerURL+"/jwks")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		tokenHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer"}`))
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	issuerURL = server.URL
+	return server.URL
+}
+
+// dialTokenEndpoint exercises cfg through the same client oauth.NewFlow builds
+// from it, so the assertion is about whether the endpoint was reached rather
+// than about the value of a trust flag.
+func dialTokenEndpoint(t *testing.T, cfg *oauth.Config) error {
+	t.Helper()
+
+	client, err := oauth.NewTokenHTTPClient(cfg.TokenURL, cfg.TokenEndpointTrusted)
+	require.NoError(t, err)
+	resp, err := client.Post(cfg.TokenURL, "application/x-www-form-urlencoded",
+		strings.NewReader("grant_type=refresh_token"))
+	if err != nil {
+		return err
+	}
+	require.NoError(t, resp.Body.Close())
+	return nil
+}
+
+// TestCreateOAuthConfig_DiscoveredTokenEndpoint is the regression test for
+// GHSA-3768-rwj3-38p2. An operator-configured issuer that names its own
+// authority in its metadata stays trusted; one that names a different authority
+// must not lend that authority the operator's trust, even on the same host at a
+// different port (CWE-918).
+func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
+	t.Parallel()
+
+	t.Run("issuer naming its own authority is still trusted", func(t *testing.T) {
+		t.Parallel()
+
+		var hits atomic.Int32
+		issuerURL := startIssuerServer(t, func(issuer string) string { return issuer + "/token" }, &hits)
+
+		cfg, err := createOAuthConfig(context.Background(), issuerURL, &OAuthFlowConfig{
+			ClientID:             "test-client",
+			IssuerTrusted:        true,
+			TokenEndpointTrusted: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, issuerURL+"/token", cfg.TokenURL)
+
+		require.NoError(t, dialTokenEndpoint(t, cfg))
+		assert.Equal(t, int32(1), hits.Load(), "the issuer's own token endpoint must be reachable")
+	})
+
+	t.Run("issuer naming a foreign authority loses the trust", func(t *testing.T) {
+		t.Parallel()
+
+		var foreignHits atomic.Int32
+		foreignURL := startIssuerServer(t, func(issuer string) string { return issuer + "/token" }, &foreignHits)
+
+		var ownHits atomic.Int32
+		issuerURL := startIssuerServer(t, func(string) string { return foreignURL + "/token" }, &ownHits)
+
+		cfg, err := createOAuthConfig(context.Background(), issuerURL, &OAuthFlowConfig{
+			ClientID:             "test-client",
+			IssuerTrusted:        true,
+			TokenEndpointTrusted: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, foreignURL+"/token", cfg.TokenURL)
+
+		err = dialTokenEndpoint(t, cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), networking.ErrPrivateIpAddress)
+		assert.Zero(t, foreignHits.Load(), "a metadata-named foreign authority must not be dialed")
+	})
 }

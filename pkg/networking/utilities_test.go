@@ -12,6 +12,108 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAuthorityMatchesAny(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		endpointURL  string
+		operatorURLs []string
+		want         bool
+	}{
+		{
+			name:         "implicit https port matches explicit authority",
+			endpointURL:  "idp.example.com:443",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "explicit authority matches implicit https port",
+			endpointURL:  "https://idp.example.com/oauth/token",
+			operatorURLs: []string{"idp.example.com:443"},
+			want:         true,
+		},
+		{
+			name:         "implicit http port normalizes to 80",
+			endpointURL:  "http://idp.example.com/token",
+			operatorURLs: []string{"idp.example.com:80"},
+			want:         true,
+		},
+		{
+			name:         "host comparison is case-insensitive",
+			endpointURL:  "https://IdP.Example.COM/token",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "different path on the same authority still matches",
+			endpointURL:  "https://idp.example.com/oauth2/v1/token",
+			operatorURLs: []string{"https://idp.example.com/oauth2/v1/authorize"},
+			want:         true,
+		},
+		{
+			name:         "same host on a different port does not match",
+			endpointURL:  "http://127.0.0.1:9999/token",
+			operatorURLs: []string{"http://127.0.0.1:8080"},
+			want:         false,
+		},
+		{
+			name:         "bracketed IPv6 authority matches its URL form",
+			endpointURL:  "[::1]:8443",
+			operatorURLs: []string{"https://[::1]:8443/token"},
+			want:         true,
+		},
+		{
+			name:         "distinct IPv6 addresses do not match",
+			endpointURL:  "https://[::1]:8443/token",
+			operatorURLs: []string{"https://[fd00::1]:8443"},
+			want:         false,
+		},
+		{
+			name:         "second operator entry can match",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{"https://other.example.com", "https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "empty endpoint never matches",
+			endpointURL:  "",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         false,
+		},
+		{
+			name:         "no operator entries never matches",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: nil,
+			want:         false,
+		},
+		{
+			name:         "empty operator entry is not a wildcard",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{""},
+			want:         false,
+		},
+		{
+			name:         "garbage operator entry is not a wildcard",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{"://%%", "not a url at all"},
+			want:         false,
+		},
+		{
+			name:         "endpoint without a scheme or port is undecidable and fails closed",
+			endpointURL:  "idp.example.com",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, AuthorityMatchesAny(tt.endpointURL, tt.operatorURLs...))
+		})
+	}
+}
+
 func TestTargetIsPrivate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -13,6 +13,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -68,6 +69,15 @@ type Config struct {
 	// for user-token scopes). When set, scopes are sent under this parameter name
 	// instead of "scope", and the standard "scope" parameter is cleared.
 	ScopeParamName string
+
+	// TokenEndpointTrusted reports that the token endpoint's authority was
+	// supplied by the operator — either configured directly, or named by the
+	// operator-configured issuer's own metadata document. Because the operator
+	// chose that authority, the endpoint may be a private, loopback, or
+	// link-local address. The zero value is the guarded posture and is what an
+	// endpoint named by a remote MCP server, or by a metadata document pointing
+	// at some other authority, must keep.
+	TokenEndpointTrusted bool
 }
 
 // Flow handles the OAuth authentication flow
@@ -83,6 +93,7 @@ type Flow struct {
 	state         string
 
 	tokenSource oauth2.TokenSource
+	httpClient  *http.Client
 }
 
 // TokenResult contains the result of the OAuth flow
@@ -148,10 +159,16 @@ func NewFlow(config *Config) (*Flow, error) {
 		},
 	}
 
+	httpClient, err := NewTokenHTTPClient(config.TokenURL, config.TokenEndpointTrusted)
+	if err != nil {
+		return nil, fmt.Errorf("build token endpoint HTTP client: %w", err)
+	}
+
 	flow := &Flow{
 		config:       config,
 		oauth2Config: oauth2Config,
 		port:         port,
+		httpClient:   httpClient,
 	}
 
 	// Generate PKCE parameters if enabled
@@ -165,6 +182,39 @@ func NewFlow(config *Config) (*Flow, error) {
 	}
 
 	return flow, nil
+}
+
+// NewTokenHTTPClient creates the client used for OAuth token exchanges and
+// refreshes. A trusted endpoint (see Config.TokenEndpointTrusted) may be dialed
+// at a private, loopback, or link-local address, because the operator named its
+// authority. An untrusted endpoint is refused those addresses (CWE-918) and
+// gets a plain-HTTP exception only for localhost. Both clients disable
+// keep-alives so the dial-time guard re-runs per request, and follow only
+// same-host redirects.
+func NewTokenHTTPClient(tokenURL string, trusted bool) (*http.Client, error) {
+	endpoint, err := url.Parse(tokenURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse token endpoint URL %q: %w", tokenURL, err)
+	}
+	if endpoint.Scheme == "" || endpoint.Host == "" {
+		return nil, fmt.Errorf("token endpoint URL %q is missing a scheme or host", tokenURL)
+	}
+
+	builder := func() *networking.HttpClientBuilder {
+		if trusted {
+			return networking.NewHostScopedClientBuilder(endpoint.Host, true, false)
+		}
+		return networking.NewHttpClientBuilder().
+			WithPrivateIPs(false).
+			WithInsecureAllowHTTP(networking.IsLocalhost(endpoint.Host))
+	}()
+	client, err := builder.WithDisableKeepAlives(true).Build()
+	if err != nil {
+		return nil, err
+	}
+	client.Transport = &oauthproto.UserAgentTransport{Base: client.Transport}
+	client.CheckRedirect = networking.SameHostRedirectPolicy()
+	return client, nil
 }
 
 // generatePKCEParams generates PKCE code verifier and challenge using
@@ -344,7 +394,7 @@ func (f *Flow) handleCallback(tokenChan chan<- *oauth2.Token, errorChan chan<- e
 		}
 
 		// Exchange code for token using the request context to respect cancellation
-		ctx := r.Context()
+		ctx := context.WithValue(r.Context(), oauth2.HTTPClient, f.httpClient)
 		opts := []oauth2.AuthCodeOption{}
 
 		// Add PKCE verifier if enabled
@@ -509,13 +559,9 @@ func (f *Flow) processToken(_ context.Context, token *oauth2.Token) *TokenResult
 	var base oauth2.TokenSource
 	if f.config.Resource != "" {
 		// Use resourceTokenSource wrapper to add resource parameter to refresh requests (RFC 8707)
-		base = NewResourceTokenSource(f.oauth2Config, token, f.config.Resource)
+		base = NewResourceTokenSource(f.oauth2Config, token, f.config.Resource, f.httpClient)
 	} else {
-		// No resource parameter needed, use standard token source. Inject an
-		// HTTP client whose transport sets the ToolHive User-Agent so the
-		// oauth2 library does not fall back to Go-http-client/2.0 on token
-		// refresh requests.
-		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, oauthproto.NewHTTPClient())
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, f.httpClient)
 		base = f.oauth2Config.TokenSource(ctx, token)
 	}
 

@@ -274,12 +274,12 @@ func (h *Handler) PopulateTokenEndpointResponse(
 // its own client_id (e.g. a particular agent instance or delegate persona)
 // the same way a normal issued token records its client identity: via a
 // "client_id" claim. The actor_token's own "client_id" claim MUST match the
-// authenticated client ID — this is the binding/proof-of-possession check,
-// proving the token was minted for this very client — while its "sub" claim
-// is the actor identity that is returned here and flows into the delegated
-// token's act.sub the same place a normal client's identity would go. "sub"
-// is deliberately not compared to client.GetID(): requiring equality there
-// would make actor_token unable to ever assert an identity different from
+// authenticated client ID — this is the client-ID binding check, proving the
+// token was minted for this client — while its "sub" claim is the actor
+// identity that is returned here and flows into the delegated token's act.sub
+// the same place a normal client's identity would go. "sub" is deliberately
+// not compared to client.GetID(): requiring equality there would make
+// actor_token unable to ever assert an identity different from
 // the OAuth client, collapsing it to a no-op self-check. Note that this does
 // not by itself grant the asserted actor any extra privilege: the resulting
 // actor identity still has to satisfy checkDelegationConsent (may_act,
@@ -296,12 +296,14 @@ func (h *Handler) resolveActorIdentity(
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token is invalid or could not be verified."))
 		}
-		// Binding check: actor_token's client_id claim MUST match the
+		// Client-ID binding: actor_token's client_id claim MUST match the
 		// authenticated client ID. This prevents replay attacks where a leaked
 		// actor token is presented by a different client. The client ID is
 		// always verified by fosite's client authentication before reaching here.
+		// RFC 8693 §2.2.2 requires invalid_request when an actor token is
+		// unacceptable based on policy.
 		if actorClaims.ClientID != client.GetID() {
-			return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token's client_id claim does not match the authenticated client identity."))
 		}
 		return actorClaims.Subject, nil

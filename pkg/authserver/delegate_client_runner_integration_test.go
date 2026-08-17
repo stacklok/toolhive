@@ -103,6 +103,15 @@ func TestConfiguredDelegateClientTokenExchange(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantError:  "invalid_request",
 		},
+		{
+			name:         "id_token_subject_token_type_rejected",
+			authenticate: func(_ *http.Request) {},
+			mutateRequest: func(values url.Values) {
+				values.Set("subject_token_type", oauthproto.TokenTypeIDToken)
+			},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "invalid_request",
+		},
 	}
 
 	t.Run("discovery advertises token exchange and client secret methods", func(t *testing.T) {
@@ -187,17 +196,14 @@ func TestConfiguredDelegateClientTokenExchange_WithActorToken(t *testing.T) {
 		wantError        string
 	}{
 		{
-			// resolveActorIdentity's client_id-mismatch branch deliberately
-			// returns invalid_grant, not invalid_request — a distinct "wrong
-			// party" error class, the same convention checkDelegationConsent
-			// uses for its own client_id-mismatch case elsewhere in this file.
-			// invalid_request is reserved for a malformed/unverifiable token.
+			// RFC 8693 §2.2.2 requires invalid_request when an actor token is
+			// unacceptable based on policy, including a client-ID binding mismatch.
 			name:             "mismatched actor_token rejected before delegation consent is reached",
 			subjectClientID:  originalClientID,
 			actorTokenClient: "someone-elses-client",
 			actorTokenSub:    "someone-else",
 			wantStatus:       http.StatusBadRequest,
-			wantError:        "invalid_grant",
+			wantError:        "invalid_request",
 		},
 		{
 			name:             "matching actor_token still succeeds via the delegate-client relaxation",
@@ -381,9 +387,9 @@ func signedSubjectTokenForClient(
 
 // signedActorToken mints a self-issued RFC 8693 actor_token with the given
 // "client_id" and "sub" claims. resolveActorIdentity requires "client_id" to
-// equal the authenticated client's ID (the binding/proof-of-possession
-// check) or the exchange is rejected before delegation consent is ever
-// consulted; "sub" is the asserted actor identity, which flows into the
+// equal the authenticated client's ID (the client-ID binding check) or the
+// exchange is rejected before delegation consent is ever consulted; "sub" is
+// the asserted actor identity, which flows into the
 // delegated token's act.sub and may legitimately differ from "client_id" —
 // see TestConfiguredDelegateClientTokenExchange_WithActorToken.
 func signedActorToken(

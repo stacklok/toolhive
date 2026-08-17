@@ -208,7 +208,7 @@ tokens only — an `actor_token` validated against any other issuer is
 rejected. Two claims on the `actor_token` matter, and they play different
 roles:
 
-- **`client_id`** is the binding/proof-of-possession check: it must equal the
+- **`client_id`** is the authenticated-client binding: it must equal the
   authenticated OAuth client ID (the client fosite already authenticated for
   this request). This is the same role a `client_id` claim plays on a normal
   issued token — it says which client the token was minted for.
@@ -226,7 +226,8 @@ delegate exemption).
 
 `actor_token_type` only accepts `access_token` or `jwt`; `id_token` is
 rejected outright. Similarly, `subject_token_type` accepts `access_token` or
-`jwt`, but not `id_token`: this server applies exactly one validation profile
+`jwt`, but not `id_token`: this embedded authorization-server endpoint does
+not implement the XAA/ID-JAG profile and applies exactly one validation profile
 to a subject or actor token (the self-issued/access-token one — see
 `rejectIDTokenClaims`'s doc comment in `validator.go`), so accepting a
 declared `subject_token_type`/`actor_token_type` of `id_token` without a

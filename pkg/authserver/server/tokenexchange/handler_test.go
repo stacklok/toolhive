@@ -370,7 +370,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				return f
 			},
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "does not match the authenticated client identity",
 		},
 		{

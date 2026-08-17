@@ -111,7 +111,7 @@ func (s *service) installExtractionSameDigestNewClients(
 	for _, ct := range dirsToWrite {
 		snapshotTargets = append(snapshotTargets, filepath.Clean(clientDirs[ct]))
 	}
-	var backups map[string]string
+	var backups map[string]map[string]fileSnapshot
 	if opts.Force {
 		var snapErr error
 		backups, snapErr = snapshotDirs(snapshotTargets)
@@ -225,7 +225,7 @@ func (s *service) installExtractionFresh(
 	for _, ct := range dirsToWrite {
 		snapshotTargets = append(snapshotTargets, filepath.Clean(clientDirs[ct]))
 	}
-	var backups map[string]string
+	var backups map[string]map[string]fileSnapshot
 	if opts.Force {
 		var snapErr error
 		backups, snapErr = snapshotDirs(snapshotTargets)

@@ -257,7 +257,7 @@ func (s *service) gitWriteMultiAndPersist(
 	for _, ct := range dirsToWrite {
 		snapshotTargets = append(snapshotTargets, filepath.Clean(clientDirs[ct]))
 	}
-	var backups map[string]string
+	var backups map[string]map[string]fileSnapshot
 	if isUpgrade || opts.Force {
 		var snapErr error
 		backups, snapErr = snapshotDirs(snapshotTargets)

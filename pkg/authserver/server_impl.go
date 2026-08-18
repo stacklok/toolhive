@@ -205,7 +205,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// refresh an expired upstream leg during login instead of skipping it and
 	// failing later at MCP-request token-swap time. The same instance is stored
 	// on the server so UpstreamTokenRefresher() returns the identical object,
-	// ensuring both paths share one singleflight.Group.
+	// ensuring both paths share one process-local singleflight.Group keyed by
+	// opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
 		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
@@ -324,8 +325,8 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 
 // UpstreamTokenRefresher returns the single shared refresher constructed in
 // newServer. Both the handler's chain-walk path and the runtime token-swap
-// path use this instance, ensuring concurrent refreshes for the same
-// (session, provider) pair are deduplicated by a single singleflight.Group.
+// path use this instance, ensuring concurrent refreshes for the same logical
+// upstream-token row are deduplicated by one process-local singleflight.Group.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	return s.upstreamRefresher
 }

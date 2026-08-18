@@ -176,6 +176,26 @@ The implementation uses different strategies based on consistency requirements:
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation — partial failures are safe since orphaned keys expire via TTL
 
+### Refresh Coordination Scope
+
+When an expired upstream access token is refreshed, `UpstreamTokenStorage` derives
+an opaque SHA-256 identity from its storage-defined row representation. For
+Redis, that representation is its row-key format, so two `(sessionID,
+providerName)` pairs that happen to produce the same Redis key resolve to the
+same identity — that's safe because they're the same physical row. What's
+not allowed is aliasing two pairs that are genuinely different rows: the
+auth server uses this identity only as the key for its in-process
+`singleflight` group, then its leader re-reads the row before redeeming its
+refresh token, and it reads/writes under its own sessionID — aliasing
+distinct rows would cross credentials between sessions. This prevents
+duplicate redemption from stale concurrent callers served by the same
+process; the identity is not persisted, logged, or exposed.
+
+This is deliberately narrower than #4122: it does not provide distributed
+coordination across replicas, row-addressed mutation, compare-and-swap, or any
+other cross-process consistency guarantee. Redis remains the durable storage
+backend, while each replica coordinates only its own in-flight refreshes.
+
 ### Serialization
 
 All values are stored as JSON. The implementation uses defensive copies on read and write to prevent caller mutations from affecting stored data.

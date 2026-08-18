@@ -348,15 +348,29 @@ func TestQuoteForPOSIXShell_SurvivesRealShell(t *testing.T) {
 	assert.True(t, strings.HasPrefix(string(out), "/a"))
 }
 
-// TestWriteCredentialHelperShim_RequiresPath proves the writer fails closed
-// when no absolute thv path is available (os.Executable() failed upstream)
-// rather than emitting a shim that cannot locate thv.
-func TestWriteCredentialHelperShim_RequiresPath(t *testing.T) {
+// TestWriteCredentialHelperShim_RequiresAbsolutePath proves the writer fails
+// closed on anything that is not an absolute path. Defeating PATH resolution is
+// the whole point of the shim, so a relative path — which Claude Desktop would
+// resolve against an arbitrary working directory — must not produce a shim at
+// all rather than one that silently cannot find thv.
+func TestWriteCredentialHelperShim_RequiresAbsolutePath(t *testing.T) {
 	t.Parallel()
-	cm := &ClientManager{homeDir: t.TempDir()}
 
-	_, err := cm.writeCredentialHelperShim("")
-	require.Error(t, err)
+	for _, path := range []string{
+		"",      // os.Executable() failed upstream
+		"thv",   // bare command: would resolve via PATH, the bug being fixed
+		"./thv", // relative to an arbitrary working directory
+		"../bin/thv",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			cm := &ClientManager{homeDir: t.TempDir()}
+			_, err := cm.writeCredentialHelperShim(path)
+			require.Error(t, err, "expected rejection of %q", path)
+			assert.NoFileExists(t, cm.credentialHelperShimPath(),
+				"no shim may be written when the path is rejected")
+		})
+	}
 }
 
 // TestWriteCredentialHelperShim_UsesAbsolutePath proves the shim execs the

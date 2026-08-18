@@ -64,7 +64,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 	if runtime.GOOS == "windows" {
 		// The shim is a POSIX /bin/sh script — consistent with the rest of the
 		// LLM gateway token-helper feature, which is POSIX-only (see
-		// tokenHelperShellCommandFor in pkg/llm). Windows support is a follow-up.
+		// tokenHelperShellCommand in pkg/llm). Windows support is a follow-up.
 		return "", fmt.Errorf("claude-desktop LLM gateway setup is not supported on Windows yet")
 	}
 
@@ -254,10 +254,15 @@ func (cm *ClientManager) credentialHelperShimPath() string {
 // --skip-browser and rely on the cached/refresh token that "thv llm setup"
 // primed up front.
 func (cm *ClientManager) writeCredentialHelperShim(tokenHelperPath string) (string, error) {
-	if tokenHelperPath == "" {
-		// A caller bug (os.Executable() failed upstream), not user input: fail
-		// closed rather than emitting a shim that cannot locate thv.
-		return "", fmt.Errorf("no token-helper path available for credential helper shim")
+	// Require an absolute path. Defeating PATH resolution is the entire point of
+	// this shim, and a relative path would silently reintroduce it — resolved
+	// against whatever working directory Claude Desktop happens to have. A
+	// non-absolute path here is a caller bug (os.Executable() is documented to
+	// return an absolute path unless it errors), so fail closed rather than
+	// emit a shim that cannot reliably locate thv.
+	if !filepath.IsAbs(tokenHelperPath) {
+		return "", fmt.Errorf(
+			"credential helper shim requires an absolute token-helper path, got %q", tokenHelperPath)
 	}
 	shimPath := cm.credentialHelperShimPath()
 	if err := os.MkdirAll(filepath.Dir(shimPath), 0o700); err != nil {

@@ -43,10 +43,11 @@ import (
 // (mirrors the same finding already documented in dual_era_mixing_test.go
 // for the single-server transparent proxy).
 //
-// Every request in this file sends the streamable-HTTP Accept header both MCP
-// revisions require: "application/json, text/event-stream". Legacy responses
-// may therefore be SSE-framed by the go-sdk transport, while Modern responses
-// remain plain JSON; e2e.RawMCPClient parses both shapes before assertions.
+// Except for the explicit plain-Accept parity check below, every request in
+// this file sends the streamable-HTTP Accept header both MCP revisions require:
+// "application/json, text/event-stream". Legacy responses may therefore be
+// SSE-framed by the go-sdk transport, while Modern responses remain plain JSON;
+// e2e.RawMCPClient parses both shapes before assertions.
 var _ = Describe("vMCP Dual-Era Bridge", Label("vmcp", "dual-era", "e2e"), Serial, func() {
 	Context("one Legacy and one Modern backend in the same group", func() {
 		var (

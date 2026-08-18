@@ -101,6 +101,36 @@ func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
 	assert.Empty(t, result.Failed)
 }
 
+// The documented `--clients all` mode must behave exactly like the empty
+// default: expand to every detected plugin-supporting client, not fail
+// validation.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_ClientsAllSentinelMatchesDefault(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ //nolint:forcetypeassert
+		ProjectRoot: projectRoot, Clients: []string{"All"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, result.AlreadyCurrent)
+	assert.Empty(t, result.Failed, "--clients all must not produce a validation failure")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_ClientsAllSentinelRejectsCombination(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	result, err := svc.(*service).Sync(t.Context(), plugins.SyncOptions{ //nolint:forcetypeassert
+		ProjectRoot: projectRoot, Clients: []string{"all", "claude-code"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Contains(t, result.Failed[0].Error, "cannot be combined")
+}
+
 //nolint:paralleltest // uses t.Setenv via newLockTestService
 func TestSync_CheckReportsDriftWithoutWriting(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)

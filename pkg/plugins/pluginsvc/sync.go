@@ -175,12 +175,14 @@ func (s *service) syncLockedEntry(
 }
 
 // resolveSyncTargetClients returns the client set Sync should check and
-// restore. Empty requested expands to availableMaterializerClients (detected
-// + plugin-supporting). Explicit names are validated like Install (materializer
-// + SupportsPlugins) but do not require IsClientInstalled — the caller asked
-// for them.
+// restore. Empty requested — or the sole sentinel value "all", matching
+// Install and the CLI help text — expands to availableMaterializerClients
+// (detected + plugin-supporting). Explicit names are validated like Install
+// (materializer + SupportsPlugins) but do not require IsClientInstalled —
+// the caller asked for them.
 func (s *service) resolveSyncTargetClients(requested []string) ([]string, error) {
-	if len(requested) == 0 {
+	if len(requested) == 0 ||
+		(len(requested) == 1 && strings.EqualFold(requested[0], clientsAllSentinel)) {
 		return s.availableMaterializerClients(), nil
 	}
 	for _, c := range requested {

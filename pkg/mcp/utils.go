@@ -9,6 +9,11 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 )
 
+// UTF8BOM is the three-byte UTF-8 byte order mark. Clients following the
+// WHATWG UTF-8 decode algorithm strip one leading BOM before parsing, so code
+// decoding or sniffing a JSON-RPC response from the wire must do the same.
+var UTF8BOM = []byte("\xEF\xBB\xBF")
+
 // ConvertToJSONRPC2ID converts an interface{} ID to jsonrpc2.ID
 func ConvertToJSONRPC2ID(id interface{}) (jsonrpc2.ID, error) {
 	if id == nil {

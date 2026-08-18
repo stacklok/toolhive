@@ -235,6 +235,10 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("building oauth2 config for cache restore: %w", err)
 	}
+	httpClient, err := oauth.NewTokenHTTPClient(oauth2Cfg.Endpoint.TokenURL, true)
+	if err != nil {
+		return fmt.Errorf("building token endpoint HTTP client for cache restore: %w", err)
+	}
 
 	// Use a non-caching refresher as the innermost source.
 	//
@@ -252,7 +256,7 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	// serves it until the next window — exactly one refresh per window.
 	//
 	// Target stacking: ReuseTokenSource(nil, preemptive{PersistingTokenSource{nonCachingRefresher}})
-	rawRefresher := oauth.NewNonCachingRefresher(oauth2Cfg, refreshToken, t.opts.OIDC.Audience)
+	rawRefresher := oauth.NewNonCachingRefresher(oauth2Cfg, refreshToken, t.opts.OIDC.Audience, httpClient)
 
 	// Persist rotated refresh tokens back to the secrets provider so future
 	// invocations can still restore the session if the provider invalidates the
@@ -301,7 +305,13 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 		TokenType:    tokenResult.TokenType,
 	}
 
-	var base oauth2.TokenSource = oauth.NewNonCachingRefresher(oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource)
+	httpClient, err := oauth.NewTokenHTTPClient(flowCfg.TokenURL, flowCfg.TokenEndpointTrusted)
+	if err != nil {
+		return fmt.Errorf("building token endpoint HTTP client: %w", err)
+	}
+	var base oauth2.TokenSource = oauth.NewNonCachingRefresher(
+		oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource, httpClient,
+	)
 
 	if t.opts.SecretsProvider != nil {
 		key := t.opts.KeyProvider()
@@ -326,7 +336,7 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 // buildFlowConfig creates an oauth.Config for the interactive browser flow.
 // PKCE (S256) is always enabled per OAuth 2.1 requirements for public clients.
 func (t *OAuthTokenSource) buildFlowConfig(ctx context.Context) (*oauth.Config, error) {
-	return oauth.CreateOAuthConfigFromOIDC(
+	config, err := oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		t.opts.OIDC.Issuer,
 		t.opts.OIDC.ClientID,
@@ -336,6 +346,11 @@ func (t *OAuthTokenSource) buildFlowConfig(ctx context.Context) (*oauth.Config, 
 		t.opts.OIDC.CallbackPort,
 		t.opts.OIDC.Audience,
 	)
+	if err != nil {
+		return nil, err
+	}
+	config.TokenEndpointTrusted = true
+	return config, nil
 }
 
 // buildOAuth2Config creates a minimal oauth2.Config suitable for token refresh

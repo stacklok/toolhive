@@ -196,6 +196,12 @@ func TestMCPRemoteProxyReconciler_handleInvalidEmbeddedAuthServerConfigExternalA
 	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
 		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
 		v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Conditions: []metav1.Condition{{
+				Type:   mcpv1beta1.ConditionTypeReady,
+				Status: metav1.ConditionTrue,
+			}},
+		}),
 	)
 	reconciler, _ := newTestMCPRemoteProxyReconciler(t, proxy)
 
@@ -211,6 +217,9 @@ func TestMCPRemoteProxyReconciler_handleInvalidEmbeddedAuthServerConfigExternalA
 	require.NotNil(t, validated)
 	assert.Equal(t, metav1.ConditionFalse, validated.Status)
 	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
+	ready := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 }
 
 func TestMCPRemoteProxyReconciler_InvalidExternalAuthConfigSteadyState(t *testing.T) {

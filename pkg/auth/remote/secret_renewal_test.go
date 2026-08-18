@@ -480,10 +480,11 @@ func TestHandler_Restore_RenewSuccess(t *testing.T) {
 	}
 
 	// Calling tryRestoreFromCachedTokens should trigger renewal because of the 1h expiry.
-	// We expect an error because it will try to refresh the token and fail (no token endpoint).
+	// We expect an error because no token endpoint is configured, so the guarded
+	// token-endpoint client cannot be built and no refresh is attempted.
 	_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
+	assert.Contains(t, err.Error(), "build token endpoint HTTP client")
 
 	// But renewal DID happen
 	assert.Equal(t, "test-client", persistedID)
@@ -522,11 +523,12 @@ func TestHandler_Restore_RenewFail_Soft(t *testing.T) {
 	}
 
 	// Renewal fails, but since it's only "expiring soon", each restore should
-	// continue to token refresh after making exactly one renewal request.
+	// continue past renewal after making exactly one renewal request. It then
+	// stops at the token endpoint, which is not configured here.
 	for attempt := int32(1); attempt <= 2; attempt++ {
 		_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
+		assert.Contains(t, err.Error(), "build token endpoint HTTP client")
 		assert.Equal(t, attempt, renewalPUTs.Load())
 	}
 }

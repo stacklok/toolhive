@@ -1726,6 +1726,51 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 	}
 }
 
+func TestBuildAuthServerRunConfig_TrustedIssuerConversion(t *testing.T) {
+	t.Parallel()
+
+	allowedActors := []string{"external-agent"}
+	allowedDelegateClients := []string{"toolhive-delegate"}
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+			IssuerURL:              "http://issuer.example.test",
+			ExpectedAudience:       "https://resource.example.com",
+			JWKSURL:                "http://issuer.example.test/jwks",
+			InsecureAllowHTTP:      true,
+			AllowPrivateIPs:        true,
+			ActorClaim:             "appid",
+			AllowedActors:          allowedActors,
+			AllowedDelegateClients: allowedDelegateClients,
+			AllowMayAct:            true,
+		}},
+	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", authConfig,
+		[]string{"https://resource.example.com"}, []string{"openid"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	require.Len(t, config.TrustedIssuers, 1)
+
+	assert.Equal(t, authConfig.TrustedIssuers[0], mcpv1beta1.TrustedIssuerConfig{
+		IssuerURL:              config.TrustedIssuers[0].IssuerURL,
+		ExpectedAudience:       config.TrustedIssuers[0].ExpectedAudience,
+		JWKSURL:                config.TrustedIssuers[0].JWKSURL,
+		InsecureAllowHTTP:      config.TrustedIssuers[0].InsecureAllowHTTP,
+		AllowPrivateIPs:        config.TrustedIssuers[0].AllowPrivateIPs,
+		ActorClaim:             config.TrustedIssuers[0].ActorClaim,
+		AllowedActors:          config.TrustedIssuers[0].AllowedActors,
+		AllowedDelegateClients: config.TrustedIssuers[0].AllowedDelegateClients,
+		AllowMayAct:            config.TrustedIssuers[0].AllowMayAct,
+	})
+
+	allowedActors[0] = "mutated-actor"
+	allowedDelegateClients[0] = "mutated-client"
+	assert.Equal(t, []string{"external-agent"}, config.TrustedIssuers[0].AllowedActors)
+	assert.Equal(t, []string{"toolhive-delegate"}, config.TrustedIssuers[0].AllowedDelegateClients)
+}
+
 func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
 	t.Parallel()
 

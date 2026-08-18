@@ -149,10 +149,10 @@ type TrustedIssuer struct {
 	ActorClaim string `json:"actor_claim,omitempty" yaml:"actor_claim,omitempty"`
 	// AllowedActors is the allowlist of ActorClaim values authorized to
 	// exchange a subject token from this issuer when it carries no
-	// "may_act" claim; empty means only may_act-bearing tokens are
-	// accepted. By itself names no ToolHive client — see
-	// AllowedDelegateClients and docs/arch/17-token-exchange-delegation.md
-	// ("Accepted limitations" #1).
+	// "may_act" claim. Empty denies every token unless AllowMayAct is true
+	// and the token carries a permitted may_act claim. By itself names no
+	// ToolHive client — see AllowedDelegateClients and
+	// docs/arch/17-token-exchange-delegation.md ("Accepted limitations" #1).
 	AllowedActors []string `json:"allowed_actors,omitempty" yaml:"allowed_actors,omitempty"`
 	// AllowedDelegateClients restricts which ToolHive client IDs may
 	// exchange a subject token from this issuer, for BOTH consent paths.
@@ -161,6 +161,12 @@ type TrustedIssuer struct {
 	// docs/arch/17-token-exchange-delegation.md ("Accepted limitations" #1).
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowedDelegateClients []string `json:"allowed_delegate_clients,omitempty" yaml:"allowed_delegate_clients,omitempty"`
+	// AllowMayAct permits this external issuer's may_act claim to authorize
+	// delegation. It defaults to false; external issuers must be opted in
+	// explicitly because may_act bypasses AllowedActors. It does not affect
+	// self-issued subject tokens. When enabled, AllowedDelegateClients must
+	// name specific ToolHive clients rather than use the wildcard.
+	AllowMayAct bool `json:"allow_may_act,omitempty" yaml:"allow_may_act,omitempty"`
 }
 
 // MultiIssuerTokenValidator validates subject tokens from the authorization
@@ -300,10 +306,13 @@ func NewMultiIssuerTokenValidator(
 			return nil, err
 		}
 		if len(ti.AllowedActors) == 0 {
-			slog.Warn("Trusted issuer has no allowed actors configured; "+
-				"only may_act-bearing subject tokens from it will be accepted",
-				"issuer", ti.IssuerURL,
-			)
+			message := func() string {
+				if ti.AllowMayAct {
+					return "Trusted issuer has no allowed actors configured; only may_act-bearing subject tokens from it will be accepted"
+				}
+				return "Trusted issuer has no allowed actors configured; no subject tokens from it will be accepted"
+			}()
+			slog.Warn(message, "issuer", ti.IssuerURL)
 		}
 		if !looksLikeResourceIdentifier(ti.ExpectedAudience) {
 			slog.Warn("Trusted issuer's expected_audience does not look like a resource identifier "+
@@ -519,13 +528,7 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, err
 	}
 
-	// selfIssuer (not issuerConfig.IssuerURL) is the correct comparison for
-	// may_act's optional "iss": that member identifies the namespace of
-	// may_act.sub, always compared against a ToolHive client ID regardless
-	// of which issuer validated the surrounding token. requireIss is true
-	// here — unlike the self-issued path, the external path cannot leave
-	// "iss" optional; see validateMayActShape's doc comment.
-	if err := validateMayActShape(extraClaims, v.selfIssuer, true); err != nil {
+	if err := checkMayActAllowed(extraClaims, v.selfIssuer, issuerConfig); err != nil {
 		return nil, err
 	}
 
@@ -546,14 +549,14 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	// authenticated client; this validator never sees that client ID.
 	claims.AllowedDelegateClients = issuerConfig.AllowedDelegateClients
 
-	// A may_act claim is authoritative and enforced by checkDelegationConsent
-	// against the authenticated client — validateMayActShape above has
-	// already confirmed its own "iss" (if any) names this server, so
-	// may_act.sub is in ToolHive's own client namespace. AllowedActors below
-	// is skipped entirely when MayAct is set. Otherwise, the resolved actor
-	// claim (even "client_id") is in the EXTERNAL issuer's namespace and
-	// must match AllowedActors — it can never be compared against the
-	// authenticated ToolHive client directly.
+	// An enabled may_act claim is authoritative and enforced by
+	// checkDelegationConsent against the authenticated client —
+	// validateMayActShape above has already confirmed its own "iss" names
+	// this server, so may_act.sub is in ToolHive's own client namespace.
+	// AllowedActors below is skipped entirely when MayAct is set. Otherwise,
+	// the resolved actor claim (even "client_id") is in the EXTERNAL issuer's
+	// namespace and must match AllowedActors — it can never be compared against
+	// the authenticated ToolHive client directly.
 	if claims.MayAct == nil {
 		actor, err := resolveAllowedActor(issuerConfig, claims)
 		if err != nil {
@@ -563,6 +566,29 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	}
 
 	return claims, nil
+}
+
+// checkMayActAllowed rejects a may_act claim from an issuer that hasn't
+// opted in (issuerConfig.AllowMayAct false) before validating the claim's
+// shape: a malformed may_act on a disabled-by-default issuer should surface
+// this clearer, more-actionable message rather than "malformed 'may_act'
+// claim" — both paths reject the token either way, but this one names the
+// actual reason for the common case.
+//
+// selfIssuer (not issuerConfig.IssuerURL) is the correct comparison for
+// may_act's optional "iss" once shape validation runs: that member
+// identifies the namespace of may_act.sub, always compared against a
+// ToolHive client ID regardless of which issuer validated the surrounding
+// token. requireIss is true here — unlike the self-issued path, the external
+// path cannot leave "iss" optional; see validateMayActShape's doc comment.
+func checkMayActAllowed(extraClaims map[string]any, selfIssuer string, issuerConfig *externalIssuerConfig) error {
+	rawMayAct, ok := extraClaims["may_act"]
+	if ok && rawMayAct != nil && !issuerConfig.AllowMayAct {
+		return fmt.Errorf(
+			"subject token from issuer %q carries a may_act claim, but allow_may_act is disabled",
+			issuerConfig.IssuerURL)
+	}
+	return validateMayActShape(extraClaims, selfIssuer, true)
 }
 
 // ensureRegistered resolves issuerConfig.jwksURL — via OIDC discovery on
@@ -896,7 +922,8 @@ func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) er
 // selfIssuer or an already-registered issuer, an ActorClaim that
 // resolveAllowedActor can actually read from Extra (or ClientID), and a
 // well-formed AllowedDelegateClients (non-empty, no empty entries, and the
-// wildcard anyDelegateClient never combined with specific client IDs).
+// wildcard anyDelegateClient never combined with specific client IDs or
+// AllowMayAct).
 //
 // Error messages name TrustedIssuer's wire keys (issuer_url,
 // expected_audience, actor_claim), not its Go field names: TrustedIssuer is
@@ -937,6 +964,11 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 	if slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) && len(ti.AllowedDelegateClients) > 1 {
 		return fmt.Errorf(
 			"issuer_url %q: allowed_delegate_clients must not combine the wildcard %q with specific client IDs",
+			ti.IssuerURL, anyDelegateClient)
+	}
+	if ti.AllowMayAct && slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) {
+		return fmt.Errorf(
+			"issuer_url %q: allow_may_act must not be enabled when allowed_delegate_clients contains the wildcard %q",
 			ti.IssuerURL, anyDelegateClient)
 	}
 	// AllowPrivateIPs without a hand-configured jwks_url would let OIDC

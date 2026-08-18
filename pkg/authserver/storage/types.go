@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -550,6 +551,23 @@ type ClientRegistry interface {
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 
+// UpstreamTokenRowID is an opaque, process-local coordination key for one
+// logical upstream token row. Callers must not persist, log, or expose it.
+type UpstreamTokenRowID string
+
+// upstreamTokenRowID returns a SHA-256 digest of the supplied row-key components.
+// Each component is length-prefixed so the encoding is self-delimiting: distinct
+// inputs cannot share a canonical representation when a component contains the
+// delimiter. Hashing keeps the session ID out of a value that is easy to log.
+func upstreamTokenRowID(components ...string) UpstreamTokenRowID {
+	h := sha256.New()
+	for _, component := range components {
+		// hash.Hash.Write never returns an error.
+		_, _ = fmt.Fprintf(h, "%d:%s", len(component), component)
+	}
+	return UpstreamTokenRowID(hex.EncodeToString(h.Sum(nil)))
+}
+
 // UpstreamTokenStorage provides storage for tokens obtained from upstream identity providers.
 // The auth server exposes this interface via Server.UpstreamTokenStorage() for use by
 // middleware that needs to retrieve upstream tokens (e.g., token swap middleware that
@@ -560,6 +578,23 @@ type ClientRegistry interface {
 // A secondary lookup by (userID, providerID) is exposed via GetLatestUpstreamTokensForUser;
 // see that method for usage and security contract.
 type UpstreamTokenStorage interface {
+	// ResolveUpstreamTokenRowID returns an opaque non-empty identity for the
+	// (sessionID, providerName) row. Equal physical rows must resolve to equal
+	// IDs; implementations must NOT alias rows that are not physically the
+	// same row (e.g. two distinct sessionIDs), because the singleflight leader
+	// reads and writes under its own sessionID, and aliasing distinct rows
+	// would cross credentials between sessions. A backend whose storage key is
+	// derived from (sessionID, providerName) may legitimately map two
+	// different (sessionID, providerName) pairs to the same ID when they are
+	// the same physical row under that key scheme.
+	//
+	// Resolution must be local and side-effect-free (no I/O): it is called
+	// before the singleflight joins, so any I/O here gives every concurrent
+	// caller its own round-trip and partially defeats the deduplication. This
+	// ID is solely for process-local refresh coordination: callers must not
+	// persist, log, or expose it.
+	ResolveUpstreamTokenRowID(ctx context.Context, sessionID, providerName string) (UpstreamTokenRowID, error)
+
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
 	StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error

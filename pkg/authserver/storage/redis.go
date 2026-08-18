@@ -1044,6 +1044,18 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 	return nil
 }
 
+// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
+// coordination of a logical upstream-token row.
+func (s *RedisStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
+	if sessionID == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+	return upstreamTokenRowID(redisUpstreamKey(s.keyPrefix, sessionID, providerName)), nil
+}
+
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a new UpstreamTokens struct deserialized from Redis, which acts as
 // a defensive copy - callers cannot modify the stored data by mutating the return value.

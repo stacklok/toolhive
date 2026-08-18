@@ -863,6 +863,18 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 // Upstream Token Storage
 // -----------------------
 
+// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
+// coordination of a logical upstream-token row.
+func (*MemoryStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
+	if sessionID == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+	return upstreamTokenRowID(sessionID, providerName), nil
+}
+
 // StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 // A defensive copy is made to prevent aliasing issues.
 func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, providerName string, tokens *UpstreamTokens) error {

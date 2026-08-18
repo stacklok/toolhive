@@ -639,16 +639,18 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 // through a shell (execa with shell:true; see anthropics/claude-code#42593).
 //
 // It deliberately names "thv" bare rather than interpolating os.Executable().
-// An absolute path has to be quoted into a string that a different shell parses
-// on each platform — /bin/sh on POSIX, cmd.exe via ComSpec on Windows — and Go
-// has no portable shell-escaping primitive. Every Windows path also contains
-// backslashes, which no single quoting scheme survives in both shells. A bare
-// command has nothing to escape, so it is correct on every platform by
-// construction.
+// A bare command has nothing to escape, so it is correct in both /bin/sh and
+// cmd.exe without a platform branch, and it re-resolves on every invocation —
+// so upgrading, reinstalling, or relocating thv keeps working without re-running
+// "thv llm setup".
 //
-// The trade-off is that "thv" resolves via PATH when the tool invokes it, so a
-// binary earlier on PATH can shadow it and return an attacker-chosen token.
-// That requires an attacker who can already write to the user's PATH.
+// The trade-off is that it resolves via PATH at invocation time. A tool launched
+// without the user's shell PATH (e.g. from the macOS Dock, which inherits
+// launchd's environment) will not find thv, and a binary earlier on PATH can
+// shadow it. Both are accepted here: direct-mode tools are terminal-oriented.
+// Claude Desktop cannot accept them — it is only ever GUI-launched — so its
+// credential-helper shim uses the absolute TokenHelperPath instead (see
+// writeCredentialHelperShim in pkg/client).
 const tokenHelperShellCommand = "thv llm token" //nolint:gosec // G101: a command line, not a credential
 
 // buildTokenHelperArgv returns the argv-form of the token helper, for config

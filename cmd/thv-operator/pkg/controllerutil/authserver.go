@@ -797,12 +797,6 @@ func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig 
 
 	// Wire through the confidential-over-loopback-http opt-in (default off).
 	config.InsecureAllowConfidentialOverLoopbackHTTP = authConfig.InsecureAllowConfidentialOverLoopbackHTTP
-
-	if err := validateDelegateClients(config); err != nil {
-		return nil, err
-	}
-
-	return config, nil
 }
 
 // buildAuthServerSecretsConfig wires signing-key file paths, HMAC secret file

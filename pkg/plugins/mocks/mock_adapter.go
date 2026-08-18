@@ -69,6 +69,20 @@ func (mr *MockMaterializationAdapterMockRecorder) EnsureRegistered(ctx, req any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureRegistered", reflect.TypeOf((*MockMaterializationAdapter)(nil).EnsureRegistered), ctx, req)
 }
 
+// Health mocks base method.
+func (m *MockMaterializationAdapter) Health(ctx context.Context, req plugins.DematerializeRequest) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Health", ctx, req)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Health indicates an expected call of Health.
+func (mr *MockMaterializationAdapterMockRecorder) Health(ctx, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Health", reflect.TypeOf((*MockMaterializationAdapter)(nil).Health), ctx, req)
+}
+
 // Materialize mocks base method.
 func (m *MockMaterializationAdapter) Materialize(ctx context.Context, req plugins.MaterializeRequest) (*plugins.MaterializeResult, error) {
 	m.ctrl.T.Helper()

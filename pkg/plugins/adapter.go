@@ -108,6 +108,12 @@ type MaterializationAdapter interface {
 	// so a failed upgrade does not leave the client unable to discover the
 	// plugin. Must be idempotent.
 	EnsureRegistered(ctx context.Context, req DematerializeRequest) error
+	// Health reports whether this plugin is fully materialized for the client:
+	// the plugin tree exists and any required marketplace or settings
+	// registration is present. A missing directory or registration is an
+	// error. Health must not hash shared files into a content digest — it is
+	// a presence check, not a pin.
+	Health(ctx context.Context, req DematerializeRequest) error
 	// SupportedComponents returns the component types this adapter loads.
 	SupportedComponents() []ComponentType
 	// ScopeSupport reports whether a project-scoped install degrades for this

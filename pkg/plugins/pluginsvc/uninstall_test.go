@@ -4,8 +4,10 @@
 package pluginsvc
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -123,6 +125,94 @@ func TestUninstall(t *testing.T) {
 		assert.Contains(t, err.Error(), "etcd unavailable")
 	})
 
+	// A failure on the second group update restores the membership already
+	// removed from the first group before returning.
+	t.Run("second group update failure restores first membership", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
+		gm := groupmocks.NewMockManager(ctrl)
+
+		existing := plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Clients:  []string{"claude-code"},
+		}
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
+		adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil)
+
+		groupA := map[string][]string{"alpha": {"my-plugin", "other"}, "beta": {"my-plugin"}}
+		gm.EXPECT().List(gomock.Any()).Return([]*groups.Group{
+			{Name: "alpha", Plugins: append([]string(nil), groupA["alpha"]...)},
+			{Name: "beta", Plugins: append([]string(nil), groupA["beta"]...)},
+		}, nil)
+		gm.EXPECT().Get(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, name string) (*groups.Group, error) {
+				return &groups.Group{Name: name, Plugins: append([]string(nil), groupA[name]...)}, nil
+			},
+		).AnyTimes()
+		gm.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, g *groups.Group) error {
+				if g.Name == "beta" && !slices.Contains(g.Plugins, "my-plugin") {
+					return errors.New("beta update failed")
+				}
+				groupA[g.Name] = append([]string(nil), g.Plugins...)
+				return nil
+			},
+		).AnyTimes()
+
+		svc := newTestService(WithStore(store), WithGroupManager(gm),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		err := svc.Uninstall(t.Context(), plugins.UninstallOptions{Name: "my-plugin"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "beta update failed")
+		assert.Contains(t, groupA["alpha"], "my-plugin",
+			"the membership removed from alpha must be restored after beta fails")
+	})
+
+	// A DB-delete failure after successful group removal restores every
+	// removed membership so the still-installed plugin stays attached.
+	t.Run("store delete failure restores group memberships", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
+		gm := groupmocks.NewMockManager(ctrl)
+
+		existing := plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Clients:  []string{"claude-code"},
+		}
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
+		adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil)
+		store.EXPECT().Delete(gomock.Any(), "my-plugin", plugins.ScopeUser, "").
+			Return(errors.New("db locked"))
+
+		memberships := map[string][]string{"alpha": {"my-plugin"}}
+		gm.EXPECT().List(gomock.Any()).Return([]*groups.Group{
+			{Name: "alpha", Plugins: append([]string(nil), memberships["alpha"]...)},
+		}, nil)
+		gm.EXPECT().Get(gomock.Any(), "alpha").DoAndReturn(
+			func(context.Context, string) (*groups.Group, error) {
+				return &groups.Group{Name: "alpha", Plugins: append([]string(nil), memberships["alpha"]...)}, nil
+			},
+		).AnyTimes()
+		gm.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, g *groups.Group) error {
+				memberships[g.Name] = append([]string(nil), g.Plugins...)
+				return nil
+			},
+		).AnyTimes()
+
+		svc := newTestService(WithStore(store), WithGroupManager(gm),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		err := svc.Uninstall(t.Context(), plugins.UninstallOptions{Name: "my-plugin"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db locked")
+		assert.Contains(t, memberships["alpha"], "my-plugin",
+			"a failed DB delete must restore the removed group membership")
+	})
+
 	// A missing materializer for a stored client type is skipped (not an error)
 	// on unmanaged uninstall; the remaining clients dematerialize and the
 	// record is deleted.
@@ -191,10 +281,12 @@ func TestUninstall(t *testing.T) {
 		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
 		adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil)
 		store.EXPECT().Delete(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
-		// RemovePluginFromAllGroups lists groups, finds one containing the plugin, updates it.
+		// Group removal lists memberships, then removes per group (Get+Update).
 		gm.EXPECT().List(gomock.Any()).Return([]*groups.Group{
 			{Name: "mygroup", Plugins: []string{"my-plugin", "other"}},
 		}, nil)
+		gm.EXPECT().Get(gomock.Any(), "mygroup").
+			Return(&groups.Group{Name: "mygroup", Plugins: []string{"my-plugin", "other"}}, nil)
 		gm.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
 
 		svc := newTestService(WithStore(store), WithGroupManager(gm),

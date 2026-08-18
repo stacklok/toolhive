@@ -6,6 +6,7 @@ package pluginsvc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -51,6 +52,13 @@ func (a *extractingAdapter) Dematerialize(_ context.Context, req plugins.Demater
 }
 
 func (*extractingAdapter) EnsureRegistered(context.Context, plugins.DematerializeRequest) error {
+	return nil
+}
+
+func (a *extractingAdapter) Health(_ context.Context, req plugins.DematerializeRequest) error {
+	if _, err := os.Stat(filepath.Join(a.base, req.Name)); err != nil {
+		return fmt.Errorf("plugin directory missing: %w", err)
+	}
 	return nil
 }
 
@@ -470,6 +478,10 @@ func (*failingMaterializeAdapter) EnsureRegistered(context.Context, plugins.Dema
 	return nil
 }
 
+func (*failingMaterializeAdapter) Health(context.Context, plugins.DematerializeRequest) error {
+	return nil
+}
+
 func (*failingMaterializeAdapter) SupportedComponents() []plugins.ComponentType {
 	return nil
 }
@@ -712,6 +724,89 @@ func TestInstallFresh_LockWriteFailureRestoresPreexistingTree(t *testing.T) {
 		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
 	})
 	require.ErrorIs(t, infoErr, storage.ErrNotFound)
+}
+
+// registrationTrackingAdapter mimics Claude Code: Materialize extracts and
+// registers, Dematerialize removes and deregisters, EnsureRegistered
+// re-registers, Health fails unless registered.
+type registrationTrackingAdapter struct {
+	extractingAdapter
+	registered bool
+}
+
+func (a *registrationTrackingAdapter) Materialize(
+	ctx context.Context, req plugins.MaterializeRequest,
+) (*plugins.MaterializeResult, error) {
+	res, err := a.extractingAdapter.Materialize(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	a.registered = true
+	return res, nil
+}
+
+func (a *registrationTrackingAdapter) Dematerialize(ctx context.Context, req plugins.DematerializeRequest) error {
+	a.registered = false
+	return a.extractingAdapter.Dematerialize(ctx, req)
+}
+
+func (a *registrationTrackingAdapter) EnsureRegistered(context.Context, plugins.DematerializeRequest) error {
+	a.registered = true
+	return nil
+}
+
+func (a *registrationTrackingAdapter) Health(ctx context.Context, req plugins.DematerializeRequest) error {
+	if !a.registered {
+		return errors.New("plugin is not registered")
+	}
+	return a.extractingAdapter.Health(ctx, req)
+}
+
+// A forced install over a pre-existing unmanaged tree that was NOT registered
+// must not leave the plugin registered after rollback: restore reproduces the
+// exact snapshot state (files present, registration absent).
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallFresh_RollbackDoesNotRegisterUnmanagedTree(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	cm := client.NewTestClientManagerWithHome(t.TempDir())
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.clientManager = cm
+	tracking := &registrationTrackingAdapter{
+		extractingAdapter: extractingAdapter{
+			base:      filepath.Join(projectRoot, ".claude", "plugins"),
+			installer: skills.NewInstaller(),
+		},
+	}
+	inner.materializers["claude-code"] = tracking
+
+	pluginDir, err := cm.GetPluginPath(client.ClaudeCode, "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(pluginDir, "commands"), 0o750))
+	prior := []byte("# prior unregistered unmanaged")
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "commands", "hello.md"), prior, 0o644))
+	require.False(t, tracking.registered, "precondition: the unmanaged tree is not registered")
+
+	// Make lock writes fail after extraction/DB create.
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+		Force:       true,
+	})
+	require.Error(t, err)
+
+	got, readErr := os.ReadFile(filepath.Join(pluginDir, "commands", "hello.md")) //nolint:gosec
+	require.NoError(t, readErr)
+	assert.Equal(t, string(prior), string(got),
+		"a failed Force install must restore the pre-existing unmanaged tree")
+	assert.False(t, tracking.registered,
+		"rollback must not register a tree that was unregistered at snapshot time")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService

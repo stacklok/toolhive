@@ -131,7 +131,7 @@ func (s *service) installExtractionUpgradeDigest(
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
 	allClients := mergeClientLists(existing.Clients, clientTypes)
-	backups, snapErr := s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, allClients)
+	backups, snapErr := s.snapshotClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, allClients)
 	if snapErr != nil {
 		return nil, fmt.Errorf("snapshotting installed plugin trees: %w", snapErr)
 	}
@@ -184,10 +184,10 @@ func (s *service) materializeAndPersist(
 	create bool,
 ) (*plugins.InstallResult, error) {
 	useSnapshot := s.clientManager != nil
-	var backups map[string]map[string]fileSnapshot
+	var backups map[string]clientTreeBackup
 	if useSnapshot {
 		var snapErr error
-		backups, snapErr = s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, targetClients)
+		backups, snapErr = s.snapshotClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, targetClients)
 		if snapErr != nil {
 			return nil, fmt.Errorf("snapshotting plugin trees before install: %w", snapErr)
 		}
@@ -285,6 +285,16 @@ type fileSnapshot struct {
 	mode fs.FileMode
 }
 
+// clientTreeBackup is one client's pre-mutation state: the plugin tree files
+// plus whether the adapter reported the plugin as registered at snapshot
+// time. Restore must reproduce that exact state — re-registering a tree that
+// was never registered would make a failed install enable a previously
+// undiscoverable unmanaged plugin.
+type clientTreeBackup struct {
+	files      map[string]fileSnapshot
+	registered bool
+}
+
 // snapshotFileModeMask strips setuid/setgid/sticky and caps at 0755, matching
 // skills.PluginFilePermissionMask so restored hooks keep +x without restoring
 // unsafe bits.
@@ -296,14 +306,16 @@ func sanitizeFileMode(mode fs.FileMode) fs.FileMode {
 
 // snapshotClientTrees copies each client's installed plugin tree into memory
 // so a later rollback can restore the previous materialization without
-// leaking temp directories. Missing directories are omitted (the client was
-// not yet installed). A walk/read error on an existing tree is returned so
-// the caller can abort before mutating. Path-resolution failures (including
-// a missing ClientManager) abort rather than being treated as "not installed."
+// leaking temp directories, recording alongside each tree whether the
+// adapter considered the plugin registered at snapshot time. Missing
+// directories are omitted (the client was not yet installed). A walk/read
+// error on an existing tree is returned so the caller can abort before
+// mutating. Path-resolution failures (including a missing ClientManager)
+// abort rather than being treated as "not installed."
 func (s *service) snapshotClientTrees(
-	name string, scope plugins.Scope, projectRoot string, clientTypes []string,
-) (map[string]map[string]fileSnapshot, error) {
-	backups := make(map[string]map[string]fileSnapshot, len(clientTypes))
+	ctx context.Context, name string, scope plugins.Scope, projectRoot string, clientTypes []string,
+) (map[string]clientTreeBackup, error) {
+	backups := make(map[string]clientTreeBackup, len(clientTypes))
 	var errs []error
 	for _, ct := range clientTypes {
 		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
@@ -318,7 +330,15 @@ func (s *service) snapshotClientTrees(
 			errs = append(errs, fmt.Errorf("snapshotting %s copy of %q: %w", ct, name, err))
 			continue
 		}
-		backups[ct] = files
+		registered := false
+		if adapter, ok := s.materializers[ct]; ok {
+			registered = adapter.Health(ctx, plugins.DematerializeRequest{
+				Name:        name,
+				Scope:       scope,
+				ProjectRoot: projectRoot,
+			}) == nil
+		}
+		backups[ct] = clientTreeBackup{files: files, registered: registered}
 	}
 	if len(errs) > 0 {
 		return backups, errors.Join(errs...)
@@ -329,31 +349,46 @@ func (s *service) snapshotClientTrees(
 	return backups, nil
 }
 
-// restoreClientTrees writes snapshotClientTrees backups back over the live
-// plugin directories and re-registers each restored client so marketplace
-// and settings entries match the restored tree. Clients without a backup are
-// dematerialized (they were newly added by the failed install).
+// restoreClientTrees restores each backed-up client to its exact snapshot
+// state: any registration the failed operation added is cleared via
+// Dematerialize, the snapshotted tree is rewritten, and marketplace/settings
+// entries are re-registered only when the snapshot found them registered.
+// Clients without a backup are dematerialized (they were newly added by the
+// failed install).
 func (s *service) restoreClientTrees(
 	ctx context.Context,
 	name string,
 	scope plugins.Scope,
 	projectRoot string,
-	backups map[string]map[string]fileSnapshot,
+	backups map[string]clientTreeBackup,
 	allClients []string,
 ) error {
 	var errs []error
 	restored := make(map[string]struct{}, len(backups))
-	for ct, files := range backups {
+	for ct, backup := range backups {
 		restored[ct] = struct{}{}
 		dir, err := s.pluginInstallPath(ct, name, scope, projectRoot)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("resolving %s install path: %w", ct, err))
 			continue
 		}
-		if err := restoreDir(dir, files); err != nil {
+		adapter, hasAdapter := s.materializers[ct]
+		// Clear whatever files/registration the failed operation left behind
+		// before rewriting the snapshot, so a tree that was unregistered at
+		// snapshot time does not stay registered after rollback.
+		if hasAdapter {
+			if err := adapter.Dematerialize(ctx, plugins.DematerializeRequest{
+				Name:        name,
+				Scope:       scope,
+				ProjectRoot: projectRoot,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("clearing %s state before restore: %w", ct, err))
+			}
+		}
+		if err := restoreDir(dir, backup.files); err != nil {
 			errs = append(errs, fmt.Errorf("restoring %s plugin tree: %w", ct, err))
 		}
-		if adapter, ok := s.materializers[ct]; ok {
+		if hasAdapter && backup.registered {
 			if err := adapter.EnsureRegistered(ctx, plugins.DematerializeRequest{
 				Name:        name,
 				Scope:       scope,

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -73,10 +74,10 @@ func (s *service) uninstallExisting(
 		return err
 	}
 
-	var backups map[string]map[string]fileSnapshot
+	var backups map[string]clientTreeBackup
 	if restoreLock != nil {
 		var snapErr error
-		backups, snapErr = s.snapshotClientTrees(opts.Name, scope, opts.ProjectRoot, existing.Clients)
+		backups, snapErr = s.snapshotClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, existing.Clients)
 		if snapErr != nil {
 			return errors.Join(
 				fmt.Errorf("snapshotting plugin trees before uninstall: %w", snapErr),
@@ -92,49 +93,74 @@ func (s *service) uninstallExisting(
 		))...)
 	}
 
-	if err := s.removePluginGroups(ctx, opts.Name, restoreLock, scope, opts.ProjectRoot, backups, existing.Clients); err != nil {
+	restoreGroups, groupErr := s.removePluginGroups(ctx, opts.Name)
+	if groupErr != nil {
 		if restoreLock != nil {
-			return err
-		}
-		return errors.Join(append(cleanupErrs, err)...)
-	}
-
-	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
-		if restoreLock != nil {
-			return errors.Join(err, s.compensateManagedUninstall(
+			return errors.Join(groupErr, s.compensateManagedUninstall(
 				ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
 			))
 		}
-		return err
+		return errors.Join(append(cleanupErrs, groupErr)...)
+	}
+
+	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
+		restoreErrs := []error{err}
+		if restoreGroups != nil {
+			restoreErrs = append(restoreErrs, restoreGroups(ctx))
+		}
+		if restoreLock != nil {
+			restoreErrs = append(restoreErrs, s.compensateManagedUninstall(
+				ctx, restoreLock, opts.Name, scope, opts.ProjectRoot, backups, existing.Clients,
+			))
+		}
+		return errors.Join(restoreErrs...)
 	}
 	return errors.Join(cleanupErrs...)
 }
 
-// removePluginGroups removes the plugin from all groups before DB delete so a
-// failed cleanup remains retryable. Managed failures compensate lock/files.
+// removePluginGroups removes the plugin from every group that references it,
+// before the DB delete so a failed cleanup remains retryable. Group updates
+// run sequentially and can fail midway, so memberships are snapshotted first:
+// a mid-removal failure re-adds the memberships already removed, and the
+// returned restore func lets a later DB-delete failure reinstate all of them.
+// The restore func is nil when the plugin belonged to no group.
 func (s *service) removePluginGroups(
-	ctx context.Context,
-	name string,
-	restoreLock func() error,
-	scope plugins.Scope,
-	projectRoot string,
-	backups map[string]map[string]fileSnapshot,
-	clients []string,
-) error {
+	ctx context.Context, name string,
+) (restore func(context.Context) error, err error) {
 	if s.groupManager == nil {
-		return nil
+		return nil, nil
 	}
-	groupErr := groups.RemovePluginFromAllGroups(ctx, s.groupManager, name)
-	if groupErr == nil {
-		return nil
+	all, err := s.groupManager.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("removing plugin from groups: listing groups: %w", err)
 	}
-	groupErr = fmt.Errorf("removing plugin from groups: %w", groupErr)
-	if restoreLock != nil {
-		return errors.Join(groupErr, s.compensateManagedUninstall(
-			ctx, restoreLock, name, scope, projectRoot, backups, clients,
-		))
+	var members []string
+	for _, g := range all {
+		if slices.Contains(g.Plugins, name) {
+			members = append(members, g.Name)
+		}
 	}
-	return groupErr
+	if len(members) == 0 {
+		return nil, nil
+	}
+	restoreUpTo := func(ctx context.Context, upTo int) error {
+		var errs []error
+		for _, groupName := range members[:upTo] {
+			if _, addErr := groups.AddPluginToGroup(ctx, s.groupManager, groupName, name); addErr != nil {
+				errs = append(errs, fmt.Errorf("restoring plugin membership in group %q: %w", groupName, addErr))
+			}
+		}
+		return errors.Join(errs...)
+	}
+	for i, groupName := range members {
+		if removeErr := groups.RemovePluginFromGroup(ctx, s.groupManager, groupName, name); removeErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("removing plugin from groups: group %q: %w", groupName, removeErr),
+				restoreUpTo(ctx, i),
+			)
+		}
+	}
+	return func(ctx context.Context) error { return restoreUpTo(ctx, len(members)) }, nil
 }
 
 // requireMaterializers fails closed when a managed uninstall would delete the
@@ -161,7 +187,7 @@ func (s *service) compensateManagedUninstall(
 	name string,
 	scope plugins.Scope,
 	projectRoot string,
-	backups map[string]map[string]fileSnapshot,
+	backups map[string]clientTreeBackup,
 	clients []string,
 ) error {
 	return errors.Join(

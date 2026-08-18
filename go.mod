@@ -86,7 +86,7 @@ require github.com/hashicorp/golang-lru/v2 v2.0.7
 
 require (
 	github.com/github/smimesign v0.2.0
-	go.starlark.net v0.0.0-20260630144053-529d8e869a14
+	go.starlark.net v0.0.0-20260708150628-5395d018f003
 )
 
 require (

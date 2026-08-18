@@ -732,7 +732,7 @@ spec:
                           in self.allowedDelegateClients)'
                       - message: actorClaim must name a readable claim; use client_id
                           or a non-reserved claim such as azp, appid, or cid
-                        rule: self.actorClaim == ” || !(self.actorClaim in ['sub',
+                        rule: self.actorClaim == '' || !(self.actorClaim in ['sub',
                           'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email',
                           'scope', 'scp', 'may_act'])
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly
@@ -4577,7 +4577,7 @@ spec:
                           in self.allowedDelegateClients)'
                       - message: actorClaim must name a readable claim; use client_id
                           or a non-reserved claim such as azp, appid, or cid
-                        rule: self.actorClaim == ” || !(self.actorClaim in ['sub',
+                        rule: self.actorClaim == '' || !(self.actorClaim in ['sub',
                           'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email',
                           'scope', 'scp', 'may_act'])
                       - message: allowPrivateIPs requires jwksUrl to be set explicitly

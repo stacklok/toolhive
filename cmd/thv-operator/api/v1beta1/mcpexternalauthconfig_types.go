@@ -397,7 +397,7 @@ type DelegateClientConfig struct {
 //
 // +kubebuilder:validation:XValidation:rule="!('*' in self.allowedDelegateClients) || size(self.allowedDelegateClients) == 1",message="allowedDelegateClients must not combine the wildcard \"*\" with specific client IDs"
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowMayAct) && self.allowMayAct && '*' in self.allowedDelegateClients)",message="allowMayAct must not be enabled when allowedDelegateClients contains the wildcard \"*\""
-// +kubebuilder:validation:XValidation:rule="self.actorClaim == ” || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
+// +kubebuilder:validation:XValidation:rule="self.actorClaim == '' || !(self.actorClaim in ['sub', 'iss', 'aud', 'exp', 'iat', 'nbf', 'jti', 'name', 'email', 'scope', 'scp', 'may_act'])",message="actorClaim must name a readable claim; use client_id or a non-reserved claim such as azp, appid, or cid"
 // +kubebuilder:validation:XValidation:rule="!(has(self.allowPrivateIPs) && self.allowPrivateIPs) || (has(self.jwksUrl) && self.jwksUrl != \"\")",message="allowPrivateIPs requires jwksUrl to be set explicitly"
 //
 //nolint:lll // CEL validation rule exceeds line length limit

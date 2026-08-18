@@ -728,6 +728,9 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			// Progress does not end the request; keep waiting for more
 			// progress or the final response.
 		case msg := <-waitCh:
+			if p.writePendingSSEProgress(w, flusher, deliverCh) {
+				return
+			}
 			p.writeSingleRequestSSEFinalResponse(w, flusher, msg, ck)
 			return
 		case <-ctx.Done():
@@ -741,6 +744,33 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			return
 		}
 	}
+}
+
+// writePendingSSEProgress drains progress notifications that arrived before a
+// final response was selected. It returns true when writing fails.
+func (p *HTTPProxy) writePendingSSEProgress(
+	w http.ResponseWriter, flusher http.Flusher, deliverCh <-chan jsonrpc2.Message,
+) bool {
+	for deliverCh != nil {
+		select {
+		case progressMsg, ok := <-deliverCh:
+			if !ok {
+				return false
+			}
+			data, err := jsonrpc2.EncodeMessage(progressMsg)
+			if err != nil {
+				slog.Error("failed to encode progress notification", "error", err)
+				continue
+			}
+			if err := writeSSEData(w, flusher, data); err != nil {
+				slog.Debug("failed to write progress notification to SSE stream", "error", err)
+				return true
+			}
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // writeSingleRequestSSEFinalResponse restores msg's original client ID (if it

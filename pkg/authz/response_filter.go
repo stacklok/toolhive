@@ -93,6 +93,15 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 	rawResponse := rfw.buffer.Bytes()
 
+	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
+	// before parsing, so strip it here too. Otherwise a BOM-prefixed list
+	// response fails every decode and sniff below (Go's encoding/json treats
+	// EF BB BF as a syntax error, not whitespace) and passes through
+	// unfiltered. This mirrors the SSE-path fix in processSSEResponse, and
+	// doing it once here covers the JSON decode path as well as both the
+	// JSON and SSE smuggled-result sniffs in the default branch below.
+	rawResponse = bytes.TrimPrefix(rawResponse, mcpparser.UTF8BOM)
+
 	// Skip filtering for empty responses (common in SSE scenarios where actual data comes via SSE stream)
 	if len(rawResponse) == 0 {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -143,6 +152,10 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
 		}
+		// The leading BOM was removed above, so the backend's Content-Length
+		// is now three bytes too large even though this fallback doesn't filter
+		// the body. Clear it before writing to avoid a truncated response.
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
@@ -265,7 +278,7 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	// before parsing lines, so strip it here too: otherwise the first line's
 	// "data:" prefix wouldn't match and the event would pass through
 	// unfiltered.
-	rawResponse = bytes.TrimPrefix(rawResponse, []byte("\xEF\xBB\xBF"))
+	rawResponse = bytes.TrimPrefix(rawResponse, mcpparser.UTF8BOM)
 
 	var outputLines []sseLine
 	var event []sseLine

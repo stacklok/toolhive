@@ -980,10 +980,31 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document.
+                                  minLength: 1
+                                  type: string
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -999,6 +1020,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -3870,10 +3894,31 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document.
+                                  minLength: 1
+                                  type: string
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -3889,6 +3934,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)

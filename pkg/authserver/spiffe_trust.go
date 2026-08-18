@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -32,6 +33,8 @@ const (
 
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeFile selects a locally mounted SPIFFE trust bundle.
+	SPIFFEBundleSourceTypeFile SPIFFEBundleSourceType = "file"
 	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 
@@ -83,6 +86,7 @@ type SPIFFEBundleSourceRunConfig struct {
 	Type SPIFFEBundleSourceType `json:"type" yaml:"type"`
 
 	Endpoint    *SPIFFEBundleEndpointSourceRunConfig    `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	File        *SPIFFEFileBundleSourceRunConfig        `json:"file,omitempty" yaml:"file,omitempty"`
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceRunConfig `json:"workload_api,omitempty" yaml:"workload_api,omitempty"`
 }
 
@@ -97,6 +101,13 @@ type SPIFFEBundleEndpointSourceRunConfig struct {
 	// authenticate the initial connection; https_spiffe is rejected until
 	// bootstrap trust configuration is supported.
 	Profile SPIFFEBundleEndpointProfile `json:"profile" yaml:"profile"`
+}
+
+// SPIFFEFileBundleSourceRunConfig declares a trust bundle read from a local
+// file, typically a mounted ConfigMap or Secret containing a SPIFFE JWKS
+// trust-bundle document.
+type SPIFFEFileBundleSourceRunConfig struct {
+	Path string `json:"path" yaml:"path"`
 }
 
 // SPIFFEWorkloadAPIBundleSourceRunConfig selects the local SPIFFE Workload API.
@@ -283,27 +294,36 @@ type SPIFFEBundleSourceConfig struct {
 	sourceType SPIFFEBundleSourceType
 	endpoint   string
 	profile    SPIFFEBundleEndpointProfile
+	path       string
 }
 
 // Type returns the selected bundle-source type.
 func (c SPIFFEBundleSourceConfig) Type() SPIFFEBundleSourceType { return c.sourceType }
 
 // Endpoint returns the configured Bundle Endpoint URL, or an empty string for
-// a Workload API source.
+// a Workload API or file source.
 func (c SPIFFEBundleSourceConfig) Endpoint() string { return c.endpoint }
 
 // Profile returns the configured Bundle Endpoint authentication profile, or
-// an empty string for a Workload API source.
+// an empty string for a Workload API or file source.
 func (c SPIFFEBundleSourceConfig) Profile() SPIFFEBundleEndpointProfile { return c.profile }
 
+// Path returns the configured local bundle file path, or an empty string for
+// a Bundle Endpoint or Workload API source.
+func (c SPIFFEBundleSourceConfig) Path() string { return c.path }
+
 func normalizeSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig) SPIFFEBundleSourceConfig {
-	if source.Endpoint == nil {
+	switch {
+	case source.Endpoint != nil:
+		return SPIFFEBundleSourceConfig{
+			sourceType: source.Type,
+			endpoint:   source.Endpoint.URL,
+			profile:    source.Endpoint.Profile,
+		}
+	case source.File != nil:
+		return SPIFFEBundleSourceConfig{sourceType: source.Type, path: source.File.Path}
+	default:
 		return SPIFFEBundleSourceConfig{sourceType: source.Type}
-	}
-	return SPIFFEBundleSourceConfig{
-		sourceType: source.Type,
-		endpoint:   source.Endpoint.URL,
-		profile:    source.Endpoint.Profile,
 	}
 }
 
@@ -469,18 +489,39 @@ func validateSPIFFETrustDomains(domains []SPIFFETrustDomainRunConfig) (map[strin
 func validateSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig, index int) error {
 	switch source.Type {
 	case SPIFFEBundleSourceTypeEndpoint:
-		if source.Endpoint == nil || source.WorkloadAPI != nil {
+		if source.Endpoint == nil || source.File != nil || source.WorkloadAPI != nil {
 			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires endpoint only", index, source.Type)
 		}
 		return validateSPIFFEBundleEndpoint(*source.Endpoint, index)
+	case SPIFFEBundleSourceTypeFile:
+		if source.File == nil || source.Endpoint != nil || source.WorkloadAPI != nil {
+			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires file only", index, source.Type)
+		}
+		return validateSPIFFEBundleFilePath(source.File.Path, index)
 	case SPIFFEBundleSourceTypeWorkloadAPI:
-		if source.WorkloadAPI == nil || source.Endpoint != nil {
+		if source.WorkloadAPI == nil || source.Endpoint != nil || source.File != nil {
 			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires workload_api only", index, source.Type)
 		}
 		return nil
 	default:
 		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.type: unknown source type %q", index, source.Type)
 	}
+}
+
+// validateSPIFFEBundleFilePath validates the context-independent shape of a
+// local trust-bundle file path: it must be a non-empty absolute path with no
+// traversal segments. It does not check that the file exists or parses as a
+// SPIFFE trust bundle, which is deferred to the bundle-loading implementation.
+func validateSPIFFEBundleFilePath(path string, index int) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.file.path must be a non-empty absolute path", index)
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.file.path must not contain traversal segments", index)
+		}
+	}
+	return nil
 }
 
 func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, index int) error {

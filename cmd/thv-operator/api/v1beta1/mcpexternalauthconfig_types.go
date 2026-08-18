@@ -607,6 +607,8 @@ const (
 
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.
+	SPIFFEBundleSourceTypeFile SPIFFEBundleSourceType = "file"
 	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 
@@ -624,13 +626,14 @@ const (
 // refreshed for its lifetime.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' ? has(self.endpoint) : !has(self.endpoint)",message="endpoint configuration must be set if and only if type is 'bundle_endpoint'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'file' ? has(self.file) : !has(self.file)",message="file configuration must be set if and only if type is 'file'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'workload_api' ? has(self.workloadAPI) : !has(self.workloadAPI)",message="workloadAPI configuration must be set if and only if type is 'workload_api'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type SPIFFEBundleSourceConfig struct {
 	// Type selects the trust-bundle source.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=bundle_endpoint;workload_api
+	// +kubebuilder:validation:Enum=bundle_endpoint;file;workload_api
 	Type SPIFFEBundleSourceType `json:"type"`
 
 	// Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
@@ -638,10 +641,30 @@ type SPIFFEBundleSourceConfig struct {
 	// +optional
 	Endpoint *SPIFFEBundleEndpointSourceConfig `json:"endpoint,omitempty"`
 
+	// File declares a SPIFFE trust bundle projected from a ConfigMap.
+	// Required when Type is "file".
+	// +optional
+	File *SPIFFEFileBundleSourceConfig `json:"file,omitempty"`
+
 	// WorkloadAPI selects the local SPIFFE Workload API. Required when Type
 	// is "workload_api".
 	// +optional
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceConfig `json:"workloadAPI,omitempty"`
+}
+
+// SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+// trust-bundle JWKS document, typically projected as a mounted file.
+type SPIFFEFileBundleSourceConfig struct {
+	// ConfigMapName is the name of the ConfigMap containing the trust bundle.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ConfigMapName string `json:"configMapName"`
+
+	// ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+	// trust-bundle document.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ConfigMapKey string `json:"configMapKey"`
 }
 
 // SPIFFEBundleEndpointSourceConfig declares a HTTPS SPIFFE Bundle Endpoint.

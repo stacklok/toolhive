@@ -31,6 +31,7 @@ Every trust domain declares exactly one `bundle_source`, a discriminated union n
 - `type: bundle_endpoint` requires an `endpoint` block with:
   - `url`: an absolute HTTPS URL with no userinfo, query string, or fragment; the host must not be an IP literal and must not be a loopback address.
   - `profile`: either `https_web` (the endpoint's TLS connection is authenticated with a Web PKI certificate) or `https_spiffe` (authenticated with an X.509-SVID trusted by a separately distributed root), per the SPIFFE Bundle Endpoint profiles.
+- `type: file` requires a `file` block naming a locally mounted SPIFFE JWKS trust-bundle document. On `RunConfig` this is an absolute filesystem path; the CRD instead names a `configMapName`/`configMapKey` pair, since the operator projects that ConfigMap key into a per-domain directory under `/etc/toolhive/authserver/spiffe-bundles/<index>/bundle.json` rather than accepting a raw path.
 - `type: workload_api` selects the local SPIFFE Workload API and carries no payload.
 
 The following canonical operator excerpt shows the supported shape. `allowedAudiences` is intentionally absent here: it is not a configurable field on `embeddedAuthServer` — it is derived at reconcile time from the resolved incoming OIDC configuration.

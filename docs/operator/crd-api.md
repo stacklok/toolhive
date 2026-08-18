@@ -4285,8 +4285,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint workload_api] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ | Type selects the trust-bundle source. |  | Enum: [bundle_endpoint file workload_api] <br />Required: \{\} <br /> |
 | `endpoint` _[api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)_ | Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is<br />"bundle_endpoint". |  | Optional: \{\} <br /> |
+| `file` _[api.v1beta1.SPIFFEFileBundleSourceConfig](#apiv1beta1spiffefilebundlesourceconfig)_ | File declares a SPIFFE trust bundle projected from a ConfigMap.<br />Required when Type is "file". |  | Optional: \{\} <br /> |
 | `workloadAPI` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI selects the local SPIFFE Workload API. Required when Type<br />is "workload_api". |  | Optional: \{\} <br /> |
 
 
@@ -4305,6 +4306,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `bundle_endpoint` | SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.<br /> |
+| `file` | SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.<br /> |
 | `workload_api` | SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.<br /> |
 
 
@@ -4334,6 +4336,24 @@ _Appears in:_
 | `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
 | `grantTypes` _string array_ | GrantTypes contains the OAuth grants permitted for this association. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [client_credentials urn:ietf:params:oauth:grant-type:token-exchange] <br /> |
 | `tokenExchange` _[api.v1beta1.SPIFFETokenExchangeConfig](#apiv1beta1spiffetokenexchangeconfig)_ | TokenExchange enables token exchange when the token-exchange grant is selected. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEFileBundleSourceConfig
+
+
+
+SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+trust-bundle JWKS document, typically projected as a mounted file.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapName` _string_ | ConfigMapName is the name of the ConfigMap containing the trust bundle. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `configMapKey` _string_ | ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS<br />trust-bundle document. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFETokenExchangeConfig

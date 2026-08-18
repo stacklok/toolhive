@@ -1048,6 +1048,11 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: false,
 		},
 		{
+			name:      "spiffe file bundle source is valid",
+			config:    mustEmbeddedAuthServerConfigWithFileBundleSource("spire-bundle", "bundle.json"),
+			expectErr: false,
+		},
+		{
 			name: "spiffe principal patterns reject an identical duplicate pair",
 			config: mustEmbeddedAuthServerConfigWithPrincipalPatterns(
 				"spiffe://example.org/ns/default/agent", "spiffe://example.org/ns/default/agent",
@@ -1281,6 +1286,40 @@ func mustEmbeddedAuthServerConfigWithBundleEndpoint(url string) *MCPExternalAuth
 						Type: SPIFFEBundleSourceTypeEndpoint,
 						Endpoint: &SPIFFEBundleEndpointSourceConfig{
 							URL: url, Profile: SPIFFEBundleEndpointProfileHTTPSWeb,
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// mustEmbeddedAuthServerConfigWithFileBundleSource builds a minimal valid
+// MCPExternalAuthConfig with a single spiffeTrustDomains entry whose
+// bundleSource is a file source referencing the given ConfigMap name and key.
+func mustEmbeddedAuthServerConfigWithFileBundleSource(configMapName, configMapKey string) *MCPExternalAuthConfig {
+	return &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				ListenerTLS: &ListenerTLSConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{
+							ConfigMapName: configMapName,
+							ConfigMapKey:  configMapKey,
 						},
 					},
 				}},

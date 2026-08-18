@@ -212,10 +212,7 @@ func NewRoleMapper(cfg *Config) (*RoleMapper, error) {
 func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 	// If no role mappings configured, use default role
 	if len(rm.mappings) == 0 {
-		if rm.config.FallbackRoleArn == "" {
-			return "", ErrMissingRoleConfig
-		}
-		return rm.config.FallbackRoleArn, nil
+		return rm.fallbackRole(ErrMissingRoleConfig)
 	}
 
 	// Find all matching mappings
@@ -280,10 +277,7 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 
 	// If no matches, fall back to default role
 	if len(matches) == 0 {
-		if rm.config.FallbackRoleArn == "" {
-			return "", fmt.Errorf("%w: no mapping matched for the provided claims", ErrNoRoleMapping)
-		}
-		return rm.config.FallbackRoleArn, nil
+		return rm.fallbackRole(fmt.Errorf("%w: no mapping matched for the provided claims", ErrNoRoleMapping))
 	}
 
 	// Sort by priority (lower number = higher priority).
@@ -295,6 +289,16 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 
 	// Return the highest priority match (lowest priority number)
 	return matches[0].roleArn, nil
+}
+
+// fallbackRole returns the configured fallback role, or missingErr when none
+// is configured. Callers provide their context-specific error to preserve the
+// distinction between missing configuration and unmatched mappings.
+func (rm *RoleMapper) fallbackRole(missingErr error) (string, error) {
+	if rm.config.FallbackRoleArn == "" {
+		return "", missingErr
+	}
+	return rm.config.FallbackRoleArn, nil
 }
 
 // ValidateConfig validates the AWS STS configuration structure.

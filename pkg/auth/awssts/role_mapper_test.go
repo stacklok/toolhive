@@ -779,3 +779,38 @@ func TestRoleMapper_SelectRole_UnsupportedRoleClaimShape(t *testing.T) {
 		})
 	}
 }
+
+func TestRoleMapper_SelectRole_MatcherMatchWinsOverInvalidRoleClaim(t *testing.T) {
+	t.Parallel()
+
+	matcherPriority := 1
+	claimPriority := 2
+	matcherRole := "arn:aws:iam::123456789012:role/MatcherRole"
+	cfg := &awssts.Config{
+		Region:          "us-east-1",
+		FallbackRoleArn: "arn:aws:iam::123456789012:role/FallbackRole",
+		RoleClaim:       "groups",
+		RoleMappings: []awssts.RoleMapping{
+			{
+				RoleArn:  matcherRole,
+				Matcher:  "claims.sub == 'admin1'",
+				Priority: &matcherPriority,
+			},
+			{
+				RoleArn:  "arn:aws:iam::123456789012:role/ClaimRole",
+				Claim:    "admins",
+				Priority: &claimPriority,
+			},
+		},
+	}
+
+	rm, err := awssts.NewRoleMapper(cfg)
+	require.NoError(t, err)
+
+	role, err := rm.SelectRole(map[string]any{
+		"sub":    "admin1",
+		"groups": map[string]any{"admins": true},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, matcherRole, role)
+}

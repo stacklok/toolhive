@@ -92,19 +92,19 @@ type compiledMapping struct {
 // Claim-based mappings bind claim_value and role_claim_key as variables so that
 // user-supplied values are never interpolated into CEL expression strings,
 // eliminating CEL injection by design. Matcher-based mappings only need claims.
-func (cm *compiledMapping) evalContext(claims map[string]any, roleClaim string) (map[string]any, error) {
+func (cm *compiledMapping) evalContext(
+	claims map[string]any,
+	normalizedClaims map[string]any,
+	roleClaim string,
+) map[string]any {
 	if cm.claimValue != "" {
-		claims, err := normalizeRoleClaim(claims, roleClaim)
-		if err != nil {
-			return nil, err
-		}
 		return map[string]any{
-			"claims":         claims,
+			"claims":         normalizedClaims,
 			"claim_value":    cm.claimValue,
 			"role_claim_key": roleClaim,
-		}, nil
+		}
 	}
-	return map[string]any{"claims": claims}, nil
+	return map[string]any{"claims": claims}
 }
 
 // normalizeRoleClaim returns a copy of claims whose role claim value is
@@ -125,26 +125,25 @@ func normalizeRoleClaim(claims map[string]any, roleClaim string) (map[string]any
 		// A missing role claim is a normal "no match", not an error: index the
 		// expression against an empty list so it evaluates false and SelectRole
 		// falls back as it always did.
-		clone := make(map[string]any, len(claims)+1)
-		for k, val := range claims {
-			clone[k] = val
-		}
-		clone[roleClaim] = []any{}
-		return clone, nil
+		return cloneClaimsWithRoleClaim(claims, roleClaim, []any{}), nil
 	}
 	switch t := v.(type) {
 	case string:
-		clone := make(map[string]any, len(claims)+1)
-		for k, val := range claims {
-			clone[k] = val
-		}
-		clone[roleClaim] = []any{t}
-		return clone, nil
+		return cloneClaimsWithRoleClaim(claims, roleClaim, []any{t}), nil
 	case []any, []string:
 		return claims, nil
 	default:
 		return nil, fmt.Errorf("role claim %q has unsupported value type %T (want string or list of strings)", roleClaim, v)
 	}
+}
+
+func cloneClaimsWithRoleClaim(claims map[string]any, roleClaim string, value any) map[string]any {
+	clone := make(map[string]any, len(claims)+1)
+	for key, claim := range claims {
+		clone[key] = claim
+	}
+	clone[roleClaim] = value
+	return clone
 }
 
 // RoleMapper handles mapping JWT claims to IAM roles with priority-based selection.
@@ -221,27 +220,43 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 
 	// Find all matching mappings
 	roleClaim := rm.config.GetRoleClaim()
+	normalizedClaims := claims
+	var normalizationErr error
+	for _, mapping := range rm.mappings {
+		if mapping.claimValue != "" {
+			normalizedClaims, normalizationErr = normalizeRoleClaim(claims, roleClaim)
+			break
+		}
+	}
 
 	var matches []compiledMapping
+	var claimMappingErr error
 	for _, mapping := range rm.mappings {
-		ctx, err := mapping.evalContext(claims, roleClaim)
-		if err != nil {
-			// Unsupported role claim shape: fail closed rather than granting
-			// the fallback role or a spuriously matched mapping.
+		if mapping.claimValue != "" && normalizationErr != nil {
+			// Keep evaluating other mappings: a valid matcher mapping may have
+			// already matched. If none do, fail closed below rather than granting
+			// the fallback role for an unsupported claim shape.
 			slog.Warn("role claim has unsupported shape, failing closed",
-				"role_arn", mapping.roleArn, "error", err)
-			return "", fmt.Errorf("%w: %w", ErrNoRoleMapping, err)
+				"role_arn", mapping.roleArn, "error", normalizationErr)
+			if claimMappingErr == nil {
+				claimMappingErr = normalizationErr
+			}
+			continue
 		}
 
+		ctx := mapping.evalContext(claims, normalizedClaims, roleClaim)
 		match, err := mapping.expr.EvaluateBool(ctx)
 		if err != nil {
 			if mapping.claimValue != "" {
 				// Claim-based mappings are normalized before evaluation, so an
-				// error here indicates an unexpected claim shape. Fail closed
-				// instead of silently falling back to FallbackRoleArn.
+				// error here is unexpected. Keep evaluating other mappings; if no
+				// valid mapping matches, fail closed below instead of falling back.
 				slog.Warn("claim-based role mapping evaluation failed, failing closed",
 					"role_arn", mapping.roleArn, "error", err)
-				return "", fmt.Errorf("%w: %w", ErrNoRoleMapping, err)
+				if claimMappingErr == nil {
+					claimMappingErr = err
+				}
+				continue
 			}
 			// Matcher expressions are admin-authored; keep the historical
 			// skip-and-fall-back behavior but surface the failure at Warn so
@@ -255,6 +270,12 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 		if match {
 			matches = append(matches, mapping)
 		}
+	}
+
+	// A malformed claim-based mapping must not fall through to the fallback
+	// role, but a valid mapping match always takes precedence over that error.
+	if len(matches) == 0 && claimMappingErr != nil {
+		return "", fmt.Errorf("%w: %w", ErrNoRoleMapping, claimMappingErr)
 	}
 
 	// If no matches, fall back to default role

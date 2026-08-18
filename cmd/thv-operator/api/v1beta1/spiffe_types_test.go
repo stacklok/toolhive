@@ -26,7 +26,7 @@ func TestValidateSPIFFEConfig(t *testing.T) {
 		want string
 	}{
 		{
-			name: "endpoint X509 and workload API JWT configurations are valid",
+			name: "endpoint X509 and file JWT configurations are valid",
 			cfg:  validSPIFFEEmbeddedAuthServerConfig(),
 		},
 		{
@@ -224,8 +224,11 @@ func validSPIFFEEmbeddedAuthServerConfig() *EmbeddedAuthServerConfig {
 				TrustDomain: "dev.example.org",
 				Methods:     []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
 				BundleSource: SPIFFEBundleSourceConfig{
-					Type:        SPIFFEBundleSourceTypeWorkloadAPI,
-					WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceConfig{},
+					Type: SPIFFEBundleSourceTypeFile,
+					File: &SPIFFEFileBundleSourceConfig{
+						ConfigMapName: "spire-bundle",
+						ConfigMapKey:  "bundle.json",
+					},
 				},
 			},
 		},

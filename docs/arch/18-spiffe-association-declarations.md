@@ -17,10 +17,13 @@ An association is valid only when it references a declared domain, its pattern b
 
 Each trust-domain declaration chooses exactly one bundle source:
 
-- `bundle_endpoint` specifies an HTTPS SPIFFE Bundle Endpoint URL. Its TLS connection uses the platform WebPKI root store; this scope does not use SPIFFE bundle-derived or custom TLS trust for the endpoint connection.
-- `workload_api` connects to the local SPIFFE Workload API and has no endpoint payload.
+- `file` reads a SPIFFE trust-bundle JSON document from a local file. The operator uses it for a same-trust-domain authorization server by projecting one ConfigMap key into a read-only directory; it does not use `subPath`, so kubelet ConfigMap rotation remains visible.
+- `bundle_endpoint` specifies an HTTPS SPIFFE Bundle Endpoint URL for federation. Its TLS connection uses the platform WebPKI root store; this scope does not use SPIFFE bundle-derived or custom TLS trust for the endpoint connection.
+- `workload_api` connects to the local SPIFFE Workload API and has no endpoint payload. It remains available to generic runtime consumers, but the operator rejects it because it does not deploy a Workload API socket for the authorization server.
 
-`SPIFFEBundleRegistry` is built only from a validated trust configuration and is keyed by parsed trust domains. It implements both `x509bundle.Source` and `jwtbundle.Source`. It retains each domain's explicitly enabled methods. `Start` waits for each domain to have at least one authority for each enabled credential type: an X.509 authority when `spiffe_x509` is enabled and a JWT authority when `spiffe_jwt` is enabled. It does not require authority types that a domain does not enable. Startup has a 10-second readiness limit (or an earlier caller deadline), before it serves lookups. A failed start closes its sources; `Close` stops endpoint refresh loops and Workload API sources.
+The authorization server needs public trust material to validate incoming SVIDs. It does not need its own SVID and must not receive a Workload API socket or private-key access.
+
+`SPIFFEBundleRegistry` is built only from a validated trust configuration and is keyed by parsed trust domains. It implements both `x509bundle.Source` and `jwtbundle.Source`. It retains each domain's explicitly enabled methods. `Start` waits for each domain to have at least one authority for each enabled credential type: an X.509 authority when `spiffe_x509` is enabled and a JWT authority when `spiffe_jwt` is enabled. It does not require authority types that a domain does not enable. Startup has a 10-second readiness limit (or an earlier caller deadline), before it serves lookups. A failed start closes its sources; `Close` stops endpoint and file refresh loops plus Workload API sources.
 
 The registry checks that a requested trust domain is declared **before** it delegates to a backing source. This gate is essential for `workload_api`: a Workload API source can know federated or otherwise available domains that ToolHive did not declare. Delegating first would silently extend trust beyond configuration. Before startup, after shutdown, for an unready domain, or for an undeclared domain, lookups fail rather than returning an empty bundle or consulting another domain.
 
@@ -31,6 +34,23 @@ On a successful endpoint refresh, the complete document atomically replaces the 
 Endpoint documents may carry `spiffe_sequence`. A refresh with a lower sequence is rejected and retains the current document. Once the current document has a sequence, an unsequenced document is also a rollback and is rejected. Equal sequences retain the current whole document. Two unsequenced documents may replace each other.
 
 If a refresh fails after an initial successful fetch, the registry continues serving the complete last-known-good document, including both its X.509 and JWT authority material, and retries with exponential backoff. This availability policy is presently unbounded and does not impose a deadline on stale or revoked material. A configurable maximum-staleness policy is required to enforce revocation and rotation deadlines. `// ponytail: TODO` add that policy before deployments that require those deadlines. A refresh failure, malformed document, missing authority for an enabled method, or rejected sequence never clears current material.
+
+A file source synchronously loads its initial SPIFFE trust-bundle JSON document, so startup fails if the file is unreadable, malformed, or lacks an authority required by an enabled method. After startup it polls once per minute rather than watching filesystem events: ConfigMap volume updates rotate symlinks, for which polling is reliable. Every valid reload atomically replaces the complete authority set, so removed authorities stop validating immediately. Failed reads, parses, and method-incomplete updates retain the last-known-good bundle.
+
+SPIRE must publish this document with:
+
+```hcl
+BundlePublisher "k8s_configmap" {
+  plugin_data {
+    namespace      = "toolhive-system"
+    config_map     = "spire-bundle"
+    config_map_key = "bundle.json"
+    format         = "spiffe"
+  }
+}
+```
+
+`Notifier "k8sbundle"` writes PEM-encoded X.509 material instead. PEM cannot carry the JWK authorities required for JWT-SVID validation, so it is not a suitable source when JWT authentication is enabled.
 
 ### Bundle Endpoint SSRF constraints
 
@@ -76,9 +96,9 @@ Configuration and loaded bundles are not authentication by themselves. A client 
 
 Issue [#6201](https://github.com/stacklok/toolhive/issues/6201) loads and rotates trust bundles. SPIFFE JWT-SVID and X.509-SVID client authentication, including association-constrained `client_credentials` and discovery metadata integration for SPIFFE methods, are implemented by [#6203](https://github.com/stacklok/toolhive/issues/6203), [#6202](https://github.com/stacklok/toolhive/issues/6202), and [#6204](https://github.com/stacklok/toolhive/issues/6204). The following remains separate and pending:
 
-- deploy SPIRE or mount Workload API sockets ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
+- deploy SPIRE, configure attestation or registration entries, or acquire workload SVIDs ([#6205](https://github.com/stacklok/toolhive/issues/6205)).
 
-For [#6205](https://github.com/stacklok/toolhive/issues/6205), `workloadapi.X509Source` implements both `x509svid.Source` and `x509bundle.Source`, so one Workload API connection can also provide the authorization server's own certificate when deployment wiring is added. The v1alpha1 `ClientCASecretRef` plus `subPath` shape cannot support a rotating bundle and must not be reused for this purpose.
+The authorization-server file source is limited to public trust material. Follow-up deployment work must not mount a Workload API socket into the authorization-server pod or use it to obtain an authorization-server SVID.
 
 ## Related documentation
 

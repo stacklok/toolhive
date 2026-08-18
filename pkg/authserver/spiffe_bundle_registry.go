@@ -24,6 +24,7 @@ type SPIFFEBundleRegistry struct {
 	bundles map[spiffeid.TrustDomain]spiffeBundleRegistration
 
 	endpointSources []*spiffeBundleEndpointSource
+	fileSources     []*spiffeBundleFileSource
 	workloadSource  *workloadapi.BundleSource
 	workloadCancel  context.CancelFunc
 	hasWorkloadAPI  bool
@@ -82,6 +83,15 @@ func NewSPIFFEBundleRegistry(trust *SPIFFETrustConfig) (*SPIFFEBundleRegistry, e
 			}
 			registration.source = endpointBundleSource{source: endpoint}
 			registry.endpointSources = append(registry.endpointSources, endpoint)
+		case SPIFFEBundleSourceTypeFile:
+			fileSource, err := newSPIFFEBundleFileSource(
+				trustDomain, domain.methods, source.Path(), spiffeBundleFileRefreshInterval,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("create SPIFFE bundle source for trust domain %q: %w", trustDomain, err)
+			}
+			registration.source = fileSource
+			registry.fileSources = append(registry.fileSources, fileSource)
 		case SPIFFEBundleSourceTypeWorkloadAPI:
 			registry.hasWorkloadAPI = true
 		default:
@@ -195,6 +205,11 @@ func (r *SPIFFEBundleRegistry) start(ctx context.Context) error {
 			return fmt.Errorf("start SPIFFE bundle endpoint source for trust domain %q: %w", source.trustDomain, err)
 		}
 	}
+	for _, source := range r.fileSources {
+		if err := source.start(ctx); err != nil {
+			return fmt.Errorf("start SPIFFE bundle file source for trust domain %q: %w", source.trustDomain, err)
+		}
+	}
 	return r.ensureReadiness()
 }
 
@@ -230,6 +245,9 @@ func (r *SPIFFEBundleRegistry) closeLocked() error {
 
 	var errs []error
 	for _, source := range r.endpointSources {
+		source.close()
+	}
+	for _, source := range r.fileSources {
 		source.close()
 	}
 	if r.workloadCancel != nil {

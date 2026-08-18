@@ -4183,7 +4183,9 @@ _Appears in:_
 
 
 SPIFFEBundleSourceConfig is a discriminated trust-bundle source configuration
-for the runtime registry.
+for the operator-managed runtime registry. workload_api remains a generic
+runtime option but is unsupported here because the operator does not deploy a
+Workload API socket.
 
 
 
@@ -4192,9 +4194,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ |  |  | Enum: [bundle_endpoint workload_api] <br /> |
+| `type` _[api.v1beta1.SPIFFEBundleSourceType](#apiv1beta1spiffebundlesourcetype)_ |  |  | Enum: [bundle_endpoint file workload_api] <br /> |
 | `endpoint` _[api.v1beta1.SPIFFEBundleEndpointSourceConfig](#apiv1beta1spiffebundleendpointsourceconfig)_ | Endpoint configures the HTTPS SPIFFE Bundle Endpoint fetched by the<br />runtime registry. |  | Optional: \{\} <br /> |
-| `workloadApi` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI selects the local SPIFFE Workload API used by the runtime<br />registry.<br />It does not deploy SPIRE or mount a Workload API socket. |  | Optional: \{\} <br /> |
+| `file` _[api.v1beta1.SPIFFEFileBundleSourceConfig](#apiv1beta1spiffefilebundlesourceconfig)_ | File configures a SPIFFE trust bundle projected from a ConfigMap. |  | Optional: \{\} <br /> |
+| `workloadApi` _[api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig](#apiv1beta1spiffeworkloadapibundlesourceconfig)_ | WorkloadAPI is retained for wire compatibility but unsupported by this operator. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEBundleSourceType
@@ -4211,6 +4214,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `bundle_endpoint` | SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.<br /> |
+| `file` | SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.<br /> |
 | `workload_api` | SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.<br /> |
 
 
@@ -4238,6 +4242,24 @@ _Appears in:_
 | `scopes` _string array_ | Scopes are the OAuth scopes granted to this association. |  | MinItems: 1 <br />items:MinLength: 1 <br /> |
 | `grantTypes` _string array_ | GrantTypes contains the OAuth grants permitted for this association. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [client_credentials urn:ietf:params:oauth:grant-type:token-exchange] <br /> |
 | `tokenExchange` _[api.v1beta1.SPIFFETokenExchangeConfig](#apiv1beta1spiffetokenexchangeconfig)_ | TokenExchange enables token exchange when the token-exchange grant is selected. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.SPIFFEFileBundleSourceConfig
+
+
+
+SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+trust-bundle JSON document.
+
+
+
+_Appears in:_
+- [api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapName` _string_ |  |  | MinLength: 1 <br /> |
+| `configMapKey` _string_ |  |  | MinLength: 1 <br /> |
 
 
 #### api.v1beta1.SPIFFETokenExchangeConfig

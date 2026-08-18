@@ -37,8 +37,11 @@ func TestBuildAuthServerRunConfigConvertsSPIFFETrust(t *testing.T) {
 				TrustDomain: "dev.example.org",
 				Methods:     []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT},
 				BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
-					Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
-					WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+					Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+					File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{
+						ConfigMapName: "spire-bundle",
+						ConfigMapKey:  "bundle.json",
+					},
 				},
 			},
 		},
@@ -79,8 +82,9 @@ func TestBuildAuthServerRunConfigConvertsSPIFFETrust(t *testing.T) {
 	require.Len(t, config.SPIFFETrustDomains, 2)
 	require.Equal(t, authserver.SPIFFEBundleSourceTypeEndpoint, config.SPIFFETrustDomains[0].BundleSource.Type)
 	require.Equal(t, "https://bundles.example.org/", config.SPIFFETrustDomains[0].BundleSource.Endpoint.URL)
-	require.Equal(t, authserver.SPIFFEBundleSourceTypeWorkloadAPI, config.SPIFFETrustDomains[1].BundleSource.Type)
-	require.NotNil(t, config.SPIFFETrustDomains[1].BundleSource.WorkloadAPI)
+	require.Equal(t, authserver.SPIFFEBundleSourceTypeFile, config.SPIFFETrustDomains[1].BundleSource.Type)
+	require.NotNil(t, config.SPIFFETrustDomains[1].BundleSource.File)
+	require.Equal(t, "/etc/toolhive/authserver/spiffe-bundles/1/bundle.json", config.SPIFFETrustDomains[1].BundleSource.File.Path)
 	require.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, config.SPIFFETrustDomains[0].Methods)
 	require.Len(t, config.InboundGrants.SPIFFEClientAuth, 2)
 	require.Equal(t, "production", config.InboundGrants.SPIFFEClientAuth[0].TrustDomainRef)

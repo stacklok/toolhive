@@ -687,18 +687,31 @@ spec:
                               required:
                               - url
                               type: object
+                            file:
+                              description: File configures a SPIFFE trust bundle projected
+                                from a ConfigMap.
+                              properties:
+                                configMapKey:
+                                  minLength: 1
+                                  type: string
+                                configMapName:
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: SPIFFEBundleSourceType identifies the selected
                                 SPIFFE trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadApi:
-                              description: |-
-                                WorkloadAPI selects the local SPIFFE Workload API used by the runtime
-                                registry.
-                                It does not deploy SPIRE or mount a Workload API socket.
+                              description: WorkloadAPI is retained for wire compatibility
+                                but unsupported by this operator.
                               type: object
                           required:
                           - type
@@ -707,14 +720,18 @@ spec:
                           - message: bundleSource type must select exactly its matching
                               source
                             rule: self.type != 'bundle_endpoint' || (has(self.endpoint)
+                              && !has(self.file) && !has(self.workloadApi))
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type != 'file' || (has(self.file) && !has(self.endpoint)
                               && !has(self.workloadApi))
                           - message: bundleSource type must select exactly its matching
                               source
-                            rule: self.type != 'workload_api' || (has(self.workloadApi)
-                              && !has(self.endpoint))
-                          - message: bundleSource type must select exactly its matching
-                              source
-                            rule: self.type == 'bundle_endpoint' || self.type == 'workload_api'
+                            rule: self.type == 'bundle_endpoint' || self.type == 'file'
+                              || self.type == 'workload_api'
+                          - message: bundleSource type workload_api is not supported
+                              by the operator
+                            rule: self.type != 'workload_api'
                         methods:
                           description: Methods explicitly enables the credential types
                             accepted for this trust domain.
@@ -2897,18 +2914,31 @@ spec:
                               required:
                               - url
                               type: object
+                            file:
+                              description: File configures a SPIFFE trust bundle projected
+                                from a ConfigMap.
+                              properties:
+                                configMapKey:
+                                  minLength: 1
+                                  type: string
+                                configMapName:
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: SPIFFEBundleSourceType identifies the selected
                                 SPIFFE trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadApi:
-                              description: |-
-                                WorkloadAPI selects the local SPIFFE Workload API used by the runtime
-                                registry.
-                                It does not deploy SPIRE or mount a Workload API socket.
+                              description: WorkloadAPI is retained for wire compatibility
+                                but unsupported by this operator.
                               type: object
                           required:
                           - type
@@ -2917,14 +2947,18 @@ spec:
                           - message: bundleSource type must select exactly its matching
                               source
                             rule: self.type != 'bundle_endpoint' || (has(self.endpoint)
+                              && !has(self.file) && !has(self.workloadApi))
+                          - message: bundleSource type must select exactly its matching
+                              source
+                            rule: self.type != 'file' || (has(self.file) && !has(self.endpoint)
                               && !has(self.workloadApi))
                           - message: bundleSource type must select exactly its matching
                               source
-                            rule: self.type != 'workload_api' || (has(self.workloadApi)
-                              && !has(self.endpoint))
-                          - message: bundleSource type must select exactly its matching
-                              source
-                            rule: self.type == 'bundle_endpoint' || self.type == 'workload_api'
+                            rule: self.type == 'bundle_endpoint' || self.type == 'file'
+                              || self.type == 'workload_api'
+                          - message: bundleSource type workload_api is not supported
+                              by the operator
+                            rule: self.type != 'workload_api'
                         methods:
                           description: Methods explicitly enables the credential types
                             accepted for this trust domain.

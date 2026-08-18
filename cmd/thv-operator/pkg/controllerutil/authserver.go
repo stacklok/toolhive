@@ -66,6 +66,15 @@ const (
 	// AuthServerTLSKeyFileName is the listener TLS private key filename.
 	AuthServerTLSKeyFileName = "tls.key"
 
+	// AuthServerSPIFFEBundleVolumePrefix is the prefix for SPIFFE trust-bundle ConfigMap volumes.
+	AuthServerSPIFFEBundleVolumePrefix = "authserver-spiffe-bundle-"
+
+	// AuthServerSPIFFEBundleMountPath is the base directory for SPIFFE trust bundles.
+	AuthServerSPIFFEBundleMountPath = "/etc/toolhive/authserver/spiffe-bundles"
+
+	// AuthServerSPIFFEBundleFileName is the controlled filename for a projected trust bundle.
+	AuthServerSPIFFEBundleFileName = "bundle.json"
+
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
 	// upstream name uppercased with hyphens replaced by underscores (e.g.,
@@ -448,6 +457,30 @@ func GenerateAuthServerVolumes(
 		})
 	}
 
+	for idx, domain := range authConfig.SPIFFETrustDomains {
+		if domain.BundleSource.File == nil {
+			continue
+		}
+		volumeName := fmt.Sprintf("%s%d", AuthServerSPIFFEBundleVolumePrefix, idx)
+		mountPath := fmt.Sprintf("%s/%d", AuthServerSPIFFEBundleMountPath, idx)
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: domain.BundleSource.File.ConfigMapName},
+				Items: []corev1.KeyToPath{{
+					Key:  domain.BundleSource.File.ConfigMapKey,
+					Path: AuthServerSPIFFEBundleFileName,
+				}},
+				DefaultMode: k8sptr.To(int32(0400)),
+			}},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: mountPath,
+			ReadOnly:  true,
+		})
+	}
+
 	// Generate volumes for Redis TLS CA certificates
 	if authConfig.Storage != nil && authConfig.Storage.Redis != nil {
 		redis := authConfig.Storage.Redis
@@ -710,6 +743,11 @@ func buildSPIFFETrustRunConfig(
 		if domain.BundleSource.Endpoint != nil {
 			trustDomains[i].BundleSource.Endpoint = &authserver.SPIFFEBundleEndpointSourceRunConfig{
 				URL: domain.BundleSource.Endpoint.URL,
+			}
+		}
+		if domain.BundleSource.File != nil {
+			trustDomains[i].BundleSource.File = &authserver.SPIFFEFileBundleSourceRunConfig{
+				Path: fmt.Sprintf("%s/%d/%s", AuthServerSPIFFEBundleMountPath, i, AuthServerSPIFFEBundleFileName),
 			}
 		}
 		if domain.BundleSource.WorkloadAPI != nil {

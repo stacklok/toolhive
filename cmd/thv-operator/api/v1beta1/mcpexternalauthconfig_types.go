@@ -598,6 +598,8 @@ type SPIFFEBundleSourceType string
 const (
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.
+	SPIFFEBundleSourceTypeFile SPIFFEBundleSourceType = "file"
 	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 )
@@ -627,14 +629,17 @@ type SPIFFETrustDomainConfig struct {
 }
 
 // SPIFFEBundleSourceConfig is a discriminated trust-bundle source configuration
-// for the runtime registry.
-// +kubebuilder:validation:XValidation:rule="self.type != 'bundle_endpoint' || (has(self.endpoint) && !has(self.workloadApi))",message="bundleSource type must select exactly its matching source"
-// +kubebuilder:validation:XValidation:rule="self.type != 'workload_api' || (has(self.workloadApi) && !has(self.endpoint))",message="bundleSource type must select exactly its matching source"
-// +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' || self.type == 'workload_api'",message="bundleSource type must select exactly its matching source"
+// for the operator-managed runtime registry. workload_api remains a generic
+// runtime option but is unsupported here because the operator does not deploy a
+// Workload API socket.
+// +kubebuilder:validation:XValidation:rule="self.type != 'bundle_endpoint' || (has(self.endpoint) && !has(self.file) && !has(self.workloadApi))",message="bundleSource type must select exactly its matching source"
+// +kubebuilder:validation:XValidation:rule="self.type != 'file' || (has(self.file) && !has(self.endpoint) && !has(self.workloadApi))",message="bundleSource type must select exactly its matching source"
+// +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' || self.type == 'file' || self.type == 'workload_api'",message="bundleSource type must select exactly its matching source"
+// +kubebuilder:validation:XValidation:rule="self.type != 'workload_api'",message="bundleSource type workload_api is not supported by the operator"
 //
 //nolint:lll // controller-gen requires XValidation markers to remain on one line.
 type SPIFFEBundleSourceConfig struct {
-	// +kubebuilder:validation:Enum=bundle_endpoint;workload_api
+	// +kubebuilder:validation:Enum=bundle_endpoint;file;workload_api
 	Type SPIFFEBundleSourceType `json:"type"`
 
 	// Endpoint configures the HTTPS SPIFFE Bundle Endpoint fetched by the
@@ -642,11 +647,22 @@ type SPIFFEBundleSourceConfig struct {
 	// +optional
 	Endpoint *SPIFFEBundleEndpointSourceConfig `json:"endpoint,omitempty"`
 
-	// WorkloadAPI selects the local SPIFFE Workload API used by the runtime
-	// registry.
-	// It does not deploy SPIRE or mount a Workload API socket.
+	// File configures a SPIFFE trust bundle projected from a ConfigMap.
+	// +optional
+	File *SPIFFEFileBundleSourceConfig `json:"file,omitempty"`
+
+	// WorkloadAPI is retained for wire compatibility but unsupported by this operator.
 	// +optional
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceConfig `json:"workloadApi,omitempty"`
+}
+
+// SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+// trust-bundle JSON document.
+type SPIFFEFileBundleSourceConfig struct {
+	// +kubebuilder:validation:MinLength=1
+	ConfigMapName string `json:"configMapName"`
+	// +kubebuilder:validation:MinLength=1
+	ConfigMapKey string `json:"configMapKey"`
 }
 
 // SPIFFEBundleEndpointSourceConfig configures the HTTPS SPIFFE Bundle Endpoint
@@ -2265,6 +2281,9 @@ func validateSPIFFETrustDomains(trustDomains []SPIFFETrustDomainConfig) error {
 		if err := validateSPIFFEMethods(domain.Methods, fmt.Sprintf("spiffeTrustDomains[%d].methods", i)); err != nil {
 			return err
 		}
+		if domain.BundleSource.Type == SPIFFEBundleSourceTypeWorkloadAPI {
+			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource: workload_api is not supported by the operator", i)
+		}
 		if !validSPIFFEBundleSource(domain.BundleSource) {
 			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource must select exactly its matching source", i)
 		}
@@ -2272,6 +2291,10 @@ func validateSPIFFETrustDomains(trustDomains []SPIFFETrustDomainConfig) error {
 			if err := validateSPIFFEBundleEndpoint(domain.BundleSource.Endpoint.URL, i); err != nil {
 				return err
 			}
+		}
+		if domain.BundleSource.File != nil &&
+			(domain.BundleSource.File.ConfigMapName == "" || domain.BundleSource.File.ConfigMapKey == "") {
+			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource.file configMapName and configMapKey are required", i)
 		}
 	}
 	return nil
@@ -2299,8 +2322,8 @@ func validateSPIFFEBundleEndpoint(endpoint string, index int) error {
 }
 
 func validSPIFFEBundleSource(source SPIFFEBundleSourceConfig) bool {
-	return (source.Type == SPIFFEBundleSourceTypeEndpoint && source.Endpoint != nil && source.WorkloadAPI == nil) ||
-		(source.Type == SPIFFEBundleSourceTypeWorkloadAPI && source.Endpoint == nil && source.WorkloadAPI != nil)
+	return (source.Type == SPIFFEBundleSourceTypeEndpoint && source.Endpoint != nil && source.File == nil && source.WorkloadAPI == nil) ||
+		(source.Type == SPIFFEBundleSourceTypeFile && source.Endpoint == nil && source.File != nil && source.WorkloadAPI == nil)
 }
 
 func validateSPIFFEClientAuth(clientAuth []SPIFFEClientAuthConfig) error {

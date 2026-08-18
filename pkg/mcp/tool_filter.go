@@ -648,7 +648,7 @@ func processUnrecognizedMimeType(
 	// fails both the JSON sniff below (encoding/json rejects EF BB BF) and
 	// sniffSSEToolsList's "data:" prefix match, letting an unfiltered tools
 	// list pass through under a mislabeled/absent Content-Type.
-	buffer = bytes.TrimPrefix(buffer, []byte("\xEF\xBB\xBF"))
+	buffer = bytes.TrimPrefix(buffer, UTF8BOM)
 
 	var candidate toolsListResponse
 	if err := json.Unmarshal(buffer, &candidate); err == nil && candidate.Result.Tools != nil {

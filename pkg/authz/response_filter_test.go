@@ -1538,6 +1538,28 @@ func TestResponseFilteringWriter_JSON_LeadingBOMBypass(t *testing.T) {
 	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
 }
 
+// TestResponseFilteringWriter_BOMFallbackPassthroughClearsContentLength
+// verifies that stripping a BOM from a response that does not need filtering
+// cannot leave the upstream Content-Length header three bytes too large.
+func TestResponseFilteringWriter_BOMFallbackPassthroughClearsContentLength(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	body := append(append([]byte{}, mcpparser.UTF8BOM...), []byte("not a JSON-RPC response")...)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/plain")
+	rfw.ResponseWriter.Header().Set("Content-Length", strconv.Itoa(len(body)))
+
+	_, err := rfw.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	assert.Empty(t, rr.Header().Get("Content-Length"))
+	assert.Equal(t, body[len(mcpparser.UTF8BOM):], rr.Body.Bytes())
+}
+
 // TestResponseFilteringWriter_Sniff_SSE_LeadingBOMBypass is a regression test
 // for the SSE half of the same #5257-class leak: the unrecognized-media-type
 // branch sniffs the body with sseCarriesResult, which used to fail to match a

@@ -337,13 +337,17 @@ func (s *service) installAndRegister(
 	if lockScoped {
 		root, rootErr := lockfile.OpenRoot(opts.ProjectRoot)
 		if rootErr != nil {
-			_ = s.rollbackInstall(ctx, opts, result, skillName, scope, false, nil, false, "")
-			return nil, fmt.Errorf("opening lock file root: %w", rootErr)
+			return nil, errors.Join(
+				fmt.Errorf("opening lock file root: %w", rootErr),
+				s.rollbackInstall(ctx, opts, result, skillName, scope, false, nil, false, ""),
+			)
 		}
 		lf, loadErr := lockfile.Load(root)
 		if loadErr != nil {
-			_ = s.rollbackInstall(ctx, opts, result, skillName, scope, false, nil, false, "")
-			return nil, fmt.Errorf("loading lock file: %w", loadErr)
+			return nil, errors.Join(
+				fmt.Errorf("loading lock file: %w", loadErr),
+				s.rollbackInstall(ctx, opts, result, skillName, scope, false, nil, false, ""),
+			)
 		}
 		if e, ok := lf.Get(skillName); ok {
 			prevEntry = &e
@@ -352,23 +356,22 @@ func (s *service) installAndRegister(
 
 	resolvedGroup := resolvedGroupName(groupName)
 	var addedToGroup bool
-	rollback := func() {
-		_ = s.rollbackInstall(ctx, opts, result, skillName, scope, lockScoped, prevEntry, addedToGroup, resolvedGroup)
+	rollback := func() error {
+		return s.rollbackInstall(ctx, opts, result, skillName, scope, lockScoped, prevEntry, addedToGroup, resolvedGroup)
 	}
 
 	added, err := s.registerSkillInGroup(ctx, groupName, skillName)
 	if err != nil {
-		// Best-effort rollback. Files on disk are restored when a snapshot
-		// was taken; otherwise left in place for a fresh force install.
-		rollback()
-		return nil, fmt.Errorf("registering skill in group: %w", err)
+		// Rollback restores files from the pre-write snapshot and removes
+		// freshly created trees; its errors join the trigger error so a
+		// partial restore is never reported as clean.
+		return nil, errors.Join(fmt.Errorf("registering skill in group: %w", err), rollback())
 	}
 	addedToGroup = added
 
 	if lockScoped {
 		updated, err := s.recordLockState(ctx, opts, originalName, result.Skill, deps)
 		if err != nil {
-			rollback()
 			// Preserve a specific code already attached deeper in the chain
 			// — dependency materialization runs inside recordLockState, so a
 			// dep's 502 (git resolve) or 404 (registry miss) must reach the
@@ -379,7 +382,7 @@ func (s *service) installAndRegister(
 			if !errors.As(err, &coded) {
 				wrapped = httperr.WithCode(wrapped, http.StatusInternalServerError)
 			}
-			return nil, wrapped
+			return nil, errors.Join(wrapped, rollback())
 		}
 		result.Skill = updated
 	}

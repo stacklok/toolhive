@@ -6,6 +6,7 @@ package skillsvc
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"sync"
 
@@ -114,26 +115,28 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 	return m.Unlock
 }
 
+// projectTxStripes bounds the project transaction lock set. Project roots
+// are request-derived in the long-running API service, so a grow-forever
+// map keyed by root would leak; a fixed stripe set caps memory at a
+// constant. Two projects hashing to the same stripe merely serialize
+// against each other — never a correctness issue.
+const projectTxStripes = 64
+
 // projectTx serializes all project-scoped skill mutations for a given
-// canonical ProjectRoot. Different projects remain concurrent; Install,
-// Uninstall, Sync, and Upgrade for the same project share one transaction
-// that spans extraction through bookkeeping, dependency materialization,
-// cascades, and compensation.
+// canonical ProjectRoot. Different projects remain concurrent (up to stripe
+// collisions); Install, Uninstall, Sync, and Upgrade for the same project
+// share one transaction that spans extraction through bookkeeping,
+// dependency materialization, cascades, and compensation.
 type projectTx struct {
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex // key = canonical projectRoot
+	stripes [projectTxStripes]sync.Mutex
 }
 
-// lock acquires the project transaction mutex and returns a release function.
+// lock acquires the project transaction mutex for projectRoot's stripe and
+// returns a release function.
 func (p *projectTx) lock(projectRoot string) func() {
-	p.mu.Lock()
-	m, ok := p.locks[projectRoot]
-	if !ok {
-		m = &sync.Mutex{}
-		p.locks[projectRoot] = m
-	}
-	p.mu.Unlock()
-
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(projectRoot))
+	m := &p.stripes[h.Sum32()%projectTxStripes]
 	m.Lock()
 	return m.Unlock
 }
@@ -226,9 +229,8 @@ func WithVerifier(v verifier.Verifier) Option {
 // New creates a new SkillService backed by the given store.
 func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 	s := &service{
-		store:     store,
-		locks:     skillLock{locks: make(map[string]*sync.Mutex)},
-		projectTx: projectTx{locks: make(map[string]*sync.Mutex)},
+		store: store,
+		locks: skillLock{locks: make(map[string]*sync.Mutex)},
 	}
 	for _, o := range opts {
 		o(s)

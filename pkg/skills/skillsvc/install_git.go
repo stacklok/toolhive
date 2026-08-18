@@ -236,12 +236,10 @@ func (s *service) applyGitInstallFresh(
 }
 
 // gitWriteMultiAndPersist writes git files to the given client directories,
-// verifies each tree, then creates or updates the store record. On failure
-// after any write, previously written directories in this call are removed.
-// When overwriting existing content (upgrade or force), trees are
-// snapshotted first so installAndRegister rollback can restore them.
-//
-//nolint:gocyclo // resolve/hydrate/lock/persist form one transactional path
+// verifies each tree, then creates or updates the store record. Every target
+// is snapshotted first (recording whether it existed) so any failure — and
+// any later installAndRegister rollback — restores prior content and removes
+// freshly created trees, with all compensation errors joined into the result.
 func (s *service) gitWriteMultiAndPersist(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -253,20 +251,12 @@ func (s *service) gitWriteMultiAndPersist(
 	existingClients []string,
 	isUpgrade, writeAggressive bool,
 ) (*skills.InstallResult, error) {
-	var snapshotTargets []string
-	for _, ct := range dirsToWrite {
-		snapshotTargets = append(snapshotTargets, filepath.Clean(clientDirs[ct]))
+	backups, snapErr := snapshotTargets(cleanedDirs(dirsToWrite, clientDirs))
+	if snapErr != nil {
+		return nil, fmt.Errorf("snapshotting skill trees before write: %w", snapErr)
 	}
-	var backups map[string]map[string]fileSnapshot
-	if isUpgrade || opts.Force {
-		var snapErr error
-		backups, snapErr = snapshotDirs(snapshotTargets)
-		if snapErr != nil {
-			return nil, fmt.Errorf("snapshotting skill trees before write: %w", snapErr)
-		}
-	}
+	restore := func() error { return restoreTargets(backups) }
 
-	var written []string
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		writeMode := opts.Force
@@ -274,44 +264,22 @@ func (s *service) gitWriteMultiAndPersist(
 			writeMode = true
 		}
 		if writeErr := gitresolver.WriteFiles(files, dir, writeMode); writeErr != nil {
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			_ = restoreDirs(backups)
-			return nil, fmt.Errorf("writing git skill: %w", writeErr)
+			return nil, errors.Join(fmt.Errorf("writing git skill: %w", writeErr), restore())
 		}
 		if checkErr := skills.CheckFilesystem(dir); checkErr != nil {
-			_ = s.installer.Remove(dir)
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			_ = restoreDirs(backups)
-			return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
+			return nil, errors.Join(fmt.Errorf("post-extraction verification failed: %w", checkErr), restore())
 		}
-		written = append(written, ct)
 	}
 
 	sk := buildInstalledSkill(opts, scope, allRequested, existingClients)
+	var persistErr error
 	if isUpgrade {
-		if err := s.store.Update(ctx, sk); err != nil {
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			_ = restoreDirs(backups)
-			return nil, err
-		}
+		persistErr = s.store.Update(ctx, sk)
 	} else {
-		if err := s.store.Create(ctx, sk); err != nil {
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			_ = restoreDirs(backups)
-			return nil, err
-		}
+		persistErr = s.store.Create(ctx, sk)
 	}
-	result := &skills.InstallResult{Skill: sk}
-	if len(backups) > 0 {
-		result.RestoreFiles = func() error { return restoreDirs(backups) }
+	if persistErr != nil {
+		return nil, errors.Join(persistErr, restore())
 	}
-	return result, nil
+	return &skills.InstallResult{Skill: sk, RestoreFiles: restore}, nil
 }

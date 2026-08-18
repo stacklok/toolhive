@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -106,53 +105,41 @@ func (s *service) installExtractionSameDigestNewClients(
 		}
 		return &skills.InstallResult{Skill: sk}, nil
 	}
-	var written []string
-	var snapshotTargets []string
-	for _, ct := range dirsToWrite {
-		snapshotTargets = append(snapshotTargets, filepath.Clean(clientDirs[ct]))
+	targets := cleanedDirs(dirsToWrite, clientDirs)
+	backups, snapErr := snapshotTargets(targets)
+	if snapErr != nil {
+		return nil, fmt.Errorf("snapshotting skill trees before install: %w", snapErr)
 	}
-	var backups map[string]map[string]fileSnapshot
-	if opts.Force {
-		var snapErr error
-		backups, snapErr = snapshotDirs(snapshotTargets)
-		if snapErr != nil {
-			return nil, fmt.Errorf("snapshotting skill trees before force install: %w", snapErr)
-		}
-	}
+	restore := func() error { return restoreTargets(backups) }
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
-		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
-			removeSkillDirs(s.installer, clientDirs, written)
-			_ = restoreDirs(backups)
-			return nil, httperr.WithCode(
-				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
-				http.StatusConflict,
+		if backups[dir].existed && !opts.Force {
+			return nil, errors.Join(
+				httperr.WithCode(
+					fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+					http.StatusConflict,
+				),
+				restore(),
 			)
 		}
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
-			removeSkillDirs(s.installer, clientDirs, written)
-			_ = restoreDirs(backups)
-			return nil, fmt.Errorf("extracting skill: %w", exErr)
+			return nil, errors.Join(fmt.Errorf("extracting skill: %w", exErr), restore())
 		}
-		written = append(written, ct)
 	}
 	sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
 	if err := s.store.Update(ctx, sk); err != nil {
-		removeSkillDirs(s.installer, clientDirs, written)
-		_ = restoreDirs(backups)
-		return nil, err
+		return nil, errors.Join(err, restore())
 	}
-	result := &skills.InstallResult{Skill: sk}
-	if len(backups) > 0 {
-		result.RestoreFiles = func() error { return restoreDirs(backups) }
-	}
-	return result, nil
+	return &skills.InstallResult{Skill: sk, RestoreFiles: restore}, nil
 }
 
-func removeSkillDirs(inst skills.Installer, clientDirs map[string]string, clients []string) {
+// cleanedDirs maps client types to their cleaned target directories.
+func cleanedDirs(clients []string, clientDirs map[string]string) []string {
+	out := make([]string, 0, len(clients))
 	for _, ct := range clients {
-		_ = inst.Remove(filepath.Clean(clientDirs[ct]))
+		out = append(out, filepath.Clean(clientDirs[ct]))
 	}
+	return out
 }
 
 func (s *service) installExtractionUpgradeDigest(
@@ -170,35 +157,22 @@ func (s *service) installExtractionUpgradeDigest(
 	}
 	// Deduplicate so clients sharing the same directory don't conflict.
 	dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
-	var snapshotTargets []string
-	for _, ct := range dirsToWrite {
-		snapshotTargets = append(snapshotTargets, filepath.Clean(allDirs[ct]))
-	}
-	backups, snapErr := snapshotDirs(snapshotTargets)
+	backups, snapErr := snapshotTargets(cleanedDirs(dirsToWrite, allDirs))
 	if snapErr != nil {
 		return nil, fmt.Errorf("snapshotting skill trees before upgrade: %w", snapErr)
 	}
-	var written []string
+	restore := func() error { return restoreTargets(backups) }
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(allDirs[ct])
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, true); exErr != nil {
-			removeSkillDirs(s.installer, allDirs, written)
-			_ = restoreDirs(backups)
-			return nil, fmt.Errorf("extracting skill upgrade: %w", exErr)
+			return nil, errors.Join(fmt.Errorf("extracting skill upgrade: %w", exErr), restore())
 		}
-		written = append(written, ct)
 	}
 	sk := buildInstalledSkill(opts, scope, allClients, nil)
 	if err := s.store.Update(ctx, sk); err != nil {
-		removeSkillDirs(s.installer, allDirs, dirsToWrite)
-		_ = restoreDirs(backups)
-		return nil, err
+		return nil, errors.Join(err, restore())
 	}
-	result := &skills.InstallResult{Skill: sk}
-	if len(backups) > 0 {
-		result.RestoreFiles = func() error { return restoreDirs(backups) }
-	}
-	return result, nil
+	return &skills.InstallResult{Skill: sk, RestoreFiles: restore}, nil
 }
 
 func (s *service) installExtractionFresh(
@@ -211,48 +185,31 @@ func (s *service) installExtractionFresh(
 	// Deduplicate so clients sharing the same directory don't conflict.
 	dirsToWrite := uniqueDirClients(clientTypes, clientDirs, nil)
 
+	backups, snapErr := snapshotTargets(cleanedDirs(dirsToWrite, clientDirs))
+	if snapErr != nil {
+		return nil, fmt.Errorf("snapshotting skill trees before install: %w", snapErr)
+	}
+	restore := func() error { return restoreTargets(backups) }
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
-		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
+		if backups[dir].existed && !opts.Force {
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
 				http.StatusConflict,
 			)
 		}
 	}
-	var written []string
-	var snapshotTargets []string
-	for _, ct := range dirsToWrite {
-		snapshotTargets = append(snapshotTargets, filepath.Clean(clientDirs[ct]))
-	}
-	var backups map[string]map[string]fileSnapshot
-	if opts.Force {
-		var snapErr error
-		backups, snapErr = snapshotDirs(snapshotTargets)
-		if snapErr != nil {
-			return nil, fmt.Errorf("snapshotting skill trees before force install: %w", snapErr)
-		}
-	}
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
-			removeSkillDirs(s.installer, clientDirs, written)
-			_ = restoreDirs(backups)
-			return nil, fmt.Errorf("extracting skill: %w", exErr)
+			return nil, errors.Join(fmt.Errorf("extracting skill: %w", exErr), restore())
 		}
-		written = append(written, ct)
 	}
 	sk := buildInstalledSkill(opts, scope, clientTypes, nil)
 	if err := s.store.Create(ctx, sk); err != nil {
-		removeSkillDirs(s.installer, clientDirs, dirsToWrite)
-		_ = restoreDirs(backups)
-		return nil, err
+		return nil, errors.Join(err, restore())
 	}
-	result := &skills.InstallResult{Skill: sk}
-	if len(backups) > 0 {
-		result.RestoreFiles = func() error { return restoreDirs(backups) }
-	}
-	return result, nil
+	return &skills.InstallResult{Skill: sk, RestoreFiles: restore}, nil
 }
 
 // buildInstalledSkill constructs an InstalledSkill from install options.

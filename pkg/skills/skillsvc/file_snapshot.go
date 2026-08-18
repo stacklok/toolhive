@@ -9,11 +9,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
-// fileSnapshot is one regular file captured by snapshotDir: contents plus a
-// sanitized permission mode so executable bits survive restore.
+// fileSnapshot is one regular file captured by snapshotTargets: contents plus
+// a sanitized permission mode so executable bits survive restore.
 type fileSnapshot struct {
 	data []byte
 	mode fs.FileMode
@@ -26,48 +25,69 @@ func sanitizeFileMode(mode fs.FileMode) fs.FileMode {
 	return mode.Perm() & snapshotFileModeMask
 }
 
-// snapshotDirs copies each existing directory in dirs into memory so a later
-// failed force/upgrade install can restore prior content without temp
-// directories. Missing directories are skipped. Map keys are the original
-// cleaned directory paths.
-func snapshotDirs(dirs []string) (map[string]map[string]fileSnapshot, error) {
-	backups := make(map[string]map[string]fileSnapshot, len(dirs))
+// dirBackup captures one target directory's pre-mutation state: whether it
+// existed at all, and its regular files when it did. Restore reproduces that
+// exact state — directories that did not exist are removed, pre-existing
+// ones are rewritten from the snapshot.
+type dirBackup struct {
+	existed bool
+	files   map[string]fileSnapshot
+}
+
+// snapshotTargets captures each target directory into memory so a later
+// failed install can restore prior content and remove freshly created trees.
+// All filesystem access goes through an os.Root anchored at the directory's
+// parent, so no traversal can escape the validated skill install location.
+func snapshotTargets(dirs []string) (map[string]dirBackup, error) {
+	backups := make(map[string]dirBackup, len(dirs))
 	for _, dir := range dirs {
 		dir = filepath.Clean(dir)
-		info, err := os.Stat(dir) // lgtm[go/path-injection] #nosec G304 -- skill install dirs from PathResolver
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("stat %q before snapshot: %w", dir, err)
-		}
-		if !info.IsDir() {
+		if _, seen := backups[dir]; seen {
 			continue
 		}
-		files, err := snapshotDir(dir)
+		backup, err := snapshotTarget(dir)
 		if err != nil {
 			return nil, fmt.Errorf("snapshotting %q: %w", dir, err)
 		}
-		backups[dir] = files
+		backups[dir] = backup
 	}
 	return backups, nil
 }
 
-// restoreDirs replaces each original directory with its in-memory snapshot.
-func restoreDirs(backups map[string]map[string]fileSnapshot) error {
-	var errs []error
-	for original, files := range backups {
-		if err := restoreDir(original, files); err != nil {
-			errs = append(errs, fmt.Errorf("restoring %q: %w", original, err))
+// snapshotTarget captures a single directory. A missing directory (or a
+// missing parent) is recorded as existed=false so restore knows to remove
+// whatever the failed install writes there.
+func snapshotTarget(dir string) (dirBackup, error) {
+	parent, err := os.OpenRoot(filepath.Dir(dir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return dirBackup{existed: false}, nil
 		}
+		return dirBackup{}, err
 	}
-	return errors.Join(errs...)
-}
+	defer func() { _ = parent.Close() }()
 
-// snapshotDir reads every regular file under dir into a relative-path map.
-func snapshotDir(dir string) (map[string]fileSnapshot, error) {
+	base := filepath.Base(dir)
+	info, err := parent.Stat(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return dirBackup{existed: false}, nil
+		}
+		return dirBackup{}, err
+	}
+	if !info.IsDir() {
+		return dirBackup{existed: false}, nil
+	}
+
+	sub, err := parent.OpenRoot(base)
+	if err != nil {
+		return dirBackup{}, err
+	}
+	defer func() { _ = sub.Close() }()
+
 	files := make(map[string]fileSnapshot)
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error { // lgtm[go/path-injection]
+	fsys := sub.FS()
+	walkErr := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -81,58 +101,74 @@ func snapshotDir(dir string) (map[string]fileSnapshot, error) {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		rel, relErr := filepath.Rel(dir, path)
-		if relErr != nil {
-			return relErr
-		}
-		if !safeRelPath(rel) {
-			return fmt.Errorf("refusing to snapshot path %q outside %q", path, dir)
-		}
-		data, readErr := os.ReadFile(path) // #nosec G304 -- path walked under validated skill install dir; lgtm[go/path-injection]
+		data, readErr := fs.ReadFile(fsys, path)
 		if readErr != nil {
 			return readErr
 		}
-		files[rel] = fileSnapshot{data: data, mode: sanitizeFileMode(info.Mode())}
+		files[path] = fileSnapshot{data: data, mode: sanitizeFileMode(info.Mode())}
 		return nil
 	})
-	if err != nil {
-		return nil, err
+	if walkErr != nil {
+		return dirBackup{}, walkErr
 	}
-	return files, nil
+	return dirBackup{existed: true, files: files}, nil
 }
 
-// restoreDir replaces dir with the files captured by snapshotDir.
-func restoreDir(dir string, files map[string]fileSnapshot) error {
-	if err := os.RemoveAll(dir); err != nil { // lgtm[go/path-injection] #nosec G304 -- skill install dir
-		return err
-	}
+// restoreTargets restores every snapshotted directory to its exact
+// pre-mutation state: targets that did not exist are removed (they were
+// created by the failed install), pre-existing targets are rewritten from
+// their snapshots. All errors are joined so a partial restore still surfaces.
+func restoreTargets(backups map[string]dirBackup) error {
 	var errs []error
-	for rel, snap := range files {
-		if !safeRelPath(rel) {
-			errs = append(errs, fmt.Errorf("refusing to restore unsafe relative path %q", rel))
-			continue
-		}
-		path := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { // lgtm[go/path-injection]
-			errs = append(errs, err)
-			continue
-		}
-		if err := os.WriteFile(path, snap.data, snap.mode); err != nil { // lgtm[go/path-injection] #nosec G304
-			errs = append(errs, err)
+	for dir, backup := range backups {
+		if err := restoreTarget(dir, backup); err != nil {
+			errs = append(errs, fmt.Errorf("restoring %q: %w", dir, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// safeRelPath reports whether rel is a non-escaping relative path suitable
-// for joining under a snapshot root.
-func safeRelPath(rel string) bool {
-	if rel == "" || rel == "." {
-		return false
+// restoreTarget restores one directory from its backup through an os.Root
+// anchored at the parent directory.
+func restoreTarget(dir string, backup dirBackup) error {
+	parent, err := os.OpenRoot(filepath.Dir(dir))
+	if err != nil {
+		if os.IsNotExist(err) && !backup.existed {
+			// Neither the parent nor the target existed before, and the
+			// failed install did not create them either.
+			return nil
+		}
+		return err
 	}
-	slash := filepath.ToSlash(rel)
-	if !fs.ValidPath(slash) {
-		return false
+	defer func() { _ = parent.Close() }()
+
+	base := filepath.Base(dir)
+	if err := parent.RemoveAll(base); err != nil {
+		return err
 	}
-	return !strings.HasPrefix(slash, "../") && slash != ".."
+	if !backup.existed {
+		return nil
+	}
+	if err := parent.Mkdir(base, 0o750); err != nil {
+		return err
+	}
+	sub, err := parent.OpenRoot(base)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sub.Close() }()
+
+	var errs []error
+	for rel, snap := range backup.files {
+		if parentDir := filepath.Dir(rel); parentDir != "." {
+			if err := sub.MkdirAll(parentDir, 0o750); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		if err := sub.WriteFile(rel, snap.data, snap.mode); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

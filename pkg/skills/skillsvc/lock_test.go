@@ -5,6 +5,7 @@ package skillsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
+	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
 
@@ -346,6 +348,107 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 
 	_, err = svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
 	require.Error(t, err, "the DB record must be rolled back so a retry starts fresh")
+
+	assert.NoDirExists(t, filepath.Join(projectRoot, ".claude", "skills", "my-skill"),
+		"a fresh install rolled back by a lock-write failure must not leave its tree on disk")
+}
+
+// perClientPathResolver returns a PathResolver whose skill dirs differ per
+// client, so add-client installs write a genuinely new directory.
+func perClientPathResolver(t *testing.T) *skillsmocks.MockPathResolver {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	pr := skillsmocks.NewMockPathResolver(ctrl)
+	pr.EXPECT().GetSkillPath(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(client, skillName string, _ skills.Scope, projectRoot string) (string, error) {
+			return filepath.Join(projectRoot, "."+client, "skills", skillName), nil
+		})
+	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
+	return pr
+}
+
+// A lock-write failure on a same-digest add-client install must remove the
+// newly written client tree and leave the original install untouched.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_LockWriteFailureRemovesAddedClientTree(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr, WithPathResolver(perClientPathResolver(t)))
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	claudeTree := filepath.Join(projectRoot, ".claude-code", "skills", "my-skill")
+	require.DirExists(t, claudeTree)
+
+	// Break lock writes for the add-client attempt.
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.Remove(lockPath))
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"cursor"},
+	})
+	require.Error(t, err, "the add-client install must fail when the lock cannot be written")
+
+	assert.NoDirExists(t, filepath.Join(projectRoot, ".cursor", "skills", "my-skill"),
+		"the freshly written cursor tree must be removed on rollback")
+	assert.DirExists(t, claudeTree, "the original claude-code tree must survive")
+
+	info, err := svc.Info(t.Context(), skills.InfoOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err, "the pre-existing DB record must be restored, not deleted")
+	assert.Equal(t, []string{"claude-code"}, info.InstalledSkill.Clients,
+		"the restored record must not list the rolled-back client")
+}
+
+// hookSkillStore lets tests inject storage failures into specific operations.
+type hookSkillStore struct {
+	storage.SkillStore
+	deleteErr error
+}
+
+func (s *hookSkillStore) Delete(ctx context.Context, name string, scope skills.Scope, projectRoot string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.SkillStore.Delete(ctx, name, scope, projectRoot)
+}
+
+// A rollback whose own storage compensation fails must surface that failure
+// joined with the original error, not report only the trigger.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_RollbackStorageFailureIsJoined(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+
+	// Group registration fails after extraction+DB create, triggering the
+	// rollback whose DB delete then also fails.
+	ctrl := gomock.NewController(t)
+	gm := groupmocks.NewMockManager(ctrl)
+	gm.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, errors.New("group backend down")).AnyTimes()
+
+	svc, projectRoot := newLockTestService(t, gr, WithGroupManager(gm))
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.store = &hookSkillStore{
+		SkillStore: inner.store,
+		deleteErr:  errors.New("db delete unavailable"),
+	}
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registering skill in group",
+		"the original group registration failure must be reported")
+	assert.Contains(t, err.Error(), "db delete unavailable",
+		"the failed rollback deletion must be joined into the returned error")
 }
 
 // TestInstallProjectScope_DependencyFailureRollsBackParentLockEntry covers a

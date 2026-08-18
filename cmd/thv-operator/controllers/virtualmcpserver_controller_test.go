@@ -4208,7 +4208,14 @@ func TestVirtualMCPServerValidateAuthServerConfig_DelegateClientsRejectUnsafeHTT
 func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *testing.T) {
 	t.Parallel()
 
-	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default")
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:   mcpv1beta1.ConditionTypeReady,
+				Status: metav1.ConditionTrue,
+			}},
+		}),
+	)
 	reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp)
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
@@ -4227,4 +4234,7 @@ func TestVirtualMCPServerReconciler_handleInvalidEmbeddedAuthServerConfig(t *tes
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
 	assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, condition.Reason)
+	ready := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 }

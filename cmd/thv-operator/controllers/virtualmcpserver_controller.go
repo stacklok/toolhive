@@ -181,7 +181,13 @@ func (r *VirtualMCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
 	}
 
 	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-	statusManager.SetMessage(fmt.Sprintf("Failed to build configuration: %s", err))
+	message := fmt.Sprintf("Failed to build configuration: %s", err)
+	statusManager.SetMessage(message)
+	statusManager.SetReadyCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
 	statusManager.SetAuthServerConfigValidatedCondition(
 		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
 		err.Error(),

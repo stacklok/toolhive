@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -238,6 +239,28 @@ func buildDelegateClientRunConfigs(
 		}
 	}
 	return configs, nil
+}
+
+// buildTrustedIssuerRunConfigs converts CRD TrustedIssuerConfig entries to
+// tokenexchange.TrustedIssuer, the runtime type authserver.RunConfig.TrustedIssuers
+// already consumes directly. Unlike DelegateClientConfig, none of these fields
+// reference a Secret, so no env-var indirection is needed here.
+func buildTrustedIssuerRunConfigs(issuers []mcpv1beta1.TrustedIssuerConfig) []tokenexchange.TrustedIssuer {
+	configs := make([]tokenexchange.TrustedIssuer, len(issuers))
+	for i, ti := range issuers {
+		configs[i] = tokenexchange.TrustedIssuer{
+			IssuerURL:              ti.IssuerURL,
+			ExpectedAudience:       ti.ExpectedAudience,
+			JWKSURL:                ti.JWKSURL,
+			InsecureAllowHTTP:      ti.InsecureAllowHTTP,
+			AllowPrivateIPs:        ti.AllowPrivateIPs,
+			ActorClaim:             ti.ActorClaim,
+			AllowedActors:          append([]string(nil), ti.AllowedActors...),
+			AllowedDelegateClients: append([]string(nil), ti.AllowedDelegateClients...),
+			AllowMayAct:            ti.AllowMayAct,
+		}
+	}
+	return configs
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for
@@ -631,6 +654,10 @@ func BuildAuthServerRunConfig(
 		config.DelegateClients = delegateClients
 	}
 
+	if len(authConfig.TrustedIssuers) > 0 {
+		config.TrustedIssuers = buildTrustedIssuerRunConfigs(authConfig.TrustedIssuers)
+	}
+
 	// Build signing key configuration
 	if len(authConfig.SigningKeySecretRefs) > 0 {
 		signingKeyConfig := &authserver.SigningKeyRunConfig{
@@ -680,6 +707,20 @@ func BuildAuthServerRunConfig(
 	}
 	config.Storage = storageCfg
 
+	applySimpleAuthServerConfigFields(config, authConfig)
+
+	if err := validateDelegateClientsAndTrustedIssuers(config); err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+// applySimpleAuthServerConfigFields wires the remaining CRD fields that
+// require no conversion (booleans, string lists, and CIMD) onto config.
+// Split out of BuildAuthServerRunConfig purely to keep that function's
+// cyclomatic complexity down; it has no independent validation role.
+func applySimpleAuthServerConfigFields(config *authserver.RunConfig, authConfig *mcpv1beta1.EmbeddedAuthServerConfig) {
 	// Wire through upstream token injection flag
 	config.DisableUpstreamTokenInjection = authConfig.DisableUpstreamTokenInjection
 
@@ -705,29 +746,31 @@ func BuildAuthServerRunConfig(
 			CacheFallbackTTL: authConfig.CIMD.CacheFallbackTTL,
 		}
 	}
-
-	if err := validateDelegateClients(config); err != nil {
-		return nil, err
-	}
-
-	return config, nil
 }
 
-func validateDelegateClients(config *authserver.RunConfig) error {
-	if len(config.DelegateClients) == 0 {
+// validateDelegateClientsAndTrustedIssuers re-validates delegate clients and
+// trusted issuers at reconcile time via RunConfig.Validate(), the same check
+// authserver startup performs. Reconcile-time construction (BuildAuthServerRunConfig)
+// runs before authserver startup, so this catches an invalid CRD-level
+// configuration (e.g. an issuer_url colliding with the server's own issuer,
+// or allow_may_act combined with the delegate-client wildcard) as a
+// reconcile error rather than a pod crash loop.
+func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) error {
+	if len(config.DelegateClients) == 0 && len(config.TrustedIssuers) == 0 {
 		return nil
 	}
 
-	delegateValidationConfig := &authserver.RunConfig{
+	validationConfig := &authserver.RunConfig{
 		Issuer:            config.Issuer,
 		AllowedAudiences:  config.AllowedAudiences,
 		ScopesSupported:   config.ScopesSupported,
 		InsecureAllowHTTP: config.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: config.InsecureAllowConfidentialOverLoopbackHTTP,
 		DelegateClients: config.DelegateClients,
+		TrustedIssuers:  config.TrustedIssuers,
 	}
-	if err := delegateValidationConfig.Validate(); err != nil {
-		return fmt.Errorf("invalid embedded auth server delegate clients: %w", err)
+	if err := validationConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid embedded auth server delegate clients or trusted issuers: %w", err)
 	}
 	return nil
 }

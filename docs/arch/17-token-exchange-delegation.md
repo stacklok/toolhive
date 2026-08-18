@@ -54,10 +54,12 @@ trusted_issuers:
     allowed_delegate_clients: [reporting-delegate]
 ```
 
-`trusted_issuers` remains a `RunConfig`-only surface. It is needed only when
-subject tokens originate at an external issuer; a configured delegate client can
-also exchange a self-issued subject token. See [Trust model](#trust-model) for
-the required external-issuer binding.
+A `RunConfig` is needed only when subject tokens originate at an external
+issuer; a configured delegate client can also exchange a self-issued subject
+token. See [Trust model](#trust-model) for the required external-issuer
+binding. The Kubernetes operator also exposes `trusted_issuers` as
+`EmbeddedAuthServerConfig.trustedIssuers` — see
+[Kubernetes operator](#kubernetes-operator) below.
 
 ### Kubernetes operator
 
@@ -122,6 +124,29 @@ arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
 `.key`, at least one scope, and at least one audience are required. Delegate
 clients require an HTTPS issuer at admission.
 
+`trustedIssuers` is exposed the same way, on the same shared
+`EmbeddedAuthServerConfig`, and converts directly to `[]tokenexchange.TrustedIssuer`
+(no secret is referenced, so there is no `SecretKeyRef` indirection to apply):
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: embedded-auth
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    # Other required embedded-auth-server fields, including upstreamProviders,
+    # are omitted here.
+    trustedIssuers:
+      - issuerUrl: https://login.example-idp.com
+        expectedAudience: https://mcp.example.com
+        allowedActors: [external-reporting-client]
+        allowedDelegateClients: [reporting-delegate]
+        allowMayAct: false
+```
+
 Static delegate clients and confidential Dynamic Client Registration (DCR) are
 independent. Declaring `delegateClients` neither enables nor requires
 `allowConfidentialClientRegistration`; the latter governs unauthenticated
@@ -165,17 +190,18 @@ external-issuer allowlist and — when it matches — sets
 (`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
 whether to grant the exchange, in this order:
 
-1. **`may_act` (RFC 8693 §4.4).** If the subject token carries a well-formed
-   `may_act` claim, it is authoritative: the allowlist step above is skipped
-   entirely (`validateExternalToken` never calls `resolveAllowedActor` when
-   `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
-   against the authenticated ToolHive client. A malformed `may_act` is
-   rejected outright by `validateMayActShape`, not silently ignored or
-   fallen through to the allowlist. On the external path, `may_act.iss` is
-   mandatory, not merely constrained when present as on the self-issued path
-   — `validateMayActShape`'s `requireIss` parameter is `true` there. Without
-   this, an external issuer omitting `iss` could authorize any ToolHive
-   client by naming its ID in a bare `may_act.sub`, bypassing
+1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
+   `allow_may_act: true` before its well-formed `may_act` claim is considered.
+   It is otherwise rejected outright, not silently ignored or fallen through
+   to the allowlist. When enabled, `may_act` is authoritative: the allowlist
+   step above is skipped entirely (`validateExternalToken` never calls
+   `resolveAllowedActor` when `may_act` is present), and
+   `checkDelegationConsent` enforces `may_act.sub` against the authenticated
+   ToolHive client. On the external path, `may_act.iss` is mandatory, not
+   merely constrained when present as on the self-issued path —
+   `validateMayActShape`'s `requireIss` parameter is `true` there. Without
+   this, an external issuer omitting `iss` could authorize any ToolHive client
+   by naming its ID in a bare `may_act.sub`, bypassing
    `allowedActors`/`allowedDelegateClients` entirely — the one consent path
    that does.
 2. **`ExternalActor`.** Otherwise, consent was already established by
@@ -183,8 +209,9 @@ whether to grant the exchange, in this order:
    (default `azp`; `appid` for Microsoft Entra v1, `cid` for Okta) matched an
    entry in that issuer's `allowedActors`. `allowedActors` holds client IDs in
    the *external* IdP's namespace, not ToolHive client IDs — the likeliest
-   misconfiguration. An empty `allowedActors` accepts only `may_act`-bearing
-   tokens from that issuer. `checkDelegationConsent` then additionally checks
+   misconfiguration. An empty `allowedActors` accepts only permitted
+   `may_act`-bearing tokens from that issuer; without `allow_may_act`, it
+   accepts no tokens. `checkDelegationConsent` then additionally checks
    the issuer's `allowedDelegateClients` against the authenticated ToolHive
    client — this field is required (see below), so the check always applies
    on this path.
@@ -336,7 +363,7 @@ delegate_clients:
    {
      "iss": "https://auth.example.com",
      "sub": "3f9c2eab-1a4e-4b8f-9c11-3a0d2e6f9d21",
-     "act": { "sub": "coding-agent" },
+     "act": { "iss": "https://auth.example.com", "sub": "coding-agent" },
      "aud": "https://mcp.example.com",
      "scope": "openid",
      "exp": 1755099400
@@ -371,9 +398,10 @@ delegate_clients:
    token-exchange grant. `validateTrustedIssuer` rejects the field when it is
    empty or absent — permissiveness must be *declared* with the wildcard, not
    obtained by leaving the field out — and rejects the wildcard combined with
-   specific client IDs, since silently ignoring the specific IDs alongside it
-   would be worse than rejecting the config outright. `checkDelegationConsent`
-   checks the authenticated client against this list on both consent paths:
+   specific client IDs. The wildcard is also rejected when `allow_may_act` is
+   enabled: trusting a foreign issuer to name ToolHive clients in `may_act`
+   requires explicit per-client containment. `checkDelegationConsent` checks
+   the authenticated client against this list on both consent paths:
    `may_act` bypasses `allowedActors` (the external-issuer allowlist) but NOT
    `allowedDelegateClients`, since the validator sets `AllowedDelegateClients`
    for every external token regardless of which path authorized it (see
@@ -394,22 +422,23 @@ delegate_clients:
    qualified this way and remain the operator's responsibility to keep
    disjoint across issuers.
 3. **Provenance is recorded for every external token.** The RFC 8693 §4.1
-   `act` claim records who acted: `act.sub` is always the ToolHive client,
-   with the external issuer nested one level in — `ValidatedClaims.ExternalIssuer`
-   is set for every token validated by the external-issuer path, whether or
-   not it also carries `may_act`. The nested entry additionally carries `sub`
-   (the allowlisted actor claim) when the allowlist path resolved one;
-   a `may_act`-bearing external token yields `act = {sub: <toolhive-client>,
-   act: {iss: <external-issuer>}}` — no client-namespace actor to report, but
-   the issuer is still recorded. Either way, Cedar authorizers key on `sub`
-   and do not read `act` — it is an audit trail, not an access control. (AWS
-   STS role mapping can read arbitrary claims including `act` via its CEL
-   matcher, so "authorizers" here means Cedar specifically, not every
-   consumer.)
-4. **A `may_act`-emitting issuer bypasses the allowlist entirely.** Since it
-   takes priority and can name any ToolHive client, that claim must be drawn
-   from ToolHive's own client namespace and must not be influenceable by an
-   untrusted party.
+   `act` claim records who acted: its outer hop always contains ToolHive's
+   issuer and client ID. The external issuer is nested one level in —
+   `ValidatedClaims.ExternalIssuer` is set for every token validated by the
+   external-issuer path, whether or not it also carries `may_act`. The nested
+   entry additionally carries `sub` (the allowlisted actor claim) when the
+   allowlist path resolved one; a `may_act`-bearing external token yields
+   `act = {iss: <toolhive-issuer>, sub: <toolhive-client>, act: {iss:
+   <external-issuer>}}`. Either way, Cedar authorizers key on `sub` and do not
+   read `act` — it is an audit trail, not an access control. (AWS STS role
+   mapping can read arbitrary claims including `act` via its CEL matcher, so
+   "authorizers" here means Cedar specifically, not every consumer.)
+4. **`may_act` trust is a per-issuer opt-in.** `allow_may_act` is false by
+   default because an enabled issuer bypasses `allowedActors` and can name a
+   ToolHive client. The claim must be drawn from ToolHive's own client
+   namespace and must not be influenceable by an untrusted party. Its issuer
+   must use explicit `allowedDelegateClients`; wildcard delegation is rejected
+   with this opt-in.
 5. **ID/access-token discrimination on the external path rests on two
    partial layers, neither of which is exhaustive alone.** Nothing inspects
    the JWT header's `typ` claim: RFC 8725 §3.12 recommends `typ: at+jwt` for
@@ -476,9 +505,10 @@ delegate_clients:
 - **Delegated token lifetime.** `min(subject token's remaining lifetime,
   configured delegationLifespan)`. A short-lived external token silently
   yields a short delegated token.
-- **Delegation chain depth.** Re-exchanging an already-delegated token nests
-  `act` further; `maxDelegationDepth` (10) bounds it, past which the exchange
-  fails with `invalid_grant` ("delegation chain is too deep").
+- **Delegation chain depth and size.** Re-exchanging an already-delegated
+  token nests `act` further; `maxDelegationDepth` (10) and the complete
+  serialized `act` claim limit (8 KiB) bound it. An exchange exceeding either
+  limit fails with `invalid_grant`.
 - **Discovery redirects.** The per-issuer HTTP client only follows same-host
   redirects (`networking.SameHostRedirectPolicy()`), so an issuer whose
   `/.well-known/openid-configuration` redirects cross-host cannot be
@@ -505,10 +535,10 @@ delegate_clients:
   `insecure_allow_http` is set. There is no separate runtime scheme check for
   `issuer_url` — only `jwks_url` gets one (`ValidateJWKSURL`, on every fetch;
   shared verbatim between the runtime choke point and the config-time check
-  so the two can't drift). The operator exposes delegate clients, but not
-  `trusted_issuers`; external-issuer trust therefore still requires a
-  `RunConfig` supplied outside the CRD, while self-issued token exchange is
-  fully configurable through the supported delegate-client CRD surfaces.
+  so the two can't drift). The operator exposes both delegate clients and
+  `trusted_issuers` on `EmbeddedAuthServerConfig` (`delegateClients` and
+  `trustedIssuers`), so both self-issued and external-issuer token exchange
+  are configurable through the CRD.
 - **`allowPrivateIPs` requires `jwksUrl`.** Enforced at config time by
   `validateTrustedIssuers` (`pkg/authserver/config.go`) for every RunConfig.
   Without a hand-configured `jwksUrl`, OIDC discovery — a document fetched
@@ -524,6 +554,8 @@ delegate_clients:
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveAllowedActor`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
 - `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`
+- `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
+- `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
 - `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup
 - `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration
 - `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange grant and client-secret authentication methods

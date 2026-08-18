@@ -1322,6 +1322,14 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			wantErr: true,
 			errMsg:  "allowed_delegate_clients is required",
 		},
+		{
+			name: "allow_may_act with wildcard allowed_delegate_clients rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}, AllowMayAct: true},
+			},
+			wantErr: true,
+			errMsg:  "allow_may_act",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1410,6 +1418,14 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "private or loopback",
+		},
+		{
+			name: "allow_may_act with wildcard allowed_delegate_clients rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}, AllowMayAct: true},
+			},
+			wantErr: true,
+			errMsg:  "allow_may_act",
 		},
 	}
 

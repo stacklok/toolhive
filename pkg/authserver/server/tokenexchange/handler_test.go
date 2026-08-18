@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -39,6 +41,7 @@ func newTestHandler(t *testing.T, tj *testJWKS, delegationLifespan time.Duration
 		HandleHelper:       nil,
 		validator:          validator,
 		selfValidator:      validator,
+		issuer:             testIssuer,
 		delegationLifespan: delegationLifespan,
 		allowedAudiences:   []string{testIssuer},
 		config: &mockConfig{
@@ -739,6 +742,40 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 		},
 		{
+			// Regression test: a subject token's prior act claim can carry
+			// non-identity claims (here "role") that we never validated and
+			// did not mint. Re-signing them verbatim under ToolHive's own
+			// key would present them as vouched-for. buildActClaim must
+			// rebuild the nested act from iss/sub only (chainToAct) and drop
+			// everything else.
+			name:   "valid prior iss and sub hop is normalized without extras",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return actFormValues(t, tj, map[string]any{
+					"iss":  "https://prior-issuer.example.com",
+					"sub":  "original-agent",
+					"role": "admin",
+				})
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+				actMap, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+				require.True(t, ok, "act claim must be a map")
+				priorAct, ok := actMap["act"].(map[string]any)
+				require.True(t, ok, "prior act claim should be nested under the new act claim")
+				assert.Equal(t, map[string]any{
+					"iss": "https://prior-issuer.example.com",
+					"sub": "original-agent",
+				}, priorAct,
+					"only iss/sub survive; the untrusted 'role' claim must not be re-signed")
+			},
+		},
+		{
 			name: "requested audience not allowed by client",
 			ctx:  func(_ *testing.T) context.Context { return context.Background() },
 			client: func() *fosite.DefaultClient {
@@ -921,7 +958,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "too deep",
 		},
 		{
@@ -954,6 +991,36 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 		},
 		{
+			// A single shallow hop can still blow the encoded-size cap if its
+			// own iss/sub value is large, independent of maxDelegationDepth
+			// (depth here is 1, far under the depth gate) — this exercises the
+			// size gate on its own, not as a side effect of depth. The hop's
+			// non-identity claims no longer count toward this: buildActClaim
+			// rebuilds the prior chain from iss/sub only (see chainToAct), so
+			// an oversized unrelated claim ("filler") would be stripped
+			// before the size check and never trigger it.
+			name:   "act claim exceeding encoded size cap rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["act"] = map[string]any{
+					"sub": strings.Repeat("a", maxActClaimSize),
+				}
+				token := tj.signToken(t, validClaims(), extra)
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "too large",
+		},
+		{
 			// RFC 8693 Section 4.1 requires act to be a JSON object. Rejecting keeps
 			// us from re-minting the violation. A non-object array or scalar reaches
 			// the same parser branch, so the string case covers both.
@@ -966,7 +1033,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "act_not_object",
 		},
 		{
@@ -979,7 +1046,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "nested_act_not_object",
 		},
 		{
@@ -994,7 +1061,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "sub_not_string",
 		},
 		{
@@ -1011,13 +1078,16 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "iss_not_string",
 		},
 		{
 			// A JSON-null nested act ends the chain; it asserts no further
-			// delegation and must not read as malformed.
-			name:   "null nested act is accepted and nested unchanged",
+			// delegation and must not read as malformed. The rebuilt hop
+			// carries no "act" key at all (see chainToAct) — an explicit
+			// null and an absent key both mean "no further delegation", and
+			// normalization does not need to preserve the distinction.
+			name:   "null nested act is accepted and normalized to a single hop",
 			ctx:    func(_ *testing.T) context.Context { return context.Background() },
 			client: defaultClient,
 			form: func(t *testing.T) url.Values {
@@ -1032,8 +1102,8 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				actMap, ok := sess.JWTClaims.Extra["act"].(map[string]any)
 				require.True(t, ok, "act claim must be a map")
 				assert.Equal(t, testAgentClientID, actMap["sub"])
-				assert.Equal(t, map[string]any{"sub": "agent-0", "act": nil}, actMap["act"],
-					"the prior act claim should be nested verbatim, null member included")
+				assert.Equal(t, map[string]any{"sub": "agent-0"}, actMap["act"],
+					"the prior act claim is rebuilt from iss/sub only, dropping the null act member")
 			},
 		},
 		{
@@ -1041,14 +1111,17 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			// sub is conventional rather than mandatory, so an empty hop is
 			// conformant. Pinned so a future tightening of the shared parser breaks
 			// a test rather than a caller.
-			name:   "empty act object is accepted",
+			name:   "empty outer act hop is rejected during issuance",
 			ctx:    func(_ *testing.T) context.Context { return context.Background() },
 			client: defaultClient,
 			form: func(t *testing.T) url.Values {
 				t.Helper()
 				return actFormValues(t, tj, map[string]any{})
 			},
-			lifespan: 15 * time.Minute,
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "empty actor",
 			check: func(t *testing.T, req *fosite.AccessRequest) {
 				t.Helper()
 				sess, ok := req.GetSession().(*session.Session)
@@ -1178,7 +1251,7 @@ func TestTokenExchangeHandler_DelegateClientDepthCap(t *testing.T) {
 
 		err := h.HandleTokenEndpointRequest(context.Background(), req)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant))
+		assert.True(t, errors.Is(err, fosite.ErrInvalidRequest))
 		var rfcErr *fosite.RFC6749Error
 		require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
 		assert.Contains(t, rfcErr.Reason(), "too deep")
@@ -1530,6 +1603,7 @@ func TestCheckDelegationConsent(t *testing.T) {
 func newTestHandlerWithValidator(validator SubjectTokenValidator) *Handler {
 	return &Handler{
 		validator:          validator,
+		issuer:             testIssuer,
 		delegationLifespan: 15 * time.Minute,
 		allowedAudiences:   []string{testIssuer},
 		config: &mockConfig{
@@ -1555,7 +1629,8 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		ExpectedAudience:       testExternalAudience,
 		JWKSURL:                jwksServer.URL + "/jwks",
 		AllowedActors:          []string{"ext-agent"},
-		AllowedDelegateClients: []string{anyDelegateClient},
+		AllowedDelegateClients: []string{testAgentClientID},
+		AllowMayAct:            true,
 	}}
 	multiValidator := newMultiValidator(t, tj, trustedIssuers)
 
@@ -1601,6 +1676,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"], "outermost act.sub is always the ToolHive client")
+		assert.Equal(t, testIssuer, act["iss"], "outermost act.iss is always this server's own issuer")
 
 		nested, ok := act["act"].(map[string]any)
 		require.True(t, ok, "external actor/issuer must be nested under act.act")
@@ -1623,6 +1699,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"])
+		assert.Equal(t, testIssuer, act["iss"], "outermost act.iss is always this server's own issuer")
 		assert.Nil(t, act["act"], "self-issued delegation must not nest an external actor")
 	})
 
@@ -1728,11 +1805,20 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 
 		_, err := requestWith(t, h, externalToken(t, nestedActChain(9)))
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant))
+		assert.True(t, errors.Is(err, fosite.ErrInvalidRequest))
 		var rfcErr *fosite.RFC6749Error
 		require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
 		assert.Contains(t, rfcErr.Reason(), "too deep")
 	})
+}
+
+func TestChainToAct_EmptyIdentityHop(t *testing.T) {
+	t.Parallel()
+
+	act, err := chainToAct([]coreaudit.DelegatedActor{{}})
+
+	require.Error(t, err)
+	assert.Nil(t, act)
 }
 
 // mockConfig implements the tokenExchangeConfig interface for testing.
@@ -1852,6 +1938,7 @@ func newTestHandlerWithHelper(t *testing.T, tj *testJWKS, accessLifespan time.Du
 			},
 		},
 		validator:          validator,
+		issuer:             testIssuer,
 		delegationLifespan: delegationLifespan,
 		allowedAudiences:   []string{testIssuer},
 		config:             cfg,

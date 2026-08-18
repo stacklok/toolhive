@@ -209,6 +209,7 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedDelegateClients: []string{"toolhive-agent-a"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -418,9 +419,10 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				IssuerURL:        testExternalIssuer,
 				ExpectedAudience: testExternalAudience,
 				JWKSURL:          jwksServer.URL + "/jwks",
-				// AllowedActors intentionally empty: may_act is authoritative and
-				// skips the allowlist entirely.
-				AllowedDelegateClients: []string{anyDelegateClient},
+				// AllowedActors intentionally empty: permitted may_act is authoritative
+				// and skips the allowlist entirely.
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -449,7 +451,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				IssuerURL:              testExternalIssuer,
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -466,7 +469,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"someone-else"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -489,7 +493,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"ext-agent"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -510,7 +515,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"ext-agent"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -529,7 +535,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"ext-agent"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -548,7 +555,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"ext-agent"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -567,7 +575,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"ext-agent"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -591,7 +600,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				IssuerURL:              testExternalIssuer,
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -605,6 +615,25 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 			},
 		},
 		{
+			name: "external token may_act without issuer opt-in rejected before allowlist fallback",
+			trustedIssuers: []TrustedIssuer{{
+				IssuerURL:              testExternalIssuer,
+				ExpectedAudience:       testExternalAudience,
+				JWKSURL:                jwksServer.URL + "/jwks",
+				AllowedActors:          []string{"ext-agent"},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+			}},
+			token: func(t *testing.T) string {
+				t.Helper()
+				return externalJWKS.signToken(t, externalClaims(), map[string]any{
+					"azp":     "ext-agent",
+					"may_act": map[string]any{"sub": "some-toolhive-client", "iss": testIssuer},
+				})
+			},
+			wantErr:     true,
+			errContains: "allow_may_act is disabled",
+		},
+		{
 			// The external issuer's own URL is never a valid may_act.iss
 			// value: a regression that compared against issuerConfig.IssuerURL
 			// instead of v.selfIssuer would wrongly accept this.
@@ -613,7 +642,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				IssuerURL:              testExternalIssuer,
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -773,7 +803,8 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 				ExpectedAudience:       testExternalAudience,
 				JWKSURL:                jwksServer.URL + "/jwks",
 				AllowedActors:          []string{"ext-agent"},
-				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowedDelegateClients: []string{"some-toolhive-client"},
+				AllowMayAct:            true,
 			}},
 			token: func(t *testing.T) string {
 				t.Helper()
@@ -1135,6 +1166,18 @@ func TestNewMultiIssuerTokenValidator_Validation(t *testing.T) {
 				AllowedDelegateClients: []string{anyDelegateClient, "toolhive-agent-a"},
 			}},
 			errContains: "must not combine the wildcard",
+		},
+		{
+			name:          "AllowMayAct with wildcard AllowedDelegateClients rejected",
+			selfValidator: selfValidator,
+			selfIssuer:    testIssuer,
+			trustedIssuers: []TrustedIssuer{{
+				IssuerURL:              testExternalIssuer,
+				ExpectedAudience:       testExternalAudience,
+				AllowedDelegateClients: []string{anyDelegateClient},
+				AllowMayAct:            true,
+			}},
+			errContains: "allow_may_act",
 		},
 		{
 			// AllowPrivateIPs without a hand-configured jwks_url would let
@@ -1957,7 +2000,8 @@ func TestMultiIssuerTokenValidator_KeyRotationRefreshesImmediately(t *testing.T)
 		IssuerURL:              testExternalIssuer,
 		ExpectedAudience:       testExternalAudience,
 		JWKSURL:                srv.URL + "/jwks",
-		AllowedDelegateClients: []string{anyDelegateClient},
+		AllowedDelegateClients: []string{"some-toolhive-client"},
+		AllowMayAct:            true,
 	}}
 	validator := newMultiValidator(t, selfJWKS, trustedIssuers)
 
@@ -2021,7 +2065,8 @@ func TestMultiIssuerTokenValidator_UnknownKidRefreshIsRateLimited(t *testing.T) 
 		IssuerURL:              testExternalIssuer,
 		ExpectedAudience:       testExternalAudience,
 		JWKSURL:                srv.URL + "/jwks",
-		AllowedDelegateClients: []string{anyDelegateClient},
+		AllowedDelegateClients: []string{"some-toolhive-client"},
+		AllowMayAct:            true,
 	}}
 	validator := newMultiValidator(t, selfJWKS, trustedIssuers)
 

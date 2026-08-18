@@ -97,6 +97,84 @@ func TestAddSkillToGroups(t *testing.T) {
 	}
 }
 
+func TestRemoveSkillFromGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		groupName string
+		skillName string
+		setupMock func(*groupmocks.MockManager)
+		wantErr   string
+	}{
+		{
+			name:      "empty group name is a no-op",
+			groupName: "",
+			skillName: "my-skill",
+			setupMock: func(*groupmocks.MockManager) {},
+		},
+		{
+			name:      "missing membership is a no-op",
+			groupName: "mygroup",
+			skillName: "my-skill",
+			setupMock: func(m *groupmocks.MockManager) {
+				m.EXPECT().Get(gomock.Any(), "mygroup").
+					Return(&Group{Name: "mygroup", Skills: []string{"other"}}, nil)
+			},
+		},
+		{
+			name:      "removes membership",
+			groupName: "mygroup",
+			skillName: "my-skill",
+			setupMock: func(m *groupmocks.MockManager) {
+				m.EXPECT().Get(gomock.Any(), "mygroup").
+					Return(&Group{Name: "mygroup", Skills: []string{"my-skill", "other"}}, nil)
+				m.EXPECT().Update(gomock.Any(), &Group{Name: "mygroup", Skills: []string{"other"}}).
+					Return(nil)
+			},
+		},
+		{
+			name:      "get error is wrapped",
+			groupName: "mygroup",
+			skillName: "my-skill",
+			setupMock: func(m *groupmocks.MockManager) {
+				m.EXPECT().Get(gomock.Any(), "mygroup").
+					Return(nil, errors.New("backend down"))
+			},
+			wantErr: "getting group",
+		},
+		{
+			name:      "update error is wrapped",
+			groupName: "mygroup",
+			skillName: "my-skill",
+			setupMock: func(m *groupmocks.MockManager) {
+				m.EXPECT().Get(gomock.Any(), "mygroup").
+					Return(&Group{Name: "mygroup", Skills: []string{"my-skill"}}, nil)
+				m.EXPECT().Update(gomock.Any(), gomock.Any()).
+					Return(errors.New("write failed"))
+			},
+			wantErr: "updating group",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			mgr := groupmocks.NewMockManager(ctrl)
+			tt.setupMock(mgr)
+
+			err := RemoveSkillFromGroup(context.Background(), mgr, tt.groupName, tt.skillName)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestRemoveSkillFromAllGroups(t *testing.T) {
 	t.Parallel()
 

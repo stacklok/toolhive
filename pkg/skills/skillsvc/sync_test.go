@@ -5,6 +5,7 @@ package skillsvc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -329,6 +330,95 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, sk.InstalledSkill)
 	assert.True(t, sk.InstalledSkill.Managed, "adopt must mark the DB record as managed")
+}
+
+// A failed adopt (marking the DB record managed fails after the lock write)
+// must remove the entry this adoption created — the lock must not claim a
+// skill is managed while the DB says otherwise.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_AdoptCompensatesFailedManagedUpdate(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("unmanaged-skill", gitSkill("unmanaged-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	// Simulate a legacy unmanaged install.
+	ref, _ := gitRef("unmanaged-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	root := mustOpenRoot(t, projectRoot)
+	require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+		lf.Remove("unmanaged-skill")
+		return nil
+	}))
+	inner := svc.(*service) //nolint:forcetypeassert
+	legacySk, err := inner.store.Get(t.Context(), "unmanaged-skill", skills.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacySk.Managed = false
+	require.NoError(t, inner.store.Update(t.Context(), legacySk))
+
+	// Marking the record managed during adopt now fails.
+	inner.store = &hookSkillStore{
+		SkillStore: inner.store,
+		updateErr:  errors.New("db update unavailable"),
+	}
+
+	result, err := inner.Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Contains(t, result.Failed[0].Error, "db update unavailable")
+
+	_, ok := readLockfile(t, projectRoot).Get("unmanaged-skill")
+	assert.False(t, ok, "a failed adopt must remove the lock entry it created")
+}
+
+// Sync must fail up front on an invalid project root or an unreadable lock
+// file rather than reporting per-name results from broken state.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_InvalidInputsFail(t *testing.T) {
+	gr, _ := newGitResolverMock(t)
+	svc, projectRoot := newLockTestService(t, gr)
+	syncer := svc.(*service) //nolint:forcetypeassert
+
+	_, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: filepath.Join(projectRoot, "does-not-exist")})
+	require.Error(t, err, "a nonexistent project root must fail")
+
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+	_, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.Error(t, err, "an unreadable lock file must fail")
+}
+
+// syncOne must report a per-name failure when the lock file becomes
+// unreadable under the held transaction, not panic or mutate state.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSyncOne_UnreadableLockReportsFailure(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.Remove(lockPath))
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	result := &skills.SyncResult{}
+	inner.syncOne(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot}, "my-skill", result)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, "my-skill", result.Failed[0].Name)
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel

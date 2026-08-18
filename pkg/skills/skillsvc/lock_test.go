@@ -409,7 +409,9 @@ func TestInstallProjectScope_LockWriteFailureRemovesAddedClientTree(t *testing.T
 // hookSkillStore lets tests inject storage failures into specific operations.
 type hookSkillStore struct {
 	storage.SkillStore
-	deleteErr error
+	deleteErr   error
+	updateErr   error
+	afterCreate func()
 }
 
 func (s *hookSkillStore) Delete(ctx context.Context, name string, scope skills.Scope, projectRoot string) error {
@@ -417,6 +419,23 @@ func (s *hookSkillStore) Delete(ctx context.Context, name string, scope skills.S
 		return s.deleteErr
 	}
 	return s.SkillStore.Delete(ctx, name, scope, projectRoot)
+}
+
+func (s *hookSkillStore) Update(ctx context.Context, sk skills.InstalledSkill) error {
+	if s.updateErr != nil {
+		return s.updateErr
+	}
+	return s.SkillStore.Update(ctx, sk)
+}
+
+func (s *hookSkillStore) Create(ctx context.Context, sk skills.InstalledSkill) error {
+	if err := s.SkillStore.Create(ctx, sk); err != nil {
+		return err
+	}
+	if s.afterCreate != nil {
+		s.afterCreate()
+	}
+	return nil
 }
 
 // A rollback whose own storage compensation fails must surface that failure
@@ -449,6 +468,141 @@ func TestInstallProjectScope_RollbackStorageFailureIsJoined(t *testing.T) {
 		"the original group registration failure must be reported")
 	assert.Contains(t, err.Error(), "db delete unavailable",
 		"the failed rollback deletion must be joined into the returned error")
+}
+
+// A failed force reinstall over a lock-managed skill must restore the prior
+// lock entry rather than delete it.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_GroupFailureRestoresPriorLockEntry(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+
+	// The group manager succeeds for the first install and fails afterwards.
+	ctrl := gomock.NewController(t)
+	gm := groupmocks.NewMockManager(ctrl)
+	calls := 0
+	gm.EXPECT().Get(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+		func(_ context.Context, name string) (*groups.Group, error) {
+			calls++
+			if calls > 1 {
+				return nil, errors.New("group backend down")
+			}
+			return &groups.Group{Name: name}, nil
+		},
+	)
+	gm.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithGroupManager(gm))
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	prevEntry, ok := readLockfile(t, projectRoot).Get("my-skill")
+	require.True(t, ok)
+
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, Force: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registering skill in group")
+
+	after, ok := readLockfile(t, projectRoot).Get("my-skill")
+	require.True(t, ok, "the prior lock entry must be restored, not deleted")
+	assert.Equal(t, prevEntry.Digest, after.Digest)
+
+	info, err := svc.Info(t.Context(), skills.InfoOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err, "the pre-existing DB record must be restored")
+	require.NotNil(t, info.InstalledSkill)
+}
+
+// A rollback that fails to restore the pre-existing DB record must join
+// that failure with the trigger error.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_RollbackUpdateFailureIsJoined(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+
+	ctrl := gomock.NewController(t)
+	gm := groupmocks.NewMockManager(ctrl)
+	calls := 0
+	gm.EXPECT().Get(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+		func(_ context.Context, name string) (*groups.Group, error) {
+			calls++
+			if calls > 1 {
+				return nil, errors.New("group backend down")
+			}
+			return &groups.Group{Name: name}, nil
+		},
+	)
+	gm.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+	svc, projectRoot := newLockTestService(t, gr, WithGroupManager(gm))
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	// Restoring the pre-existing DB record during rollback now fails.
+	inner.store = &hookSkillStore{
+		SkillStore: inner.store,
+		updateErr:  errors.New("db update unavailable"),
+	}
+
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, Force: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registering skill in group")
+	assert.Contains(t, err.Error(), "db update unavailable",
+		"the failed pre-existing record restore must be joined into the returned error")
+}
+
+// A lock file that becomes unreadable between extraction and bookkeeping
+// must fail closed: the fresh install is rolled back and the load error is
+// joined with the compensation result.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_LockSnapshotFailureRollsBackFreshInstall(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	// Corrupt the lock file only after the DB row exists, so the prior-entry
+	// snapshot inside installAndRegister is what fails.
+	inner.store = &hookSkillStore{
+		SkillStore: inner.store,
+		afterCreate: func() {
+			lockPath := filepath.Join(projectRoot, lockfile.FileName)
+			_ = os.Remove(lockPath)
+			_ = os.MkdirAll(lockPath, 0o755)
+		},
+	}
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading lock file")
+
+	_, err = svc.Info(t.Context(), skills.InfoOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "the DB record must be rolled back when the lock snapshot fails")
+	assert.NoDirExists(t, filepath.Join(projectRoot, ".claude", "skills", "my-skill"),
+		"the freshly extracted tree must be removed")
 }
 
 // TestInstallProjectScope_DependencyFailureRollsBackParentLockEntry covers a

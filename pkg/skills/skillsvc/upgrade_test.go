@@ -5,6 +5,8 @@ package skillsvc
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,50 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// Upgrade must fail up front on an invalid project root or an unreadable
+// lock file.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_InvalidInputsFail(t *testing.T) {
+	gr, _ := newGitResolverMock(t)
+	svc, projectRoot := newLockTestService(t, gr)
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	_, err := inner.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: filepath.Join(projectRoot, "does-not-exist")})
+	require.Error(t, err, "a nonexistent project root must fail")
+
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+	_, err = inner.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot})
+	require.Error(t, err, "an unreadable lock file must fail")
+}
+
+// upgradeOne must report a failed outcome when the lock file becomes
+// unreadable under the held transaction.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgradeOne_UnreadableLockReportsFailure(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.Remove(lockPath))
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	outcome := inner.upgradeOne(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}, "my-skill")
+	assert.Equal(t, skills.UpgradeStatusFailed, outcome.Status)
+	assert.Equal(t, "my-skill", outcome.Name)
+	assert.NotEmpty(t, outcome.Error)
+}
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_ReportsUpToDateWhenSourceUnchanged(t *testing.T) {

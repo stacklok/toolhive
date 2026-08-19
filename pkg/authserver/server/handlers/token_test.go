@@ -89,10 +89,13 @@ func TestLogAccessError(t *testing.T) {
 }
 
 // TestLogClientLookupFailure asserts that logClientLookupFailure splits on
-// whether the error is storage.ErrNotFound: an unknown client_id is ordinary
+// whether the error is a not-found client: an unknown client_id is ordinary
 // traffic on the unauthenticated /oauth/authorize endpoint and must stay at
 // Debug, while any other storage error (a genuine backend problem) logs at
-// Warn.
+// Warn. Both storage.ErrNotFound (opaque DCR-issued client_id) and
+// fosite.ErrNotFound (a CIMD client_id -- an https:// URL -- that fails to
+// resolve) count as not-found; either can be triggered by an unauthenticated
+// caller sending garbage, so both must stay quiet at Debug.
 //
 //nolint:paralleltest // mutates the process-global slog default (slog.SetDefault); racing with any concurrent test that logs via the default logger
 func TestLogClientLookupFailure(t *testing.T) {
@@ -104,6 +107,11 @@ func TestLogClientLookupFailure(t *testing.T) {
 		{
 			name:      "unknown client_id logs at Debug",
 			err:       fmt.Errorf("lookup failed: %w", storage.ErrNotFound),
+			wantLevel: slog.LevelDebug,
+		},
+		{
+			name:      "unresolvable CIMD client_id logs at Debug",
+			err:       fmt.Errorf("%w: CIMD fetch failed: %w", fosite.ErrNotFound, errors.New("connection refused")),
 			wantLevel: slog.LevelDebug,
 		},
 		{

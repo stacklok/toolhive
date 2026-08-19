@@ -230,14 +230,21 @@ func (r *loopbackAuthorizeRequester) GetRedirectURI() *url.URL {
 }
 
 // logClientLookupFailure logs a GetClient failure from rewriteLoopbackRedirectURI
-// at a level determined by the error: Debug for storage.ErrNotFound (an
+// at a level determined by the error: Debug for a not-found client (an
 // unknown client_id is ordinary traffic on this unauthenticated endpoint --
 // any caller can send a random client_id alongside a localhost redirect_uri,
 // so logging every one at Warn would make log flooding trivial) and Warn for
 // any other error, which indicates an actual backend problem worth surfacing.
+//
+// Both storage.ErrNotFound and fosite.ErrNotFound are checked: an opaque
+// DCR-issued client_id not-found comes back wrapping storage.ErrNotFound, but
+// a CIMD client_id (an https:// URL resolved live via
+// CIMDStorageDecorator.fetch) that fails to resolve wraps fosite.ErrNotFound
+// instead -- the same log-flooding risk exists for a caller who sends a
+// bogus or unreachable CIMD URL as client_id.
 func logClientLookupFailure(ctx context.Context, clientID string, err error) {
 	level := slog.LevelWarn
-	if errors.Is(err, storage.ErrNotFound) {
+	if errors.Is(err, storage.ErrNotFound) || errors.Is(err, fosite.ErrNotFound) {
 		level = slog.LevelDebug
 	}
 	slog.Log(ctx, level, "failed to look up client for loopback redirect_uri rewrite",

@@ -239,9 +239,14 @@ type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
 	// Key is the path to a cosign PEM private key used to sign the pushed
-	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Empty with
-	// NoSign false is an error: unsigned pushes must be explicit.
+	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Mutually exclusive
+	// with IdentityToken. One of Key, IdentityToken, or NoSign is required.
 	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
+	// keyless signing: the server exchanges it with Fulcio for a short-lived
+	// signing certificate and records the signature in Rekor. Mutually
+	// exclusive with Key. One of Key, IdentityToken, or NoSign is required.
+	IdentityToken string `json:"identity_token,omitempty"`
 	// NoSign pushes without signing. Consumers installing the artifact
 	// project-scoped will need an explicit unsigned exception.
 	NoSign bool `json:"no_sign,omitempty"`

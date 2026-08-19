@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -229,8 +228,9 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 const defaultCIMDTokenEndpointAuthMethod = "none"
 
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
-// Redirect URIs containing http://localhost are wrapped in a LoopbackClient
-// so that RFC 8252 §7.3 dynamic port matching applies.
+// RFC 8252 §7.3 loopback dynamic-port matching for a "http://localhost" redirect
+// URI is provided generically by registration.RegisteredLoopbackRedirectURI
+// (keyed on IsPublic() + GetRedirectURIs()), so no wrapper type is needed here.
 // resolvedScopes is the already-validated scope list computed by fetch() via
 // registration.ValidateScopes; when empty, DefaultScopes is used — this occurs when
 // the decorator has no ScopesSupported restriction (unconstrained AS).
@@ -268,39 +268,8 @@ func buildFositeClient(
 		Public:   true,
 	}
 
-	openIDClient := &fosite.DefaultOpenIDConnectClient{
+	return &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:           defaultClient,
 		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
 	}
-
-	// Wrap in LoopbackClient when any redirect URI targets localhost. This does
-	// NOT make RFC 8252 §7.3 dynamic port matching work: fosite's own
-	// authorize-path redirect matching reads only GetRedirectURIs() and never
-	// calls LoopbackClient's methods, and fosite's own loopback matcher
-	// supports IP literals (127.0.0.1, [::1]) but not the "localhost"
-	// hostname — a "http://localhost/callback" registration still gets
-	// exact-match only against a dynamic-port authorize request. The wrap's
-	// value here is carrying the OIDC client shape so TokenEndpointAuthMethod
-	// is preserved — LoopbackClient embeds *fosite.DefaultOpenIDConnectClient.
-	if hasLoopbackRedirectURI(doc.RedirectURIs) {
-		return registration.NewLoopbackClient(openIDClient)
-	}
-
-	return openIDClient
-}
-
-// hasLoopbackRedirectURI returns true when any of the redirect URIs in the
-// list targets a loopback address over HTTP. The host is parsed from each URI
-// to prevent bypass via hosts like "http://localhost.evil.com/".
-func hasLoopbackRedirectURI(uris []string) bool {
-	for _, uri := range uris {
-		parsed, err := url.Parse(uri)
-		if err != nil {
-			continue
-		}
-		if parsed.Scheme == "http" && oauthproto.IsLoopbackHost(parsed.Hostname()) {
-			return true
-		}
-	}
-	return false
 }

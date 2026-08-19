@@ -420,6 +420,21 @@ Total number of Redis errors encountered while checking rate limits.
 | `server` | string | MCPServer or VirtualMCPServer name |
 | `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
 
+#### `toolhive_rate_limit_fail_open` (Counter)
+
+Total number of rate limit checks allowed after an enforcement error. Prometheus
+exports this counter as `toolhive_rate_limit_fail_open_total`.
+
+This counter records the application of fail-open policy, while
+`toolhive_rate_limit_redis_errors` records the underlying Redis failure. A
+failed check does not increment `toolhive_rate_limit_decisions` because Redis
+did not produce a rate limit decision.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+
 #### `toolhive_rate_limit_check_latency` (Histogram, seconds)
 
 Duration of each attempted atomic Redis Lua rate limit check, including failed
@@ -486,7 +501,7 @@ attributes below.
 |-----------|------|-------------|
 | `rate_limit.decision` | string | `"allowed"` or `"rejected"` |
 | `rate_limit.rejected_by` | string | `"none"` for allowed requests, otherwise the bucket that rejected the request |
-| `rate_limit.fail_open` | bool | `false` for normal allowed and rejected outcomes |
+| `rate_limit.fail_open` | bool | `true` when an enforcement error is allowed to fail open; otherwise `false` |
 
 The bounded `rate_limit.rejected_by` values are:
 
@@ -499,9 +514,12 @@ The bounded `rate_limit.rejected_by` values are:
 
 When no configured bucket applies to a tool call, the span records
 `rate_limit.decision="allowed"`, `rate_limit.rejected_by="none"`, and
-`rate_limit.fail_open=false`. Redis check failures do not receive these normal
-outcome attributes. If multiple rate limit checks use the same request span,
-the latest normal outcome replaces earlier values.
+`rate_limit.fail_open=false`. When a Redis check fails and enforcement fails
+open, the span records `rate_limit.decision="allowed"`,
+`rate_limit.rejected_by="none"`, and `rate_limit.fail_open=true`. These
+attributes describe the rate limit outcome only; the eventual request result
+determines the span status. If multiple rate limit checks use the same request
+span, the latest outcome replaces earlier values (last write wins).
 
 ### Tool, Prompt, and Resource Attributes
 

@@ -169,6 +169,142 @@ func TestRateLimitMetrics_RedisErrorAndFailedLatency(t *testing.T) {
 		"server":    "test-server",
 	}))
 	assert.Nil(t, findRateLimitMetric(metrics, "toolhive_rate_limit_decisions"))
+	assert.Nil(t, findRateLimitMetric(metrics, "toolhive_rate_limit_fail_open"))
+}
+
+func TestRateLimitMetrics_SharedAdapterRecordsFailOpenPerInvocation(t *testing.T) {
+	t.Parallel()
+	client, redisServer := newTestClient(t)
+	reader, meterProvider := newRateLimitMeterProvider()
+	t.Cleanup(func() {
+		require.NoError(t, meterProvider.Shutdown(context.Background()))
+	})
+
+	limiter, err := newLimiter(client, "test-ns", "test-server", &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{
+			MaxTokens:    1,
+			RefillPeriod: metav1.Duration{Duration: time.Minute},
+		},
+	}, meterProvider)
+	require.NoError(t, err)
+	redisServer.Close()
+
+	tracerProvider, recorder := newRateLimitTracerProvider(t)
+	tracer := tracerProvider.Tracer("rate-limit-test")
+	for range 2 {
+		ctx, span := tracer.Start(t.Context(), "request")
+		err := Allow(ctx, limiter, nil, "")
+		require.Error(t, err)
+		span.End()
+	}
+
+	metrics := collectRateLimitMetrics(t, reader)
+	failOpen := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_fail_open")
+	sum, ok := failOpen.Data.(metricdata.Sum[int64])
+	require.True(t, ok, "metric %q is not an int64 sum", failOpen.Name)
+	require.Len(t, sum.DataPoints, 1)
+	assert.Equal(t, int64(2), sum.DataPoints[0].Value)
+	assert.Equal(t, map[string]string{
+		"namespace": "test-ns",
+		"server":    "test-server",
+	}, stringAttributeMap(sum.DataPoints[0].Attributes))
+
+	redisErrors := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_redis_errors")
+	assert.Equal(t, int64(2), counterValueWithAttributes(t, redisErrors, map[string]string{
+		"namespace":  "test-ns",
+		"server":     "test-server",
+		"error_type": redisErrorTypeConnection,
+	}))
+	assert.Nil(t, findRateLimitMetric(metrics, "toolhive_rate_limit_decisions"))
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2, "fail-open must annotate ambient spans without creating child spans")
+	for _, span := range spans {
+		attributes := spanAttributeMap(span)
+		assert.Equal(t, "allowed", attributes["rate_limit.decision"])
+		assert.Equal(t, "none", attributes["rate_limit.rejected_by"])
+		assert.Equal(t, true, attributes["rate_limit.fail_open"])
+	}
+}
+
+func TestRateLimitMetrics_NormalAdapterOutcomesDoNotRecordFailOpen(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     *v1beta1.RateLimitConfig
+		toolName   string
+		preconsume bool
+		nilLimiter bool
+		wantErr    bool
+	}{
+		{
+			name: "allowed",
+			config: &v1beta1.RateLimitConfig{Shared: &v1beta1.RateLimitBucket{
+				MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute},
+			}},
+		},
+		{
+			name: "rejected",
+			config: &v1beta1.RateLimitConfig{Shared: &v1beta1.RateLimitBucket{
+				MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute},
+			}},
+			preconsume: true,
+			wantErr:    true,
+		},
+		{
+			name: "no applicable bucket",
+			config: &v1beta1.RateLimitConfig{Tools: []v1beta1.ToolRateLimitConfig{{
+				Name: "search",
+				Shared: &v1beta1.RateLimitBucket{
+					MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			}}},
+			toolName: "other-tool",
+		},
+		{
+			name:   "no-op limiter",
+			config: nil,
+		},
+		{
+			name:       "nil limiter",
+			nilLimiter: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client, _ := newTestClient(t)
+			reader, meterProvider := newRateLimitMeterProvider()
+			t.Cleanup(func() {
+				require.NoError(t, meterProvider.Shutdown(context.Background()))
+			})
+
+			var limiter Limiter
+			if !tt.nilLimiter {
+				var err error
+				limiter, err = newLimiter(client, "test-ns", "test-server", tt.config, meterProvider)
+				require.NoError(t, err)
+			}
+			if tt.preconsume {
+				decision, err := limiter.Allow(t.Context(), tt.toolName, "")
+				require.NoError(t, err)
+				require.True(t, decision.Allowed)
+			}
+
+			err := Allow(t.Context(), limiter, nil, tt.toolName)
+			if tt.wantErr {
+				var limited *RateLimitedError
+				require.ErrorAs(t, err, &limited)
+			} else {
+				require.NoError(t, err)
+			}
+
+			metrics := collectRateLimitMetrics(t, reader)
+			assert.Nil(t, findRateLimitMetric(metrics, "toolhive_rate_limit_fail_open"))
+		})
+	}
 }
 
 func TestRateLimitMetrics_NoApplicableBucketRecordsNothing(t *testing.T) {
@@ -342,6 +478,33 @@ func TestRateLimitSpanAttributes_RedisErrorLeavesOutcomeUnset(t *testing.T) {
 	assert.NotContains(t, attributes, "rate_limit.fail_open")
 }
 
+func TestRateLimitSpanAttributes_FailOpenWithNilMeterProvider(t *testing.T) {
+	t.Parallel()
+	client, redisServer := newTestClient(t)
+	limiter, err := newLimiter(
+		client,
+		"test-ns",
+		"test-server",
+		newSpanTestRateLimitConfig(t, rateLimitScopeShared, rateLimitOperationServer),
+		nil,
+	)
+	require.NoError(t, err)
+	redisServer.Close()
+
+	tracerProvider, recorder := newRateLimitTracerProvider(t)
+	ctx, span := tracerProvider.Tracer("rate-limit-test").Start(t.Context(), "request")
+	err = Allow(ctx, limiter, nil, "")
+	require.Error(t, err)
+	span.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	attributes := spanAttributeMap(spans[0])
+	assert.Equal(t, "allowed", attributes["rate_limit.decision"])
+	assert.Equal(t, "none", attributes["rate_limit.rejected_by"])
+	assert.Equal(t, true, attributes["rate_limit.fail_open"])
+}
+
 func TestClassifyRedisError(t *testing.T) {
 	t.Parallel()
 
@@ -391,6 +554,7 @@ func TestRateLimitMetricNamesUseToolHivePrefix(t *testing.T) {
 		operationType: rateLimitOperationServer,
 	})
 	telemetry.recordRedisError(t.Context(), errors.New("ERR script failed"))
+	telemetry.recordFailOpen(t.Context())
 	telemetry.recordCheckLatency(t.Context(), time.Millisecond)
 
 	metrics := collectRateLimitMetrics(t, reader)
@@ -536,4 +700,12 @@ func attributesMatch(attributes attribute.Set, want map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func stringAttributeMap(attributes attribute.Set) map[string]string {
+	result := make(map[string]string, attributes.Len())
+	for _, attr := range attributes.ToSlice() {
+		result[string(attr.Key)] = attr.Value.AsString()
+	}
+	return result
 }

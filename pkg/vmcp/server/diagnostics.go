@@ -74,7 +74,8 @@ func (s *Server) startDiagnostics() error {
 
 	if s.transportPortMetricsHandler() != nil {
 		slog.Warn("serving prometheus metrics on the MCP port as well as the diagnostics port; "+
-			"this is deprecated and the MCP-port copy will be removed. Move scrapers to the "+
+			"this is deprecated and the MCP-port copy will be removed; see #6384 for the timeline. "+
+			"Move scrapers to the "+
 			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
 			"mcp_port", s.config.Port)
 	}

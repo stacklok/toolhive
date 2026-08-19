@@ -235,7 +235,8 @@ During the migration window `/metrics` is *also* still served on the port carryi
 traffic, so an existing scrape configuration keeps working. Once you have moved a
 scraper to the diagnostics port, set `metricsOnTransportPort: false` to confirm nothing
 else depended on the old location. See
-[Migration window](../observability.md#migration-window).
+[Migration window](../observability.md#migration-window) and
+[issue #6384](https://github.com/stacklok/toolhive/issues/6384) for the timeline.
 
 The endpoint is unauthenticated, so restricting who can reach that port is what
 protects it. See [Metrics endpoint exposure](../observability.md#metrics-endpoint-exposure)

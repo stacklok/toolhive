@@ -418,7 +418,16 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	// requested URI (not fosite's validated one) to become the effective
 	// redirect target, so the same check must run here too, or an invalid
 	// requested URI could reach storage/token-issuance unvalidated.
-	if requested.Fragment != "" || requested.User != nil {
+	//
+	// The registered side gets the same userinfo check: registration
+	// validation (oauthproto.ValidateRedirectURI, backed by fosite's
+	// IsValidRedirectURI) only rejects a missing fragment, not userinfo, so a
+	// registered "http://user:pass@localhost/callback" would otherwise match
+	// a dynamic-port request for "http://localhost:54321/callback" -- the
+	// hostname/path/query comparisons below never look at User, so dropping
+	// this check would let a registered entry's userinfo silently vanish from
+	// what "matching" means.
+	if requested.Fragment != "" || requested.User != nil || registered.User != nil {
 		return false
 	}
 

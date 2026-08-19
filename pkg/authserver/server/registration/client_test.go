@@ -151,6 +151,13 @@ func TestRegisteredLoopbackRedirectURI(t *testing.T) {
 			expectedURI:    "",
 			expectedOK:     false,
 		},
+		{
+			name:           "loopback localhost - userinfo on registered URI rejected",
+			registeredURIs: []string{"http://user:pass@localhost/callback"},
+			requestedURI:   "http://localhost:57403/callback",
+			expectedURI:    "",
+			expectedOK:     false,
+		},
 
 		// isLoopbackHostname is self-contained (not networking.IsLocalhost, which
 		// has a separate, wider-blast-radius bug: a case-sensitive prefix check

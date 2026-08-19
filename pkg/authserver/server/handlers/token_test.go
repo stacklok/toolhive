@@ -6,6 +6,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -79,6 +81,47 @@ func TestLogAccessError(t *testing.T) {
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
 			logAccessError(context.Background(), "test message", tc.err)
+
+			require.Len(t, handler.records, 1)
+			assert.Equal(t, tc.wantLevel, handler.records[0].Level)
+		})
+	}
+}
+
+// TestLogClientLookupFailure asserts that logClientLookupFailure splits on
+// whether the error is storage.ErrNotFound: an unknown client_id is ordinary
+// traffic on the unauthenticated /oauth/authorize endpoint and must stay at
+// Debug, while any other storage error (a genuine backend problem) logs at
+// Warn.
+//
+//nolint:paralleltest // mutates the process-global slog default (slog.SetDefault); racing with any concurrent test that logs via the default logger
+func TestLogClientLookupFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantLevel slog.Level
+	}{
+		{
+			name:      "unknown client_id logs at Debug",
+			err:       fmt.Errorf("lookup failed: %w", storage.ErrNotFound),
+			wantLevel: slog.LevelDebug,
+		},
+		{
+			name:      "other storage error logs at Warn",
+			err:       errors.New("storage unavailable"),
+			wantLevel: slog.LevelWarn,
+		},
+	}
+
+	//nolint:paralleltest // subtests serialize slog.SetDefault/slog.Default swaps; running them in parallel would race on the global default
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &capturingHandler{}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(handler))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			logClientLookupFailure(context.Background(), "some-client-id", tc.err)
 
 			require.Len(t, handler.records, 1)
 			assert.Equal(t, tc.wantLevel, handler.records[0].Level)

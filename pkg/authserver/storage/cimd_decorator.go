@@ -228,8 +228,9 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 const defaultCIMDTokenEndpointAuthMethod = "none"
 
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
-// Redirect URIs containing http://localhost are wrapped in a LoopbackClient
-// so that RFC 8252 §7.3 dynamic port matching applies.
+// RFC 8252 §7.3 loopback dynamic-port matching for a "http://localhost" redirect
+// URI is provided generically by registration.RegisteredLoopbackRedirectURI
+// (keyed on IsPublic() + GetRedirectURIs()), so no wrapper type is needed here.
 // resolvedScopes is the already-validated scope list computed by fetch() via
 // registration.ValidateScopes; when empty, DefaultScopes is used — this occurs when
 // the decorator has no ScopesSupported restriction (unconstrained AS).

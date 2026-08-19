@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -52,13 +53,14 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Let fosite validate everything: client_id, redirect_uri, response_type, PKCE, scopes
 	ar, err := h.provider.NewAuthorizeRequest(ctx, req)
+	// If the rewrite above fired, fosite validated (and stored) the
+	// registered portless literal, not the dynamic port the client actually
+	// requested. Wrapping ar restores the real listener as the error-redirect
+	// target for every error path below -- see loopbackAuthorizeRequester's
+	// doc comment for how -- not just a NewAuthorizeRequest failure.
+	errAr := wrapLoopbackErrorRequester(ar, rewrittenFrom)
 	if err != nil {
-		// If the rewrite above fired, fosite validated (and stored) the
-		// registered portless literal, not the dynamic port the client
-		// actually requested. Wrapping ar restores the real listener as the
-		// error-redirect target -- see loopbackAuthorizeRequester's doc
-		// comment for how.
-		h.provider.WriteAuthorizeError(ctx, w, wrapLoopbackErrorRequester(ar, rewrittenFrom), err)
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
 		return
 	}
 
@@ -80,7 +82,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	// Check if upstream providers are configured (defensive; constructor panics on empty)
 	if len(h.upstreams) == 0 {
 		slog.Error("upstream providers not configured")
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("authorization server not configured"))
+		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError.WithHint("authorization server not configured"))
 		return
 	}
 
@@ -116,7 +118,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		slog.Error("failed to store pending authorization",
 			"error", err,
 		)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to store authorization request"))
+		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError.WithHint("failed to store authorization request"))
 		return
 	}
 
@@ -133,7 +135,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		)
 		// Clean up pending authorization
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
+		h.provider.WriteAuthorizeError(ctx, w, errAr, fosite.ErrServerError.WithHint("failed to build authorization URL"))
 		return
 	}
 
@@ -227,6 +229,23 @@ func (r *loopbackAuthorizeRequester) GetRedirectURI() *url.URL {
 	return &u
 }
 
+// logClientLookupFailure logs a GetClient failure from rewriteLoopbackRedirectURI
+// at a level determined by the error: Debug for storage.ErrNotFound (an
+// unknown client_id is ordinary traffic on this unauthenticated endpoint --
+// any caller can send a random client_id alongside a localhost redirect_uri,
+// so logging every one at Warn would make log flooding trivial) and Warn for
+// any other error, which indicates an actual backend problem worth surfacing.
+func logClientLookupFailure(ctx context.Context, clientID string, err error) {
+	level := slog.LevelWarn
+	if errors.Is(err, storage.ErrNotFound) {
+		level = slog.LevelDebug
+	}
+	slog.Log(ctx, level, "failed to look up client for loopback redirect_uri rewrite",
+		"client_id", clientID,
+		"error", err,
+	)
+}
+
 // rewriteLoopbackRedirectURI checks whether req's redirect_uri is a genuine
 // RFC 8252 §7.3 loopback dynamic-port match against a client's registered
 // redirect_uri (via registration.RegisteredLoopbackRedirectURI, so this works
@@ -282,10 +301,7 @@ func (h *Handler) rewriteLoopbackRedirectURI(ctx context.Context, req *http.Requ
 	// diagnosable; client_id is not a secret.
 	client, err := h.storage.GetClient(ctx, clientID)
 	if err != nil {
-		slog.WarnContext(ctx, "failed to look up client for loopback redirect_uri rewrite",
-			"client_id", clientID,
-			"error", err,
-		)
+		logClientLookupFailure(ctx, clientID, err)
 		return ""
 	}
 

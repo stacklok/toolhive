@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -448,6 +449,40 @@ func TestAuthorizeHandler_Loopback127001ErrorRedirectsToDynamicPort(t *testing.T
 	assert.Contains(t, location, "error=unsupported_response_type")
 	assert.True(t, strings.HasPrefix(location, "http://127.0.0.1:54321/callback"),
 		"error redirect must preserve the dynamic port for IP-literal loopback clients, got: %s", location)
+}
+
+// TestAuthorizeHandler_LoopbackPostValidationErrorRedirectsToDynamicPort proves
+// that a failure AFTER NewAuthorizeRequest succeeds -- not just a validation
+// failure inside it -- still redirects to the client's real dynamic-port
+// listener rather than the registered portless literal. StorePendingAuthorization
+// failing is the regression case: ar is valid at that point (rewriteLoopbackRedirectURI
+// already substituted the portless literal into it), so the error path must
+// use the wrapped requester too, not the raw one.
+func TestAuthorizeHandler_LoopbackPostValidationErrorRedirectsToDynamicPort(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t, withStorePendingError(errors.New("storage unavailable")))
+
+	const clientID = "loopback-post-validation-error-client"
+	registerLoopbackClient(t, storState, clientID, "http://localhost/callback")
+
+	params := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://localhost:54321/callback"},
+		"response_type":         {"code"},
+		"state":                 {"client-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error")
+	assert.True(t, strings.HasPrefix(location, "http://localhost:54321/callback"),
+		"a post-validation failure must still redirect to the client's real dynamic-port listener, got: %s", location)
 }
 
 func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {

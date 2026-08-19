@@ -72,7 +72,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 	applyCfg := llmgateway.ApplyConfig{
 		GatewayURL:         "https://gw.example.com",
 		ProxyBaseURL:       "http://localhost:14000/v1",
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	}
 
 	// wantPointers maps RFC 6901 JSON pointer → expected string value after
@@ -85,7 +85,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			// ~/.claude/settings.json
 			clientType: ClaudeCode,
 			wantPointers: map[string]string{
-				"/apiKeyHelper":                          `"thv" llm token`,
+				"/apiKeyHelper":                          `thv llm token`,
 				"/env/ANTHROPIC_BASE_URL":                "https://gw.example.com",
 				"/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000",
 			},
@@ -193,7 +193,7 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 
 		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 			GatewayURL:         "https://gw.example.com",
-			TokenHelperCommand: `"thv" llm token`,
+			TokenHelperCommand: `thv llm token`,
 			BedrockCompat:      true,
 			BedrockHaikuModel:  "us.anthropic.claude-haiku-x",
 			BedrockOpusModel:   "us.anthropic.claude-opus-x[1m]",
@@ -218,7 +218,7 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 
 		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 			GatewayURL:         "https://gw.example.com",
-			TokenHelperCommand: `"thv" llm token`,
+			TokenHelperCommand: `thv llm token`,
 		})
 		require.NoError(t, err)
 
@@ -321,7 +321,7 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
 	path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(claudeDir, "settings.json"), path)
@@ -330,7 +330,7 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 	require.NoError(t, err)
 	got, ok := jsonPointerGet(data, "/apiKeyHelper")
 	assert.True(t, ok, "/apiKeyHelper pointer must be present")
-	assert.Equal(t, `"thv" llm token`, got, "/apiKeyHelper must contain the token helper command")
+	assert.Equal(t, `thv llm token`, got, "/apiKeyHelper must contain the token helper command")
 }
 
 func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
@@ -345,7 +345,7 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 	require.NoError(t, os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["read"]}}`), 0o600))
 
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	})
 	require.NoError(t, err)
 
@@ -354,7 +354,7 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 	assert.Contains(t, string(data), "permissions") // non-string object — checked as raw substring
 	got, ok := jsonPointerGet(data, "/apiKeyHelper")
 	assert.True(t, ok, "/apiKeyHelper pointer must be present after configure")
-	assert.Equal(t, `"thv" llm token`, got)
+	assert.Equal(t, `thv llm token`, got)
 }
 
 func TestConfigureLLMGateway_JSONCPreservesExistingParent(t *testing.T) {
@@ -408,7 +408,7 @@ func TestConfigureLLMGateway_Idempotent(t *testing.T) {
 	claudeDir := filepath.Join(home, ".claude")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
-	cfg := llmgateway.ApplyConfig{TokenHelperCommand: `"thv" llm token`}
+	cfg := llmgateway.ApplyConfig{TokenHelperCommand: `thv llm token`}
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, cfg)
 	require.NoError(t, err)
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, cfg)
@@ -721,7 +721,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_WritesNodeEnv(t *testing.T) {
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      true,
 	})
 	require.NoError(t, err)
@@ -741,7 +741,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      false,
 	})
 	require.NoError(t, err)
@@ -761,7 +761,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 
 	// First run: set tls-skip-verify
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      true,
 	})
 	require.NoError(t, err)
@@ -774,7 +774,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 
 	// Second run: clear tls-skip-verify
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      false,
 	})
 	require.NoError(t, err)
@@ -819,7 +819,7 @@ func TestLLMValueForSpec(t *testing.T) {
 	cfg := llmgateway.ApplyConfig{
 		GatewayURL:         "https://gw.example.com",
 		ProxyBaseURL:       "http://localhost:14000/v1",
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      false,
 	}
 
@@ -833,7 +833,7 @@ func TestLLMValueForSpec(t *testing.T) {
 		// Known ValueField names resolve correctly
 		{name: "GatewayURL", valueField: "GatewayURL", cfg: cfg, want: "https://gw.example.com"},
 		{name: "ProxyBaseURL", valueField: "ProxyBaseURL", cfg: cfg, want: "http://localhost:14000/v1"},
-		{name: "TokenHelperCommand", valueField: "TokenHelperCommand", cfg: cfg, want: `"thv" llm token`},
+		{name: "TokenHelperCommand", valueField: "TokenHelperCommand", cfg: cfg, want: `thv llm token`},
 		{name: "PlaceholderAPIKey", valueField: "PlaceholderAPIKey", cfg: cfg, want: "thv-proxy"},
 		// NodeTLSRejectUnauthorized: "0" when set, "" when clear
 		{name: "NodeTLSRejectUnauthorized/skip=false", valueField: "NodeTLSRejectUnauthorized", cfg: cfg, want: ""},

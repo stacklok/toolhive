@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Token servers in this file are httptest loopback listeners standing in for an
+// operator-configured IdP (dex, Keycloak in Docker), so cases that expect the
+// exchange to succeed set Config.TokenEndpointTrusted. An untrusted loopback
+// token endpoint is refused at the private-IP dial guard, which is the point of
+// TestHandleCallback_BlocksUntrustedLoopbackTokenEndpoint.
 package oauth
 
 import (
@@ -9,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,6 +27,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 func TestMain(m *testing.M) {
@@ -739,6 +747,26 @@ func TestStart(t *testing.T) {
 	}
 }
 
+func TestListenAddrLoopback(t *testing.T) {
+	t.Parallel()
+	config := &Config{
+		ClientID: "test-client",
+		AuthURL:  "https://example.com/auth",
+		TokenURL: "https://example.com/token",
+	}
+
+	flow, err := NewFlow(config)
+	require.NoError(t, err)
+
+	host, port, err := net.SplitHostPort(flow.listenAddr())
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("%d", flow.port), port, "listen address should use the flow's callback port")
+
+	ip := net.ParseIP(host)
+	require.NotNil(t, ip, "listen host should be an IP address, got %q", host)
+	assert.True(t, ip.IsLoopback(), "callback listener must bind to a loopback address, got %q", host)
+}
+
 func TestWriteSuccessPage(t *testing.T) {
 	t.Parallel()
 	flow := &Flow{}
@@ -766,6 +794,98 @@ func TestWriteSuccessPage(t *testing.T) {
 
 	// Verify no inline scripts for security
 	assert.NotContains(t, body, "<script>")
+}
+
+// runCallbackExchange drives the callback handler once and returns the
+// exchange outcome, so each case below asserts on what the token server
+// observed rather than on a config flag.
+func runCallbackExchange(t *testing.T, config *Config) error {
+	t.Helper()
+
+	flow, err := NewFlow(config)
+	require.NoError(t, err)
+
+	values := url.Values{"code": {"test-code"}, "state": {flow.state}}
+	tokenChan := make(chan *oauth2.Token, 1)
+	errorChan := make(chan error, 1)
+	flow.handleCallback(tokenChan, errorChan).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/callback?"+values.Encode(), nil),
+	)
+
+	select {
+	case callbackErr := <-errorChan:
+		return callbackErr
+	case <-tokenChan:
+		return nil
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback handler produced neither a token nor an error")
+		return nil
+	}
+}
+
+// TestHandleCallback_BlocksUntrustedLoopbackTokenEndpoint pins the SSRF guard on
+// the token exchange (CWE-918): a token endpoint the operator did not name must
+// not be dialed at a loopback address, and a trusted one still must be.
+func TestHandleCallback_BlocksUntrustedLoopbackTokenEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer"}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	err := runCallbackExchange(t, &Config{
+		ClientID: "test-client",
+		AuthURL:  "https://example.com/auth",
+		TokenURL: tokenServer.URL,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), networking.ErrPrivateIpAddress)
+	assert.Zero(t, hits.Load(), "untrusted loopback token endpoint must not be reached")
+
+	// The non-regression half: an operator-configured private IdP (dex, or
+	// Keycloak in Docker) must still complete the exchange.
+	require.NoError(t, runCallbackExchange(t, &Config{
+		ClientID:             "test-client",
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
+		TokenEndpointTrusted: true,
+	}))
+	assert.Equal(t, int32(1), hits.Load(), "trusted loopback token endpoint must be reached")
+}
+
+// TestHandleCallback_TrustedTokenEndpointRefusesCrossHostRedirect pins that
+// trusting an authority does not extend to wherever that authority points next:
+// a 302 off the token endpoint must not be followed to another host.
+func TestHandleCallback_TrustedTokenEndpointRefusesCrossHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	var elsewhereHits atomic.Int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		elsewhereHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"leaked","token_type":"Bearer"}`))
+	}))
+	t.Cleanup(elsewhere.Close)
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL, http.StatusFound)
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	err := runCallbackExchange(t, &Config{
+		ClientID:             "test-client",
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
+		TokenEndpointTrusted: true,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, networking.ErrRedirectRefused)
+	assert.Zero(t, elsewhereHits.Load(), "redirect target must not be reached")
 }
 
 func TestHandleCallback_SuccessfulFlow(t *testing.T) {
@@ -807,11 +927,12 @@ func TestHandleCallback_SuccessfulFlow(t *testing.T) {
 	defer tokenServer.Close()
 
 	config := &Config{
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		AuthURL:      "https://example.com/auth",
-		TokenURL:     tokenServer.URL,
-		UsePKCE:      true,
+		ClientID:             "test-client",
+		ClientSecret:         "test-secret",
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
+		TokenEndpointTrusted: true,
+		UsePKCE:              true,
 	}
 
 	flow, err := NewFlow(config)
@@ -998,9 +1119,10 @@ func TestTokenRefreshAfterContextCancellation(t *testing.T) {
 	defer tokenServer.Close()
 
 	config := &Config{
-		ClientID: "test-client",
-		AuthURL:  "https://example.com/auth",
-		TokenURL: tokenServer.URL,
+		ClientID:             "test-client",
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
+		TokenEndpointTrusted: true,
 	}
 
 	flow, err := NewFlow(config)
@@ -1059,10 +1181,11 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		defer server.Close()
 
 		config := &Config{
-			ClientID: "test-client",
-			AuthURL:  "https://example.com/auth",
-			TokenURL: server.URL,
-			Resource: "https://api.example.com", // Resource parameter provided
+			ClientID:             "test-client",
+			AuthURL:              "https://example.com/auth",
+			TokenURL:             server.URL,
+			TokenEndpointTrusted: true,
+			Resource:             "https://api.example.com", // Resource parameter provided
 		}
 
 		flow, err := NewFlow(config)
@@ -1116,10 +1239,11 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		defer server.Close()
 
 		config := &Config{
-			ClientID: "test-client",
-			AuthURL:  "https://example.com/auth",
-			TokenURL: server.URL,
-			Resource: "", // No resource parameter
+			ClientID:             "test-client",
+			AuthURL:              "https://example.com/auth",
+			TokenURL:             server.URL,
+			TokenEndpointTrusted: true,
+			Resource:             "", // No resource parameter
 		}
 
 		flow, err := NewFlow(config)
@@ -1180,10 +1304,11 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 				defer server.Close()
 
 				config := &Config{
-					ClientID: "test-client",
-					AuthURL:  "https://example.com/auth",
-					TokenURL: server.URL,
-					Resource: tc.resource,
+					ClientID:             "test-client",
+					AuthURL:              "https://example.com/auth",
+					TokenURL:             server.URL,
+					TokenEndpointTrusted: true,
+					Resource:             tc.resource,
 				}
 
 				flow, err := NewFlow(config)
@@ -1217,10 +1342,11 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 		t.Parallel()
 
 		config := &Config{
-			ClientID: "test-client",
-			AuthURL:  "https://example.com/auth",
-			TokenURL: "https://example.com/token",
-			Resource: "https://api.example.com",
+			ClientID:             "test-client",
+			AuthURL:              "https://example.com/auth",
+			TokenURL:             "https://example.com/token",
+			TokenEndpointTrusted: true,
+			Resource:             "https://api.example.com",
 		}
 
 		flow, err := NewFlow(config)
@@ -1313,11 +1439,12 @@ func TestAuthStyleInParams_StrictPublicClientServer(t *testing.T) {
 	defer tokenServer.Close()
 
 	config := &Config{
-		ClientID:     "test-public-client",
-		ClientSecret: "", // Public client — no secret
-		AuthURL:      "https://example.com/auth",
-		TokenURL:     tokenServer.URL,
-		UsePKCE:      true,
+		ClientID:             "test-public-client",
+		ClientSecret:         "", // Public client — no secret
+		AuthURL:              "https://example.com/auth",
+		TokenURL:             tokenServer.URL,
+		TokenEndpointTrusted: true,
+		UsePKCE:              true,
 	}
 
 	flow, err := NewFlow(config)

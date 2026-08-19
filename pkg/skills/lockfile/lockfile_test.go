@@ -69,6 +69,7 @@ func TestLoadMissingFileReturnsEmptyLockfile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, CurrentVersion, lf.Version)
 	assert.Empty(t, lf.Skills)
+	assert.Empty(t, lf.Plugins)
 }
 
 func TestLoadRejectsMalformedYAML(t *testing.T) {
@@ -116,6 +117,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, loaded.Skills, 1)
 	assert.Equal(t, entry, loaded.Skills[0])
+	assert.Empty(t, loaded.Plugins)
 }
 
 // TestUnknownFieldsSurviveLoadModifySave freezes the version-skew contract:
@@ -230,6 +232,110 @@ func TestLockfileGetUpsertRemove(t *testing.T) {
 
 	removedAgain := lf.Remove("b-skill")
 	assert.False(t, removedAgain)
+}
+
+func TestPluginSaveAndLoadRoundTrip(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+
+	lf := &Lockfile{Version: CurrentVersion}
+	skill := Entry{
+		Name:              "code-review",
+		Source:            "code-review",
+		ResolvedReference: "ghcr.io/org/code-review:1.0.0",
+		Digest:            ociDigest(1),
+		Explicit:          true,
+	}
+	plugin := Entry{
+		Name:              "code-review", // same name, different key — allowed
+		Version:           "2.0.0",
+		Source:            "code-review",
+		ResolvedReference: "ghcr.io/org/code-review-plugin:2.0.0",
+		Digest:            ociDigest(3),
+		ContentDigest:     ociDigest(4),
+		Explicit:          true,
+	}
+	lf.Upsert(skill)
+	lf.UpsertPlugin(plugin)
+	require.NoError(t, lf.Save(root))
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+	require.Len(t, loaded.Skills, 1)
+	assert.Equal(t, skill, loaded.Skills[0])
+	require.Len(t, loaded.Plugins, 1)
+	assert.Equal(t, plugin, loaded.Plugins[0])
+}
+
+func TestLockfileGetUpsertRemovePlugin(t *testing.T) {
+	t.Parallel()
+
+	lf := &Lockfile{Version: CurrentVersion}
+
+	_, ok := lf.GetPlugin("missing")
+	assert.False(t, ok)
+
+	a := Entry{Name: "b-plugin", Source: "b-plugin", Digest: ociDigest(3)}
+	c := Entry{Name: "a-plugin", Source: "a-plugin", Digest: ociDigest(4)}
+	lf.UpsertPlugin(a)
+	lf.UpsertPlugin(c)
+
+	require.Len(t, lf.Plugins, 2)
+	assert.Equal(t, "a-plugin", lf.Plugins[0].Name)
+	assert.Equal(t, "b-plugin", lf.Plugins[1].Name)
+	assert.Empty(t, lf.Skills, "UpsertPlugin must not write skills:")
+
+	got, ok := lf.GetPlugin("b-plugin")
+	require.True(t, ok)
+	assert.Equal(t, a.Digest, got.Digest)
+
+	updated := Entry{Name: "b-plugin", Source: "b-plugin", Digest: ociDigest(5)}
+	lf.UpsertPlugin(updated)
+	require.Len(t, lf.Plugins, 2)
+	got, ok = lf.GetPlugin("b-plugin")
+	require.True(t, ok)
+	assert.Equal(t, updated.Digest, got.Digest)
+
+	removed := lf.RemovePlugin("b-plugin")
+	assert.True(t, removed)
+	require.Len(t, lf.Plugins, 1)
+
+	removedAgain := lf.RemovePlugin("b-plugin")
+	assert.False(t, removedAgain)
+}
+
+func TestUpsertPluginEntryAndRemovePluginEntry(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+
+	skill := Entry{Name: "shared-name", Source: "shared-name", Digest: ociDigest(1)}
+	require.NoError(t, UpsertEntry(root, skill))
+
+	plugin := Entry{Name: "shared-name", Source: "shared-name", Digest: ociDigest(3)}
+	require.NoError(t, UpsertPluginEntry(root, plugin))
+
+	lf, err := Load(root)
+	require.NoError(t, err)
+	require.Len(t, lf.Skills, 1)
+	require.Len(t, lf.Plugins, 1)
+	assert.Equal(t, skill.Digest, lf.Skills[0].Digest)
+	assert.Equal(t, plugin.Digest, lf.Plugins[0].Digest)
+
+	other := Entry{Name: "other-plugin", Source: "other-plugin", Digest: ociDigest(6)}
+	require.NoError(t, UpsertPluginEntry(root, other))
+	lf, err = Load(root)
+	require.NoError(t, err)
+	assert.Len(t, lf.Plugins, 2)
+	assert.Len(t, lf.Skills, 1, "plugin upsert must not drop skills:")
+
+	require.NoError(t, RemovePluginEntry(root, "shared-name"))
+	lf, err = Load(root)
+	require.NoError(t, err)
+	require.Len(t, lf.Plugins, 1)
+	assert.Equal(t, "other-plugin", lf.Plugins[0].Name)
+	require.Len(t, lf.Skills, 1, "removing a plugin must not remove the skill of the same name")
+
+	require.NoError(t, RemovePluginEntry(root, "does-not-exist"))
 }
 
 func TestRemoveParentFromRequiredBy(t *testing.T) {
@@ -400,10 +506,12 @@ func TestProvenanceRoundTrip(t *testing.T) {
 		ResolvedReference: "ghcr.io/org/signed-skill:latest",
 		Digest:            ociDigest(1),
 		Provenance: &Provenance{
-			SignerIdentity: "/.github/workflows/release.yml",
-			CertIssuer:     "https://token.actions.githubusercontent.com",
-			RepositoryURI:  "https://github.com/org/signed-skill",
-			SigstoreURL:    "https://rekor.sigstore.dev",
+			SignerIdentity:    "/.github/workflows/release.yml",
+			CertIssuer:        "https://token.actions.githubusercontent.com",
+			RepositoryURI:     "https://github.com/org/signed-skill",
+			RepositoryRef:     "refs/heads/main",
+			RunnerEnvironment: "github-hosted",
+			SigstoreURL:       "https://rekor.sigstore.dev",
 		},
 		Explicit: true,
 	}
@@ -431,6 +539,56 @@ func TestProvenanceRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, gotUnsigned.Unsigned)
 	assert.Nil(t, gotUnsigned.Provenance)
+}
+
+// TestProvenanceWithoutRefFieldsIsUnconstrained pins the compatibility
+// contract for repositoryRef and runnerEnvironment: every lock file written
+// before they existed omits them, so absent must mean unconstrained. Such a
+// file must load with both empty, must not gain the new keys when re-saved,
+// and must reach a byte-stable form so an install by a newer binary produces
+// no spurious diff for entries it did not touch.
+func TestProvenanceWithoutRefFieldsIsUnconstrained(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	path, err := root.Path()
+	require.NoError(t, err)
+
+	preExisting := "" +
+		"version: 1\n" +
+		"skills:\n" +
+		"  - name: legacy-skill\n" +
+		"    source: ghcr.io/org/legacy-skill\n" +
+		"    digest: " + ociDigest(1) + "\n" +
+		"    provenance:\n" +
+		"      signerIdentity: /.github/workflows/release.yml\n" +
+		"      certIssuer: https://token.actions.githubusercontent.com\n" +
+		"      repositoryUri: https://github.com/org/legacy-skill\n" +
+		"    explicit: true\n"
+	require.NoError(t, os.WriteFile(path, []byte(preExisting), 0o644))
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+	entry, ok := loaded.Get("legacy-skill")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Empty(t, entry.Provenance.RepositoryRef)
+	assert.Empty(t, entry.Provenance.RunnerEnvironment)
+	assert.Equal(t, "https://github.com/org/legacy-skill", entry.Provenance.RepositoryURI)
+	assert.Empty(t, entry.Extra, "the new keys must not surface through the inline Extra map")
+
+	require.NoError(t, loaded.Save(root))
+	saved, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	assert.NotContains(t, string(saved), "repositoryRef")
+	assert.NotContains(t, string(saved), "runnerEnvironment")
+
+	reloaded, err := Load(root)
+	require.NoError(t, err)
+	require.NoError(t, reloaded.Save(root))
+	resaved, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	assert.Equal(t, string(saved), string(resaved),
+		"a lock file predating the ref fields must reach a byte-stable form")
 }
 
 // TestProvenanceGraduatesFromExtraMap: before this schema change, a
@@ -473,4 +631,55 @@ func TestProvenanceGraduatesFromExtraMap(t *testing.T) {
 	entry, ok = reloaded.Get("signed-skill")
 	require.True(t, ok)
 	assert.Equal(t, "dev@example.com", entry.Provenance.SignerIdentity)
+}
+
+// TestPluginsGraduateFromExtraMap: before this schema change, a plugins:
+// key written by a newer binary round-tripped through Lockfile.Extra. Now
+// that the field is typed, loading such a file must parse it into
+// Lockfile.Plugins — not duplicate it in Extra, which would make Save
+// produce a colliding key. A skills-only lock (no plugins: key) must still
+// load, and unknown top-level fields must still round-trip.
+func TestPluginsGraduateFromExtraMap(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	path, err := root.Path()
+	require.NoError(t, err)
+
+	handWritten := "" +
+		"version: 1\n" +
+		"futureTopLevelField: keep-me\n" +
+		"skills:\n" +
+		"  - name: my-skill\n" +
+		"    source: my-skill\n" +
+		"    digest: " + ociDigest(1) + "\n" +
+		"plugins:\n" +
+		"  - name: my-plugin\n" +
+		"    source: my-plugin\n" +
+		"    digest: " + ociDigest(2) + "\n" +
+		"    explicit: true\n"
+	require.NoError(t, os.WriteFile(path, []byte(handWritten), 0o644))
+
+	loaded, err := Load(root)
+	require.NoError(t, err)
+	assert.NotContains(t, loaded.Extra, "plugins", "the typed field must not also appear in Extra")
+	plugin, ok := loaded.GetPlugin("my-plugin")
+	require.True(t, ok)
+	assert.Equal(t, ociDigest(2), plugin.Digest)
+	assert.True(t, plugin.Explicit)
+	_, skillOK := loaded.Get("my-skill")
+	require.True(t, skillOK)
+
+	require.NoError(t, UpsertEntry(root, Entry{
+		Name: "other-skill", Source: "other-skill", Digest: ociDigest(3),
+	}))
+	data, err := os.ReadFile(path) //nolint:gosec // fixed test path
+	require.NoError(t, err)
+	saved := string(data)
+	assert.Contains(t, saved, "futureTopLevelField: keep-me")
+	assert.Contains(t, saved, "name: my-plugin")
+
+	reloaded, err := Load(root)
+	require.NoError(t, err)
+	_, ok = reloaded.GetPlugin("my-plugin")
+	require.True(t, ok, "a skills: upsert must not strip plugins:")
 }

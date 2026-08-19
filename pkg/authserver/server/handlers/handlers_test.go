@@ -37,8 +37,10 @@ import (
 
 // testSetupOptions allows customizing the test handler setup.
 type testSetupOptions struct {
-	AuthorizationEndpointBaseURL string
-	CIMDEnabled                  bool
+	AuthorizationEndpointBaseURL        string
+	CIMDEnabled                         bool
+	AllowConfidentialClientRegistration bool
+	HasStaticDelegateClients            bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -65,16 +67,18 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:                       "https://auth.example.com",
-		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                  opts.CIMDEnabled,
-		AccessTokenLifespan:          time.Hour,
-		RefreshTokenLifespan:         time.Hour * 24,
-		AuthCodeLifespan:             time.Minute * 10,
-		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                 "test-key-1",
-		SigningKeyAlgorithm:          "RS256",
-		SigningKey:                   rsaKey,
+		Issuer:                              "https://auth.example.com",
+		AuthorizationEndpointBaseURL:        opts.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         opts.CIMDEnabled,
+		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
+		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
+		AccessTokenLifespan:                 time.Hour,
+		RefreshTokenLifespan:                time.Hour * 24,
+		AuthCodeLifespan:                    time.Minute * 10,
+		HMACSecrets:                         servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                        "test-key-1",
+		SigningKeyAlgorithm:                 "RS256",
+		SigningKey:                          rsaKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -187,8 +191,11 @@ func TestOAuthDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields per RFC 8414
 	assert.Contains(t, metadata.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, metadata.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, metadata.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange)
 	assert.Contains(t, metadata.CodeChallengeMethodsSupported, "S256")
-	assert.Contains(t, metadata.TokenEndpointAuthMethodsSupported, "none")
+	// Flag off: only "none" is advertised (exact-slice, not Contains — a
+	// Contains assertion cannot fail to notice an unexpectedly-added method).
+	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, metadata.TokenEndpointAuthMethodsSupported)
 }
 
 func TestOAuthDiscoveryHandler_DoesNotContainOIDCFields(t *testing.T) {
@@ -248,8 +255,65 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields
 	assert.Contains(t, discovery.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, discovery.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange)
 	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256")
-	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "none")
+	// Flag off: only "none" is advertised (exact-slice, not Contains).
+	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, discovery.TokenEndpointAuthMethodsSupported)
+}
+
+// TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
+// advertise the client authentication methods needed for configured confidential
+// clients. "none" must stay at index 0 (readability convention; RFC 8414 defines
+// no ordering).
+func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
+	t.Parallel()
+
+	wantOff := []string{sharedobauth.TokenEndpointAuthMethodNone}
+	wantOn := []string{
+		sharedobauth.TokenEndpointAuthMethodNone,
+		sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
+		sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+	}
+
+	tests := []struct {
+		name              string
+		allowConfidential bool
+		hasStaticClient   bool
+		wantMethods       []string
+	}{
+		{"public only advertises only none", false, false, wantOff},
+		{"confidential DCR advertises client_secret methods", true, false, wantOn},
+		{"static delegate client advertises client_secret methods", false, true, wantOn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := testSetupWithOptions(t, testSetupOptions{
+				AllowConfidentialClientRegistration: tc.allowConfidential,
+				HasStaticDelegateClients:            tc.hasStaticClient,
+			})
+
+			// OAuth AS metadata endpoint.
+			rec := httptest.NewRecorder()
+			handler.OAuthDiscoveryHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			var metadata sharedobauth.AuthorizationServerMetadata
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
+			assert.Equal(t, tc.wantMethods, metadata.TokenEndpointAuthMethodsSupported,
+				"oauth-authorization-server must advertise configured client authentication methods")
+			assert.Equal(t, sharedobauth.TokenEndpointAuthMethodNone, metadata.TokenEndpointAuthMethodsSupported[0],
+				"none must remain at index 0")
+
+			// OIDC discovery endpoint (shares buildOAuthMetadata).
+			rec2 := httptest.NewRecorder()
+			handler.OIDCDiscoveryHandler(rec2, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
+			require.Equal(t, http.StatusOK, rec2.Code)
+			var discovery sharedobauth.OIDCDiscoveryDocument
+			require.NoError(t, json.NewDecoder(rec2.Body).Decode(&discovery))
+			assert.Equal(t, tc.wantMethods, discovery.TokenEndpointAuthMethodsSupported,
+				"openid-configuration must advertise configured client authentication methods")
+		})
+	}
 }
 
 func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {

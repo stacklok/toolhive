@@ -22,18 +22,18 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-git/go-billy/v5 v5.9.0
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-jose/go-jose/v3 v3.0.5
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/gofrs/flock v0.13.0
 	github.com/google/cel-go v0.30.0
 	github.com/google/go-cmp v0.7.0
-	github.com/google/go-containerregistry v0.21.8
+	github.com/google/go-containerregistry v0.21.9
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/moby/moby/client v0.5.1
-	github.com/modelcontextprotocol/registry v1.8.0
+	github.com/modelcontextprotocol/registry v1.8.1
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
 	github.com/olekukonko/tablewriter v1.1.4
 	github.com/onsi/ginkgo/v2 v2.28.1
@@ -48,7 +48,7 @@ require (
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/viper v1.21.0
-	github.com/stacklok/toolhive-catalog v0.20260804.0
+	github.com/stacklok/toolhive-catalog v0.20260817.0
 	github.com/stacklok/toolhive-core v0.0.38
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
@@ -66,7 +66,7 @@ require (
 	go.uber.org/zap v1.28.0
 	golang.ngrok.com/ngrok/v2 v2.1.4
 	golang.org/x/exp/jsonrpc2 v0.0.0-20260709172345-9ea1abe57597
-	golang.org/x/mod v0.38.0
+	golang.org/x/mod v0.40.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/term v0.45.0
@@ -217,12 +217,12 @@ require (
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mattn/goveralls v0.0.12 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
-	github.com/moby/go-archive v0.2.0 // indirect
+	github.com/moby/go-archive v0.3.0 // indirect
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/spdystream v0.5.1 // indirect
-	github.com/moby/sys/sequential v0.6.0 // indirect
-	github.com/moby/sys/user v0.4.0 // indirect
+	github.com/moby/sys/sequential v0.7.0 // indirect
+	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -251,7 +251,7 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/seatgeek/logrus-gelf-formatter v0.0.0-20210414080842-5b05eb8ff761 // indirect
-	github.com/secure-systems-lab/go-securesystemslib v0.11.0 // indirect
+	github.com/secure-systems-lab/go-securesystemslib v0.11.0
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
@@ -299,9 +299,9 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/exp/event v0.0.0-20260611194520-c48552f49976 // indirect
-	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/tools v0.48.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
@@ -352,7 +352,7 @@ require (
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.55.0
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/sys v0.47.0
 	k8s.io/client-go v0.35.3

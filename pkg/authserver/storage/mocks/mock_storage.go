@@ -331,6 +331,21 @@ func (mr *MockUpstreamTokenStorageMockRecorder) GetUpstreamTokens(ctx, sessionID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetUpstreamTokens), ctx, sessionID, providerName)
 }
 
+// ResolveUpstreamTokenRowID mocks base method.
+func (m *MockUpstreamTokenStorage) ResolveUpstreamTokenRowID(ctx context.Context, sessionID, providerName string) (storage.UpstreamTokenRowID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResolveUpstreamTokenRowID", ctx, sessionID, providerName)
+	ret0, _ := ret[0].(storage.UpstreamTokenRowID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ResolveUpstreamTokenRowID indicates an expected call of ResolveUpstreamTokenRowID.
+func (mr *MockUpstreamTokenStorageMockRecorder) ResolveUpstreamTokenRowID(ctx, sessionID, providerName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveUpstreamTokenRowID", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).ResolveUpstreamTokenRowID), ctx, sessionID, providerName)
+}
+
 // StoreUpstreamTokens mocks base method.
 func (m *MockUpstreamTokenStorage) StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens) error {
 	m.ctrl.T.Helper()
@@ -977,6 +992,21 @@ func (m *MockStorage) RenewClientTTL(ctx context.Context, client fosite.Client) 
 func (mr *MockStorageMockRecorder) RenewClientTTL(ctx, client any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RenewClientTTL", reflect.TypeOf((*MockStorage)(nil).RenewClientTTL), ctx, client)
+}
+
+// ResolveUpstreamTokenRowID mocks base method.
+func (m *MockStorage) ResolveUpstreamTokenRowID(ctx context.Context, sessionID, providerName string) (storage.UpstreamTokenRowID, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResolveUpstreamTokenRowID", ctx, sessionID, providerName)
+	ret0, _ := ret[0].(storage.UpstreamTokenRowID)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ResolveUpstreamTokenRowID indicates an expected call of ResolveUpstreamTokenRowID.
+func (mr *MockStorageMockRecorder) ResolveUpstreamTokenRowID(ctx, sessionID, providerName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveUpstreamTokenRowID", reflect.TypeOf((*MockStorage)(nil).ResolveUpstreamTokenRowID), ctx, sessionID, providerName)
 }
 
 // RevokeAccessToken mocks base method.

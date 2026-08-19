@@ -20,9 +20,11 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	celgo "github.com/google/cel-go/cel"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 
+	"github.com/stacklok/toolhive-core/cel"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -149,11 +151,23 @@ type TrustedIssuer struct {
 	ActorClaim string `json:"actor_claim,omitempty" yaml:"actor_claim,omitempty"`
 	// AllowedActors is the allowlist of ActorClaim values authorized to
 	// exchange a subject token from this issuer when it carries no
-	// "may_act" claim; empty means only may_act-bearing tokens are
-	// accepted. By itself names no ToolHive client — see
-	// AllowedDelegateClients and docs/arch/17-token-exchange-delegation.md
-	// ("Accepted limitations" #1).
+	// "may_act" claim. ActorMatcher can additionally authorize a token by
+	// matching its complete verified claims map; either signal is sufficient.
+	// When both are empty, only may_act-bearing tokens are accepted, and only
+	// if AllowMayAct is also true for this issuer. By itself names no
+	// ToolHive client — see AllowedDelegateClients and
+	// docs/arch/17-token-exchange-delegation.md ("Accepted limitations" #1).
 	AllowedActors []string `json:"allowed_actors,omitempty" yaml:"allowed_actors,omitempty"`
+	// ActorMatcher is an admin-authored CEL expression evaluated against the
+	// complete signature-verified JWT claims map as "claims". A true result
+	// authorizes delegation alongside AllowedActors; a syntax or type error
+	// fails configuration validation. An expression that compiles but does
+	// not return bool is NOT caught at that point, though — it compiles
+	// successfully and is only rejected the first time it is evaluated
+	// against a real token, denying that token (and every one after it, since
+	// the expression will never return bool). Any other runtime evaluation
+	// error denies the token the same way.
+	ActorMatcher string `json:"actor_matcher,omitempty" yaml:"actor_matcher,omitempty"`
 	// AllowedDelegateClients restricts which ToolHive client IDs may
 	// exchange a subject token from this issuer, for BOTH consent paths.
 	// Required (validateTrustedIssuer rejects empty/absent); "*" permits
@@ -161,6 +175,13 @@ type TrustedIssuer struct {
 	// docs/arch/17-token-exchange-delegation.md ("Accepted limitations" #1).
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowedDelegateClients []string `json:"allowed_delegate_clients,omitempty" yaml:"allowed_delegate_clients,omitempty"`
+	// AllowMayAct permits this external issuer's may_act claim to authorize
+	// delegation. It defaults to false; external issuers must be opted in
+	// explicitly because may_act bypasses AllowedActors and ActorMatcher. It
+	// does not affect self-issued subject tokens. When enabled,
+	// AllowedDelegateClients must name specific ToolHive clients rather than
+	// use the wildcard.
+	AllowMayAct bool `json:"allow_may_act,omitempty" yaml:"allow_may_act,omitempty"`
 }
 
 // MultiIssuerTokenValidator validates subject tokens from the authorization
@@ -172,10 +193,9 @@ type TrustedIssuer struct {
 // A valid signature and audience alone would authorize ToolHive as a
 // resource, not any particular client, as a delegate — a confused-deputy
 // risk (CWE-863). validateExternalToken therefore requires a "may_act"
-// claim or a matching AllowedActors entry (surfaced as
-// ValidatedClaims.ExternalActor) before returning successfully. See
-// docs/arch/17-token-exchange-delegation.md for the full consent-signal
-// precedence and trust model.
+// claim or authorization by AllowedActors or ActorMatcher before returning
+// successfully. See docs/arch/17-token-exchange-delegation.md for the full
+// consent-signal precedence and trust model.
 type MultiIssuerTokenValidator struct {
 	selfIssuer    string
 	selfValidator *SelfIssuedTokenValidator
@@ -184,12 +204,17 @@ type MultiIssuerTokenValidator struct {
 
 // externalIssuerConfig holds the configuration and cached state for an external
 // OIDC issuer. The embedded TrustedIssuer is treated as immutable after
-// construction: resolveAllowedActor reads TrustedIssuer.AllowedActors (and
-// discoverJWKSURL/fetchJWKS read httpClient) on every validation without
-// holding mu, since mu protects JWKS state only. Mutating TrustedIssuer
-// fields in place after NewMultiIssuerTokenValidator returns is a data race.
+// construction: resolveActorAuthorization reads TrustedIssuer.AllowedActors
+// and actorMatcher (and discoverJWKSURL/fetchJWKS read httpClient) on every
+// validation without holding mu, since mu protects JWKS state only. Mutating
+// TrustedIssuer fields in place after NewMultiIssuerTokenValidator returns is
+// a data race.
 type externalIssuerConfig struct {
 	TrustedIssuer
+
+	// actorMatcher is compiled once from TrustedIssuer.ActorMatcher during
+	// construction and is immutable thereafter.
+	actorMatcher *cel.CompiledExpression
 
 	// httpClient is dedicated to this issuer, built once at construction
 	// time from its own InsecureAllowHTTP/AllowPrivateIPs. A single
@@ -276,6 +301,37 @@ func (t *limitedBodyTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
+// newActorMatcherEngine creates a CEL engine for admin-authored actor matcher
+// expressions. The only available variable is "claims", a map[string]any.
+func newActorMatcherEngine() *cel.Engine {
+	return cel.NewEngine(
+		celgo.Variable("claims", celgo.MapType(celgo.StringType, celgo.DynType)),
+	)
+}
+
+// compileActorMatcher compiles an optional admin-authored actor matcher.
+//
+// It does not check the expression's output type: toolhive-core's
+// cel.Engine has no accessor for the checked AST's static type, only the
+// compiled *cel.CompiledExpression. An expression that type-checks but
+// does not return bool (e.g. "claims.foo" where foo is a string) therefore
+// compiles successfully here — it is only rejected later, at evaluation
+// time, by EvaluateBool's runtime type assertion (see
+// resolveActorAuthorization), which denies the token on any evaluation
+// error including a wrong result type.
+func compileActorMatcher(actorMatcher string) (*cel.CompiledExpression, error) {
+	if actorMatcher == "" {
+		return nil, nil
+	}
+
+	expr, err := newActorMatcherEngine().Compile(actorMatcher)
+	if err != nil {
+		return nil, fmt.Errorf("invalid actor_matcher: %w", err)
+	}
+
+	return expr, nil
+}
+
 // NewMultiIssuerTokenValidator creates a validator that accepts tokens from
 // the authorization server itself and from the provided trusted external
 // issuers. Returns an error if selfValidator is nil, selfIssuer is empty,
@@ -299,11 +355,16 @@ func NewMultiIssuerTokenValidator(
 		if err := validateTrustedIssuer(ti, selfIssuer, issuers); err != nil {
 			return nil, err
 		}
-		if len(ti.AllowedActors) == 0 {
-			slog.Warn("Trusted issuer has no allowed actors configured; "+
-				"only may_act-bearing subject tokens from it will be accepted",
-				"issuer", ti.IssuerURL,
-			)
+		if len(ti.AllowedActors) == 0 && ti.ActorMatcher == "" {
+			message := func() string {
+				if ti.AllowMayAct {
+					return "Trusted issuer has no allowed actors or actor matcher configured; " +
+						"only may_act-bearing subject tokens from it will be accepted"
+				}
+				return "Trusted issuer has no allowed actors or actor matcher configured; " +
+					"no subject tokens from it will be accepted"
+			}()
+			slog.Warn(message, "issuer", ti.IssuerURL)
 		}
 		if !looksLikeResourceIdentifier(ti.ExpectedAudience) {
 			slog.Warn("Trusted issuer's expected_audience does not look like a resource identifier "+
@@ -338,11 +399,16 @@ func NewMultiIssuerTokenValidator(
 func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 	// Clone AllowedActors and AllowedDelegateClients so a caller mutating
 	// their original slices in place (e.g. a future config reload) cannot
-	// race with the unsynchronized reads in resolveAllowedActor and
+	// race with the unsynchronized reads in resolveActorAuthorization and
 	// validateExternalToken, which run on every validation without
 	// holding externalIssuerConfig.mu (that mutex guards JWKS state only).
 	ti.AllowedActors = slices.Clone(ti.AllowedActors)
 	ti.AllowedDelegateClients = slices.Clone(ti.AllowedDelegateClients)
+
+	actorMatcher, err := compileActorMatcher(ti.ActorMatcher)
+	if err != nil {
+		return nil, fmt.Errorf("issuer_url %q: %w", ti.IssuerURL, err)
+	}
 
 	// Deliberately networking.NewHttpClientBuilder(), not
 	// NewHostScopedClientBuilder: that helper ORs
@@ -402,6 +468,7 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 
 	return &externalIssuerConfig{
 		TrustedIssuer: ti,
+		actorMatcher:  actorMatcher,
 		jwksURL:       ti.JWKSURL,
 		httpClient:    httpClient,
 		jwksCache:     jwksCache,
@@ -410,9 +477,9 @@ func newExternalIssuerConfig(ti TrustedIssuer) (*externalIssuerConfig, error) {
 
 // ValidateTrustedIssuers runs every structural check
 // NewMultiIssuerTokenValidator performs on trustedIssuers — required fields,
-// self-issuer collision, duplicate issuers, and ActorClaim reachability —
-// without constructing a validator or any per-issuer HTTP client. Config
-// validation calls this to fail before the live upstream DCR registration
+// self-issuer collision, duplicate issuers, ActorClaim reachability, and
+// ActorMatcher compilation — without constructing a validator or any
+// per-issuer HTTP client. Config validation calls this to fail before the live upstream DCR registration
 // and storage creation that run between RunConfig.Validate and server
 // construction; NewMultiIssuerTokenValidator repeats the same checks at
 // server startup as defence in depth. Both route through validateTrustedIssuer,
@@ -519,13 +586,7 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, err
 	}
 
-	// selfIssuer (not issuerConfig.IssuerURL) is the correct comparison for
-	// may_act's optional "iss": that member identifies the namespace of
-	// may_act.sub, always compared against a ToolHive client ID regardless
-	// of which issuer validated the surrounding token. requireIss is true
-	// here — unlike the self-issued path, the external path cannot leave
-	// "iss" optional; see validateMayActShape's doc comment.
-	if err := validateMayActShape(extraClaims, v.selfIssuer, true); err != nil {
+	if err := checkMayActAllowed(extraClaims, v.selfIssuer, issuerConfig); err != nil {
 		return nil, err
 	}
 
@@ -549,20 +610,44 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	// A may_act claim is authoritative and enforced by checkDelegationConsent
 	// against the authenticated client — validateMayActShape above has
 	// already confirmed its own "iss" (if any) names this server, so
-	// may_act.sub is in ToolHive's own client namespace. AllowedActors below
-	// is skipped entirely when MayAct is set. Otherwise, the resolved actor
-	// claim (even "client_id") is in the EXTERNAL issuer's namespace and
-	// must match AllowedActors — it can never be compared against the
-	// authenticated ToolHive client directly.
+	// may_act.sub is in ToolHive's own client namespace. AllowedActors and
+	// ActorMatcher below are skipped entirely when MayAct is set. Otherwise,
+	// either the resolved external actor claim or the matcher evaluated against
+	// the complete signature-verified JWT claims authorizes delegation. Neither
+	// is ever compared against the authenticated ToolHive client directly.
 	if claims.MayAct == nil {
-		actor, err := resolveAllowedActor(issuerConfig, claims)
+		actor, authorized, err := resolveActorAuthorization(issuerConfig, claims, extraClaims)
 		if err != nil {
 			return nil, err
 		}
 		claims.ExternalActor = actor
+		claims.ExternalActorAuthorized = authorized
 	}
 
 	return claims, nil
+}
+
+// checkMayActAllowed rejects a may_act claim from an issuer that hasn't
+// opted in (issuerConfig.AllowMayAct false) before validating the claim's
+// shape: a malformed may_act on a disabled-by-default issuer should surface
+// this clearer, more-actionable message rather than "malformed 'may_act'
+// claim" — both paths reject the token either way, but this one names the
+// actual reason for the common case.
+//
+// selfIssuer (not issuerConfig.IssuerURL) is the correct comparison for
+// may_act's optional "iss" once shape validation runs: that member
+// identifies the namespace of may_act.sub, always compared against a
+// ToolHive client ID regardless of which issuer validated the surrounding
+// token. requireIss is true here — unlike the self-issued path, the external
+// path cannot leave "iss" optional; see validateMayActShape's doc comment.
+func checkMayActAllowed(extraClaims map[string]any, selfIssuer string, issuerConfig *externalIssuerConfig) error {
+	rawMayAct, ok := extraClaims["may_act"]
+	if ok && rawMayAct != nil && !issuerConfig.AllowMayAct {
+		return fmt.Errorf(
+			"subject token from issuer %q carries a may_act claim, but allow_may_act is disabled",
+			issuerConfig.IssuerURL)
+	}
+	return validateMayActShape(extraClaims, selfIssuer, true)
 }
 
 // ensureRegistered resolves issuerConfig.jwksURL — via OIDC discovery on
@@ -894,9 +979,10 @@ func ValidateJWKSURL(jwksURL string, insecureAllowHTTP, allowPrivateIPs bool) er
 // validateTrustedIssuer checks a single TrustedIssuer for structural validity
 // before it is admitted into issuers: required fields, no collision with
 // selfIssuer or an already-registered issuer, an ActorClaim that
-// resolveAllowedActor can actually read from Extra (or ClientID), and a
-// well-formed AllowedDelegateClients (non-empty, no empty entries, and the
-// wildcard anyDelegateClient never combined with specific client IDs).
+// resolveActorAuthorization can actually read from Extra (or ClientID), a
+// compilable ActorMatcher, and a well-formed AllowedDelegateClients (non-empty,
+// no empty entries, and the wildcard anyDelegateClient never combined with
+// specific client IDs or AllowMayAct).
 //
 // Error messages name TrustedIssuer's wire keys (issuer_url,
 // expected_audience, actor_claim), not its Go field names: TrustedIssuer is
@@ -923,21 +1009,11 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 				`(use "client_id" or a non-registered claim such as "azp", "appid", "cid")`,
 			ti.IssuerURL, ti.ActorClaim)
 	}
-	if len(ti.AllowedDelegateClients) == 0 {
-		return fmt.Errorf(
-			"issuer_url %q: allowed_delegate_clients is required; set it to [%q] to permit any ToolHive "+
-				"confidential client holding the token-exchange grant, or list specific client IDs to bind "+
-				"delegation to them — an issuer with no entries can never authorize a delegated exchange",
-			ti.IssuerURL, anyDelegateClient)
+	if _, err := compileActorMatcher(ti.ActorMatcher); err != nil {
+		return fmt.Errorf("issuer_url %q: %w", ti.IssuerURL, err)
 	}
-	if slices.Contains(ti.AllowedDelegateClients, "") {
-		return fmt.Errorf(
-			"issuer_url %q: allowed_delegate_clients must not contain an empty client ID", ti.IssuerURL)
-	}
-	if slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) && len(ti.AllowedDelegateClients) > 1 {
-		return fmt.Errorf(
-			"issuer_url %q: allowed_delegate_clients must not combine the wildcard %q with specific client IDs",
-			ti.IssuerURL, anyDelegateClient)
+	if err := validateAllowedDelegateClients(ti); err != nil {
+		return err
 	}
 	// AllowPrivateIPs without a hand-configured jwks_url would let OIDC
 	// discovery — a document fetched from, and thus influenceable by, the
@@ -956,6 +1032,34 @@ func validateTrustedIssuer(ti TrustedIssuer, selfIssuer string, issuers map[stri
 	return nil
 }
 
+// validateAllowedDelegateClients checks the structural and narrowing
+// invariants for TrustedIssuer.AllowedDelegateClients, split out of
+// validateTrustedIssuer to keep that function's cyclomatic complexity down.
+func validateAllowedDelegateClients(ti TrustedIssuer) error {
+	if len(ti.AllowedDelegateClients) == 0 {
+		return fmt.Errorf(
+			"issuer_url %q: allowed_delegate_clients is required; set it to [%q] to permit any ToolHive "+
+				"confidential client holding the token-exchange grant, or list specific client IDs to bind "+
+				"delegation to them — an issuer with no entries can never authorize a delegated exchange",
+			ti.IssuerURL, anyDelegateClient)
+	}
+	if slices.Contains(ti.AllowedDelegateClients, "") {
+		return fmt.Errorf(
+			"issuer_url %q: allowed_delegate_clients must not contain an empty client ID", ti.IssuerURL)
+	}
+	if slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) && len(ti.AllowedDelegateClients) > 1 {
+		return fmt.Errorf(
+			"issuer_url %q: allowed_delegate_clients must not combine the wildcard %q with specific client IDs",
+			ti.IssuerURL, anyDelegateClient)
+	}
+	if ti.AllowMayAct && slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) {
+		return fmt.Errorf(
+			"issuer_url %q: allow_may_act must not be enabled when allowed_delegate_clients contains the wildcard %q",
+			ti.IssuerURL, anyDelegateClient)
+	}
+	return nil
+}
+
 // looksLikeResourceIdentifier reports whether aud is shaped like a resource/API
 // identifier (an absolute URI, e.g. "https://api.example.com" or
 // "api://<app-id>") rather than a bare opaque string or GUID, which is more
@@ -967,10 +1071,49 @@ func looksLikeResourceIdentifier(aud string) bool {
 	return strings.Contains(aud, "://")
 }
 
+// resolveActorAuthorization authorizes an external token when either its
+// configured actor claim matches AllowedActors or ActorMatcher evaluates true
+// against the complete signature-verified JWT claims map. It returns the
+// resolved actor, when one exists, separately from authorization because a
+// matcher need not depend on an actor claim. Called only when the subject token
+// carries no may_act claim — see validateExternalToken.
+func resolveActorAuthorization(
+	issuerConfig *externalIssuerConfig,
+	claims *ValidatedClaims,
+	verifiedClaims map[string]any,
+) (string, bool, error) {
+	actor, actorErr := resolveAllowedActor(issuerConfig, claims)
+	if actorErr == nil {
+		return actor, true, nil
+	}
+
+	if issuerConfig.actorMatcher != nil {
+		matched, err := issuerConfig.actorMatcher.EvaluateBool(map[string]any{"claims": verifiedClaims})
+		if err != nil {
+			// The raw CEL error is never logged or returned: it can quote
+			// runtime values from the claims map (e.g. timestamp(claims.foo)
+			// on a malformed string embeds that string in the error),
+			// which would otherwise leak signed claim data into logs and,
+			// via HandleTokenEndpointRequest's own error logging, further
+			// downstream.
+			slog.Debug("Trusted issuer actor matcher evaluation failed; denying subject token",
+				"issuer", issuerConfig.IssuerURL)
+			return "", false, fmt.Errorf("actor matcher evaluation failed for issuer %q", issuerConfig.IssuerURL)
+		} else if matched {
+			return actor, true, nil
+		}
+	}
+
+	if len(issuerConfig.AllowedActors) == 0 && issuerConfig.actorMatcher != nil {
+		return "", false, fmt.Errorf("subject token from issuer %q was not authorized by actor matcher", issuerConfig.IssuerURL)
+	}
+
+	return "", false, actorErr
+}
+
 // resolveAllowedActor resolves the issuer's configured actor claim from
 // claims and checks it against issuerConfig.AllowedActors, returning the
-// matched value on success. Called only when the subject token carries no
-// may_act claim — see validateExternalToken.
+// matched value on success.
 func resolveAllowedActor(issuerConfig *externalIssuerConfig, claims *ValidatedClaims) (string, error) {
 	claimName := issuerConfig.ActorClaim
 	if claimName == "" {

@@ -116,11 +116,16 @@ var passthroughMetaKeys = map[string]struct{}{
 }
 
 // modernSignalMetaKeys is the INGRESS/detection set consumed by hasModernSignal:
-// the reserved keys a Legacy client never sets, whose presence — independent of
-// whether the value is well-formed — is itself a claim of the Modern revision
-// and must not be silently downgraded to Legacy. Only a malformed/absent
-// protocolVersion alongside one of them turns into a rejection, never a
-// downgrade.
+// the reserved keys whose presence — independent of whether the value is
+// well-formed — is a claim of the Modern revision when nothing else contradicts
+// it, and must not then be silently downgraded to Legacy.
+//
+// "Nothing else contradicts it" is load-bearing. Real Legacy clients DO set
+// these keys (the ChatGPT connector sets them while negotiating 2025-11-25),
+// so an explicit non-Modern MCP-Protocol-Version header outranks them — see
+// ClassifyRevision. The claim stands where the key is the only signal present,
+// and there a malformed/absent protocolVersion alongside one of them turns into
+// a rejection, never a downgrade.
 //
 // It is deliberately narrower than what StripReservedMeta removes: logLevel is
 // excluded so a request carrying only logLevel — which go-sdk's
@@ -444,6 +449,25 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 
 	bodyVersion, hasBodyVersion := stringMetaValue(meta, metaKeyProtocolVersion)
 	if !hasBodyVersion {
+		if protoHeader != "" && protoHeader != MCPVersionModern {
+			// An explicit non-Modern header is the client's negotiated
+			// declaration and outranks a stray reserved _meta key that carries
+			// no version of its own. Without this, merely including e.g.
+			// clientInfo flipped an otherwise-fine Legacy request from accepted
+			// to -32020 -- the same request with no reserved key at all is
+			// classified Legacy by hasModernSignal above, so rejecting this one
+			// was incoherent rather than strict. It broke every tools/call from
+			// the ChatGPT connector, which negotiates 2025-11-25 and sets
+			// reserved keys without a _meta protocolVersion (#6188).
+			//
+			// Modern enforcement is untouched: a Modern header with no _meta
+			// version still falls through to the mismatch below, and a reserved
+			// key with no header at all still yields MissingModernMetadata --
+			// which is where "a reserved key is a claim of Modern that must not
+			// be silently downgraded" (see modernSignalMetaKeys) actually
+			// applies, because there the key is the only signal present.
+			return RevisionLegacy, nil
+		}
 		if protoHeader != "" {
 			return RevisionModern, &HeaderMismatchError{Header: protoHeader, Body: ""}
 		}

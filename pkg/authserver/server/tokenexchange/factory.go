@@ -27,10 +27,25 @@ import (
 // NewMultiIssuerTokenValidator) — this Factory takes no validator-wide
 // equivalent, so a self-issuer setting can never reach the external path
 // through here.
-func Factory(delegationLifespan time.Duration, trustedIssuers []TrustedIssuer) (server.Factory, error) {
+//
+// configuredDelegateClients is the operator-configured list of delegate
+// client IDs (Config.DelegateClients, projected down to just their
+// ClientIDs by the caller). An empty list preserves existing behavior
+// exactly. The trust source here is server config, not client storage: the
+// set is read once at process construction, so removing a client from
+// config revokes its trust on the next restart rather than requiring any
+// explicit revocation step against storage.
+func Factory(
+	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
+) (server.Factory, error) {
 	if delegationLifespan <= 0 || delegationLifespan > server.MaxAccessTokenLifespan {
 		return nil, fmt.Errorf("tokenexchange: delegationLifespan must be between %v and %v, got %v",
 			time.Duration(0), server.MaxAccessTokenLifespan, delegationLifespan)
+	}
+	for _, id := range configuredDelegateClients {
+		if id == "" {
+			return nil, fmt.Errorf("tokenexchange: configuredDelegateClients must not contain an empty client ID")
+		}
 	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
@@ -69,10 +84,13 @@ func Factory(delegationLifespan time.Duration, trustedIssuers []TrustedIssuer) (
 				AccessTokenStorage:  atStorage,
 				Config:              config.Config,
 			},
-			validator:          validator,
-			delegationLifespan: delegationLifespan,
-			config:             config.Config,
-			allowedAudiences:   config.AllowedAudiences,
+			validator:                 validator,
+			selfValidator:             selfValidator,
+			issuer:                    config.GetAccessTokenIssuer(),
+			delegationLifespan:        delegationLifespan,
+			config:                    config.Config,
+			allowedAudiences:          config.AllowedAudiences,
+			configuredDelegateClients: configuredDelegateClients,
 		}, nil
 	}, nil
 }

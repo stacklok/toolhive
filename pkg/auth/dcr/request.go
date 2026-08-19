@@ -129,9 +129,12 @@ type Request struct {
 	// a clear error rather than silently downgrading.
 	//
 	// When false (the embedded-authserver default), the resolver picks
-	// the strongest auth method the upstream advertises (private_key_jwt
-	// > client_secret_basic > client_secret_post > none, with the same
-	// S256 gate on "none").
+	// the most preferred auth method the upstream advertises among the
+	// ones our OAuth2 runtime can actually use (client_secret_basic >
+	// client_secret_post > none, with the same S256 gate on "none").
+	// private_key_jwt is excluded from this preference even when
+	// advertised: it requires a signed client assertion the runtime has
+	// no way to produce.
 	//
 	// Has no effect on the RegistrationEndpoint-direct branch when neither
 	// DiscoveryURL nor CodeChallengeMethodsSupported is set: without
@@ -141,13 +144,26 @@ type Request struct {
 
 	// AllowPrivateIPs permits both of the resolver's outbound calls — the
 	// discovery fetch to DiscoveryURL and the registration POST to the
-	// resolved registration endpoint — to connect to private IP ranges.
-	// See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
-	// this widens (loopback exemption, dial-time re-check, etc.). Set this to
-	// true only when the upstream authorization server is reachable solely
-	// over a private address (e.g. an in-cluster IdP with no public
-	// endpoint); defaults to false. Mirrors the AllowPrivateIPs posture
-	// already carried by the OAuth2 and OIDC upstream configs so a DCR
-	// upstream is not the one outbound-facing path without an SSRF guard.
+	// resolved registration endpoint — to connect to private IP ranges. For
+	// ServerSuppliedEndpoints, this is the only way to permit private,
+	// loopback, or link-local dialing; localhost and
+	// INSECURE_DISABLE_URL_VALIDATION do not widen that gate. Set this to true
+	// only when the upstream authorization server is reachable solely over a
+	// private address (e.g. an in-cluster IdP with no public endpoint);
+	// defaults to false. Mirrors the AllowPrivateIPs posture already carried
+	// by the OAuth2 and OIDC upstream configs so a DCR upstream is not the one
+	// outbound-facing path without an SSRF guard.
 	AllowPrivateIPs bool
+
+	// ServerSuppliedEndpoints reports that DiscoveryURL or RegistrationEndpoint
+	// originated with a remote MCP server rather than with the operator. The
+	// resolver then uses the strict server-supplied client policy, which does
+	// not grant private-IP access merely because an endpoint is localhost or
+	// INSECURE_DISABLE_URL_VALIDATION is set. Leave false for trusted,
+	// operator-configured embedded-authserver upstreams.
+	//
+	// A registration endpoint read out of a fetched metadata document is always
+	// treated as server-supplied regardless of this field: the upstream controls
+	// that document even when the operator chose the DiscoveryURL that returned it.
+	ServerSuppliedEndpoints bool
 }

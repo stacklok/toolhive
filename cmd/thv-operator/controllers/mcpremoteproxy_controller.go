@@ -66,6 +66,46 @@ var errInvalidMCPRemoteProxyPodTemplateSpec = stderrors.New("invalid MCPRemotePr
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 
+// handleInvalidEmbeddedAuthServerConfig records an invalid embedded auth server
+// configuration as terminal. Failures to persist status remain retryable.
+func (r *MCPRemoteProxyReconciler) handleInvalidEmbeddedAuthServerConfig(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError,
+) error {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, func(remoteProxy *mcpv1beta1.MCPRemoteProxy) {
+		remoteProxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		remoteProxy.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidConfigErr)
+		remoteProxy.Status.ObservedGeneration = remoteProxy.Generation
+		meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: remoteProxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonNotReady,
+			Message:            remoteProxy.Status.Message,
+		})
+
+		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceAuthServerRef {
+			meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: remoteProxy.Generation,
+				Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidConfig,
+				Message:            invalidConfigErr.Error(),
+			})
+		}
+		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceExternalAuthConfigRef {
+			meta.SetStatusCondition(&remoteProxy.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: remoteProxy.Generation,
+				Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+				Message:            invalidConfigErr.Error(),
+			})
+		}
+	})
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -93,6 +133,14 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Ensure all resources
 	if err := r.ensureAllResources(ctx, proxy); err != nil {
+		var invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError
+		if stderrors.As(err, &invalidConfigErr) {
+			if statusErr := r.handleInvalidEmbeddedAuthServerConfig(ctx, proxy, invalidConfigErr); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after invalid embedded auth server configuration")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -198,6 +246,13 @@ func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(
 		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
 		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: proxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonNotReady,
+			Message:            proxy.Status.Message,
+		})
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
 			Status:  metav1.ConditionFalse,
@@ -865,14 +920,7 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 			proxy.Namespace, proxy.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	// ExternalAuthConfig found and valid
-	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
-		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", externalAuthConfig.Name),
-		ObservedGeneration: proxy.Generation,
-	})
+	setMCPRemoteProxyExternalAuthConfigValidCondition(proxy, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash)
 
 	if proxy.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPRemoteProxy",
@@ -888,6 +936,32 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	}
 
 	return nil
+}
+
+// setMCPRemoteProxyExternalAuthConfigValidCondition preserves a terminal RunConfig validation failure
+// until its referenced configuration or this resource generation changes.
+func setMCPRemoteProxyExternalAuthConfigValidCondition(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	configName, configHash string,
+) {
+	previousCondition := meta.FindStatusCondition(
+		proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+	)
+	if previousCondition != nil &&
+		previousCondition.Status == metav1.ConditionFalse &&
+		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.ObservedGeneration == proxy.Generation &&
+		proxy.Status.ExternalAuthConfigHash == configHash {
+		return
+	}
+
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName),
+		ObservedGeneration: proxy.Generation,
+	})
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
@@ -975,14 +1049,7 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 			proxy.Namespace, proxy.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	// AuthServerRef valid
-	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
-		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
-		ObservedGeneration: proxy.Generation,
-	})
+	setMCPRemoteProxyAuthServerRefValidCondition(proxy, authConfig.Name, authConfig.Status.ConfigHash)
 
 	// Check if the config hash has changed
 	if proxy.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {
@@ -999,6 +1066,32 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 	}
 
 	return nil
+}
+
+// setMCPRemoteProxyAuthServerRefValidCondition preserves a terminal RunConfig validation failure
+// until its referenced configuration or this resource generation changes.
+func setMCPRemoteProxyAuthServerRefValidCondition(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	configName, configHash string,
+) {
+	previousCondition := meta.FindStatusCondition(
+		proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+	)
+	if previousCondition != nil &&
+		previousCondition.Status == metav1.ConditionFalse &&
+		previousCondition.Reason == mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidConfig &&
+		previousCondition.ObservedGeneration == proxy.Generation &&
+		proxy.Status.AuthServerConfigHash == configHash {
+		return
+	}
+
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
+		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", configName),
+		ObservedGeneration: proxy.Generation,
+	})
 }
 
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.

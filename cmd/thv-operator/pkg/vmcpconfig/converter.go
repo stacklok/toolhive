@@ -47,6 +47,21 @@ type Converter struct {
 	k8sClient    client.Client
 }
 
+// DelegateClientConfigValidationError marks an invalid delegate-client
+// configuration after its effective scopes and audiences have been derived.
+// Controllers can surface it as a terminal spec error rather than retrying.
+type DelegateClientConfigValidationError struct {
+	Err error
+}
+
+func (e *DelegateClientConfigValidationError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *DelegateClientConfigValidationError) Unwrap() error {
+	return e.Err
+}
+
 // NewConverter creates a new Converter instance.
 // oidcResolver is required and used to resolve OIDC configuration from various sources
 // (kubernetes, configMap, inline). Use a mock resolver in tests.
@@ -159,6 +174,9 @@ func (c *Converter) Convert(
 	if vmcp.Spec.AuthServerConfig != nil {
 		rc, err := c.convertAuthServerConfig(vmcp, config)
 		if err != nil {
+			if len(vmcp.Spec.AuthServerConfig.DelegateClients) > 0 {
+				return nil, nil, &DelegateClientConfigValidationError{Err: err}
+			}
 			return nil, nil, fmt.Errorf("failed to convert auth server config: %w", err)
 		}
 		authServerRC = rc

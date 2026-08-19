@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -37,6 +38,18 @@ const (
 	networkTransportTCP = "tcp"
 	// networkProtocolHTTP is the OTEL value for HTTP protocol
 	networkProtocolHTTP = "http"
+	// maxLabelValueBytes bounds the length of client-controlled metric label
+	// values. Cumulative metric readers (Prometheus, OTLP PeriodicReader) keep
+	// every distinct attribute set resident for the process lifetime, so an
+	// unbounded label value (e.g. an 8 MB MCP method name) stays in memory
+	// permanently and can exhaust the pod. This caps the byte length; the OTEL
+	// SDK's 2000-series limit caps the count. Spans are left untruncated on
+	// purpose — they are sampled and ephemeral, and the OTEL MCP semconv wants
+	// the real value.
+	maxLabelValueBytes = 128
+	// labelTruncationMarker is appended to truncated label values so consumers
+	// can tell a value was clamped.
+	labelTruncationMarker = "..."
 )
 
 // MCPHistogramBuckets are the bucket boundaries defined by the MCP OTEL semantic conventions
@@ -165,6 +178,19 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		// Normal HTTP request handling
+		// Reuse an outer holder (for example, audit's) so webhook mutations are
+		// visible to every wrapper. When there is no outer holder, install one for
+		// telemetry itself and seed it with the parse published by the parser.
+		parsedHolder, ok := mcpparser.ParsedRequestHolderFromContext(ctx)
+		if !ok {
+			parsedHolder = &mcpparser.ParsedRequestHolder{
+				Parsed: mcpparser.GetParsedMCPRequest(ctx),
+			}
+			ctx = mcpparser.WithParsedRequestHolder(ctx, parsedHolder)
+		} else if parsedHolder.Parsed == nil {
+			parsedHolder.Parsed = mcpparser.GetParsedMCPRequest(ctx)
+		}
+
 		// Extract trace context from incoming request headers
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
 
@@ -187,12 +213,14 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			attribute.String("transport", m.transport),
 		))
 
-		// Create span name based on MCP method if available, otherwise use HTTP method + path
-		spanName := m.createSpanName(ctx)
-		if spanName == "" {
-			spanName = fmt.Sprintf("%s %s", r.Method, r.URL.Path)
-		}
-		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
+		// Start the request span before rate limiting. MCP identity is populated
+		// after the inner chain returns because a mutating webhook may republish a
+		// different method, resource, or argument set while the request is in flight.
+		ctx, span := m.tracer.Start(
+			ctx,
+			fmt.Sprintf("%s %s", r.Method, r.URL.Path),
+			trace.WithSpanKind(trace.SpanKindServer),
+		)
 		defer span.End()
 
 		// Create a response writer wrapper to capture response details
@@ -205,9 +233,6 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Add HTTP attributes
 		m.addHTTPAttributes(span, r)
 
-		// Add MCP attributes if parsed data is available
-		m.addMCPAttributes(ctx, span, r)
-
 		// Add environment variables as attributes
 		m.addEnvironmentAttributes(span)
 
@@ -217,11 +242,29 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Call the next handler with the instrumented context
 		next.ServeHTTP(rw, r.WithContext(ctx))
 
-		// Record completion metrics and finalize span
+		// A mutating webhook publishes its replacement parse through the shared
+		// holder. Use that final parse for all MCP identity exported by telemetry.
+		finalCtx := contextWithFinalParsedMCPRequest(ctx, parsedHolder)
+		if spanName := m.createSpanName(finalCtx); spanName != "" {
+			span.SetName(spanName)
+		}
+		m.addMCPAttributes(finalCtx, span, r)
+
+		// Record completion metrics and finalize span.
 		duration := time.Since(startTime)
 		m.finalizeSpan(span, rw, duration)
-		m.recordMetrics(ctx, r, rw, duration)
+		m.recordMetrics(finalCtx, r, rw, duration)
 	})
+}
+
+func contextWithFinalParsedMCPRequest(
+	ctx context.Context,
+	holder *mcpparser.ParsedRequestHolder,
+) context.Context {
+	if holder == nil || holder.Parsed == nil || holder.Parsed == mcpparser.GetParsedMCPRequest(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, mcpparser.MCPRequestContextKey, holder.Parsed)
 }
 
 func (*HTTPMiddleware) createSpanName(ctx context.Context) string {
@@ -667,6 +710,24 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
+// truncateLabelValue bounds a client-controlled metric label value to
+// maxLabelValueBytes, clamping on a UTF-8 rune boundary so the result is never
+// invalid UTF-8, and appending labelTruncationMarker to signal truncation.
+// Values within the cap are returned unchanged. Use this only for metric
+// labels; span attributes keep the full value.
+func truncateLabelValue(s string) string {
+	if len(s) <= maxLabelValueBytes {
+		return s
+	}
+	// Reserve room for the marker so the returned value stays within the cap.
+	limit := maxLabelValueBytes - len(labelTruncationMarker)
+	// Back up to a rune boundary so we never split a multi-byte character.
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + labelTruncationMarker
+}
+
 // recordMetrics records request metrics.
 func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw *responseWriter, duration time.Duration) {
 	// Get MCP method from context if available
@@ -694,8 +755,8 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		attribute.String("method", r.Method),
 		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
 		attribute.String("status", status),
-		attribute.String("mcp_method", mcpMethod),
-		attribute.String("mcp_resource_id", mcpResourceID),
+		attribute.String("mcp_method", truncateLabelValue(mcpMethod)),
+		attribute.String("mcp_resource_id", truncateLabelValue(mcpResourceID)),
 		attribute.String("server", m.serverName),
 		attribute.String("transport", m.transport),
 	)
@@ -724,7 +785,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
 			toolAttrs := metric.WithAttributes(
 				attribute.String("server", m.serverName),
-				attribute.String("tool", parsedMCP.ResourceID),
+				attribute.String("tool", truncateLabelValue(parsedMCP.ResourceID)),
 				attribute.String("status", status),
 			)
 			m.toolCallCounter.Add(ctx, 1, toolAttrs)
@@ -740,7 +801,7 @@ func (m *HTTPMiddleware) recordOperationDuration(
 	networkTransport, protocolName, _ := mapTransport(m.transport)
 
 	specAttrs := []attribute.KeyValue{
-		attribute.String("mcp.method.name", mcpMethod),
+		attribute.String("mcp.method.name", truncateLabelValue(mcpMethod)),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 		attribute.String("network.transport", networkTransport),
 	}
@@ -765,11 +826,11 @@ func (m *HTTPMiddleware) recordOperationDuration(
 	case string(mcp.MethodToolsCall):
 		specAttrs = append(specAttrs, attribute.String("gen_ai.operation.name", "execute_tool"))
 		if resourceID != "" {
-			specAttrs = append(specAttrs, attribute.String("gen_ai.tool.name", resourceID))
+			specAttrs = append(specAttrs, attribute.String("gen_ai.tool.name", truncateLabelValue(resourceID)))
 		}
 	case methodPromptsGet:
 		if resourceID != "" {
-			specAttrs = append(specAttrs, attribute.String("gen_ai.prompt.name", resourceID))
+			specAttrs = append(specAttrs, attribute.String("gen_ai.prompt.name", truncateLabelValue(resourceID)))
 		}
 	}
 
@@ -894,12 +955,11 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Add middleware to runner
 	runner.AddMiddleware(config.Type, telemetryMw)
 
-	// Set Prometheus handler if enabled
+	// Set Prometheus handler if enabled. The runner serves it on a dedicated
+	// diagnostics listener and logs the resolved address there, so no port is
+	// logged here — it is not the application port.
 	if prometheusHandler != nil {
 		runner.SetPrometheusHandler(prometheusHandler)
-		//nolint:gosec // G706: port number from config
-		slog.Info("prometheus metrics will be exposed at /metrics",
-			"port", runner.GetConfig().GetPort())
 	}
 
 	return nil

@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
@@ -88,6 +89,11 @@ type Runner struct {
 
 	// prometheusHandler is the Prometheus metrics handler set by telemetry middleware
 	prometheusHandler http.Handler
+
+	// diagnosticsServer serves the Prometheus /metrics endpoint on its own
+	// listener, keeping it off the application listener where it would bypass
+	// the middleware chain. Nil unless the metrics path is enabled.
+	diagnosticsServer *diagnostics.Server
 
 	statusManager statuses.StatusManager
 
@@ -366,7 +372,33 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set all named middleware and handlers on transport config
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
-	transportConfig.PrometheusHandler = r.prometheusHandler
+
+	// Serve Prometheus metrics on a dedicated diagnostics listener rather than
+	// handing the handler to the transport, which would register it on the
+	// application mux where it outranks the middleware chain and stays
+	// unauthenticated. Leaving transportConfig.PrometheusHandler nil is what
+	// keeps the proxies from mounting /metrics at all.
+	if err := r.startDiagnosticsServer(); err != nil {
+		return err
+	}
+
+	// Release the listener on every exit from Run, not just the happy path.
+	// Cleanup runs only via stopMCPServer, which several paths skip: the early
+	// error returns below, and the graceful container-exit branch that returns
+	// nil after the transport already stopped. Leaking here would strand a
+	// goroutine and a bound port, and under workloads.Manager's restart loop each
+	// attempt would strand another and push the next onto a different port —
+	// silently breaking the scrape target this change exists to stabilise.
+	//
+	// A duplicate stop is harmless: stopDiagnosticsServer is nil-safe and
+	// idempotent, so the paths that do reach Cleanup are unaffected.
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), diagnosticsStopTimeout)
+		defer cancel()
+		if err := r.stopDiagnosticsServer(stopCtx); err != nil {
+			slog.Warn("failed to stop diagnostics server", "error", err)
+		}
+	}()
 
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)
@@ -955,6 +987,15 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			if lastErr == nil {
 				lastErr = err
 			}
+		}
+	}
+
+	// Stop the diagnostics listener before the telemetry provider it scrapes
+	// from is shut down.
+	if err := r.stopDiagnosticsServer(ctx); err != nil {
+		slog.Warn("Failed to stop diagnostics server", "error", err)
+		if lastErr == nil {
+			lastErr = err
 		}
 	}
 

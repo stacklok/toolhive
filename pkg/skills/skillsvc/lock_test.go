@@ -35,7 +35,6 @@ import (
 // Only the git resolver and path resolver are test doubles.
 func newLockTestService(t *testing.T, gr *gitmocks.MockResolver, extra ...Option) (skills.SkillService, string) {
 	t.Helper()
-	t.Setenv(skills.LockFileEnvVar, "true")
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
@@ -189,23 +188,6 @@ func readLockfile(t *testing.T, projectRoot string) *lockfile.Lockfile {
 	lf, err := lockfile.Load(mustOpenRoot(t, projectRoot))
 	require.NoError(t, err)
 	return lf
-}
-
-//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestInstallProjectScope_LockFileDisabled_NoLockFileWritten(t *testing.T) {
-	gr, fx := newGitResolverMock(t)
-	fx.register("my-skill", gitSkill("my-skill"))
-	svc, projectRoot := newLockTestService(t, gr)
-	t.Setenv(skills.LockFileEnvVar, "false") // override newLockTestService's default
-
-	ref, _ := gitRef("my-skill")
-	_, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
-	})
-	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(projectRoot, lockfile.FileName))
-	assert.True(t, os.IsNotExist(err), "lock file must not be written when the feature is disabled")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel

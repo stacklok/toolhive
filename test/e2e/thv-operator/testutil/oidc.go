@@ -144,6 +144,17 @@ func DeployParameterizedOIDCServer(
 //
 // Usage: POST /token?subject=alice  → returns {"access_token": "<jwt>", ...}
 // The subject defaults to "test-user" when the query parameter is omitted.
+// Further optional query parameters extend this for tokenexchange.TrustedIssuer
+// coverage:
+//   - aud=<value>          overrides the default "aud" claim.
+//   - may_act_sub=<value>  adds a "may_act" claim; may_act_iss=<value> sets
+//     its optional "iss" member (both read together, since a bare "sub" is
+//     enough to exercise validateMayActShape).
+//   - extra_claim_name=<name>&extra_claim_value=<value>  adds one arbitrary
+//     top-level string claim (e.g. "appid"), for exercising
+//     TrustedIssuer.ActorMatcher against a claim other than the default
+//     ActorClaim ("azp"). Both must be present together; either alone is
+//     ignored.
 const parameterizedOIDCServerScript = `
 import base64, json, time, http.server, socketserver
 from urllib.parse import urlparse, parse_qs
@@ -178,8 +189,16 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/token"):
             params = parse_qs(urlparse(self.path).query)
             sub = params.get("subject", ["test-user"])[0]
+            aud = params.get("aud", ["vmcp-audience"])[0]
             hdr = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
-            pay = {"sub": sub, "iss": ISSUER, "aud": "vmcp-audience", "exp": int(time.time())+3600, "iat": int(time.time())}
+            pay = {"sub": sub, "iss": ISSUER, "aud": aud, "exp": int(time.time())+3600, "iat": int(time.time())}
+            if "may_act_sub" in params:
+                may_act = {"sub": params["may_act_sub"][0]}
+                if "may_act_iss" in params:
+                    may_act["iss"] = params["may_act_iss"][0]
+                pay["may_act"] = may_act
+            if "extra_claim_name" in params and "extra_claim_value" in params:
+                pay[params["extra_claim_name"][0]] = params["extra_claim_value"][0]
             def enc(d): return base64.urlsafe_b64encode(json.dumps(d, separators=(",",":")).encode()).decode().rstrip("=")
             h64, p64 = enc(hdr), enc(pay)
             sig = private_key.sign((h64+"."+p64).encode(), asym_padding.PKCS1v15(), hashes.SHA256())

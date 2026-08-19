@@ -105,7 +105,14 @@ var allowedResponseTypes = map[string]bool{
 }
 
 // ValidateDCRRequest validates a DCR request according to RFC 7591
-// and the server's security policy (loopback-only public clients).
+// and the server's security policy. When allowConfidential is false the
+// policy is unchanged from the historical default: public clients only.
+// When true, token_endpoint_auth_method may also be client_secret_basic or
+// client_secret_post; such confidential registrations are additionally
+// restricted to https non-loopback redirect URIs, because a client on a
+// loopback or private-scheme URI is by construction a public client
+// (OAuth 2.1 §2.1) and minting it a secret ships that secret inside a
+// distributed binary.
 // Returns the validated request with defaults applied, or an error.
 //
 // The validated request does NOT carry the requested scopes — scope
@@ -113,6 +120,7 @@ var allowedResponseTypes = map[string]bool{
 // handled by ValidateScopes using the caller's policy inputs.
 func ValidateDCRRequest(
 	req *oauthproto.DynamicClientRegistrationRequest,
+	allowConfidential bool,
 ) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
 	// 1. Validate redirect_uris - required
 	if len(req.RedirectURIs) == 0 {
@@ -155,15 +163,9 @@ func ValidateDCRRequest(
 	}
 
 	// 5. Validate/default token_endpoint_auth_method
-	authMethod := req.TokenEndpointAuthMethod
-	if authMethod == "" {
-		authMethod = "none"
-	}
-	if authMethod != "none" {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
-		}
+	authMethod, dcrErr := validateAuthMethod(req.TokenEndpointAuthMethod, req.RedirectURIs, allowConfidential)
+	if dcrErr != nil {
+		return nil, dcrErr
 	}
 
 	// 6. Validate/default grant_types
@@ -211,6 +213,100 @@ func validateSoftwareID(softwareID string) *DCRError {
 			return &DCRError{
 				Error:            DCRErrorInvalidClientMetadata,
 				ErrorDescription: "software_id must contain only printable ASCII characters",
+			}
+		}
+	}
+	return nil
+}
+
+// validateAuthMethod validates token_endpoint_auth_method and returns the
+// effective method with the empty default applied. When allowConfidential is
+// false the policy is unchanged from the historical default: public clients
+// only. When true, the client_secret_* methods are accepted but restricted to
+// https non-loopback redirect URIs, because a client on a loopback or
+// private-scheme URI is by construction a public client (OAuth 2.1 §2.1) and
+// minting it a secret ships that secret inside a distributed binary.
+func validateAuthMethod(
+	authMethod string,
+	redirectURIs []string,
+	allowConfidential bool,
+) (string, *DCRError) {
+	if authMethod == "" {
+		// RFC 7591 §2 says an omitted token_endpoint_auth_method defaults to
+		// "client_secret_basic". We deliberately default to "none" instead.
+		// That RFC default predates PKCE-based public clients becoming the
+		// norm for native and CLI apps, which are most MCP clients today.
+		// Following it here would silently turn any public client that
+		// omits the field into a confidential one — and fosite pins the
+		// auth method at registration, so that client's first token request
+		// would fail with invalid_client because it has no secret and never
+		// asked for one. It also wouldn't help the clients confidential
+		// support was added for: the known cases send "none" explicitly
+		// rather than omitting the field, and an explicit value always
+		// overrides the default.
+		authMethod = oauthproto.TokenEndpointAuthMethodNone
+	}
+	switch authMethod {
+	case oauthproto.TokenEndpointAuthMethodNone:
+		// Always accepted; the public-client default.
+		return authMethod, nil
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !allowConfidential {
+			return "", &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "this authorization server only supports token_endpoint_auth_method 'none'",
+			}
+		}
+		// Server policy (not a spec mandate): confidential registrations must
+		// use https non-loopback redirect URIs. A client reachable on loopback
+		// or a private scheme is typically a distributed native app that cannot
+		// keep a secret, so this server declines to mint it one.
+		if dcrErr := ValidateConfidentialRedirectURIs(redirectURIs, authMethod); dcrErr != nil {
+			return "", dcrErr
+		}
+		return authMethod, nil
+	default:
+		return "", &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "unsupported token_endpoint_auth_method: " + authMethod,
+		}
+	}
+}
+
+// ValidateConfidentialRedirectURIs checks that every entry in redirectURIs
+// meets the confidential-client policy: https non-loopback, RFC 8252 strict
+// scheme rules. authMethod is embedded in the loopback-rejection message and
+// should be the auth method the client is being registered with.
+//
+// Shared by the ordinary confidential registration path (validateAuthMethod)
+// and the force-confidential override (resolveForceConfidentialOverride in
+// pkg/authserver/server/handlers/dcr.go), so a registration cannot become
+// confidential by either path while carrying a loopback redirect_uri.
+func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) *DCRError {
+	for _, uri := range redirectURIs {
+		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+			return &DCRError{
+				Error:            DCRErrorInvalidRedirectURI,
+				ErrorDescription: err.Error(),
+			}
+		}
+		// isLoopbackURI is a literal-string check (127.0.0.0/8, ::1,
+		// ::ffff:127.0.0.1, localhost); it does not resolve the hostname,
+		// so a registrant-controlled name that merely resolves to a
+		// loopback address slips through. This is acceptable: the
+		// registrant controls both its own redirect URI and its own DNS,
+		// so at worst this lets an actor mint a secret for its own
+		// loopback app, not attack another tenant. Resolving DNS at
+		// registration time would add an unreliable (TTL/rebinding) and
+		// unnecessary network dependency to a request that should stay
+		// purely local.
+		if isLoopbackURI(uri) {
+			return &DCRError{
+				Error: DCRErrorInvalidRedirectURI,
+				ErrorDescription: "token_endpoint_auth_method '" + authMethod +
+					"' requires https non-loopback redirect_uris; native and loopback clients must use 'none'" +
+					" (offending redirect_uri: " + uri + ")",
 			}
 		}
 	}
@@ -370,4 +466,70 @@ func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 // applied when nil/empty) or a *DCRError on violation.
 func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
 	return validateResponseTypes(responseTypes)
+}
+
+// FilterPublicGrantTypes returns the subset of grantTypes this server supports
+// for public clients, dropping unsupported entries instead of rejecting the
+// whole set the way ValidatePublicGrantTypes does.
+//
+// This is the right semantics for CIMD: a Client ID Metadata Document
+// describes the client's capabilities across every authorization server it
+// talks to, and the client cannot tailor it per server — VS Code, for
+// example, declares the device_code grant alongside authorization_code, and
+// rejecting the document over a grant type this flow never uses breaks the
+// client entirely. A DCR request, by contrast, is addressed to this server
+// specifically, so ValidatePublicGrantTypes' rejection remains the correct
+// feedback on that path.
+//
+// The surviving set must still include "authorization_code": a client whose
+// supported grant types do not intersect with the only redemption flow this
+// server offers cannot function against it, and a clear error beats a client
+// that registers and then fails every token request. nil/empty input gets the
+// same defaults as DCR.
+func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	// Clone so callers that store the result (e.g. in a cached fosite client)
+	// never alias the package-level default.
+	if len(grantTypes) == 0 {
+		return slices.Clone(defaultGrantTypes), nil
+	}
+	filtered := make([]string, 0, len(grantTypes))
+	for _, gt := range grantTypes {
+		if allowedGrantTypes[gt] {
+			filtered = append(filtered, gt)
+		}
+	}
+	if !slices.Contains(filtered, "authorization_code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "grant_types must include 'authorization_code'",
+		}
+	}
+	return filtered, nil
+}
+
+// FilterPublicResponseTypes returns the subset of responseTypes this server
+// supports for public clients, dropping unsupported entries instead of
+// rejecting the whole set. Same reasoning as FilterPublicGrantTypes: a CIMD
+// document declares capabilities across all servers, so an entry this server
+// does not support must not be fatal — but "code" must survive the filter,
+// since it is the only response type this server can serve. nil/empty input
+// gets the same defaults as DCR.
+func FilterPublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	// Clone for the same non-aliasing reason as FilterPublicGrantTypes.
+	if len(responseTypes) == 0 {
+		return slices.Clone(defaultResponseTypes), nil
+	}
+	filtered := make([]string, 0, len(responseTypes))
+	for _, rt := range responseTypes {
+		if allowedResponseTypes[rt] {
+			filtered = append(filtered, rt)
+		}
+	}
+	if !slices.Contains(filtered, "code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "response_types must include 'code'",
+		}
+	}
+	return filtered, nil
 }

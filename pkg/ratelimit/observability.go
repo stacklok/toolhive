@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
@@ -24,6 +25,7 @@ const (
 
 	rateLimitDecisionAllowed  = "allowed"
 	rateLimitDecisionRejected = "rejected"
+	rateLimitRejectedByNone   = "none"
 
 	rateLimitScopeShared  = "shared"
 	rateLimitScopePerUser = "per_user"
@@ -137,6 +139,14 @@ func (t *rateLimitTelemetry) recordCheckLatency(ctx context.Context, duration ti
 		attribute.String("namespace", t.namespace),
 		attribute.String("server", t.serverName),
 	))
+}
+
+func recordRateLimitSpanOutcome(ctx context.Context, decision, rejectedBy string) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("rate_limit.decision", decision),
+		attribute.String("rate_limit.rejected_by", rejectedBy),
+		attribute.Bool("rate_limit.fail_open", false),
+	)
 }
 
 func classifyRedisError(err error) string {

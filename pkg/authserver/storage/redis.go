@@ -18,7 +18,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // nullMarker is used to store nil upstream tokens in Redis.
@@ -107,7 +109,9 @@ type storedSession struct {
 
 // NewRedisStorage creates Redis-backed storage. Connection-mode topology,
 // timeouts, TLS, and credentials are configured through cfg; keyPrefix is the
-// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:") and must be non-empty.
+// per-tenant key prefix (a single Redis Cluster hash tag combining namespace
+// and name — see DeriveKeyPrefix, e.g. "thv:auth:{ns:name}:") and must be
+// non-empty.
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
@@ -173,21 +177,112 @@ type storedClient struct {
 	Scopes        []string `json:"scopes"`
 	Audience      []string `json:"audience"`
 	Public        bool     `json:"public"`
+	// TokenEndpointAuthMethod is the auth method registered for the client
+	// ("none", "client_secret_basic", "client_secret_post"). Empty means the
+	// row predates confidential-client support; see GetClient for how legacy
+	// rows are interpreted.
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
+	// DCRIssued is true when the row was written from a dynamically registered
+	// client. It is persisted rather than inferred from the auth method: a
+	// pre-provisioned confidential client also carries a method, and inferring
+	// from it would hand that permanent client an anti-bloat TTL on its first
+	// token request. Rows predating this field unmarshal with DCRIssued=false.
+	// DCR mints a new client_id per registration and never rewrites an existing
+	// row, so a pre-existing row with no DCRIssued value is itself DCR-issued —
+	// it just reads back unmarked. clientFromStored compensates for this on
+	// read using the Redis key's TTL as a discriminator: a legacy row with no
+	// auth method, Public=true, AND a live TTL on its key is treated as
+	// DCR-issued even though the persisted field says otherwise, because
+	// RegisterClient only ever wrote that TTL for DCR-issued rows — a
+	// pre-provisioned public client (a bare *fosite.DefaultClient) was always
+	// written with no TTL. A legacy confidential row (no method, Public=false)
+	// is not compensated for — it predates confidential DCR support entirely,
+	// so it cannot be DCR-issued.
+	DCRIssued bool `json:"dcr_issued,omitempty"`
 }
 
-// redisClient implements fosite.Client for deserialization.
-type redisClient struct {
-	storedClient
+// clientFromStored rebuilds a fosite.Client from its persisted form. hasTTL
+// reports whether the Redis key currently carries an expiry (TTL >= 0); it is
+// the discriminator used to compensate for the legacy public shape below, and
+// is meaningless for rows that carry an explicit DCRIssued marker.
+//
+// The read logic is two-way so that drift between the Public flag and the
+// auth method can only ever *add* secret verification, never remove it:
+//
+//   - A row with no method recorded covers two populations, both rebuilt as a
+//     bare *fosite.DefaultClient: a pre-provisioned non-OIDC client
+//     (permanent — RegisterClient only populates the column for
+//     fosite.OpenIDConnectClient implementations, so a non-OIDC client will
+//     never carry one, by design, not by omission) and a row written before
+//     confidential-client support existed (transitional). Neither shape was
+//     ever assigned a pinned method — the public one no more than the
+//     confidential one — so neither should acquire method enforcement on
+//     read-back: fosite only enforces token_endpoint_auth_method on
+//     fosite.OpenIDConnectClient implementations, and a bare
+//     *fosite.DefaultClient does not satisfy that interface. IsPublic still
+//     reports correctly because it reads the Public field directly
+//     (fosite.DefaultClient.IsPublic() returns c.Public, uninfluenced by the
+//     auth method).
+//   - A row with a method was written by registration.New (the only path
+//     that populates the column), so it is rebuilt as a
+//     *fosite.DefaultOpenIDConnectClient — fosite enforces the pinned method
+//     at the token endpoint. IsPublic is derived as
+//     (Public && method == "none"): a row that somehow carries both
+//     Public=true and a secret-based method reads back confidential, forcing
+//     secret verification rather than dropping it.
+//
+// DCR-issued marking: a row is treated as DCR-issued when it was persisted as
+// such (stored.DCRIssued — the primary signal, always honored regardless of
+// TTL), OR when it has the legacy public shape (no method, Public=true) AND
+// the key currently carries a TTL. That second clause exists because rows
+// written before the DCRIssued field existed have neither field set, and the
+// legacy public shape is ambiguous on its own: it matches both a pre-existing
+// DCR-issued public client (which must keep renewing its TTL) and a
+// pre-provisioned public client registered as a bare *fosite.DefaultClient
+// (which must never acquire one — Redis EXPIRE on a key with no TTL creates
+// one). The two are distinguishable by how RegisterClient originally wrote
+// the key: DCR-issued rows always got DefaultDCRClientTTL, pre-provisioned
+// rows always got none. Gating the legacy-shape compensation on "the key
+// currently has a TTL" reproduces that distinction without needing to touch
+// the stored JSON. A legacy confidential row (no method, Public=false) is
+// never marked regardless of TTL: it predates confidential DCR support
+// entirely and cannot be DCR-issued.
+func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
+	method := stored.TokenEndpointAuthMethod
+	if method == "" {
+		client := &fosite.DefaultClient{
+			ID:            stored.ID,
+			Secret:        stored.Secret,
+			RedirectURIs:  stored.RedirectURIs,
+			GrantTypes:    stored.GrantTypes,
+			ResponseTypes: stored.ResponseTypes,
+			Scopes:        stored.Scopes,
+			Audience:      stored.Audience,
+			Public:        stored.Public,
+		}
+		if stored.DCRIssued || (stored.Public && hasTTL) {
+			return registration.MarkDCRIssued(client)
+		}
+		return client
+	}
+	oidcClient := &fosite.DefaultOpenIDConnectClient{
+		DefaultClient: &fosite.DefaultClient{
+			ID:            stored.ID,
+			Secret:        stored.Secret,
+			RedirectURIs:  stored.RedirectURIs,
+			GrantTypes:    stored.GrantTypes,
+			ResponseTypes: stored.ResponseTypes,
+			Scopes:        stored.Scopes,
+			Audience:      stored.Audience,
+			Public:        stored.Public && method == oauthproto.TokenEndpointAuthMethodNone,
+		},
+		TokenEndpointAuthMethod: method,
+	}
+	if stored.DCRIssued {
+		return registration.MarkDCRIssued(oidcClient)
+	}
+	return oidcClient
 }
-
-func (c *redisClient) GetID() string                      { return c.ID }
-func (c *redisClient) GetHashedSecret() []byte            { return c.Secret }
-func (c *redisClient) GetRedirectURIs() []string          { return c.RedirectURIs }
-func (c *redisClient) GetGrantTypes() fosite.Arguments    { return c.GrantTypes }
-func (c *redisClient) GetResponseTypes() fosite.Arguments { return c.ResponseTypes }
-func (c *redisClient) GetScopes() fosite.Arguments        { return c.Scopes }
-func (c *redisClient) GetAudience() fosite.Arguments      { return c.Audience }
-func (c *redisClient) IsPublic() bool                     { return c.Public }
 
 // RegisterClient adds or updates a client in the storage.
 func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
@@ -203,28 +298,58 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		Audience:      client.GetAudience(),
 		Public:        client.IsPublic(),
 	}
+	// Record the registered auth method when the client exposes one. Clients
+	// that don't implement fosite.OpenIDConnectClient (e.g. pre-provisioned
+	// confidential clients built as bare *fosite.DefaultClient) leave the field
+	// empty on purpose: Public alone carries the meaning it already carries,
+	// and GetClient treats the empty method as a legacy row. Do NOT substitute
+	// a "none" fallback here — that would silently reclassify a confidential
+	// row as public on read-back.
+	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
+		stored.TokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
+	}
+	stored.DCRIssued = registration.DCRIssued(client)
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
-	// Public clients (from DCR) expire to prevent unbounded growth; RenewClientTTL
-	// refreshes this on proven use so actively-used clients are not evicted.
-	// Confidential clients don't expire.
+	// DCR-issued clients (public and confidential) expire to prevent unbounded
+	// growth from unauthenticated dynamic registration; RenewClientTTL refreshes
+	// this on proven use so actively-used clients are not evicted. The TTL is
+	// keyed on the registration.DCRIssued marker, not IsPublic: a confidential
+	// client minted via DCR is exactly the registration an attacker would pile
+	// up, while a pre-provisioned confidential client (no marker) must never
+	// acquire a TTL — Redis EXPIRE on a key with no TTL creates one, so gating
+	// on IsPublic would give an existing permanent client an expiry on its
+	// first token request after upgrade.
 	ttl := time.Duration(0)
-	if client.IsPublic() {
-		ttl = DefaultPublicClientTTL
+	if registration.DCRIssued(client) {
+		ttl = DefaultDCRClientTTL
 	}
 
 	return s.client.Set(ctx, key, data, ttl).Err()
 }
 
 // GetClient loads the client by its ID.
+//
+// The value and the key's TTL are fetched together in one pipelined round
+// trip: clientFromStored needs the TTL to disambiguate the legacy public
+// client shape (see DCRIssued and clientFromStored for why), and issuing GET
+// then TTL as two separate round trips would leave a window where a
+// concurrent RenewClientTTL or expiry changes the answer between them.
 func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
 	key := redisKey(s.keyPrefix, KeyTypeClient, id)
 
-	data, err := s.client.Get(ctx, key).Bytes()
+	pipe := s.client.Pipeline()
+	getCmd := pipe.Get(ctx, key)
+	ttlCmd := pipe.TTL(ctx, key)
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("failed to get client: %w", err)
+	}
+
+	data, err := getCmd.Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Client not found"))
@@ -232,32 +357,44 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 		return nil, fmt.Errorf("failed to get client: %w", err)
 	}
 
+	// TTL returns -2 for a missing key (already excluded above by getCmd
+	// succeeding) and -1 for a key with no expiry ("persist"); any value >= 0
+	// means the key currently carries an expiry.
+	ttl, err := ttlCmd.Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client TTL: %w", err)
+	}
+	hasTTL := ttl >= 0
+
 	var stored storedClient
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal client: %w", err)
 	}
 
-	return &redisClient{storedClient: stored}, nil
+	return clientFromStored(stored, hasTTL), nil
 }
 
-// RenewClientTTL extends a public client's registration TTL to DefaultPublicClientTTL.
+// RenewClientTTL extends a DCR-issued client's registration TTL to DefaultDCRClientTTL.
 //
 // Call this on a proven-use signal — a successful token exchange/refresh — not on a
 // client read. GetClient is reached from the unauthenticated front-channel
-// /oauth/authorize handler before any authentication, and public clients have no
-// secret, so renewing there would let any caller who knows a public client_id keep
-// its row alive indefinitely and defeat the anti-bloat TTL. Renewing on token
+// /oauth/authorize handler before any authentication, and DCR-issued public clients
+// have no secret, so renewing there would let any caller who knows a public client_id
+// keep its row alive indefinitely and defeat the anti-bloat TTL. Renewing on token
 // issuance ties registration survival to actual use.
 //
-// Only public clients carry a TTL; confidential clients are stored without one and
-// are left untouched. EXPIRE on a missing key is a no-op, so a client whose row has
-// already been evicted (or a non-persisted CIMD client) is safely ignored.
+// Only DCR-issued clients carry a TTL; pre-provisioned clients are stored without one
+// and are left untouched. The gate is the registration.DCRIssued marker, not IsPublic:
+// EXPIRE on a key with no TTL creates one, so keying on IsPublic would hand an
+// existing permanent confidential client an expiry on its first token request after
+// upgrade. EXPIRE on a missing key is a no-op, so a client whose row has already been
+// evicted (or a non-persisted CIMD client) is safely ignored.
 func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client) error {
-	if client == nil || !client.IsPublic() {
+	if client == nil || !registration.DCRIssued(client) {
 		return nil
 	}
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
-	return s.client.Expire(ctx, key, DefaultPublicClientTTL).Err()
+	return s.client.Expire(ctx, key, DefaultDCRClientTTL).Err()
 }
 
 // ClientAssertionJWTValid returns an error if the JTI is known.
@@ -905,6 +1042,18 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 	}
 
 	return nil
+}
+
+// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
+// coordination of a logical upstream-token row.
+func (s *RedisStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
+	if sessionID == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return "", fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+	return upstreamTokenRowID(redisUpstreamKey(s.keyPrefix, sessionID, providerName)), nil
 }
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.

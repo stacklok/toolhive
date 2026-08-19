@@ -111,9 +111,10 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		GrantTypesSupported: []string{
 			string(fosite.GrantTypeAuthorizationCode),
 			string(fosite.GrantTypeRefreshToken),
+			sharedobauth.GrantTypeTokenExchange,
 		},
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: []string{sharedobauth.TokenEndpointAuthMethodNone},
+		TokenEndpointAuthMethodsSupported: h.tokenEndpointAuthMethodsSupported(),
 
 		// ClientIDMetadataDocumentSupported is defined in the CIMD draft as an
 		// OAuth AS metadata field (RFC 8414), not in OIDC Discovery 1.0. It is
@@ -122,6 +123,23 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		// CIMD. Spec-compliant OIDC consumers silently ignore unknown fields.
 		ClientIDMetadataDocumentSupported: h.config.CIMDEnabled,
 	}
+}
+
+// tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
+// list for discovery, derived from config. "none" is always first — the public-client
+// default. When confidential DCR is enabled or static delegate clients are configured,
+// the two client_secret_* methods are appended. Static clients need these methods even
+// though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
+// "none"-first is a readability convention, not a security control.
+func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
+	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
+	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
+		methods = append(methods,
+			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
+			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+		)
+	}
+	return methods
 }
 
 // OAuthDiscoveryHandler handles GET /.well-known/oauth-authorization-server requests.

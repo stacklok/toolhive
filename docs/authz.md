@@ -192,8 +192,16 @@ In the context of MCP servers, the following entities are used:
   - Examples:
     - `Tool::"weather"`: The weather tool
     - `Prompt::"greeting"`: The greeting prompt
-    - `Resource::"data"`: The data resource
+    - `Resource::"data"`: A short resource name
+    - `Resource::"file:///etc/passwd"`: An MCP resource URI (exact URI is the Cedar entity ID)
     - `FeatureType::"tool"`: The tool feature type (used for list operations)
+
+  For `read_resource`, the Cedar entity ID is the **exact resource URI** (for example
+  `Resource::"file:///ok"` or `Resource::"mcp://srv/config:admin"`). Do not rewrite
+  characters such as `/`, `:`, or `?` into underscores; policies must name the URI as
+  the client and server see it. In Cedar source the ID is a double-quoted string
+  literal, so almost every URI character is ordinary, but `"` and `\` must be escaped
+  (for example `Resource::"file://C:\\share\\data"`).
 
 #### Example policies
 
@@ -221,7 +229,17 @@ This policy allows any client to get the greeting prompt.
 permit(principal, action == Action::"read_resource", resource == Resource::"data");
 ```
 
-This policy allows any client to read the data resource.
+This policy allows any client to read the resource whose entity ID is `data`.
+
+For URI-shaped MCP resources, name the exact URI:
+
+```plain
+permit(
+  principal,
+  action == Action::"read_resource",
+  resource == Resource::"file:///etc/passwd"
+);
+```
 
 ##### List operations
 

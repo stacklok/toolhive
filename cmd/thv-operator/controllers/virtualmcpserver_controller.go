@@ -167,6 +167,68 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
 
+// handleInvalidEmbeddedAuthServerConfig persists a terminal status for invalid
+// inline auth server configuration. It returns handled=false for transient errors.
+func (r *VirtualMCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	err error,
+) (handled bool, retErr error) {
+	var invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError
+	if !stderrors.As(err, &invalidConfigErr) {
+		return false, nil
+	}
+
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	message := fmt.Sprintf("Failed to build configuration: %s", err)
+	statusManager.SetMessage(message)
+	statusManager.SetReadyCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		err.Error(),
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func (r *VirtualMCPServerReconciler) reconcileResources(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	statusManager virtualmcpserverstatus.StatusManager,
+) (ctrl.Result, bool, error) {
+	result, err := r.ensureAllResources(ctx, vmcp, telemetryCfg, statusManager)
+	if err != nil {
+		if handled, statusErr := r.handleInvalidEmbeddedAuthServerConfig(ctx, vmcp, statusManager, err); handled {
+			if statusErr != nil {
+				log.FromContext(ctx).Error(statusErr, "Failed to apply status updates after invalid embedded auth server configuration")
+			}
+			return ctrl.Result{}, true, statusErr
+		}
+
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			log.FromContext(ctx).Error(applyErr, "Failed to apply status updates after resource reconciliation error")
+		}
+		return ctrl.Result{}, true, err
+	}
+	if result.RequeueAfter > 0 {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			log.FromContext(ctx).Error(applyErr, "Failed to apply status updates before requeue")
+		}
+		return result, true, nil
+	}
+	return ctrl.Result{}, false, nil
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -209,19 +271,8 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Ensure all resources
-	if result, err := r.ensureAllResources(ctx, vmcp, telemetryCfg, statusManager); err != nil {
-		// Apply status changes before returning error
-		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates after resource reconciliation error")
-		}
-		return ctrl.Result{}, err
-	} else if result.RequeueAfter > 0 {
-		// Apply status changes before returning requeue (e.g., waiting for EmbeddingServer)
-		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates before requeue")
-		}
-		return result, nil
+	if result, done, err := r.reconcileResources(ctx, vmcp, telemetryCfg, statusManager); done {
+		return result, err
 	}
 
 	// Backend discovery and health reporting is now delegated to the vMCP runtime (StatusReporter).
@@ -531,6 +582,19 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			statusManager.SetObservedGeneration(vmcp.Generation)
 			return stderrors.New(message)
 		}
+	}
+
+	if err := cfg.ValidateConfidentialClientTransport(); err != nil {
+		message := fmt.Sprintf("spec.authServerConfig: %v", err)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return stderrors.New(message)
 	}
 
 	if len(cfg.UpstreamProviders) == 0 {

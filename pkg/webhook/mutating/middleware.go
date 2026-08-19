@@ -130,8 +130,9 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 			}
 
 			// A mutating webhook rewrote the body, so the parse cached by ParsingMiddleware
-			// now describes a request the backend will not execute. Refresh it before any
-			// downstream consumer (authorization, audit, telemetry) reads it.
+			// now describes a request the backend will not execute. Refresh it for downstream
+			// consumers and publish it through the holder so outer audit and telemetry
+			// wrappers observe the final request after the inner chain returns.
 			if !bytes.Equal(bodyBytes, mutatedBody) {
 				republished, err := mcp.RepublishParsedMCPRequest(r, mutatedBody)
 				if err != nil {

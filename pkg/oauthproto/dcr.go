@@ -122,8 +122,15 @@ type DynamicClientRegistrationResponse struct {
 	ClientSecret string `json:"client_secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// Optional fields that may be returned
-	ClientIDIssuedAt        int64  `json:"client_id_issued_at,omitempty"`
-	ClientSecretExpiresAt   int64  `json:"client_secret_expires_at,omitempty"`
+	ClientIDIssuedAt int64 `json:"client_id_issued_at,omitempty"`
+	// ClientSecretExpiresAt is a pointer so the key is present (with value 0,
+	// "does not expire") exactly when client_secret is issued and absent
+	// otherwise: RFC 7591 §3.2.1 requires the key on any response carrying a
+	// secret, and 0 is the value this server legitimately returns for a
+	// confidential client — an int64 with omitempty would silently drop
+	// exactly that case, while a plain int64 would emit the key on public
+	// registrations that carry no secret.
+	ClientSecretExpiresAt   *int64 `json:"client_secret_expires_at,omitempty"`
 	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
 

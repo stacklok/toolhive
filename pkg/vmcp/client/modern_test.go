@@ -166,34 +166,70 @@ func TestModernCall_Decode(t *testing.T) {
 	assert.Equal(t, []string{"2026-07-28"}, out.SupportedVersions)
 }
 
-// TestModernCall_SSEResponse verifies the dual-body reader handles a
-// text/event-stream response, ignoring interleaved notifications and returning
+// TestModernCall_SSEResponse verifies the dual-body reader handles
+// text/event-stream responses, ignoring interleaved notifications and returning
 // the final matching JSON-RPC response.
 func TestModernCall_SSEResponse(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Echo the request's JSON-RPC id: modernCall's SSE reader matches the
-		// response frame by id (unlike the JSON path), and the id comes from a
-		// shared counter, so it cannot be hardcoded.
-		var req struct {
-			ID json.RawMessage `json:"id"`
-		}
-		body, _ := io.ReadAll(r.Body)
-		require.NoError(t, json.Unmarshal(body, &req))
+	tests := []struct {
+		name       string
+		writeEvent func(t *testing.T, w http.ResponseWriter, id json.RawMessage)
+	}{
+		{
+			name: "single-line response after notification",
+			writeEvent: func(_ *testing.T, w http.ResponseWriter, id json.RawMessage) {
+				_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n"))
+				_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":" + string(id) +
+					",\"result\":{\"resultType\":\"complete\",\"ok\":true}}\n\n"))
+			},
+		},
+		{
+			name: "multi-line data response",
+			writeEvent: func(_ *testing.T, w http.ResponseWriter, id json.RawMessage) {
+				_, _ = w.Write([]byte("event: message\n"))
+				_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":" + string(id) + ",\n"))
+				_, _ = w.Write([]byte("data: \"result\":{\"resultType\":\"complete\",\"ok\":true}}\n\n"))
+			},
+		},
+		{
+			name: "CRLF response without trailing blank line",
+			writeEvent: func(_ *testing.T, w http.ResponseWriter, id json.RawMessage) {
+				_, _ = w.Write([]byte("event: message\r\n"))
+				_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\r\n\r\n"))
+				_, _ = w.Write([]byte("event: message\r\n"))
+				_, _ = w.Write([]byte("data:{\"jsonrpc\":\"2.0\",\"id\":" + string(id) +
+					",\"result\":{\"resultType\":\"complete\",\"ok\":true}}"))
+			},
+		},
+	}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		// A progress notification (has "method", no id match) then the response.
-		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":" + string(req.ID) +
-			",\"result\":{\"resultType\":\"complete\",\"ok\":true}}\n\n"))
-	}))
-	t.Cleanup(srv.Close)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	var out map[string]any
-	require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out, "", nil))
-	assert.Equal(t, "complete", out["resultType"])
-	assert.Equal(t, true, out["ok"])
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Echo the request's JSON-RPC id: modernCall's SSE reader matches the
+				// response frame by id (unlike the JSON path), and the id comes from a
+				// shared counter, so it cannot be hardcoded.
+				var req struct {
+					ID json.RawMessage `json:"id"`
+				}
+				body, _ := io.ReadAll(r.Body)
+				require.NoError(t, json.Unmarshal(body, &req))
+
+				w.Header().Set("Content-Type", "text/event-stream")
+				tt.writeEvent(t, w, req.ID)
+			}))
+			t.Cleanup(srv.Close)
+
+			var out map[string]any
+			require.NoError(t, modernCall(context.Background(), srv.Client(), srv.URL, "server/discover", nil, "", nil, &out, "", nil))
+			assert.Equal(t, "complete", out["resultType"])
+			assert.Equal(t, true, out["ok"])
+		})
+	}
 }
 
 // TestModernCall_LogLevelMeta verifies the logLevel argument is overlaid onto

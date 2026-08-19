@@ -25,9 +25,6 @@ import (
 // the lock file are reported (or removed with Prune). Check performs the
 // same reconciliation read-only: nothing is installed, written, or removed.
 func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
-	if !skills.LockFileFeatureEnabled() {
-		return nil, errExperimentalLockFeature
-	}
 
 	_, projectRoot, err := normalizeProjectRoot(skills.ScopeProject, opts.ProjectRoot)
 	if err != nil {
@@ -67,13 +64,6 @@ func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Sy
 
 	return result, nil
 }
-
-// errExperimentalLockFeature is returned by Sync/Upgrade while the lock file
-// feature is behind its rollout gate (skills.LockFileFeatureEnabled).
-var errExperimentalLockFeature = httperr.WithCode(
-	fmt.Errorf("skills lock file support is experimental; set %s=true to use it", skills.LockFileEnvVar),
-	http.StatusForbidden,
-)
 
 // syncLockedEntry reconciles one lock file entry against installed state,
 // appending its outcome to result. Missing (dbOK false) and drifted (digest

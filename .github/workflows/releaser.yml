@@ -25,17 +25,24 @@ on:
   release:
     types: [published]
 
+# Read-only by default. The jobs that need to write — release-binaries and the
+# reusable workflows this calls — already declare their own permissions, which
+# replace this rather than extend it, so they are unaffected.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
 
   verify-release:
     name: Verify Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Verify tag matches VERSION file
         run: |
@@ -67,6 +74,8 @@ jobs:
   compute-build-flags:
     name: Compute Build Flags
     runs-on: ubuntu-slim
+    permissions:
+      contents: read
     outputs:
       commit-date: ${{ steps.ldflags.outputs.commit-date }}
       commit: ${{ steps.ldflags.outputs.commit }}
@@ -77,6 +86,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: ldflags
         run: |
           echo "commit=$GITHUB_SHA" >> $GITHUB_OUTPUT
@@ -98,6 +108,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -176,11 +187,15 @@ jobs:
       - name: Remove existing release assets (allows re-runs)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bound to the environment rather than interpolated: a git ref name
+          # may contain ';', '$', backticks and '|', and this is a command
+          # substitution.
+          TAG: ${{ github.ref_name }}
         run: |
           # Delete existing assets so GoReleaser can re-upload when re-running a failed job
           set +e
-          for name in $(gh release view "${{ github.ref_name }}" --json assets --jq '.assets[].name' 2>/dev/null); do
-            gh release delete-asset "${{ github.ref_name }}" "$name" -y 2>/dev/null || true
+          for name in $(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null); do
+            gh release delete-asset "$TAG" "$name" -y 2>/dev/null || true
           done
           set -e
 
@@ -192,6 +207,27 @@ jobs:
           private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
           owner: stacklok
           repositories: homebrew-tap
+          # Already limited to one repository by the two lines above; this
+          # limits it to one permission as well. GoReleaser commits the formula
+          # straight to the tap's default branch — the brews block configures no
+          # pull request — so contents is all it uses.
+          permission-contents: write
+
+      # Gates the notarize.macos pipe in .goreleaser.yaml, and warns when the
+      # signing secrets are absent so unsigned releases are visible in the log.
+      - name: Determine macOS signing configuration
+        id: macos-signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APPLE_CERTIFICATE" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Apple signing credentials present — darwin binaries will be Developer ID signed"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=macOS binaries unsigned::APPLE_CERTIFICATE is not configured, so the darwin thv binaries ship ad-hoc signed with no Team ID. See issue #5862."
+          fi
 
       - name: Run GoReleaser
         id: run-goreleaser
@@ -208,6 +244,12 @@ jobs:
           COMMIT: ${{ needs.compute-build-flags.outputs.commit }}
           COMMIT_DATE: ${{ needs.compute-build-flags.outputs.commit-date }}
           TREE_STATE: ${{ needs.compute-build-flags.outputs.tree-state }}
+          # macOS signing, consumed by the notarize.macos pipe in
+          # .goreleaser.yaml. Same Developer ID cert toolhive-studio uses; no
+          # keychain needed, since quill reads the .p12 directly.
+          MACOS_SIGN_ENABLED: ${{ steps.macos-signing.outputs.enabled }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Generate subject
         id: hash

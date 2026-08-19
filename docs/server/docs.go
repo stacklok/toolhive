@@ -356,6 +356,39 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig": {
+                "properties": {
+                    "audiences": {
+                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth client_id this client presents at the token endpoint.",
+                        "type": "string"
+                    },
+                    "client_secret_env_var": {
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+                        "type": "string"
+                    },
+                    "client_secret_file": {
+                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig": {
                 "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
                 "properties": {
@@ -498,6 +531,10 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
+                    "allow_confidential_client_registration": {
+                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
+                        "type": "boolean"
+                    },
                     "allowed_audiences": {
                         "description": "AllowedAudiences is the list of valid resource URIs that tokens can be issued for.\nPer RFC 8707, the \"resource\" parameter in authorization and token requests is\nvalidated against this list. Required for MCP compliance.",
                         "items": {
@@ -521,6 +558,14 @@ const docTemplate = `{
                     "cimd": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
                     },
+                    "delegate_clients": {
+                        "description": "DelegateClients declares confidential OAuth clients to register at\nauthorization-server startup, including clients intended for RFC 8693\ntoken exchange.\n\nIndependent of AllowConfidentialClientRegistration: declaring a client\nhere does not require or enable self-service confidential DCR, and\nsetting that flag does not declare or enable any client here. They\ngovern different endpoints — this field is static configuration the\noperator controls directly, while the flag is admission policy for the\nunauthenticated /oauth/register endpoint.\n\nSee DelegateClientRunConfig for the per-client field reference.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DelegateClientRunConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "delegation_token_lifespan": {
                         "description": "DelegationTokenLifespan is the maximum lifetime for delegated tokens issued\nvia RFC 8693 token exchange. Specified as a Go duration string (e.g., \"15m\").\nIf empty, defaults to 15 minutes.",
                         "type": "string"
@@ -529,6 +574,14 @@ const docTemplate = `{
                         "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
                         "type": "boolean"
                     },
+                    "force_confidential_redirect_uris": {
+                        "description": "ForceConfidentialRedirectURIs lists redirect URIs that must be registered\nas confidential clients regardless of the token_endpoint_auth_method the\nDCR request declares. A registration whose redirect_uris contains an\nEXACT match for one of these entries is issued a real client_secret and\nreported back as token_endpoint_auth_method \"client_secret_post\", even\nif the request said \"none\" or omitted the field.\n\nThis exists for MCP clients (Perplexity is the known case) that declare\nthemselves public (token_endpoint_auth_method: \"none\") per RFC 7591 but\nthen refuse to proceed because the response carries no client_secret —\na self-contradictory request no conformant server can satisfy as\nwritten. RFC 7591 §3.2.1 permits the server to substitute metadata, so\nthis takes such a client at its word that it wants a secret.\n\nExact matching is deliberate: it is not a way to obtain a usable\ncredential for another client. An attacker who registers with someone\nelse's callback URI is issued a secret for a client whose authorization\ncodes are delivered to that someone else's redirect endpoint, not to\nthe attacker — the secret is useless without also controlling the\ncallback.\n\nRequires AllowConfidentialClientRegistration; every entry must be a\nvalid https non-loopback URI (Validate rejects loopback entries — the\nsame restriction AllowConfidentialClientRegistration itself enforces\nexists so secrets do not land in distributed native apps, and this\noverride must not bypass it). Remove an entry once the client is fixed\nto handle \"none\" registrations correctly.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {
@@ -536,6 +589,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "insecure_allow_confidential_over_loopback_http": {
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients; the\nKubernetes CRD blocks this combination unconditionally only because CEL\ncannot express the loopback exception, not because delegate clients need\na stricter policy — see EmbeddedAuthServerConfig's doc comment.",
+                        "type": "boolean"
                     },
                     "insecure_allow_http": {
                         "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",
@@ -567,7 +624,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "trusted_issuers": {
-                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nPrerequisite: the token-exchange grant requires a confidential client,\nand no supported deployment path provisions one today (DCR and CIMD\nclients are both public-only, and there is no client-seeding field on\nthis RunConfig), so this grant is not yet usable end to end for\nself-issued or external subject tokens alike. Tracked in\nhttps://github.com/stacklok/toolhive/issues/6082.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
+                        "description": "TrustedIssuers lists external OIDC issuers whose tokens are accepted as\nsubject tokens during RFC 8693 token exchange. Empty (the default) means\nonly self-issued subject tokens are accepted.\n\nSee tokenexchange.TrustedIssuer for the per-issuer field reference, and\ndocs/arch/17-token-exchange-delegation.md for the trust model, consent\nsignals, and operator-facing constraints (audience/scope bounding,\nsubject namespace qualification, required client binding) that aren't\nvisible from the config shape alone.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.TrustedIssuer"
                         },
@@ -737,12 +794,20 @@ const docTemplate = `{
                         "description": "ActorClaim names the claim identifying the client that requested the\nsubject token from THIS EXTERNAL ISSUER (used by AllowedActors below).\nValues are in the external issuer's namespace, NOT ToolHive client\nIDs. Defaults to \"azp\"; use \"appid\" for Microsoft Entra v1, \"cid\" for\nOkta. The special value \"client_id\" reads ValidatedClaims.ClientID\ninstead of Extra (assignClaim routes it to that field) — it is still\nthe external token's client_id claim, not a ToolHive one.",
                         "type": "string"
                     },
+                    "actor_matcher": {
+                        "description": "ActorMatcher is an admin-authored CEL expression evaluated against the\ncomplete signature-verified JWT claims map as \"claims\". A true result\nauthorizes delegation alongside AllowedActors; a syntax or type error\nfails configuration validation. An expression that compiles but does\nnot return bool is NOT caught at that point, though — it compiles\nsuccessfully and is only rejected the first time it is evaluated\nagainst a real token, denying that token (and every one after it, since\nthe expression will never return bool). Any other runtime evaluation\nerror denies the token the same way.",
+                        "type": "string"
+                    },
+                    "allow_may_act": {
+                        "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors and ActorMatcher. It\ndoes not affect self-issued subject tokens. When enabled,\nAllowedDelegateClients must name specific ToolHive clients rather than\nuse the wildcard.",
+                        "type": "boolean"
+                    },
                     "allow_private_ips": {
                         "description": "AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS\nissuer to resolve to a private or loopback address. Use only when the\nissuer is hosted inside the same cluster and has no public endpoint.",
                         "type": "boolean"
                     },
                     "allowed_actors": {
-                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim; empty means only may_act-bearing tokens are\naccepted. By itself names no ToolHive client — see\nAllowedDelegateClients and docs/arch/17-token-exchange-delegation.md\n(\"Accepted limitations\" #1).",
+                        "description": "AllowedActors is the allowlist of ActorClaim values authorized to\nexchange a subject token from this issuer when it carries no\n\"may_act\" claim. ActorMatcher can additionally authorize a token by\nmatching its complete verified claims map; either signal is sufficient.\nWhen both are empty, only may_act-bearing tokens are accepted, and only\nif AllowMayAct is also true for this issuer. By itself names no\nToolHive client — see AllowedDelegateClients and\ndocs/arch/17-token-exchange-delegation.md (\"Accepted limitations\" #1).",
                         "items": {
                             "type": "string"
                         },
@@ -1009,6 +1074,10 @@ const docTemplate = `{
                     "installed_at": {
                         "description": "InstalledAt is the timestamp when the plugin was installed.",
                         "type": "string"
+                    },
+                    "managed": {
+                        "description": "Managed indicates this install is tracked in the project's\ntoolhive.lock.yaml plugins: key. Only ever true for project-scoped\ninstalls. No omitempty: false is an observable state (unmanaged),\nnot an absence.",
+                        "type": "boolean"
                     },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.PluginMetadata"
@@ -1649,6 +1718,7 @@ const docTemplate = `{
                     "lock-write-failed",
                     "signature-invalid",
                     "signer-mismatch",
+                    "provenance-field-mismatch",
                     "unsigned-rejected",
                     "unknown"
                 ],
@@ -1660,6 +1730,7 @@ const docTemplate = `{
                     "FailureReasonLockWriteFailed",
                     "FailureReasonSignatureInvalid",
                     "FailureReasonSignerMismatch",
+                    "FailureReasonProvenanceFieldMismatch",
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
@@ -1758,6 +1829,40 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo": {
+                "description": "Provenance is the signer identity the project's lock file records\nfor this skill, when project-scoped and lock-managed.",
+                "properties": {
+                    "cert_issuer": {
+                        "description": "CertIssuer is the OIDC issuer that authenticated the signer.",
+                        "type": "string"
+                    },
+                    "provisional": {
+                        "description": "Provisional marks provenance with a documented verification gap\n(git signatures until transparency-log validation lands).",
+                        "type": "boolean"
+                    },
+                    "repository_ref": {
+                        "description": "RepositoryRef is the git ref the signing workflow ran on, from Fulcio\ncertificate extension 1.3.6.1.4.1.57264.1.14. Empty means\nunconstrained, matching lock files written before the field existed.",
+                        "type": "string"
+                    },
+                    "repository_uri": {
+                        "description": "RepositoryURI is the source repository from the certificate\nextensions, when present.",
+                        "type": "string"
+                    },
+                    "runner_environment": {
+                        "description": "RunnerEnvironment is the runner class the signing workflow executed in\n(e.g. \"github-hosted\"), from Fulcio certificate extension\n1.3.6.1.4.1.57264.1.11. Empty means unconstrained.",
+                        "type": "string"
+                    },
+                    "signer_identity": {
+                        "description": "SignerIdentity is the certificate subject identity (workflow path for\nGitHub Actions certificates, SAN verbatim otherwise).",
+                        "type": "string"
+                    },
+                    "sigstore_url": {
+                        "description": "SigstoreURL is the Sigstore instance the signature chains to.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
@@ -1823,6 +1928,13 @@ const docTemplate = `{
                     },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo"
+                    },
+                    "unsigned": {
+                        "description": "Unsigned reports that the lock file records an explicit unsigned\nexception for this skill.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -3215,8 +3327,15 @@ const docTemplate = `{
             "pkg_api_v1.installSkillResponse": {
                 "description": "Response after successfully installing a skill",
                 "properties": {
+                    "provenance": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.ProvenanceInfo"
+                    },
                     "skill": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill"
+                    },
+                    "unsigned": {
+                        "description": "Whether the install was recorded as an explicit unsigned exception.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -3397,6 +3516,14 @@ const docTemplate = `{
             "pkg_api_v1.pushSkillRequest": {
                 "description": "Request to push a built skill artifact",
                 "properties": {
+                    "key": {
+                        "description": "Key is the path to a cosign private key used to sign the pushed\nartifact",
+                        "type": "string"
+                    },
+                    "no_sign": {
+                        "description": "NoSign pushes without signing",
+                        "type": "boolean"
+                    },
                     "reference": {
                         "description": "OCI reference to push",
                         "type": "string"
@@ -4869,7 +4996,7 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served at /metrics on a dedicated diagnostics port rather than on the\nmain transport port, so the endpoint can be restricted by port and is not routed\nalongside application traffic. The endpoint is unauthenticated either way.\nSee PrometheusPort and pkg/diagnostics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "endpoint": {
@@ -4898,6 +5025,10 @@ const docTemplate = `{
                     "metricsEnabled": {
                         "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
+                    },
+                    "prometheusPort": {
+                        "description": "PrometheusPort is the port the Prometheus /metrics endpoint is served on when\nEnablePrometheusMetricsPath is true. It is deliberately not the main transport port,\nso that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,\nnot on HTTP path, so a shared port makes \"allow MCP traffic, deny metrics scraping\"\nimpossible to express. The endpoint itself is unauthenticated, so restricting who can\nreach this port is how it is protected.\n\nZero selects the default diagnostics port (9464, the OpenTelemetry specification's\nPrometheus exporter default). If that port is taken the listener falls back to an\navailable one and logs the resolved address. Do not route this port publicly.\n+optional",
+                        "type": "integer"
                     },
                     "samplingRate": {
                         "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
@@ -8210,7 +8341,7 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "Create and start a new workload",
+                "description": "Create and start a new workload\nruntime_config is only accepted for protocol-scheme images\n(uvx://, npx://, go://); supplying it with an ordinary image\nreference or a remote url is rejected with 400.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -8575,7 +8706,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/edit": {
             "post": {
-                "description": "Update an existing workload configuration",
+                "description": "Update an existing workload configuration\nruntime_config on a non-protocol-scheme image is accepted only when it\nexactly matches the workload's persisted config and the image and url\nare unchanged (an inert echo, e.g. from a prior GET); otherwise it is\nrejected with 400.",
                 "parameters": [
                     {
                         "description": "Workload name",

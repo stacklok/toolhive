@@ -407,8 +407,9 @@ func readModernEnvelope(
 // with a Method) are not the response: when onNotification is non-nil their
 // method and params are handed to it (so a caller can relay the
 // notifications/message and notifications/progress the request's logLevel /
-// progressToken elicited); when nil they are dropped as before. A stream that
-// ends without a matching response yields errWrongEra.
+// progressToken elicited); when nil they are dropped as before. Consecutive
+// data: lines in one SSE event are joined with "\n" per the SSE spec before JSON
+// decoding. A stream that ends without a matching response yields errWrongEra.
 func readModernSSE(
 	body io.Reader, wantID int64, onNotification func(method string, params json.RawMessage),
 ) (json.RawMessage, *modernRPCError, error) {
@@ -417,35 +418,65 @@ func readModernSSE(
 	// data: event up to that size decodes; the outer io.LimitReader already bounds
 	// the total, so this cannot over-allocate.
 	sc.Buffer(make([]byte, 0, 64*1024), maxResponseSize)
+
+	var data [][]byte
+	flush := func() (json.RawMessage, *modernRPCError, bool, error) {
+		result, rpcErr, matched, err := readModernSSEEvent(data, wantID, onNotification)
+		data = nil
+		return result, rpcErr, matched, err
+	}
+
 	for sc.Scan() {
-		data, ok := strings.CutPrefix(sc.Text(), "data:")
-		if !ok {
-			continue
-		}
-		var env modernRPCEnvelope
-		if json.Unmarshal([]byte(strings.TrimSpace(data)), &env) != nil {
-			continue
-		}
-		if env.Method != "" {
-			// server->client request/notification; not our response. Relay it when a
-			// listener is bound, otherwise drop it (historical behavior).
-			if onNotification != nil {
-				onNotification(env.Method, env.Params)
+		line := sc.Text()
+		if line == "" {
+			result, rpcErr, matched, err := flush()
+			if matched || err != nil {
+				return result, rpcErr, err
 			}
 			continue
 		}
-		if !modernIDMatches(env.ID, wantID) {
+		value, ok := strings.CutPrefix(line, "data:")
+		if !ok {
 			continue
 		}
-		if env.Error == nil && len(env.Result) == 0 {
-			return nil, nil, errWrongEra
-		}
-		return env.Result, env.Error, nil
+		data = append(data, []byte(strings.TrimPrefix(value, " ")))
 	}
 	if err := sc.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%w: reading SSE stream: %w", errModernTransient, err)
 	}
+	result, rpcErr, matched, err := flush()
+	if matched || err != nil {
+		return result, rpcErr, err
+	}
 	return nil, nil, errWrongEra
+}
+
+func readModernSSEEvent(
+	data [][]byte, wantID int64, onNotification func(method string, params json.RawMessage),
+) (json.RawMessage, *modernRPCError, bool, error) {
+	if len(data) == 0 {
+		return nil, nil, false, nil
+	}
+
+	var env modernRPCEnvelope
+	if json.Unmarshal(bytes.Join(data, []byte("\n")), &env) != nil {
+		return nil, nil, false, nil
+	}
+	if env.Method != "" {
+		// Server->client request/notification; not our response. Relay it when a
+		// listener is bound, otherwise drop it (historical behavior).
+		if onNotification != nil {
+			onNotification(env.Method, env.Params)
+		}
+		return nil, nil, false, nil
+	}
+	if !modernIDMatches(env.ID, wantID) {
+		return nil, nil, false, nil
+	}
+	if env.Error == nil && len(env.Result) == 0 {
+		return nil, nil, true, errWrongEra
+	}
+	return env.Result, env.Error, true, nil
 }
 
 // modernIDMatches reports whether the raw JSON id equals wantID.

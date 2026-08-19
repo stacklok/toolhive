@@ -93,6 +93,15 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 
 	rawResponse := rfw.buffer.Bytes()
 
+	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
+	// before parsing, so strip it here too. Otherwise a BOM-prefixed list
+	// response fails every decode and sniff below (Go's encoding/json treats
+	// EF BB BF as a syntax error, not whitespace) and passes through
+	// unfiltered. This mirrors the SSE-path fix in processSSEResponse, and
+	// doing it once here covers the JSON decode path as well as both the
+	// JSON and SSE smuggled-result sniffs in the default branch below.
+	rawResponse = bytes.TrimPrefix(rawResponse, mcpparser.UTF8BOM)
+
 	// Skip filtering for empty responses (common in SSE scenarios where actual data comes via SSE stream)
 	if len(rawResponse) == 0 {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -143,6 +152,10 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
 		}
+		// The leading BOM was removed above, so the backend's Content-Length
+		// is now three bytes too large even though this fallback doesn't filter
+		// the body. Clear it before writing to avoid a truncated response.
+		rfw.ResponseWriter.Header().Del("Content-Length")
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
@@ -158,9 +171,19 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 // implicit WriteHeader(200), sending headers to the wire. If the stale
 // Content-Length is still present at that point, it's too late to remove it in
 // FlushAndFilter().
+//
+// Commit the recorded status before the first flush. Without this, the implicit
+// 200 would also rewrite a non-2xx backend status (e.g. 500) to 200 on the
+// wire, defeating the non-2xx passthrough precondition in FlushAndFilter(): a
+// fetch-based MCP client gates list delivery on response.ok, so an unfiltered
+// list body would be delivered under a fabricated 200. Committing here keeps
+// the wire status identical to the recorded backend status; SSE (statusCode
+// 200) is unaffected and later WriteHeader calls in FlushAndFilter become
+// no-ops instead of corrupting the status.
 func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
 		rfw.ResponseWriter.Header().Del("Content-Length")
+		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
 	}
 }
@@ -255,7 +278,7 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	// before parsing lines, so strip it here too: otherwise the first line's
 	// "data:" prefix wouldn't match and the event would pass through
 	// unfiltered.
-	rawResponse = bytes.TrimPrefix(rawResponse, []byte("\xEF\xBB\xBF"))
+	rawResponse = bytes.TrimPrefix(rawResponse, mcpparser.UTF8BOM)
 
 	var outputLines []sseLine
 	var event []sseLine

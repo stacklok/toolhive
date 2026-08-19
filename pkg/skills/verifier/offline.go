@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/sigstore/sigstore-go/pkg/verify"
+
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/signer"
@@ -26,9 +28,9 @@ func (*Default) VerifyBundleOffline(bundleBytes []byte, digest string, expected 
 		// reinstalling (or re-adopting) is the fix.
 		return fmt.Errorf("%w: no stored bundle to verify — reinstall to restore it", ErrSignatureInvalid)
 	}
-	_, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(expected))
+	vr, err := coreverifier.VerifyBundleOffline(bundleBytes, digest, expectedIdentity(expected))
 	if err == nil {
-		return nil
+		return checkStoredBundlePins(vr, expected)
 	}
 	if expected != nil && !errors.Is(err, coreverifier.ErrVerificationFailed) {
 		// Malformed input never reaches verification; don't reclassify.
@@ -79,9 +81,26 @@ func (*Default) ResultFromBundle(bundleBytes []byte, digest string) (*Result, er
 	if err != nil {
 		return nil, wrapInvalid(err)
 	}
-	identity, err := coreverifier.IdentityFromResult(vr)
+	observed, err := observedFromResult(vr)
 	if err != nil {
 		return nil, wrapInvalid(err)
 	}
-	return resultFromCore(identity, bundleBytes), nil
+	return resultFromCore(observed, bundleBytes), nil
+}
+
+// checkStoredBundlePins enforces the pinned ref and runner class against a
+// stored bundle that just passed offline verification. The lock file's
+// provenance and the bundle backing it are stored separately (lock file
+// versus install record), so a bundle whose certificate no longer carries
+// the recorded ref is exactly the substitution this re-verification exists
+// to catch.
+func checkStoredBundlePins(vr *verify.VerificationResult, expected *lockfile.Provenance) error {
+	if expected == nil || (expected.RepositoryRef == "" && expected.RunnerEnvironment == "") {
+		return nil
+	}
+	observed, err := observedFromResult(vr)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrSignatureInvalid, err.Error())
+	}
+	return checkPinnedCertificateFields(observed, expected)
 }

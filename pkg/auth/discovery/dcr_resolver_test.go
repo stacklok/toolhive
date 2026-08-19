@@ -135,7 +135,7 @@ func newDCRDiscoveryServer(t *testing.T, cfg dcrTestServerConfig) *httptest.Serv
 		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
 			ClientID:                "cli-registered-client",
-			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			ClientSecretExpiresAt:   &cfg.clientSecretExpiresAt,
 			RegistrationAccessToken: cfg.registrationAccessToken,
 			RegistrationClientURI:   cfg.registrationClientURI,
 			TokenEndpointAuthMethod: "none",
@@ -458,8 +458,11 @@ func TestHandleDynamicRegistration_PreDiscoveredPathNonRootIssuer(t *testing.T) 
 	// getDiscoveryDocument short-circuits without a network call and returns a
 	// synthesised document with empty code_challenge_methods_supported.
 	config := &OAuthFlowConfig{
-		Scopes:               []string{"openid", "profile"},
-		CallbackPort:         8765,
+		Scopes:       []string{"openid", "profile"},
+		CallbackPort: 8765,
+		// Every endpoint here is operator-configured, so the metadata re-fetch
+		// runs under the host-scoped policy that exempts loopback.
+		IssuerTrusted:        true,
 		RegistrationEndpoint: server.URL + "/oauth/register",
 		AuthorizeURL:         server.URL + "/oauth/authorize",
 		TokenURL:             server.URL + "/oauth/token",
@@ -525,6 +528,7 @@ func TestHandleDynamicRegistration_SynthesisesEndpointWhenMetadataOmitsIt(t *tes
 	config := &OAuthFlowConfig{
 		Scopes:               []string{"openid", "profile"},
 		CallbackPort:         8765,
+		IssuerTrusted:        true,
 		RegistrationEndpoint: server.URL + "/register",
 		AuthorizeURL:         server.URL + "/authorize",
 		TokenURL:             server.URL + "/token",

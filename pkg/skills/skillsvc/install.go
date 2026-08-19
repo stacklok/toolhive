@@ -217,7 +217,7 @@ func (s *service) registerSkillInGroup(ctx context.Context, groupName string, sk
 
 // installAndRegister registers the just-installed skill in the target group
 // and, for project-scope installs with the lock file feature enabled (see
-// skills.LockFileFeatureEnabled), records it — and any toolhive.requires
+// records it — and any toolhive.requires
 // dependencies — in the project's toolhive.lock.yaml. If group registration
 // or the lock write fails, the DB record and lock entry are rolled back to
 // their pre-install state: restored when this call updated a pre-existing
@@ -233,7 +233,11 @@ func (s *service) installAndRegister(
 	skillName string,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
-	lockScoped := scope == skills.ScopeProject && skills.LockFileFeatureEnabled()
+	lockScoped := scope == skills.ScopeProject
+	// Surface the verification decision on the result so callers can show
+	// what trust state this install recorded.
+	result.Provenance = opts.Provenance
+	result.Unsigned = opts.Unsigned
 
 	// Snapshot the prior lock entry before anything below can write one, so
 	// rollback can reinstate it (RequiredBy links from other parents

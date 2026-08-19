@@ -555,6 +555,16 @@ func sessionFactoryOptions(
 	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
 		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
 	}
+	// Bound client-facing initialize to the same budget as a health probe
+	// so Ready + /health cannot stay green while initialize hangs past
+	// typical gateway timeouts (#6345). Unset keeps the factory default (10s).
+	if cfg != nil &&
+		cfg.Operational != nil &&
+		cfg.Operational.FailureHandling != nil &&
+		cfg.Operational.FailureHandling.HealthCheckTimeout > 0 {
+		opts = append(opts, vmcpsession.WithSessionInitTimeout(
+			time.Duration(cfg.Operational.FailureHandling.HealthCheckTimeout)))
+	}
 	if filter := listChangedFilter(cfg); filter != nil {
 		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
 	}

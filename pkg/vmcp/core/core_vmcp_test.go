@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -66,6 +67,10 @@ func baseConfig(t *testing.T) (*Config, *coreMocks) {
 
 func requireNoOpenFDForPath(t *testing.T, path string) {
 	t.Helper()
+
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd is Linux-only; fd-release is covered on Linux CI")
+	}
 
 	entries, err := os.ReadDir("/proc/self/fd")
 	require.NoError(t, err)

@@ -177,9 +177,10 @@ type TrustedIssuer struct {
 	AllowedDelegateClients []string `json:"allowed_delegate_clients,omitempty" yaml:"allowed_delegate_clients,omitempty"`
 	// AllowMayAct permits this external issuer's may_act claim to authorize
 	// delegation. It defaults to false; external issuers must be opted in
-	// explicitly because may_act bypasses AllowedActors. It does not affect
-	// self-issued subject tokens. When enabled, AllowedDelegateClients must
-	// name specific ToolHive clients rather than use the wildcard.
+	// explicitly because may_act bypasses AllowedActors and ActorMatcher. It
+	// does not affect self-issued subject tokens. When enabled,
+	// AllowedDelegateClients must name specific ToolHive clients rather than
+	// use the wildcard.
 	AllowMayAct bool `json:"allow_may_act,omitempty" yaml:"allow_may_act,omitempty"`
 }
 

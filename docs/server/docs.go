@@ -799,7 +799,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "allow_may_act": {
-                        "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors. It does not affect\nself-issued subject tokens. When enabled, AllowedDelegateClients must\nname specific ToolHive clients rather than use the wildcard.",
+                        "description": "AllowMayAct permits this external issuer's may_act claim to authorize\ndelegation. It defaults to false; external issuers must be opted in\nexplicitly because may_act bypasses AllowedActors and ActorMatcher. It\ndoes not affect self-issued subject tokens. When enabled,\nAllowedDelegateClients must name specific ToolHive clients rather than\nuse the wildcard.",
                         "type": "boolean"
                     },
                     "allow_private_ips": {

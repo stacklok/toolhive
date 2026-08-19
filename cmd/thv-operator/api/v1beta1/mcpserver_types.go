@@ -861,6 +861,23 @@ type PrometheusConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+	// transport port, in addition to the dedicated diagnostics port. It exists to
+	// give deployments a migration window: while true, an existing scrape
+	// configuration aimed at the transport port keeps working, so a scraper can be
+	// moved to the diagnostics port and verified before the old location goes away.
+	//
+	// Leave unset to follow the current default, which is true during the migration
+	// window and becomes false when it closes. Setting it explicitly opts out of
+	// that change: an explicit value is honoured before and after the cutover.
+	//
+	// Deliberately has no default marker. A default would be materialised into the
+	// object at admission, so every MCPTelemetryConfig created during the window
+	// would carry the window's value permanently and the cutover would not move it.
+	//
+	// +optional
+	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty"`
 }
 
 // OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration

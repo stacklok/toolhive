@@ -50,9 +50,13 @@ func NormalizeMCPTelemetryConfig(
 		}
 	}
 
-	// Map Prometheus configuration
+	// Map Prometheus configuration. MetricsOnTransportPort is copied as a pointer so
+	// "unset" survives the conversion: the runtime side resolves it against the
+	// current default at startup, which is what lets the eventual cutover move
+	// workloads that already exist.
 	if spec.Prometheus != nil {
 		config.EnablePrometheusMetricsPath = spec.Prometheus.Enabled
+		config.MetricsOnTransportPort = spec.Prometheus.MetricsOnTransportPort
 	}
 
 	// Apply per-server service name override from the TelemetryConfigRef

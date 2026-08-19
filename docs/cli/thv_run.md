@@ -150,6 +150,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-headers stringArray                    OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
       --otel-insecure                               Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default false)
       --otel-metrics-enabled                        Enable OTLP metrics export (when OTLP endpoint is configured) (default true)
+      --otel-metrics-on-transport-port              Also serve Prometheus /metrics on the transport port, alongside the diagnostics port. Deprecated: this is a migration aid and the default will become false. Move scrapers to the diagnostics port and set this to false to verify. (default true)
       --otel-sampling-rate float                    OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
       --otel-service-name string                    OpenTelemetry service name (defaults to thv-<workload-name>)
       --otel-tracing-enabled                        Enable distributed tracing (when OTLP endpoint is configured) (default true)

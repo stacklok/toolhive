@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
@@ -685,4 +686,142 @@ func TestToken_Interactive_SkipBrowser_ForwardedToFlow(t *testing.T) {
 			assert.Equal(t, tc.skipBrowser, gotSkip, "SkipBrowser option must be forwarded to flow.Start verbatim")
 		})
 	}
+}
+
+// ── A rejected stored credential reports as FallbackErr ──────────────────────
+
+// fakeOIDCServerRejecting serves discovery normally but answers every token
+// exchange with an RFC 6749 error response, the shape an IdP returns once a
+// refresh token has expired, been revoked, or been rotated out from under the
+// caller. status and errorCode control the response.
+func fakeOIDCServerRejecting(t *testing.T, status int, errorCode string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+
+	oidcHandler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w,
+			`{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q,"response_types_supported":["code"]}`,
+			srv.URL, srv.URL+"/auth", srv.URL+"/token", srv.URL+"/jwks")
+	}
+	mux.HandleFunc("/.well-known/openid-configuration", oidcHandler)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", oidcHandler)
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if errorCode == "" {
+			// A non-spec-compliant body, as a WAF or reverse proxy would return.
+			_, _ = fmt.Fprint(w, `<html>blocked</html>`)
+			return
+		}
+		_, _ = fmt.Fprintf(w,
+			`{"error":%q,"error_description":"the refresh token is invalid or has expired","secret":"rt-should-not-leak"}`,
+			errorCode)
+	})
+
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// storedRefreshTokenOnly wires a secrets mock that misses the access-token cache
+// and returns a stored refresh token for the base key.
+func storedRefreshTokenOnly(t *testing.T) *secretsmocks.MockProvider {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mock := secretsmocks.NewMockProvider(ctrl)
+	mock.EXPECT().
+		GetSecret(gomock.Any(), gomock.AssignableToTypeOf("")).
+		DoAndReturn(func(_ context.Context, key string) (string, error) {
+			if strings.HasSuffix(key, "_AT") {
+				return "", errors.New("not found")
+			}
+			return testRefreshToken, nil
+		}).AnyTimes()
+	mock.EXPECT().SetSecret(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	return mock
+}
+
+// A permanent token-endpoint verdict means the stored credential is dead and
+// only an interactive login can replace it. Callers keyed on FallbackErr to
+// render their re-login remediation must therefore see FallbackErr, not the raw
+// OAuth error, which reads like a transient provider fault.
+func TestToken_NonInteractive_PermanentVerdict_ReportsFallbackErr(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_grant")
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, errTestFallback,
+		"a rejected stored credential must report as FallbackErr so callers render the re-login remediation")
+}
+
+// The cause stays reachable underneath the sentinel so diagnostics can still
+// identify which verdict the IdP rendered.
+func TestToken_NonInteractive_PermanentVerdict_KeepsCauseReachable(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_client")
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
+	require.True(t, ok, "the underlying *oauth2.RetrieveError must stay reachable via errors.As")
+	assert.Equal(t, "invalid_client", retrieveErr.ErrorCode)
+	assert.Contains(t, err.Error(), "invalid_client", "the safe RFC 6749 code belongs in the message")
+}
+
+// An *oauth2.RetrieveError's own Error() embeds the raw token-endpoint response
+// body, which can echo back bearer material. The rendered message must carry
+// only the sentinel and the error code.
+func TestToken_NonInteractive_PermanentVerdict_MessageOmitsResponseBody(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeOIDCServerRejecting(t, http.StatusBadRequest, "invalid_grant")
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "rt-should-not-leak",
+		"the raw token-endpoint response body must never reach the rendered message")
+}
+
+// A 5xx is the IdP having a bad day, not a verdict on the credential. It must
+// surface verbatim so the caller can retry rather than telling the user to log
+// in again.
+func TestToken_NonInteractive_TransientVerdict_SurfacesVerbatim(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeOIDCServerRejecting(t, http.StatusServiceUnavailable, "temporarily_unavailable")
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, errTestFallback),
+		"a 5xx from the token endpoint is transient and must not be reported as a dead credential")
+}
+
+// A 4xx with no parseable OAuth error code is infrastructure (a WAF or CDN
+// page), not an OAuth verdict, so it must not be reported as a dead credential
+// either.
+func TestToken_NonInteractive_UnparseableRejection_SurfacesVerbatim(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeOIDCServerRejecting(t, http.StatusForbidden, "")
+	opts := optsWithFakeOIDC(srv, storedRefreshTokenOnly(t))
+
+	_, err := tokensource.New(opts).Token(context.Background())
+
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, errTestFallback),
+		"a 4xx without an OAuth error code is upstream infrastructure, not a credential verdict")
 }

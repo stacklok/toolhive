@@ -32,6 +32,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -160,7 +161,7 @@ func (t *OAuthTokenSource) Token(ctx context.Context) (string, error) {
 	// Tier 3: browser OIDC+PKCE flow — only in interactive mode.
 	if !t.opts.Interactive {
 		if lastErr != nil {
-			return "", lastErr
+			return "", t.classifyTerminalError(lastErr)
 		}
 		return "", t.opts.FallbackErr
 	}
@@ -174,6 +175,60 @@ func (t *OAuthTokenSource) Token(ctx context.Context) (string, error) {
 	t.cacheAccessToken(ctx, tok.AccessToken, tok.Expiry)
 	return tok.AccessToken, nil
 }
+
+// classifyTerminalError decides which error a non-interactive caller sees when
+// every cache tier has failed.
+//
+// A permanent token-endpoint verdict (invalid_grant, invalid_client) means the
+// OAuth server itself rejected the stored refresh token: retrying cannot fix
+// it, and only a fresh interactive login can. Returning the raw OAuth error
+// there is actively misleading, because callers that distinguish "you must log
+// in again" from "the provider is having a bad day" all key off FallbackErr,
+// and a dead credential is precisely the case that needs the re-login
+// remediation. So a permanent verdict is reported as FallbackErr with the cause
+// still reachable underneath; every other failure (5xx, 429, a WAF page, a
+// locked keyring) surfaces verbatim so the caller can retry or fix the real
+// problem.
+//
+// The stored credential is deliberately NOT deleted here. With an IdP that
+// rotates refresh tokens, a sibling process may have just written a newer token
+// under the same key, and the next Token() call re-reads the secrets provider;
+// deleting on a rejection would destroy that cross-process recovery.
+func (t *OAuthTokenSource) classifyTerminalError(lastErr error) error {
+	if t.opts.FallbackErr == nil || !oautherr.IsPermanentCredentialError(lastErr) {
+		return lastErr
+	}
+	return &credentialRejectedError{
+		fallback: t.opts.FallbackErr,
+		cause:    lastErr,
+		code:     oautherr.RetrieveErrorCode(lastErr),
+	}
+}
+
+// credentialRejectedError marks a non-interactive failure where the identity
+// provider rejected the stored credential. It wraps BOTH the caller's
+// FallbackErr (so errors.Is finds the re-login sentinel) and the underlying
+// cause (so errors.As can still reach the *oauth2.RetrieveError).
+//
+// Error() renders only the sentinel plus the RFC 6749 error code on purpose. An
+// *oauth2.RetrieveError's own Error() embeds the raw token-endpoint response
+// body, which can echo back bearer material, so it must never reach a log line
+// or a user-facing string.
+type credentialRejectedError struct {
+	fallback error
+	cause    error
+	code     string
+}
+
+func (e *credentialRejectedError) Error() string {
+	if e.code == "" {
+		return fmt.Sprintf("%s (the identity provider rejected the stored credential)", e.fallback)
+	}
+	return fmt.Sprintf("%s (the identity provider rejected the stored credential: %s)", e.fallback, e.code)
+}
+
+// Unwrap exposes both the sentinel and the cause to errors.Is / errors.As.
+func (e *credentialRejectedError) Unwrap() []error { return []error{e.fallback, e.cause} }
 
 // tryInMemoryToken tries the in-memory token source (tier 1).
 // Returns (token, nil) on success, ("", errCacheMiss) when no source is set,

@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	ocimocks "github.com/stacklok/toolhive-core/oci/skills/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
-	signermocks "github.com/stacklok/toolhive/pkg/skills/signer/mocks"
+	signermocks "github.com/stacklok/toolhive/pkg/skills/skillsvc/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -54,7 +54,7 @@ func TestPushSignsAfterPushing(t *testing.T) {
 
 	ms := signermocks.NewMockSigner(gomock.NewController(t))
 	ms.EXPECT().SignOCI(gomock.Any(), "my-tag", digest, signer.Options{Key: "/tmp/cosign.key"}).
-		Return([]byte(`{"bundle":true}`), nil)
+		Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil)
 	reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), "my-tag").Return(nil)
 
 	svc := New(&storage.NoopSkillStore{},

@@ -22,9 +22,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	coreverifier "github.com/stacklok/toolhive-core/container/verifier"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // startTestRegistry runs an in-process OCI registry and returns its host.
@@ -63,9 +63,9 @@ func signArtifact(t *testing.T, ref, digest string) (pubPEM, bundle []byte) {
 	pubPEM, err = cryptoutils.MarshalPublicKeyToPEM(priv.Public())
 	require.NoError(t, err)
 
-	raw, err := signer.NewDefault(nil).SignOCI(t.Context(), ref, digest, signer.Options{Key: keyPath})
+	res, err := signer.NewDefault(nil).SignOCI(t.Context(), ref, digest, signer.Options{Key: keyPath})
 	require.NoError(t, err)
-	return pubPEM, raw
+	return pubPEM, res.Bundle
 }
 
 func TestVerifyOCIWithKeyRoundTrip(t *testing.T) {

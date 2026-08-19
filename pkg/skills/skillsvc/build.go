@@ -14,11 +14,11 @@ import (
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/skills"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // Validate checks whether a skill definition is valid.

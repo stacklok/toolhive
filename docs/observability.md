@@ -105,7 +105,7 @@ maintaining the modular architecture of ToolHive's middleware system.
 | `--otel-service-name` | string | `"toolhive-mcp-proxy"` | Service name for telemetry resource |
 | `--otel-headers` | string[] | `nil` | OTLP authentication headers (`key=value` format) |
 | `--otel-insecure` | bool | `false` | Use HTTP instead of HTTPS for the OTLP endpoint |
-| `--otel-enable-prometheus-metrics-path` | bool | `false` | Expose Prometheus `/metrics` endpoint on the transport port |
+| `--otel-enable-prometheus-metrics-path` | bool | `false` | Expose Prometheus `/metrics` endpoint on a dedicated diagnostics port (see [Metrics endpoint exposure](#metrics-endpoint-exposure)) |
 | `--otel-env-vars` | string[] | `nil` | Environment variables to include in spans (comma-separated) |
 | `--otel-custom-attributes` | string | `""` | Custom resource attributes (`key1=value1,key2=value2`) |
 | `--otel-use-legacy-attributes` | bool | `true` | Emit legacy attribute names alongside new OTEL semantic convention names |
@@ -182,6 +182,142 @@ For VirtualMCPServer telemetry, see the
 - If only `enablePrometheusMetricsPath` is enabled (no OTLP endpoint),
   Prometheus metrics are served without OTLP export.
 - If nothing is configured (no endpoint, no Prometheus), telemetry is disabled.
+
+### Metrics endpoint exposure
+
+When `enablePrometheusMetricsPath` is on, `/metrics` is served on a **dedicated
+diagnostics listener**, not on the transport port that serves MCP traffic.
+
+This is deliberate, and it is worth being precise about what it does and does not
+give you.
+
+**The endpoint is unauthenticated either way.** The diagnostics listener carries no
+middleware — no authentication, rate limiting, body limits, or audit. Moving
+`/metrics` off the transport port does not add any of those.
+
+**What it gives you is control by port.** Kubernetes `NetworkPolicy` matches on
+pods, ports, and protocols — it cannot filter on HTTP path. So while `/metrics`
+shares the transport port, there is no way to express "allow MCP traffic, deny
+metrics scraping": any policy that permits your MCP clients also permits scraping.
+On its own port, that becomes expressible. Route-level controls (Gateway API,
+Ingress path rules) can hide the path from external traffic, but they only govern
+what passes through the gateway and leave pod-to-pod traffic untouched.
+
+It also means the safe outcome does not depend on every deployment getting its
+route rules right. The ToolHive operator already binds its own metrics endpoint
+this way (`--metrics-bind-address`), as do etcd (`--listen-metrics-urls`) and
+controller-runtime.
+
+(Serving `/metrics` on the transport mux is also what put it outside the middleware
+chain: Go's `ServeMux` resolves the most specific registered pattern first, so an
+explicit `/metrics` always outranks the `/` catch-all that carries the chain.)
+
+Port selection:
+
+- **Default** — port `9464`, the OpenTelemetry specification's Prometheus exporter
+  default (`OTEL_EXPORTER_PROMETHEUS_PORT`), so scrapers already expect it there.
+- **Explicit** — set `prometheusPort` to override it.
+- **Fallback** — if the requested port is already bound (several CLI workloads on
+  one machine, for example) an available port is chosen instead. The resolved
+  address is logged at startup.
+
+#### Restricting access to the diagnostics port
+
+Leave the diagnostics port out of any Service or Ingress that faces the internet,
+and restrict which pods may reach it. Since the endpoint is unauthenticated, this
+policy is what protects it:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcpserver-diagnostics
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcpserver
+      app.kubernetes.io/instance: my-mcp-server
+  policyTypes: [Ingress]
+  ingress:
+    # Only the monitoring namespace may scrape the diagnostics port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9464
+```
+
+This is the rule that cannot be written while `/metrics` shares the transport port,
+because it would also have to permit MCP traffic.
+
+#### Scope external routes to the paths you need
+
+A `NetworkPolicy` governs which pods may connect. It says nothing about which paths
+your gateway publishes. Those are separate controls and you want both.
+
+The operator creates a plain `Service` — it does not create an `Ingress` or an
+`HTTPRoute`, so the external route is yours to define. Route only the paths clients
+actually need rather than sending `/` at the workload. A blanket `/` publishes
+everything on the transport port, including endpoints meant to stay internal, and it
+publishes anything added to that mux in future releases without you revisiting the
+rule.
+
+What lives on the transport port:
+
+| Path | Publish externally? |
+|------|---------------------|
+| `/mcp` | Yes, for `streamable-http` — this is the MCP endpoint |
+| `/sse` and `/messages` | Yes, for `sse` — the stream and the POST channel |
+| `/.well-known/oauth-protected-resource` | Yes, if clients perform OAuth discovery (RFC 9728) |
+| `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/oauth/` | Only when the embedded authorization server is enabled |
+| `/health` | No — it exists for Kubernetes probes, which reach it in-cluster |
+| `/metrics` | Not served here at all; it returns 404 on this listener |
+
+For a transparent proxy fronting a remote MCP server, the MCP path is whatever the
+backend exposes, since that proxy forwards `/` to the backend.
+
+An `HTTPRoute` publishing only the streamable-http endpoint and OAuth discovery:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-mcp-server
+spec:
+  parentRefs:
+    - name: my-gateway
+  hostnames:
+    - my-mcp-server.example.com
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp
+        - path:
+            type: PathPrefix
+            value: /.well-known/oauth-protected-resource
+      backendRefs:
+        - name: my-mcp-server
+          port: 8080
+```
+
+The equivalent with an `Ingress` is a `path` entry per route with
+`pathType: Exact` or `Prefix`; avoid a single `path: /` with `pathType: Prefix`.
+
+Never add the diagnostics port to a `Service` or route that faces the internet. It is
+not on the transport port, so a path-scoped route excludes it automatically — but
+adding it back by hand undoes that.
+
+`/health` deliberately stays on the transport port so Kubernetes liveness and
+readiness probes keep working. It exposes no version or build information.
+
+> **Cardinality warning.** Metric label values derived from client input (MCP
+> method, tool, and prompt names) are bounded in length, and the OpenTelemetry SDK
+> caps attribute sets at 2000 per instrument. Both readers aggregate cumulatively,
+> so every distinct attribute set stays resident for the process lifetime. Avoid
+> adding new client-controlled values as metric labels; put them on spans instead.
 
 ## Metrics Reference
 

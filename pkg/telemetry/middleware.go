@@ -955,12 +955,11 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Add middleware to runner
 	runner.AddMiddleware(config.Type, telemetryMw)
 
-	// Set Prometheus handler if enabled
+	// Set Prometheus handler if enabled. The runner serves it on a dedicated
+	// diagnostics listener and logs the resolved address there, so no port is
+	// logged here — it is not the application port.
 	if prometheusHandler != nil {
 		runner.SetPrometheusHandler(prometheusHandler)
-		//nolint:gosec // G706: port number from config
-		slog.Info("prometheus metrics will be exposed at /metrics",
-			"port", runner.GetConfig().GetPort())
 	}
 
 	return nil

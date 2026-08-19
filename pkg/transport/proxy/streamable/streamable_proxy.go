@@ -271,8 +271,14 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 		mux.Handle("/health", p.healthChecker)
 	}
 
+	// Mount the metrics endpoint only if a handler is provided, otherwise return
+	// 404 so /metrics is not proxied to the backend. The runner serves metrics on
+	// a separate diagnostics listener instead (see pkg/diagnostics) so access can
+	// be restricted by port rather than by HTTP path.
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
+	} else {
+		mux.HandleFunc("/metrics", http.NotFound)
 	}
 
 	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.

@@ -4573,7 +4573,10 @@ components:
         enablePrometheusMetricsPath:
           description: |-
             EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
-            The metrics are served on the main transport port at /metrics.
+            The metrics are served at /metrics on a dedicated diagnostics port rather than on the
+            main transport port, so the endpoint can be restricted by port and is not routed
+            alongside application traffic. The endpoint is unauthenticated either way.
+            See PrometheusPort and pkg/diagnostics.
             This is separate from OTLP metrics which are sent to the Endpoint.
             +kubebuilder:default=false
             +optional
@@ -4615,6 +4618,20 @@ components:
             +kubebuilder:default=false
             +optional
           type: boolean
+        prometheusPort:
+          description: |-
+            PrometheusPort is the port the Prometheus /metrics endpoint is served on when
+            EnablePrometheusMetricsPath is true. It is deliberately not the main transport port,
+            so that access can be restricted with a NetworkPolicy: NetworkPolicy matches on port,
+            not on HTTP path, so a shared port makes "allow MCP traffic, deny metrics scraping"
+            impossible to express. The endpoint itself is unauthenticated, so restricting who can
+            reach this port is how it is protected.
+
+            Zero selects the default diagnostics port (9464, the OpenTelemetry specification's
+            Prometheus exporter default). If that port is taken the listener falls back to an
+            available one and logs the resolved address. Do not route this port publicly.
+            +optional
+          type: integer
         samplingRate:
           description: |-
             SamplingRate is the trace sampling rate (0.0-1.0) as a string.

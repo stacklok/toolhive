@@ -73,12 +73,12 @@ func (s *service) dispatchExtraction(
 	storeErr error,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
+	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &plugins.InstallResult{Plugin: existing}, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest
-	if digestMatches {
+	if digestMatches && !opts.SyncRestore {
 		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes)
 	}
 	if storeErr == nil {
@@ -89,8 +89,9 @@ func (s *service) dispatchExtraction(
 
 // isExtractionNoOp reports whether the install can be short-circuited because
 // the same digest and all requested clients are already present. Mirror of
-// skillsvc.isExtractionNoOp. Sync (a later PR) will need a SyncRestore bypass
-// so a lock-driven reinstall can repair on-disk drift at the same digest.
+// skillsvc.isExtractionNoOp. Callers must also check SyncRestore: a lock-driven
+// reinstall repairs on-disk drift at the same digest, so the no-op path must
+// not apply.
 func isExtractionNoOp(existing plugins.InstalledPlugin, storeErr error, opts plugins.InstallOptions, clientTypes []string) bool {
 	if storeErr != nil || existing.Digest != opts.Digest {
 		return false
@@ -126,6 +127,11 @@ func (s *service) installExtractionSameDigestNewClients(
 // configured; without one (embedded/test services, WithClientManager is
 // optional) compensation degrades to dematerialize-only, matching the fresh
 // and same-digest paths.
+//
+// SyncRestore is different: sync must materialize exactly the requested target
+// clients (the sync client set), not re-merge historical Clients from the DB —
+// otherwise an old client that is no longer detected/requested would stay in
+// the persisted list forever.
 func (s *service) installExtractionUpgradeDigest(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -133,7 +139,10 @@ func (s *service) installExtractionUpgradeDigest(
 	existing plugins.InstalledPlugin,
 	clientTypes []string,
 ) (*plugins.InstallResult, error) {
-	allClients := mergeClientLists(existing.Clients, clientTypes)
+	allClients := clientTypes
+	if !opts.SyncRestore {
+		allClients = mergeClientLists(existing.Clients, clientTypes)
+	}
 	return s.materializeAndPersist(ctx, opts, scope, allClients, allClients, nil, existing.Managed, false)
 }
 
@@ -511,9 +520,9 @@ func (s *service) dematerializeAll(
 
 // resolveAndValidateClients returns the deduplicated client list to target for
 // this install. Empty opts.Clients (or the sentinel value "all") expands to
-// every client present in s.materializers (additionally filtered by
-// cm.SupportsPlugins when a client manager is configured). Explicit client
-// names are validated to be present in s.materializers.
+// every client from availableMaterializerClients (materializer present, and
+// when a client manager is set: SupportsPlugins + IsClientInstalled). Explicit
+// client names are validated to be present in s.materializers.
 //
 // Unlike skillsvc.resolveAndValidateClients, this does NOT resolve filesystem
 // paths — the MaterializationAdapter owns path resolution, so the caller
@@ -574,13 +583,18 @@ func (s *service) resolveAndValidateClients(
 }
 
 // availableMaterializerClients returns the sorted list of client types that
-// have a configured materializer and (when a client manager is set) are
-// considered plugin-supporting by it.
+// have a configured materializer. When a client manager is set, only clients
+// that both support plugins and appear installed on the system are included.
+// When the client manager is nil, every materializer key is returned (tests
+// and embedded services without detection).
 func (s *service) availableMaterializerClients() []string {
 	var out []string
 	for ct := range s.materializers {
-		if s.clientManager != nil && !s.clientManager.SupportsPlugins(client.ClientApp(ct)) {
-			continue
+		if s.clientManager != nil {
+			app := client.ClientApp(ct)
+			if !s.clientManager.SupportsPlugins(app) || !s.clientManager.IsClientInstalled(app) {
+				continue
+			}
 		}
 		out = append(out, ct)
 	}

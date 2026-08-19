@@ -88,10 +88,13 @@ func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, s
 		base:      filepath.Join(projectRoot, ".claude", "plugins"),
 		installer: skills.NewInstaller(),
 	}
+	home := t.TempDir()
+	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
 	svc := New(
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
-		WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+		WithClientManager(client.NewTestClientManagerWithHome(home)),
 	)
 	return svc, projectRoot
 }
@@ -255,7 +258,7 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	var digestAtFailure string
 	inner.store = &hookPluginStore{
 		PluginStore: inner.store,
-		beforeUpdate: func(call int) error {
+		beforeUpdate: func(call int, _ plugins.InstalledPlugin) error {
 			// Call 1 persists the new digest (materializeAndPersist); call 2
 			// is recordLockState marking the record managed — after the lock
 			// entry was already rewritten. Fail there.
@@ -315,7 +318,7 @@ func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
 	// pre-existing record restore that follows it.
 	inner.store = &hookPluginStore{
 		PluginStore: inner.store,
-		beforeUpdate: func(call int) error {
+		beforeUpdate: func(call int, _ plugins.InstalledPlugin) error {
 			if call >= 2 {
 				return errors.New("db update unavailable")
 			}
@@ -441,9 +444,9 @@ func TestUninstall_DoesNotTouchSkillsKey(t *testing.T) {
 type hookPluginStore struct {
 	storage.PluginStore
 	beforeDelete func() error
-	// beforeUpdate runs before each Update with the 1-based call count;
-	// returning an error fails that Update.
-	beforeUpdate func(call int) error
+	// beforeUpdate runs before each Update with the 1-based call count and
+	// the record being written; returning an error fails that Update.
+	beforeUpdate func(call int, pl plugins.InstalledPlugin) error
 	updateCalls  int
 }
 
@@ -459,7 +462,7 @@ func (s *hookPluginStore) Delete(ctx context.Context, name string, scope plugins
 func (s *hookPluginStore) Update(ctx context.Context, pl plugins.InstalledPlugin) error {
 	s.updateCalls++
 	if s.beforeUpdate != nil {
-		if err := s.beforeUpdate(s.updateCalls); err != nil {
+		if err := s.beforeUpdate(s.updateCalls, pl); err != nil {
 			return err
 		}
 	}

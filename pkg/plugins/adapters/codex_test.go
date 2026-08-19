@@ -326,6 +326,26 @@ func TestCodexAdapter_EnsureRegisteredRestoresMarketplace(t *testing.T) {
 	assert.Equal(t, "./toolhive/foo", p.Source.Path)
 }
 
+func TestCodexAdapter_HealthDetectsMissingRegistration(t *testing.T) {
+	t.Parallel()
+	tempHome := resolvedTempDir(t)
+	cm := newTestClientManager(t, tempHome)
+	a := NewCodexAdapter(cm)
+
+	layer := makePluginLayer(t, []ociskills.FileEntry{
+		{Path: "skills/useful/SKILL.md", Content: []byte("# useful"), Mode: 0644},
+	})
+	require.NoError(t, materializeCodex(a, "foo", layer))
+
+	req := plugins.DematerializeRequest{Name: "foo", Scope: plugins.ScopeUser}
+	require.NoError(t, a.Health(context.Background(), req))
+
+	require.NoError(t, removeCodexMarketplace(codexUserMarketplaceFile(tempHome), "foo"))
+	err := a.Health(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marketplace.json")
+}
+
 // materializeCodex is a small helper to install a named user-scope plugin.
 func materializeCodex(a *CodexAdapter, name string, layer []byte) error {
 	_, err := a.Materialize(context.Background(), plugins.MaterializeRequest{

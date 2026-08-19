@@ -60,6 +60,17 @@ type InstallOptions struct {
 	// reinstalling at a pinned reference. Internal use only — NOT exposed
 	// via HTTP API.
 	LockResolvedReference string `json:"-"`
+	// SyncRestore forces re-extraction to every existing client even when
+	// Digest matches the currently-installed digest. Set by Sync when
+	// reinstalling at a pinned reference: the whole point is repairing
+	// on-disk drift that happened without the pinned digest changing, so the
+	// normal "same digest means content is already correct" fast path must
+	// not apply. Internal use only — NOT exposed via HTTP API.
+	SyncRestore bool `json:"-"`
+	// ExpectedCanonicalName, when set, requires the resolved plugin/manifest name
+	// to equal this value before any install mutation. Used by Sync/Upgrade so a
+	// lock entry cannot be repaired under a different canonical identity.
+	ExpectedCanonicalName string `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.

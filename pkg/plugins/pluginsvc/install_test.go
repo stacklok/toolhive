@@ -173,7 +173,9 @@ func TestInstallWithExtraction(t *testing.T) {
 				return nil
 			})
 
-		svc := newTestService(WithStore(store), WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+		home := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
+		svc := newTestService(WithStore(store), WithClientManager(client.NewTestClientManagerWithHome(home)),
 			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
 		result, err := svc.Install(t.Context(), plugins.InstallOptions{
 			Name:      "my-plugin",

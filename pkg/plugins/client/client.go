@@ -310,6 +310,23 @@ func (c *Client) GetContent(ctx context.Context, opts plugins.ContentOptions) (*
 	return &content, nil
 }
 
+// Sync restores a project's installed plugins to match its lock file.
+func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.SyncResult, error) {
+	body := syncRequest{
+		ProjectRoot: opts.ProjectRoot,
+		Clients:     opts.Clients,
+		Prune:       opts.Prune,
+		Check:       opts.Check,
+		Adopt:       opts.Adopt,
+	}
+
+	var result plugins.SyncResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/sync", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // --- internal helpers ---
 
 func (c *Client) buildURL(path string, query url.Values) string {

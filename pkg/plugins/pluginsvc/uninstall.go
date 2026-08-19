@@ -41,9 +41,17 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 	scope = defaultScope(scope)
 	opts.ProjectRoot = projectRoot
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	_, unlock := s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
+	return s.uninstallLocked(ctx, opts, scope)
+}
+
+// uninstallLocked performs Uninstall assuming the per-plugin lock is already
+// held (e.g. by Sync prune). opts must already be normalized.
+func (s *service) uninstallLocked(
+	ctx context.Context, opts plugins.UninstallOptions, scope plugins.Scope,
+) error {
 	existing, err := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
 		// Idempotent: a missing record is not an error.

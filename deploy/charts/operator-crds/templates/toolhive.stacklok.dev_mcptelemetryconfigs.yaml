@@ -227,6 +227,8 @@ spec:
                       window and becomes false when it closes. Setting it explicitly opts out of
                       that change: an explicit value is honoured before and after the cutover.
 
+                      See https://github.com/stacklok/toolhive/issues/6384 for the removal timeline.
+
                       Deliberately has no default marker. A default would be materialised into the
                       object at admission, so every MCPTelemetryConfig created during the window
                       would carry the window's value permanently and the cutover would not move it.
@@ -516,6 +518,8 @@ spec:
                       Leave unset to follow the current default, which is true during the migration
                       window and becomes false when it closes. Setting it explicitly opts out of
                       that change: an explicit value is honoured before and after the cutover.
+
+                      See https://github.com/stacklok/toolhive/issues/6384 for the removal timeline.
 
                       Deliberately has no default marker. A default would be materialised into the
                       object at admission, so every MCPTelemetryConfig created during the window

@@ -373,7 +373,7 @@ func TestSync_AdoptUpdateFailureRestoresExistingLockEntry(t *testing.T) {
 
 	syncSvc.store = &hookPluginStore{
 		PluginStore: syncSvc.store,
-		beforeUpdate: func(p plugins.InstalledPlugin) error {
+		beforeUpdate: func(_ int, p plugins.InstalledPlugin) error {
 			if p.Managed {
 				return errors.New("db locked")
 			}

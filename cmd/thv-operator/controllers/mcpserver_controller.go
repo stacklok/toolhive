@@ -29,10 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -581,6 +583,13 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		// Spec updated - return and requeue
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if result, err := r.ensureWorkloadStatefulSet(ctx, mcpServer, deployment); err != nil {
+		ctxLogger.Error(err, "Failed to ensure workload StatefulSet")
+		return ctrl.Result{}, err
+	} else if result.Requeue || result.RequeueAfter > 0 {
+		return result, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -1690,8 +1699,21 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	// Set ReadyReplicas to the count of running pods
 	m.Status.ReadyReplicas = int32(running)
 
-	// Update the status based on pod health
+	// Proxy pods alone are not enough: stdio (and other) transports run the
+	// real MCP process in a sibling StatefulSet created by the proxy-runner.
+	// If that STS is gone, clients hit a dead backend while Ready stays true
+	// (#6343). Surface the gap instead of claiming the server is running.
 	if running > 0 {
+		missing, stsErr := r.statefulSetMissing(ctx, m)
+		if stsErr != nil {
+			return stsErr
+		}
+		if missing {
+			m.Status.Phase = mcpv1beta1.MCPServerPhasePending
+			m.Status.Message = "MCP server proxy is running; recreating missing workload StatefulSet"
+			setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
+			return r.Status().Update(ctx, m)
+		}
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
 	} else if failed > 0 {
@@ -3003,6 +3025,12 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mcpv1beta1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&appsv1.StatefulSet{}).
+		Watches(
+			&appsv1.StatefulSet{},
+			handler.EnqueueRequestsFromMapFunc(r.mapStatefulSetToMCPServer),
+			builder.WithPredicates(predicate.NewPredicateFuncs(isToolhiveStatefulSet)),
+		).
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).

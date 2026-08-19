@@ -4,19 +4,21 @@
 // Package skillsvc provides the default implementation of skills.SkillService.
 package skillsvc
 
+//go:generate mockgen -destination=mocks/mock_signer.go -package=mocks github.com/stacklok/toolhive-core/container/signer Signer
+
 import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
 	"sync"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
-	"github.com/stacklok/toolhive/pkg/skills/signer"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )

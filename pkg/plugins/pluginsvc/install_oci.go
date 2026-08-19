@@ -20,7 +20,8 @@ import (
 
 // installFromOCI pulls a plugin artifact from a remote registry, extracts
 // metadata and layer data, then materializes and registers the plugin while
-// holding the per-plugin lock. Mirror of skillsvc.installFromOCI, substituting
+// holding the per-plugin lock. Structural mirror of skillsvc.installFromOCI
+// (failure semantics diverge — see Install), substituting
 // the plugin supply-chain check (config.Name == OCI repo last segment) and
 // hydrating Components/Dependencies from the plugin OCI config.
 func (s *service) installFromOCI(

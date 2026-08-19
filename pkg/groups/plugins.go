@@ -55,29 +55,3 @@ func RemovePluginFromGroup(ctx context.Context, mgr Manager, groupName string, p
 	}
 	return nil
 }
-
-// RemovePluginFromAllGroups removes pluginName from every group that references it.
-// It is a no-op when the plugin is not found in any group.
-func RemovePluginFromAllGroups(ctx context.Context, mgr Manager, pluginName string) error {
-	allGroups, err := mgr.List(ctx)
-	if err != nil {
-		return fmt.Errorf("listing groups: %w", err)
-	}
-
-	for _, group := range allGroups {
-		modified := false
-		for i, p := range group.Plugins {
-			if p == pluginName {
-				group.Plugins = append(group.Plugins[:i], group.Plugins[i+1:]...)
-				modified = true
-				break
-			}
-		}
-		if modified {
-			if err := mgr.Update(ctx, group); err != nil {
-				return fmt.Errorf("updating group %q: %w", group.Name, err)
-			}
-		}
-	}
-	return nil
-}

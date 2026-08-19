@@ -74,8 +74,11 @@ func (s *service) uninstallExisting(
 		return err
 	}
 
+	// Tree snapshots need a ClientManager for path resolution; without one
+	// (WithClientManager is optional) managed compensation degrades to
+	// restoring the lock pin only, matching materializeAndPersist's policy.
 	var backups map[string]clientTreeBackup
-	if restoreLock != nil {
+	if restoreLock != nil && s.clientManager != nil {
 		var snapErr error
 		backups, snapErr = s.snapshotClientTrees(ctx, opts.Name, scope, opts.ProjectRoot, existing.Clients)
 		if snapErr != nil {
@@ -180,7 +183,8 @@ func (s *service) requireMaterializers(clients []string) error {
 }
 
 // compensateManagedUninstall restores the lock pin and every snapshotted
-// client tree after a failed managed uninstall step.
+// client tree after a failed managed uninstall step. Without a ClientManager
+// no snapshots were taken, so only the lock pin is restored.
 func (s *service) compensateManagedUninstall(
 	ctx context.Context,
 	restoreLock func() error,
@@ -190,6 +194,9 @@ func (s *service) compensateManagedUninstall(
 	backups map[string]clientTreeBackup,
 	clients []string,
 ) error {
+	if s.clientManager == nil {
+		return restoreLock()
+	}
 	return errors.Join(
 		restoreLock(),
 		s.restoreClientTrees(ctx, name, scope, projectRoot, backups, clients),

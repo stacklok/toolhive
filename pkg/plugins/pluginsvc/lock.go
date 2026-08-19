@@ -27,18 +27,15 @@ func (s *service) recordLockState(
 	pl plugins.InstalledPlugin,
 	contentDigest string,
 ) (plugins.InstalledPlugin, error) {
+	// contentDigest is always populated by installWithExtraction
+	// (lockContentDigest gates on the same ScopeProject + feature-flag
+	// condition as installAndRegister's lockScoped), and Install sets
+	// LockSource before any dispatch can rewrite opts.Name — so neither
+	// value needs a fallback here.
 	if contentDigest == "" {
-		var err error
-		contentDigest, err = computeContentDigest(opts.LayerData)
-		if err != nil {
-			return pl, fmt.Errorf("computing content digest: %w", err)
-		}
+		return pl, fmt.Errorf("recording lock state for %q: content digest was not computed", pl.Metadata.Name)
 	}
-
 	source := opts.LockSource
-	if source == "" {
-		source = opts.Name
-	}
 	resolvedReference := opts.LockResolvedReference
 	if resolvedReference == "" {
 		resolvedReference = pl.Reference

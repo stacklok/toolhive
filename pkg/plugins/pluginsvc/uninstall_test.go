@@ -98,7 +98,7 @@ func TestUninstall(t *testing.T) {
 		assert.Contains(t, err.Error(), "db locked")
 	})
 
-	// RemovePluginFromAllGroups fails before the DB delete so the record
+	// Group removal fails before the DB delete so the record
 	// remains and uninstall can be retried; dematerialize may already have
 	// run (best-effort) and its errors are joined when present.
 	t.Run("group removal failure aborts before store delete", func(t *testing.T) {

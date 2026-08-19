@@ -22,7 +22,10 @@ import (
 // (git://...), the repo is cloned and the plugin tree is built in memory. When
 // it contains an OCI reference, the artifact is pulled and extracted. A plain
 // name is resolved against the local OCI store, then the registry lookup.
-// Mirror of skillsvc.Install, substituting the plugin install backends.
+// Structural mirror of skillsvc.Install, substituting the plugin install
+// backends — but the failure semantics deliberately diverge: skills discards
+// rollback errors and fails forward, while plugins joins every compensation
+// error with the trigger and can abort (see rollbackInstall).
 func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
 	if err != nil {
@@ -71,7 +74,8 @@ func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*pl
 
 // installByName handles installation for a validated plain plugin name. It
 // checks the local OCI store, then the registry lookup, before returning an
-// error. Mirror of skillsvc.installByName.
+// error. Structural mirror of skillsvc.installByName (failure semantics
+// diverge — see Install).
 func (s *service) installByName(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -327,14 +331,14 @@ func (s *service) installAndRegister(
 		if rootErr != nil {
 			return nil, errors.Join(
 				fmt.Errorf("opening lock file root: %w", rootErr),
-				s.rollbackInstall(ctx, opts, result, pluginName, scope, false, nil, false, ""),
+				s.rollbackInstall(ctx, result, rollbackParams{}),
 			)
 		}
 		lf, loadErr := lockfile.Load(root)
 		if loadErr != nil {
 			return nil, errors.Join(
 				fmt.Errorf("loading lock file: %w", loadErr),
-				s.rollbackInstall(ctx, opts, result, pluginName, scope, false, nil, false, ""),
+				s.rollbackInstall(ctx, result, rollbackParams{}),
 			)
 		}
 		if e, ok := lf.GetPlugin(pluginName); ok {
@@ -345,10 +349,12 @@ func (s *service) installAndRegister(
 	var addedToGroup bool
 	groupName := resolvedGroupName(opts.Group)
 	rollback := func() error {
-		return s.rollbackInstall(
-			ctx, opts, result, pluginName, scope, lockScoped, prevEntry,
-			addedToGroup, groupName,
-		)
+		return s.rollbackInstall(ctx, result, rollbackParams{
+			lockScoped:   lockScoped,
+			prevEntry:    prevEntry,
+			addedToGroup: addedToGroup,
+			groupName:    groupName,
+		})
 	}
 
 	added, err := s.registerPluginInGroup(ctx, opts.Group, pluginName)
@@ -371,27 +377,35 @@ func (s *service) installAndRegister(
 	return result, nil
 }
 
+// rollbackParams carries the compensation state rollbackInstall needs beyond
+// what the install result itself provides. Name, scope, and project root are
+// derived from result.Plugin.
+type rollbackParams struct {
+	lockScoped   bool
+	prevEntry    *lockfile.Entry
+	addedToGroup bool
+	groupName    string
+}
+
 // rollbackInstall undoes installAndRegister's side effects after a failure.
 // Every compensation error is returned so the caller can join it with the
 // original failure; discarding it can hide a partial restore after a
 // destructive rewrite.
 func (s *service) rollbackInstall(
 	ctx context.Context,
-	opts plugins.InstallOptions,
 	result *plugins.InstallResult,
-	pluginName string,
-	scope plugins.Scope,
-	lockScoped bool,
-	prevEntry *lockfile.Entry,
-	addedToGroup bool,
-	groupName string,
+	params rollbackParams,
 ) error {
+	pluginName := result.Plugin.Metadata.Name
+	scope := result.Plugin.Scope
+	projectRoot := result.Plugin.ProjectRoot
+
 	var errs []error
 	if result.PreExisting != nil {
 		if err := s.store.Update(ctx, *result.PreExisting); err != nil {
 			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
 		}
-	} else if err := s.store.Delete(ctx, pluginName, scope, opts.ProjectRoot); err != nil {
+	} else if err := s.store.Delete(ctx, pluginName, scope, projectRoot); err != nil {
 		errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
 	}
 
@@ -401,27 +415,27 @@ func (s *service) rollbackInstall(
 		}
 	}
 
-	if addedToGroup && s.groupManager != nil {
-		if err := groups.RemovePluginFromGroup(ctx, s.groupManager, groupName, pluginName); err != nil {
+	if params.addedToGroup && s.groupManager != nil {
+		if err := groups.RemovePluginFromGroup(ctx, s.groupManager, params.groupName, pluginName); err != nil {
 			errs = append(errs, fmt.Errorf("removing plugin from group: %w", err))
 		}
 	}
 
-	if !lockScoped {
+	if !params.lockScoped {
 		return errors.Join(errs...)
 	}
-	if prevEntry != nil {
-		root, err := lockfile.OpenRoot(opts.ProjectRoot)
+	if params.prevEntry != nil {
+		root, err := lockfile.OpenRoot(projectRoot)
 		if err != nil {
 			return errors.Join(append(errs, fmt.Errorf("reopening lock file: %w", err))...)
 		}
-		if err := lockfile.UpsertPluginEntry(root, *prevEntry); err != nil {
+		if err := lockfile.UpsertPluginEntry(root, *params.prevEntry); err != nil {
 			errs = append(errs, fmt.Errorf("restoring lock entry: %w", err))
 		}
 		return errors.Join(errs...)
 	}
 	if err := removeLockEntry(plugins.UninstallOptions{
-		Name: pluginName, Scope: scope, ProjectRoot: opts.ProjectRoot,
+		Name: pluginName, Scope: scope, ProjectRoot: projectRoot,
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("removing rolled-back lock entry: %w", err))
 	}

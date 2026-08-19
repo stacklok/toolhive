@@ -437,7 +437,10 @@ func TestInstallWithExtraction(t *testing.T) {
 		assert.ElementsMatch(t, []string{"claude-code", "codex"}, result.Plugin.Clients)
 	})
 
-	t.Run("upgrade without client manager aborts before mutation", func(t *testing.T) {
+	// WithClientManager is optional: without one, upgrades degrade to
+	// dematerialize-only compensation instead of failing on tree snapshots,
+	// matching the fresh and same-digest install paths.
+	t.Run("upgrade without client manager degrades to dematerialize-only", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		store := storemocks.NewMockPluginStore(ctrl)
@@ -449,6 +452,9 @@ func TestInstallWithExtraction(t *testing.T) {
 			Clients:  []string{"claude-code"},
 		}
 		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
+		adapter.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db update error"))
+		adapter.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
 
 		svc := newTestService(WithStore(store),
 			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
@@ -458,8 +464,7 @@ func TestInstallWithExtraction(t *testing.T) {
 			Digest:    "sha256:new",
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "resolving")
-		assert.Contains(t, err.Error(), "install path")
+		assert.Contains(t, err.Error(), "db update error")
 	})
 }
 

@@ -226,6 +226,12 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "a failed fresh install must dematerialize on rollback")
 }
 
+// TestInstallProjectScope_RollbackRestoresPreExistingState exercises the real
+// prevEntry restore branch: the failure is injected AFTER the lock entry was
+// overwritten (recordLockState's managed-flag Update fails), so rollback must
+// reinstate the previous pin, DB record, and files — not merely observe that
+// nothing was written.
+//
 //nolint:paralleltest // uses t.Setenv via newLockTestService
 func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)
@@ -237,8 +243,31 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	beforeHello, err := os.ReadFile(helloPath) //nolint:gosec // test fixture path
 	require.NoError(t, err)
 
-	require.NoError(t, os.Chmod(projectRoot, 0o555))
-	t.Cleanup(func() { _ = os.Chmod(projectRoot, 0o755) })
+	// Drift state: the lock entry exists but the DB record is unmanaged, so
+	// recordLockState writes the lock entry and THEN updates the DB record —
+	// giving rollback a genuinely overwritten entry to restore.
+	inner := svc.(*service) //nolint:forcetypeassert
+	drifted, err := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	drifted.Managed = false
+	require.NoError(t, inner.store.Update(t.Context(), drifted))
+
+	var digestAtFailure string
+	inner.store = &hookPluginStore{
+		PluginStore: inner.store,
+		beforeUpdate: func(call int) error {
+			// Call 1 persists the new digest (materializeAndPersist); call 2
+			// is recordLockState marking the record managed — after the lock
+			// entry was already rewritten. Fail there.
+			if call == 2 {
+				if e, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin"); ok {
+					digestAtFailure = e.Digest
+				}
+				return errors.New("db update unavailable")
+			}
+			return nil
+		},
+	}
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
 		Name:        "my-plugin",
@@ -248,9 +277,11 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 		ProjectRoot: projectRoot,
 		Clients:     []string{"claude-code"},
 	})
-	require.Error(t, err, "reinstall must fail when the lock file cannot be written")
+	require.Error(t, err, "reinstall must fail when marking the record managed fails")
+	assert.Contains(t, err.Error(), "db update unavailable")
+	assert.Equal(t, validLockDigestAlt(), digestAtFailure,
+		"precondition: the lock entry must have been overwritten before the injected failure")
 
-	require.NoError(t, os.Chmod(projectRoot, 0o755))
 	after, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 	require.True(t, ok, "a transient failure must not destroy the pre-existing lock entry")
 	assert.Equal(t, before.Digest, after.Digest, "the previous pin must be restored")
@@ -264,6 +295,84 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	afterHello, err := os.ReadFile(helloPath) //nolint:gosec // test fixture path
 	require.NoError(t, err, "the previous materialization must be restored")
 	assert.Equal(t, beforeHello, afterHello)
+}
+
+// A rollback whose own DB compensation fails must join that error with the
+// trigger instead of reporting only the original failure.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	drifted, err := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	drifted.Managed = false
+	require.NoError(t, inner.store.Update(t.Context(), drifted))
+
+	// Fail recordLockState's managed-flag Update AND the rollback's
+	// pre-existing record restore that follows it.
+	inner.store = &hookPluginStore{
+		PluginStore: inner.store,
+		beforeUpdate: func(call int) error {
+			if call >= 2 {
+				return errors.New("db update unavailable")
+			}
+			return nil
+		},
+	}
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		Digest:      validLockDigestAlt(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recording plugin in project lock file",
+		"the trigger failure must be reported")
+	assert.Contains(t, err.Error(), "restoring pre-existing DB record",
+		"the failed compensation must be joined into the returned error")
+}
+
+// A rollback must not remove a group membership this install did not add.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestInstallProjectScope_RollbackKeepsPreExistingGroupMembership(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ctrl := gomock.NewController(t)
+	gm := groupmocks.NewMockManager(ctrl)
+
+	// The plugin is already a member, so AddPluginToGroup reports added=false
+	// and rollback must leave the membership alone (no Update calls at all).
+	gm.EXPECT().Get(gomock.Any(), groups.DefaultGroup).
+		Return(&groups.Group{Name: groups.DefaultGroup, Plugins: []string{"my-plugin"}}, nil)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.groupManager = gm
+
+	// Lock writes fail after group registration: the project root is
+	// read-only, so Load succeeds but recordLockEntry's write fails.
+	// Extraction still works because the plugin tree lives in a
+	// pre-existing writable subdirectory.
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, ".claude", "plugins"), 0o755))
+	require.NoError(t, os.Chmod(projectRoot, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(projectRoot, 0o755) })
+
+	_, err := svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.Error(t, err, "install must fail when the lock entry cannot be written")
+	// gomock verifies no gm.Update ran: rollback did not touch the
+	// pre-existing membership it did not create.
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService
@@ -332,6 +441,10 @@ func TestUninstall_DoesNotTouchSkillsKey(t *testing.T) {
 type hookPluginStore struct {
 	storage.PluginStore
 	beforeDelete func() error
+	// beforeUpdate runs before each Update with the 1-based call count;
+	// returning an error fails that Update.
+	beforeUpdate func(call int) error
+	updateCalls  int
 }
 
 func (s *hookPluginStore) Delete(ctx context.Context, name string, scope plugins.Scope, projectRoot string) error {
@@ -341,6 +454,16 @@ func (s *hookPluginStore) Delete(ctx context.Context, name string, scope plugins
 		}
 	}
 	return s.PluginStore.Delete(ctx, name, scope, projectRoot)
+}
+
+func (s *hookPluginStore) Update(ctx context.Context, pl plugins.InstalledPlugin) error {
+	s.updateCalls++
+	if s.beforeUpdate != nil {
+		if err := s.beforeUpdate(s.updateCalls); err != nil {
+			return err
+		}
+	}
+	return s.PluginStore.Update(ctx, pl)
 }
 
 type failingDematerializeAdapter struct {
@@ -446,13 +569,16 @@ func TestSnapshotRestore_PreservesExecutableMode(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(md), 0o750))
 	require.NoError(t, os.WriteFile(md, []byte("# hello"), 0o644))
 
-	files, err := snapshotDir(dir)
+	// An empty directory must survive the snapshot/restore round trip too.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "skills", "empty"), 0o750))
+
+	tree, err := snapshotDir(dir)
 	require.NoError(t, err)
-	assert.Equal(t, fs.FileMode(0o755), files[filepath.Join("hooks", "preinstall.sh")].mode)
-	assert.Equal(t, fs.FileMode(0o644), files[filepath.Join("commands", "hello.md")].mode)
+	assert.Equal(t, fs.FileMode(0o755), tree.files[filepath.Join("hooks", "preinstall.sh")].mode)
+	assert.Equal(t, fs.FileMode(0o644), tree.files[filepath.Join("commands", "hello.md")].mode)
 
 	dest := t.TempDir()
-	require.NoError(t, restoreDir(dest, files))
+	require.NoError(t, restoreDir(dest, tree))
 
 	info, err := os.Stat(filepath.Join(dest, "hooks", "preinstall.sh"))
 	require.NoError(t, err)
@@ -460,6 +586,8 @@ func TestSnapshotRestore_PreservesExecutableMode(t *testing.T) {
 	mdInfo, err := os.Stat(filepath.Join(dest, "commands", "hello.md"))
 	require.NoError(t, err)
 	assert.Equal(t, fs.FileMode(0o644), mdInfo.Mode().Perm())
+	assert.DirExists(t, filepath.Join(dest, "skills", "empty"),
+		"empty directories must be recreated on restore")
 }
 
 type failingMaterializeAdapter struct {

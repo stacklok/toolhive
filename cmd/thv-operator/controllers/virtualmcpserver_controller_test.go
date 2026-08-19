@@ -1831,6 +1831,29 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 			checksum:       vmcpConfigChecksum,
 			expectedUpdate: false,
 		},
+		{
+			name: "kubectl rollout restart annotation is not drift",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: expectedLabels,
+							Annotations: func() map[string]string {
+								ann := make(map[string]string, len(expectedAnnotations)+1)
+								for k, v := range expectedAnnotations {
+									ann[k] = v
+								}
+								ann[ctrlutil.KubectlRestartedAtAnnotation] = "2026-08-19T06:00:00Z"
+								return ann
+							}(),
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {

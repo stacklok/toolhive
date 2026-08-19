@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	stderrors "errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"reflect"
 	"slices"
@@ -1574,6 +1573,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		//
 		// Note: If update conflicts occur due to concurrent modifications, the reconcile
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
+		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
@@ -1835,11 +1836,11 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
 	)
 
-	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
+	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
 		return true
 	}
 
-	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
 

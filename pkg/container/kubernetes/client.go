@@ -51,6 +51,11 @@ const (
 	// serviceFieldManager is the field manager name for server-side apply operations
 	serviceFieldManager = "toolhive-container-manager"
 
+	// kubectlRestartedAtAnnotation is the pod-template annotation written by
+	// `kubectl rollout restart`. Server-side apply must re-assert it or the
+	// operator/runner clobber the bounce (#6344).
+	kubectlRestartedAtAnnotation = "kubectl.kubernetes.io/restartedAt"
+
 	// RunConfigMCPServerGenerationAnnotation carries the MCPServer .metadata.generation that
 	// produced the RunConfig applied to this StatefulSet. Used as a monotonic version stamp
 	// to prevent stale proxyrunner pods (from an old Deployment ReplicaSet) from clobbering
@@ -495,6 +500,14 @@ func (c *Client) applyStatefulSet(
 		podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
 			RunConfigMCPServerGenerationAnnotation: strconv.FormatInt(ourGen, 10),
 		})
+	}
+	existing, getErr := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerName, metav1.GetOptions{})
+	if getErr == nil && existing.Spec.Template.Annotations != nil {
+		if restartedAt := existing.Spec.Template.Annotations[kubectlRestartedAtAnnotation]; restartedAt != "" {
+			podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
+				kubectlRestartedAtAnnotation: restartedAt,
+			})
+		}
 	}
 	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
 		WithLabels(containerLabels).

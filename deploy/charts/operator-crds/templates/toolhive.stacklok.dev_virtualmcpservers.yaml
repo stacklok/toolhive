@@ -3184,7 +3184,8 @@ spec:
                           deployments a migration window: while true, an existing scrape configuration
                           aimed at the transport port keeps working, and a new one aimed at
                           PrometheusPort works too, so a scraper can be moved and verified before the
-                          old location goes away.
+                          old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+                          the removal timeline.
 
                           Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
                           resolved against DefaultMetricsOnTransportPort at the point of use rather than
@@ -7061,7 +7062,8 @@ spec:
                           deployments a migration window: while true, an existing scrape configuration
                           aimed at the transport port keeps working, and a new one aimed at
                           PrometheusPort works too, so a scraper can be moved and verified before the
-                          old location goes away.
+                          old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+                          the removal timeline.
 
                           Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
                           resolved against DefaultMetricsOnTransportPort at the point of use rather than

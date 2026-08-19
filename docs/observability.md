@@ -222,7 +222,8 @@ while it is moved:
 2. Set `metricsOnTransportPort: false` to stop serving the old location, and confirm
    nothing else was still scraping it.
 3. When the window closes the default flips, and only the diagnostics port serves
-   `/metrics`.
+   `/metrics`. See [issue #6384](https://github.com/stacklok/toolhive/issues/6384) for
+   the timeline.
 
 A deployment that sets `metricsOnTransportPort` explicitly is not moved by the flip.
 Leaving it unset is what opts you into the new default when it changes — the value is

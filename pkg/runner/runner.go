@@ -387,7 +387,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.prometheusHandler != nil && r.Config.TelemetryConfig.ServeMetricsOnTransportPort() {
 		transportConfig.PrometheusHandler = r.prometheusHandler
 		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
-			"this is deprecated and the transport-port copy will be removed. Move scrapers to the "+
+			"this is deprecated and the transport-port copy will be removed; see #6384 for the timeline. "+
+			"Move scrapers to the "+
 			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
 			"transport_port", r.Config.Port)
 	}

@@ -97,7 +97,8 @@ type Config struct {
 	// deployments a migration window: while true, an existing scrape configuration
 	// aimed at the transport port keeps working, and a new one aimed at
 	// PrometheusPort works too, so a scraper can be moved and verified before the
-	// old location goes away.
+	// old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+	// the removal timeline.
 	//
 	// Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
 	// resolved against DefaultMetricsOnTransportPort at the point of use rather than
@@ -175,6 +176,9 @@ func (c Config) String() string {
 // to false is the entire cutover — it stops serving the transport-port copy and leaves
 // only the diagnostics port. Deployments that set MetricsOnTransportPort explicitly
 // are unaffected by the flip, by design.
+//
+// Flipping it is not the whole job: #6384 carries the timeline and the cleanup this
+// field, its CLI flag, and its CRD entry all need afterwards.
 const DefaultMetricsOnTransportPort = true
 
 // ServeMetricsOnTransportPort reports whether /metrics should also be served on the

@@ -96,6 +96,17 @@ const (
 // the two must not drift apart.
 const startupLogMessage = "prometheus metrics are served on a dedicated diagnostics port, not the application port"
 
+// ResolvePort returns the diagnostics port to request for a configured value.
+// Zero means "not configured" and selects DefaultPort, so a scraper has a
+// predictable target rather than an arbitrary one. Callers that genuinely want
+// an OS-assigned port pass 0 to New directly instead.
+func ResolvePort(configured int) int {
+	if configured == 0 {
+		return DefaultPort
+	}
+	return configured
+}
+
 // bindAttempts bounds how many times Start re-resolves and re-binds when the
 // port is claimed between the availability check and the bind. See Server.bind.
 const bindAttempts = 3

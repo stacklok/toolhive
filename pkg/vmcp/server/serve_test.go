@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -231,34 +232,68 @@ func TestServeOmitsAuthzAndAnnotation(t *testing.T) {
 	require.NotNil(t, handler)
 }
 
-func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
+// TestServeHandlerMetricsOnTransportPort pins both ends of the migration: while
+// metricsOnTransportPort is on, /metrics stays reachable on the port serving MCP
+// traffic so existing scrapers keep working; once it is off, the application mux
+// 404s rather than letting /metrics fall through to the "/" MCP handler.
+//
+// Metrics are served on the diagnostics listener in both cases.
+func TestServeHandlerMetricsOnTransportPort(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	provider, err := telemetry.NewProvider(ctx, telemetry.Config{
-		ServiceName:                 "vmcp-serve-test",
-		ServiceVersion:              "0.0.0",
-		EnablePrometheusMetricsPath: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+	tests := []struct {
+		name                   string
+		metricsOnTransportPort *bool
+		wantStatus             int
+	}{
+		{
+			name:                   "default serves on the transport port during the migration window",
+			metricsOnTransportPort: nil,
+			wantStatus:             http.StatusOK,
+		},
+		{
+			name:                   "explicitly enabled serves on the transport port",
+			metricsOnTransportPort: ptrTo(true),
+			wantStatus:             http.StatusOK,
+		},
+		{
+			name:                   "opted out leaves only the diagnostics listener",
+			metricsOnTransportPort: ptrTo(false),
+			wantStatus:             http.StatusNotFound,
+		},
+	}
 
-	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
-		SessionTTL:           defaultSessionTTL,
-		SessionManagerConfig: testMinimalSessionManagerConfig(),
-		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
-		TelemetryProvider:    provider,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	handler, err := srv.Handler(ctx)
-	require.NoError(t, err)
+			ctx := context.Background()
+			provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+				ServiceName:                 "vmcp-serve-test",
+				ServiceVersion:              "0.0.0",
+				EnablePrometheusMetricsPath: true,
+				MetricsOnTransportPort:      tt.metricsOnTransportPort,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = provider.Shutdown(ctx) })
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+			srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
+				SessionTTL:           defaultSessionTTL,
+				SessionManagerConfig: testMinimalSessionManagerConfig(),
+				BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+				TelemetryProvider:    provider,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+			handler, err := srv.Handler(ctx)
+			require.NoError(t, err)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, diagnostics.MetricsPath, nil))
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
 }
 
 func TestServeStopClosesCore(t *testing.T) {

@@ -1403,6 +1403,118 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 		assert.Contains(t, errDesc, "not authorized to exchange subject tokens")
 	})
 
+	t.Run("actor matcher grants an exchange with no allowlisted actor", func(t *testing.T) {
+		t.Parallel()
+
+		externalKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		idpServer, _ := startExternalIdPServer(t, externalKey)
+
+		m := startMockOIDC(t)
+		ts := setupTestServerWithMockOIDC(t, m,
+			withExtraClient(newAgentClient(t)),
+			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
+				IssuerURL:        idpServer.URL,
+				ExpectedAudience: testAudience,
+				JWKSURL:          idpServer.URL + "/jwks",
+				// AllowedActors deliberately empty: the matcher is the sole
+				// consent signal here. It matches "appid" — Entra v1's
+				// actor-claim name, distinct from the "azp" claim this test
+				// file's ActorClaim default (and every other subtest) reads
+				// — proving the matcher genuinely evaluates the token's
+				// complete claims map rather than re-checking whatever the
+				// allowlist path already looks at.
+				ActorMatcher:           `claims.appid == "` + allowedActor + `"`,
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
+			}}),
+		)
+
+		subjectToken := signExternalToken(t, externalKey, externalClaims(idpServer.URL), map[string]any{
+			"appid": allowedActor,
+		})
+
+		resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			"client_id":          {agentClientID},
+			"client_secret":      {agentClientSecret},
+		})
+		defer resp.Body.Close()
+
+		body := parseTokenResponse(t, resp)
+		require.Equal(t, http.StatusOK, resp.StatusCode,
+			"an actor matcher match should authorize the exchange even with no allowlisted actor, "+
+				"got %d (body: %v)", resp.StatusCode, body)
+
+		delegated, ok := body["access_token"].(string)
+		require.True(t, ok, "access_token should be a string")
+		require.NotEmpty(t, delegated)
+
+		parsed, err := jwt.ParseSigned(delegated, []jose.SignatureAlgorithm{jose.RS256})
+		require.NoError(t, err)
+		var claims map[string]any
+		require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+
+		act, ok := claims["act"].(map[string]any)
+		require.True(t, ok, "delegated token must carry an 'act' claim")
+		assert.Equal(t, agentClientID, act["sub"], "outermost act.sub must be the ToolHive acting client")
+
+		nested, ok := act["act"].(map[string]any)
+		require.True(t, ok, "external issuer provenance must still be nested")
+		assert.Equal(t, idpServer.URL, nested["iss"], "nested act.iss is the external issuer")
+		_, hasSub := nested["sub"]
+		assert.False(t, hasSub,
+			"a matcher-only authorization resolves no actor claim, so there is no client-namespace value to report")
+	})
+
+	t.Run("actor matcher false with no allowlist match rejected", func(t *testing.T) {
+		t.Parallel()
+
+		externalKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		idpServer, _ := startExternalIdPServer(t, externalKey)
+
+		m := startMockOIDC(t)
+		ts := setupTestServerWithMockOIDC(t, m,
+			withExtraClient(newAgentClient(t)),
+			withTrustedIssuers([]tokenexchange.TrustedIssuer{{
+				IssuerURL:              idpServer.URL,
+				ExpectedAudience:       testAudience,
+				JWKSURL:                idpServer.URL + "/jwks",
+				ActorMatcher:           `claims.appid == "some-other-app"`,
+				InsecureAllowHTTP:      true,
+				AllowPrivateIPs:        true,
+				AllowedDelegateClients: []string{"*"},
+			}}),
+		)
+
+		subjectToken := signExternalToken(t, externalKey, externalClaims(idpServer.URL), map[string]any{
+			"appid": allowedActor,
+		})
+
+		resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			"client_id":          {agentClientID},
+			"client_secret":      {agentClientSecret},
+		})
+		defer resp.Body.Close()
+
+		body := parseTokenResponse(t, resp)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+			"a false matcher with no allowlisted actor must fail closed, got %d (body: %v)",
+			resp.StatusCode, body)
+		assert.Equal(t, "invalid_request", body["error"])
+
+		errDesc, _ := body["error_description"].(string)
+		assert.Contains(t, errDesc, "invalid or could not be verified",
+			"the handler's fixed hint must not be replaced by a more specific — and leakier — message")
+	})
+
 	t.Run("untrusted issuer rejected before any JWKS fetch", func(t *testing.T) {
 		t.Parallel()
 

@@ -143,6 +143,9 @@ spec:
       - issuerUrl: https://login.example-idp.com
         expectedAudience: https://mcp.example.com
         allowedActors: [external-reporting-client]
+        # actorMatcher is additive with allowedActors, not a replacement —
+        # either signal is sufficient. Omit it to rely on allowedActors alone.
+        actorMatcher: "has(claims.roles) && 'trusted-delegator' in claims.roles"
         allowedDelegateClients: [reporting-delegate]
         allowMayAct: false
 ```
@@ -182,39 +185,64 @@ delegation.
 
 ## Consent signals
 
-Two functions cooperate here. `resolveAllowedActor`
+Two functions cooperate here. `resolveActorAuthorization`
 (`pkg/authserver/server/tokenexchange/multi_issuer_validator.go`), called from
 `validateExternalToken` during signature/claim validation, checks the
-external-issuer allowlist and — when it matches — sets
-`ValidatedClaims.ExternalActor`. `checkDelegationConsent`
+external-issuer authorization and — when it matches — sets
+`ValidatedClaims.ExternalActorAuthorized` (and `ValidatedClaims.ExternalActor`
+when the allowlist path resolved an actor claim). `checkDelegationConsent`
 (`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
 whether to grant the exchange, in this order:
 
 1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
    `allow_may_act: true` before its well-formed `may_act` claim is considered.
    It is otherwise rejected outright, not silently ignored or fallen through
-   to the allowlist. When enabled, `may_act` is authoritative: the allowlist
-   step above is skipped entirely (`validateExternalToken` never calls
-   `resolveAllowedActor` when `may_act` is present), and
-   `checkDelegationConsent` enforces `may_act.sub` against the authenticated
-   ToolHive client. On the external path, `may_act.iss` is mandatory, not
-   merely constrained when present as on the self-issued path —
-   `validateMayActShape`'s `requireIss` parameter is `true` there. Without
-   this, an external issuer omitting `iss` could authorize any ToolHive client
-   by naming its ID in a bare `may_act.sub`, bypassing
-   `allowedActors`/`allowedDelegateClients` entirely — the one consent path
-   that does.
-2. **`ExternalActor`.** Otherwise, consent was already established by
-   `resolveAllowedActor`: the claim named by that issuer's `actorClaim`
-   (default `azp`; `appid` for Microsoft Entra v1, `cid` for Okta) matched an
-   entry in that issuer's `allowedActors`. `allowedActors` holds client IDs in
-   the *external* IdP's namespace, not ToolHive client IDs — the likeliest
-   misconfiguration. An empty `allowedActors` accepts only permitted
-   `may_act`-bearing tokens from that issuer; without `allow_may_act`, it
-   accepts no tokens. `checkDelegationConsent` then additionally checks
-   the issuer's `allowedDelegateClients` against the authenticated ToolHive
-   client — this field is required (see below), so the check always applies
-   on this path.
+   to external-issuer authorization. When enabled, `may_act` is authoritative:
+   external-issuer authorization below is skipped entirely
+   (`validateExternalToken` never calls `resolveActorAuthorization` when
+   `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
+   against the authenticated ToolHive client. A malformed `may_act` is
+   rejected outright by `validateMayActShape`, not silently ignored. On the
+   external path, `may_act.iss` is mandatory, not merely constrained when
+   present as on the self-issued path — `validateMayActShape`'s `requireIss`
+   parameter is `true` there. Without this, an external issuer omitting `iss`
+   could authorize any ToolHive client by naming its ID in a bare
+   `may_act.sub`, bypassing `allowedActors`/`actorMatcher` external
+   authorization entirely. The handler still enforces `allowedDelegateClients`
+   for every external token.
+2. **External actor authorization.** Otherwise, consent was already
+   established by `resolveActorAuthorization`: the claim named by that
+   issuer's `actorClaim` (default `azp`; `appid` for Microsoft Entra v1,
+   `cid` for Okta) matched an entry in that issuer's `allowedActors`, **or**
+   its `actorMatcher` CEL expression evaluated to `true`. `allowedActors`
+   holds client IDs in the *external* IdP's namespace, not ToolHive client
+   IDs — the likeliest misconfiguration. `actorMatcher` is an admin-authored
+   CEL expression whose only variable is `claims`, a `map[string]any`
+   containing the complete signature-verified JWT claims map, including
+   registered claims such as `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, and
+   `jti`. It is compiled during config validation and validator construction;
+   a syntax or type error fails startup, but an expression that compiles yet
+   never returns bool does NOT — it is only caught the first time a real
+   token evaluates it, denying that token (and every subsequent one, since it
+   can never return bool). Runtime CEL errors, including that one, deny the
+   token (they are never treated as a match). Access to optional claims must be
+   guarded with `has()` (for example, `has(claims.roles) && 'trusted-delegator'
+   in claims.roles`), because a missing claim produces a CEL evaluation error
+   and denies the token. An empty `allowedActors` and
+   `actorMatcher` accepts only permitted `may_act`-bearing tokens from that
+   issuer; without `allowMayAct`, it accepts no tokens at all.
+   `checkDelegationConsent` then additionally checks the issuer's
+   `allowedDelegateClients` against the authenticated ToolHive client — this
+   field is required (see below), so the check always applies on this path.
+
+   **`actorMatcher` misconfiguration risk, analogous to `allowedActors`
+   above:** write the predicate against a claim the external issuer alone
+   controls and that does not vary with a user- or self-service-editable
+   attribute — an actor/client identifier such as `azp`, `appid`, or `cid`,
+   not a profile or business attribute such as a department or team name
+   (which may be HR-synced or editable by the user themselves). A matcher
+   written against the wrong kind of claim can grant delegation on a basis
+   the operator never intended.
 3. **`client_id` binding.** For a self-issued subject token (not part of the
    external path above), the token's `client_id` must match the authenticated
    client — **unless** the authenticated client is a configured delegate
@@ -381,15 +409,15 @@ delegate_clients:
 
 ## Accepted limitations
 
-1. **`allowedDelegateClients` binds an allowlisted actor to specific ToolHive
-   clients, and is mandatory, not opt-in.** `allowedActors` by itself
-   authorizes "this external client's tokens may be exchanged here," not
-   "…by this particular ToolHive client" — the external actor claim is never
-   compared against the authenticated ToolHive client ID. Without a separate
-   binding, every ToolHive confidential client holding the token-exchange
-   grant would be delegation-equivalent with respect to an allowlisted
-   external actor, so compromise of the weakest such client would be as good
-   as compromise of all of them.
+1. **`allowedDelegateClients` binds external actor authorization to specific
+   ToolHive clients, and is mandatory, not opt-in.** `allowedActors` or
+   `actorMatcher` by itself authorizes "these external tokens may be exchanged
+   here," not "…by this particular ToolHive client" — the external actor
+   claim (when one exists) is never compared against the authenticated
+   ToolHive client ID. Without a separate binding, every ToolHive confidential
+   client holding the token-exchange grant would be delegation-equivalent with
+   respect to an authorized external token, so compromise of the weakest such
+   client would be as good as compromise of all of them.
 
    `TrustedIssuer.AllowedDelegateClients` (`allowed_delegate_clients` on a
    hand-written `authserver.RunConfig`) closes this per issuer: a list of
@@ -402,7 +430,8 @@ delegate_clients:
    enabled: trusting a foreign issuer to name ToolHive clients in `may_act`
    requires explicit per-client containment. `checkDelegationConsent` checks
    the authenticated client against this list on both consent paths:
-   `may_act` bypasses `allowedActors` (the external-issuer allowlist) but NOT
+   `may_act` bypasses `allowedActors` and `actorMatcher` (external-issuer
+   authorization) but NOT
    `allowedDelegateClients`, since the validator sets `AllowedDelegateClients`
    for every external token regardless of which path authorized it (see
    limitation 4 below). A self-issued `may_act` (no external issuer involved)
@@ -429,16 +458,18 @@ delegate_clients:
    entry additionally carries `sub` (the allowlisted actor claim) when the
    allowlist path resolved one; a `may_act`-bearing external token yields
    `act = {iss: <toolhive-issuer>, sub: <toolhive-client>, act: {iss:
-   <external-issuer>}}`. Either way, Cedar authorizers key on `sub` and do not
-   read `act` — it is an audit trail, not an access control. (AWS STS role
+   <external-issuer>}}` — no client-namespace actor to report there, but the
+   issuer is still recorded. Either way, Cedar authorizers key on `sub` and do
+   not read `act` — it is an audit trail, not an access control. (AWS STS role
    mapping can read arbitrary claims including `act` via its CEL matcher, so
    "authorizers" here means Cedar specifically, not every consumer.)
-4. **`may_act` trust is a per-issuer opt-in.** `allow_may_act` is false by
-   default because an enabled issuer bypasses `allowedActors` and can name a
-   ToolHive client. The claim must be drawn from ToolHive's own client
-   namespace and must not be influenceable by an untrusted party. Its issuer
-   must use explicit `allowedDelegateClients`; wildcard delegation is rejected
-   with this opt-in.
+4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
+   thing.** `allow_may_act` is false by default because an enabled issuer
+   bypasses BOTH `allowedActors` and `actorMatcher` (external actor
+   authorization) and can name a ToolHive client directly. The claim must be
+   drawn from ToolHive's own client namespace and must not be influenceable by
+   an untrusted party. Its issuer must use explicit `allowedDelegateClients`;
+   wildcard delegation is rejected with this opt-in.
 5. **ID/access-token discrimination on the external path rests on two
    partial layers, neither of which is exhaustive alone.** Nothing inspects
    the JWT header's `typ` claim: RFC 8725 §3.12 recommends `typ: at+jwt` for
@@ -520,14 +551,16 @@ delegate_clients:
   its first successful fetch — so a just-corrected `jwksUrl` can keep failing
   for up to 30s before the next retry; once a fetch has ever succeeded, this
   backoff no longer applies.
-- **Diagnostics.** A non-allowlisted actor and an untrusted issuer both
-  surface as the same generic `invalid_request`
-  ("The subject token is invalid or could not be verified."), per RFC 8693
-  §2.2.2. The only discriminator is a `slog.Debug` log line, so diagnosing a
-  failed exchange needs debug logging enabled. The two exceptions are startup
-  `slog.Warn` lines — an issuer with empty `allowedActors`, and an
-  `expectedAudience` missing from `allowedAudiences` — the only non-DEBUG
-  diagnostics this feature emits.
+- **Diagnostics.** A non-allowlisted/non-matching actor, a runtime
+  `actorMatcher` CEL evaluation failure, and an untrusted issuer all surface
+  as the same generic `invalid_request` ("The subject token is invalid or
+  could not be verified."), per RFC 8693 §2.2.2. The only discriminator is a
+  safe `slog.Debug` log line (the matcher diagnostic names only the configured
+  issuer and CEL error, never claims or tokens), so diagnosing a failed
+  exchange needs debug logging enabled. The two exceptions are startup
+  `slog.Warn` lines — an issuer with both empty `allowedActors` and
+  `actorMatcher`, and an `expectedAudience` that does not look like a resource
+  identifier — the only non-DEBUG diagnostics this feature emits.
 - **HTTPS enforcement for a trusted issuer.** `validateTrustedIssuerURL`
   (`pkg/authserver/config.go`) validates `issuer_url` at config time and,
   unlike the server's own issuer, grants no localhost exemption: an
@@ -551,7 +584,7 @@ delegate_clients:
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
-- `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveAllowedActor`, `ValidateJWKSURL`
+- `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
 - `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`

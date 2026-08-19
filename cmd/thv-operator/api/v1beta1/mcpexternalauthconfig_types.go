@@ -453,14 +453,28 @@ type TrustedIssuerConfig struct {
 
 	// AllowedActors is the allowlist of actorClaim values authorized to
 	// exchange a subject token from this issuer when it carries no
-	// "may_act" claim. Empty denies every token unless allowMayAct is true
-	// and the token carries a permitted may_act claim.
+	// "may_act" claim, in addition to (not instead of) actorMatcher below —
+	// either signal is sufficient. Empty denies every token unless
+	// actorMatcher is set, or allowMayAct is true and the token carries a
+	// permitted may_act claim.
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=atomic
 	// +optional
 	AllowedActors []string `json:"allowedActors,omitempty"`
+
+	// ActorMatcher is an admin-authored CEL expression evaluated against the
+	// subject token's complete signature-verified claims map (bound as
+	// "claims") to authorize a class of external actors, in addition to (not
+	// instead of) allowedActors — either signal is sufficient. Must evaluate
+	// to a boolean; a non-boolean result denies the token at evaluation time,
+	// not at reconcile time. A syntactically invalid expression fails
+	// reconciliation (surfaced via the AuthServerConfigValidated condition),
+	// not admission — there is no validating webhook for this field.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	ActorMatcher string `json:"actorMatcher,omitempty"`
 
 	// AllowedDelegateClients restricts which ToolHive client IDs may
 	// exchange a subject token from this issuer. Required; set it to ["*"]
@@ -477,9 +491,10 @@ type TrustedIssuerConfig struct {
 
 	// AllowMayAct permits this external issuer's may_act claim to authorize
 	// delegation. Defaults to false; external issuers must be opted in
-	// explicitly because may_act bypasses allowedActors. Does not affect
-	// self-issued subject tokens. The wildcard is never permitted alongside
-	// specific allowedDelegateClients, regardless of this setting.
+	// explicitly because may_act bypasses allowedActors and actorMatcher.
+	// Does not affect self-issued subject tokens. The wildcard is never
+	// permitted alongside specific allowedDelegateClients, regardless of
+	// this setting.
 	// +kubebuilder:default=false
 	// +optional
 	AllowMayAct bool `json:"allowMayAct,omitempty"`

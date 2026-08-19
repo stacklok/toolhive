@@ -1089,9 +1089,15 @@ func resolveActorAuthorization(
 	if issuerConfig.actorMatcher != nil {
 		matched, err := issuerConfig.actorMatcher.EvaluateBool(map[string]any{"claims": verifiedClaims})
 		if err != nil {
+			// The raw CEL error is never logged or returned: it can quote
+			// runtime values from the claims map (e.g. timestamp(claims.foo)
+			// on a malformed string embeds that string in the error),
+			// which would otherwise leak signed claim data into logs and,
+			// via HandleTokenEndpointRequest's own error logging, further
+			// downstream.
 			slog.Debug("Trusted issuer actor matcher evaluation failed; denying subject token",
-				"issuer", issuerConfig.IssuerURL, "error", err)
-			return "", false, fmt.Errorf("actor matcher evaluation failed for issuer %q: %w", issuerConfig.IssuerURL, err)
+				"issuer", issuerConfig.IssuerURL)
+			return "", false, fmt.Errorf("actor matcher evaluation failed for issuer %q", issuerConfig.IssuerURL)
 		} else if matched {
 			return actor, true, nil
 		}

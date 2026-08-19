@@ -1441,10 +1441,15 @@ func TestMultiIssuerTokenValidator_ActorMatcherEvaluationFailure(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
-		IssuerURL:              testExternalIssuer,
-		ExpectedAudience:       testExternalAudience,
-		JWKSURL:                jwksServer.URL + "/jwks",
-		ActorMatcher:           `claims["missing"] == "value"`,
+		IssuerURL:        testExternalIssuer,
+		ExpectedAudience: testExternalAudience,
+		JWKSURL:          jwksServer.URL + "/jwks",
+		// timestamp() on a malformed value is CEL's own example of an
+		// evaluation error that quotes the offending value verbatim —
+		// this exercises that the claim value never reaches the error
+		// or the log, not just an attribute-missing error that never
+		// carried a value to begin with.
+		ActorMatcher:           `timestamp(claims["sensitive"]) > timestamp("2000-01-01T00:00:00Z")`,
 		AllowedDelegateClients: []string{anyDelegateClient},
 	}})
 
@@ -1454,6 +1459,7 @@ func TestMultiIssuerTokenValidator_ActorMatcherEvaluationFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "actor matcher evaluation failed")
 	assert.Contains(t, buf.String(), "level=DEBUG")
 	assert.Contains(t, buf.String(), "actor matcher evaluation failed")
+	assert.NotContains(t, err.Error(), "sensitive-claim-value", "returned error must not carry claim values")
 	assert.NotContains(t, buf.String(), rawToken, "diagnostics must not log tokens")
 	assert.NotContains(t, buf.String(), "sensitive-claim-value", "diagnostics must not log claims")
 }

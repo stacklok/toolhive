@@ -221,6 +221,23 @@ Port selection:
   one machine, for example) an available port is chosen instead. The resolved
   address is logged at startup.
 
+#### Finding the endpoint after an upgrade
+
+If metrics stopped arriving after an upgrade, the endpoint moved off the transport
+port. Two things tell you where it went:
+
+- **The startup log.** A warning naming the resolved address is emitted whenever
+  metrics are enabled: `prometheus metrics are served on a dedicated diagnostics
+  port, not the application port`.
+- **The old address.** `GET /metrics` on the transport port returns 404 with a body
+  explaining that metrics moved and telling you which log line carries the address.
+  It names no port: the listener honours a configured port and falls back to another
+  when that one is taken, so only the log is reliably correct.
+
+Prometheus reports the stale target as `up == 0` with a 404, so an alert on scrape
+failure fires — but neither the alert nor a bare 404 says *why*, which is what these
+two signals add.
+
 #### Restricting access to the diagnostics port
 
 Leave the diagnostics port out of any Service or Ingress that faces the internet,

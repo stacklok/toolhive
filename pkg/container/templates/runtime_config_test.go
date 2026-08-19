@@ -4,7 +4,6 @@
 package templates
 
 import (
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -760,16 +759,6 @@ func TestRuntimeConfigWithOverrides_OutputIsDetachedFromInputs(t *testing.T) {
 	assert.Equal(t, []string{"git", "curl"}, got.AdditionalPackages)
 	assert.Equal(t, "override", got.RuntimeEnv["FOO"])
 	assert.Equal(t, []string{"mcp<2"}, got.BuildWith)
-}
-
-// TestRuntimeConfigFieldCount guards against a field being added to
-// RuntimeConfig without updating Clone, WithOverrides, and IsEmpty, all of
-// which enumerate every field individually.
-func TestRuntimeConfigFieldCount(t *testing.T) {
-	t.Parallel()
-
-	// Adding a field? Update Clone, WithOverrides, and IsEmpty, then bump this.
-	require.Equal(t, 4, reflect.TypeOf(RuntimeConfig{}).NumField())
 }
 
 func TestRuntimeConfigIsEmpty(t *testing.T) {

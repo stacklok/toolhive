@@ -134,23 +134,29 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 	// other load error (corrupt file, cancelled context) is surfaced
 	// instead of silently disabling the echo check and producing a
 	// misleading 400.
-	var persisted *runner.RunConfig
 	// runtimeConfigFromRequest is called again in BuildFullRunConfig; it's
 	// pure (Clone-then-normalize), so the duplicate call just decides whether
 	// a state read is needed at all. Gating on it rather than the raw
 	// req.RuntimeConfig != nil means a request with an empty/whitespace-only
 	// runtime_config (which normalizes away to nothing) never reads state.
-	if runtimeConfigFromRequest(req) != nil && (req.URL != "" || !runner.IsImageProtocolScheme(req.Image)) {
+	persisted, err := func() (*runner.RunConfig, error) {
+		if runtimeConfigFromRequest(req) == nil || (req.URL == "" && runner.IsImageProtocolScheme(req.Image)) {
+			return nil, nil
+		}
 		p, err := runner.LoadState(ctx, name)
 		switch {
 		case err == nil:
-			persisted = p
+			return p, nil
 		case errors.Is(err, wterrors.ErrRunConfigNotFound):
 			// No persisted state to echo against; fall through to the
 			// protocol-scheme guard.
+			return nil, nil
 		default:
 			return nil, fmt.Errorf("failed to load persisted state for workload %q: %w", name, err)
 		}
+	}()
+	if err != nil {
+		return nil, err
 	}
 
 	// Build the full run config

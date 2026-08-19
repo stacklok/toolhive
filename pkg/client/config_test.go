@@ -193,6 +193,14 @@ func createMockClientConfigs() []clientAppConfig {
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           Qoder,
+			Description:          "Qoder (Mock)",
+			RelPath:              []string{"mock_qoder"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
 	}
 }
 
@@ -376,6 +384,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Codex),
 					string(KimiCli),
 					string(Factory),
+					string(Qoder),
 				},
 			},
 		}
@@ -456,7 +465,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpCli config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory, CopilotCli:
+			case Qoder, LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
 			case VSCodeServer:
@@ -515,7 +524,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
 				LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-				MistralVibe, Codex, KimiCli, Factory, CopilotCli:
+				MistralVibe, Codex, Qoder, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -1244,8 +1253,8 @@ func TestGetAllClients(t *testing.T) {
 
 	clients := GetAllClients()
 
-	// Should return all 24 supported clients
-	assert.Len(t, clients, 24, "Expected 24 supported clients")
+	// Should return all 25 supported clients
+	assert.Len(t, clients, 25, "Expected 25 supported clients")
 
 	// Verify the list is sorted alphabetically
 	for i := 1; i < len(clients); i++ {
@@ -1459,7 +1468,7 @@ func TestGetClientListCSV(t *testing.T) {
 			clientNames[i-1], clientNames[i])
 	}
 
-	// Count the number of clients (should be 24)
+	// Count the number of clients (should be 25)
 	clients := strings.Split(csv, ", ")
-	assert.Len(t, clients, 24, "Expected 24 clients in CSV list")
+	assert.Len(t, clients, 25, "Expected 25 clients in CSV list")
 }

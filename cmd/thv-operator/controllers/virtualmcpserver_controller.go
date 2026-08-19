@@ -21,6 +21,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1564,6 +1565,20 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
 
+		mergedAnnotations := mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
+		replicasUnchanged := newDeployment.Spec.Replicas == nil ||
+			(deployment.Spec.Replicas != nil && *deployment.Spec.Replicas == *newDeployment.Spec.Replicas)
+		// Skip the write when the pod template (and the other fields we own)
+		// is unchanged. Status-interval requeues used to call Update anyway,
+		// bumping metadata.generation and emitting DeploymentUpdated with no
+		// new ReplicaSet (#6340).
+		if equality.Semantic.DeepEqual(deployment.Spec.Template, newDeployment.Spec.Template) &&
+			maps.Equal(deployment.Labels, newDeployment.Labels) &&
+			maps.Equal(deployment.Annotations, mergedAnnotations) &&
+			replicasUnchanged {
+			return ctrl.Result{}, nil
+		}
+
 		// Selective field update strategy:
 		// - Update Spec.Template: Contains container spec, volumes, pod metadata (triggers rollout)
 		// - Update Labels: For label selectors and queries
@@ -1576,7 +1591,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
-		deployment.Annotations = mergeDeploymentAnnotations(newDeployment.Annotations, deployment.Annotations)
+		deployment.Annotations = mergedAnnotations
 		if newDeployment.Spec.Replicas != nil {
 			deployment.Spec.Replicas = newDeployment.Spec.Replicas
 		}
@@ -1778,7 +1793,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	if err != nil {
 		return true // Trigger update to surface the error
 	}
-	if !reflect.DeepEqual(container.Env, expectedEnv) {
+	// Semantic equality ignores Kubernetes defaulting on pointer fields
+	// (e.g. SecretKeyRef.Optional) so telemetry/OIDC env vars do not look
+	// like drift after the first apply (#6340).
+	if !equality.Semantic.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}
 
@@ -1835,11 +1853,16 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
 	)
 
-	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
+	// Subset check, not maps.Equal: applyPodTemplateSpecToDeployment merges
+	// user PodTemplateSpec labels/annotations onto the live template. Exact
+	// equality then flags those extras as drift on every status requeue
+	// (statusReportingInterval), which Update's the Deployment without
+	// creating a new ReplicaSet (#6340).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
 		return true
 	}
 
-	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
 

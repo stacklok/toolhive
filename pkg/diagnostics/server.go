@@ -91,6 +91,11 @@ const (
 	maxHeaderBytes = 1 << 20 // 1 MiB
 )
 
+// startupLogMessage is the message logged when the diagnostics listener binds. It
+// is referenced by NotServedHereHandler, which tells the reader to grep for it, so
+// the two must not drift apart.
+const startupLogMessage = "prometheus metrics are served on a dedicated diagnostics port, not the application port"
+
 // bindAttempts bounds how many times Start re-resolves and re-binds when the
 // port is claimed between the availability check and the bind. See Server.bind.
 const bindAttempts = 3
@@ -101,8 +106,14 @@ const bindAttempts = 3
 // It exists so the response explains itself. A bare 404 is indistinguishable
 // from a typo, and the failure is otherwise silent from the server side: an
 // upgrade moves the endpoint and the operator sees only a Prometheus target
-// going down. The body names the diagnostics port so whoever curls it gets the
-// answer immediately.
+// going down.
+//
+// The body deliberately names no port. The diagnostics listener honours a
+// configured port and falls back to an available one when that is taken (see
+// Server.bind), so any number written here would be wrong for both of those
+// supported configurations — and a confidently wrong address is worse than none
+// when the whole point is to redirect someone who is already lost. The startup
+// log carries the resolved address and is the one source that is always correct.
 //
 // The status stays 404 rather than 410 Gone: this handler is also registered on
 // deployments that never served metrics on this port, where claiming the
@@ -116,9 +127,10 @@ func NotServedHereHandler() http.Handler {
 		// there is nothing useful to do about it on a 404.
 		_, _ = fmt.Fprintf(w, "%s is not served on this port.\n\n"+
 			"When Prometheus metrics are enabled they are served on a dedicated diagnostics\n"+
-			"port (default %d) so that access can be restricted separately from MCP traffic.\n"+
-			"The resolved address is logged at startup. See docs/observability.md.\n",
-			MetricsPath, DefaultPort)
+			"listener, so that access can be restricted separately from MCP traffic.\n\n"+
+			"Its address is logged at startup; look for %q.\n"+
+			"See docs/observability.md for how to point a scraper at it.\n",
+			MetricsPath, startupLogMessage)
 	})
 }
 
@@ -215,8 +227,7 @@ func (s *Server) Start() error {
 	// fires only for deployments that enabled them — the exact population whose
 	// scrape configuration has to point here. Without it, an upgrade moves the
 	// endpoint and the operator's only clue is a Prometheus target going down.
-	slog.Warn("prometheus metrics are served on a dedicated diagnostics port, not the application port; "+
-		"update scrape configuration to target this address",
+	slog.Warn(startupLogMessage+"; update scrape configuration to target this address",
 		"address", listener.Addr().String(), "path", MetricsPath)
 
 	return nil

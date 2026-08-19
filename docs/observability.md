@@ -230,7 +230,9 @@ port. Two things tell you where it went:
   metrics are enabled: `prometheus metrics are served on a dedicated diagnostics
   port, not the application port`.
 - **The old address.** `GET /metrics` on the transport port returns 404 with a body
-  naming the diagnostics port, so `curl` answers the question directly.
+  explaining that metrics moved and telling you which log line carries the address.
+  It names no port: the listener honours a configured port and falls back to another
+  when that one is taken, so only the log is reliably correct.
 
 Prometheus reports the stale target as `up == 0` with a 404, so an alert on scrape
 failure fires — but neither the alert nor a bare 404 says *why*, which is what these

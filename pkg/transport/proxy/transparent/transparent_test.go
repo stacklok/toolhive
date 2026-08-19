@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,7 +25,6 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -1699,11 +1697,12 @@ func TestMetricsNotServedWithoutHandler(t *testing.T) {
 
 	// The response has to explain itself: a bare 404 here is indistinguishable
 	// from a typo, and this is the only client-side signal that a scrape
-	// configuration is pointed at the wrong port.
+	// configuration is pointed at the wrong port. It names no port deliberately —
+	// see diagnostics.NotServedHereHandler.
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Contains(t, string(body), strconv.Itoa(diagnostics.DefaultPort),
-		"the 404 body must name the diagnostics port")
+	assert.Contains(t, string(body), "diagnostics",
+		"the 404 body must explain where metrics moved to")
 }
 
 // TestPrefixHandlers_NilMapDoesNotPanic tests that a nil PrefixHandlers map doesn't cause panic

@@ -1338,6 +1338,25 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			wantErr: true,
 			errMsg:  "allow_may_act",
 		},
+		{
+			// This is a server runtime configuration invariant, not CRD
+			// admission: the configured allowed audience is supplied by the
+			// individual MCP server using the shared auth configuration.
+			name: "JWT-bearer accepted audience overlapping allowed resource rejected",
+			issuers: []tokenexchange.TrustedIssuer{{
+				IssuerURL: "https://idp.example.com",
+				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "1m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+						Subject:          "workload",
+						AllowedResources: []string{"https://mcp.example.com"},
+					}},
+					AcceptedAudiences: []string{"https://mcp.example.com"},
+				},
+			}},
+			wantErr: true,
+			errMsg:  "must not also be a configured resource audience",
+		},
 	}
 
 	for _, tt := range tests {

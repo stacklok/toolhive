@@ -116,6 +116,32 @@ func TestCIMDStorageDecorator_UnwrapReturnsBase(t *testing.T) {
 	assert.Same(t, base, dec.Unwrap())
 }
 
+func TestCIMDStorageDecorator_ConsumeAssertionJWTDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	var consumer AssertionJWTConsumer = dec
+
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", exp))
+	require.ErrorIs(t, consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", exp), fosite.ErrJTIKnown)
+}
+
+type storageWithoutAssertionJWTConsumer struct{ Storage }
+
+func TestCIMDStorageDecorator_ConsumeAssertionJWTFailsClosedWithoutBackendCapability(t *testing.T) {
+	t.Parallel()
+
+	decorated, err := NewCIMDStorageDecorator(storageWithoutAssertionJWTConsumer{}, CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
+	consumer := decorated.(AssertionJWTConsumer)
+	err = consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", time.Now().Add(time.Hour))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support assertion JWT replay consumption")
+}
+
 // --- GetClient delegation for non-CIMD IDs ---
 
 func TestCIMDStorageDecorator_GetClient_OpaqueIDDelegatesToBase(t *testing.T) {

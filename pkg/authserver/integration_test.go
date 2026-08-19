@@ -372,9 +372,187 @@ func makeTokenRequest(t *testing.T, serverURL string, params url.Values) *http.R
 	return resp
 }
 
-// ============================================================================
-// Token Endpoint Error Handling Tests
-// ============================================================================
+func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*testServerWithUpstream, func(string, time.Time, time.Time, string) string) {
+	t.Helper()
+
+	externalKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	const externalIssuer = "https://issuer.example.com"
+	jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       externalKey.Public(),
+		KeyID:     "external-key",
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}}}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode(jwks))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	serverOpts := append([]testServerOption{}, opts...)
+	serverOpts = append(serverOpts, withTrustedIssuers([]tokenexchange.TrustedIssuer{{
+		IssuerURL:         externalIssuer,
+		JWKSURL:           jwksServer.URL,
+		InsecureAllowHTTP: true,
+		AllowPrivateIPs:   true,
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+			MaxAssertionAge: "10m",
+			SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+				Subject:          "external-subject",
+				AllowedResources: []string{testAudience},
+			}},
+		},
+	}}))
+	ts := setupTestServerWithMockOIDC(t, startMockOIDC(t), serverOpts...)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: externalKey}, (&jose.SignerOptions{}).WithHeader("kid", "external-key"))
+	require.NoError(t, err)
+
+	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+			Issuer:   externalIssuer,
+			Subject:  subject,
+			Audience: jwt.Audience{testIssuer + "/oauth/token"},
+			IssuedAt: jwt.NewNumericDate(issuedAt),
+			Expiry:   jwt.NewNumericDate(expiry),
+			ID:       id,
+		}).Serialize()
+		require.NoError(t, err)
+		return assertion
+	}
+	return ts, signAssertion
+}
+
+func TestIntegration_JWTBearerGrantWithoutClientAuthentication(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t)
+	now := time.Now()
+	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "assertion-1")
+
+	request := func(assertion, resource string) (*http.Response, map[string]interface{}) {
+		t.Helper()
+		response := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type": {oauthproto.GrantTypeJWTBearer},
+			"assertion":  {assertion},
+			"resource":   {resource},
+		})
+		t.Cleanup(func() { response.Body.Close() })
+		return response, parseTokenResponse(t, response)
+	}
+
+	response, result := request(assertion, testAudience)
+	require.Equal(t, http.StatusOK, response.StatusCode, result)
+	accessToken, ok := result["access_token"].(string)
+	require.True(t, ok)
+
+	issued, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]any
+	require.NoError(t, issued.Claims(ts.PrivateKey.Public(), &claims))
+	assert.Equal(t, "https://issuer.example.com#external-subject", claims["sub"])
+	assert.Equal(t, []any{testAudience}, claims["aud"])
+	assert.Contains(t, claims["client_id"], "jwt-bearer-")
+
+	for _, tc := range []struct {
+		name      string
+		assertion string
+		resource  string
+		errorCode string
+	}{
+		{
+			name:      "wrong subject",
+			assertion: signAssertion("unconfigured-subject", now, now.Add(2*time.Minute), "assertion-wrong-subject"),
+			resource:  testAudience,
+			errorCode: "invalid_grant",
+		},
+		{
+			name:      "unauthorized resource",
+			assertion: signAssertion("external-subject", now, now.Add(2*time.Minute), "assertion-wrong-resource"),
+			resource:  "https://unauthorized.example.com",
+			errorCode: "invalid_target",
+		},
+		{
+			name:      "maximum assertion age exceeded",
+			assertion: signAssertion("external-subject", now.Add(-11*time.Minute), now.Add(2*time.Minute), "assertion-too-old"),
+			resource:  testAudience,
+			errorCode: "invalid_grant",
+		},
+	} {
+		response, result := request(tc.assertion, tc.resource)
+		assert.Equalf(t, http.StatusBadRequest, response.StatusCode, "%s: %v", tc.name, result)
+		assert.Equalf(t, tc.errorCode, result["error"], "%s: %v", tc.name, result)
+	}
+
+	response, result = request(assertion, testAudience)
+	assert.Equal(t, http.StatusBadRequest, response.StatusCode, result)
+	assert.Equal(t, "invalid_grant", result["error"])
+
+	// The RFC 8693 handler remains responsible for its own grant and rejects
+	// a request without client authentication even when RFC 7523 is enabled.
+	exchangeResponse := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {assertion},
+		"subject_token_type": {oauthproto.TokenTypeJWT},
+	})
+	defer exchangeResponse.Body.Close()
+	exchangeResult := parseTokenResponse(t, exchangeResponse)
+	assert.Equal(t, http.StatusBadRequest, exchangeResponse.StatusCode, exchangeResult)
+	assert.Equal(t, "invalid_request", exchangeResult["error"])
+}
+
+func TestIntegration_JWTBearerGrantReplay_RedisStorage(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t, withRedisBackedStorage())
+	now := time.Now()
+	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "redis-replay")
+	params := url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {testAudience},
+	}
+
+	response := makeTokenRequest(t, ts.Server.URL, params)
+	defer response.Body.Close()
+	result := parseTokenResponse(t, response)
+	require.Equal(t, http.StatusOK, response.StatusCode, result)
+
+	response = makeTokenRequest(t, ts.Server.URL, params)
+	defer response.Body.Close()
+	result = parseTokenResponse(t, response)
+	assert.Equal(t, http.StatusBadRequest, response.StatusCode, result)
+	assert.Equal(t, "invalid_grant", result["error"])
+}
+
+// TestIntegration_JWTBearerGrantReplay_NoJTI proves replay protection still
+// works for an assertion that omits the optional "jti" claim (as real-world
+// IdPs like Microsoft Entra ID commonly do): the fallback hash-of-assertion
+// key must catch the second use of the identical assertion, exactly as jti
+// would.
+func TestIntegration_JWTBearerGrantReplay_NoJTI(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t)
+	now := time.Now()
+	assertion := signAssertion("external-subject", now, now.Add(2*time.Minute), "")
+	params := url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {testAudience},
+	}
+
+	response := makeTokenRequest(t, ts.Server.URL, params)
+	defer response.Body.Close()
+	result := parseTokenResponse(t, response)
+	require.Equal(t, http.StatusOK, response.StatusCode, result)
+
+	response = makeTokenRequest(t, ts.Server.URL, params)
+	defer response.Body.Close()
+	result = parseTokenResponse(t, response)
+	assert.Equal(t, http.StatusBadRequest, response.StatusCode, result)
+	assert.Equal(t, "invalid_grant", result["error"])
+}
 
 // TestIntegration_TokenEndpoint_Errors tests various error conditions at the token endpoint.
 func TestIntegration_TokenEndpoint_Errors(t *testing.T) {

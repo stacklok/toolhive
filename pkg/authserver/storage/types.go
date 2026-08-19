@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
@@ -52,6 +53,10 @@ var (
 	// ErrClientCapacity is returned when the client map is full and no
 	// DCR-issued client has aged enough to be safely evicted.
 	ErrClientCapacity = errors.New("storage: client capacity reached")
+
+	// ErrReservedClientID is returned when a caller attempts to register a
+	// real client whose ID collides with SyntheticClientIDPrefix.
+	ErrReservedClientID = errors.New("storage: client id uses reserved synthetic prefix")
 )
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
@@ -524,6 +529,58 @@ type PendingAuthorizationStorage interface {
 	// DeletePendingAuthorization removes a pending authorization.
 	// Returns ErrNotFound if the state does not exist.
 	DeletePendingAuthorization(ctx context.Context, state string) error
+}
+
+// AssertionJWTConsumer atomically records a validated assertion JWT as consumed.
+//
+// Implementations must treat (purpose, issuer, jti) as the replay key, retain it
+// until exp, and return fosite.ErrJTIKnown when that key is already unexpired.
+// Purpose keeps distinct assertion profiles separate, while issuer binds a JTI to
+// its JWT issuer. This intentionally stays separate from Storage so only
+// assertion-grant composition needs replay-consumption access.
+type AssertionJWTConsumer interface {
+	ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error
+}
+
+// SyntheticClientIDPrefix marks a client ID minted by NewSyntheticClient. A
+// grant that skips client authentication (fosite's CanSkipClientAuth) has no
+// real registered fosite.Client to attach to its request, but every storage
+// backend's marshal/unmarshal path calls request.GetClient() unconditionally
+// — so the request still needs a non-nil one. A synthetic client ID encodes
+// everything needed to reconstruct that client, so unmarshaling never has to
+// look it up in the client registry (it was never registered there).
+const SyntheticClientIDPrefix = "synthetic:"
+
+// NewSyntheticClient returns a public fosite.Client identified only by id,
+// for a clientless grant to attach to its fosite.AccessRequester so no
+// storage backend ever has to marshal a nil client. id should carry the
+// SyntheticClientIDPrefix so IsSyntheticClientID recognizes it again on
+// unmarshal.
+func NewSyntheticClient(id string) fosite.Client {
+	return &fosite.DefaultClient{ID: id, Public: true}
+}
+
+// IsSyntheticClientID reports whether id was minted by NewSyntheticClient,
+// letting a storage backend reconstruct the client locally on unmarshal
+// instead of looking it up in the client registry.
+func IsSyntheticClientID(id string) bool {
+	return strings.HasPrefix(id, SyntheticClientIDPrefix)
+}
+
+// ValidateRegisterableClientID rejects a real client registration whose ID
+// collides with the SyntheticClientIDPrefix namespace. Synthetic clients are
+// minted directly by NewSyntheticClient and never go through RegisterClient,
+// so any caller reaching this check — DCR, static delegate-client config, or
+// a future registration path — is registering a real, externally-visible
+// client. Every ClientRegistry.RegisterClient implementation must call this
+// before persisting: without it, a colliding ID would round-trip through
+// Redis as a bare unregistered synthetic client (see IsSyntheticClientID),
+// silently discarding its real secret, scopes, and grants.
+func ValidateRegisterableClientID(id string) error {
+	if IsSyntheticClientID(id) {
+		return fmt.Errorf("%w: %q", ErrReservedClientID, id)
+	}
+	return nil
 }
 
 // ClientRegistry provides client registration and lookup operations.

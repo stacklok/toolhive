@@ -40,6 +40,14 @@ type upstreamKey struct {
 	providerName string
 }
 
+// assertionJWTKey identifies a consumed assertion JWT without sharing JTIs
+// across assertion purposes or authorization-server issuers.
+type assertionJWTKey struct {
+	purpose string
+	issuer  string
+	jti     string
+}
+
 // clientOrderEntry is one position in MemoryStorage.clientOrder: a client ID
 // and the time it was placed at the back of the eviction queue (registration
 // or renewal). touchedAt backs the minClientAge grace window.
@@ -126,6 +134,9 @@ type MemoryStorage struct {
 
 	// clientAssertionJWTs tracks JTIs to prevent JWT replay attacks per RFC 7523.
 	clientAssertionJWTs map[string]time.Time
+
+	// assertionJWTs tracks consumed assertion JWTs by purpose, issuer, and JTI.
+	assertionJWTs map[assertionJWTKey]time.Time
 
 	// users maps user ID -> User for user account lookup.
 	// Users are not subject to TTL-based cleanup as they represent persistent accounts.
@@ -224,6 +235,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
 		invalidatedCodes:      make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:   make(map[string]time.Time),
+		assertionJWTs:         make(map[assertionJWTKey]time.Time),
 		users:                 make(map[string]*User),
 		providerIdentities:    make(map[string]*ProviderIdentity),
 		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
@@ -345,6 +357,13 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredAssertionJWTs []assertionJWTKey
+	for k, v := range s.assertionJWTs {
+		if now.After(v) {
+			expiredAssertionJWTs = append(expiredAssertionJWTs, k)
+		}
+	}
+
 	s.mu.RUnlock()
 
 	// Phase 2: Early return if nothing to delete (no write lock needed)
@@ -355,7 +374,8 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
-		len(expiredJWTs) == 0 {
+		len(expiredJWTs) == 0 &&
+		len(expiredAssertionJWTs) == 0 {
 		return
 	}
 
@@ -395,6 +415,12 @@ func (s *MemoryStorage) cleanupExpired() {
 	for _, k := range expiredJWTs {
 		delete(s.clientAssertionJWTs, k)
 	}
+
+	for _, k := range expiredAssertionJWTs {
+		if exp, ok := s.assertionJWTs[k]; ok && now.After(exp) {
+			delete(s.assertionJWTs, k)
+		}
+	}
 }
 
 // getExpirationFromRequester extracts expiration time from a fosite.Requester session.
@@ -432,10 +458,14 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 // ErrClientCapacity. Re-registering an existing ID moves it to the back of the
 // eviction queue.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
+	id := client.GetID()
+	if err := ValidateRegisterableClientID(id); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id := client.GetID()
 	now := time.Now()
 	if _, exists := s.clients[id]; exists {
 		// Refresh the eviction position: an actively re-registering client is
@@ -548,6 +578,31 @@ func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp
 	}
 
 	s.clientAssertionJWTs[jti] = exp
+	return nil
+}
+
+// ConsumeAssertionJWT atomically records an assertion JWT as consumed until its
+// expiry. Reusing an unexpired (purpose, issuer, jti) tuple returns
+// fosite.ErrJTIKnown. Expired assertions are not retained because a caller must
+// reject them during JWT validation before attempting replay consumption.
+func (s *MemoryStorage) ConsumeAssertionJWT(_ context.Context, purpose, issuer, jti string, exp time.Time) error {
+	key := assertionJWTKey{purpose: purpose, issuer: issuer, jti: jti}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if !exp.After(now) {
+		return nil
+	}
+
+	if storedExp, ok := s.assertionJWTs[key]; ok {
+		if storedExp.After(now) {
+			return fosite.ErrJTIKnown
+		}
+		delete(s.assertionJWTs, key)
+	}
+
+	s.assertionJWTs[key] = exp
 	return nil
 }
 
@@ -1501,4 +1556,5 @@ var (
 	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
 	_ UserStorage                 = (*MemoryStorage)(nil)
 	_ DCRCredentialStore          = (*MemoryStorage)(nil)
+	_ AssertionJWTConsumer        = (*MemoryStorage)(nil)
 )

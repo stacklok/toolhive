@@ -122,8 +122,10 @@ type RunConfig struct {
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 
 	// TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-	// subject tokens during RFC 8693 token exchange. Empty (the default) means
-	// only self-issued subject tokens are accepted.
+	// RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. Issuers with
+	// jwtBearerGrant enabled may be used for the JWT-bearer grant without an
+	// RFC 8693 delegation policy. Empty (the default) means only self-issued
+	// subject tokens are accepted.
 	//
 	// See tokenexchange.TrustedIssuer for the per-issuer field reference, and
 	// docs/arch/17-token-exchange-delegation.md for the trust model, consent
@@ -263,7 +265,7 @@ func (c *RunConfig) Validate() error {
 	if err := validateDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
 		return err
 	}
-	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer); err != nil {
+	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
@@ -929,9 +931,9 @@ type Config struct {
 	InsecureAllowHTTP bool
 
 	// TrustedIssuers lists external OIDC issuers whose tokens are accepted as
-	// subject tokens during RFC 8693 token exchange. See the identically
-	// named field on RunConfig for the full doc comment, including the
-	// fail-closed AllowedActors semantics and the audience/scope constraints
+	// RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions. See the
+	// identically named field on RunConfig for the full doc comment, including
+	// the fail-closed AllowedActors semantics and the audience/scope constraints
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
@@ -1070,7 +1072,7 @@ func (c *Config) validateDelegationConfig() error {
 	if err := validateResolvedDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
 		return err
 	}
-	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer)
+	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
 }
 
 // validateConfidentialClientConfig groups cleartext-transport validation for
@@ -1130,7 +1132,7 @@ func (c *Config) validateDelegationTokenLifespan() error {
 // enforces. The remaining structural checks (required fields, self-issuer
 // collision, duplicate issuers, ActorClaim reachability, and ActorMatcher
 // compilation) run via tokenexchange.ValidateTrustedIssuers.
-func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string) error {
+func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
 	for _, ti := range issuers {
 		if err := validateTrustedIssuerURL(ti.IssuerURL, ti.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("trusted_issuers: issuer_url %q: %w", ti.IssuerURL, err)
@@ -1162,8 +1164,22 @@ func validateTrustedIssuers(issuers []tokenexchange.TrustedIssuer, selfIssuer st
 			}
 		}
 	}
-	if err := tokenexchange.ValidateTrustedIssuers(issuers, selfIssuer); err != nil {
+	if err := tokenexchange.ValidateTrustedIssuers(issuers, selfIssuer, allowedAudiences); err != nil {
 		return fmt.Errorf("trusted_issuers: %w", err)
+	}
+	for _, issuer := range issuers {
+		if issuer.JWTBearerGrant == nil {
+			continue
+		}
+		for _, binding := range issuer.JWTBearerGrant.SubjectBindings {
+			for _, resource := range binding.AllowedResources {
+				if !slices.Contains(allowedAudiences, resource) {
+					return fmt.Errorf(
+						"trusted_issuers: issuer_url %q: jwt_bearer_grant subject %q resource %q is not in allowed_audiences",
+						issuer.IssuerURL, binding.Subject, resource)
+				}
+			}
+		}
 	}
 	return nil
 }

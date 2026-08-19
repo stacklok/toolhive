@@ -2374,6 +2374,44 @@ _Appears in:_
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.JWTBearerGrantConfig
+
+
+
+JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
+issuer. Each assertion subject must have an exact binding and request exactly
+one of that binding's allowed resources.
+
+
+
+_Appears in:_
+- [api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
+| `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.JWTBearerSubjectBinding
+
+
+
+JWTBearerSubjectBinding configures the exact subject and allowed resources
+for one RFC 7523 JWT-bearer assertion identity.
+
+
+
+_Appears in:_
+- [api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `subject` _string_ | Subject is an exact assertion sub value. Wildcards are not supported. |  | MaxLength: 256 <br />MinLength: 1 <br />Pattern: `^[^*]+$` <br />Required: \{\} <br /> |
+| `allowedResources` _string array_ | AllowedResources is the exact set of RFC 8707 resources this subject may<br />request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br /> |
+
+
 #### api.v1beta1.KubernetesServiceAccountOIDCConfig
 
 
@@ -4320,11 +4358,25 @@ ToolRateLimitConfig defines rate limits for a specific tool.
 
 
 TrustedIssuerConfig configures an external OIDC issuer whose tokens are
-accepted as RFC 8693 subject tokens during token exchange. It mirrors
-tokenexchange.TrustedIssuer (pkg/authserver/server/tokenexchange), the
-runtime type the operator converts this into directly — no secret is
-referenced by this type, so no SecretKeyRef indirection is needed, unlike
-DelegateClientConfig.
+accepted as RFC 8693 subject tokens or RFC 7523 JWT-bearer assertions during
+token exchange. It mirrors tokenexchange.TrustedIssuer
+(pkg/authserver/server/tokenexchange), the runtime type the operator converts
+this into directly — no secret is referenced by this type, so no SecretKeyRef
+indirection is needed, unlike DelegateClientConfig.
+
+expectedAudience is exempted only for a grant-only issuer: jwtBearerGrant
+present and none of actorClaim, actorMatcher, allowMayAct, or allowedActors
+set. Any RFC 8693 delegation field (actorClaim, actorMatcher, allowMayAct,
+allowedActors) still requires expectedAudience, even when combined with
+jwtBearerGrant.
+
+The allowedDelegateClients rule below mirrors validateDelegationPolicy
+(pkg/authserver/server/tokenexchange/multi_issuer_validator.go): it is
+keyed on whether ANY delegation field is set (expectedAudience,
+actorClaim, actorMatcher, allowMayAct), not merely on whether
+jwtBearerGrant is absent — an issuer can combine jwtBearerGrant with
+expectedAudience for RFC 8693 delegation on the same issuer, and that
+combination still requires allowedDelegateClients at the Go level.
 
 
 
@@ -4334,15 +4386,16 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuerUrl` _string_ | IssuerURL is the expected "iss" claim value (exact match). |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />the token's audience list. This should be a resource/API identifier<br />(e.g. a URI), not a client ID. |  | MaxLength: 2048 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `expectedAudience` _string_ | ExpectedAudience is the expected "aud" claim value that must appear in<br />an RFC 8693 subject token's audience list. It is not used by an RFC 7523<br />JWT-bearer assertion, whose audience is the token endpoint. |  | MaxLength: 2048 <br />MinLength: 1 <br />Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the issuer's JSON Web Key Set from. If<br />empty, it is resolved via OIDC discovery at<br />\{issuerUrl\}/.well-known/openid-configuration. |  | MaxLength: 2048 <br />Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits plain-HTTP OIDC discovery and JWKS fetches<br />for THIS issuer only. Development and testing only — never set in<br />production. |  | Optional: \{\} <br /> |
 | `allowPrivateIPs` _boolean_ | AllowPrivateIPs permits OIDC discovery and JWKS fetches for THIS issuer<br />to resolve to a private or loopback address. Use only when the issuer<br />is hosted inside the same cluster and has no public endpoint. Requires<br />jwksUrl to be set explicitly (enforced at reconcile time), since<br />otherwise OIDC discovery — fetched from the external issuer itself —<br />would choose the private dial target. |  | Optional: \{\} <br /> |
 | `actorClaim` _string_ | ActorClaim names the claim identifying the client that requested the<br />subject token from this external issuer (used by allowedActors below).<br />Defaults to "azp" when empty; use "appid" for Microsoft Entra v1, "cid"<br />for Okta. The special value "client_id" reads the subject token's<br />client_id claim instead. |  | MaxLength: 64 <br />Optional: \{\} <br /> |
 | `allowedActors` _string array_ | AllowedActors is the allowlist of actorClaim values authorized to<br />exchange a subject token from this issuer when it carries no<br />"may_act" claim, in addition to (not instead of) actorMatcher below —<br />either signal is sufficient. Empty denies every token unless<br />actorMatcher is set, or allowMayAct is true and the token carries a<br />permitted may_act claim. |  | MaxItems: 50 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
 | `actorMatcher` _string_ | ActorMatcher is an admin-authored CEL expression evaluated against the<br />subject token's complete signature-verified claims map (bound as<br />"claims") to authorize a class of external actors, in addition to (not<br />instead of) allowedActors — either signal is sufficient. Must evaluate<br />to a boolean; a non-boolean result denies the token at evaluation time,<br />not at reconcile time. A syntactically invalid expression fails<br />reconciliation (surfaced via the AuthServerConfigValidated condition),<br />not admission — there is no validating webhook for this field. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
-| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may<br />exchange a subject token from this issuer. Required; set it to ["*"]<br />to permit any confidential client holding the token-exchange grant. The<br />wildcard must be the only entry; otherwise list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+| `allowedDelegateClients` _string array_ | AllowedDelegateClients restricts which ToolHive client IDs may exchange<br />an RFC 8693 subject token from this issuer. Required unless only<br />jwtBearerGrant is configured; set it to ["*"] to permit any confidential<br />client holding the token-exchange grant, or list specific client IDs to<br />bind delegation to them. |  | MaxItems: 50 <br />MinItems: 1 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
 | `allowMayAct` _boolean_ | AllowMayAct permits this external issuer's may_act claim to authorize<br />delegation. Defaults to false; external issuers must be opted in<br />explicitly because may_act bypasses allowedActors and actorMatcher.<br />Does not affect self-issued subject tokens. The wildcard is never<br />permitted alongside specific allowedDelegateClients, regardless of<br />this setting. | false | Optional: \{\} <br /> |
+| `jwtBearerGrant` _[api.v1beta1.JWTBearerGrantConfig](#apiv1beta1jwtbearergrantconfig)_ | JWTBearerGrant enables the plain RFC 7523 JWT-bearer grant for this<br />issuer. It is independent of RFC 8693 delegation policy. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamInjectSpec

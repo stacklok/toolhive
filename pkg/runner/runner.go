@@ -373,13 +373,23 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 
-	// Serve Prometheus metrics on a dedicated diagnostics listener rather than
-	// handing the handler to the transport, which would register it on the
-	// application mux where it outranks the middleware chain and stays
-	// unauthenticated. Leaving transportConfig.PrometheusHandler nil is what
-	// keeps the proxies from mounting /metrics at all.
+	// Metrics are served on a dedicated diagnostics listener so access can be
+	// restricted by port; see pkg/diagnostics.
 	if err := r.startDiagnosticsServer(); err != nil {
 		return err
+	}
+
+	// During the deprecation window /metrics is ALSO served on the transport port,
+	// so an existing scrape configuration keeps working while it is moved. Handing
+	// the handler to the transport is what mounts it there; leaving it nil is what
+	// keeps the proxies from mounting it at all. See
+	// telemetry.DefaultMetricsOnTransportPort for the cutover.
+	if r.prometheusHandler != nil && r.Config.TelemetryConfig.ServeMetricsOnTransportPort() {
+		transportConfig.PrometheusHandler = r.prometheusHandler
+		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
+			"this is deprecated and the transport-port copy will be removed. Move scrapers to the "+
+			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
+			"transport_port", r.Config.Port)
 	}
 
 	// Release the listener on every exit from Run, not just the happy path.

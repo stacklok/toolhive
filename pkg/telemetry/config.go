@@ -92,6 +92,23 @@ type Config struct {
 	// +optional
 	PrometheusPort int `json:"prometheusPort,omitempty" yaml:"prometheusPort,omitempty"`
 
+	// MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+	// transport port, in addition to the diagnostics port. It exists to give
+	// deployments a migration window: while true, an existing scrape configuration
+	// aimed at the transport port keeps working, and a new one aimed at
+	// PrometheusPort works too, so a scraper can be moved and verified before the
+	// old location goes away.
+	//
+	// Deliberately a pointer with NO kubebuilder default. Nil means "unset", and is
+	// resolved against DefaultMetricsOnTransportPort at the point of use rather than
+	// written into config. A plain bool with a default marker would be materialised
+	// into the persisted RunConfig and into CRD objects at admission, so changing
+	// the default later would not move any workload that already exists — the flip
+	// would silently do nothing.
+	//
+	// +optional
+	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty" yaml:"metricsOnTransportPort,omitempty"`
+
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
 	// be read from the host machine and included in spans for observability.
@@ -140,12 +157,35 @@ func (c Config) String() string {
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
-		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, MetricsOnTransportPort: %t, "+
+		"EnvironmentVariables: %v, CustomAttributes: %v, "+
 		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
-		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.EnvironmentVariables, c.CustomAttributes,
+		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.ServeMetricsOnTransportPort(),
+		c.EnvironmentVariables, c.CustomAttributes,
 		c.UseLegacyAttributes, c.CACertPath)
+}
+
+// DefaultMetricsOnTransportPort is the value used when Config.MetricsOnTransportPort
+// is unset.
+//
+// True during the deprecation window: /metrics is served on both the transport port
+// and the diagnostics port, so no existing scrape configuration breaks. Flipping this
+// to false is the entire cutover — it stops serving the transport-port copy and leaves
+// only the diagnostics port. Deployments that set MetricsOnTransportPort explicitly
+// are unaffected by the flip, by design.
+const DefaultMetricsOnTransportPort = true
+
+// ServeMetricsOnTransportPort reports whether /metrics should also be served on the
+// main transport port. It resolves the unset case at the point of use, which is what
+// makes changing DefaultMetricsOnTransportPort take effect for workloads that already
+// exist. A nil receiver reports the default so callers need no nil check.
+func (c *Config) ServeMetricsOnTransportPort() bool {
+	if c == nil || c.MetricsOnTransportPort == nil {
+		return DefaultMetricsOnTransportPort
+	}
+	return *c.MetricsOnTransportPort
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.

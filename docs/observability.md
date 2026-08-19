@@ -212,6 +212,27 @@ controller-runtime.
 chain: Go's `ServeMux` resolves the most specific registered pattern first, so an
 explicit `/metrics` always outranks the `/` catch-all that carries the chain.)
 
+#### Migration window
+
+`/metrics` is currently served on **both** the transport port and the diagnostics
+port. That is deliberate and temporary, so no existing scrape configuration breaks
+while it is moved:
+
+1. Point your scraper at the diagnostics port and confirm metrics arrive.
+2. Set `metricsOnTransportPort: false` to stop serving the old location, and confirm
+   nothing else was still scraping it.
+3. When the window closes the default flips, and only the diagnostics port serves
+   `/metrics`.
+
+A deployment that sets `metricsOnTransportPort` explicitly is not moved by the flip.
+Leaving it unset is what opts you into the new default when it changes — the value is
+resolved at startup rather than written into stored configuration, so existing
+workloads pick up the new default without being recreated.
+
+While the transport-port copy is being served, a warning is logged at startup naming
+the transport port. That endpoint is on the listener that carries MCP traffic, so it
+cannot be restricted separately — which is the reason for the move.
+
 Port selection:
 
 - **Default** — port `9464`, the OpenTelemetry specification's Prometheus exporter

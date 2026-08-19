@@ -910,6 +910,11 @@ func (s *Server) Address() string {
 // handleHealth handles /health and /ping HTTP requests.
 // Returns 200 OK if the server is running and able to respond.
 //
+// This is a liveness signal only. It does not mean a new client session can
+// initialize within the configured timeout. Kubernetes Ready on the
+// VirtualMCPServer CR reflects the last backend ListCapabilities probe.
+// Session open is bounded separately by HealthCheckTimeout (#6345).
+//
 // Security Note: This endpoint is unauthenticated and intentionally minimal.
 // It only confirms the HTTP server is responding. No version information,
 // session counts, or operational metrics are exposed to prevent information

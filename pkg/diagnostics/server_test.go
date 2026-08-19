@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -218,4 +220,24 @@ func TestStopIsIdempotentAndClosesListener(t *testing.T) {
 		_ = resp.Body.Close()
 		t.Fatal("expected the diagnostics listener to be closed after Stop")
 	}
+}
+
+// TestNotServedHereHandler covers the discoverability half of the split. The
+// status alone is indistinguishable from a typo, so the body has to name where
+// metrics actually live — this is the only client-side signal an operator gets
+// when a scrape configuration still points at the application port.
+func TestNotServedHereHandler(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	NotServedHereHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, MetricsPath, nil))
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "text/plain; charset=utf-8", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+
+	body := rec.Body.String()
+	assert.Contains(t, body, MetricsPath, "body must name the path being asked for")
+	assert.Contains(t, body, strconv.Itoa(DefaultPort), "body must name the diagnostics port")
+	assert.Contains(t, body, "docs/observability.md", "body must point at the docs")
 }

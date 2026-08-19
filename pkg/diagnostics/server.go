@@ -95,6 +95,33 @@ const (
 // port is claimed between the availability check and the bind. See Server.bind.
 const bindAttempts = 3
 
+// NotServedHereHandler answers requests for MetricsPath on an application
+// listener, where metrics are deliberately not served.
+//
+// It exists so the response explains itself. A bare 404 is indistinguishable
+// from a typo, and the failure is otherwise silent from the server side: an
+// upgrade moves the endpoint and the operator sees only a Prometheus target
+// going down. The body names the diagnostics port so whoever curls it gets the
+// answer immediately.
+//
+// The status stays 404 rather than 410 Gone: this handler is also registered on
+// deployments that never served metrics on this port, where claiming the
+// resource was removed would be untrue.
+func NotServedHereHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusNotFound)
+		// Best effort: the client has already disconnected if this fails, and
+		// there is nothing useful to do about it on a 404.
+		_, _ = fmt.Fprintf(w, "%s is not served on this port.\n\n"+
+			"When Prometheus metrics are enabled they are served on a dedicated diagnostics\n"+
+			"port (default %d) so that access can be restricted separately from MCP traffic.\n"+
+			"The resolved address is logged at startup. See docs/observability.md.\n",
+			MetricsPath, DefaultPort)
+	})
+}
+
 // Server serves diagnostics endpoints on a dedicated listener.
 //
 // The zero value is not usable; construct one with New.
@@ -183,9 +210,13 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	// Logged at INFO because the resolved port is not predictable when the
-	// caller requested 0, and an operator needs it to point a scraper here.
-	slog.Info("prometheus metrics endpoint enabled on diagnostics listener",
+	// Logged at WARN, not INFO, because this is the only server-side signal that
+	// the endpoint is not on the application port. Metrics are opt-in, so this
+	// fires only for deployments that enabled them — the exact population whose
+	// scrape configuration has to point here. Without it, an upgrade moves the
+	// endpoint and the operator's only clue is a Prometheus target going down.
+	slog.Warn("prometheus metrics are served on a dedicated diagnostics port, not the application port; "+
+		"update scrape configuration to target this address",
 		"address", listener.Addr().String(), "path", MetricsPath)
 
 	return nil

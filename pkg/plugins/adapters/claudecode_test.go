@@ -560,3 +560,38 @@ func TestClaudeCodeAdapter_ProjectScopeUsesProjectSettings(t *testing.T) {
 	_, hasEnabled := settings["enabledPlugins"]
 	assert.False(t, hasEnabled, "project enabledPlugins removed when empty")
 }
+
+func TestClaudeCodeAdapter_EnsureRegisteredRestoresSettings(t *testing.T) {
+	t.Parallel()
+	tempHome := resolvedTempDir(t)
+	cm := newTestClientManager(t, tempHome)
+	a := NewClaudeCodeAdapter(cm)
+
+	layer := makePluginLayer(t, []ociskills.FileEntry{
+		{Path: "commands/greet.md", Content: []byte("# greet"), Mode: 0644},
+	})
+	_, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
+		Name:      "my-plugin",
+		LayerData: layer,
+		Scope:     plugins.ScopeUser,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{
+		Name:  "my-plugin",
+		Scope: plugins.ScopeUser,
+	}))
+
+	require.NoError(t, a.EnsureRegistered(context.Background(), plugins.DematerializeRequest{
+		Name:  "my-plugin",
+		Scope: plugins.ScopeUser,
+	}))
+
+	settings := readSettings(t, userSettingsPath(tempHome))
+	enabled, ok := settings["enabledPlugins"].(map[string]any)
+	require.True(t, ok, "enabledPlugins present after EnsureRegistered")
+	assert.Equal(t, true, enabled["my-plugin@toolhive"])
+
+	mp := readClaudeMarketplaceManifest(t, filepath.Join(tempHome, ".claude", "plugins"))
+	requireMarketplacePlugin(t, mp, "my-plugin")
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociartifact "github.com/stacklok/toolhive-core/oci/artifact"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -29,9 +30,14 @@ import (
 // (manifest + a command file). Used by install round-trip tests.
 func makePluginLayerData(t *testing.T, name string) []byte {
 	t.Helper()
+	return makePluginLayerDataWithBody(t, name, "# hello")
+}
+
+func makePluginLayerDataWithBody(t *testing.T, name, body string) []byte {
+	t.Helper()
 	files := []ociartifact.FileEntry{
 		{Path: ".claude-plugin/plugin.json", Content: []byte(fmt.Sprintf(`{"name":%q,"version":"1.0.0"}`, name)), Mode: 0644},
-		{Path: "commands/hello.md", Content: []byte("# hello"), Mode: 0644},
+		{Path: "commands/hello.md", Content: []byte(body), Mode: 0644},
 	}
 	data, err := ociartifact.CompressTar(files, ociartifact.DefaultTarOptions(), ociartifact.DefaultGzipOptions())
 	require.NoError(t, err)
@@ -167,7 +173,8 @@ func TestInstallWithExtraction(t *testing.T) {
 				return nil
 			})
 
-		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		svc := newTestService(WithStore(store), WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
 		result, err := svc.Install(t.Context(), plugins.InstallOptions{
 			Name:      "my-plugin",
 			LayerData: layerData,
@@ -262,6 +269,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		adapterA.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
 		adapterB.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("disk full"))
 		adapterA.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
+		adapterB.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
 
 		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{
 			"claude-code": adapterA,
@@ -414,10 +422,11 @@ func TestInstallWithExtraction(t *testing.T) {
 				return nil
 			})
 
-		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{
-			"claude-code": adapterA,
-			"codex":       adapterB,
-		}))
+		svc := newTestService(WithStore(store), WithClientManager(client.NewTestClientManagerWithHome(t.TempDir())),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{
+				"claude-code": adapterA,
+				"codex":       adapterB,
+			}))
 		result, err := svc.Install(t.Context(), plugins.InstallOptions{
 			Name:      "my-plugin",
 			LayerData: layerData,
@@ -426,6 +435,36 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{"claude-code", "codex"}, result.Plugin.Clients)
+	})
+
+	// WithClientManager is optional: without one, upgrades degrade to
+	// dematerialize-only compensation instead of failing on tree snapshots,
+	// matching the fresh and same-digest install paths.
+	t.Run("upgrade without client manager degrades to dematerialize-only", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
+
+		existing := plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Digest:   "sha256:old",
+			Clients:  []string{"claude-code"},
+		}
+		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(existing, nil)
+		adapter.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db update error"))
+		adapter.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
+
+		svc := newTestService(WithStore(store),
+			WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
+		_, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name:      "my-plugin",
+			LayerData: layerData,
+			Digest:    "sha256:new",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db update error")
 	})
 }
 
@@ -548,6 +587,9 @@ func TestInstallAddsPluginToGroup(t *testing.T) {
 			gm := groupmocks.NewMockManager(ctrl)
 			adapter := plugmocks.NewMockMaterializationAdapter(ctrl)
 			adapter.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil).AnyTimes()
+			if tt.wantErr != "" {
+				adapter.EXPECT().Dematerialize(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+			}
 
 			tt.setupStoreMock(store)
 			tt.setupGroupMock(gm)

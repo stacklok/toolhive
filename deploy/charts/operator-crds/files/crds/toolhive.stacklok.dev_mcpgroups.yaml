@@ -25,6 +25,9 @@ spec:
     - jsonPath: .status.serverCount
       name: Servers
       type: integer
+    - jsonPath: .status.remoteProxyCount
+      name: Proxies
+      type: integer
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -180,6 +183,9 @@ spec:
   - additionalPrinterColumns:
     - jsonPath: .status.serverCount
       name: Servers
+      type: integer
+    - jsonPath: .status.remoteProxyCount
+      name: Proxies
       type: integer
     - jsonPath: .status.phase
       name: Phase

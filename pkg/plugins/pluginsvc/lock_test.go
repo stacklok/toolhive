@@ -70,7 +70,7 @@ func (*extractingAdapter) ScopeSupport() plugins.ScopeSupport {
 	return plugins.ScopeSupport{}
 }
 
-func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, string) {
+func newLockTestService(t *testing.T, enableGate bool, extra ...Option) (plugins.PluginService, string) {
 	t.Helper()
 	if enableGate {
 		t.Setenv(plugins.LockFileEnvVar, "true")
@@ -91,12 +91,12 @@ func newLockTestService(t *testing.T, enableGate bool) (plugins.PluginService, s
 	home := t.TempDir()
 	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
-	svc := New(
+	opts := append([]Option{
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
 		WithClientManager(client.NewTestClientManagerWithHome(home)),
-	)
-	return svc, projectRoot
+	}, extra...)
+	return New(opts...), projectRoot
 }
 
 func mustOpenRoot(t *testing.T, projectRoot string) lockfile.Root {
@@ -125,12 +125,13 @@ func installTestPlugin(t *testing.T, svc plugins.PluginService, projectRoot, dig
 	t.Helper()
 	const name = "my-plugin"
 	result, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        name,
-		LayerData:   makePluginLayerData(t, name),
-		Digest:      digest,
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          name,
+		LayerData:     makePluginLayerData(t, name),
+		AllowUnsigned: true,
+		Digest:        digest,
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	return result
@@ -171,11 +172,12 @@ func TestInstallUserScope_DoesNotWriteLock(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)
 
 	result, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:      "my-plugin",
-		LayerData: makePluginLayerData(t, "my-plugin"),
-		Digest:    validLockDigest(),
-		Scope:     plugins.ScopeUser,
-		Clients:   []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeUser,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	assert.False(t, result.Plugin.Managed)
@@ -210,12 +212,13 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err, "install must fail when the lock file cannot be written")
 	assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
@@ -273,12 +276,13 @@ func TestInstallProjectScope_RollbackRestoresPreExistingState(t *testing.T) {
 	}
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
-		Digest:      validLockDigestAlt(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		AllowUnsigned: true,
+		Digest:        validLockDigestAlt(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err, "reinstall must fail when marking the record managed fails")
 	assert.Contains(t, err.Error(), "db update unavailable")
@@ -327,12 +331,13 @@ func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
 	}
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
-		Digest:      validLockDigestAlt(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		AllowUnsigned: true,
+		Digest:        validLockDigestAlt(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "recording plugin in project lock file",
@@ -366,12 +371,13 @@ func TestInstallProjectScope_RollbackKeepsPreExistingGroupMembership(t *testing.
 	t.Cleanup(func() { _ = os.Chmod(projectRoot, 0o755) })
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err, "install must fail when the lock entry cannot be written")
 	// gomock verifies no gm.Update ran: rollback did not touch the
@@ -646,12 +652,13 @@ func TestInstall_MaterializeFailureAfterExtractRemovesTree(t *testing.T) {
 	}
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marketplace write failed")
@@ -692,12 +699,13 @@ func TestInstallProjectScope_LockWriteFailureRemovesGroupMembership(t *testing.T
 	inner.groupManager = gm
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
 	assert.Empty(t, members, "a failed fresh install must not leave the plugin in the group")
@@ -724,12 +732,13 @@ func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
 	)
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 
@@ -739,12 +748,13 @@ func TestInstallUpgrade_SecondClientFailureRestoresRegistration(t *testing.T) {
 	assert.Contains(t, string(before), "my-plugin@toolhive")
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
-		Digest:      validLockDigestAlt(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"codex"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# hello v2"),
+		AllowUnsigned: true,
+		Digest:        validLockDigestAlt(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"codex"},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disk full")
@@ -787,12 +797,13 @@ func TestUninstall_PartialDematerializeRestoresAllClients(t *testing.T) {
 	)
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code", "codex"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code", "codex"},
 	})
 	require.NoError(t, err)
 
@@ -836,13 +847,14 @@ func TestInstallFresh_LockWriteFailureRestoresPreexistingTree(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
-		Force:       true,
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
+		Force:         true,
 	})
 	require.Error(t, err)
 
@@ -922,13 +934,14 @@ func TestInstallFresh_RollbackDoesNotRegisterUnmanagedTree(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
-		Force:       true,
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerDataWithBody(t, "my-plugin", "# installed"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
+		Force:         true,
 	})
 	require.Error(t, err)
 
@@ -940,23 +953,34 @@ func TestInstallFresh_RollbackDoesNotRegisterUnmanagedTree(t *testing.T) {
 		"rollback must not register a tree that was unregistered at snapshot time")
 }
 
+// TestInstall_UnreadableLockFileAbortsBeforeMutating covers an unreadable
+// lock file on a project-scope install. Install-time verification reads the
+// entry's trust state before anything is extracted, so an unloadable lock
+// file now fails there — earlier than installAndRegister's own snapshot,
+// which keeps its Load guard only against a rewrite racing that window.
+// Failing closed is the point: no DB record, no files, no lock entry.
+//
 //nolint:paralleltest // uses t.Setenv via newLockTestService
-func TestInstallAndRegister_LockSnapshotFailureRollsBackDB(t *testing.T) {
+func TestInstall_UnreadableLockFileAbortsBeforeMutating(t *testing.T) {
 	svc, projectRoot := newLockTestService(t, true)
 
-	// A lock path that is a directory makes Load fail after extraction.
+	// A lock path that is a directory makes Load fail.
 	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, lockfile.FileName), 0o755))
 
 	_, err := svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading lock file")
+	assert.Contains(t, err.Error(), "reading lock trust state")
+
+	_, statErr := os.Stat(filepath.Join(projectRoot, ".claude", "plugins", "my-plugin"))
+	assert.True(t, os.IsNotExist(statErr), "nothing may be extracted before the lock file can be read")
 
 	info, infoErr := svc.Info(t.Context(), plugins.InfoOptions{
 		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,

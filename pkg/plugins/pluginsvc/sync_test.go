@@ -52,7 +52,12 @@ func (c *redirectGitClient) Cleanup(ctx context.Context, repoInfo *git.Repositor
 	return c.inner.Cleanup(ctx, repoInfo)
 }
 
-func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService, string) {
+// newGitLockTestService builds a lock-enabled service whose git installs
+// resolve to repoDir. Test repo commits are unsigned, so it defaults to a
+// verifier that reports every commit as signed by a fixed test identity —
+// tests about verification itself pass their own WithVerifier via extra
+// (later options win).
+func newGitLockTestService(t *testing.T, repoDir string, extra ...Option) (plugins.PluginService, string) {
 	t.Helper()
 	t.Setenv(plugins.LockFileEnvVar, "true")
 
@@ -69,13 +74,14 @@ func newGitLockTestService(t *testing.T, repoDir string) (plugins.PluginService,
 	home := t.TempDir()
 	// Claude Code RelPath is empty; IsClientInstalled checks ~/.claude.json.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644))
-	svc := New(
+	opts := append([]Option{
 		WithStore(sqlite.NewPluginStore(db)),
 		WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}),
 		WithClientManager(client.NewTestClientManagerWithHome(home)),
 		WithGitClient(&redirectGitClient{dir: repoDir, inner: git.NewDefaultGitClient()}),
-	)
-	return svc, projectRoot
+		WithVerifier(alwaysSignedVerifier(t)),
+	}, extra...)
+	return New(opts...), projectRoot
 }
 
 func pluginOnDiskPath(projectRoot, name string) string {
@@ -603,12 +609,13 @@ func TestSync_LocalUpgradeRoundTripRestoresExactDigest(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 
@@ -663,12 +670,13 @@ func TestSync_LocalStorePinDigestMissing(t *testing.T) {
 	inner.ociStore = ociStore
 
 	_, err = svc.Install(t.Context(), plugins.InstallOptions{
-		Name:        "my-plugin",
-		LayerData:   makePluginLayerData(t, "my-plugin"),
-		Digest:      validLockDigest(),
-		Scope:       plugins.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     []string{"claude-code"},
+		Name:          "my-plugin",
+		LayerData:     makePluginLayerData(t, "my-plugin"),
+		AllowUnsigned: true,
+		Digest:        validLockDigest(),
+		Scope:         plugins.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       []string{"claude-code"},
 	})
 	require.NoError(t, err)
 

@@ -3366,6 +3366,10 @@ const docTemplate = `{
             "pkg_api_v1.installPluginRequest": {
                 "description": "Request to install a plugin",
                 "properties": {
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits installing a project-scoped plugin without a\nverified signature; the exception is recorded in the project's lock\nfile.",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every plugin-supporting client.\nOmitting this field installs to all available clients.",
                         "items": {

@@ -206,13 +206,14 @@ func (c *Client) List(ctx context.Context, opts plugins.ListOptions) ([]plugins.
 // Install installs a plugin from a remote source.
 func (c *Client) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
 	body := installRequest{
-		Name:        opts.Name,
-		Version:     opts.Version,
-		Scope:       opts.Scope,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Force:       opts.Force,
-		Group:       opts.Group,
+		Name:          opts.Name,
+		Version:       opts.Version,
+		Scope:         opts.Scope,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Force:         opts.Force,
+		Group:         opts.Group,
+		AllowUnsigned: opts.AllowUnsigned,
 	}
 
 	var resp installResponse

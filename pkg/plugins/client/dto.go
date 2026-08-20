@@ -15,6 +15,9 @@ type installRequest struct {
 	Clients     []string      `json:"clients,omitempty"`
 	Force       bool          `json:"force,omitempty"`
 	Group       string        `json:"group,omitempty"`
+	// AllowUnsigned mirrors plugins.InstallOptions.AllowUnsigned; without
+	// it here the CLI flag would silently never reach the server.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 type validateRequest struct {

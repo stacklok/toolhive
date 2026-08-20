@@ -64,6 +64,56 @@ func TestBuildPinnedReferenceRejectsUnparsable(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestIsLocalStorePin(t *testing.T) {
+	t.Parallel()
+
+	digest := "sha256:" + hexDigestForTest()
+	tests := []struct {
+		name  string
+		entry lockfile.Entry
+		want  bool
+	}{
+		{
+			name: "plain source, empty resolvedReference, and digest is a local-store pin",
+			entry: lockfile.Entry{
+				Name: "my-plugin", Source: "my-plugin", Digest: digest,
+			},
+			want: true,
+		},
+		{
+			name: "a remote resolvedReference is not a local-store pin",
+			entry: lockfile.Entry{
+				Name: "my-plugin", Source: "my-plugin",
+				ResolvedReference: "ghcr.io/org/my-plugin:1.0.0", Digest: digest,
+			},
+		},
+		{
+			name: "an OCI source is not a local-store pin",
+			entry: lockfile.Entry{
+				Name: "my-plugin", Source: "ghcr.io/org/my-plugin:1.0.0", Digest: digest,
+			},
+		},
+		{
+			name: "a git source is not a local-store pin",
+			entry: lockfile.Entry{
+				Name: "my-plugin", Source: "git://github.com/org/plugins", Digest: digest,
+			},
+		},
+		{
+			name: "missing digest is not a local-store pin",
+			entry: lockfile.Entry{
+				Name: "my-plugin", Source: "my-plugin",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isLocalStorePin(tt.entry))
+		})
+	}
+}
+
 func TestIsImmutableSource(t *testing.T) {
 	t.Parallel()
 

@@ -44,7 +44,7 @@ func (s *service) recordLockState(
 	source := opts.LockSource
 	resolvedReference := opts.LockResolvedReference
 	if resolvedReference == "" {
-		resolvedReference = pl.Reference
+		resolvedReference = lockableResolvedReference(pl.Reference)
 	}
 	if err := recordLockEntry(pl.ProjectRoot, lockEntryInput{
 		Name:              pl.Metadata.Name,

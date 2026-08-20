@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -166,6 +167,51 @@ var _ = Describe("Plugins CLI lock file exit codes (RFC THV-0080)", Label("api",
 			Expect(exitCodeOf(cmdErr)).To(Equal(2))
 		})
 	})
+
+	Describe("thv ai-plugin upgrade --fail-on-changes", func() {
+		It("exits 2 when a plugin would change, without installing it", func() {
+			projectRoot := makeE2EProjectRoot()
+			pluginName := "cli-lock-upgrade-fail-on-changes-plugin"
+
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := buildAndPushPlugin(apiServer, ociRegistry, pluginName, "The original description")
+
+			installResp := installPlugin(apiServer, installPluginE2ERequest{
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+			})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+			By("Republishing newer content at the same OCI reference")
+			newPluginDir := createTestPluginDirWithBody(pluginName, "The updated description", "# hello v2\n")
+			rebuildResp := buildPlugin(apiServer, newPluginDir, ociRef)
+			defer rebuildResp.Body.Close()
+			Expect(rebuildResp.StatusCode).To(Equal(http.StatusOK))
+			repushResp := pushPlugin(apiServer, ociRef)
+			defer repushResp.Body.Close()
+			Expect(repushResp.StatusCode).To(Equal(http.StatusNoContent))
+
+			root, err := lockfile.OpenRoot(projectRoot)
+			Expect(err).ToNot(HaveOccurred())
+			before, err := lockfile.Load(root)
+			Expect(err).ToNot(HaveOccurred())
+			beforeEntry, ok := before.GetPlugin(pluginName)
+			Expect(ok).To(BeTrue())
+
+			_, _, err = thvPluginCmd("upgrade", "--yes", "--fail-on-changes", "--project-root", projectRoot).Run()
+			Expect(err).To(HaveOccurred())
+			Expect(exitCodeOf(err)).To(Equal(2))
+
+			By("Verifying nothing was actually installed before the conflict was reported")
+			after, err := lockfile.Load(root)
+			Expect(err).ToNot(HaveOccurred())
+			afterEntry, ok := after.GetPlugin(pluginName)
+			Expect(ok).To(BeTrue())
+			Expect(afterEntry.Digest).To(Equal(beforeEntry.Digest),
+				"--fail-on-changes must not install a changed plugin before reporting the conflict")
+		})
+	})
 })
 
 type installPluginE2ERequest struct {
@@ -232,6 +278,10 @@ func pushPlugin(server *e2e.Server, reference string) *http.Response {
 }
 
 func createTestPluginDir(pluginName, description string) string {
+	return createTestPluginDirWithBody(pluginName, description, "# hello\n")
+}
+
+func createTestPluginDirWithBody(pluginName, description, helloBody string) string {
 	parentDir := GinkgoT().TempDir()
 	pluginDir := filepath.Join(parentDir, pluginName)
 	ExpectWithOffset(1, os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755)).To(Succeed())
@@ -251,7 +301,7 @@ func createTestPluginDir(pluginName, description string) string {
 	)).To(Succeed())
 	ExpectWithOffset(1, os.WriteFile(
 		filepath.Join(pluginDir, "commands", "hello.md"),
-		[]byte("# hello\n"),
+		[]byte(helloBody),
 		0o644,
 	)).To(Succeed())
 

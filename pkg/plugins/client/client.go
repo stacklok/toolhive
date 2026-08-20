@@ -327,6 +327,25 @@ func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.S
 	return &result, nil
 }
 
+// Upgrade re-resolves a project's lock entries and installs newer content
+// where available.
+func (c *Client) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+	body := upgradeRequest{
+		ProjectRoot:    opts.ProjectRoot,
+		Names:          opts.Names,
+		Preview:        opts.Preview,
+		FailOnChanges:  opts.FailOnChanges,
+		AllowRefChange: opts.AllowRefChange,
+		Clients:        opts.Clients,
+	}
+
+	var result plugins.UpgradeResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/upgrade", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // --- internal helpers ---
 
 func (c *Client) buildURL(path string, query url.Values) string {

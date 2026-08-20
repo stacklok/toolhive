@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -590,4 +591,122 @@ func TestSync_UnhealthyRegistrationIsNotAlreadyCurrent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-plugin"}, result.Drifted)
 	assert.Empty(t, result.AlreadyCurrent, "missing marketplace/settings registration is drift, not current")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_LocalUpgradeRoundTripRestoresExactDigest(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+	require.NoError(t, ociStore.Tag(t.Context(), d2, "my-plugin"))
+
+	upgradeResult, err := inner.Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	require.Len(t, upgradeResult.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusUpgraded, upgradeResult.Outcomes[0].Status)
+	assert.Equal(t, d2.String(), upgradeResult.Outcomes[0].NewDigest)
+
+	lockEntry, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	assert.Equal(t, d2.String(), lockEntry.Digest)
+	assert.Empty(t, lockEntry.ResolvedReference)
+	assert.Equal(t, "my-plugin", lockEntry.Source)
+
+	require.NoError(t, os.RemoveAll(pluginOnDiskPath(projectRoot, "my-plugin")))
+	require.NoError(t, inner.store.Delete(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot))
+
+	syncResult, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, syncResult.Missing)
+	assert.Equal(t, []string{"my-plugin"}, syncResult.Installed)
+	assert.Empty(t, syncResult.Failed)
+
+	info, err := svc.Info(t.Context(), plugins.InfoOptions{
+		Name: "my-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info.InstalledPlugin)
+	assert.Equal(t, d2.String(), info.InstalledPlugin.Digest)
+
+	manifest, err := os.ReadFile(filepath.Join(pluginOnDiskPath(projectRoot, "my-plugin"), ".claude-plugin", "plugin.json")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(manifest), "2.0.0")
+
+	afterLock, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	assert.Equal(t, lockEntry.Digest, afterLock.Digest)
+	assert.Empty(t, afterLock.ResolvedReference)
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService
+func TestSync_LocalStorePinDigestMissing(t *testing.T) {
+	svc, projectRoot := newLockTestService(t, true)
+	ociStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	inner.ociStore = ociStore
+
+	_, err = svc.Install(t.Context(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		LayerData:   makePluginLayerData(t, "my-plugin"),
+		Digest:      validLockDigest(),
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: projectRoot,
+		Clients:     []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	d2 := buildTestPlugin(t, ociStore, "my-plugin", "2.0.0")
+	require.NoError(t, ociStore.Tag(t.Context(), d2, "my-plugin"))
+
+	upgradeResult, err := inner.Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	require.Len(t, upgradeResult.Outcomes, 1)
+	require.Equal(t, plugins.UpgradeStatusUpgraded, upgradeResult.Outcomes[0].Status)
+
+	lockBefore := readLockfile(t, projectRoot)
+	entryBefore, ok := lockBefore.GetPlugin("my-plugin")
+	require.True(t, ok)
+	require.Equal(t, d2.String(), entryBefore.Digest)
+	require.Empty(t, entryBefore.ResolvedReference)
+
+	require.NoError(t, os.RemoveAll(pluginOnDiskPath(projectRoot, "my-plugin")))
+	require.NoError(t, inner.store.Delete(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot))
+
+	emptyStore, err := ociplugins.NewStore(tempDir(t))
+	require.NoError(t, err)
+	inner.ociStore = emptyStore
+
+	syncResult, err := inner.Sync(t.Context(), plugins.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-plugin"}, syncResult.Missing)
+	assert.Empty(t, syncResult.Installed)
+	require.Len(t, syncResult.Failed, 1)
+	assert.Equal(t, "my-plugin", syncResult.Failed[0].Name)
+	assert.Equal(t, plugins.FailureReasonDigestMissing, syncResult.Failed[0].Reason)
+
+	_, err = inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	assert.ErrorIs(t, err, storage.ErrNotFound, "digest-missing must not recreate the DB row")
+	_, err = os.Stat(pluginOnDiskPath(projectRoot, "my-plugin"))
+	assert.True(t, os.IsNotExist(err), "digest-missing must not write plugin files")
+
+	entryAfter, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	assert.Equal(t, entryBefore, entryAfter, "digest-missing must leave the lock entry untouched")
 }

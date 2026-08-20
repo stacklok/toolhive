@@ -115,3 +115,68 @@ func TestSyncPluginsEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestUpgradePluginsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		service      plugins.PluginService
+		body         string
+		wantStatus   int
+		wantContains string
+	}{
+		{
+			name: "successful upgrade returns 200 with result",
+			service: &pluginServiceWithSync{
+				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
+				syncFn:        func(context.Context, plugins.SyncOptions) (*plugins.SyncResult, error) { return nil, nil },
+				upgradeFn: func(_ context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+					assert.Equal(t, "/tmp/proj", opts.ProjectRoot)
+					assert.True(t, opts.Preview)
+					return &plugins.UpgradeResult{Outcomes: []plugins.UpgradeOutcome{
+						{Name: "my-plugin", Status: plugins.UpgradeStatusUpToDate},
+					}}, nil
+				},
+			},
+			body:         `{"project_root":"/tmp/proj","preview":true}`,
+			wantStatus:   http.StatusOK,
+			wantContains: `"my-plugin"`,
+		},
+		{
+			name:       "service without Upgrade support returns 501",
+			service:    plugmocks.NewMockPluginService(gomock.NewController(t)),
+			body:       `{"project_root":"/tmp/proj"}`,
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name: "invalid JSON body returns 400",
+			service: &pluginServiceWithSync{
+				PluginService: plugmocks.NewMockPluginService(gomock.NewController(t)),
+				syncFn:        func(context.Context, plugins.SyncOptions) (*plugins.SyncResult, error) { return nil, nil },
+				upgradeFn: func(context.Context, plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+					t.Fatal("Upgrade must not be called for an invalid body")
+					return nil, nil
+				},
+			},
+			body:       `{`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/upgrade", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			PluginsRouter(tt.service).ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.wantContains != "" {
+				assert.Contains(t, rec.Body.String(), tt.wantContains)
+			}
+		})
+	}
+}

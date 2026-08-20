@@ -166,7 +166,7 @@ func (s *service) installFromRegistryLookup(
 		// Use the last path segment as the search query (matching
 		// skillsvc.resolveFromRegistry's splitQualifiedName), since
 		// SearchPlugins matches on name substring.
-		_, searchName := splitQualifiedName(opts.Name)
+		namespace, searchName := splitQualifiedName(opts.Name)
 
 		hits, err := s.pluginLookup.SearchPlugins(ctx, searchName)
 		if err != nil {
@@ -179,6 +179,9 @@ func (s *service) installFromRegistryLookup(
 		var matches []PluginSearchHit
 		for _, hit := range hits {
 			if !strings.EqualFold(hit.Name, searchName) {
+				continue
+			}
+			if namespace != "" && !strings.EqualFold(hit.Namespace, namespace) {
 				continue
 			}
 			matches = append(matches, hit)

@@ -1462,6 +1462,15 @@ components:
           type: array
           uniqueItems: false
       type: object
+    github_com_stacklok_toolhive_pkg_plugins.UpgradeResult:
+      properties:
+        outcomes:
+          description: Outcomes contains one entry per skill considered for upgrade.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome'
+          type: array
+          uniqueItems: false
+      type: object
     github_com_stacklok_toolhive_pkg_plugins.ValidationResult:
       properties:
         errors:
@@ -3738,6 +3747,41 @@ components:
         result:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult'
       type: object
+    pkg_api_v1.upgradePluginsRequest:
+      description: Request to re-resolve a project's lock entries and install newer
+        content
+      properties:
+        allow_ref_change:
+          description: AllowRefChange permits resolvedReference changes during upgrade
+          type: boolean
+        clients:
+          description: |-
+            Clients lists target client identifiers. Empty means every
+            plugin-supporting client detected on this host.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        fail_on_changes:
+          description: FailOnChanges exits with an error when any mutable source would
+            upgrade
+          type: boolean
+        names:
+          description: Names restricts the upgrade to specific plugin names. Empty
+            means every entry.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        preview:
+          description: Preview reports what would change without installing (still
+            fetches to compare digests)
+          type: boolean
+        project_root:
+          description: ProjectRoot is the project root path whose lock file should
+            be upgraded
+          type: string
+      type: object
     pkg_api_v1.upgradeRequest:
       description: Request to apply an available upgrade to a workload. All fields
         are optional; an empty body applies the upgrade preserving the workload's
@@ -5726,6 +5770,61 @@ paths:
                 type: string
           description: Not Implemented
       summary: Sync project plugins from the lock file
+      tags:
+      - plugins
+  /api/v1beta/plugins/upgrade:
+    post:
+      description: Re-resolve a project's lock entries and install newer content where
+        available
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/pkg_api_v1.upgradePluginsRequest'
+                description: Upgrade request
+                summary: request
+        description: Upgrade request
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.UpgradeResult'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (feature not enabled)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (a requested name is not in the lock file)
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Implemented
+      summary: Upgrade project plugins
       tags:
       - plugins
   /api/v1beta/plugins/validate:

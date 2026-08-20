@@ -41,5 +41,6 @@ The ai-plugin command provides subcommands to manage plugins for AI tools
 * [thv ai-plugin push](thv_ai-plugin_push.md)	 - Push a built AI-tool plugin to an OCI registry
 * [thv ai-plugin sync](thv_ai-plugin_sync.md)	 - Restore project plugins to match the lock file
 * [thv ai-plugin uninstall](thv_ai-plugin_uninstall.md)	 - Uninstall an AI-tool plugin
+* [thv ai-plugin upgrade](thv_ai-plugin_upgrade.md)	 - Upgrade project plugins to newer pinned content
 * [thv ai-plugin validate](thv_ai-plugin_validate.md)	 - Validate an AI-tool plugin directory
 

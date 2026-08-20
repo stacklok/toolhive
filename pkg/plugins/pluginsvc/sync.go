@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/opencontainers/go-digest"
+
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -17,12 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
-
-// var _ ensures *service satisfies the lock service surface. Upgrade is a
-// stub until the next PR in this stack lands the real implementation; the
-// compile-time check still requires both methods so PluginsRouter's type
-// assert succeeds and /sync can be served.
-var _ plugins.PluginLockService = (*service)(nil)
 
 // Sync restores a project's installed plugins to match its lock file: missing
 // or drifted entries are reinstalled at their pinned digest (never
@@ -77,13 +73,6 @@ func (s *service) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.
 	}
 
 	return result, nil
-}
-
-// Upgrade is implemented in the next PR of this stack. The stub exists so
-// *service satisfies PluginLockService (and /sync can be type-asserted)
-// without exposing a half-built upgrade path.
-func (*service) Upgrade(_ context.Context, _ plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
-	return nil, httperr.WithCode(errors.New("plugin upgrade is not implemented"), http.StatusNotImplemented)
 }
 
 // syncOne re-reads the lock entry and DB row under the per-plugin lock, then
@@ -273,6 +262,9 @@ func (s *service) entryMatchesInstalled(
 func (s *service) reinstallPinned(
 	ctx context.Context, opts plugins.SyncOptions, entry lockfile.Entry, targetClients []string,
 ) error {
+	if isLocalStorePin(entry) {
+		return s.reinstallLocalStorePin(ctx, opts, entry, targetClients)
+	}
 	pinnedRef, err := buildPinnedReference(entry)
 	if err != nil {
 		return fmt.Errorf("pinning %q: %w", entry.Name, err)
@@ -288,6 +280,79 @@ func (s *service) reinstallPinned(
 		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
 		ExpectedCanonicalName: entry.Name,
 	})
+	return err
+}
+
+// reinstallLocalStorePin restores a plain-Source lock pin whose digest lives
+// only in the local OCI store. It loads that exact digest, validates the
+// artifact's canonical plugin name, and installs the layer bytes directly so
+// Source is never reinterpreted as Docker Hub. A missing digest is reported
+// as digest-missing without mutating DB or lock state.
+func (s *service) reinstallLocalStorePin(
+	ctx context.Context, opts plugins.SyncOptions, entry lockfile.Entry, targetClients []string,
+) error {
+	if s.ociStore == nil {
+		return httperr.WithCode(
+			fmt.Errorf("pinned digest %q for plugin %q not found in local store: OCI store is not configured",
+				entry.Digest, entry.Name),
+			http.StatusNotFound,
+		)
+	}
+	d, err := digest.Parse(entry.Digest)
+	if err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid pinned digest %q for plugin %q: %w", entry.Digest, entry.Name, err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	layerData, pluginConfig, err := s.extractPluginOCIContent(ctx, d)
+	if err != nil {
+		// Missing digests (fresh machine) and unreadable local blobs both
+		// surface as digest-missing so sync does not mutate DB/lock. Preserve
+		// explicit validation rejections from extractPluginOCIContent.
+		if httperr.Code(err) == http.StatusUnprocessableEntity {
+			return err
+		}
+		return httperr.WithCode(
+			fmt.Errorf("pinned digest %q for plugin %q not found in local store: %w",
+				entry.Digest, entry.Name, err),
+			http.StatusNotFound,
+		)
+	}
+	if pluginConfig == nil {
+		return httperr.WithCode(
+			fmt.Errorf("pinned digest %q for plugin %q has no plugin config", entry.Digest, entry.Name),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	if err := plugins.ValidatePluginName(pluginConfig.Name); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("local artifact contains invalid plugin name: %w", err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+	if pluginConfig.Name != entry.Name {
+		return httperr.WithCode(
+			fmt.Errorf("plugin name %q in local artifact does not match lock entry name %q",
+				pluginConfig.Name, entry.Name),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	installOpts := plugins.InstallOptions{
+		Name:                  entry.Name,
+		Scope:                 plugins.ScopeProject,
+		ProjectRoot:           opts.ProjectRoot,
+		Clients:               targetClients,
+		Force:                 true,
+		LockSource:            entry.Source,
+		LockResolvedReference: "", // local-store pins stay empty so sync restores by digest
+		SyncRestore:           true,
+		ExpectedCanonicalName: entry.Name,
+	}
+	hydrateOptsFromLocalBuild(&installOpts, layerData, d, pluginConfig, entry.Source)
+	_, err = s.installAlreadyLocked(ctx, installOpts)
 	return err
 }
 

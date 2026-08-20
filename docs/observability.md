@@ -212,6 +212,28 @@ controller-runtime.
 chain: Go's `ServeMux` resolves the most specific registered pattern first, so an
 explicit `/metrics` always outranks the `/` catch-all that carries the chain.)
 
+#### Migration window
+
+`/metrics` is currently served on **both** the transport port and the diagnostics
+port. That is deliberate and temporary, so no existing scrape configuration breaks
+while it is moved:
+
+1. Point your scraper at the diagnostics port and confirm metrics arrive.
+2. Set `metricsOnTransportPort: false` to stop serving the old location, and confirm
+   nothing else was still scraping it.
+3. When the window closes the default flips, and only the diagnostics port serves
+   `/metrics`. See [issue #6384](https://github.com/stacklok/toolhive/issues/6384) for
+   the timeline.
+
+A deployment that sets `metricsOnTransportPort` explicitly is not moved by the flip.
+Leaving it unset is what opts you into the new default when it changes — the value is
+resolved at startup rather than written into stored configuration, so existing
+workloads pick up the new default without being recreated.
+
+While the transport-port copy is being served, a warning is logged at startup naming
+the transport port. That endpoint is on the listener that carries MCP traffic, so it
+cannot be restricted separately — which is the reason for the move.
+
 Port selection:
 
 - **Default** — port `9464`, the OpenTelemetry specification's Prometheus exporter
@@ -290,7 +312,7 @@ What lives on the transport port:
 | `/.well-known/oauth-protected-resource` | Yes, if clients perform OAuth discovery (RFC 9728) |
 | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/oauth/` | Only when the embedded authorization server is enabled |
 | `/health` | No — it exists for Kubernetes probes, which reach it in-cluster |
-| `/metrics` | Not served here at all; it returns 404 on this listener |
+| `/metrics` | During the migration window, yes — see [Migration window](#migration-window). After it closes, no; it returns 404 on this listener |
 
 For a transparent proxy fronting a remote MCP server, the MCP path is whatever the
 backend exposes, since that proxy forwards `/` to the backend.

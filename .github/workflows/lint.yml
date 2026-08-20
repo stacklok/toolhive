@@ -44,5 +44,11 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
+          # Pinned below v2.13.0: that release bundles honnef.co/go/tools
+          # v0.8.0-rc.1, whose nilness analyzer panics analyzing this repo's
+          # dependency graph (package "sentry") — reproduces deterministically
+          # on a clean checkout, unrelated to any PR's changes. Unpin once
+          # upstream ships a fixed nilness analyzer.
+          version: v2.12.2
           # Enable golangci-lint's built-in caching (removes skip-cache: true)
           args: --timeout=5m

@@ -50,7 +50,10 @@ func (s *service) installFromGit(
 
 	gitURL := opts.Name
 
-	files, manifest, commitHash, err := s.cloneAndCollectPlugin(ctx, gitRef)
+	// head carries the resolved commit's hash plus its (unverified) gitsign
+	// signature and signed payload. Only the hash is consumed today; the
+	// signature and payload are carried for install-time verification.
+	files, manifest, head, err := s.cloneAndCollectPlugin(ctx, gitRef)
 	if err != nil {
 		return nil, httperr.WithCode(
 			fmt.Errorf("resolving git plugin: %w", err),
@@ -85,7 +88,7 @@ func (s *service) installFromGit(
 	opts.Name = manifest.Name
 	opts.LayerData = layerData
 	opts.Reference = gitURL
-	opts.Digest = commitHash
+	opts.Digest = head.Hash
 	opts.Components = manifestComponentInventory(manifest)
 	opts.Description = manifest.Description
 	if opts.Version == "" && manifest.Version != "" {
@@ -112,10 +115,12 @@ func (s *service) installFromGit(
 // cloneAndCollectPlugin clones the repo referenced by gitRef, reads the plugin
 // manifest, and collects every file under the plugin subdirectory. Returns the
 // files as ociartifact.FileEntry values (ready for CompressTar), the parsed
-// manifest, and the commit hash.
+// manifest, and the HEAD commit. The commit carries its hash (used as the
+// install digest) alongside its UNVERIFIED gitsign signature and the payload
+// that signature covers, so install-time verification can check them.
 func (s *service) cloneAndCollectPlugin(
 	ctx context.Context, gitRef *gitresolver.GitReference,
-) ([]ociartifact.FileEntry, *plugins.PluginManifest, string, error) {
+) ([]ociartifact.FileEntry, *plugins.PluginManifest, git.HeadCommit, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitresolver.CloneTimeout)
 	defer cancel()
 
@@ -124,33 +129,32 @@ func (s *service) cloneAndCollectPlugin(
 	client := gitresolver.ClientForURL(gitRef.URL, s.gitClient)
 	repoInfo, err := client.Clone(ctx, cloneConfig)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("cloning repository: %w", err)
+		return nil, nil, git.HeadCommit{}, fmt.Errorf("cloning repository: %w", err)
 	}
 	defer func() { _ = client.Cleanup(ctx, repoInfo) }()
 
 	head, err := client.HeadCommit(repoInfo)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("getting HEAD commit: %w", err)
+		return nil, nil, git.HeadCommit{}, fmt.Errorf("getting HEAD commit: %w", err)
 	}
-	commitHash := head.Hash
 
 	// Read the plugin manifest. It lives at <path>/.claude-plugin/plugin.json.
 	// We collect the whole file tree first, then locate the manifest among the
 	// collected entries so we don't need a second pass over the repo.
 	fileEntries, err := collectPluginFiles(repoInfo, gitRef.Path)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("collecting plugin files: %w", err)
+		return nil, nil, git.HeadCommit{}, fmt.Errorf("collecting plugin files: %w", err)
 	}
 
 	manifestBytes, err := findManifestBytes(fileEntries)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("reading plugin manifest: %w", err)
+		return nil, nil, git.HeadCommit{}, fmt.Errorf("reading plugin manifest: %w", err)
 	}
 	manifest, err := plugins.ParsePluginManifestFromBytes(manifestBytes)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("parsing plugin manifest: %w", err)
+		return nil, nil, git.HeadCommit{}, fmt.Errorf("parsing plugin manifest: %w", err)
 	}
-	return fileEntries, manifest, commitHash, nil
+	return fileEntries, manifest, head, nil
 }
 
 // collectPluginFiles reads all files from the given path in the repository,

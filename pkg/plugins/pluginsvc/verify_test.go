@@ -38,14 +38,18 @@ func signedResult() *verifier.Result {
 }
 
 // alwaysSignedVerifier reports every artifact as signed by the fixed test
-// identity, so tests exercising lock/sync/upgrade mechanics don't trip
-// install-time verification.
+// identity — including offline re-verification of stored bundles — so tests
+// exercising lock/sync/upgrade mechanics don't trip verification.
 func alwaysSignedVerifier(t *testing.T) verifier.Verifier {
 	t.Helper()
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(signedResult(), nil)
 	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
 		AnyTimes().Return(signedResult(), nil)
 	return mv
 }

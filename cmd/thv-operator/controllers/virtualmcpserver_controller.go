@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"slices"
@@ -1836,7 +1837,7 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
 	)
 
-	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
+	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
 		return true
 	}
 

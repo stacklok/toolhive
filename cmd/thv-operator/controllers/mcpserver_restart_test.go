@@ -21,6 +21,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -758,4 +759,29 @@ func (m *mockFailingClient) Delete(ctx context.Context, obj client.Object, opts 
 		return fmt.Errorf("mock error: Delete operation failed")
 	}
 	return m.Client.Delete(ctx, obj, opts...)
+}
+
+func TestMCPServerDeploymentNeedsUpdate_KubectlRestartedAtIsNotDrift(t *testing.T) {
+	t.Parallel()
+	tc := setupRestartTest(t)
+	deployment, err := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	assert.False(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), deployment, tc.mcpServer, "test-checksum"),
+		"freshly built deployment must not report drift")
+
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = map[string]string{}
+	}
+	deployment.Spec.Template.Annotations[ctrlutil.KubectlRestartedAtAnnotation] = "2026-08-19T06:00:00Z"
+	assert.False(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), deployment, tc.mcpServer, "test-checksum"),
+		"kubectl.kubernetes.io/restartedAt on the live template is not drift")
+
+	if deployment.Spec.Template.Labels == nil {
+		deployment.Spec.Template.Labels = map[string]string{}
+	}
+	deployment.Spec.Template.Labels["stale-extra"] = "1"
+	assert.True(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), deployment, tc.mcpServer, "test-checksum"),
+		"extra live pod-template labels remain drift")
 }

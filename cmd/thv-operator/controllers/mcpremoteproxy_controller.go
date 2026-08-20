@@ -1831,11 +1831,11 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	)
 
 	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
-		return !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) ||
+		return !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) ||
 			!ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations)
 	}
 
-	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
+	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
 		return true
 	}
 

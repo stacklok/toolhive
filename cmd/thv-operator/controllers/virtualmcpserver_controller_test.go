@@ -1832,6 +1832,29 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 			expectedUpdate: false,
 		},
 		{
+			name: "extra live pod template label is drift",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: func() map[string]string {
+								labels := make(map[string]string, len(expectedLabels)+1)
+								for k, v := range expectedLabels {
+									labels[k] = v
+								}
+								labels["stale-extra"] = "1"
+								return labels
+							}(),
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
 			name: "kubectl rollout restart annotation is not drift",
 			deployment: &appsv1.Deployment{
 				Spec: appsv1.DeploymentSpec{

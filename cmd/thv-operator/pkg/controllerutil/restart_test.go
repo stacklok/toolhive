@@ -61,3 +61,15 @@ func TestPreserveKubectlRestartedAt(t *testing.T) {
 		})
 	}
 }
+
+func TestPreserveKubectlRestartedAtDoesNotMutateCaller(t *testing.T) {
+	t.Parallel()
+	desired := map[string]string{"keep": "me"}
+	live := map[string]string{KubectlRestartedAtAnnotation: "2026-08-19T06:00:00Z"}
+	got := PreserveKubectlRestartedAt(desired, live)
+	require.Equal(t, map[string]string{"keep": "me"}, desired)
+	require.Equal(t, map[string]string{
+		"keep":                       "me",
+		KubectlRestartedAtAnnotation: "2026-08-19T06:00:00Z",
+	}, got)
+}

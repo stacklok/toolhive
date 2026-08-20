@@ -1709,3 +1709,55 @@ func TestDeployWorkload_EqualGenerationDifferentImageClobbers(t *testing.T) {
 			"the gate cannot defend against this and the fix must live upstream "+
 			"(see issue #5360)")
 }
+
+func TestDeployWorkload_PreservesKubectlRestartedAt(t *testing.T) {
+	t.Parallel()
+	const containerName = "test-container"
+	const restartedAt = "2026-08-19T06:00:00Z"
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: defaultNamespace,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						KubectlRestartedAtAnnotation: restartedAt,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  mcpContainerName,
+						Image: "seeded-image:pre-existing",
+					}},
+				},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{ReadyReplicas: 1},
+	}
+	clientset := fake.NewClientset(sts)
+	client := NewClientWithConfigAndPlatformDetector(
+		clientset,
+		&rest.Config{Host: "https://fake-k8s-api.example.com"},
+		&mockPlatformDetector{platform: PlatformKubernetes},
+	)
+	client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+	client.namespaceFunc = func() string { return defaultNamespace }
+
+	_, err := client.DeployWorkload(
+		t.Context(),
+		"test-image", containerName, nil,
+		map[string]string{}, map[string]string{},
+		nil, "streamable-http", runtime.NewDeployWorkloadOptions(), false,
+	)
+	require.NoError(t, err)
+
+	got, getErr := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+		t.Context(), containerName, metav1.GetOptions{},
+	)
+	require.NoError(t, getErr)
+	assert.Equal(t, restartedAt, got.Spec.Template.Annotations[KubectlRestartedAtAnnotation])
+}

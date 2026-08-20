@@ -5,7 +5,6 @@ package ratelimit
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -198,17 +198,54 @@ func TestCallToolRateLimitedAnnotatesAmbientSpan(t *testing.T) {
 
 func TestCallToolLimiterErrorFailsOpen(t *testing.T) {
 	t.Parallel()
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() {
+		require.NoError(t, client.Close())
+	})
+	limiter, err := baseratelimit.NewLimiter(client, "test-ns", "test-vmcp", &v1beta1.RateLimitConfig{
+		Tools: []v1beta1.ToolRateLimitConfig{
+			{
+				Name: "backend_a_echo",
+				Shared: &v1beta1.RateLimitBucket{
+					MaxTokens:    1,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	redisServer.Close()
 
-	expected := errors.New("redis unavailable")
-	limiter := &recordingLimiter{err: expected}
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(recorder),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	t.Cleanup(func() {
+		require.NoError(t, tracerProvider.Shutdown(context.Background()))
+	})
+	ctx, span := tracerProvider.Tracer("vmcp-rate-limit-test").Start(t.Context(), "request")
 	inner := &recordingCore{}
 	decorated := NewDecorator(inner, limiter)
 
-	result, err := decorated.CallTool(t.Context(), nil, "backend_a_echo", nil, nil)
+	result, err := decorated.CallTool(ctx, nil, "backend_a_echo", nil, nil)
+	span.End()
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, inner.called)
+	spans := recorder.Ended()
+	require.Len(t, spans, 1, "the decorator must preserve the ambient span without creating another span")
+	attributes := make(map[string]any, len(spans[0].Attributes()))
+	for _, attr := range spans[0].Attributes() {
+		attributes[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	assert.Equal(t, "allowed", attributes["rate_limit.decision"])
+	assert.Equal(t, "none", attributes["rate_limit.rejected_by"])
+	assert.Equal(t, true, attributes["rate_limit.fail_open"])
+	assert.Equal(t, codes.Unset, spans[0].Status().Code)
+	assert.Empty(t, spans[0].Events(), "handled fail-open must not be recorded as a span error")
 }
 
 func TestCallToolNilIdentityUsesEmptyUserID(t *testing.T) {

@@ -163,8 +163,22 @@ func TestTokenExchangeHandler_CanSkipClientAuth(t *testing.T) {
 	tj := newTestJWKS(t)
 	h := newTestHandler(t, tj, 15*time.Minute)
 
-	req := fosite.NewAccessRequest(&session.Session{})
-	assert.False(t, h.CanSkipClientAuth(context.Background(), req))
+	tests := []struct {
+		name       string
+		grantTypes fosite.Arguments
+		want       bool
+	}{
+		{name: "token exchange requires authentication", grantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange}},
+		{name: "other grants require authentication", grantTypes: fosite.Arguments{oauthproto.GrantTypeJWTBearer}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := fosite.NewAccessRequest(&session.Session{})
+			req.GrantTypes = tt.grantTypes
+			assert.Equal(t, tt.want, h.CanSkipClientAuth(context.Background(), req))
+		})
+	}
 }
 
 func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
@@ -1401,22 +1415,32 @@ func TestCheckDelegationConsent(t *testing.T) {
 			},
 		},
 		{
+			name: "matcher-only authorization, actorID in AllowedDelegateClients accepted",
+			claims: &ValidatedClaims{
+				ExternalActorAuthorized: true,
+				AllowedDelegateClients:  []string{actorID},
+			},
+		},
+		{
 			name: "ExternalActor set, actorID in wildcard AllowedDelegateClients accepted",
 			claims: &ValidatedClaims{
-				ExternalActor:          "ext-agent",
-				AllowedDelegateClients: []string{anyDelegateClient},
+				ExternalActor:           "ext-agent",
+				ExternalActorAuthorized: true,
+				AllowedDelegateClients:  []string{anyDelegateClient},
 			},
 		},
 		{
 			// Guards the switch ordering in checkDelegationConsent: the
-			// ExternalActor case must be checked before the client_id cases,
-			// so a populated (and mismatched) ClientID must not cause
-			// rejection when ExternalActor is already set.
+			// ExternalActorAuthorized case must be checked before the
+			// client_id cases, so a populated (and mismatched) ClientID must
+			// not cause rejection when the external actor is already
+			// authorized.
 			name: "ExternalActor set with a differing ClientID still accepted",
 			claims: &ValidatedClaims{
-				ExternalActor:          "ext-agent",
-				ClientID:               "some-other-client",
-				AllowedDelegateClients: []string{anyDelegateClient},
+				ExternalActor:           "ext-agent",
+				ExternalActorAuthorized: true,
+				ClientID:                "some-other-client",
+				AllowedDelegateClients:  []string{anyDelegateClient},
 			},
 		},
 		{
@@ -1439,7 +1463,8 @@ func TestCheckDelegationConsent(t *testing.T) {
 			// pins the fail-closed default this PR introduces.
 			name: "ExternalActor set, nil AllowedDelegateClients rejected",
 			claims: &ValidatedClaims{
-				ExternalActor: "ext-agent",
+				ExternalActor:           "ext-agent",
+				ExternalActorAuthorized: true,
 				// AllowedDelegateClients intentionally nil.
 			},
 			wantErr:     true,
@@ -1448,15 +1473,17 @@ func TestCheckDelegationConsent(t *testing.T) {
 		{
 			name: "ExternalActor set, actorID in AllowedDelegateClients accepted",
 			claims: &ValidatedClaims{
-				ExternalActor:          "ext-agent",
-				AllowedDelegateClients: []string{"some-other-client", actorID},
+				ExternalActor:           "ext-agent",
+				ExternalActorAuthorized: true,
+				AllowedDelegateClients:  []string{"some-other-client", actorID},
 			},
 		},
 		{
 			name: "ExternalActor set, actorID not in AllowedDelegateClients rejected",
 			claims: &ValidatedClaims{
-				ExternalActor:          "ext-agent",
-				AllowedDelegateClients: []string{"some-other-client"},
+				ExternalActor:           "ext-agent",
+				ExternalActorAuthorized: true,
+				AllowedDelegateClients:  []string{"some-other-client"},
 			},
 			wantErr:     true,
 			errContains: "not authorized to exchange subject tokens",
@@ -1549,8 +1576,9 @@ func TestCheckDelegationConsent(t *testing.T) {
 			// access on its own.
 			name: "ExternalActor set, actorSub in AllowedDelegateClients but clientID is not rejected",
 			claims: &ValidatedClaims{
-				ExternalActor:          "ext-agent",
-				AllowedDelegateClients: []string{"distinct-actor"},
+				ExternalActor:           "ext-agent",
+				ExternalActorAuthorized: true,
+				AllowedDelegateClients:  []string{"distinct-actor"},
 			},
 			clientID:    "the-authenticated-client",
 			actorSub:    "distinct-actor",
@@ -1610,6 +1638,67 @@ func newTestHandlerWithValidator(validator SubjectTokenValidator) *Handler {
 			scopeStrategy:    fosite.ExactScopeStrategy,
 			audienceStrategy: fosite.DefaultAudienceMatchingStrategy,
 		},
+	}
+}
+
+func TestTokenExchangeHandler_ActorMatcherDelegationConsent(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		ActorMatcher:           `claims.azp == "trusted-app"`,
+		AllowedDelegateClients: []string{testAgentClientID},
+	}})
+	handler := newTestHandlerWithValidator(validator)
+
+	claims := externalClaims()
+	claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+	subjectToken := externalJWKS.signToken(t, claims, map[string]any{"azp": "trusted-app"})
+
+	tests := []struct {
+		name    string
+		client  fosite.Client
+		wantErr bool
+	}{
+		{
+			name:   "matching client is authorized",
+			client: defaultClient(),
+		},
+		{
+			name: "client absent from AllowedDelegateClients is rejected",
+			client: func() fosite.Client {
+				client := defaultClient()
+				client.ID = "different-toolhive-client"
+				return client
+			}(),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := newAccessRequest(t, tt.client, url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {subjectToken},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			})
+
+			err := handler.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErr {
+				require.Error(t, err)
+				var rfcErr *fosite.RFC6749Error
+				require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
+				assert.Contains(t, rfcErr.Reason(), "not authorized to exchange subject tokens")
+				return
+			}
+			require.NoError(t, err)
+		})
 	}
 }
 
@@ -1730,11 +1819,12 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		assert.Equal(t, testExternalIssuer+"#"+nativeLikeUUID, sess.JWTClaims.Subject)
 	})
 
-	// The documented dangerous config (see checkDelegationConsent and
-	// resolveAllowedActor's doc comments): a trusted external issuer emitting
-	// a well-formed may_act naming this client bypasses the allowlist
-	// entirely. Only covered at the checkDelegationConsent unit level until
-	// now — this exercises it through the full handler.
+	// The documented precedence (see checkDelegationConsent and
+	// resolveActorAuthorization's doc comments): a trusted external issuer
+	// emitting a well-formed may_act naming this client bypasses external
+	// actor authorization, but AllowedDelegateClients still applies. Only
+	// covered at the checkDelegationConsent unit level until now — this
+	// exercises it through the full handler.
 	t.Run("external token carrying may_act still nests the issuer, with no actor to report", func(t *testing.T) {
 		t.Parallel()
 		h := newTestHandlerWithValidator(multiValidator)
@@ -1754,7 +1844,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"])
 
-		// The path that bypasses the allowlist entirely still records where
+		// External actor authorization is bypassed, but this path still records where
 		// the delegation came from (ValidatedClaims.ExternalIssuer is set
 		// unconditionally by validateExternalToken) — it just has no
 		// client-namespace actor claim to report, since may_act.sub already

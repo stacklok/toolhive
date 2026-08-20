@@ -37,8 +37,8 @@ const upstreamDeleteTimeout = 5 * time.Second
 // a set of upstream OAuth2Providers (keyed by provider name) and
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
 // call it dispatches to the correct provider based on the expired token's
-// ProviderID, deduplicating concurrent refreshes for the same
-// (session, provider) pair via sfGroup.
+// ProviderID. It deduplicates concurrent refreshes by the opaque storage-row
+// identity returned by UpstreamTokenStorage, within this process only.
 type upstreamTokenRefresher struct {
 	providers            map[string]upstream.OAuth2Provider
 	storage              storage.UpstreamTokenStorage
@@ -49,10 +49,12 @@ type upstreamTokenRefresher struct {
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
 var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
 
-// RefreshAndStore deduplicates concurrent refreshes for the same (session,
-// provider) pair, then delegates to refreshAndStore. The detached-context
-// timeout ensures waiting callers are not abandoned if the initiating request
-// cancels before the upstream round-trip completes.
+// RefreshAndStore validates deterministic input errors before resolving the
+// opaque storage-row identity used to deduplicate a refresh within this process.
+// The leader re-reads that row under a detached timeout so it never redeems a
+// stale refresh token supplied by a caller. It only short-circuits on that
+// re-read when the row is actually unexpired; a storage backend that returns
+// tokens without checking expiry does not fool it into skipping the refresh.
 func (r *upstreamTokenRefresher) RefreshAndStore(
 	ctx context.Context,
 	sessionID string,
@@ -61,14 +63,47 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	if expired == nil {
 		return nil, errors.New("expired tokens are required")
 	}
+	if expired.RefreshToken == "" {
+		return nil, errors.New("no refresh token available for upstream token refresh")
+	}
+	if _, ok := r.providers[expired.ProviderID]; !ok {
+		return nil, fmt.Errorf("no upstream provider configured for %q", expired.ProviderID)
+	}
 
-	// providerName == ProviderID throughout the authserver; both originate from
-	// UpstreamConfig.Name and are stored verbatim in UpstreamTokens.ProviderID.
-	key := sessionID + ":" + expired.ProviderID
-	result, err, _ := r.sfGroup.Do(key, func() (any, error) {
+	rowID, err := r.storage.ResolveUpstreamTokenRowID(ctx, sessionID, expired.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	if rowID == "" {
+		return nil, errors.New("upstream token row ID cannot be empty")
+	}
+
+	result, err, _ := r.sfGroup.Do(string(rowID), func() (any, error) {
 		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 		defer cancel()
-		return r.refreshAndStore(refreshCtx, sessionID, expired)
+
+		authoritative, readErr := r.storage.GetUpstreamTokens(refreshCtx, sessionID, expired.ProviderID)
+		if readErr == nil {
+			// Some storage implementations may return tokens without checking
+			// access-token expiry (the interface does not require it; see
+			// storage.UpstreamTokenStorage.GetUpstreamTokens). Only short-circuit
+			// when the re-read row is actually unexpired; otherwise fall through
+			// and refresh using it as the authoritative row.
+			if authoritative == nil {
+				return nil, fmt.Errorf(
+					"upstream token row missing on re-read for session %q provider %q",
+					sessionID, expired.ProviderID,
+				)
+			}
+			if !authoritative.IsExpired(time.Now()) {
+				return authoritative, nil
+			}
+			return r.refreshAndStore(refreshCtx, sessionID, authoritative)
+		}
+		if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
+			return nil, readErr
+		}
+		return r.refreshAndStore(refreshCtx, sessionID, authoritative)
 	})
 	if err != nil {
 		return nil, err
@@ -77,7 +112,8 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	if !ok || refreshed == nil {
 		return nil, errors.New("unexpected nil result from upstream token refresh")
 	}
-	return refreshed, nil
+	refreshedCopy := *refreshed
+	return &refreshedCopy, nil
 }
 
 // refreshAndStore performs the actual token refresh and storage write.

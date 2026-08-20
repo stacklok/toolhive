@@ -23,7 +23,8 @@ type InstallOptions struct {
 	Version string `json:"version,omitempty"`
 	// Scope is the installation scope.
 	Scope Scope `json:"scope,omitempty"`
-	// Clients lists target clients (e.g., "claude-code"). Empty means first skill-supporting client.
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged skill directories.
 	Force bool `json:"force,omitempty"`
@@ -63,12 +64,11 @@ type InstallOptions struct {
 	// Empty means the user explicitly requested this install. Internal use
 	// only — NOT exposed via HTTP API.
 	RequiredByParent string `json:"-"`
-	// Visited tracks skill names already materialized in this dependency
-	// tree, preventing infinite recursion on a requires cycle. Left nil by
-	// external callers; Install initializes it on first entry and threads it
-	// through recursive dependency installs. Internal use only — NOT exposed
-	// via HTTP API.
-	Visited map[string]struct{} `json:"-"`
+	// ExpectedCanonicalName, when set, requires the resolved skill/manifest
+	// name to equal this value before any install mutation. Used by
+	// Sync/Upgrade so a lock entry cannot be repaired under a different
+	// canonical identity. Internal use only — NOT exposed via HTTP API.
+	ExpectedCanonicalName string `json:"-"`
 	// SyncRestore forces re-extraction to every existing client even when
 	// Digest matches the currently-installed digest. Set by Sync when
 	// reinstalling at a pinned reference: the whole point is repairing
@@ -132,6 +132,11 @@ type InstallResult struct {
 	// previous state instead of destructively deleting a record this call
 	// did not create. Internal use only — NOT exposed via HTTP API.
 	PreExisting *InstalledSkill `json:"-"`
+	// RestoreFiles restores on-disk skill trees overwritten by a force
+	// reinstall or upgrade. Set when extraction snapshotted prior content;
+	// rollback calls it so a failed install does not leave half-written
+	// files. Internal use only — NOT exposed via HTTP API.
+	RestoreFiles func() error `json:"-"`
 	// Provenance is the verified signer identity this install recorded —
 	// surfaced so callers can display what trust-on-first-use pinned.
 	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
@@ -239,9 +244,14 @@ type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
 	// Key is the path to a cosign PEM private key used to sign the pushed
-	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Empty with
-	// NoSign false is an error: unsigned pushes must be explicit.
+	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Mutually exclusive
+	// with IdentityToken. One of Key, IdentityToken, or NoSign is required.
 	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
+	// keyless signing: the server exchanges it with Fulcio for a short-lived
+	// signing certificate and records the signature in Rekor. Mutually
+	// exclusive with Key. One of Key, IdentityToken, or NoSign is required.
+	IdentityToken string `json:"identity_token,omitempty"`
 	// NoSign pushes without signing. Consumers installing the artifact
 	// project-scoped will need an explicit unsigned exception.
 	NoSign bool `json:"no_sign,omitempty"`
@@ -358,8 +368,9 @@ type UpgradeOptions struct {
 	// different identity than the one recorded in the lock file; the new
 	// identity is recorded in its place.
 	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
-	// Clients lists target clients (e.g., "claude-code"). Empty means every
-	// skill-supporting client detected on this host.
+	// Clients lists target clients (e.g., "claude-code"). Empty preserves the
+	// skill's currently installed client list; when that is also empty,
+	// every skill-supporting client detected on this host is used.
 	Clients []string `json:"clients,omitempty"`
 }
 

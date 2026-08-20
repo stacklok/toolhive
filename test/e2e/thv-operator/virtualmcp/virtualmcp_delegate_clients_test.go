@@ -102,8 +102,8 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate clients", ginkgo.Ordered, fun
 		})).To(gomega.Succeed())
 
 		ginkgo.By("deploying Dex as the embedded authorization server upstream")
-		dexInfo, dexCleanup = deployDex(ctx, k8sClient, dexName, defaultNamespace,
-			issuer+"/oauth/callback", timeout, pollInterval)
+		dexInfo, dexCleanup = deployDex(ctx, k8sClient, dexName,
+			issuer+"/oauth/callback")
 		cleanupDexFn = dexCleanup
 
 		CreateMCPGroupAndWait(ctx, k8sClient, groupName, defaultNamespace, "delegate client e2e group", timeout, pollInterval)

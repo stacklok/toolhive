@@ -117,35 +117,35 @@ func TestUninstall_ExplicitDependencyIsNeverCascaded(t *testing.T) {
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestUninstall_CascadeCycleTerminates(t *testing.T) {
+func TestUninstall_CascadeUnderProjectTxTerminates(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
-	refA, _ := gitRef("skill-a")
-	refB, _ := gitRef("skill-b")
-	fx.register("skill-a", gitSkill("skill-a", refB))
-	fx.register("skill-b", gitSkill("skill-b", refA))
+	depRef, _ := gitRef("shared-dep")
+	fx.register("parent-skill", gitSkill("parent-skill", depRef))
+	fx.register("shared-dep", gitSkill("shared-dep"))
 	svc, projectRoot := newLockTestService(t, gr)
 
+	parentRef, _ := gitRef("parent-skill")
 	_, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name: refA, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		Name: parentRef, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
 	})
 	require.NoError(t, err)
 
 	done := make(chan error, 1)
 	go func() {
 		done <- svc.Uninstall(t.Context(), skills.UninstallOptions{
-			Name: "skill-a", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+			Name: "parent-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
 		})
 	}()
 	select {
 	case err := <-done:
 		require.NoError(t, err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("timeout: cascade uninstall did not terminate on a requiredBy cycle")
+		t.Fatal("timeout: cascade uninstall under project tx did not terminate")
 	}
 
 	lf := readLockfile(t, projectRoot)
-	_, ok := lf.Get("skill-a")
+	_, ok := lf.Get("parent-skill")
 	assert.False(t, ok)
-	_, ok = lf.Get("skill-b")
-	assert.False(t, ok, "skill-b lost its only (cyclic) parent and must cascade too")
+	_, ok = lf.Get("shared-dep")
+	assert.False(t, ok, "orphaned dependency must cascade under the held project tx")
 }

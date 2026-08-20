@@ -83,6 +83,12 @@ type AuthorizationServerConfig struct {
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
+	// RFC 7523 JWT-bearer grant configured. Discovery advertises
+	// urn:ietf:params:oauth:grant-type:jwt-bearer in grant_types_supported
+	// only when this is true, mirroring how the grant itself is only
+	// registered with fosite when true (see buildProvider).
+	JWTBearerGrantEnabled bool
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -134,6 +140,10 @@ type AuthorizationServerParams struct {
 	// auth method. See authserver.Config.ForceConfidentialRedirectURIs for the
 	// full semantics.
 	ForceConfidentialRedirectURIs []string
+	// JWTBearerGrantEnabled indicates that at least one trusted issuer has the
+	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
+	// field of the same name.
+	JWTBearerGrantEnabled bool
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -299,6 +309,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
 		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
 		ForceConfidentialRedirectURIs:       cfg.ForceConfidentialRedirectURIs,
+		JWTBearerGrantEnabled:               cfg.JWTBearerGrantEnabled,
 	}, nil
 }
 

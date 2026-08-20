@@ -18,12 +18,23 @@ import (
 )
 
 // installFromGit clones a git repository, extracts the skill, writes files to
-// disk, and creates a DB record. The digest is the git commit hash, enabling
+// disk, creates a DB record, and completes group/lock bookkeeping while the
+// caller-held lock remains held. The digest is the git commit hash, enabling
 // same-commit no-op and upgrade detection.
+//
+// When alreadyLocked is false (user-scope), the per-skill lock is acquired
+// after the canonical name is known and held through installAndRegister.
+// When alreadyLocked is true (project transaction), no per-skill lock is
+// taken — the project tx is the serialization boundary.
+//
+//nolint:gocyclo // resolve/hydrate/lock/persist form one transactional path
 func (s *service) installFromGit(
 	ctx context.Context,
 	opts *skills.InstallOptions,
 	scope skills.Scope,
+	originalName string,
+	deps *depState,
+	alreadyLocked bool,
 ) (*skills.InstallResult, error) {
 	if s.gitResolver == nil {
 		return nil, httperr.WithCode(
@@ -75,12 +86,28 @@ func (s *service) installFromGit(
 		opts.Version = resolved.SkillConfig.Version
 	}
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	if err := validateExpectedCanonicalName(*opts); err != nil {
+		return nil, err
+	}
+
+	if deps != nil {
+		if deps.alreadyDone(opts.Name) {
+			return s.mergeRequiredByOnly(ctx, *opts, opts.Name, scope)
+		}
+		if err := deps.enter(opts.Name); err != nil {
+			return nil, err
+		}
+		defer deps.leave(opts.Name)
+	}
+
+	if !alreadyLocked {
+		unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+		defer unlock()
+	}
 
 	// Verify the commit signature before anything is written or recorded.
-	// This runs under the per-skill lock so concurrent first installs
-	// cannot both read an absent lock entry and race their TOFU anchors.
+	// This runs under the held lock so concurrent first installs cannot
+	// both read an absent lock entry and race their TOFU anchors.
 	if shouldVerifyInstall(*opts, scope) {
 		decision, verifyErr := s.verifyGitInstall(
 			ctx, *opts, resolved.SkillConfig.Name, resolved.CommitPayload, resolved.CommitSignature,
@@ -96,7 +123,11 @@ func (s *service) installFromGit(
 		return nil, err
 	}
 
-	return s.applyGitInstall(ctx, *opts, scope, clientTypes, clientDirs, resolved.Files)
+	result, err := s.applyGitInstall(ctx, *opts, scope, clientTypes, clientDirs, resolved.Files)
+	if err != nil {
+		return nil, err
+	}
+	return s.installAndRegister(ctx, *opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope, deps)
 }
 
 // applyGitInstall handles the create/upgrade/no-op logic for a git-based skill
@@ -205,8 +236,10 @@ func (s *service) applyGitInstallFresh(
 }
 
 // gitWriteMultiAndPersist writes git files to the given client directories,
-// verifies each tree, then creates or updates the store record. On failure
-// after any write, previously written directories in this call are removed.
+// verifies each tree, then creates or updates the store record. Every target
+// is snapshotted first (recording whether it existed) so any failure — and
+// any later installAndRegister rollback — restores prior content and removes
+// freshly created trees, with all compensation errors joined into the result.
 func (s *service) gitWriteMultiAndPersist(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -218,7 +251,12 @@ func (s *service) gitWriteMultiAndPersist(
 	existingClients []string,
 	isUpgrade, writeAggressive bool,
 ) (*skills.InstallResult, error) {
-	var written []string
+	backups, snapErr := snapshotTargets(cleanedDirs(dirsToWrite, clientDirs))
+	if snapErr != nil {
+		return nil, fmt.Errorf("snapshotting skill trees before write: %w", snapErr)
+	}
+	restore := func() error { return restoreTargets(backups) }
+
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		writeMode := opts.Force
@@ -226,36 +264,22 @@ func (s *service) gitWriteMultiAndPersist(
 			writeMode = true
 		}
 		if writeErr := gitresolver.WriteFiles(files, dir, writeMode); writeErr != nil {
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			return nil, fmt.Errorf("writing git skill: %w", writeErr)
+			return nil, errors.Join(fmt.Errorf("writing git skill: %w", writeErr), restore())
 		}
 		if checkErr := skills.CheckFilesystem(dir); checkErr != nil {
-			_ = s.installer.Remove(dir)
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
+			return nil, errors.Join(fmt.Errorf("post-extraction verification failed: %w", checkErr), restore())
 		}
-		written = append(written, ct)
 	}
 
 	sk := buildInstalledSkill(opts, scope, allRequested, existingClients)
+	var persistErr error
 	if isUpgrade {
-		if err := s.store.Update(ctx, sk); err != nil {
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			return nil, err
-		}
+		persistErr = s.store.Update(ctx, sk)
 	} else {
-		if err := s.store.Create(ctx, sk); err != nil {
-			for _, wct := range written {
-				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
-			}
-			return nil, err
-		}
+		persistErr = s.store.Create(ctx, sk)
 	}
-	return &skills.InstallResult{Skill: sk}, nil
+	if persistErr != nil {
+		return nil, errors.Join(persistErr, restore())
+	}
+	return &skills.InstallResult{Skill: sk, RestoreFiles: restore}, nil
 }

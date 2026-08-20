@@ -140,6 +140,10 @@ type listChangedTestBackend struct {
 	// ready closes once OnRegisterSession has captured session, decoupling
 	// addTool/addResource/addPrompt from the client-side race noted below.
 	ready chan struct{}
+	// readyOnce guards the close: OnRegisterSession fires once per registered
+	// session, and a backend can legitimately serve more than one client, so an
+	// unguarded close panics with "close of closed channel" (#6362).
+	readyOnce sync.Once
 
 	mu        sync.Mutex
 	session   mcpserver.ClientSession
@@ -233,7 +237,7 @@ func newListChangedTestBackend(t *testing.T) *listChangedTestBackend {
 		}
 		sessionWithPrompts.SetSessionPrompts(prompts)
 
-		close(b.ready)
+		b.readyOnce.Do(func() { close(b.ready) })
 	})
 
 	srv := mcpserver.NewMCPServer("list-changed-backend", "1.0.0",

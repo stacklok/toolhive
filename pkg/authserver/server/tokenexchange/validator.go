@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tokenexchange implements RFC 8693 token exchange for the authorization server.
-// It provides validation of subject tokens that were issued by the same authorization
-// server, enabling agents to act on behalf of users through delegation.
+// Package tokenexchange implements RFC 8693 token exchange and RFC 7523
+// JWT-bearer grants for the authorization server. It validates subject tokens
+// issued by the same authorization server and trusted external JWT assertions,
+// enabling delegated and assertion-based access-token issuance.
 package tokenexchange
 
 import (
@@ -64,16 +65,17 @@ type ValidatedClaims struct {
 	// MayAct holds the authorized actor from the "may_act" claim (RFC 8693 §4.4).
 	// Nil when the subject token does not carry a may_act claim.
 	MayAct *MayActClaim
-	// ExternalActor is the client identity that the external-issuer validation
-	// path has already authorized for delegation, via a per-issuer actor-claim
-	// allowlist match. It is set ONLY by that path (multi_issuer_validator.go),
-	// after the resolved actor claim is confirmed present in the issuer's
-	// AllowedActors — never populated from token claims by buildValidatedClaims
-	// or assignClaim. It is empty for self-issued tokens and for external
-	// tokens that carry a may_act claim (may_act is authoritative there
-	// instead). A non-empty value means the validator has already authorized
-	// this token's actor for delegation; it is not itself a raw claim.
+	// ExternalActor is the external actor claim value when the allowlist
+	// authorization path matched. It is empty when ActorMatcher alone
+	// authorized the token, because a matcher need not identify an actor.
+	// It is never populated from token claims by buildValidatedClaims or
+	// assignClaim, and is empty for self-issued and may_act-bearing tokens.
 	ExternalActor string
+	// ExternalActorAuthorized reports that the external issuer authorized
+	// delegation through AllowedActors or ActorMatcher. It is separate from
+	// ExternalActor because ActorMatcher can authorize without an actor claim.
+	// It is false for self-issued and may_act-bearing tokens.
+	ExternalActorAuthorized bool
 	// ExternalIssuer is set by the external-issuer validation path
 	// (validateExternalToken in multi_issuer_validator.go) to that issuer's
 	// IssuerURL, for EVERY external token it validates — unlike
@@ -89,7 +91,7 @@ type ValidatedClaims struct {
 	// AllowedDelegateClients is set for EVERY external token — like
 	// ExternalIssuer and unlike ExternalActor, it does not depend on whether
 	// the token carries a may_act claim (see validateExternalToken). That
-	// matters: the may_act path bypasses the AllowedActors allowlist
+	// matters: the may_act path bypasses AllowedActors and ActorMatcher
 	// entirely, so it is the path that most needs this restriction to still
 	// apply. It is set to that issuer's configured
 	// TrustedIssuer.AllowedDelegateClients, and is never populated
